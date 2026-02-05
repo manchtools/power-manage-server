@@ -102,16 +102,10 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 	now := time.Now()
 	notAfter := now.Add(ca.validity)
 
-	// Use hostname from CSR's CommonName
-	hostname := csr.Subject.CommonName
-	if hostname == "" {
-		hostname = "unknown"
-	}
-
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			CommonName:   hostname,
+			CommonName:   deviceID,
 			Organization: []string{"power-manage"},
 		},
 		NotBefore:             now.Add(-1 * time.Minute), // Allow for clock skew
@@ -206,5 +200,5 @@ func DeviceIDFromPEM(certPEM []byte) (string, error) {
 		return "", fmt.Errorf("parse certificate: %w", err)
 	}
 
-	return cert.Subject.SerialNumber, nil
+	return cert.Subject.CommonName, nil
 }
