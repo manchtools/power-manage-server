@@ -828,6 +828,75 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+// isInstantActionType returns true if the action type is an instant action (agent-builtin, no parameters).
+func isInstantActionType(t pm.ActionType) bool {
+	return t == pm.ActionType_ACTION_TYPE_REBOOT || t == pm.ActionType_ACTION_TYPE_SYNC
+}
+
+// DispatchInstantAction dispatches an instant action (reboot, sync) to a device.
+// Instant actions are agent-builtin and require no parameters.
+func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.Request[pm.DispatchInstantActionRequest]) (*connect.Response[pm.DispatchInstantActionResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	if !isInstantActionType(req.Msg.InstantAction) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid instant action type: %s", req.Msg.InstantAction.String()))
+	}
+
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	var timeoutSeconds int32
+	switch req.Msg.InstantAction {
+	case pm.ActionType_ACTION_TYPE_REBOOT:
+		timeoutSeconds = 600
+	case pm.ActionType_ACTION_TYPE_SYNC:
+		timeoutSeconds = 60
+	}
+
+	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+
+	eventData := map[string]any{
+		"device_id":       req.Msg.DeviceId,
+		"action_type":     int32(req.Msg.InstantAction),
+		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		"params":          map[string]any{},
+		"timeout_seconds": timeoutSeconds,
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "execution",
+		StreamID:   id,
+		EventType:  "ExecutionCreated",
+		Data:       eventData,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
+	}
+
+	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+	}
+
+	return connect.NewResponse(&pm.DispatchInstantActionResponse{
+		Execution: h.executionToProto(exec),
+	}), nil
+}
+
 func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest) (map[string]any, error) {
 	params := map[string]any{}
 
