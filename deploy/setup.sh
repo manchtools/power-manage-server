@@ -5,7 +5,8 @@
 # This script:
 # 1. Validates the .env configuration
 # 2. Generates the internal CA for agent certificate signing
-# 3. Prepares data directories for PostgreSQL and Traefik
+# 3. Generates the gateway server certificate (signed by the CA)
+# 4. Prepares data directories for PostgreSQL and Traefik
 #
 # Usage: ./setup.sh
 
@@ -86,7 +87,7 @@ check_env() {
     log_info "Environment configuration validated"
 }
 
-generate_certs() {
+generate_ca() {
     if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
         log_warn "CA already exists in $CERTS_DIR"
         read -p "Regenerate CA? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
@@ -113,6 +114,42 @@ generate_certs() {
     log_info "CA generated successfully"
 }
 
+generate_gateway_cert() {
+    if [[ -f "$CERTS_DIR/gateway.crt" ]] && [[ -f "$CERTS_DIR/gateway.key" ]]; then
+        log_warn "Gateway certificate already exists"
+        read -p "Regenerate gateway certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing gateway certificate"
+            return
+        fi
+    fi
+
+    log_info "Generating gateway server certificate for ${GATEWAY_DOMAIN}..."
+
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
+
+    # Generate CSR with SAN
+    openssl req -new -key "$CERTS_DIR/gateway.key" \
+        -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
+        -addext "subjectAltName=DNS:${GATEWAY_DOMAIN}" \
+        -out "$CERTS_DIR/gateway.csr"
+
+    # Sign with CA
+    openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -copy_extensions copyall \
+        -out "$CERTS_DIR/gateway.crt"
+
+    rm -f "$CERTS_DIR/gateway.csr"
+    chmod 600 "$CERTS_DIR/gateway.key"
+    chmod 644 "$CERTS_DIR/gateway.crt"
+
+    log_info "Gateway certificate generated (valid 825 days)"
+}
+
 show_instructions() {
     echo ""
     echo "=========================================="
@@ -128,8 +165,8 @@ show_instructions() {
     echo "2. Start the services:"
     echo "   docker compose up -d"
     echo ""
-    echo "   Traefik will automatically obtain Let's Encrypt certificates"
-    echo "   for both domains via HTTP challenge."
+    echo "   Traefik obtains a Let's Encrypt certificate for the control domain."
+    echo "   The gateway uses its internal CA-signed certificate for agent mTLS."
     echo ""
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
@@ -144,7 +181,8 @@ main() {
     echo ""
 
     check_env
-    generate_certs
+    generate_ca
+    generate_gateway_cert
 
     mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,traefik}"

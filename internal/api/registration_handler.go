@@ -137,6 +137,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		ActorID:   "registration",
 	}); err != nil {
 		logger.Error("failed to append token event", "error", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to consume registration token"))
 	}
 
 	logger.Info("device registered successfully", "device_id", deviceID)

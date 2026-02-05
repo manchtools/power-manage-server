@@ -226,14 +226,25 @@ BEGIN
                 event.data->>'registration_token_id',
                 COALESCE(event.data->'labels', '{}'),
                 event.sequence_num
-            );
+            )
+            ON CONFLICT (id) DO UPDATE SET
+                hostname = EXCLUDED.hostname,
+                cert_fingerprint = EXCLUDED.cert_fingerprint,
+                cert_not_after = EXCLUDED.cert_not_after,
+                registered_at = EXCLUDED.registered_at,
+                last_seen_at = EXCLUDED.last_seen_at,
+                registration_token_id = EXCLUDED.registration_token_id,
+                labels = EXCLUDED.labels,
+                projection_version = EXCLUDED.projection_version,
+                is_deleted = FALSE;
 
         WHEN 'DeviceSeen' THEN
             UPDATE devices_projection
             SET last_seen_at = event.occurred_at,
                 agent_version = COALESCE(event.data->>'agent_version', agent_version),
                 hostname = COALESCE(NULLIF(event.data->>'hostname', ''), hostname),
-                projection_version = event.sequence_num
+                projection_version = event.sequence_num,
+                is_deleted = FALSE
             WHERE id = event.stream_id;
 
         WHEN 'DeviceCertRenewed' THEN

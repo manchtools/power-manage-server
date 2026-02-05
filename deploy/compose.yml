@@ -9,9 +9,9 @@
 #   3. docker compose up -d  (or: podman-compose up -d)
 #
 # Architecture:
-#   Internet -> Traefik (:443, HTTPS) -> Control (:8081) -> Web UI / API
-#                                     -> Gateway (:8080) -> Agent Streaming
-#              (:80 redirects to :443)
+#   Internet -> Traefik (:443, HTTPS)       -> Control (:8081) -> Web UI / API
+#            -> Traefik (:443, TCP passthru) -> Gateway (:8080) -> Agent mTLS Streaming
+#              (:80 redirects to :443 for control only)
 
 services:
   traefik:
@@ -99,21 +99,27 @@ services:
         condition: service_healthy
       control:
         condition: service_healthy
+    volumes:
+      - ./certs:/certs:ro,z
     command:
       - "-addr=:8080"
       - "-database-url=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable"
       - "-log-level=${LOG_LEVEL:-info}"
+      - "-tls"
+      - "-tls-cert=/certs/gateway.crt"
+      - "-tls-key=/certs/gateway.key"
+      - "-tls-ca=/certs/ca.crt"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-q", "--spider", "--no-check-certificate", "https://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 3
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.gateway.rule=Host(`${GATEWAY_DOMAIN}`)"
-      - "traefik.http.routers.gateway.entrypoints=websecure"
-      - "traefik.http.routers.gateway.tls.certresolver=letsencrypt"
-      - "traefik.http.services.gateway.loadbalancer.server.port=8080"
+      - "traefik.tcp.routers.gateway.rule=HostSNI(`${GATEWAY_DOMAIN}`)"
+      - "traefik.tcp.routers.gateway.entrypoints=websecure"
+      - "traefik.tcp.routers.gateway.tls.passthrough=true"
+      - "traefik.tcp.services.gateway.loadbalancer.server.port=8080"
     networks:
       - internal
 
