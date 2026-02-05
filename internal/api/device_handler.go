@@ -1,0 +1,424 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
+)
+
+// DeviceHandler handles device management RPCs.
+type DeviceHandler struct {
+	store *store.Store
+}
+
+// NewDeviceHandler creates a new device handler.
+func NewDeviceHandler(st *store.Store) *DeviceHandler {
+	return &DeviceHandler{store: st}
+}
+
+// ListDevices returns a paginated list of devices.
+// Row-level security handles filtering: admins see all, users see only assigned devices.
+func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm.ListDevicesRequest]) (*connect.Response[pm.ListDevicesResponse], error) {
+	pageSize := int32(req.Msg.PageSize)
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+
+	offset := int32(0)
+	if req.Msg.PageToken != "" {
+		offset64, err := parsePageToken(req.Msg.PageToken)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+		}
+		offset = int32(offset64)
+	}
+
+	q := h.store.QueriesFromContext(ctx)
+
+	var devices []db.DevicesProjection
+	var err error
+
+	switch req.Msg.StatusFilter {
+	case "online":
+		devices, err = q.ListDevicesOnline(ctx, db.ListDevicesOnlineParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+	case "offline":
+		devices, err = q.ListDevicesOffline(ctx, db.ListDevicesOfflineParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+	default:
+		devices, err = q.ListDevices(ctx, db.ListDevicesParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list devices"))
+	}
+
+	count, err := q.CountDevices(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count devices"))
+	}
+
+	var nextPageToken string
+	if int32(len(devices)) == pageSize && int64(offset)+int64(pageSize) < count {
+		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
+	}
+
+	protoDevices := make([]*pm.Device, len(devices))
+	for i, d := range devices {
+		protoDevices[i] = h.deviceToProto(d)
+	}
+
+	return connect.NewResponse(&pm.ListDevicesResponse{
+		Devices:       protoDevices,
+		NextPageToken: nextPageToken,
+		TotalCount:    int32(count),
+	}), nil
+}
+
+// GetDevice returns a device by ID.
+// Row-level security handles access: admins see all, users see only assigned devices.
+func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.GetDeviceRequest]) (*connect.Response[pm.GetDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	q := h.store.QueriesFromContext(ctx)
+
+	device, err := q.GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	return connect.NewResponse(&pm.GetDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// SetDeviceLabel sets a label on a device.
+func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request[pm.SetDeviceLabelRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Emit DeviceLabelSet event
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.Id,
+		EventType:  "DeviceLabelSet",
+		Data: map[string]any{
+			"key":   req.Msg.Key,
+			"value": req.Msg.Value,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set label"))
+	}
+
+	// Read back updated device
+	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// RemoveDeviceLabel removes a label from a device.
+func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Request[pm.RemoveDeviceLabelRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Emit DeviceLabelRemoved event
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.Id,
+		EventType:  "DeviceLabelRemoved",
+		Data: map[string]any{
+			"key": req.Msg.Key,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove label"))
+	}
+
+	// Read back updated device
+	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// DeleteDevice deletes a device.
+func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[pm.DeleteDeviceRequest]) (*connect.Response[pm.DeleteDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Emit DeviceDeleted event
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.Id,
+		EventType:  "DeviceDeleted",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete device"))
+	}
+
+	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
+}
+
+// AssignDevice assigns a device to a user.
+func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[pm.AssignDeviceRequest]) (*connect.Response[pm.AssignDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Verify user exists
+	_, err = h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.UserId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+	}
+
+	// Emit DeviceAssigned event
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.DeviceId,
+		EventType:  "DeviceAssigned",
+		Data: map[string]any{
+			"user_id": req.Msg.UserId,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to assign device"))
+	}
+
+	// Read back updated device
+	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+	}
+
+	return connect.NewResponse(&pm.AssignDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// UnassignDevice removes a device from its assigned user.
+func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request[pm.UnassignDeviceRequest]) (*connect.Response[pm.UnassignDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Emit DeviceUnassigned event
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.DeviceId,
+		EventType:  "DeviceUnassigned",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to unassign device"))
+	}
+
+	// Read back updated device
+	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+	}
+
+	return connect.NewResponse(&pm.UnassignDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// SetDeviceSyncInterval sets the sync interval for a device.
+func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.Request[pm.SetDeviceSyncIntervalRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists
+	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Emit DeviceSyncIntervalSet event
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.Id,
+		EventType:  "DeviceSyncIntervalSet",
+		Data: map[string]any{
+			"sync_interval_minutes": req.Msg.SyncIntervalMinutes,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set sync interval"))
+	}
+
+	// Read back updated device
+	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceResponse{
+		Device: h.deviceToProto(device),
+	}), nil
+}
+
+// deviceToProto converts a database device projection to a protobuf device.
+func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
+	device := &pm.Device{
+		Id:                  d.ID,
+		Hostname:            d.Hostname,
+		AgentVersion:        d.AgentVersion,
+		Labels:              make(map[string]string),
+		SyncIntervalMinutes: d.SyncIntervalMinutes,
+	}
+
+	// Determine status based on last_seen
+	if d.LastSeenAt.Valid {
+		device.LastSeenAt = timestamppb.New(d.LastSeenAt.Time)
+		if time.Since(d.LastSeenAt.Time) < 5*time.Minute {
+			device.Status = "online"
+		} else {
+			device.Status = "offline"
+		}
+	} else {
+		device.Status = "offline"
+	}
+
+	if d.RegisteredAt.Valid {
+		device.RegisteredAt = timestamppb.New(d.RegisteredAt.Time)
+	}
+
+	if d.CertNotAfter.Valid {
+		device.CertExpiresAt = timestamppb.New(d.CertNotAfter.Time)
+	}
+
+	if d.AssignedUserID != nil {
+		device.AssignedUserId = *d.AssignedUserID
+	}
+
+	// Parse labels from JSONB
+	if len(d.Labels) > 0 {
+		var labels map[string]string
+		if err := json.Unmarshal(d.Labels, &labels); err == nil {
+			device.Labels = labels
+		}
+	}
+
+	return device
+}
