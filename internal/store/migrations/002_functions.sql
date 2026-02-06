@@ -247,6 +247,13 @@ BEGIN
                 is_deleted = FALSE
             WHERE id = event.stream_id;
 
+        WHEN 'DeviceHeartbeat' THEN
+            UPDATE devices_projection
+            SET last_seen_at = event.occurred_at,
+                agent_version = COALESCE(event.data->>'agent_version', agent_version),
+                projection_version = event.sequence_num
+            WHERE id = event.stream_id;
+
         WHEN 'DeviceCertRenewed' THEN
             UPDATE devices_projection
             SET cert_fingerprint = event.data->>'cert_fingerprint',
@@ -259,6 +266,18 @@ BEGIN
         WHEN 'DeviceLabelsUpdated' THEN
             UPDATE devices_projection
             SET labels = COALESCE(event.data->'labels', labels),
+                projection_version = event.sequence_num
+            WHERE id = event.stream_id;
+
+        WHEN 'DeviceLabelSet' THEN
+            UPDATE devices_projection
+            SET labels = COALESCE(labels, '{}'::jsonb) || jsonb_build_object(event.data->>'key', event.data->>'value'),
+                projection_version = event.sequence_num
+            WHERE id = event.stream_id;
+
+        WHEN 'DeviceLabelRemoved' THEN
+            UPDATE devices_projection
+            SET labels = labels - (event.data->>'key'),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -1060,8 +1079,16 @@ CREATE OR REPLACE FUNCTION extract_label_key(label_expr TEXT) RETURNS TEXT AS $$
 DECLARE
     parts TEXT[];
 BEGIN
-    IF label_expr ~* '^labels\.' THEN
+    -- Support device.labels.key format
+    IF label_expr ~* '^device\.labels\.' THEN
+        RETURN substr(label_expr, 15);
+    ELSIF label_expr ~* '^labels\.' THEN
         RETURN substr(label_expr, 8);
+    ELSIF label_expr ~* '^device\.labels\[' THEN
+        parts := regexp_matches(label_expr, '^device\.labels\[["'']?(.+?)["'']?\]$');
+        IF parts IS NOT NULL THEN
+            RETURN parts[1];
+        END IF;
     ELSIF label_expr ~* '^labels\[' THEN
         parts := regexp_matches(label_expr, '^labels\[["'']?(.+?)["'']?\]$');
         IF parts IS NOT NULL THEN
