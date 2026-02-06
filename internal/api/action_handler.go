@@ -84,6 +84,10 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		if p.Directory != nil {
 			return Validate(p.Directory)
 		}
+	case *pm.CreateActionRequest_User:
+		if p.User != nil {
+			return Validate(p.User)
+		}
 	}
 	return nil
 }
@@ -126,6 +130,10 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 	case *pm.UpdateActionParamsRequest_Directory:
 		if p.Directory != nil {
 			return Validate(p.Directory)
+		}
+	case *pm.UpdateActionParamsRequest_User:
+		if p.User != nil {
+			return Validate(p.User)
 		}
 	}
 	return nil
@@ -928,6 +936,9 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 	case *pm.CreateActionRequest_Directory:
 		data, _ := protojson.Marshal(p.Directory)
 		json.Unmarshal(data, &params)
+	case *pm.CreateActionRequest_User:
+		data, _ := protojson.Marshal(p.User)
+		json.Unmarshal(data, &params)
 	}
 
 	return params, nil
@@ -963,6 +974,9 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		json.Unmarshal(data, &params)
 	case *pm.UpdateActionParamsRequest_Directory:
 		data, _ := protojson.Marshal(p.Directory)
+		json.Unmarshal(data, &params)
+	case *pm.UpdateActionParamsRequest_User:
+		data, _ := protojson.Marshal(p.User)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1005,6 +1019,9 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 		json.Unmarshal(data, &params)
 	case *pm.Action_Directory:
 		data, _ := protojson.Marshal(p.Directory)
+		json.Unmarshal(data, &params)
+	case *pm.Action_User:
+		data, _ := protojson.Marshal(p.User)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1076,6 +1093,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.DirectoryParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Directory{Directory: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_USER:
+		var p pm.UserParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_User{User: &p}
 		}
 	}
 }
