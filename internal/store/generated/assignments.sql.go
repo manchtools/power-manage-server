@@ -491,7 +491,7 @@ func (q *Queries) ListGroupAssignmentsForDevice(ctx context.Context, deviceID st
 
 const listResolvedActionsForDevice = `-- name: ListResolvedActionsForDevice :many
 WITH all_assignments AS (
-  -- Direct action assignments
+  -- Direct action assignments (source_priority = 1, highest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -499,6 +499,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    1 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -510,7 +511,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Action assignments via device group
+  -- Action assignments via device group (source_priority = 1, highest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -518,6 +519,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    1 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -530,7 +532,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via action set assignments (direct to device)
+  -- Actions via action set assignments (direct to device, source_priority = 2)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -538,6 +540,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    2 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -550,7 +553,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via action set assignments (via device group)
+  -- Actions via action set assignments (via device group, source_priority = 2)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -558,6 +561,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    2 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -571,7 +575,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via definition assignments (direct to device)
+  -- Actions via definition assignments (direct to device, source_priority = 3, lowest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -579,6 +583,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    3 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -592,7 +597,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via definition assignments (via device group)
+  -- Actions via definition assignments (via device group, source_priority = 3, lowest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -600,6 +605,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    3 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -613,13 +619,23 @@ WITH all_assignments AS (
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 with_selections AS (
-  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
+  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
     CASE WHEN aa.mode = 1 THEN us.selected ELSE NULL END AS user_selected
   FROM all_assignments aa
   LEFT JOIN user_selections_projection us
     ON us.device_id = $1
     AND us.source_type = aa.asn_source_type
     AND us.source_id = aa.asn_source_id
+),
+priority_per_action AS (
+  SELECT id, MIN(source_priority) AS min_priority
+  FROM with_selections
+  GROUP BY id
+),
+filtered AS (
+  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
+  FROM with_selections ws
+  JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
 effective AS (
   SELECT
@@ -637,7 +653,7 @@ effective AS (
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
     MIN(action_sort) AS action_sort
-  FROM with_selections
+  FROM filtered
   GROUP BY id, name, description, action_type, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical
@@ -670,8 +686,12 @@ type ListResolvedActionsForDeviceRow struct {
 // Get all resolved actions for a device with desired_state computed from assignment modes.
 // This is used by the agent sync to determine what actions to apply and with what desired_state.
 // Conflict resolution: absent (2) > present (0) > available+selected > available+rejected > unselected (excluded)
+// Resolution priority: action > action_set > definition
+// Within each level: absent > present > available
 // Join with user selections for available assignments
-// Resolve conflicts per action: absent > present > available+selected > available+rejected
+// Find the highest priority source level for each action
+// Filter to only keep assignments at the highest priority level for each action
+// Resolve conflicts per action at the winning priority level: absent > present > available
 // Return with computed desired_state: mode 2 (absent) → 1, mode 0 (present) → 0
 func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID string) ([]ListResolvedActionsForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, listResolvedActionsForDevice, targetID)

@@ -168,8 +168,10 @@ ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 -- This is used by the agent sync to determine what actions to apply and with what desired_state.
 -- Conflict resolution: absent (2) > present (0) > available+selected > available+rejected > unselected (excluded)
 -- name: ListResolvedActionsForDevice :many
+-- Resolution priority: action > action_set > definition
+-- Within each level: absent > present > available
 WITH all_assignments AS (
-  -- Direct action assignments
+  -- Direct action assignments (source_priority = 1, highest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -177,6 +179,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    1 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -188,7 +191,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Action assignments via device group
+  -- Action assignments via device group (source_priority = 1, highest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -196,6 +199,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    1 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -208,7 +212,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via action set assignments (direct to device)
+  -- Actions via action set assignments (direct to device, source_priority = 2)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -216,6 +220,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    2 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -228,7 +233,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via action set assignments (via device group)
+  -- Actions via action set assignments (via device group, source_priority = 2)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -236,6 +241,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    2 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -249,7 +255,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via definition assignments (direct to device)
+  -- Actions via definition assignments (direct to device, source_priority = 3, lowest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -257,6 +263,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    3 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -270,7 +277,7 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via definition assignments (via device group)
+  -- Actions via definition assignments (via device group, source_priority = 3, lowest)
   SELECT
     a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -278,6 +285,7 @@ WITH all_assignments AS (
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
+    3 AS source_priority,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -300,7 +308,19 @@ with_selections AS (
     AND us.source_type = aa.asn_source_type
     AND us.source_id = aa.asn_source_id
 ),
--- Resolve conflicts per action: absent > present > available+selected > available+rejected
+-- Find the highest priority source level for each action
+priority_per_action AS (
+  SELECT id, MIN(source_priority) AS min_priority
+  FROM with_selections
+  GROUP BY id
+),
+-- Filter to only keep assignments at the highest priority level for each action
+filtered AS (
+  SELECT ws.*
+  FROM with_selections ws
+  JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
+),
+-- Resolve conflicts per action at the winning priority level: absent > present > available
 effective AS (
   SELECT
     id, name, description, action_type, params, timeout_seconds,
@@ -317,7 +337,7 @@ effective AS (
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
     MIN(action_sort) AS action_sort
-  FROM with_selections
+  FROM filtered
   GROUP BY id, name, description, action_type, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical
