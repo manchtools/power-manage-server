@@ -160,6 +160,11 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		h.logger.Warn("failed to record heartbeat", "error", err)
 	}
 
+	// Notify control server about agent connection so it can dispatch pending actions
+	if err := h.notifyControlHello(ctx, deviceID, hello.Hostname, hello.AgentVersion); err != nil {
+		h.logger.Warn("failed to notify control server", "error", err)
+	}
+
 	// Process incoming messages from agent
 	for {
 		msg, err := stream.Receive()
@@ -190,6 +195,34 @@ func (h *AgentHandler) recordHeartbeat(ctx context.Context, deviceID, agentVersi
 		ActorType: "device",
 		ActorID:   deviceID,
 	})
+}
+
+// notifyControlHello notifies the control server that an agent has connected.
+// This triggers the control server to dispatch any pending actions to the agent.
+func (h *AgentHandler) notifyControlHello(ctx context.Context, deviceID, hostname, agentVersion string) error {
+	msgID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+
+	payload, err := json.Marshal(map[string]string{
+		"hostname":      hostname,
+		"agent_version": agentVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal hello payload: %w", err)
+	}
+
+	msg := map[string]any{
+		"type":       "hello",
+		"device_id":  deviceID,
+		"message_id": msgID,
+		"payload":    json.RawMessage(payload),
+	}
+
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal control message: %w", err)
+	}
+
+	return h.store.Notify(ctx, "control_inbox", string(msgBytes))
 }
 
 // handleAgentMessage processes messages from the agent and records events.

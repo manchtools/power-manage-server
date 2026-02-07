@@ -358,8 +358,8 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 		StreamID:   req.Msg.SetId,
 		EventType:  "ActionSetMemberReordered",
 		Data: map[string]any{
-			"action_id": req.Msg.ActionId,
-			"order":     req.Msg.NewOrder,
+			"action_id":  req.Msg.ActionId,
+			"sort_order": req.Msg.NewOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

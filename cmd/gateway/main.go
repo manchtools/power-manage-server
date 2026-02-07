@@ -17,6 +17,7 @@ import (
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -86,6 +87,17 @@ func main() {
 
 	// Create connection manager
 	manager := connection.NewManager()
+
+	// Create and start the dispatcher (listens for action notifications)
+	dispatcher := gateway.NewDispatcher(db, manager, logger)
+	dispatcherCtx, cancelDispatcher := context.WithCancel(ctx)
+	defer cancelDispatcher()
+
+	go func() {
+		if err := dispatcher.Run(dispatcherCtx); err != nil && err != context.Canceled {
+			logger.Error("dispatcher error", "error", err)
+		}
+	}()
 
 	logger.Info("gateway started", "version", version)
 

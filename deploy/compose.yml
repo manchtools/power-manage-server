@@ -86,6 +86,8 @@ services:
       - "traefik.http.routers.control.rule=Host(`${CONTROL_DOMAIN}`)"
       - "traefik.http.routers.control.entrypoints=websecure"
       - "traefik.http.routers.control.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.control.middlewares=pm-headers"
+      - "traefik.http.middlewares.pm-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.services.control.loadbalancer.server.port=8081"
     networks:
       - internal

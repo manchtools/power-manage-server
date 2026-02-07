@@ -359,7 +359,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		EventType:  "DefinitionMemberReordered",
 		Data: map[string]any{
 			"action_set_id": req.Msg.ActionSetId,
-			"order":         req.Msg.NewOrder,
+			"sort_order":    req.Msg.NewOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
