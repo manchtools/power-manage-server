@@ -272,34 +272,49 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		if result.ActionId == nil {
 			return fmt.Errorf("action result missing action ID")
 		}
-		actionID := result.ActionId.GetValue()
-		if actionID == "" {
+		resultID := result.ActionId.GetValue()
+		if resultID == "" {
 			return fmt.Errorf("action result has empty action ID")
 		}
 
-		// Generate a unique execution ID for this result
-		// Agent-scheduled actions don't have a pre-created execution, so we create one here
-		executionID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+		// The resultID could be either:
+		// 1. An execution ID (for dispatched actions from the server)
+		// 2. An action ID (for agent-scheduled actions)
+		//
+		// Try to look up an existing execution first. If found, we update it.
+		// If not found, we create a new execution record.
+		var executionID string
+		var actionID string
+		var needsCreate bool
 
-		h.logger.Info("received action result",
-			"device_id", deviceID,
-			"action_id", actionID,
-			"execution_id", executionID,
-			"status", result.Status.String(),
-			"duration_ms", result.DurationMs,
-		)
-
-		// Look up the action to get its details for the ExecutionCreated event
-		action, err := h.store.Queries().GetActionByID(ctx, actionID)
-		if err != nil {
-			h.logger.Warn("could not look up action for execution result",
+		existingExec, err := h.store.Queries().GetExecutionByID(ctx, resultID)
+		if err == nil {
+			// Found existing execution - this was a dispatched action
+			executionID = existingExec.ID
+			if existingExec.ActionID != nil {
+				actionID = *existingExec.ActionID
+			}
+			needsCreate = false
+			h.logger.Info("received result for dispatched action",
+				"device_id", deviceID,
+				"execution_id", executionID,
 				"action_id", actionID,
-				"error", err,
+				"status", result.Status.String(),
+				"duration_ms", result.DurationMs,
 			)
-			// Fall back to creating execution with minimal data
-			action.ActionType = 0 // UNSPECIFIED
-			action.Params = nil
-			action.TimeoutSeconds = 300
+		} else {
+			// No existing execution - this is an agent-scheduled action
+			// resultID is the action ID, generate a new execution ID
+			actionID = resultID
+			executionID = ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+			needsCreate = true
+			h.logger.Info("received result for agent-scheduled action",
+				"device_id", deviceID,
+				"action_id", actionID,
+				"execution_id", executionID,
+				"status", result.Status.String(),
+				"duration_ms", result.DurationMs,
+			)
 		}
 
 		// Calculate execution timestamps from agent data
@@ -314,25 +329,40 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 		}
 
-		// First, create an ExecutionCreated event so the projector can INSERT a row
-		createdData := map[string]any{
-			"device_id":       deviceID,
-			"action_id":       actionID,
-			"action_type":     action.ActionType,
-			"desired_state":   0, // Default to PRESENT for agent-reported results
-			"params":          json.RawMessage(action.Params),
-			"timeout_seconds": action.TimeoutSeconds,
-			"executed_at":     executedAt.Format(time.RFC3339Nano), // When execution started on agent
-		}
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "execution",
-			StreamID:   executionID,
-			EventType:  "ExecutionCreated",
-			Data:       createdData,
-			ActorType:  "device",
-			ActorID:    deviceID,
-		}); err != nil {
-			return fmt.Errorf("create execution event: %w", err)
+		// Only create ExecutionCreated event if this is a new execution (agent-scheduled action)
+		if needsCreate {
+			// Look up the action to get its details for the ExecutionCreated event
+			action, err := h.store.Queries().GetActionByID(ctx, actionID)
+			if err != nil {
+				h.logger.Warn("could not look up action for execution result",
+					"action_id", actionID,
+					"error", err,
+				)
+				// Fall back to creating execution with minimal data
+				action.ActionType = 0 // UNSPECIFIED
+				action.Params = nil
+				action.TimeoutSeconds = 300
+			}
+
+			createdData := map[string]any{
+				"device_id":       deviceID,
+				"action_id":       actionID,
+				"action_type":     action.ActionType,
+				"desired_state":   0, // Default to PRESENT for agent-reported results
+				"params":          json.RawMessage(action.Params),
+				"timeout_seconds": action.TimeoutSeconds,
+				"executed_at":     executedAt.Format(time.RFC3339Nano), // When execution started on agent
+			}
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "execution",
+				StreamID:   executionID,
+				EventType:  "ExecutionCreated",
+				Data:       createdData,
+				ActorType:  "device",
+				ActorID:    deviceID,
+			}); err != nil {
+				return fmt.Errorf("create execution event: %w", err)
+			}
 		}
 
 		// Now append the completion/result event
