@@ -40,6 +40,7 @@ type ActionsProjection struct {
 	ProjectionVersion int64              `json:"projection_version"`
 	Signature         []byte             `json:"signature"`
 	ParamsCanonical   []byte             `json:"params_canonical"`
+	DesiredState      int32              `json:"desired_state"`
 }
 
 type AssignmentsProjection struct {

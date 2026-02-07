@@ -174,6 +174,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 			"name":            req.Msg.Name,
 			"description":     req.Msg.Description,
 			"action_type":     int32(req.Msg.Type),
+			"desired_state":   int32(req.Msg.DesiredState),
 			"params":          params,
 			"timeout_seconds": timeoutSeconds,
 		},
@@ -372,7 +373,8 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	}
 
 	eventData := map[string]any{
-		"params": params,
+		"params":        params,
+		"desired_state": int32(req.Msg.DesiredState),
 	}
 
 	if req.Msg.TimeoutSeconds > 0 {
@@ -1109,6 +1111,7 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 		Id:             a.ID,
 		Name:           a.Name,
 		Type:           pm.ActionType(a.ActionType),
+		DesiredState:   pm.DesiredState(a.DesiredState),
 		TimeoutSeconds: a.TimeoutSeconds,
 		CreatedBy:      a.CreatedBy,
 	}

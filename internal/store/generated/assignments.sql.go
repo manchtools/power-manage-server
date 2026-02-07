@@ -105,7 +105,7 @@ const listAssignedActionsForDevice = `-- name: ListAssignedActionsForDevice :man
 WITH assigned_actions AS (
   -- Direct action assignments (no hierarchy, use assignment sort_order only)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -119,7 +119,7 @@ WITH assigned_actions AS (
 
   -- Action assignments via device group
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -134,7 +134,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -149,7 +149,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -165,7 +165,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -181,7 +181,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -196,13 +196,13 @@ WITH assigned_actions AS (
 ),
 deduped AS (
   SELECT DISTINCT ON (id)
-    id, name, description, action_type, params, timeout_seconds,
+    id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version, signature, params_canonical,
     assignment_sort, definition_sort, action_set_sort, action_sort
   FROM assigned_actions
   ORDER BY id, assignment_sort, definition_sort, action_set_sort, action_sort
 )
-SELECT id, name, description, action_type, params, timeout_seconds,
+SELECT id, name, description, action_type, desired_state, params, timeout_seconds,
        created_at, created_by, is_deleted, projection_version, signature, params_canonical
 FROM deduped
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
@@ -213,6 +213,7 @@ type ListAssignedActionsForDeviceRow struct {
 	Name              string             `json:"name"`
 	Description       *string            `json:"description"`
 	ActionType        int32              `json:"action_type"`
+	DesiredState      int32              `json:"desired_state"`
 	Params            []byte             `json:"params"`
 	TimeoutSeconds    int32              `json:"timeout_seconds"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
@@ -242,6 +243,7 @@ func (q *Queries) ListAssignedActionsForDevice(ctx context.Context, targetID str
 			&i.Name,
 			&i.Description,
 			&i.ActionType,
+			&i.DesiredState,
 			&i.Params,
 			&i.TimeoutSeconds,
 			&i.CreatedAt,
@@ -493,7 +495,7 @@ const listResolvedActionsForDevice = `-- name: ListResolvedActionsForDevice :man
 WITH all_assignments AS (
   -- Direct action assignments (source_priority = 1, highest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -513,7 +515,7 @@ WITH all_assignments AS (
 
   -- Action assignments via device group (source_priority = 1, highest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -534,7 +536,7 @@ WITH all_assignments AS (
 
   -- Actions via action set assignments (direct to device, source_priority = 2)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -555,7 +557,7 @@ WITH all_assignments AS (
 
   -- Actions via action set assignments (via device group, source_priority = 2)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -577,7 +579,7 @@ WITH all_assignments AS (
 
   -- Actions via definition assignments (direct to device, source_priority = 3, lowest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -599,7 +601,7 @@ WITH all_assignments AS (
 
   -- Actions via definition assignments (via device group, source_priority = 3, lowest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -619,7 +621,7 @@ WITH all_assignments AS (
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 with_selections AS (
-  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
+  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
     CASE WHEN aa.mode = 1 THEN us.selected ELSE NULL END AS user_selected
   FROM all_assignments aa
   LEFT JOIN user_selections_projection us
@@ -633,33 +635,32 @@ priority_per_action AS (
   GROUP BY id
 ),
 filtered AS (
-  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
+  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
   FROM with_selections ws
   JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
 effective AS (
   SELECT
-    id, name, description, action_type, params, timeout_seconds,
+    id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
     signature, params_canonical,
     CASE
-      WHEN bool_or(mode = 2) THEN 2                            -- absent wins
-      WHEN bool_or(mode = 0) THEN 0                            -- present wins
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → present
-      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN 2  -- available+rejected → absent
-      ELSE -1                                                    -- unselected available → exclude
+      WHEN bool_or(mode = 2) THEN -1                           -- excluded: don't apply this action
+      WHEN bool_or(mode = 0) THEN 0                            -- required: apply
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → apply
+      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1 -- available+rejected → skip
+      ELSE -1                                                    -- unselected available → skip
     END AS effective_mode,
     MIN(assignment_sort) AS assignment_sort,
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
     MIN(action_sort) AS action_sort
   FROM filtered
-  GROUP BY id, name, description, action_type, params, timeout_seconds,
+  GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical
 )
-SELECT id, name, description, action_type,
-  CASE WHEN effective_mode = 2 THEN 1 ELSE 0 END AS desired_state,
+SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
   projection_version, signature, params_canonical
 FROM effective
@@ -683,16 +684,16 @@ type ListResolvedActionsForDeviceRow struct {
 	ParamsCanonical   []byte             `json:"params_canonical"`
 }
 
-// Get all resolved actions for a device with desired_state computed from assignment modes.
-// This is used by the agent sync to determine what actions to apply and with what desired_state.
-// Conflict resolution: absent (2) > present (0) > available+selected > available+rejected > unselected (excluded)
+// Get all resolved actions for a device with conflict resolution.
+// This is used by the agent sync to determine what actions to apply.
+// Conflict resolution: excluded (2) > required (0) > available+selected > available+rejected > unselected (skip)
 // Resolution priority: action > action_set > definition
-// Within each level: absent > present > available
+// Within each level: excluded > required > available
 // Join with user selections for available assignments
 // Find the highest priority source level for each action
 // Filter to only keep assignments at the highest priority level for each action
-// Resolve conflicts per action at the winning priority level: absent > present > available
-// Return with computed desired_state: mode 2 (absent) → 1, mode 0 (present) → 0
+// Resolve conflicts per action at the winning priority level: excluded > required > available
+// Return actions that should be applied, using action's stored desired_state
 func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID string) ([]ListResolvedActionsForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, listResolvedActionsForDevice, targetID)
 	if err != nil {

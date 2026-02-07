@@ -152,28 +152,28 @@ WITH assigned_actions AS (
 -- First deduplicate by taking the lowest sort order for each action
 deduped AS (
   SELECT DISTINCT ON (id)
-    id, name, description, action_type, params, timeout_seconds,
+    id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version, signature, params_canonical,
     assignment_sort, definition_sort, action_set_sort, action_sort
   FROM assigned_actions
   ORDER BY id, assignment_sort, definition_sort, action_set_sort, action_sort
 )
 -- Then return in the correct execution order
-SELECT id, name, description, action_type, params, timeout_seconds,
+SELECT id, name, description, action_type, desired_state, params, timeout_seconds,
        created_at, created_by, is_deleted, projection_version, signature, params_canonical
 FROM deduped
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
--- Get all resolved actions for a device with desired_state computed from assignment modes.
--- This is used by the agent sync to determine what actions to apply and with what desired_state.
--- Conflict resolution: absent (2) > present (0) > available+selected > available+rejected > unselected (excluded)
+-- Get all resolved actions for a device with conflict resolution.
+-- This is used by the agent sync to determine what actions to apply.
+-- Conflict resolution: excluded (2) > required (0) > available+selected > available+rejected > unselected (skip)
 -- name: ListResolvedActionsForDevice :many
 -- Resolution priority: action > action_set > definition
--- Within each level: absent > present > available
+-- Within each level: excluded > required > available
 WITH all_assignments AS (
   -- Direct action assignments (source_priority = 1, highest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -193,7 +193,7 @@ WITH all_assignments AS (
 
   -- Action assignments via device group (source_priority = 1, highest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -214,7 +214,7 @@ WITH all_assignments AS (
 
   -- Actions via action set assignments (direct to device, source_priority = 2)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -235,7 +235,7 @@ WITH all_assignments AS (
 
   -- Actions via action set assignments (via device group, source_priority = 2)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -257,7 +257,7 @@ WITH all_assignments AS (
 
   -- Actions via definition assignments (direct to device, source_priority = 3, lowest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -279,7 +279,7 @@ WITH all_assignments AS (
 
   -- Actions via definition assignments (via device group, source_priority = 3, lowest)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds,
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
     a.signature, a.params_canonical,
     asn.mode,
@@ -320,31 +320,30 @@ filtered AS (
   FROM with_selections ws
   JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
--- Resolve conflicts per action at the winning priority level: absent > present > available
+-- Resolve conflicts per action at the winning priority level: excluded > required > available
 effective AS (
   SELECT
-    id, name, description, action_type, params, timeout_seconds,
+    id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
     signature, params_canonical,
     CASE
-      WHEN bool_or(mode = 2) THEN 2                            -- absent wins
-      WHEN bool_or(mode = 0) THEN 0                            -- present wins
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → present
-      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN 2  -- available+rejected → absent
-      ELSE -1                                                    -- unselected available → exclude
+      WHEN bool_or(mode = 2) THEN -1                           -- excluded: don't apply this action
+      WHEN bool_or(mode = 0) THEN 0                            -- required: apply
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → apply
+      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1 -- available+rejected → skip
+      ELSE -1                                                    -- unselected available → skip
     END AS effective_mode,
     MIN(assignment_sort) AS assignment_sort,
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
     MIN(action_sort) AS action_sort
   FROM filtered
-  GROUP BY id, name, description, action_type, params, timeout_seconds,
+  GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical
 )
--- Return with computed desired_state: mode 2 (absent) → 1, mode 0 (present) → 0
-SELECT id, name, description, action_type,
-  CASE WHEN effective_mode = 2 THEN 1 ELSE 0 END AS desired_state,
+-- Return actions that should be applied, using action's stored desired_state
+SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
   projection_version, signature, params_canonical
 FROM effective
