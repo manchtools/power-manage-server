@@ -2,6 +2,7 @@
 -- Add changed column to executions_projection to track if execution made system changes
 ALTER TABLE executions_projection ADD COLUMN IF NOT EXISTS changed BOOLEAN NOT NULL DEFAULT TRUE;
 
+-- +goose StatementBegin
 -- Update projection function to handle the changed field
 CREATE OR REPLACE FUNCTION project_execution_event(event events) RETURNS void AS $$
 BEGIN
@@ -84,8 +85,10 @@ BEGIN
     END CASE;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 -- +goose Down
+-- +goose StatementBegin
 -- Restore original function without changed field
 CREATE OR REPLACE FUNCTION project_execution_event(event events) RETURNS void AS $$
 BEGIN
@@ -166,5 +169,6 @@ BEGIN
     END CASE;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 ALTER TABLE executions_projection DROP COLUMN IF EXISTS changed;
