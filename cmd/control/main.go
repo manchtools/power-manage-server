@@ -31,25 +31,26 @@ import (
 var version = "dev"
 
 type Config struct {
-	ListenAddr    string
-	DatabaseURL   string
-	JWTSecret     string
-	CACertPath    string
-	CAKeyPath     string
-	CertValidity  time.Duration
-	LogLevel      string
-	LogFormat     string
-	AdminEmail    string
-	AdminPassword string
-	CORSOrigins   []string
-	GatewayURL    string
+	ListenAddr                   string
+	DatabaseURL                  string
+	JWTSecret                    string
+	CACertPath                   string
+	CAKeyPath                    string
+	CertValidity                 time.Duration
+	LogLevel                     string
+	LogFormat                    string
+	AdminEmail                   string
+	AdminPassword                string
+	CORSOrigins                  []string
+	GatewayURL                   string
+	DynamicGroupEvalInterval     time.Duration
 }
 
 func main() {
 	cfg := parseFlags()
 
 	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
-	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL)
+	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
 		logger.Warn("CONTROL_GATEWAY_URL is not set - agents will not receive a gateway URL during registration")
 	}
@@ -127,6 +128,30 @@ func main() {
 		}
 	}()
 
+	// Start periodic evaluation of queued dynamic groups
+	if cfg.DynamicGroupEvalInterval > 0 {
+		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
+		go func() {
+			ticker := time.NewTicker(cfg.DynamicGroupEvalInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					count, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
+					if err != nil {
+						logger.Error("failed to evaluate queued dynamic groups", "error", err)
+					} else if count > 0 {
+						logger.Info("evaluated queued dynamic groups", "count", count)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	} else {
+		logger.Info("dynamic group evaluation worker disabled")
+	}
+
 	// Initialize action signer (signs actions so agents can verify authenticity)
 	actionSigner := ca.NewActionSigner(certAuth)
 
@@ -198,6 +223,7 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.AdminEmail, "admin-email", "", "Initial admin user email")
 	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
+	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 
 	flag.Parse()
 
@@ -235,6 +261,20 @@ func parseFlags() *Config {
 			origins[i] = strings.TrimSpace(origins[i])
 		}
 		cfg.CORSOrigins = origins
+	}
+	if v := os.Getenv("CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.DynamicGroupEvalInterval = d
+		}
+	}
+
+	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
+	if cfg.DynamicGroupEvalInterval != 0 {
+		if cfg.DynamicGroupEvalInterval < 30*time.Minute {
+			cfg.DynamicGroupEvalInterval = 30 * time.Minute
+		} else if cfg.DynamicGroupEvalInterval > 8*time.Hour {
+			cfg.DynamicGroupEvalInterval = 8 * time.Hour
+		}
 	}
 
 	// Generate JWT secret if not provided

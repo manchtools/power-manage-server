@@ -151,6 +151,7 @@ type ExecutionsProjection struct {
 	CreatedByType     string             `json:"created_by_type"`
 	CreatedByID       string             `json:"created_by_id"`
 	ProjectionVersion int64              `json:"projection_version"`
+	Changed           bool               `json:"changed"`
 }
 
 type ProjectionError struct {

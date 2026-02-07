@@ -2,6 +2,7 @@ package auth
 
 import (
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -76,6 +77,15 @@ func CookieFromHeader(header http.Header, name string) string {
 }
 
 // IsSecureRequest checks whether the request was made over HTTPS.
+// This determines whether cookies should be set with Secure=true and SameSite=None
+// (required for cross-origin cookie support).
 func IsSecureRequest(header http.Header) bool {
+	// HTTPS localhost (dev with SSL) - enable Secure cookies for cross-origin support
+	origin := header.Get("Origin")
+	if strings.HasPrefix(origin, "https://localhost") || strings.HasPrefix(origin, "https://127.0.0.1") {
+		return true
+	}
+
+	// Production: check X-Forwarded-Proto from reverse proxy
 	return header.Get("X-Forwarded-Proto") == "https"
 }

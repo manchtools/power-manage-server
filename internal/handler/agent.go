@@ -299,6 +299,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			data = map[string]any{
 				"duration_ms":  result.DurationMs,
 				"completed_at": completedAt.Format(time.RFC3339Nano),
+				"changed":      result.Changed,
 			}
 			if result.Output != nil {
 				data["output"] = map[string]any{
@@ -314,6 +315,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				"error":        result.Error,
 				"duration_ms":  result.DurationMs,
 				"completed_at": completedAt.Format(time.RFC3339Nano),
+				"changed":      result.Changed,
 			}
 			if result.Output != nil {
 				data["output"] = map[string]any{

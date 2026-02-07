@@ -43,6 +43,7 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 | `-gateway-url` | (required) | Gateway URL returned to agents during registration |
 | `-admin-email` | (optional) | Initial admin user email |
 | `-admin-password` | (optional) | Initial admin user password |
+| `-dynamic-group-eval-interval` | `1h` | Interval for evaluating queued dynamic groups (min 30m, max 8h, 0 to disable) |
 
 ### Environment Variables
 
@@ -58,6 +59,7 @@ Environment variables override command-line flags:
 | `CONTROL_GATEWAY_URL` | Gateway URL returned to agents during registration |
 | `CONTROL_ADMIN_EMAIL` | Initial admin user email |
 | `CONTROL_ADMIN_PASSWORD` | Initial admin user password |
+| `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
 
 ## Setup
 
@@ -374,7 +376,8 @@ curl -X POST http://localhost:8081/pm.v1.ControlService/UpdateDeviceGroupQuery \
 
 ### Behavior
 
-- **Automatic re-evaluation**: When device labels change, dynamic groups are automatically queued for re-evaluation
+- **Automatic queueing**: When device labels change, dynamic groups are automatically queued for re-evaluation
+- **Periodic evaluation**: Queued groups are evaluated at the configured interval (default: 1 hour, configurable via `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL`)
 - **Manual members ignored**: Dynamic groups ignore manual add/remove member operations
 - **Converting groups**: You can convert a static group to dynamic (and vice versa) using `UpdateDeviceGroupQuery`
 - **Query validation**: Invalid queries are rejected at creation/update time with descriptive error messages

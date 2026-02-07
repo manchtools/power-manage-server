@@ -1104,10 +1104,12 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 
 func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionExecution {
 	exec := &pm.ActionExecution{
-		Id:       e.ID,
-		DeviceId: e.DeviceID,
-		Type:     pm.ActionType(e.ActionType),
-		Status:   stringToStatus(e.Status),
+		Id:           e.ID,
+		DeviceId:     e.DeviceID,
+		Type:         pm.ActionType(e.ActionType),
+		Status:       stringToStatus(e.Status),
+		DesiredState: pm.DesiredState(e.DesiredState),
+		Changed:      e.Changed,
 	}
 
 	if e.ActionID != nil {
