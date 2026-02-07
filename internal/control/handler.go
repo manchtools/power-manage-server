@@ -94,7 +94,10 @@ func (h *Handler) handleHello(ctx context.Context, msg *Message, logger *slog.Lo
 		return
 	}
 
-	logger.Debug("received hello", "hostname", payload.Hostname, "version", payload.AgentVersion)
+	logger.Info("agent connected",
+		"hostname", payload.Hostname,
+		"agent_version", payload.AgentVersion,
+	)
 
 	// Emit DeviceHeartbeat event (trigger updates projection and may notify UI)
 	if err := h.store.AppendEvent(ctx, store.Event{
@@ -111,6 +114,7 @@ func (h *Handler) handleHello(ctx context.Context, msg *Message, logger *slog.Lo
 		logger.Error("failed to append heartbeat event", "error", err)
 		return
 	}
+	logger.Debug("device heartbeat event appended")
 
 	// Dispatch pending actions - the ExecutionDispatched event triggers notification to gateway
 	h.dispatchPendingActions(ctx, msg.DeviceID, logger)
@@ -163,8 +167,8 @@ func (h *Handler) handleActionResult(ctx context.Context, msg *Message, logger *
 		return
 	}
 
-	logger = logger.With("action_id", payload.ActionID, "status", payload.Status)
-	logger.Debug("received action result")
+	logger = logger.With("execution_id", payload.ActionID, "status", payload.Status)
+	logger.Debug("received action result", "duration_ms", payload.DurationMs)
 
 	// Determine the event type based on status
 	var eventType string
@@ -176,6 +180,7 @@ func (h *Handler) handleActionResult(ctx context.Context, msg *Message, logger *
 	case "timeout":
 		eventType = "ExecutionTimedOut"
 	default:
+		logger.Warn("unknown action result status, treating as failed", "status", payload.Status)
 		eventType = "ExecutionFailed"
 	}
 
@@ -201,7 +206,10 @@ func (h *Handler) handleActionResult(ctx context.Context, msg *Message, logger *
 		ActorID:    msg.DeviceID,
 	}); err != nil {
 		logger.Error("failed to append execution result event", "error", err)
+		return
 	}
+
+	logger.Info("execution result recorded", "event_type", eventType)
 }
 
 func (h *Handler) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) {
@@ -259,16 +267,24 @@ func (h *Handler) dispatchPendingActions(ctx context.Context, deviceID string, l
 			"params":          params,
 			"timeout_seconds": exec.TimeoutSeconds,
 		}
-		payloadBytes, _ := json.Marshal(payload)
+		payloadBytes, err := json.Marshal(payload)
+		if err != nil {
+			logger.Error("failed to marshal dispatch payload", "error", err, "execution_id", exec.ID)
+			continue
+		}
 		logger.Debug("sending action dispatch notification",
 			"execution_id", exec.ID,
+			"action_type", exec.ActionType,
 			"channel", agentChannel,
-			"payload", string(payloadBytes),
 		)
 		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
 			logger.Error("failed to notify agent", "error", err, "execution_id", exec.ID)
+			continue
 		}
 
-		logger.Debug("dispatched execution", "execution_id", exec.ID)
+		logger.Info("dispatched pending execution to agent",
+			"execution_id", exec.ID,
+			"action_type", exec.ActionType,
+		)
 	}
 }

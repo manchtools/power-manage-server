@@ -141,6 +141,8 @@ func (d *Dispatcher) handleNotification(ctx context.Context, deviceID, payload s
 
 // parseActionParams populates the oneof Params field on an Action from JSON.
 func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
+	actionTypeName := pm.ActionType(actionType).String()
+
 	switch pm.ActionType(actionType) {
 	case pm.ActionType_ACTION_TYPE_PACKAGE:
 		var params struct {
@@ -153,19 +155,21 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			PacmanName     string `json:"pacmanName"`
 			ZypperName     string `json:"zypperName"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Package{
-				Package: &pm.PackageParams{
-					Name:           params.Name,
-					Version:        params.Version,
-					Pin:            params.Pin,
-					AllowDowngrade: params.AllowDowngrade,
-					AptName:        params.AptName,
-					DnfName:        params.DnfName,
-					PacmanName:     params.PacmanName,
-					ZypperName:     params.ZypperName,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal package params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Package{
+			Package: &pm.PackageParams{
+				Name:           params.Name,
+				Version:        params.Version,
+				Pin:            params.Pin,
+				AllowDowngrade: params.AllowDowngrade,
+				AptName:        params.AptName,
+				DnfName:        params.DnfName,
+				PacmanName:     params.PacmanName,
+				ZypperName:     params.ZypperName,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
@@ -174,14 +178,16 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			ChecksumSha256 string `json:"checksumSha256"`
 			InstallPath    string `json:"installPath"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_App{
-				App: &pm.AppInstallParams{
-					Url:            params.URL,
-					ChecksumSha256: params.ChecksumSha256,
-					InstallPath:    params.InstallPath,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal app params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_App{
+			App: &pm.AppInstallParams{
+				Url:            params.URL,
+				ChecksumSha256: params.ChecksumSha256,
+				InstallPath:    params.InstallPath,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_FLATPAK:
@@ -191,15 +197,17 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			SystemWide bool   `json:"systemWide"`
 			Pin        bool   `json:"pin"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Flatpak{
-				Flatpak: &pm.FlatpakParams{
-					AppId:      params.AppId,
-					Remote:     params.Remote,
-					SystemWide: params.SystemWide,
-					Pin:        params.Pin,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal flatpak params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Flatpak{
+			Flatpak: &pm.FlatpakParams{
+				AppId:      params.AppId,
+				Remote:     params.Remote,
+				SystemWide: params.SystemWide,
+				Pin:        params.Pin,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_SHELL:
@@ -210,16 +218,18 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			WorkingDirectory string            `json:"workingDirectory"`
 			Environment      map[string]string `json:"environment"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Shell{
-				Shell: &pm.ShellParams{
-					Script:           params.Script,
-					Interpreter:      params.Interpreter,
-					RunAsRoot:        params.RunAsRoot,
-					WorkingDirectory: params.WorkingDirectory,
-					Environment:      params.Environment,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal shell params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Shell{
+			Shell: &pm.ShellParams{
+				Script:           params.Script,
+				Interpreter:      params.Interpreter,
+				RunAsRoot:        params.RunAsRoot,
+				WorkingDirectory: params.WorkingDirectory,
+				Environment:      params.Environment,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_SYSTEMD:
@@ -229,29 +239,33 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Enable       bool            `json:"enable"`
 			DesiredState json.RawMessage `json:"desiredState"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			var desiredState pm.SystemdUnitState
-			if len(params.DesiredState) > 0 {
-				var stateInt int32
-				if err := json.Unmarshal(params.DesiredState, &stateInt); err == nil {
-					desiredState = pm.SystemdUnitState(stateInt)
-				} else {
-					var stateStr string
-					if err := json.Unmarshal(params.DesiredState, &stateStr); err == nil {
-						if val, ok := pm.SystemdUnitState_value[stateStr]; ok {
-							desiredState = pm.SystemdUnitState(val)
-						}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal systemd params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		var desiredState pm.SystemdUnitState
+		if len(params.DesiredState) > 0 {
+			var stateInt int32
+			if err := json.Unmarshal(params.DesiredState, &stateInt); err == nil {
+				desiredState = pm.SystemdUnitState(stateInt)
+			} else {
+				var stateStr string
+				if err := json.Unmarshal(params.DesiredState, &stateStr); err == nil {
+					if val, ok := pm.SystemdUnitState_value[stateStr]; ok {
+						desiredState = pm.SystemdUnitState(val)
 					}
+				} else {
+					d.logger.Debug("failed to parse systemd desired state", "error", err, "raw", string(params.DesiredState))
 				}
 			}
-			action.Params = &pm.Action_Systemd{
-				Systemd: &pm.SystemdParams{
-					UnitName:     params.UnitName,
-					UnitContent:  params.UnitContent,
-					Enable:       params.Enable,
-					DesiredState: desiredState,
-				},
-			}
+		}
+		action.Params = &pm.Action_Systemd{
+			Systemd: &pm.SystemdParams{
+				UnitName:     params.UnitName,
+				UnitContent:  params.UnitContent,
+				Enable:       params.Enable,
+				DesiredState: desiredState,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_FILE:
@@ -262,16 +276,18 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Owner   string `json:"owner"`
 			Group   string `json:"group"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_File{
-				File: &pm.FileParams{
-					Path:    params.Path,
-					Content: params.Content,
-					Mode:    params.Mode,
-					Owner:   params.Owner,
-					Group:   params.Group,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal file params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_File{
+			File: &pm.FileParams{
+				Path:    params.Path,
+				Content: params.Content,
+				Mode:    params.Mode,
+				Owner:   params.Owner,
+				Group:   params.Group,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_UPDATE:
@@ -280,14 +296,16 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Autoremove       bool `json:"autoremove"`
 			RebootIfRequired bool `json:"rebootIfRequired"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Update{
-				Update: &pm.UpdateParams{
-					SecurityOnly:     params.SecurityOnly,
-					Autoremove:       params.Autoremove,
-					RebootIfRequired: params.RebootIfRequired,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal update params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Update{
+			Update: &pm.UpdateParams{
+				SecurityOnly:     params.SecurityOnly,
+				Autoremove:       params.Autoremove,
+				RebootIfRequired: params.RebootIfRequired,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_REPOSITORY:
@@ -328,55 +346,57 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 				Disabled    bool   `json:"disabled"`
 			} `json:"zypper"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			repoParams := &pm.RepositoryParams{
-				Name: params.Name,
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal repository params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		repoParams := &pm.RepositoryParams{
+			Name: params.Name,
+		}
+		if params.Apt != nil {
+			repoParams.Apt = &pm.AptRepository{
+				Url:          params.Apt.Url,
+				Distribution: params.Apt.Distribution,
+				Components:   params.Apt.Components,
+				GpgKeyUrl:    params.Apt.GpgKeyUrl,
+				GpgKey:       params.Apt.GpgKey,
+				Trusted:      params.Apt.Trusted,
+				Arch:         params.Apt.Arch,
+				Disabled:     params.Apt.Disabled,
 			}
-			if params.Apt != nil {
-				repoParams.Apt = &pm.AptRepository{
-					Url:          params.Apt.Url,
-					Distribution: params.Apt.Distribution,
-					Components:   params.Apt.Components,
-					GpgKeyUrl:    params.Apt.GpgKeyUrl,
-					GpgKey:       params.Apt.GpgKey,
-					Trusted:      params.Apt.Trusted,
-					Arch:         params.Apt.Arch,
-					Disabled:     params.Apt.Disabled,
-				}
+		}
+		if params.Dnf != nil {
+			repoParams.Dnf = &pm.DnfRepository{
+				Baseurl:        params.Dnf.Baseurl,
+				Description:    params.Dnf.Description,
+				Enabled:        params.Dnf.Enabled,
+				Gpgcheck:       params.Dnf.Gpgcheck,
+				Gpgkey:         params.Dnf.Gpgkey,
+				ModuleHotfixes: params.Dnf.ModuleHotfixes,
+				Disabled:       params.Dnf.Disabled,
 			}
-			if params.Dnf != nil {
-				repoParams.Dnf = &pm.DnfRepository{
-					Baseurl:        params.Dnf.Baseurl,
-					Description:    params.Dnf.Description,
-					Enabled:        params.Dnf.Enabled,
-					Gpgcheck:       params.Dnf.Gpgcheck,
-					Gpgkey:         params.Dnf.Gpgkey,
-					ModuleHotfixes: params.Dnf.ModuleHotfixes,
-					Disabled:       params.Dnf.Disabled,
-				}
+		}
+		if params.Pacman != nil {
+			repoParams.Pacman = &pm.PacmanRepository{
+				Server:   params.Pacman.Server,
+				SigLevel: params.Pacman.SigLevel,
+				Disabled: params.Pacman.Disabled,
 			}
-			if params.Pacman != nil {
-				repoParams.Pacman = &pm.PacmanRepository{
-					Server:   params.Pacman.Server,
-					SigLevel: params.Pacman.SigLevel,
-					Disabled: params.Pacman.Disabled,
-				}
+		}
+		if params.Zypper != nil {
+			repoParams.Zypper = &pm.ZypperRepository{
+				Url:         params.Zypper.Url,
+				Description: params.Zypper.Description,
+				Enabled:     params.Zypper.Enabled,
+				Autorefresh: params.Zypper.Autorefresh,
+				Gpgcheck:    params.Zypper.Gpgcheck,
+				Gpgkey:      params.Zypper.Gpgkey,
+				Type:        params.Zypper.Type,
+				Disabled:    params.Zypper.Disabled,
 			}
-			if params.Zypper != nil {
-				repoParams.Zypper = &pm.ZypperRepository{
-					Url:         params.Zypper.Url,
-					Description: params.Zypper.Description,
-					Enabled:     params.Zypper.Enabled,
-					Autorefresh: params.Zypper.Autorefresh,
-					Gpgcheck:    params.Zypper.Gpgcheck,
-					Gpgkey:      params.Zypper.Gpgkey,
-					Type:        params.Zypper.Type,
-					Disabled:    params.Zypper.Disabled,
-				}
-			}
-			action.Params = &pm.Action_Repository{
-				Repository: repoParams,
-			}
+		}
+		action.Params = &pm.Action_Repository{
+			Repository: repoParams,
 		}
 
 	case pm.ActionType_ACTION_TYPE_DIRECTORY:
@@ -387,16 +407,18 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Mode      string `json:"mode"`
 			Recursive bool   `json:"recursive"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Directory{
-				Directory: &pm.DirectoryParams{
-					Path:      params.Path,
-					Owner:     params.Owner,
-					Group:     params.Group,
-					Mode:      params.Mode,
-					Recursive: params.Recursive,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal directory params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Directory{
+			Directory: &pm.DirectoryParams{
+				Path:      params.Path,
+				Owner:     params.Owner,
+				Group:     params.Group,
+				Mode:      params.Mode,
+				Recursive: params.Recursive,
+			},
 		}
 
 	case pm.ActionType_ACTION_TYPE_USER:
@@ -414,25 +436,28 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Disabled          bool     `json:"disabled"`
 			PrimaryGroup      string   `json:"primaryGroup"`
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_User{
-				User: &pm.UserParams{
-					Username:          params.Username,
-					Uid:               params.Uid,
-					Gid:               params.Gid,
-					HomeDir:           params.HomeDir,
-					Shell:             params.Shell,
-					Groups:            params.Groups,
-					SshAuthorizedKeys: params.SshAuthorizedKeys,
-					Comment:           params.Comment,
-					SystemUser:        params.SystemUser,
-					CreateHome:        params.CreateHome,
-					Disabled:          params.Disabled,
-					PrimaryGroup:      params.PrimaryGroup,
-				},
-			}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal user params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_User{
+			User: &pm.UserParams{
+				Username:          params.Username,
+				Uid:               params.Uid,
+				Gid:               params.Gid,
+				HomeDir:           params.HomeDir,
+				Shell:             params.Shell,
+				Groups:            params.Groups,
+				SshAuthorizedKeys: params.SshAuthorizedKeys,
+				Comment:           params.Comment,
+				SystemUser:        params.SystemUser,
+				CreateHome:        params.CreateHome,
+				Disabled:          params.Disabled,
+				PrimaryGroup:      params.PrimaryGroup,
+			},
 		}
 
-		// Instant actions (REBOOT, SYNC) have no params - no case needed
+	default:
+		d.logger.Debug("unknown action type, no params to parse", "action_type", actionTypeName)
 	}
 }

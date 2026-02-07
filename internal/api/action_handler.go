@@ -551,10 +551,47 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
 	}
 
+	// Notify agent channel directly with action_dispatch format.
+	// The PostgreSQL trigger sends an event notification, but the gateway dispatcher
+	// only handles action_dispatch messages. This ensures the action reaches the agent
+	// immediately if connected, without waiting for the next sync.
+	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
+	dispatchPayload := map[string]any{
+		"type":            "action_dispatch",
+		"execution_id":    id,
+		"action_type":     int32(actionType),
+		"desired_state":   int32(desiredState),
+		"params":          params,
+		"timeout_seconds": timeoutSeconds,
+	}
+	payloadBytes, err := json.Marshal(dispatchPayload)
+	if err != nil {
+		h.logger.Error("failed to marshal dispatch payload", "error", err, "execution_id", id)
+	} else {
+		h.logger.Debug("sending action dispatch notification",
+			"execution_id", id,
+			"device_id", req.Msg.DeviceId,
+			"action_type", actionType.String(),
+			"channel", agentChannel,
+		)
+		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
+			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
+		} else {
+			h.logger.Debug("action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+		}
+	}
+
 	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, id)
 	if err != nil {
+		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
 	}
+
+	h.logger.Info("action dispatched",
+		"execution_id", id,
+		"device_id", req.Msg.DeviceId,
+		"action_type", actionType.String(),
+	)
 
 	return connect.NewResponse(&pm.DispatchActionResponse{
 		Execution: h.executionToProto(exec),
@@ -895,10 +932,45 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
 	}
 
+	// Notify agent channel directly with action_dispatch format.
+	// This ensures instant actions reach the agent immediately if connected.
+	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
+	dispatchPayload := map[string]any{
+		"type":            "action_dispatch",
+		"execution_id":    id,
+		"action_type":     int32(req.Msg.InstantAction),
+		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		"params":          map[string]any{},
+		"timeout_seconds": timeoutSeconds,
+	}
+	payloadBytes, err := json.Marshal(dispatchPayload)
+	if err != nil {
+		h.logger.Error("failed to marshal instant action dispatch payload", "error", err, "execution_id", id)
+	} else {
+		h.logger.Debug("sending instant action dispatch notification",
+			"execution_id", id,
+			"device_id", req.Msg.DeviceId,
+			"action_type", req.Msg.InstantAction.String(),
+			"channel", agentChannel,
+		)
+		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
+			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
+		} else {
+			h.logger.Debug("instant action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+		}
+	}
+
 	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, id)
 	if err != nil {
+		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
 	}
+
+	h.logger.Info("instant action dispatched",
+		"execution_id", id,
+		"device_id", req.Msg.DeviceId,
+		"action_type", req.Msg.InstantAction.String(),
+	)
 
 	return connect.NewResponse(&pm.DispatchInstantActionResponse{
 		Execution: h.executionToProto(exec),
@@ -908,37 +980,39 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest) (map[string]any, error) {
 	params := map[string]any{}
 
+	var data []byte
+	var err error
+
 	switch p := req.Params.(type) {
 	case *pm.CreateActionRequest_Package:
-		data, _ := protojson.Marshal(p.Package)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Package)
 	case *pm.CreateActionRequest_App:
-		data, _ := protojson.Marshal(p.App)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.App)
 	case *pm.CreateActionRequest_Flatpak:
-		data, _ := protojson.Marshal(p.Flatpak)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Flatpak)
 	case *pm.CreateActionRequest_Shell:
-		data, _ := protojson.Marshal(p.Shell)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Shell)
 	case *pm.CreateActionRequest_Systemd:
-		data, _ := protojson.Marshal(p.Systemd)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Systemd)
 	case *pm.CreateActionRequest_File:
-		data, _ := protojson.Marshal(p.File)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.File)
 	case *pm.CreateActionRequest_Update:
-		data, _ := protojson.Marshal(p.Update)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Update)
 	case *pm.CreateActionRequest_Repository:
-		data, _ := protojson.Marshal(p.Repository)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Repository)
 	case *pm.CreateActionRequest_Directory:
-		data, _ := protojson.Marshal(p.Directory)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Directory)
 	case *pm.CreateActionRequest_User:
-		data, _ := protojson.Marshal(p.User)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.User)
+	default:
+		return params, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal params to map: %w", err)
 	}
 
 	return params, nil
@@ -947,37 +1021,39 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRequest) (map[string]any, error) {
 	params := map[string]any{}
 
+	var data []byte
+	var err error
+
 	switch p := req.Params.(type) {
 	case *pm.UpdateActionParamsRequest_Package:
-		data, _ := protojson.Marshal(p.Package)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Package)
 	case *pm.UpdateActionParamsRequest_App:
-		data, _ := protojson.Marshal(p.App)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.App)
 	case *pm.UpdateActionParamsRequest_Flatpak:
-		data, _ := protojson.Marshal(p.Flatpak)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Flatpak)
 	case *pm.UpdateActionParamsRequest_Shell:
-		data, _ := protojson.Marshal(p.Shell)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Shell)
 	case *pm.UpdateActionParamsRequest_Systemd:
-		data, _ := protojson.Marshal(p.Systemd)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Systemd)
 	case *pm.UpdateActionParamsRequest_File:
-		data, _ := protojson.Marshal(p.File)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.File)
 	case *pm.UpdateActionParamsRequest_Update:
-		data, _ := protojson.Marshal(p.Update)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Update)
 	case *pm.UpdateActionParamsRequest_Repository:
-		data, _ := protojson.Marshal(p.Repository)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Repository)
 	case *pm.UpdateActionParamsRequest_Directory:
-		data, _ := protojson.Marshal(p.Directory)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.Directory)
 	case *pm.UpdateActionParamsRequest_User:
-		data, _ := protojson.Marshal(p.User)
-		json.Unmarshal(data, &params)
+		data, err = protojson.Marshal(p.User)
+	default:
+		return params, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal params: %w", err)
+	}
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal params to map: %w", err)
 	}
 
 	return params, nil
