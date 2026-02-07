@@ -150,7 +150,20 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 
 	// Register the agent connection
 	h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
+
+	// Subscribe to agent-specific notification channel so dispatcher can forward actions
+	agentChannel := fmt.Sprintf("agent_%s", deviceID)
+	if err := h.store.ListenChannel(ctx, agentChannel); err != nil {
+		h.logger.Warn("failed to subscribe to agent channel", "channel", agentChannel, "error", err)
+	} else {
+		h.logger.Debug("subscribed to agent channel", "channel", agentChannel)
+	}
+
 	defer func() {
+		// Unsubscribe from agent channel
+		if err := h.store.UnlistenChannel(context.Background(), agentChannel); err != nil {
+			h.logger.Warn("failed to unsubscribe from agent channel", "channel", agentChannel, "error", err)
+		}
 		h.manager.Unregister(deviceID)
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
