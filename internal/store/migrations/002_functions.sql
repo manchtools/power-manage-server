@@ -84,7 +84,7 @@ BEGIN
     CASE event.event_type
         WHEN 'UserCreated' THEN
             INSERT INTO users_projection (
-                id, email, password_hash, role, created_at, updated_at, projection_version
+                id, email, password_hash, role, created_at, updated_at, projection_version, session_version
             ) VALUES (
                 event.stream_id,
                 event.data->>'email',
@@ -92,7 +92,8 @@ BEGIN
                 COALESCE(event.data->>'role', 'user'),
                 event.occurred_at,
                 event.occurred_at,
-                event.sequence_num
+                event.sequence_num,
+                0
             );
 
         WHEN 'UserEmailChanged' THEN
@@ -105,6 +106,7 @@ BEGIN
         WHEN 'UserPasswordChanged' THEN
             UPDATE users_projection
             SET password_hash = event.data->>'password_hash',
+                session_version = session_version + 1,
                 updated_at = event.occurred_at,
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
@@ -119,6 +121,7 @@ BEGIN
         WHEN 'UserDisabled' THEN
             UPDATE users_projection
             SET disabled = TRUE,
+                session_version = session_version + 1,
                 updated_at = event.occurred_at,
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
@@ -319,13 +322,14 @@ BEGIN
     CASE event.event_type
         WHEN 'ActionCreated' THEN
             INSERT INTO actions_projection (
-                id, name, description, action_type,
+                id, name, description, action_type, desired_state,
                 params, timeout_seconds, created_at, created_by, projection_version
             ) VALUES (
                 event.stream_id,
                 event.data->>'name',
                 event.data->>'description',
                 COALESCE((event.data->>'action_type')::INTEGER, 0),
+                COALESCE((event.data->>'desired_state')::INTEGER, 0),
                 COALESCE(event.data->'params', '{}'),
                 COALESCE((event.data->>'timeout_seconds')::INTEGER, 300),
                 event.occurred_at,
@@ -349,6 +353,7 @@ BEGIN
             UPDATE actions_projection
             SET params = COALESCE(event.data->'params', params),
                 timeout_seconds = COALESCE((event.data->>'timeout_seconds')::INTEGER, timeout_seconds),
+                desired_state = COALESCE((event.data->>'desired_state')::INTEGER, desired_state),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -358,18 +363,29 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
+            -- Cascade: Update member counts for affected action sets
+            UPDATE action_sets_projection
+            SET member_count = member_count - 1
+            WHERE id IN (
+                SELECT set_id FROM action_set_members_projection WHERE action_id = event.stream_id
+            );
+
+            -- Cascade: Remove action from all action sets
+            DELETE FROM action_set_members_projection WHERE action_id = event.stream_id;
+
         -- Legacy single-action definition events (backward compatibility)
         WHEN 'DefinitionCreated' THEN
             -- Only handle old-style definitions that have action_type
             IF event.data ? 'action_type' THEN
                 INSERT INTO actions_projection (
-                    id, name, description, action_type,
+                    id, name, description, action_type, desired_state,
                     params, timeout_seconds, created_at, created_by, projection_version
                 ) VALUES (
                     event.stream_id,
                     event.data->>'name',
                     event.data->>'description',
                     COALESCE((event.data->>'action_type')::INTEGER, 0),
+                    COALESCE((event.data->>'desired_state')::INTEGER, 0),
                     COALESCE(event.data->'params', '{}'),
                     COALESCE((event.data->>'timeout_seconds')::INTEGER, 300),
                     event.occurred_at,
@@ -394,6 +410,7 @@ BEGIN
             UPDATE actions_projection
             SET params = COALESCE(event.data->'params', params),
                 timeout_seconds = COALESCE((event.data->>'timeout_seconds')::INTEGER, timeout_seconds),
+                desired_state = COALESCE((event.data->>'desired_state')::INTEGER, desired_state),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -402,6 +419,16 @@ BEGIN
             SET is_deleted = TRUE,
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
+
+            -- Cascade: Update member counts for affected action sets
+            UPDATE action_sets_projection
+            SET member_count = member_count - 1
+            WHERE id IN (
+                SELECT set_id FROM action_set_members_projection WHERE action_id = event.stream_id
+            );
+
+            -- Cascade: Remove action from all action sets
+            DELETE FROM action_set_members_projection WHERE action_id = event.stream_id;
 
         ELSE
             NULL;
@@ -455,6 +482,7 @@ BEGIN
                 completed_at = COALESCE((event.data->>'completed_at')::TIMESTAMPTZ, event.occurred_at),
                 output = event.data->'output',
                 duration_ms = (event.data->>'duration_ms')::BIGINT,
+                changed = COALESCE((event.data->>'changed')::BOOLEAN, TRUE),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -465,6 +493,7 @@ BEGIN
                 error = event.data->>'error',
                 output = event.data->'output',
                 duration_ms = (event.data->>'duration_ms')::BIGINT,
+                changed = COALESCE((event.data->>'changed')::BOOLEAN, TRUE),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -558,7 +587,18 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
+            -- Delete members of this action set
             DELETE FROM action_set_members_projection WHERE set_id = event.stream_id;
+
+            -- Cascade: Update member counts for affected definitions
+            UPDATE definitions_projection
+            SET member_count = member_count - 1
+            WHERE id IN (
+                SELECT definition_id FROM definition_members_projection WHERE action_set_id = event.stream_id
+            );
+
+            -- Cascade: Remove action set from all definitions
+            DELETE FROM definition_members_projection WHERE action_set_id = event.stream_id;
 
         ELSE
             NULL;
@@ -948,8 +988,6 @@ CREATE OR REPLACE FUNCTION notify_event() RETURNS trigger AS $$
 DECLARE
     channel TEXT;
     payload TEXT;
-    gateway_channel TEXT;
-    gateway_payload TEXT;
 BEGIN
     channel := 'events';
 
@@ -1003,7 +1041,7 @@ BEGIN
             -- Don't send output chunks to the events channel
             RETURN NEW;
 
-        -- Device registration: may need gateway notification
+        -- Device registration: send lightweight event notification
         WHEN NEW.event_type = 'DeviceRegistered' THEN
             payload := json_build_object(
                 'id', NEW.id,
@@ -1019,19 +1057,6 @@ BEGIN
                 'actor_id', NEW.actor_id,
                 'occurred_at', NEW.occurred_at
             )::TEXT;
-
-            -- Send registration response to gateway if gateway_id is present
-            IF NEW.data->>'gateway_id' IS NOT NULL AND NEW.data->>'connection_id' IS NOT NULL THEN
-                gateway_channel := 'gateway_' || (NEW.data->>'gateway_id');
-                gateway_payload := json_build_object(
-                    'type', 'registration_response',
-                    'connection_id', NEW.data->>'connection_id',
-                    'device_id', NEW.stream_id,
-                    'cert_pem', NEW.data->>'cert_pem',
-                    'ca_cert_pem', NEW.data->>'ca_cert_pem'
-                )::TEXT;
-                PERFORM pg_notify(gateway_channel, gateway_payload);
-            END IF;
 
         ELSE
             -- Default: send full event payload

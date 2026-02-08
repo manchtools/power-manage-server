@@ -44,7 +44,8 @@ CREATE TABLE users_projection (
     last_login_at TIMESTAMPTZ,
     disabled BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
-    projection_version BIGINT NOT NULL DEFAULT 0
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    session_version INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE tokens_projection (
@@ -96,7 +97,8 @@ CREATE TABLE actions_projection (
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     projection_version BIGINT NOT NULL DEFAULT 0,
     signature BYTEA,
-    params_canonical BYTEA
+    params_canonical BYTEA,
+    desired_state INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE executions_projection (
@@ -117,7 +119,8 @@ CREATE TABLE executions_projection (
     duration_ms BIGINT,
     created_by_type TEXT NOT NULL DEFAULT '',
     created_by_id TEXT NOT NULL DEFAULT '',
-    projection_version BIGINT NOT NULL DEFAULT 0
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    changed BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 CREATE INDEX idx_executions_device ON executions_projection (device_id);
