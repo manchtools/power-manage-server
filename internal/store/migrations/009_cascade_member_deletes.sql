@@ -40,6 +40,7 @@ BEGIN
             UPDATE actions_projection
             SET params = COALESCE(event.data->'params', params),
                 timeout_seconds = COALESCE((event.data->>'timeout_seconds')::INTEGER, timeout_seconds),
+                desired_state = COALESCE((event.data->>'desired_state')::INTEGER, desired_state),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
@@ -247,6 +248,7 @@ BEGIN
             UPDATE actions_projection
             SET params = COALESCE(event.data->'params', params),
                 timeout_seconds = COALESCE((event.data->>'timeout_seconds')::INTEGER, timeout_seconds),
+                desired_state = COALESCE((event.data->>'desired_state')::INTEGER, desired_state),
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
