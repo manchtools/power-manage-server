@@ -285,7 +285,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		EventType:  "DefinitionMemberAdded",
 		Data: map[string]any{
 			"action_set_id": req.Msg.ActionSetId,
-			"order":         req.Msg.SortOrder,
+			"sort_order":    req.Msg.SortOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

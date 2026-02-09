@@ -284,8 +284,8 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		StreamID:   req.Msg.SetId,
 		EventType:  "ActionSetMemberAdded",
 		Data: map[string]any{
-			"action_id": req.Msg.ActionId,
-			"order":     req.Msg.SortOrder,
+			"action_id":  req.Msg.ActionId,
+			"sort_order": req.Msg.SortOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
