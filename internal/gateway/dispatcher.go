@@ -423,17 +423,18 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 
 	case pm.ActionType_ACTION_TYPE_USER:
 		var params struct {
-			Username     string   `json:"username"`
-			Uid          int32    `json:"uid"`
-			Gid          int32    `json:"gid"`
-			HomeDir      string   `json:"homeDir"`
-			Shell        string   `json:"shell"`
-			Groups       []string `json:"groups"`
-			Comment      string   `json:"comment"`
-			SystemUser   bool     `json:"systemUser"`
-			CreateHome   bool     `json:"createHome"`
-			Disabled     bool     `json:"disabled"`
-			PrimaryGroup string   `json:"primaryGroup"`
+			Username          string   `json:"username"`
+			Uid               int32    `json:"uid"`
+			Gid               int32    `json:"gid"`
+			HomeDir           string   `json:"homeDir"`
+			Shell             string   `json:"shell"`
+			Groups            []string `json:"groups"`
+			SshAuthorizedKeys []string `json:"sshAuthorizedKeys"`
+			Comment           string   `json:"comment"`
+			SystemUser        bool     `json:"systemUser"`
+			CreateHome        bool     `json:"createHome"`
+			Disabled          bool     `json:"disabled"`
+			PrimaryGroup      string   `json:"primaryGroup"`
 		}
 		if err := json.Unmarshal(paramsJSON, &params); err != nil {
 			d.logger.Debug("failed to unmarshal user params", "error", err, "action_type", actionTypeName)
@@ -441,17 +442,18 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 		}
 		action.Params = &pm.Action_User{
 			User: &pm.UserParams{
-				Username:     params.Username,
-				Uid:          params.Uid,
-				Gid:          params.Gid,
-				HomeDir:      params.HomeDir,
-				Shell:        params.Shell,
-				Groups:       params.Groups,
-				Comment:      params.Comment,
-				SystemUser:   params.SystemUser,
-				CreateHome:   params.CreateHome,
-				Disabled:     params.Disabled,
-				PrimaryGroup: params.PrimaryGroup,
+				Username:          params.Username,
+				Uid:               params.Uid,
+				Gid:               params.Gid,
+				HomeDir:           params.HomeDir,
+				Shell:             params.Shell,
+				Groups:            params.Groups,
+				SshAuthorizedKeys: params.SshAuthorizedKeys,
+				Comment:           params.Comment,
+				SystemUser:        params.SystemUser,
+				CreateHome:        params.CreateHome,
+				Disabled:          params.Disabled,
+				PrimaryGroup:      params.PrimaryGroup,
 			},
 		}
 
