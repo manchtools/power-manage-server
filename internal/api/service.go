@@ -26,6 +26,7 @@ type ControlService struct {
 	deviceGroup   *DeviceGroupHandler
 	assignment    *AssignmentHandler
 	userSelection *UserSelectionHandler
+	audit         *AuditHandler
 }
 
 // NewControlService creates a new control service.
@@ -43,6 +44,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		deviceGroup:   NewDeviceGroupHandler(st),
 		assignment:    NewAssignmentHandler(st, actionHandler),
 		userSelection: NewUserSelectionHandler(st),
+		audit:         NewAuditHandler(st),
 	}
 }
 
@@ -374,4 +376,9 @@ func (s *ControlService) SetUserSelection(ctx context.Context, req *connect.Requ
 
 func (s *ControlService) ListAvailableActions(ctx context.Context, req *connect.Request[pm.ListAvailableActionsRequest]) (*connect.Response[pm.ListAvailableActionsResponse], error) {
 	return s.userSelection.ListAvailableActions(ctx, req)
+}
+
+// Audit Log
+func (s *ControlService) ListAuditEvents(ctx context.Context, req *connect.Request[pm.ListAuditEventsRequest]) (*connect.Response[pm.ListAuditEventsResponse], error) {
+	return s.audit.ListAuditEvents(ctx, req)
 }
