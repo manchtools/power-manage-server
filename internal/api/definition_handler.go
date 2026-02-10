@@ -59,7 +59,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create definition"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, id)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
 	}
@@ -75,7 +75,7 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -83,7 +83,7 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
 	}
 
-	members, err := h.store.QueriesFromContext(ctx).ListDefinitionMembers(ctx, req.Msg.Id)
+	members, err := h.store.Queries().ListDefinitionMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition members"))
 	}
@@ -118,7 +118,7 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 		offset = int32(offset64)
 	}
 
-	defs, err := h.store.QueriesFromContext(ctx).ListDefinitions(ctx, db.ListDefinitionsParams{
+	defs, err := h.store.Queries().ListDefinitions(ctx, db.ListDefinitionsParams{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -126,7 +126,7 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list definitions"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountDefinitions(ctx)
+	count, err := h.store.Queries().CountDefinitions(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count definitions"))
 	}
@@ -173,7 +173,7 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename definition"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -211,7 +211,7 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -262,7 +262,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	// Verify definition exists
-	_, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -271,7 +271,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	// Verify action set exists
-	_, err = h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.ActionSetId)
+	_, err = h.store.Queries().GetActionSetByID(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -294,7 +294,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to add action set to definition"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
 	}
@@ -329,7 +329,7 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove action set from definition"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -368,7 +368,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reorder action set in definition"))
 	}
 
-	def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))

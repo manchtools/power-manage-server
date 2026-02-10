@@ -59,7 +59,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create action set"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, id)
+	set, err := h.store.Queries().GetActionSetByID(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
 	}
@@ -75,7 +75,7 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -83,7 +83,7 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
 	}
 
-	members, err := h.store.QueriesFromContext(ctx).ListActionSetMembers(ctx, req.Msg.Id)
+	members, err := h.store.Queries().ListActionSetMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set members"))
 	}
@@ -118,7 +118,7 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 		offset = int32(offset64)
 	}
 
-	sets, err := h.store.QueriesFromContext(ctx).ListActionSets(ctx, db.ListActionSetsParams{
+	sets, err := h.store.Queries().ListActionSets(ctx, db.ListActionSetsParams{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -126,7 +126,7 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list action sets"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountActionSets(ctx)
+	count, err := h.store.Queries().CountActionSets(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count action sets"))
 	}
@@ -173,7 +173,7 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename action set"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -211,7 +211,7 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -262,7 +262,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify set exists
-	_, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.SetId)
+	_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -271,7 +271,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify action exists
-	_, err = h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.ActionId)
+	_, err = h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -294,7 +294,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to add action to set"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
 	}
@@ -329,7 +329,7 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove action from set"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -368,7 +368,7 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reorder action in set"))
 	}
 
-	set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))

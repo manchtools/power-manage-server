@@ -72,7 +72,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	}
 
 	// Read back from projection
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, id)
+	user, err := h.store.Queries().GetUserByID(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
@@ -88,7 +88,7 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 		return nil, err
 	}
 
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
@@ -117,7 +117,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		offset = int32(offset64)
 	}
 
-	users, err := h.store.QueriesFromContext(ctx).ListUsers(ctx, db.ListUsersParams{
+	users, err := h.store.Queries().ListUsers(ctx, db.ListUsersParams{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -125,7 +125,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list users"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountUsers(ctx)
+	count, err := h.store.Queries().CountUsers(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count users"))
 	}
@@ -174,7 +174,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 	}
 
 	// Read back from projection
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
@@ -204,7 +204,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("current_password is required for self-update"))
 		}
 
-		user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+		user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
 		}
@@ -238,7 +238,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 	}
 
 	// Read back from projection
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
@@ -278,7 +278,7 @@ func (h *UserHandler) UpdateUserRole(ctx context.Context, req *connect.Request[p
 	}
 
 	// Read back from projection
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
@@ -321,7 +321,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	}
 
 	// Read back from projection
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))

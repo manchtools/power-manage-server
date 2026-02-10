@@ -41,8 +41,17 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
+	// Verify device access (non-admins can only access assigned devices)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
+		ID:           req.Msg.DeviceId,
+		FilterUserID: userFilterID(ctx),
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+	}
+
 	// Verify an available-mode assignment exists for this source targeting this device
-	availableAssignments, err := h.store.QueriesFromContext(ctx).ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	availableAssignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check available assignments"))
 	}
@@ -77,7 +86,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set user selection"))
 	}
 
-	selection, err := h.store.QueriesFromContext(ctx).GetUserSelection(ctx, db.GetUserSelectionParams{
+	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
 		DeviceID:   req.Msg.DeviceId,
 		SourceType: req.Msg.SourceType,
 		SourceID:   req.Msg.SourceId,
@@ -97,14 +106,23 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		return nil, err
 	}
 
+	// Verify device access (non-admins can only access assigned devices)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
+		ID:           req.Msg.DeviceId,
+		FilterUserID: userFilterID(ctx),
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+	}
+
 	// Get available assignments for this device
-	assignments, err := h.store.QueriesFromContext(ctx).ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	assignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list available assignments"))
 	}
 
 	// Get user selections for this device
-	selections, err := h.store.QueriesFromContext(ctx).ListUserSelectionsForDevice(ctx, req.Msg.DeviceId)
+	selections, err := h.store.Queries().ListUserSelectionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list user selections"))
 	}
@@ -131,7 +149,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		// Load source metadata
 		switch asn.SourceType {
 		case "action":
-			action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, asn.SourceID)
+			action, err := h.store.Queries().GetActionByID(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = action.Name
 				if action.Description != nil {
@@ -139,13 +157,13 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 				}
 			}
 		case "action_set":
-			set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, asn.SourceID)
+			set, err := h.store.Queries().GetActionSetByID(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = set.Name
 				item.SourceDescription = set.Description
 			}
 		case "definition":
-			def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, asn.SourceID)
+			def, err := h.store.Queries().GetDefinitionByID(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = def.Name
 				item.SourceDescription = def.Description

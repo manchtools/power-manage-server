@@ -12,23 +12,11 @@ import (
 const countDevices = `-- name: CountDevices :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
+  AND ($1::TEXT IS NULL OR assigned_user_id = $1)
 `
 
-func (q *Queries) CountDevices(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevices)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countDevicesByAssignedUser = `-- name: CountDevicesByAssignedUser :one
-SELECT COUNT(*) FROM devices_projection
-WHERE is_deleted = FALSE
-  AND assigned_user_id = $1
-`
-
-func (q *Queries) CountDevicesByAssignedUser(ctx context.Context, assignedUserID *string) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevicesByAssignedUser, assignedUserID)
+func (q *Queries) CountDevices(ctx context.Context, filterUserID *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevices, filterUserID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -76,41 +64,16 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 const getDeviceByID = `-- name: GetDeviceByID :one
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
+  AND ($2::TEXT IS NULL OR assigned_user_id = $2)
 `
 
-func (q *Queries) GetDeviceByID(ctx context.Context, id string) (DevicesProjection, error) {
-	row := q.db.QueryRow(ctx, getDeviceByID, id)
-	var i DevicesProjection
-	err := row.Scan(
-		&i.ID,
-		&i.Hostname,
-		&i.AgentVersion,
-		&i.CertFingerprint,
-		&i.CertNotAfter,
-		&i.RegisteredAt,
-		&i.LastSeenAt,
-		&i.RegistrationTokenID,
-		&i.Labels,
-		&i.IsDeleted,
-		&i.ProjectionVersion,
-		&i.AssignedUserID,
-		&i.SyncIntervalMinutes,
-	)
-	return i, err
+type GetDeviceByIDParams struct {
+	ID           string  `json:"id"`
+	FilterUserID *string `json:"filter_user_id"`
 }
 
-const getDeviceByIDForUser = `-- name: GetDeviceByIDForUser :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
-WHERE id = $1 AND is_deleted = FALSE AND assigned_user_id = $2
-`
-
-type GetDeviceByIDForUserParams struct {
-	ID             string  `json:"id"`
-	AssignedUserID *string `json:"assigned_user_id"`
-}
-
-func (q *Queries) GetDeviceByIDForUser(ctx context.Context, arg GetDeviceByIDForUserParams) (DevicesProjection, error) {
-	row := q.db.QueryRow(ctx, getDeviceByIDForUser, arg.ID, arg.AssignedUserID)
+func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (DevicesProjection, error) {
+	row := q.db.QueryRow(ctx, getDeviceByID, arg.ID, arg.FilterUserID)
 	var i DevicesProjection
 	err := row.Scan(
 		&i.ID,
@@ -198,163 +161,19 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 const listDevices = `-- name: ListDevices :many
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
+  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit        int32   `json:"limit"`
+	Offset       int32   `json:"offset"`
+	FilterUserID *string `json:"filter_user_id"`
 }
 
 func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevices, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DevicesProjection{}
-	for rows.Next() {
-		var i DevicesProjection
-		if err := rows.Scan(
-			&i.ID,
-			&i.Hostname,
-			&i.AgentVersion,
-			&i.CertFingerprint,
-			&i.CertNotAfter,
-			&i.RegisteredAt,
-			&i.LastSeenAt,
-			&i.RegistrationTokenID,
-			&i.Labels,
-			&i.IsDeleted,
-			&i.ProjectionVersion,
-			&i.AssignedUserID,
-			&i.SyncIntervalMinutes,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDevicesByAssignedUser = `-- name: ListDevicesByAssignedUser :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
-WHERE is_deleted = FALSE
-  AND assigned_user_id = $1
-ORDER BY last_seen_at DESC
-LIMIT $2 OFFSET $3
-`
-
-type ListDevicesByAssignedUserParams struct {
-	AssignedUserID *string `json:"assigned_user_id"`
-	Limit          int32   `json:"limit"`
-	Offset         int32   `json:"offset"`
-}
-
-func (q *Queries) ListDevicesByAssignedUser(ctx context.Context, arg ListDevicesByAssignedUserParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesByAssignedUser, arg.AssignedUserID, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DevicesProjection{}
-	for rows.Next() {
-		var i DevicesProjection
-		if err := rows.Scan(
-			&i.ID,
-			&i.Hostname,
-			&i.AgentVersion,
-			&i.CertFingerprint,
-			&i.CertNotAfter,
-			&i.RegisteredAt,
-			&i.LastSeenAt,
-			&i.RegistrationTokenID,
-			&i.Labels,
-			&i.IsDeleted,
-			&i.ProjectionVersion,
-			&i.AssignedUserID,
-			&i.SyncIntervalMinutes,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDevicesByAssignedUserOffline = `-- name: ListDevicesByAssignedUserOffline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
-WHERE is_deleted = FALSE
-  AND assigned_user_id = $1
-  AND last_seen_at <= NOW() - INTERVAL '5 minutes'
-ORDER BY last_seen_at DESC
-LIMIT $2 OFFSET $3
-`
-
-type ListDevicesByAssignedUserOfflineParams struct {
-	AssignedUserID *string `json:"assigned_user_id"`
-	Limit          int32   `json:"limit"`
-	Offset         int32   `json:"offset"`
-}
-
-func (q *Queries) ListDevicesByAssignedUserOffline(ctx context.Context, arg ListDevicesByAssignedUserOfflineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesByAssignedUserOffline, arg.AssignedUserID, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DevicesProjection{}
-	for rows.Next() {
-		var i DevicesProjection
-		if err := rows.Scan(
-			&i.ID,
-			&i.Hostname,
-			&i.AgentVersion,
-			&i.CertFingerprint,
-			&i.CertNotAfter,
-			&i.RegisteredAt,
-			&i.LastSeenAt,
-			&i.RegistrationTokenID,
-			&i.Labels,
-			&i.IsDeleted,
-			&i.ProjectionVersion,
-			&i.AssignedUserID,
-			&i.SyncIntervalMinutes,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDevicesByAssignedUserOnline = `-- name: ListDevicesByAssignedUserOnline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
-WHERE is_deleted = FALSE
-  AND assigned_user_id = $1
-  AND last_seen_at > NOW() - INTERVAL '5 minutes'
-ORDER BY last_seen_at DESC
-LIMIT $2 OFFSET $3
-`
-
-type ListDevicesByAssignedUserOnlineParams struct {
-	AssignedUserID *string `json:"assigned_user_id"`
-	Limit          int32   `json:"limit"`
-	Offset         int32   `json:"offset"`
-}
-
-func (q *Queries) ListDevicesByAssignedUserOnline(ctx context.Context, arg ListDevicesByAssignedUserOnlineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesByAssignedUserOnline, arg.AssignedUserID, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listDevices, arg.Limit, arg.Offset, arg.FilterUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -391,17 +210,19 @@ const listDevicesOffline = `-- name: ListDevicesOffline :many
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at <= NOW() - INTERVAL '5 minutes'
+  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesOfflineParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit        int32   `json:"limit"`
+	Offset       int32   `json:"offset"`
+	FilterUserID *string `json:"filter_user_id"`
 }
 
 func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOfflineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesOffline, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listDevicesOffline, arg.Limit, arg.Offset, arg.FilterUserID)
 	if err != nil {
 		return nil, err
 	}
@@ -438,17 +259,19 @@ const listDevicesOnline = `-- name: ListDevicesOnline :many
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
+  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesOnlineParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit        int32   `json:"limit"`
+	Offset       int32   `json:"offset"`
+	FilterUserID *string `json:"filter_user_id"`
 }
 
 func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesOnline, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listDevicesOnline, arg.Limit, arg.Offset, arg.FilterUserID)
 	if err != nil {
 		return nil, err
 	}

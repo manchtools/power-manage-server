@@ -37,7 +37,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, err
 	}
 
-	user, err := h.store.QueriesFromContext(ctx).GetUserByEmail(ctx, req.Msg.Email)
+	user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Perform a dummy bcrypt comparison to prevent timing-based user enumeration
@@ -100,7 +100,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing refresh token"))
 	}
 
-	// Use pool-level queries for revocation checks (not RLS-scoped, since this is a public endpoint)
+	// Check if the refresh token has been revoked
 	isRevoked := func(jti string) (bool, error) {
 		return h.store.Queries().IsTokenRevoked(ctx, jti)
 	}
@@ -182,7 +182,7 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	user, err := h.store.QueriesFromContext(ctx).GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))

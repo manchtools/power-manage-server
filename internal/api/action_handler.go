@@ -186,7 +186,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create action: %w", err))
 	}
 
-	action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, id)
+	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get action after create", "error", err, "id", id)
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get action: %w", err))
@@ -206,7 +206,7 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
-	action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -237,7 +237,7 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 
 	typeFilter := int32(req.Msg.TypeFilter)
 
-	actions, err := h.store.QueriesFromContext(ctx).ListActions(ctx, db.ListActionsParams{
+	actions, err := h.store.Queries().ListActions(ctx, db.ListActionsParams{
 		Column1: typeFilter,
 		Limit:   pageSize,
 		Offset:  offset,
@@ -246,7 +246,7 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list actions"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountActions(ctx, typeFilter)
+	count, err := h.store.Queries().CountActions(ctx, typeFilter)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count actions"))
 	}
@@ -293,7 +293,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename action"))
 	}
 
-	action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -331,7 +331,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
 	}
 
-	action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -359,7 +359,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	_, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.Id)
+	_, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -393,7 +393,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update action params"))
 	}
 
-	action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -428,7 +428,7 @@ func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjec
 		return
 	}
 
-	if err := h.store.QueriesFromContext(ctx).UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
+	if err := h.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
 		ID:              action.ID,
 		Signature:       sig,
 		ParamsCanonical: paramsJSON,
@@ -479,7 +479,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -495,7 +495,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	switch source := req.Msg.ActionSource.(type) {
 	case *pm.DispatchActionRequest_ActionId:
-		action, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, source.ActionId)
+		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -583,7 +583,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 	}
 
-	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, id)
+	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
@@ -643,7 +643,7 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	actions, err := h.store.QueriesFromContext(ctx).ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
+	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
 	}
@@ -672,7 +672,7 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	actions, err := h.store.QueriesFromContext(ctx).ListActionsInSet(ctx, req.Msg.ActionSetId)
+	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get actions in set"))
 	}
@@ -701,14 +701,14 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	actionSets, err := h.store.QueriesFromContext(ctx).ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
+	actionSets, err := h.store.Queries().ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action sets in definition"))
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
 	for _, set := range actionSets {
-		actions, err := h.store.QueriesFromContext(ctx).ListActionsInSet(ctx, set.ID)
+		actions, err := h.store.Queries().ListActionsInSet(ctx, set.ID)
 		if err != nil {
 			continue
 		}
@@ -736,7 +736,7 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	devices, err := h.store.QueriesFromContext(ctx).ListDevicesInGroup(ctx, req.Msg.GroupId)
+	devices, err := h.store.Queries().ListDevicesInGroup(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get devices in group"))
 	}
@@ -798,7 +798,7 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, req.Msg.Id)
+	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
@@ -840,7 +840,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		statusFilter = statusToString(req.Msg.StatusFilter)
 	}
 
-	execs, err := h.store.QueriesFromContext(ctx).ListExecutions(ctx, db.ListExecutionsParams{
+	execs, err := h.store.Queries().ListExecutions(ctx, db.ListExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
 		Limit:   pageSize,
@@ -850,7 +850,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list executions"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountExecutions(ctx, db.CountExecutionsParams{
+	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
 	})
@@ -896,7 +896,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid instant action type: %s", req.Msg.InstantAction.String()))
 	}
 
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -962,7 +962,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		}
 	}
 
-	exec, err := h.store.QueriesFromContext(ctx).GetExecutionByID(ctx, id)
+	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
@@ -1266,7 +1266,7 @@ func stringToStatus(s string) pm.ExecutionStatus {
 // loadLiveOutput loads streaming output chunks from the event store and
 // aggregates them into a CommandOutput.
 func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) *pm.CommandOutput {
-	chunks, err := h.store.QueriesFromContext(ctx).LoadOutputChunks(ctx, executionID)
+	chunks, err := h.store.Queries().LoadOutputChunks(ctx, executionID)
 	if err != nil || len(chunks) == 0 {
 		return nil
 	}

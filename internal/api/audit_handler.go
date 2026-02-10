@@ -40,7 +40,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		offset = int32(offset64)
 	}
 
-	events, err := h.store.QueriesFromContext(ctx).ListAuditEvents(ctx, db.ListAuditEventsParams{
+	events, err := h.store.Queries().ListAuditEvents(ctx, db.ListAuditEventsParams{
 		Column1: req.Msg.ActorId,
 		Column2: req.Msg.StreamType,
 		Column3: req.Msg.EventType,
@@ -51,7 +51,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list audit events"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountAuditEvents(ctx, db.CountAuditEventsParams{
+	count, err := h.store.Queries().CountAuditEvents(ctx, db.CountAuditEventsParams{
 		Column1: req.Msg.ActorId,
 		Column2: req.Msg.StreamType,
 		Column3: req.Msg.EventType,

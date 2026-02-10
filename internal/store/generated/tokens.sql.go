@@ -13,29 +13,16 @@ const countTokens = `-- name: CountTokens :one
 SELECT COUNT(*) FROM tokens_projection
 WHERE is_deleted = FALSE
   AND ($1::BOOLEAN OR disabled = FALSE)
+  AND ($2::TEXT IS NULL OR owner_id = $2)
 `
 
-func (q *Queries) CountTokens(ctx context.Context, dollar_1 bool) (int64, error) {
-	row := q.db.QueryRow(ctx, countTokens, dollar_1)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+type CountTokensParams struct {
+	Column1       bool    `json:"column_1"`
+	FilterOwnerID *string `json:"filter_owner_id"`
 }
 
-const countTokensByOwner = `-- name: CountTokensByOwner :one
-SELECT COUNT(*) FROM tokens_projection
-WHERE is_deleted = FALSE
-  AND owner_id = $1
-  AND ($2::BOOLEAN OR disabled = FALSE)
-`
-
-type CountTokensByOwnerParams struct {
-	OwnerID *string `json:"owner_id"`
-	Column2 bool    `json:"column_2"`
-}
-
-func (q *Queries) CountTokensByOwner(ctx context.Context, arg CountTokensByOwnerParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countTokensByOwner, arg.OwnerID, arg.Column2)
+func (q *Queries) CountTokens(ctx context.Context, arg CountTokensParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTokens, arg.Column1, arg.FilterOwnerID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -70,10 +57,16 @@ func (q *Queries) GetTokenByHash(ctx context.Context, valueHash string) (TokensP
 const getTokenByID = `-- name: GetTokenByID :one
 SELECT id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, disabled, is_deleted, projection_version, owner_id FROM tokens_projection
 WHERE id = $1 AND is_deleted = FALSE
+  AND ($2::TEXT IS NULL OR owner_id = $2)
 `
 
-func (q *Queries) GetTokenByID(ctx context.Context, id string) (TokensProjection, error) {
-	row := q.db.QueryRow(ctx, getTokenByID, id)
+type GetTokenByIDParams struct {
+	ID            string  `json:"id"`
+	FilterOwnerID *string `json:"filter_owner_id"`
+}
+
+func (q *Queries) GetTokenByID(ctx context.Context, arg GetTokenByIDParams) (TokensProjection, error) {
+	row := q.db.QueryRow(ctx, getTokenByID, arg.ID, arg.FilterOwnerID)
 	var i TokensProjection
 	err := row.Scan(
 		&i.ID,
@@ -170,72 +163,24 @@ const listTokens = `-- name: ListTokens :many
 SELECT id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, disabled, is_deleted, projection_version, owner_id FROM tokens_projection
 WHERE is_deleted = FALSE
   AND ($1::BOOLEAN OR disabled = FALSE)
+  AND ($4::TEXT IS NULL OR owner_id = $4)
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListTokensParams struct {
-	Column1 bool  `json:"column_1"`
-	Limit   int32 `json:"limit"`
-	Offset  int32 `json:"offset"`
+	Column1       bool    `json:"column_1"`
+	Limit         int32   `json:"limit"`
+	Offset        int32   `json:"offset"`
+	FilterOwnerID *string `json:"filter_owner_id"`
 }
 
 func (q *Queries) ListTokens(ctx context.Context, arg ListTokensParams) ([]TokensProjection, error) {
-	rows, err := q.db.Query(ctx, listTokens, arg.Column1, arg.Limit, arg.Offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []TokensProjection{}
-	for rows.Next() {
-		var i TokensProjection
-		if err := rows.Scan(
-			&i.ID,
-			&i.ValueHash,
-			&i.Name,
-			&i.OneTime,
-			&i.MaxUses,
-			&i.CurrentUses,
-			&i.ExpiresAt,
-			&i.CreatedAt,
-			&i.CreatedBy,
-			&i.Disabled,
-			&i.IsDeleted,
-			&i.ProjectionVersion,
-			&i.OwnerID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTokensByOwner = `-- name: ListTokensByOwner :many
-SELECT id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, disabled, is_deleted, projection_version, owner_id FROM tokens_projection
-WHERE is_deleted = FALSE
-  AND owner_id = $1
-  AND ($2::BOOLEAN OR disabled = FALSE)
-ORDER BY created_at DESC
-LIMIT $3 OFFSET $4
-`
-
-type ListTokensByOwnerParams struct {
-	OwnerID *string `json:"owner_id"`
-	Column2 bool    `json:"column_2"`
-	Limit   int32   `json:"limit"`
-	Offset  int32   `json:"offset"`
-}
-
-func (q *Queries) ListTokensByOwner(ctx context.Context, arg ListTokensByOwnerParams) ([]TokensProjection, error) {
-	rows, err := q.db.Query(ctx, listTokensByOwner,
-		arg.OwnerID,
-		arg.Column2,
+	rows, err := q.db.Query(ctx, listTokens,
+		arg.Column1,
 		arg.Limit,
 		arg.Offset,
+		arg.FilterOwnerID,
 	)
 	if err != nil {
 		return nil, err

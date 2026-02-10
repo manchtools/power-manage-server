@@ -27,7 +27,7 @@ func NewDeviceHandler(st *store.Store) *DeviceHandler {
 }
 
 // ListDevices returns a paginated list of devices.
-// Row-level security handles filtering: admins see all, users see only assigned devices.
+// Admins see all devices; regular users see only their assigned devices.
 func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm.ListDevicesRequest]) (*connect.Response[pm.ListDevicesResponse], error) {
 	pageSize := int32(req.Msg.PageSize)
 	if pageSize <= 0 || pageSize > 100 {
@@ -43,7 +43,8 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		offset = int32(offset64)
 	}
 
-	q := h.store.QueriesFromContext(ctx)
+	q := h.store.Queries()
+	filterUID := userFilterID(ctx)
 
 	var devices []db.DevicesProjection
 	var err error
@@ -51,25 +52,28 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	switch req.Msg.StatusFilter {
 	case "online":
 		devices, err = q.ListDevicesOnline(ctx, db.ListDevicesOnlineParams{
-			Limit:  pageSize,
-			Offset: offset,
+			Limit:        pageSize,
+			Offset:       offset,
+			FilterUserID: filterUID,
 		})
 	case "offline":
 		devices, err = q.ListDevicesOffline(ctx, db.ListDevicesOfflineParams{
-			Limit:  pageSize,
-			Offset: offset,
+			Limit:        pageSize,
+			Offset:       offset,
+			FilterUserID: filterUID,
 		})
 	default:
 		devices, err = q.ListDevices(ctx, db.ListDevicesParams{
-			Limit:  pageSize,
-			Offset: offset,
+			Limit:        pageSize,
+			Offset:       offset,
+			FilterUserID: filterUID,
 		})
 	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list devices"))
 	}
 
-	count, err := q.CountDevices(ctx)
+	count, err := q.CountDevices(ctx, filterUID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count devices"))
 	}
@@ -92,15 +96,16 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 }
 
 // GetDevice returns a device by ID.
-// Row-level security handles access: admins see all, users see only assigned devices.
+// Admins see all devices; regular users see only their assigned devices.
 func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.GetDeviceRequest]) (*connect.Response[pm.GetDeviceResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
 	}
 
-	q := h.store.QueriesFromContext(ctx)
-
-	device, err := q.GetDeviceByID(ctx, req.Msg.Id)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
+		ID:           req.Msg.Id,
+		FilterUserID: userFilterID(ctx),
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -125,7 +130,7 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	}
 
 	// Verify device exists
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -150,7 +155,7 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	}
 
 	// Read back updated device
-	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
 	}
@@ -172,7 +177,7 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify device exists
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -196,7 +201,7 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	}
 
 	// Read back updated device
-	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
 	}
@@ -245,7 +250,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	}
 
 	// Verify device exists
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -254,7 +259,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	}
 
 	// Verify user exists
-	_, err = h.store.QueriesFromContext(ctx).GetUserByID(ctx, req.Msg.UserId)
+	_, err = h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
@@ -278,7 +283,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	}
 
 	// Read back updated device
-	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
 	}
@@ -300,7 +305,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 	}
 
 	// Verify device exists
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -322,7 +327,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 	}
 
 	// Read back updated device
-	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.DeviceId)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
 	}
@@ -344,7 +349,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}
 
 	// Verify device exists
-	_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -368,7 +373,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}
 
 	// Read back updated device
-	device, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.Id)
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
 	}

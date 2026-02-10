@@ -92,7 +92,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Read back from projection
-	token, err := h.store.QueriesFromContext(ctx).GetTokenByID(ctx, id)
+	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: id})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get token"))
 	}
@@ -111,7 +111,7 @@ func (h *TokenHandler) GetToken(ctx context.Context, req *connect.Request[pm.Get
 		return nil, err
 	}
 
-	token, err := h.store.QueriesFromContext(ctx).GetTokenByID(ctx, req.Msg.Id)
+	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("token not found"))
@@ -140,16 +140,20 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 		offset = int32(offset64)
 	}
 
-	tokens, err := h.store.QueriesFromContext(ctx).ListTokens(ctx, db.ListTokensParams{
-		Column1: req.Msg.IncludeDisabled,
-		Limit:   pageSize,
-		Offset:  offset,
+	tokens, err := h.store.Queries().ListTokens(ctx, db.ListTokensParams{
+		Column1:       req.Msg.IncludeDisabled,
+		Limit:         pageSize,
+		Offset:        offset,
+		FilterOwnerID: userFilterID(ctx),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list tokens"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountTokens(ctx, req.Msg.IncludeDisabled)
+	count, err := h.store.Queries().CountTokens(ctx, db.CountTokensParams{
+		Column1:       req.Msg.IncludeDisabled,
+		FilterOwnerID: userFilterID(ctx),
+	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count tokens"))
 	}
@@ -198,7 +202,7 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Read back from projection
-	token, err := h.store.QueriesFromContext(ctx).GetTokenByID(ctx, req.Msg.Id)
+	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("token not found"))
@@ -241,7 +245,7 @@ func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Reques
 	}
 
 	// Read back from projection
-	token, err := h.store.QueriesFromContext(ctx).GetTokenByID(ctx, req.Msg.Id)
+	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("token not found"))

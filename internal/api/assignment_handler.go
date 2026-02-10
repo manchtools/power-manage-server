@@ -47,7 +47,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Validate source exists
 	switch req.Msg.SourceType {
 	case "action":
-		_, err := h.store.QueriesFromContext(ctx).GetActionByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Queries().GetActionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -55,7 +55,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
 		}
 	case "action_set":
-		_, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
@@ -63,7 +63,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
 		}
 	case "definition":
-		_, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
@@ -75,7 +75,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Validate target exists
 	switch req.Msg.TargetType {
 	case "device":
-		_, err := h.store.QueriesFromContext(ctx).GetDeviceByID(ctx, req.Msg.TargetId)
+		_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.TargetId})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -83,7 +83,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
 		}
 	case "device_group":
-		_, err := h.store.QueriesFromContext(ctx).GetDeviceGroupByID(ctx, req.Msg.TargetId)
+		_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
@@ -93,7 +93,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	}
 
 	// Check if an active assignment already exists
-	existingAssignment, err := h.store.QueriesFromContext(ctx).GetAssignment(ctx, db.GetAssignmentParams{
+	existingAssignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
 		SourceType: req.Msg.SourceType,
 		SourceID:   req.Msg.SourceId,
 		TargetType: req.Msg.TargetType,
@@ -130,7 +130,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
 	// may have updated an existing soft-deleted record with a different ID
-	assignment, err := h.store.QueriesFromContext(ctx).GetAssignment(ctx, db.GetAssignmentParams{
+	assignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
 		SourceType: req.Msg.SourceType,
 		SourceID:   req.Msg.SourceId,
 		TargetType: req.Msg.TargetType,
@@ -187,7 +187,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		offset = int32(offset64)
 	}
 
-	assignments, err := h.store.QueriesFromContext(ctx).ListAssignments(ctx, db.ListAssignmentsParams{
+	assignments, err := h.store.Queries().ListAssignments(ctx, db.ListAssignmentsParams{
 		Column1: req.Msg.SourceType,
 		Column2: req.Msg.SourceId,
 		Column3: req.Msg.TargetType,
@@ -199,7 +199,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list assignments"))
 	}
 
-	count, err := h.store.QueriesFromContext(ctx).CountAssignments(ctx, db.CountAssignmentsParams{
+	count, err := h.store.Queries().CountAssignments(ctx, db.CountAssignmentsParams{
 		Column1: req.Msg.SourceType,
 		Column2: req.Msg.SourceId,
 		Column3: req.Msg.TargetType,
@@ -233,7 +233,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	}
 
 	// Get all actions assigned to this device (directly or via groups/sets/definitions)
-	actions, err := h.store.QueriesFromContext(ctx).ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
+	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
 	}
@@ -255,13 +255,13 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	}
 
 	// Get direct action set assignments
-	directAssignments, err := h.store.QueriesFromContext(ctx).ListDirectAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	directAssignments, err := h.store.Queries().ListDirectAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get direct assignments"))
 	}
 
 	// Get group-based assignments
-	groupAssignments, err := h.store.QueriesFromContext(ctx).ListGroupAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	groupAssignments, err := h.store.Queries().ListGroupAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get group assignments"))
 	}
@@ -290,7 +290,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	// Fetch action sets
 	protoActionSets := make([]*pm.ActionSet, 0, len(actionSetIDs))
 	for id := range actionSetIDs {
-		set, err := h.store.QueriesFromContext(ctx).GetActionSetByID(ctx, id)
+		set, err := h.store.Queries().GetActionSetByID(ctx, id)
 		if err == nil {
 			protoActionSets = append(protoActionSets, &pm.ActionSet{
 				Id:          set.ID,
@@ -306,7 +306,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	// Fetch definitions
 	protoDefinitions := make([]*pm.Definition, 0, len(definitionIDs))
 	for id := range definitionIDs {
-		def, err := h.store.QueriesFromContext(ctx).GetDefinitionByID(ctx, id)
+		def, err := h.store.Queries().GetDefinitionByID(ctx, id)
 		if err == nil {
 			protoDefinitions = append(protoDefinitions, &pm.Definition{
 				Id:          def.ID,

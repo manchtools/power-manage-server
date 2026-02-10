@@ -21,7 +21,7 @@ allow if {
 # USER MANAGEMENT
 # ============================================================================
 
-# Users can view their own profile (RLS filters to only their row)
+# Users can view their own profile
 allow if {
     input.role == "user"
     input.action == "GetUser"
@@ -52,13 +52,8 @@ allow if {
 # DEVICE MANAGEMENT
 # ============================================================================
 
-# ListDevices is admin-only (RLS will filter to assigned devices for users,
-# but we restrict the action entirely to admins)
-# No rule for users - they cannot list devices
-
-# GetDevice: users can only get their assigned devices (RLS enforces this)
-# But we don't allow the action at all for regular users
-# Only admins can view devices
+# Device management is admin-only by default
+# Users can list/get their assigned devices (see rule below)
 
 # Devices can only view themselves
 allow if {
@@ -87,7 +82,7 @@ allow if {
 
 # All other token management (Get, List, Rename, Disable, Delete) is admin-only
 
-# Users can view their assigned devices (RLS enforces assignment)
+# Users can view their assigned devices (SQL filter enforces assignment)
 allow if {
     input.role == "user"
     input.action in {"ListDevices", "GetDevice"}
@@ -114,8 +109,7 @@ allow if {
 # DispatchAction is admin-only (no rule for users)
 # DispatchToMultiple is admin-only (no rule for users)
 
-# Viewing executions is admin-only for users
-# Devices can only view their own executions (RLS enforces this)
+# Devices can view their own executions
 allow if {
     input.role == "device"
     input.action in {"ListExecutions", "GetExecution"}
