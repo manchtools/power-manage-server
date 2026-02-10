@@ -210,6 +210,11 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 	}
 
 	// Retry loop for handling version conflicts
+	// NOTE: Intentionally uses s.queries (pool-backed, no RLS session) rather
+	// than QueriesFromContext. The events table has FORCE ROW LEVEL SECURITY and
+	// the events_select policy restricts non-admin users to only their own events.
+	// Using the session connection would return a stale version (missing other
+	// actors' events), causing perpetual version conflicts.
 	const maxRetries = 5
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		// Get current version
