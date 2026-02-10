@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-
-	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // PublicProcedures are procedures that don't require authentication.
@@ -165,71 +163,5 @@ func (i *AuthzInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 
 // WrapStreamingHandler implements connect.Interceptor.
 func (i *AuthzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
-}
-
-// ============================================================================
-// SESSION CONTEXT INTERCEPTOR (for PostgreSQL RLS)
-// ============================================================================
-
-// SessionInterceptor acquires a dedicated database connection, sets the
-// PostgreSQL session context for RLS policies, and stashes RLS-scoped
-// queries in the Go context so handlers use the same connection.
-type SessionInterceptor struct {
-	store *store.Store
-}
-
-// NewSessionInterceptor creates a new session context interceptor.
-func NewSessionInterceptor(st *store.Store) *SessionInterceptor {
-	return &SessionInterceptor{store: st}
-}
-
-// WrapUnary implements connect.Interceptor.
-func (i *SessionInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		// Determine the session context based on the authenticated subject.
-		sc := i.sessionContextFromCtx(ctx)
-
-		// Acquire a dedicated connection and set the session context on it.
-		cws, err := i.store.AcquireWithSession(ctx, sc)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set session context"))
-		}
-		defer cws.Release()
-
-		// Stash the RLS-scoped queries in the Go context so handlers
-		// pick them up via store.QueriesFromContext(ctx).
-		ctx = store.ContextWithQueries(ctx, cws.Queries())
-
-		return next(ctx, req)
-	}
-}
-
-// sessionContextFromCtx builds a SessionContext from the authenticated
-// user/device in the Go context.
-func (i *SessionInterceptor) sessionContextFromCtx(ctx context.Context) store.SessionContext {
-	if userCtx, ok := UserFromContext(ctx); ok {
-		switch userCtx.Role {
-		case "admin":
-			return store.AdminSessionContext(userCtx.ID)
-		case "device":
-			return store.DeviceSessionContext(userCtx.ID)
-		default:
-			return store.UserSessionContext(userCtx.ID)
-		}
-	}
-	if deviceCtx, ok := DeviceFromContext(ctx); ok {
-		return store.DeviceSessionContext(deviceCtx.ID)
-	}
-	return store.SystemSessionContext()
-}
-
-// WrapStreamingClient implements connect.Interceptor.
-func (i *SessionInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-// WrapStreamingHandler implements connect.Interceptor.
-func (i *SessionInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return next
 }

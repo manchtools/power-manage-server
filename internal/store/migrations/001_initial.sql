@@ -1,42 +1,253 @@
 -- +goose Up
+
+-- ============================================================================
+-- EXTENSIONS
+-- ============================================================================
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ============================================================================
+-- EVENT STORE
+-- ============================================================================
+
+CREATE TABLE events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sequence_num BIGSERIAL UNIQUE,
+    stream_type TEXT NOT NULL,
+    stream_id TEXT NOT NULL,
+    stream_version INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    data JSONB NOT NULL DEFAULT '{}',
+    metadata JSONB NOT NULL DEFAULT '{}',
+    actor_type TEXT NOT NULL DEFAULT '',
+    actor_id TEXT NOT NULL DEFAULT '',
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (stream_type, stream_id, stream_version)
+);
+
+CREATE INDEX idx_events_stream ON events (stream_type, stream_id);
+CREATE INDEX idx_events_type ON events (event_type);
+CREATE INDEX idx_events_stream_type ON events (stream_type);
+CREATE INDEX idx_events_occurred_at ON events (occurred_at);
+
+-- ============================================================================
+-- PROJECTION TABLES
+-- ============================================================================
+
+CREATE TABLE users_projection (
+    id TEXT PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ,
+    last_login_at TIMESTAMPTZ,
+    disabled BOOLEAN NOT NULL DEFAULT FALSE,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    session_version INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE tokens_projection (
+    id TEXT PRIMARY KEY,
+    value_hash TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    one_time BOOLEAN NOT NULL DEFAULT FALSE,
+    max_uses INTEGER NOT NULL DEFAULT 0,
+    current_uses INTEGER NOT NULL DEFAULT 0,
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    disabled BOOLEAN NOT NULL DEFAULT FALSE,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    owner_id TEXT
+);
+
+CREATE INDEX idx_tokens_owner ON tokens_projection (owner_id);
+
+CREATE TABLE devices_projection (
+    id TEXT PRIMARY KEY,
+    hostname TEXT NOT NULL DEFAULT '',
+    agent_version TEXT NOT NULL DEFAULT '',
+    cert_fingerprint TEXT UNIQUE,
+    cert_not_after TIMESTAMPTZ,
+    registered_at TIMESTAMPTZ,
+    last_seen_at TIMESTAMPTZ,
+    registration_token_id TEXT,
+    labels JSONB NOT NULL DEFAULT '{}',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    assigned_user_id TEXT,
+    sync_interval_minutes INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_devices_assigned_user ON devices_projection (assigned_user_id);
+CREATE INDEX idx_devices_labels ON devices_projection USING GIN (labels);
+
+CREATE TABLE actions_projection (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT,
+    action_type INTEGER NOT NULL DEFAULT 0,
+    params JSONB NOT NULL DEFAULT '{}',
+    timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    signature BYTEA,
+    params_canonical BYTEA,
+    desired_state INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE executions_projection (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    action_id TEXT,
+    action_type INTEGER NOT NULL DEFAULT 0,
+    desired_state INTEGER NOT NULL DEFAULT 0,
+    params JSONB NOT NULL DEFAULT '{}',
+    timeout_seconds INTEGER NOT NULL DEFAULT 300,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    output JSONB,
+    created_at TIMESTAMPTZ,
+    dispatched_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    duration_ms BIGINT,
+    created_by_type TEXT NOT NULL DEFAULT '',
+    created_by_id TEXT NOT NULL DEFAULT '',
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    changed BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX idx_executions_device ON executions_projection (device_id);
+CREATE INDEX idx_executions_status ON executions_projection (status);
+CREATE INDEX idx_executions_device_status ON executions_projection (device_id, status);
+
+CREATE TABLE action_sets_projection (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    member_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE action_set_members_projection (
+    set_id TEXT NOT NULL,
+    action_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    added_at TIMESTAMPTZ,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (set_id, action_id)
+);
+
+CREATE TABLE definitions_projection (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    member_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE definition_members_projection (
+    definition_id TEXT NOT NULL,
+    action_set_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    added_at TIMESTAMPTZ,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (definition_id, action_set_id)
+);
+
+CREATE TABLE device_groups_projection (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    member_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    is_dynamic BOOLEAN NOT NULL DEFAULT FALSE,
+    dynamic_query TEXT,
+    sync_interval_minutes INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE device_group_members_projection (
+    group_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    added_at TIMESTAMPTZ,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    PRIMARY KEY (group_id, device_id)
+);
+
+CREATE TABLE assignments_projection (
+    id TEXT PRIMARY KEY,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    mode INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ,
+    created_by TEXT NOT NULL DEFAULT '',
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    UNIQUE (source_type, source_id, target_type, target_id)
+);
+
+CREATE TABLE user_selections_projection (
+    id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    selected BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    created_by TEXT NOT NULL DEFAULT '',
+    projection_version BIGINT NOT NULL DEFAULT 0,
+    UNIQUE (device_id, source_type, source_id)
+);
+
+CREATE INDEX idx_user_selections_device ON user_selections_projection (device_id);
+
+CREATE TABLE revoked_tokens (
+    jti TEXT PRIMARY KEY,
+    revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_revoked_tokens_expires ON revoked_tokens (expires_at);
+
+CREATE TABLE dynamic_group_evaluation_queue (
+    group_id TEXT PRIMARY KEY,
+    queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reason TEXT
+);
+
+CREATE TABLE projection_errors (
+    id BIGSERIAL PRIMARY KEY,
+    event_id UUID,
+    event_type TEXT,
+    stream_type TEXT,
+    error_message TEXT,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ============================================================================
+-- FUNCTIONS
+-- ============================================================================
+
 -- +goose StatementBegin
 
--- ============================================================================
--- SECTION 1: SESSION CONTEXT HELPERS
--- ============================================================================
-
-CREATE OR REPLACE FUNCTION set_session_context(p_user_id TEXT, p_role TEXT) RETURNS void AS $$
-BEGIN
-    PERFORM set_config('app.current_user_id', COALESCE(p_user_id, ''), TRUE);
-    PERFORM set_config('app.current_role', COALESCE(p_role, ''), TRUE);
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION current_user_id() RETURNS TEXT AS $$
-BEGIN
-    RETURN NULLIF(current_setting('app.current_user_id', TRUE), '');
-EXCEPTION WHEN OTHERS THEN
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
-CREATE OR REPLACE FUNCTION current_user_role() RETURNS TEXT AS $$
-BEGIN
-    RETURN NULLIF(current_setting('app.current_role', TRUE), '');
-EXCEPTION WHEN OTHERS THEN
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql STABLE;
-
-CREATE OR REPLACE FUNCTION is_admin() RETURNS BOOLEAN AS $$
-BEGIN
-    RETURN current_user_role() = 'admin';
-END;
-$$ LANGUAGE plpgsql STABLE;
-
--- ============================================================================
--- SECTION 2: ULID GENERATION
--- ============================================================================
+-- ---------- ULID GENERATION ----------
 
 CREATE OR REPLACE FUNCTION generate_ulid() RETURNS TEXT AS $$
 DECLARE
@@ -72,10 +283,6 @@ BEGIN
     RETURN ulid;
 END;
 $$ LANGUAGE plpgsql;
-
--- ============================================================================
--- SECTION 3: PROJECTOR FUNCTIONS
--- ============================================================================
 
 -- ---------- USER PROJECTOR ----------
 
@@ -207,7 +414,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ---------- DEVICE PROJECTOR ----------
--- Combined from migrations 002 + 022: includes DeviceAssigned/Unassigned AND sync intervals.
 
 CREATE OR REPLACE FUNCTION project_device_event(event events) RETURNS void AS $$
 BEGIN
@@ -315,7 +521,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ---------- ACTION PROJECTOR ----------
--- Handles Action* events and legacy Definition* events for single-action definitions.
 
 CREATE OR REPLACE FUNCTION project_action_event(event events) RETURNS void AS $$
 BEGIN
@@ -363,19 +568,15 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
-            -- Cascade: Update member counts for affected action sets
             UPDATE action_sets_projection
             SET member_count = member_count - 1
             WHERE id IN (
                 SELECT set_id FROM action_set_members_projection WHERE action_id = event.stream_id
             );
 
-            -- Cascade: Remove action from all action sets
             DELETE FROM action_set_members_projection WHERE action_id = event.stream_id;
 
-        -- Legacy single-action definition events (backward compatibility)
         WHEN 'DefinitionCreated' THEN
-            -- Only handle old-style definitions that have action_type
             IF event.data ? 'action_type' THEN
                 INSERT INTO actions_projection (
                     id, name, description, action_type, desired_state,
@@ -420,14 +621,12 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
-            -- Cascade: Update member counts for affected action sets
             UPDATE action_sets_projection
             SET member_count = member_count - 1
             WHERE id IN (
                 SELECT set_id FROM action_set_members_projection WHERE action_id = event.stream_id
             );
 
-            -- Cascade: Remove action from all action sets
             DELETE FROM action_set_members_projection WHERE action_id = event.stream_id;
 
         ELSE
@@ -437,7 +636,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ---------- EXECUTION PROJECTOR ----------
--- Final version with agent timestamps, output on failed/timeout/skipped.
 
 CREATE OR REPLACE FUNCTION project_execution_event(event events) RETURNS void AS $$
 BEGIN
@@ -587,17 +785,14 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
-            -- Delete members of this action set
             DELETE FROM action_set_members_projection WHERE set_id = event.stream_id;
 
-            -- Cascade: Update member counts for affected definitions
             UPDATE definitions_projection
             SET member_count = member_count - 1
             WHERE id IN (
                 SELECT definition_id FROM definition_members_projection WHERE action_set_id = event.stream_id
             );
 
-            -- Cascade: Remove action set from all definitions
             DELETE FROM definition_members_projection WHERE action_set_id = event.stream_id;
 
         ELSE
@@ -612,7 +807,6 @@ CREATE OR REPLACE FUNCTION project_definition_event(event events) RETURNS void A
 BEGIN
     CASE event.event_type
         WHEN 'DefinitionCreated' THEN
-            -- Only handle new-style definition collections (no action_type field)
             IF NOT (event.data ? 'action_type') THEN
                 INSERT INTO definitions_projection (
                     id, name, description, created_at, created_by, projection_version
@@ -684,7 +878,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ---------- DEVICE GROUP PROJECTOR ----------
--- Includes dynamic groups, sync intervals, manual member events.
 
 CREATE OR REPLACE FUNCTION project_device_group_event(event events) RETURNS void AS $$
 DECLARE
@@ -797,7 +990,6 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ---------- ASSIGNMENT PROJECTOR ----------
--- Includes sort_order and upsert for re-creation of deleted assignments.
 
 CREATE OR REPLACE FUNCTION project_assignment_event(event events) RETURNS void AS $$
 BEGIN
@@ -876,9 +1068,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- SECTION 4: MASTER PROJECTOR WITH ERROR HANDLING
--- ============================================================================
+-- ---------- MASTER PROJECTOR WITH ERROR HANDLING ----------
 
 CREATE OR REPLACE FUNCTION project_event() RETURNS trigger AS $$
 BEGIN
@@ -916,7 +1106,6 @@ BEGIN
             END;
 
         WHEN 'definition' THEN
-            -- Route to both action projector (for legacy) and definition projector (for collections)
             BEGIN
                 PERFORM project_action_event(NEW);
             EXCEPTION WHEN OTHERS THEN
@@ -979,10 +1168,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- SECTION 5: NOTIFICATION FUNCTION
--- ============================================================================
--- Optimized payload sizes to stay under 8KB pg_notify limit.
+-- ---------- NOTIFICATION FUNCTION ----------
 
 CREATE OR REPLACE FUNCTION notify_event() RETURNS trigger AS $$
 DECLARE
@@ -991,9 +1177,7 @@ DECLARE
 BEGIN
     channel := 'events';
 
-    -- Build notification payload based on event type
     CASE
-        -- Execution status changes: send lightweight payload (no output data)
         WHEN NEW.event_type IN ('ExecutionCreated', 'ExecutionDispatched', 'ExecutionStarted',
                                 'ExecutionCompleted', 'ExecutionFailed', 'ExecutionTimedOut', 'ExecutionSkipped') THEN
             payload := json_build_object(
@@ -1023,12 +1207,10 @@ BEGIN
                 'occurred_at', NEW.occurred_at
             )::TEXT;
 
-            -- Notify the specific device's agent channel
             IF NEW.data->>'device_id' IS NOT NULL THEN
                 PERFORM pg_notify('agent_' || (NEW.data->>'device_id'), payload);
             END IF;
 
-        -- Output chunks: send to device agent only, not to events channel
         WHEN NEW.event_type = 'OutputChunk' THEN
             IF NEW.data->>'device_id' IS NOT NULL THEN
                 payload := json_build_object(
@@ -1038,10 +1220,8 @@ BEGIN
                 )::TEXT;
                 PERFORM pg_notify('agent_' || (NEW.data->>'device_id'), payload);
             END IF;
-            -- Don't send output chunks to the events channel
             RETURN NEW;
 
-        -- Device registration: send lightweight event notification
         WHEN NEW.event_type = 'DeviceRegistered' THEN
             payload := json_build_object(
                 'id', NEW.id,
@@ -1059,7 +1239,6 @@ BEGIN
             )::TEXT;
 
         ELSE
-            -- Default: send full event payload
             payload := json_build_object(
                 'id', NEW.id,
                 'sequence_num', NEW.sequence_num,
@@ -1073,15 +1252,12 @@ BEGIN
             )::TEXT;
     END CASE;
 
-    -- Notify on the events channel
     PERFORM pg_notify(channel, payload);
 
-    -- Notify agent channel for execution events
     IF NEW.stream_type = 'execution' AND NEW.data->>'device_id' IS NOT NULL THEN
         PERFORM pg_notify('agent_' || (NEW.data->>'device_id'), payload);
     END IF;
 
-    -- Notify UI updates channel for projectable events
     IF NEW.stream_type IN ('user', 'token', 'device', 'action', 'definition',
                             'action_set', 'device_group', 'assignment', 'execution',
                             'user_selection') THEN
@@ -1096,15 +1272,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- SECTION 6: DYNAMIC GROUP FUNCTIONS
--- ============================================================================
+-- ---------- DYNAMIC GROUP FUNCTIONS ----------
 
 CREATE OR REPLACE FUNCTION extract_label_key(label_expr TEXT) RETURNS TEXT AS $$
 DECLARE
     parts TEXT[];
 BEGIN
-    -- Support device.labels.key format
     IF label_expr ~* '^device\.labels\.' THEN
         RETURN substr(label_expr, 15);
     ELSIF label_expr ~* '^labels\.' THEN
@@ -1142,21 +1315,18 @@ BEGIN
         RETURN TRUE;
     END IF;
 
-    -- Handle 'exists' operator
     IF condition ~* '^\s*(\S+)\s+exists\s*$' THEN
         parts := regexp_matches(condition, '^\s*(\S+)\s+exists\s*$', 'i');
         label_key := extract_label_key(parts[1]);
         RETURN device_labels ? label_key;
     END IF;
 
-    -- Handle 'notExists' operator
     IF condition ~* '^\s*(\S+)\s+notExists\s*$' THEN
         parts := regexp_matches(condition, '^\s*(\S+)\s+notExists\s*$', 'i');
         label_key := extract_label_key(parts[1]);
         RETURN NOT (device_labels ? label_key);
     END IF;
 
-    -- Parse binary operator condition
     IF condition ~* '^\s*(\S+)\s+(equals|notEquals|contains|notContains|startsWith|endsWith|greaterThan|lessThan|greaterThanOrEquals|lessThanOrEquals|in|notIn)\s+' THEN
         parts := regexp_matches(condition, '^\s*(\S+)\s+(equals|notEquals|contains|notContains|startsWith|endsWith|greaterThan|lessThan|greaterThanOrEquals|lessThanOrEquals|in|notIn)\s+[\"'']?(.+?)[\"'']?\s*$', 'i');
         label_expr := parts[1];
@@ -1260,7 +1430,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- FIX (Issue 9): Added depth parameter with limit of 10 to prevent infinite recursion.
 CREATE OR REPLACE FUNCTION evaluate_dynamic_query(
     device_labels JSONB,
     query TEXT,
@@ -1276,7 +1445,6 @@ DECLARE
     end_pos INTEGER;
     char_at TEXT;
 BEGIN
-    -- Prevent infinite recursion
     IF depth > 10 THEN
         RAISE WARNING 'Dynamic query recursion depth exceeded (>10)';
         RETURN FALSE;
@@ -1288,7 +1456,6 @@ BEGIN
 
     work_query := trim(query);
 
-    -- Resolve all parenthesized expressions (innermost first)
     LOOP
         start_pos := 0;
         end_pos := 0;
@@ -1315,14 +1482,12 @@ BEGIN
                       substr(work_query, end_pos + 1);
     END LOOP;
 
-    -- Handle 'not' operator (prefix)
     WHILE work_query ~* '^\s*not\s+' LOOP
         work_query := regexp_replace(work_query, '^\s*not\s+', '', 'i');
         result := NOT evaluate_dynamic_query(device_labels, work_query, depth + 1);
         RETURN result;
     END LOOP;
 
-    -- Handle 'not' in the middle
     WHILE work_query ~* '\s+not\s+__TRUE__' LOOP
         work_query := regexp_replace(work_query, '\s+not\s+__TRUE__', ' __FALSE__', 'gi');
     END LOOP;
@@ -1330,7 +1495,6 @@ BEGIN
         work_query := regexp_replace(work_query, '\s+not\s+__FALSE__', ' __TRUE__', 'gi');
     END LOOP;
 
-    -- Handle 'and' operator (higher precedence)
     IF work_query ~* '\s+and\s+' THEN
         DECLARE
             parts TEXT[];
@@ -1348,7 +1512,6 @@ BEGIN
         END;
     END IF;
 
-    -- Handle 'or' operator
     IF work_query ~* '\s+or\s+' THEN
         DECLARE
             parts TEXT[];
@@ -1366,7 +1529,6 @@ BEGIN
         END;
     END IF;
 
-    -- Handle placeholder results
     IF work_query = '__TRUE__' THEN
         RETURN TRUE;
     ELSIF work_query = '__FALSE__' THEN
@@ -1377,8 +1539,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- Evaluate a single dynamic group and update membership.
--- FIX (Issue from 024): Uses COALESCE for empty arrays in member_count.
 CREATE OR REPLACE FUNCTION evaluate_dynamic_group(group_id_param TEXT) RETURNS void AS $$
 DECLARE
     group_record RECORD;
@@ -1513,9 +1673,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- ============================================================================
--- SECTION 8: UTILITY FUNCTIONS
--- ============================================================================
+-- ---------- UTILITY FUNCTIONS ----------
 
 CREATE OR REPLACE FUNCTION get_device_sync_interval(p_device_id TEXT) RETURNS INTEGER AS $$
 DECLARE
@@ -1545,7 +1703,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- Time travel function for historical state queries
 CREATE OR REPLACE FUNCTION get_stream_at(
     p_stream_type TEXT,
     p_stream_id TEXT,
@@ -1561,9 +1718,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
--- ============================================================================
--- SECTION 9: REBUILD FUNCTIONS
--- ============================================================================
+-- ---------- REBUILD FUNCTIONS ----------
 
 CREATE OR REPLACE FUNCTION rebuild_users_projection() RETURNS void AS $$
 DECLARE
@@ -1696,8 +1851,37 @@ $$ LANGUAGE plpgsql;
 
 -- +goose StatementEnd
 
+-- ============================================================================
+-- TRIGGERS
+-- ============================================================================
+
+CREATE TRIGGER event_projector
+    AFTER INSERT ON events
+    FOR EACH ROW
+    EXECUTE FUNCTION project_event();
+
+CREATE TRIGGER event_notifier
+    AFTER INSERT ON events
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_event();
+
+CREATE TRIGGER device_label_change_trigger
+    AFTER INSERT OR UPDATE OF labels ON devices_projection
+    FOR EACH ROW
+    EXECUTE FUNCTION trigger_device_label_change();
+
+CREATE TRIGGER device_deleted_trigger
+    AFTER UPDATE OF is_deleted ON devices_projection
+    FOR EACH ROW
+    EXECUTE FUNCTION trigger_device_deleted();
+
 -- +goose Down
 -- +goose StatementBegin
+
+DROP TRIGGER IF EXISTS device_deleted_trigger ON devices_projection;
+DROP TRIGGER IF EXISTS device_label_change_trigger ON devices_projection;
+DROP TRIGGER IF EXISTS event_notifier ON events;
+DROP TRIGGER IF EXISTS event_projector ON events;
 
 DROP FUNCTION IF EXISTS rebuild_all_projections;
 DROP FUNCTION IF EXISTS rebuild_user_selections_projection;
@@ -1734,9 +1918,24 @@ DROP FUNCTION IF EXISTS project_device_event;
 DROP FUNCTION IF EXISTS project_token_event;
 DROP FUNCTION IF EXISTS project_user_event;
 DROP FUNCTION IF EXISTS generate_ulid;
-DROP FUNCTION IF EXISTS is_admin;
-DROP FUNCTION IF EXISTS current_user_role;
-DROP FUNCTION IF EXISTS current_user_id;
-DROP FUNCTION IF EXISTS set_session_context;
+
+DROP TABLE IF EXISTS projection_errors;
+DROP TABLE IF EXISTS dynamic_group_evaluation_queue;
+DROP TABLE IF EXISTS revoked_tokens;
+DROP TABLE IF EXISTS user_selections_projection;
+DROP TABLE IF EXISTS assignments_projection;
+DROP TABLE IF EXISTS device_group_members_projection;
+DROP TABLE IF EXISTS device_groups_projection;
+DROP TABLE IF EXISTS definition_members_projection;
+DROP TABLE IF EXISTS definitions_projection;
+DROP TABLE IF EXISTS action_set_members_projection;
+DROP TABLE IF EXISTS action_sets_projection;
+DROP TABLE IF EXISTS executions_projection;
+DROP TABLE IF EXISTS actions_projection;
+DROP TABLE IF EXISTS devices_projection;
+DROP TABLE IF EXISTS tokens_projection;
+DROP TABLE IF EXISTS users_projection;
+DROP TABLE IF EXISTS events;
+DROP EXTENSION IF EXISTS pgcrypto;
 
 -- +goose StatementEnd

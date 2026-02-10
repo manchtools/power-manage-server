@@ -129,24 +129,7 @@ func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error
 }
 
 // Queries returns the SQLC queries interface.
-// For RLS-aware queries, use QueriesFromContext instead.
 func (s *Store) Queries() *Queries {
-	return s.queries
-}
-
-type queriesContextKey struct{}
-
-// ContextWithQueries stores RLS-scoped queries in the context.
-func ContextWithQueries(ctx context.Context, q *Queries) context.Context {
-	return context.WithValue(ctx, queriesContextKey{}, q)
-}
-
-// QueriesFromContext returns RLS-scoped queries from context if set,
-// otherwise falls back to the store's default (pool-backed) queries.
-func (s *Store) QueriesFromContext(ctx context.Context) *Queries {
-	if q, ok := ctx.Value(queriesContextKey{}).(*Queries); ok && q != nil {
-		return q
-	}
 	return s.queries
 }
 
@@ -188,14 +171,12 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Queries) error) error {
 }
 
 // AppendEvent appends a new event to the event store.
-// It handles optimistic locking by checking the expected version.
-// Retries automatically on version conflicts (up to 5 times).
+// It auto-determines the stream version with optimistic retry on conflicts.
 func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 	if event.ActorType == "" || event.ActorID == "" {
 		return fmt.Errorf("event actor_type and actor_id are required")
 	}
 
-	// Marshal event data once (doesn't change on retry)
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		return fmt.Errorf("marshal event data: %w", err)
@@ -209,15 +190,8 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 		}
 	}
 
-	// Retry loop for handling version conflicts
-	// NOTE: Intentionally uses s.queries (pool-backed, no RLS session) rather
-	// than QueriesFromContext. The events table has FORCE ROW LEVEL SECURITY and
-	// the events_select policy restricts non-admin users to only their own events.
-	// Using the session connection would return a stale version (missing other
-	// actors' events), causing perpetual version conflicts.
 	const maxRetries = 5
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		// Get current version
+	for i := 0; i < maxRetries; i++ {
 		version, err := s.queries.GetStreamVersion(ctx, generated.GetStreamVersionParams{
 			StreamType: event.StreamType,
 			StreamID:   event.StreamID,
@@ -226,7 +200,6 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			return fmt.Errorf("get stream version: %w", err)
 		}
 
-		// Append event with next version
 		_, err = s.queries.AppendEvent(ctx, generated.AppendEventParams{
 			StreamType:    event.StreamType,
 			StreamID:      event.StreamID,
@@ -237,28 +210,23 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			ActorType:     event.ActorType,
 			ActorID:       event.ActorID,
 		})
-		if err == nil {
-			return nil
-		}
-
-		// Check for version conflict (unique constraint violation)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Retry on version conflict
-			if attempt < maxRetries-1 {
-				continue
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				if i < maxRetries-1 {
+					continue // Retry on version conflict
+				}
+				return fmt.Errorf("version conflict after %d retries: stream was modified concurrently", maxRetries)
 			}
-			return fmt.Errorf("version conflict after %d retries: stream was modified concurrently", maxRetries)
+			return fmt.Errorf("append event: %w", err)
 		}
-		return fmt.Errorf("append event: %w", err)
+		return nil
 	}
-
-	return nil
+	return fmt.Errorf("append event: exhausted retries")
 }
 
 // AppendEventWithVersion appends an event with an expected version for optimistic locking.
 func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expectedVersion int32) error {
-	// Marshal event data
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		return fmt.Errorf("marshal event data: %w", err)
@@ -272,7 +240,6 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 		}
 	}
 
-	// Append event with specified version
 	_, err = s.queries.AppendEvent(ctx, generated.AppendEventParams{
 		StreamType:    event.StreamType,
 		StreamID:      event.StreamID,
@@ -517,140 +484,6 @@ func (s *Store) StartListener(ctx context.Context, channels []string, handler No
 	go s.processNotifications(ctx)
 
 	return nil
-}
-
-// ============================================================================
-// SESSION CONTEXT FOR ROW-LEVEL SECURITY
-// ============================================================================
-
-// SessionContext holds the current user's identity for RLS policies.
-type SessionContext struct {
-	UserID string
-	Role   string
-}
-
-// SetSessionContext sets the session context for RLS policies.
-// This must be called at the start of each request to enable proper row filtering.
-func (s *Store) SetSessionContext(ctx context.Context, sc SessionContext) error {
-	_, err := s.pool.Exec(ctx, "SELECT set_session_context($1, $2)", sc.UserID, sc.Role)
-	if err != nil {
-		return fmt.Errorf("set session context: %w", err)
-	}
-	return nil
-}
-
-// WithSessionContext runs a function with the session context set for RLS.
-// This is the preferred way to execute queries that need RLS filtering.
-func (s *Store) WithSessionContext(ctx context.Context, sc SessionContext, fn func() error) error {
-	// Acquire a connection from the pool
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire connection: %w", err)
-	}
-	defer conn.Release()
-
-	// Set session context on this connection
-	_, err = conn.Exec(ctx, "SELECT set_session_context($1, $2)", sc.UserID, sc.Role)
-	if err != nil {
-		return fmt.Errorf("set session context: %w", err)
-	}
-
-	// Run the function
-	return fn()
-}
-
-// QueriesWithContext returns queries that will use the session context.
-// Note: The caller must ensure SetSessionContext was called on the same connection.
-func (s *Store) QueriesWithContext(ctx context.Context, sc SessionContext) (*Queries, error) {
-	// For proper RLS, we need to use a dedicated connection
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquire connection: %w", err)
-	}
-
-	// Set session context
-	_, err = conn.Exec(ctx, "SELECT set_session_context($1, $2)", sc.UserID, sc.Role)
-	if err != nil {
-		conn.Release()
-		return nil, fmt.Errorf("set session context: %w", err)
-	}
-
-	// Return queries using this connection
-	// Note: caller is responsible for releasing the connection
-	return generated.New(conn), nil
-}
-
-// ConnWithSession acquires a connection and sets session context.
-// The caller must call release() when done.
-type ConnWithSession struct {
-	conn    *pgxpool.Conn
-	queries *Queries
-}
-
-// AcquireWithSession acquires a connection with session context set for RLS.
-func (s *Store) AcquireWithSession(ctx context.Context, sc SessionContext) (*ConnWithSession, error) {
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("acquire connection: %w", err)
-	}
-
-	// Set session context
-	_, err = conn.Exec(ctx, "SELECT set_session_context($1, $2)", sc.UserID, sc.Role)
-	if err != nil {
-		conn.Release()
-		return nil, fmt.Errorf("set session context: %w", err)
-	}
-
-	return &ConnWithSession{
-		conn:    conn,
-		queries: generated.New(conn),
-	}, nil
-}
-
-// Queries returns the SQLC queries for this connection.
-func (c *ConnWithSession) Queries() *Queries {
-	return c.queries
-}
-
-// Release clears the session context and releases the connection back to the pool.
-func (c *ConnWithSession) Release() {
-	// Reset session context before returning to pool to prevent stale
-	// role/user_id leaking into subsequent requests that reuse this connection.
-	_, _ = c.conn.Exec(context.Background(), "SELECT set_session_context('', '')")
-	c.conn.Release()
-}
-
-// SystemSessionContext returns a session context for system operations
-// that bypass RLS (used for triggers, migrations, etc.)
-func SystemSessionContext() SessionContext {
-	return SessionContext{
-		UserID: "system",
-		Role:   "system",
-	}
-}
-
-// AdminSessionContext returns a session context for admin operations.
-func AdminSessionContext(userID string) SessionContext {
-	return SessionContext{
-		UserID: userID,
-		Role:   "admin",
-	}
-}
-
-// UserSessionContext returns a session context for regular user operations.
-func UserSessionContext(userID string) SessionContext {
-	return SessionContext{
-		UserID: userID,
-		Role:   "user",
-	}
-}
-
-// DeviceSessionContext returns a session context for device operations.
-func DeviceSessionContext(deviceID string) SessionContext {
-	return SessionContext{
-		UserID: deviceID,
-		Role:   "device",
-	}
 }
 
 // Notify sends a notification to a PostgreSQL channel.

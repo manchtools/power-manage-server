@@ -164,7 +164,6 @@ func main() {
 	interceptors := connect.WithInterceptors(
 		auth.NewAuthInterceptor(jwtManager, loginLimiter, refreshLimiter, registerLimiter),
 		auth.NewAuthzInterceptor(authorizer),
-		auth.NewSessionInterceptor(st),
 	)
 
 	mux := http.NewServeMux()

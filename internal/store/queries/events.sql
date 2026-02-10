@@ -75,3 +75,4 @@ WHERE stream_type = 'execution'
   AND stream_id = $1
   AND event_type = 'OutputChunk'
 ORDER BY stream_version;
+
