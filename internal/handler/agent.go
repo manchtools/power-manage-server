@@ -880,5 +880,25 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 				},
 			}
 		}
+
+	case pm.ActionType_ACTION_TYPE_SSH:
+		var params struct {
+			Username       string   `json:"username"`
+			AllowPubkey    bool     `json:"allowPubkey"`
+			AllowPassword  bool     `json:"allowPassword"`
+			AuthorizedKeys []string `json:"authorizedKeys"`
+			HomeDir        string   `json:"homeDir"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err == nil {
+			action.Params = &pm.Action_Ssh{
+				Ssh: &pm.SshParams{
+					Username:       params.Username,
+					AllowPubkey:    params.AllowPubkey,
+					AllowPassword:  params.AllowPassword,
+					AuthorizedKeys: params.AuthorizedKeys,
+					HomeDir:        params.HomeDir,
+				},
+			}
+		}
 	}
 }

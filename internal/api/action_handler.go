@@ -88,6 +88,10 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		if p.User != nil {
 			return Validate(p.User)
 		}
+	case *pm.CreateActionRequest_Ssh:
+		if p.Ssh != nil {
+			return Validate(p.Ssh)
+		}
 	}
 	return nil
 }
@@ -134,6 +138,10 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 	case *pm.UpdateActionParamsRequest_User:
 		if p.User != nil {
 			return Validate(p.User)
+		}
+	case *pm.UpdateActionParamsRequest_Ssh:
+		if p.Ssh != nil {
+			return Validate(p.Ssh)
 		}
 	}
 	return nil
@@ -1006,6 +1014,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Directory)
 	case *pm.CreateActionRequest_User:
 		data, err = protojson.Marshal(p.User)
+	case *pm.CreateActionRequest_Ssh:
+		data, err = protojson.Marshal(p.Ssh)
 	default:
 		return params, nil
 	}
@@ -1047,6 +1057,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Directory)
 	case *pm.UpdateActionParamsRequest_User:
 		data, err = protojson.Marshal(p.User)
+	case *pm.UpdateActionParamsRequest_Ssh:
+		data, err = protojson.Marshal(p.Ssh)
 	default:
 		return params, nil
 	}
@@ -1100,6 +1112,9 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 		json.Unmarshal(data, &params)
 	case *pm.Action_User:
 		data, _ := protojson.Marshal(p.User)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Ssh:
+		data, _ := protojson.Marshal(p.Ssh)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1177,6 +1192,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.UserParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_User{User: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_SSH:
+		var p pm.SshParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Ssh{Ssh: &p}
 		}
 	}
 }
