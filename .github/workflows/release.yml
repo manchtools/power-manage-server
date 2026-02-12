@@ -100,7 +100,7 @@ jobs:
           EXPOSE 8081
           ENTRYPOINT ["/usr/local/bin/control"]
           DEOF
-          docker build -f Dockerfile.control -t ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
+          docker build --provenance=false -f Dockerfile.control -t ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
           docker push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }}
 
       - name: Build and push gateway image
@@ -113,7 +113,7 @@ jobs:
           EXPOSE 8080
           ENTRYPOINT ["/usr/local/bin/gateway"]
           DEOF
-          docker build -f Dockerfile.gateway -t ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
+          docker build --provenance=false -f Dockerfile.gateway -t ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
           docker push ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-${{ matrix.arch }}
 
   manifests:
