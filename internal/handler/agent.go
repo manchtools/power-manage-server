@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
@@ -621,384 +622,83 @@ func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
 
 // parseActionParams populates the oneof Params field on a wire Action from JSON and action type.
 func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
+	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
+
 	switch pm.ActionType(actionType) {
 	case pm.ActionType_ACTION_TYPE_PACKAGE:
-		var params struct {
-			Name           string `json:"name"`
-			Version        string `json:"version"`
-			Pin            bool   `json:"pin"`
-			AllowDowngrade bool   `json:"allowDowngrade"`
-			AptName        string `json:"aptName"`
-			DnfName        string `json:"dnfName"`
-			PacmanName     string `json:"pacmanName"`
-			ZypperName     string `json:"zypperName"`
+		var p pm.PackageParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Package{Package: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Package{
-				Package: &pm.PackageParams{
-					Name:           params.Name,
-					Version:        params.Version,
-					Pin:            params.Pin,
-					AllowDowngrade: params.AllowDowngrade,
-					AptName:        params.AptName,
-					DnfName:        params.DnfName,
-					PacmanName:     params.PacmanName,
-					ZypperName:     params.ZypperName,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
-		var params struct {
-			URL            string `json:"url"`
-			ChecksumSha256 string `json:"checksumSha256"`
-			InstallPath    string `json:"installPath"`
+		var p pm.AppInstallParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_App{App: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_App{
-				App: &pm.AppInstallParams{
-					Url:            params.URL,
-					ChecksumSha256: params.ChecksumSha256,
-					InstallPath:    params.InstallPath,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_FLATPAK:
-		var params struct {
-			AppId      string `json:"appId"`
-			Remote     string `json:"remote"`
-			SystemWide bool   `json:"systemWide"`
-			Pin        bool   `json:"pin"`
+		var p pm.FlatpakParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Flatpak{Flatpak: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Flatpak{
-				Flatpak: &pm.FlatpakParams{
-					AppId:      params.AppId,
-					Remote:     params.Remote,
-					SystemWide: params.SystemWide,
-					Pin:        params.Pin,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_SHELL:
-		var params struct {
-			Script           string            `json:"script"`
-			Interpreter      string            `json:"interpreter"`
-			RunAsRoot        bool              `json:"runAsRoot"`
-			WorkingDirectory string            `json:"workingDirectory"`
-			Environment      map[string]string `json:"environment"`
+		var p pm.ShellParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Shell{Shell: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Shell{
-				Shell: &pm.ShellParams{
-					Script:           params.Script,
-					Interpreter:      params.Interpreter,
-					RunAsRoot:        params.RunAsRoot,
-					WorkingDirectory: params.WorkingDirectory,
-					Environment:      params.Environment,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var params struct {
-			UnitName     string          `json:"unitName"`
-			UnitContent  string          `json:"unitContent"`
-			Enable       bool            `json:"enable"`
-			DesiredState json.RawMessage `json:"desiredState"`
+		var p pm.SystemdParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Systemd{Systemd: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			var desiredState pm.SystemdUnitState
-			if len(params.DesiredState) > 0 {
-				var stateInt int32
-				if err := json.Unmarshal(params.DesiredState, &stateInt); err == nil {
-					desiredState = pm.SystemdUnitState(stateInt)
-				} else {
-					var stateStr string
-					if err := json.Unmarshal(params.DesiredState, &stateStr); err == nil {
-						if val, ok := pm.SystemdUnitState_value[stateStr]; ok {
-							desiredState = pm.SystemdUnitState(val)
-						}
-					}
-				}
-			}
-			action.Params = &pm.Action_Systemd{
-				Systemd: &pm.SystemdParams{
-					UnitName:     params.UnitName,
-					UnitContent:  params.UnitContent,
-					Enable:       params.Enable,
-					DesiredState: desiredState,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_FILE:
-		var params struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-			Mode    string `json:"mode"`
-			Owner   string `json:"owner"`
-			Group   string `json:"group"`
+		var p pm.FileParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_File{File: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_File{
-				File: &pm.FileParams{
-					Path:    params.Path,
-					Content: params.Content,
-					Mode:    params.Mode,
-					Owner:   params.Owner,
-					Group:   params.Group,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_UPDATE:
-		var params struct {
-			SecurityOnly     bool `json:"securityOnly"`
-			Autoremove       bool `json:"autoremove"`
-			RebootIfRequired bool `json:"rebootIfRequired"`
+		var p pm.UpdateParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Update{Update: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Update{
-				Update: &pm.UpdateParams{
-					SecurityOnly:     params.SecurityOnly,
-					Autoremove:       params.Autoremove,
-					RebootIfRequired: params.RebootIfRequired,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_REPOSITORY:
-		var params struct {
-			Name   string `json:"name"`
-			Apt    *struct {
-				Url          string   `json:"url"`
-				Distribution string   `json:"distribution"`
-				Components   []string `json:"components"`
-				GpgKeyUrl    string   `json:"gpgKeyUrl"`
-				GpgKey       string   `json:"gpgKey"`
-				Trusted      bool     `json:"trusted"`
-				Arch         string   `json:"arch"`
-				Disabled     bool     `json:"disabled"`
-			} `json:"apt"`
-			Dnf *struct {
-				Baseurl        string `json:"baseurl"`
-				Description    string `json:"description"`
-				Enabled        bool   `json:"enabled"`
-				Gpgcheck       bool   `json:"gpgcheck"`
-				Gpgkey         string `json:"gpgkey"`
-				ModuleHotfixes bool   `json:"moduleHotfixes"`
-				Disabled       bool   `json:"disabled"`
-			} `json:"dnf"`
-			Pacman *struct {
-				Server   string `json:"server"`
-				SigLevel string `json:"sigLevel"`
-				Disabled bool   `json:"disabled"`
-			} `json:"pacman"`
-			Zypper *struct {
-				Url         string `json:"url"`
-				Description string `json:"description"`
-				Enabled     bool   `json:"enabled"`
-				Autorefresh bool   `json:"autorefresh"`
-				Gpgcheck    bool   `json:"gpgcheck"`
-				Gpgkey      string `json:"gpgkey"`
-				Type        string `json:"type"`
-				Disabled    bool   `json:"disabled"`
-			} `json:"zypper"`
+		var p pm.RepositoryParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Repository{Repository: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			repoParams := &pm.RepositoryParams{
-				Name: params.Name,
-			}
-			if params.Apt != nil {
-				repoParams.Apt = &pm.AptRepository{
-					Url:          params.Apt.Url,
-					Distribution: params.Apt.Distribution,
-					Components:   params.Apt.Components,
-					GpgKeyUrl:    params.Apt.GpgKeyUrl,
-					GpgKey:       params.Apt.GpgKey,
-					Trusted:      params.Apt.Trusted,
-					Arch:         params.Apt.Arch,
-					Disabled:     params.Apt.Disabled,
-				}
-			}
-			if params.Dnf != nil {
-				repoParams.Dnf = &pm.DnfRepository{
-					Baseurl:        params.Dnf.Baseurl,
-					Description:    params.Dnf.Description,
-					Enabled:        params.Dnf.Enabled,
-					Gpgcheck:       params.Dnf.Gpgcheck,
-					Gpgkey:         params.Dnf.Gpgkey,
-					ModuleHotfixes: params.Dnf.ModuleHotfixes,
-					Disabled:       params.Dnf.Disabled,
-				}
-			}
-			if params.Pacman != nil {
-				repoParams.Pacman = &pm.PacmanRepository{
-					Server:   params.Pacman.Server,
-					SigLevel: params.Pacman.SigLevel,
-					Disabled: params.Pacman.Disabled,
-				}
-			}
-			if params.Zypper != nil {
-				repoParams.Zypper = &pm.ZypperRepository{
-					Url:         params.Zypper.Url,
-					Description: params.Zypper.Description,
-					Enabled:     params.Zypper.Enabled,
-					Autorefresh: params.Zypper.Autorefresh,
-					Gpgcheck:    params.Zypper.Gpgcheck,
-					Gpgkey:      params.Zypper.Gpgkey,
-					Type:        params.Zypper.Type,
-					Disabled:    params.Zypper.Disabled,
-				}
-			}
-			action.Params = &pm.Action_Repository{
-				Repository: repoParams,
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_DIRECTORY:
-		var params struct {
-			Path      string `json:"path"`
-			Owner     string `json:"owner"`
-			Group     string `json:"group"`
-			Mode      string `json:"mode"`
-			Recursive bool   `json:"recursive"`
+		var p pm.DirectoryParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Directory{Directory: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Directory{
-				Directory: &pm.DirectoryParams{
-					Path:      params.Path,
-					Owner:     params.Owner,
-					Group:     params.Group,
-					Mode:      params.Mode,
-					Recursive: params.Recursive,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_USER:
-		var params struct {
-			Username          string   `json:"username"`
-			Uid               int32    `json:"uid"`
-			Gid               int32    `json:"gid"`
-			HomeDir           string   `json:"homeDir"`
-			Shell             string   `json:"shell"`
-			SshAuthorizedKeys []string `json:"sshAuthorizedKeys"`
-			Comment           string   `json:"comment"`
-			SystemUser        bool     `json:"systemUser"`
-			CreateHome        bool     `json:"createHome"`
-			Disabled          bool     `json:"disabled"`
-			PrimaryGroup      string   `json:"primaryGroup"`
+		var p pm.UserParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_User{User: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_User{
-				User: &pm.UserParams{
-					Username:          params.Username,
-					Uid:               params.Uid,
-					Gid:               params.Gid,
-					HomeDir:           params.HomeDir,
-					Shell:             params.Shell,
-					SshAuthorizedKeys: params.SshAuthorizedKeys,
-					Comment:           params.Comment,
-					SystemUser:        params.SystemUser,
-					CreateHome:        params.CreateHome,
-					Disabled:          params.Disabled,
-					PrimaryGroup:      params.PrimaryGroup,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_GROUP:
-		var params struct {
-			Name        string   `json:"name"`
-			Members     []string `json:"members"`
-			Gid         int32    `json:"gid"`
-			SystemGroup bool     `json:"systemGroup"`
+		var p pm.GroupParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Group{Group: &p}
 		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Group{
-				Group: &pm.GroupParams{
-					Name:        params.Name,
-					Members:     params.Members,
-					Gid:         params.Gid,
-					SystemGroup: params.SystemGroup,
-				},
-			}
-		}
-
 	case pm.ActionType_ACTION_TYPE_SSH:
-		var params struct {
-			Username      string   `json:"username"`
-			Users         []string `json:"users"`
-			AllowPubkey   bool     `json:"allowPubkey"`
-			AllowPassword bool     `json:"allowPassword"`
-		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Ssh{
-				Ssh: &pm.SshParams{
-					Username:      params.Username,
-					Users:         params.Users,
-					AllowPubkey:   params.AllowPubkey,
-					AllowPassword: params.AllowPassword,
-				},
-			}
+		var p pm.SshParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Ssh{Ssh: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_SSHD:
-		var params struct {
-			Priority   uint32 `json:"priority"`
-			Directives []struct {
-				Key   string `json:"key"`
-				Value string `json:"value"`
-			} `json:"directives"`
-		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			directives := make([]*pm.SshdDirective, len(params.Directives))
-			for i, d := range params.Directives {
-				directives[i] = &pm.SshdDirective{Key: d.Key, Value: d.Value}
-			}
-			action.Params = &pm.Action_Sshd{
-				Sshd: &pm.SshdParams{
-					Priority:   params.Priority,
-					Directives: directives,
-				},
-			}
+		var p pm.SshdParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Sshd{Sshd: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_SUDO:
-		var params struct {
-			AccessLevel  int32    `json:"accessLevel"`
-			Users        []string `json:"users"`
-			CustomConfig string   `json:"customConfig"`
-		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Sudo{
-				Sudo: &pm.SudoParams{
-					AccessLevel:  pm.SudoAccessLevel(params.AccessLevel),
-					Users:        params.Users,
-					CustomConfig: params.CustomConfig,
-				},
-			}
+		var p pm.SudoParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Sudo{Sudo: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_LPS:
-		var params struct {
-			Usernames            []string `json:"usernames"`
-			PasswordLength       int32    `json:"passwordLength"`
-			Complexity           int32    `json:"complexity"`
-			RotationIntervalDays int32    `json:"rotationIntervalDays"`
-			GracePeriodHours     int32    `json:"gracePeriodHours"`
-		}
-		if err := json.Unmarshal(paramsJSON, &params); err == nil {
-			action.Params = &pm.Action_Lps{
-				Lps: &pm.LpsParams{
-					Usernames:            params.Usernames,
-					PasswordLength:       params.PasswordLength,
-					Complexity:           pm.LpsPasswordComplexity(params.Complexity),
-					RotationIntervalDays: params.RotationIntervalDays,
-					GracePeriodHours:     params.GracePeriodHours,
-				},
-			}
+		var p pm.LpsParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Lps{Lps: &p}
 		}
 	}
 }
