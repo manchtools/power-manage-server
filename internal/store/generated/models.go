@@ -155,6 +155,18 @@ type ExecutionsProjection struct {
 	Changed           bool               `json:"changed"`
 }
 
+type LpsPasswordsProjection struct {
+	ID             pgtype.UUID        `json:"id"`
+	DeviceID       string             `json:"device_id"`
+	ActionID       string             `json:"action_id"`
+	Username       string             `json:"username"`
+	Password       string             `json:"password"`
+	RotatedAt      pgtype.Timestamptz `json:"rotated_at"`
+	RotationReason string             `json:"rotation_reason"`
+	IsCurrent      bool               `json:"is_current"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type ProjectionError struct {
 	ID           int64              `json:"id"`
 	EventID      pgtype.UUID        `json:"event_id"`

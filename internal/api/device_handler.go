@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"connectrpc.com/connect"
@@ -426,4 +427,79 @@ func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
 	}
 
 	return device
+}
+
+// GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
+func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	// Get current passwords
+	current, err := h.store.Queries().GetCurrentLpsPasswords(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, fmt.Errorf("get current LPS passwords: %w", err)
+	}
+
+	// Get password history
+	history, err := h.store.Queries().GetLpsPasswordHistory(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, fmt.Errorf("get LPS password history: %w", err)
+	}
+
+	// Convert to proto
+	resp := &pm.GetDeviceLpsPasswordsResponse{}
+
+	for _, p := range current {
+		// Look up action name
+		actionName := ""
+		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
+		if err == nil {
+			actionName = action.Name
+		}
+
+		// Look up device hostname
+		deviceHostname := ""
+		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: p.DeviceID})
+		if err == nil {
+			deviceHostname = device.Hostname
+		}
+
+		entry := &pm.LpsPassword{
+			DeviceId:       p.DeviceID,
+			DeviceHostname: deviceHostname,
+			ActionId:       p.ActionID,
+			ActionName:     actionName,
+			Username:       p.Username,
+			Password:       p.Password,
+			RotationReason: p.RotationReason,
+		}
+		if p.RotatedAt.Valid {
+			entry.RotatedAt = timestamppb.New(p.RotatedAt.Time)
+		}
+		resp.Current = append(resp.Current, entry)
+	}
+
+	for _, p := range history {
+		actionName := ""
+		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
+		if err == nil {
+			actionName = action.Name
+		}
+
+		entry := &pm.LpsPassword{
+			DeviceId:       p.DeviceID,
+			ActionId:       p.ActionID,
+			ActionName:     actionName,
+			Username:       p.Username,
+			Password:       p.Password,
+			RotationReason: p.RotationReason,
+		}
+		if p.RotatedAt.Valid {
+			entry.RotatedAt = timestamppb.New(p.RotatedAt.Time)
+		}
+		resp.History = append(resp.History, entry)
+	}
+
+	return connect.NewResponse(resp), nil
 }

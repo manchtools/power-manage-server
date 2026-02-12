@@ -382,3 +382,8 @@ func (s *ControlService) ListAvailableActions(ctx context.Context, req *connect.
 func (s *ControlService) ListAuditEvents(ctx context.Context, req *connect.Request[pm.ListAuditEventsRequest]) (*connect.Response[pm.ListAuditEventsResponse], error) {
 	return s.audit.ListAuditEvents(ctx, req)
 }
+
+// LPS (Linux Password Solution)
+func (s *ControlService) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
+	return s.device.GetDeviceLpsPasswords(ctx, req)
+}

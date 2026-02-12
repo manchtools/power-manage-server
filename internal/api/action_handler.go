@@ -92,6 +92,18 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		if p.Ssh != nil {
 			return Validate(p.Ssh)
 		}
+	case *pm.CreateActionRequest_Sshd:
+		if p.Sshd != nil {
+			return Validate(p.Sshd)
+		}
+	case *pm.CreateActionRequest_Sudo:
+		if p.Sudo != nil {
+			return Validate(p.Sudo)
+		}
+	case *pm.CreateActionRequest_Lps:
+		if p.Lps != nil {
+			return Validate(p.Lps)
+		}
 	}
 	return nil
 }
@@ -143,6 +155,18 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 		if p.Ssh != nil {
 			return Validate(p.Ssh)
 		}
+	case *pm.UpdateActionParamsRequest_Sshd:
+		if p.Sshd != nil {
+			return Validate(p.Sshd)
+		}
+	case *pm.UpdateActionParamsRequest_Sudo:
+		if p.Sudo != nil {
+			return Validate(p.Sudo)
+		}
+	case *pm.UpdateActionParamsRequest_Lps:
+		if p.Lps != nil {
+			return Validate(p.Lps)
+		}
 	}
 	return nil
 }
@@ -165,6 +189,15 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	params, err := h.serializeCreateActionParams(req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Auto-assign priority for SSHD actions based on creation order
+	if req.Msg.Type == pm.ActionType_ACTION_TYPE_SSHD {
+		count, countErr := h.store.Queries().CountActions(ctx, int32(pm.ActionType_ACTION_TYPE_SSHD))
+		if countErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to count SSHD actions: %w", countErr))
+		}
+		params["priority"] = count
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -367,7 +400,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	_, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	existing, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
@@ -378,6 +411,16 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	params, err := h.serializeUpdateActionParams(req.Msg)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	// Preserve server-assigned priority for SSHD actions
+	if existing.ActionType == int32(pm.ActionType_ACTION_TYPE_SSHD) && existing.Params != nil {
+		var existingParams map[string]any
+		if json.Unmarshal(existing.Params, &existingParams) == nil {
+			if p, ok := existingParams["priority"]; ok {
+				params["priority"] = p
+			}
+		}
 	}
 
 	eventData := map[string]any{
@@ -1016,6 +1059,12 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.User)
 	case *pm.CreateActionRequest_Ssh:
 		data, err = protojson.Marshal(p.Ssh)
+	case *pm.CreateActionRequest_Sshd:
+		data, err = protojson.Marshal(p.Sshd)
+	case *pm.CreateActionRequest_Sudo:
+		data, err = protojson.Marshal(p.Sudo)
+	case *pm.CreateActionRequest_Lps:
+		data, err = protojson.Marshal(p.Lps)
 	default:
 		return params, nil
 	}
@@ -1059,6 +1108,12 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.User)
 	case *pm.UpdateActionParamsRequest_Ssh:
 		data, err = protojson.Marshal(p.Ssh)
+	case *pm.UpdateActionParamsRequest_Sshd:
+		data, err = protojson.Marshal(p.Sshd)
+	case *pm.UpdateActionParamsRequest_Sudo:
+		data, err = protojson.Marshal(p.Sudo)
+	case *pm.UpdateActionParamsRequest_Lps:
+		data, err = protojson.Marshal(p.Lps)
 	default:
 		return params, nil
 	}
@@ -1115,6 +1170,15 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 		json.Unmarshal(data, &params)
 	case *pm.Action_Ssh:
 		data, _ := protojson.Marshal(p.Ssh)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Sshd:
+		data, _ := protojson.Marshal(p.Sshd)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Sudo:
+		data, _ := protojson.Marshal(p.Sudo)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Lps:
+		data, _ := protojson.Marshal(p.Lps)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1197,6 +1261,21 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.SshParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Ssh{Ssh: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		var p pm.SshdParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Sshd{Sshd: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_SUDO:
+		var p pm.SudoParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Sudo{Sudo: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_LPS:
+		var p pm.LpsParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Lps{Lps: &p}
 		}
 	}
 }

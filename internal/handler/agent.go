@@ -431,6 +431,28 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			return fmt.Errorf("unknown execution status: %v", result.Status)
 		}
 
+		// Check for LPS password metadata and store separately
+		if result.Metadata != nil {
+			if pw, ok := result.Metadata["lps.password"]; ok && pw != "" {
+				lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+				h.store.AppendEvent(ctx, store.Event{
+					StreamType: "lps_password",
+					StreamID:   lpsStreamID,
+					EventType:  "LpsPasswordRotated",
+					Data: map[string]any{
+						"device_id":       deviceID,
+						"action_id":       actionID,
+						"username":        result.Metadata["lps.username"],
+						"password":        pw,
+						"rotated_at":      result.Metadata["lps.rotated_at"],
+						"rotation_reason": result.Metadata["lps.reason"],
+					},
+					ActorType: "device",
+					ActorID:   deviceID,
+				})
+			}
+		}
+
 		return h.store.AppendEvent(ctx, store.Event{
 			StreamType: "execution",
 			StreamID:   executionID,
@@ -883,20 +905,72 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 
 	case pm.ActionType_ACTION_TYPE_SSH:
 		var params struct {
-			Username       string   `json:"username"`
-			AllowPubkey    bool     `json:"allowPubkey"`
-			AllowPassword  bool     `json:"allowPassword"`
-			AuthorizedKeys []string `json:"authorizedKeys"`
-			HomeDir        string   `json:"homeDir"`
+			Username      string   `json:"username"`
+			Users         []string `json:"users"`
+			AllowPubkey   bool     `json:"allowPubkey"`
+			AllowPassword bool     `json:"allowPassword"`
 		}
 		if err := json.Unmarshal(paramsJSON, &params); err == nil {
 			action.Params = &pm.Action_Ssh{
 				Ssh: &pm.SshParams{
-					Username:       params.Username,
-					AllowPubkey:    params.AllowPubkey,
-					AllowPassword:  params.AllowPassword,
-					AuthorizedKeys: params.AuthorizedKeys,
-					HomeDir:        params.HomeDir,
+					Username:      params.Username,
+					Users:         params.Users,
+					AllowPubkey:   params.AllowPubkey,
+					AllowPassword: params.AllowPassword,
+				},
+			}
+		}
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		var params struct {
+			Priority   uint32 `json:"priority"`
+			Directives []struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			} `json:"directives"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err == nil {
+			directives := make([]*pm.SshdDirective, len(params.Directives))
+			for i, d := range params.Directives {
+				directives[i] = &pm.SshdDirective{Key: d.Key, Value: d.Value}
+			}
+			action.Params = &pm.Action_Sshd{
+				Sshd: &pm.SshdParams{
+					Priority:   params.Priority,
+					Directives: directives,
+				},
+			}
+		}
+	case pm.ActionType_ACTION_TYPE_SUDO:
+		var params struct {
+			AccessLevel  int32    `json:"accessLevel"`
+			Users        []string `json:"users"`
+			CustomConfig string   `json:"customConfig"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err == nil {
+			action.Params = &pm.Action_Sudo{
+				Sudo: &pm.SudoParams{
+					AccessLevel:  pm.SudoAccessLevel(params.AccessLevel),
+					Users:        params.Users,
+					CustomConfig: params.CustomConfig,
+				},
+			}
+		}
+	case pm.ActionType_ACTION_TYPE_LPS:
+		var params struct {
+			Username             string `json:"username"`
+			PasswordLength       int32  `json:"passwordLength"`
+			Complexity           int32  `json:"complexity"`
+			RotationIntervalDays int32  `json:"rotationIntervalDays"`
+			GracePeriodHours     int32  `json:"gracePeriodHours"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err == nil {
+			action.Params = &pm.Action_Lps{
+				Lps: &pm.LpsParams{
+					Username:             params.Username,
+					PasswordLength:       params.PasswordLength,
+					Complexity:           pm.LpsPasswordComplexity(params.Complexity),
+					RotationIntervalDays: params.RotationIntervalDays,
+					GracePeriodHours:     params.GracePeriodHours,
 				},
 			}
 		}
