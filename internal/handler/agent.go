@@ -431,25 +431,35 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			return fmt.Errorf("unknown execution status: %v", result.Status)
 		}
 
-		// Check for LPS password metadata and store separately
+		// Check for LPS password rotations and store each separately
 		if result.Metadata != nil {
-			if pw, ok := result.Metadata["lps.password"]; ok && pw != "" {
-				lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-				h.store.AppendEvent(ctx, store.Event{
-					StreamType: "lps_password",
-					StreamID:   lpsStreamID,
-					EventType:  "LpsPasswordRotated",
-					Data: map[string]any{
-						"device_id":       deviceID,
-						"action_id":       actionID,
-						"username":        result.Metadata["lps.username"],
-						"password":        pw,
-						"rotated_at":      result.Metadata["lps.rotated_at"],
-						"rotation_reason": result.Metadata["lps.reason"],
-					},
-					ActorType: "device",
-					ActorID:   deviceID,
-				})
+			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
+				var rotations []struct {
+					Username  string `json:"username"`
+					Password  string `json:"password"`
+					RotatedAt string `json:"rotated_at"`
+					Reason    string `json:"reason"`
+				}
+				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil {
+					for _, r := range rotations {
+						lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+						h.store.AppendEvent(ctx, store.Event{
+							StreamType: "lps_password",
+							StreamID:   lpsStreamID,
+							EventType:  "LpsPasswordRotated",
+							Data: map[string]any{
+								"device_id":       deviceID,
+								"action_id":       actionID,
+								"username":        r.Username,
+								"password":        r.Password,
+								"rotated_at":      r.RotatedAt,
+								"rotation_reason": r.Reason,
+							},
+							ActorType: "device",
+							ActorID:   deviceID,
+						})
+					}
+				}
 			}
 		}
 
@@ -957,16 +967,16 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 		}
 	case pm.ActionType_ACTION_TYPE_LPS:
 		var params struct {
-			Username             string `json:"username"`
-			PasswordLength       int32  `json:"passwordLength"`
-			Complexity           int32  `json:"complexity"`
-			RotationIntervalDays int32  `json:"rotationIntervalDays"`
-			GracePeriodHours     int32  `json:"gracePeriodHours"`
+			Usernames            []string `json:"usernames"`
+			PasswordLength       int32    `json:"passwordLength"`
+			Complexity           int32    `json:"complexity"`
+			RotationIntervalDays int32    `json:"rotationIntervalDays"`
+			GracePeriodHours     int32    `json:"gracePeriodHours"`
 		}
 		if err := json.Unmarshal(paramsJSON, &params); err == nil {
 			action.Params = &pm.Action_Lps{
 				Lps: &pm.LpsParams{
-					Username:             params.Username,
+					Usernames:            params.Usernames,
 					PasswordLength:       params.PasswordLength,
 					Complexity:           pm.LpsPasswordComplexity(params.Complexity),
 					RotationIntervalDays: params.RotationIntervalDays,

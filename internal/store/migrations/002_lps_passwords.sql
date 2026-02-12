@@ -15,17 +15,19 @@ CREATE TABLE lps_passwords_projection (
 
 CREATE INDEX idx_lps_passwords_device ON lps_passwords_projection(device_id, is_current);
 CREATE INDEX idx_lps_passwords_action_device ON lps_passwords_projection(action_id, device_id);
+CREATE INDEX idx_lps_passwords_username ON lps_passwords_projection(device_id, action_id, username, is_current);
 
 -- Projector function for LpsPasswordRotated events
 CREATE OR REPLACE FUNCTION project_lps_password_event(event events) RETURNS void AS $$
 BEGIN
     CASE event.event_type
         WHEN 'LpsPasswordRotated' THEN
-            -- Mark previous passwords as not current for this device+action
+            -- Mark previous passwords as not current for this device+action+username
             UPDATE lps_passwords_projection
             SET is_current = FALSE
             WHERE device_id = event.data->>'device_id'
-              AND action_id = event.data->>'action_id';
+              AND action_id = event.data->>'action_id'
+              AND username = event.data->>'username';
 
             -- Insert new password
             INSERT INTO lps_passwords_projection
@@ -39,16 +41,18 @@ BEGIN
                 COALESCE(event.data->>'rotation_reason', 'scheduled')
             );
 
-            -- Keep only last 3 passwords per device+action
+            -- Keep only last 3 passwords per device+action+username
             DELETE FROM lps_passwords_projection
             WHERE id NOT IN (
                 SELECT id FROM lps_passwords_projection
                 WHERE device_id = event.data->>'device_id'
                   AND action_id = event.data->>'action_id'
+                  AND username = event.data->>'username'
                 ORDER BY rotated_at DESC LIMIT 3
             )
             AND device_id = event.data->>'device_id'
-            AND action_id = event.data->>'action_id';
+            AND action_id = event.data->>'action_id'
+            AND username = event.data->>'username';
         ELSE
             NULL;
     END CASE;
