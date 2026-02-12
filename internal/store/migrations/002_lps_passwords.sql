@@ -17,6 +17,7 @@ CREATE INDEX idx_lps_passwords_device ON lps_passwords_projection(device_id, is_
 CREATE INDEX idx_lps_passwords_action_device ON lps_passwords_projection(action_id, device_id);
 CREATE INDEX idx_lps_passwords_username ON lps_passwords_projection(device_id, action_id, username, is_current);
 
+-- +goose StatementBegin
 -- Projector function for LpsPasswordRotated events
 CREATE OR REPLACE FUNCTION project_lps_password_event(event events) RETURNS void AS $$
 BEGIN
@@ -58,7 +59,9 @@ BEGIN
     END CASE;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
+-- +goose StatementBegin
 -- Update master projector to include lps_password stream type
 CREATE OR REPLACE FUNCTION project_event() RETURNS trigger AS $$
 BEGIN
@@ -165,6 +168,7 @@ BEGIN
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 -- +goose Down
 DROP TABLE IF EXISTS lps_passwords_projection;
