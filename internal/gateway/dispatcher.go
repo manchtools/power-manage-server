@@ -428,7 +428,6 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			Gid               int32    `json:"gid"`
 			HomeDir           string   `json:"homeDir"`
 			Shell             string   `json:"shell"`
-			Groups            []string `json:"groups"`
 			SshAuthorizedKeys []string `json:"sshAuthorizedKeys"`
 			Comment           string   `json:"comment"`
 			SystemUser        bool     `json:"systemUser"`
@@ -447,7 +446,6 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 				Gid:               params.Gid,
 				HomeDir:           params.HomeDir,
 				Shell:             params.Shell,
-				Groups:            params.Groups,
 				SshAuthorizedKeys: params.SshAuthorizedKeys,
 				Comment:           params.Comment,
 				SystemUser:        params.SystemUser,

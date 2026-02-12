@@ -383,7 +383,7 @@ func (s *ControlService) ListAuditEvents(ctx context.Context, req *connect.Reque
 	return s.audit.ListAuditEvents(ctx, req)
 }
 
-// LPS (Linux Password Solution)
+// LPS (Local Password Solution)
 func (s *ControlService) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
 	return s.device.GetDeviceLpsPasswords(ctx, req)
 }

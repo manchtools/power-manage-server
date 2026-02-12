@@ -886,7 +886,6 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 			Gid               int32    `json:"gid"`
 			HomeDir           string   `json:"homeDir"`
 			Shell             string   `json:"shell"`
-			Groups            []string `json:"groups"`
 			SshAuthorizedKeys []string `json:"sshAuthorizedKeys"`
 			Comment           string   `json:"comment"`
 			SystemUser        bool     `json:"systemUser"`
@@ -902,13 +901,30 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 					Gid:               params.Gid,
 					HomeDir:           params.HomeDir,
 					Shell:             params.Shell,
-					Groups:            params.Groups,
 					SshAuthorizedKeys: params.SshAuthorizedKeys,
 					Comment:           params.Comment,
 					SystemUser:        params.SystemUser,
 					CreateHome:        params.CreateHome,
 					Disabled:          params.Disabled,
 					PrimaryGroup:      params.PrimaryGroup,
+				},
+			}
+		}
+
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		var params struct {
+			Name        string   `json:"name"`
+			Members     []string `json:"members"`
+			Gid         int32    `json:"gid"`
+			SystemGroup bool     `json:"systemGroup"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err == nil {
+			action.Params = &pm.Action_Group{
+				Group: &pm.GroupParams{
+					Name:        params.Name,
+					Members:     params.Members,
+					Gid:         params.Gid,
+					SystemGroup: params.SystemGroup,
 				},
 			}
 		}
