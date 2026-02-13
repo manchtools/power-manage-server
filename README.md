@@ -401,7 +401,7 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 | `internal/api/auth_handler_test.go` | 6 | Login (success, wrong password, nonexistent user, disabled user, cookie setting), GetCurrentUser |
 | `internal/api/user_handler_test.go` | 12 | CreateUser (success, role required, unauthenticated), GetUser (found, not found), ListUsers pagination, UpdateEmail, UpdatePassword (self, wrong current, admin), UpdateRole, SetUserDisabled, DeleteUser |
 | `internal/api/device_handler_test.go` | 11 | ListDevices (empty, with devices), GetDevice (found, not found), SetDeviceLabel, RemoveDeviceLabel, DeleteDevice, AssignDevice, UnassignDevice, SetDeviceSyncInterval |
-| `internal/api/token_handler_test.go` | 7 | CreateToken (admin, user one-time), GetToken (value hidden), ListTokens, RenameToken (SKIPPED — projection bug), SetTokenDisabled, DeleteToken |
+| `internal/api/token_handler_test.go` | 7 | CreateToken (admin, user one-time), GetToken (value hidden), ListTokens, RenameToken, SetTokenDisabled, DeleteToken |
 | `internal/api/action_handler_test.go` | 12 | CreateAction (shell, default timeout), GetAction (found, not found), ListActions, RenameAction, DeleteAction, DispatchAction (by ID, device not found), ListExecutions, GetExecution, DispatchInstantAction |
 | `internal/api/action_set_handler_test.go` | 8 | CreateActionSet, GetActionSet, ListActionSets, RenameActionSet, DeleteActionSet, AddActionToSet, RemoveActionFromSet, ReorderActionInSet |
 | `internal/api/definition_handler_test.go` | 6 | CreateDefinition, GetDefinition, ListDefinitions, RenameDefinition, DeleteDefinition, AddActionSetToDefinition |
@@ -414,10 +414,6 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/handler/agent_test.go` | ~11 | SyncActions (empty, with assigned actions, missing device ID), handleAgentMessage (heartbeat, action result success/failed, agent-scheduled action, security alert, output chunk), DeviceIDFromContext (present, absent) |
-
-### Known Issues
-
-- **TestRenameToken** is skipped — the `TokenRenamed` event type is not handled by the PostgreSQL projection trigger, so the name never updates in the read model. This is an application bug, not a test bug.
 
 ## License
 

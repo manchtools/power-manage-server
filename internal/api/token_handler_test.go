@@ -81,8 +81,6 @@ func TestListTokens(t *testing.T) {
 }
 
 func TestRenameToken(t *testing.T) {
-	t.Skip("TokenRenamed event not handled by projection trigger — application bug")
-
 	st := testutil.SetupPostgres(t)
 	h := api.NewTokenHandler(st)
 
