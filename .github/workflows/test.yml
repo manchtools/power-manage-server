@@ -1,0 +1,66 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'cmd/**'
+      - '.github/workflows/test.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'internal/**'
+      - 'cmd/**'
+      - '.github/workflows/test.yml'
+
+jobs:
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+        with:
+          repository: MANCHTOOLS/power-manage-sdk
+          path: _sdk
+
+      - name: Rewrite SDK replace directive
+        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run unit tests
+        run: go test -count=1 ./internal/auth/... ./internal/connection/...
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+        with:
+          repository: MANCHTOOLS/power-manage-sdk
+          path: _sdk
+
+      - name: Rewrite SDK replace directive
+        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run integration tests
+        run: go test -count=1 -timeout 20m ./internal/store/... ./internal/api/... ./internal/handler/...
