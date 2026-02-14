@@ -128,21 +128,36 @@ func main() {
 		}
 	}()
 
-	// Start periodic evaluation of queued dynamic groups
+	// Start periodic evaluation of queued dynamic groups.
+	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
+	evaluateDynamicGroups := func() {
+		for {
+			count, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
+			if err != nil {
+				logger.Error("failed to evaluate queued dynamic groups", "error", err)
+				return
+			}
+			if count > 0 {
+				logger.Info("evaluated queued dynamic groups", "count", count)
+			}
+			if count < 1000 {
+				return // queue is drained
+			}
+		}
+	}
+
 	if cfg.DynamicGroupEvalInterval > 0 {
 		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
 		go func() {
+			// Run immediately on startup to process any groups queued during downtime
+			evaluateDynamicGroups()
+
 			ticker := time.NewTicker(cfg.DynamicGroupEvalInterval)
 			defer ticker.Stop()
 			for {
 				select {
 				case <-ticker.C:
-					count, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
-					if err != nil {
-						logger.Error("failed to evaluate queued dynamic groups", "error", err)
-					} else if count > 0 {
-						logger.Info("evaluated queued dynamic groups", "count", count)
-					}
+					evaluateDynamicGroups()
 				case <-ctx.Done():
 					return
 				}
