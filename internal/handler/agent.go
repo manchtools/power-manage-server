@@ -611,6 +611,41 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"success", result.Success,
 			"error", result.Error,
 		)
+
+		// Emit event so the projector updates revocation_status on the key.
+		luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+		if result.Success {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "luks_key",
+				StreamID:   luksStreamID,
+				EventType:  "LuksDeviceKeyRevoked",
+				Data: map[string]any{
+					"device_id":  deviceID,
+					"action_id":  result.ActionId,
+					"revoked_at": time.Now().Format(time.RFC3339),
+				},
+				ActorType: "device",
+				ActorID:   deviceID,
+			}); err != nil {
+				h.logger.Error("failed to emit LuksDeviceKeyRevoked event", "error", err)
+			}
+		} else {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "luks_key",
+				StreamID:   luksStreamID,
+				EventType:  "LuksDeviceKeyRevocationFailed",
+				Data: map[string]any{
+					"device_id": deviceID,
+					"action_id": result.ActionId,
+					"error":     result.Error,
+					"failed_at": time.Now().Format(time.RFC3339),
+				},
+				ActorType: "device",
+				ActorID:   deviceID,
+			}); err != nil {
+				h.logger.Error("failed to emit LuksDeviceKeyRevocationFailed event", "error", err)
+			}
+		}
 		return nil
 
 	default:

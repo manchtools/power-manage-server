@@ -11,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -550,6 +551,15 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		if k.RotatedAt.Valid {
 			entry.RotatedAt = timestamppb.New(k.RotatedAt.Time)
 		}
+		if k.RevocationStatus != nil {
+			entry.RevocationStatus = *k.RevocationStatus
+		}
+		if k.RevocationError != nil {
+			entry.RevocationError = *k.RevocationError
+		}
+		if k.RevocationAt.Valid {
+			entry.RevocationAt = timestamppb.New(k.RevocationAt.Time)
+		}
 		resp.Current = append(resp.Current, entry)
 	}
 
@@ -647,7 +657,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 
 	uri := fmt.Sprintf("power-manage://luks/set-passphrase?token=%s", token)
-	cliCmd := fmt.Sprintf("power-manage-agent luks set-passphrase --token %s", token)
+	cliCmd := fmt.Sprintf("sudo power-manage-agent luks set-passphrase --token %s", token)
 
 	return connect.NewResponse(&pm.CreateLuksTokenResponse{
 		Token:      token,
@@ -669,6 +679,28 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Record dispatched event so the UI can show "dispatched" status
+	userCtx, _ := auth.UserFromContext(ctx)
+	actorID := ""
+	if userCtx != nil {
+		actorID = userCtx.ID
+	}
+	luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "luks_key",
+		StreamID:   luksStreamID,
+		EventType:  "LuksDeviceKeyRevocationDispatched",
+		Data: map[string]any{
+			"device_id":     req.Msg.DeviceId,
+			"action_id":     req.Msg.ActionId,
+			"dispatched_at": time.Now().Format(time.RFC3339),
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to record revocation event: %w", err))
 	}
 
 	// Send notification to gateway to dispatch to agent

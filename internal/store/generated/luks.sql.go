@@ -56,7 +56,7 @@ func (q *Queries) DeleteLuksKeysByAction(ctx context.Context, actionID string) e
 }
 
 const getCurrentLuksKeyForAction = `-- name: GetCurrentLuksKeyForAction :one
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
 WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE
 ORDER BY rotated_at DESC
 LIMIT 1
@@ -80,12 +80,15 @@ func (q *Queries) GetCurrentLuksKeyForAction(ctx context.Context, arg GetCurrent
 		&i.RotationReason,
 		&i.IsCurrent,
 		&i.CreatedAt,
+		&i.RevocationStatus,
+		&i.RevocationError,
+		&i.RevocationAt,
 	)
 	return i, err
 }
 
 const getCurrentLuksKeys = `-- name: GetCurrentLuksKeys :many
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
 WHERE device_id = $1 AND is_current = TRUE
 ORDER BY rotated_at DESC
 `
@@ -109,6 +112,9 @@ func (q *Queries) GetCurrentLuksKeys(ctx context.Context, deviceID string) ([]Lu
 			&i.RotationReason,
 			&i.IsCurrent,
 			&i.CreatedAt,
+			&i.RevocationStatus,
+			&i.RevocationError,
+			&i.RevocationAt,
 		); err != nil {
 			return nil, err
 		}
@@ -121,7 +127,7 @@ func (q *Queries) GetCurrentLuksKeys(ctx context.Context, deviceID string) ([]Lu
 }
 
 const getLuksKeyHistory = `-- name: GetLuksKeyHistory :many
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
 WHERE device_id = $1 AND is_current = FALSE
 ORDER BY rotated_at DESC
 LIMIT 20
@@ -146,6 +152,9 @@ func (q *Queries) GetLuksKeyHistory(ctx context.Context, deviceID string) ([]Luk
 			&i.RotationReason,
 			&i.IsCurrent,
 			&i.CreatedAt,
+			&i.RevocationStatus,
+			&i.RevocationError,
+			&i.RevocationAt,
 		); err != nil {
 			return nil, err
 		}
