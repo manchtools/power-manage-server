@@ -387,3 +387,16 @@ func (s *ControlService) ListAuditEvents(ctx context.Context, req *connect.Reque
 func (s *ControlService) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
 	return s.device.GetDeviceLpsPasswords(ctx, req)
 }
+
+// LUKS (Disk Encryption)
+func (s *ControlService) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pm.GetDeviceLuksKeysRequest]) (*connect.Response[pm.GetDeviceLuksKeysResponse], error) {
+	return s.device.GetDeviceLuksKeys(ctx, req)
+}
+
+func (s *ControlService) CreateLuksToken(ctx context.Context, req *connect.Request[pm.CreateLuksTokenRequest]) (*connect.Response[pm.CreateLuksTokenResponse], error) {
+	return s.device.CreateLuksToken(ctx, req)
+}
+
+func (s *ControlService) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
+	return s.device.RevokeLuksDeviceKey(ctx, req)
+}

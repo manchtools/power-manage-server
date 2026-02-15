@@ -104,6 +104,10 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		if p.Lps != nil {
 			return Validate(p.Lps)
 		}
+	case *pm.CreateActionRequest_Luks:
+		if p.Luks != nil {
+			return Validate(p.Luks)
+		}
 	}
 	return nil
 }
@@ -166,6 +170,10 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 	case *pm.UpdateActionParamsRequest_Lps:
 		if p.Lps != nil {
 			return Validate(p.Lps)
+		}
+	case *pm.UpdateActionParamsRequest_Luks:
+		if p.Luks != nil {
+			return Validate(p.Luks)
 		}
 	}
 	return nil
@@ -1065,6 +1073,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Sudo)
 	case *pm.CreateActionRequest_Lps:
 		data, err = protojson.Marshal(p.Lps)
+	case *pm.CreateActionRequest_Luks:
+		data, err = protojson.Marshal(p.Luks)
 	default:
 		return params, nil
 	}
@@ -1114,6 +1124,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Sudo)
 	case *pm.UpdateActionParamsRequest_Lps:
 		data, err = protojson.Marshal(p.Lps)
+	case *pm.UpdateActionParamsRequest_Luks:
+		data, err = protojson.Marshal(p.Luks)
 	default:
 		return params, nil
 	}
@@ -1179,6 +1191,9 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 		json.Unmarshal(data, &params)
 	case *pm.Action_Lps:
 		data, _ := protojson.Marshal(p.Lps)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Luks:
+		data, _ := protojson.Marshal(p.Luks)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1276,6 +1291,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.LpsParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Lps{Lps: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_LUKS:
+		var p pm.LuksParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Luks{Luks: &p}
 		}
 	}
 }

@@ -537,9 +537,120 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			ActorID:   deviceID,
 		})
 
+	case *pm.AgentMessage_GetLuksKey:
+		// Look up the current LUKS key for this device+action
+		key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
+			DeviceID: deviceID,
+			ActionID: p.GetLuksKey.ActionId,
+		})
+		if err != nil {
+			// Send error response
+			return h.manager.Send(deviceID, &pm.ServerMessage{
+				Id: msg.Id,
+				Payload: &pm.ServerMessage_Error{
+					Error: &pm.Error{
+						Code:    connect.CodeNotFound.String(),
+						Message: "no LUKS key found for this action",
+					},
+				},
+			})
+		}
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msg.Id,
+			Payload: &pm.ServerMessage_GetLuksKey{
+				GetLuksKey: &pm.GetLuksKeyResponse{
+					Passphrase: key.Passphrase,
+				},
+			},
+		})
+
+	case *pm.AgentMessage_StoreLuksKey:
+		req := p.StoreLuksKey
+		// Store the LUKS key as an event
+		luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "luks_key",
+			StreamID:   luksStreamID,
+			EventType:  "LuksKeyRotated",
+			Data: map[string]any{
+				"device_id":       deviceID,
+				"action_id":       req.ActionId,
+				"device_path":     req.DevicePath,
+				"passphrase":      req.Passphrase,
+				"rotated_at":      time.Now().Format(time.RFC3339),
+				"rotation_reason": req.RotationReason,
+			},
+			ActorType: "device",
+			ActorID:   deviceID,
+		}); err != nil {
+			return h.manager.Send(deviceID, &pm.ServerMessage{
+				Id: msg.Id,
+				Payload: &pm.ServerMessage_Error{
+					Error: &pm.Error{
+						Code:    connect.CodeInternal.String(),
+						Message: fmt.Sprintf("failed to store LUKS key: %v", err),
+					},
+				},
+			})
+		}
+		// Confirm receipt — agent waits for this before removing the old key
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msg.Id,
+			Payload: &pm.ServerMessage_StoreLuksKey{
+				StoreLuksKey: &pm.StoreLuksKeyResponse{
+					Success: true,
+				},
+			},
+		})
+
+	case *pm.AgentMessage_RevokeLuksDeviceKeyResult:
+		result := p.RevokeLuksDeviceKeyResult
+		h.logger.Info("received LUKS device key revocation result",
+			"device_id", deviceID,
+			"action_id", result.ActionId,
+			"success", result.Success,
+			"error", result.Error,
+		)
+		return nil
+
 	default:
 		return fmt.Errorf("unknown message type: %T", msg.Payload)
 	}
+}
+
+// ValidateLuksToken validates and consumes a one-time LUKS token.
+// Called by the agent CLI subcommand (not via the stream).
+func (h *AgentHandler) ValidateLuksToken(ctx context.Context, req *connect.Request[pm.ValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
+	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and token are required"))
+	}
+
+	// Validate and consume the token atomically
+	token, err := h.store.Queries().ValidateAndConsumeLuksToken(ctx, db.ValidateAndConsumeLuksTokenParams{
+		Token:    req.Msg.Token,
+		DeviceID: req.Msg.DeviceId,
+	})
+	if err != nil {
+		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or has expired"))
+	}
+
+	// Look up the device_path from the stored key data
+	devicePath := ""
+	key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
+		DeviceID: req.Msg.DeviceId,
+		ActionID: token.ActionID,
+	})
+	if err == nil {
+		devicePath = key.DevicePath
+	}
+
+	return connect.NewResponse(&pm.ValidateLuksTokenResponse{
+		ActionId:   token.ActionID,
+		DevicePath: devicePath,
+		MinLength:  token.MinLength,
+		Complexity: pm.LpsPasswordComplexity(token.Complexity),
+	}), nil
 }
 
 // SyncActions returns all actions currently assigned to a device.
@@ -699,6 +810,11 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 		var p pm.LpsParams
 		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Lps{Lps: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_LUKS:
+		var p pm.LuksParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_Luks{Luks: &p}
 		}
 	}
 }

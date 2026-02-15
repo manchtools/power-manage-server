@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -502,4 +505,181 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	}
 
 	return connect.NewResponse(resp), nil
+}
+
+// GetDeviceLuksKeys returns current and historical LUKS keys for a device.
+func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pm.GetDeviceLuksKeysRequest]) (*connect.Response[pm.GetDeviceLuksKeysResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	current, err := h.store.Queries().GetCurrentLuksKeys(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, fmt.Errorf("get current LUKS keys: %w", err)
+	}
+
+	history, err := h.store.Queries().GetLuksKeyHistory(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, fmt.Errorf("get LUKS key history: %w", err)
+	}
+
+	resp := &pm.GetDeviceLuksKeysResponse{}
+
+	for _, k := range current {
+		actionName := ""
+		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
+		if err == nil {
+			actionName = action.Name
+		}
+
+		deviceHostname := ""
+		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: k.DeviceID})
+		if err == nil {
+			deviceHostname = device.Hostname
+		}
+
+		entry := &pm.LuksKey{
+			DeviceId:       k.DeviceID,
+			DeviceHostname: deviceHostname,
+			ActionId:       k.ActionID,
+			ActionName:     actionName,
+			DevicePath:     k.DevicePath,
+			Passphrase:     k.Passphrase,
+			RotationReason: k.RotationReason,
+		}
+		if k.RotatedAt.Valid {
+			entry.RotatedAt = timestamppb.New(k.RotatedAt.Time)
+		}
+		resp.Current = append(resp.Current, entry)
+	}
+
+	for _, k := range history {
+		actionName := ""
+		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
+		if err == nil {
+			actionName = action.Name
+		}
+
+		entry := &pm.LuksKey{
+			DeviceId:       k.DeviceID,
+			ActionId:       k.ActionID,
+			ActionName:     actionName,
+			DevicePath:     k.DevicePath,
+			Passphrase:     k.Passphrase,
+			RotationReason: k.RotationReason,
+		}
+		if k.RotatedAt.Valid {
+			entry.RotatedAt = timestamppb.New(k.RotatedAt.Time)
+		}
+		resp.History = append(resp.History, entry)
+	}
+
+	return connect.NewResponse(resp), nil
+}
+
+// CreateLuksToken creates a one-time token for setting a user-defined LUKS passphrase.
+// Only the device's assigned owner can create a token (admins cannot).
+func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Request[pm.CreateLuksTokenRequest]) (*connect.Response[pm.CreateLuksTokenResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Verify device exists and get assigned user
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Only the assigned owner can create a LUKS token
+	if device.AssignedUserID == nil || *device.AssignedUserID != userCtx.ID {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only the assigned device owner can create a LUKS passphrase token"))
+	}
+
+	// Verify the action exists and is a LUKS action
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+	}
+	if pm.ActionType(action.ActionType) != pm.ActionType_ACTION_TYPE_LUKS {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action is not a LUKS action"))
+	}
+
+	// Parse LUKS params to get complexity requirements
+	var luksParams pm.LuksParams
+	if len(action.Params) > 0 {
+		protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(action.Params, &luksParams)
+	}
+
+	minLength := luksParams.UserPassphraseMinLength
+	if minLength < 16 {
+		minLength = 16
+	}
+	complexity := int32(luksParams.UserPassphraseComplexity)
+
+	// Generate one-time token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate token"))
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	// Store in DB
+	_, err = h.store.Queries().CreateLuksToken(ctx, db.CreateLuksTokenParams{
+		DeviceID:   req.Msg.DeviceId,
+		ActionID:   req.Msg.ActionId,
+		Token:      token,
+		MinLength:  minLength,
+		Complexity: complexity,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create token: %w", err))
+	}
+
+	uri := fmt.Sprintf("power-manage://luks/set-passphrase?token=%s", token)
+	cliCmd := fmt.Sprintf("power-manage-agent luks set-passphrase --token %s", token)
+
+	return connect.NewResponse(&pm.CreateLuksTokenResponse{
+		Token:      token,
+		Uri:        uri,
+		CliCommand: cliCmd,
+	}), nil
+}
+
+// RevokeLuksDeviceKey sends a revocation request to the agent via pg_notify.
+func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	// Verify device exists
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+	}
+
+	// Send notification to gateway to dispatch to agent
+	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
+	payload, _ := json.Marshal(map[string]any{
+		"type":      "revoke_luks_device_key",
+		"action_id": req.Msg.ActionId,
+	})
+	if err := h.store.Notify(ctx, agentChannel, string(payload)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+	}
+
+	return connect.NewResponse(&pm.RevokeLuksDeviceKeyResponse{}), nil
 }

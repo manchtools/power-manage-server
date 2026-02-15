@@ -80,16 +80,30 @@ func (d *Dispatcher) handleNotification(ctx context.Context, deviceID, payload s
 		return
 	}
 
-	// Try to parse as action dispatch
-	var dispatchPayload ActionDispatchPayload
-	if err := json.Unmarshal([]byte(payload), &dispatchPayload); err != nil {
+	// Parse notification type
+	var basePayload struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(payload), &basePayload); err != nil {
 		d.logger.Debug("failed to parse notification payload", "error", err, "payload", payload)
 		return
 	}
 
-	// Only handle action_dispatch messages
-	if dispatchPayload.Type != "action_dispatch" {
-		d.logger.Debug("ignoring non-dispatch notification", "type", dispatchPayload.Type)
+	// Route by notification type
+	switch basePayload.Type {
+	case "revoke_luks_device_key":
+		d.handleRevokeLuksDeviceKey(deviceID, payload)
+		return
+	case "action_dispatch":
+		// Continue below
+	default:
+		d.logger.Debug("ignoring unknown notification type", "type", basePayload.Type)
+		return
+	}
+
+	var dispatchPayload ActionDispatchPayload
+	if err := json.Unmarshal([]byte(payload), &dispatchPayload); err != nil {
+		d.logger.Debug("failed to parse action dispatch payload", "error", err, "payload", payload)
 		return
 	}
 
@@ -455,7 +469,65 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			},
 		}
 
+	case pm.ActionType_ACTION_TYPE_LUKS:
+		var params struct {
+			PresharedKey             string `json:"presharedKey"`
+			RotationIntervalDays     int32  `json:"rotationIntervalDays"`
+			MinWords                 int32  `json:"minWords"`
+			DeviceBoundKeyType       int32  `json:"deviceBoundKeyType"`
+			UserPassphraseMinLength  int32  `json:"userPassphraseMinLength"`
+			UserPassphraseComplexity int32  `json:"userPassphraseComplexity"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal luks params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Luks{
+			Luks: &pm.LuksParams{
+				PresharedKey:             params.PresharedKey,
+				RotationIntervalDays:     params.RotationIntervalDays,
+				MinWords:                 params.MinWords,
+				DeviceBoundKeyType:       pm.LuksDeviceBoundKeyType(params.DeviceBoundKeyType),
+				UserPassphraseMinLength:  params.UserPassphraseMinLength,
+				UserPassphraseComplexity: pm.LpsPasswordComplexity(params.UserPassphraseComplexity),
+			},
+		}
+
 	default:
 		d.logger.Debug("unknown action type, no params to parse", "action_type", actionTypeName)
 	}
+}
+
+// handleRevokeLuksDeviceKey dispatches a LUKS device key revocation to the connected agent.
+func (d *Dispatcher) handleRevokeLuksDeviceKey(deviceID, payload string) {
+	var revokePayload struct {
+		ActionID string `json:"action_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &revokePayload); err != nil {
+		d.logger.Debug("failed to parse revoke LUKS payload", "error", err)
+		return
+	}
+
+	msg := &pm.ServerMessage{
+		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Payload: &pm.ServerMessage_RevokeLuksDeviceKey{
+			RevokeLuksDeviceKey: &pm.RevokeLuksDeviceKey{
+				ActionId: revokePayload.ActionID,
+			},
+		},
+	}
+
+	if err := d.manager.Send(deviceID, msg); err != nil {
+		d.logger.Error("failed to send LUKS revocation to agent",
+			"device_id", deviceID,
+			"action_id", revokePayload.ActionID,
+			"error", err,
+		)
+		return
+	}
+
+	d.logger.Info("LUKS device key revocation dispatched",
+		"device_id", deviceID,
+		"action_id", revokePayload.ActionID,
+	)
 }
