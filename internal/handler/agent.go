@@ -507,11 +507,61 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		})
 
 	case *pm.AgentMessage_QueryResult:
-		// For now, just log query results
+		result := p.QueryResult
 		h.logger.Info("received query result",
 			"device_id", deviceID,
-			"query_id", p.QueryResult.QueryId,
+			"query_id", result.QueryId,
+			"success", result.Success,
 		)
+
+		// Convert rows to JSON for storage
+		var rowsJSON []map[string]string
+		for _, row := range result.Rows {
+			rowsJSON = append(rowsJSON, row.Data)
+		}
+		rowsBytes, err := json.Marshal(rowsJSON)
+		if err != nil {
+			rowsBytes = []byte("[]")
+		}
+
+		return h.store.Queries().CompleteOSQueryResult(ctx, db.CompleteOSQueryResultParams{
+			QueryID: result.QueryId,
+			Success: result.Success,
+			Error:   result.Error,
+			Rows:    rowsBytes,
+		})
+
+	case *pm.AgentMessage_Inventory:
+		inventory := p.Inventory
+		h.logger.Info("received device inventory",
+			"device_id", deviceID,
+			"tables", len(inventory.Tables),
+		)
+
+		for _, table := range inventory.Tables {
+			// Convert rows to JSON for storage
+			var rowsJSON []map[string]string
+			for _, row := range table.Rows {
+				rowsJSON = append(rowsJSON, row.Data)
+			}
+			rowsBytes, err := json.Marshal(rowsJSON)
+			if err != nil {
+				continue
+			}
+
+			if err := h.store.Queries().UpsertDeviceInventory(ctx, db.UpsertDeviceInventoryParams{
+				DeviceID:  deviceID,
+				TableName: table.TableName,
+				Rows:      rowsBytes,
+			}); err != nil {
+				h.logger.Warn("failed to upsert inventory table",
+					"device_id", deviceID,
+					"table", table.TableName,
+					"error", err,
+				)
+			}
+		}
+
 		return nil
 
 	case *pm.AgentMessage_SecurityAlert:

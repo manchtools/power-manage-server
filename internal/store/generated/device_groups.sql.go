@@ -24,7 +24,7 @@ func (q *Queries) CountDeviceGroups(ctx context.Context) (int64, error) {
 const countMatchingDevicesForQuery = `-- name: CountMatchingDevicesForQuery :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
-AND evaluate_dynamic_query(labels, $1) = TRUE
+AND evaluate_dynamic_query_v2(id, labels, $1) = TRUE
 `
 
 func (q *Queries) CountMatchingDevicesForQuery(ctx context.Context, query string) (int64, error) {

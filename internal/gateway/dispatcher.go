@@ -94,6 +94,12 @@ func (d *Dispatcher) handleNotification(ctx context.Context, deviceID, payload s
 	case "revoke_luks_device_key":
 		d.handleRevokeLuksDeviceKey(deviceID, payload)
 		return
+	case "osquery_dispatch":
+		d.handleOSQueryDispatch(deviceID, payload)
+		return
+	case "request_inventory":
+		d.handleRequestInventory(deviceID)
+		return
 	case "action_dispatch":
 		// Continue below
 	default:
@@ -530,4 +536,67 @@ func (d *Dispatcher) handleRevokeLuksDeviceKey(deviceID, payload string) {
 		"device_id", deviceID,
 		"action_id", revokePayload.ActionID,
 	)
+}
+
+// handleOSQueryDispatch dispatches an on-demand OSQuery to the connected agent.
+func (d *Dispatcher) handleOSQueryDispatch(deviceID, payload string) {
+	var queryPayload struct {
+		QueryID string   `json:"query_id"`
+		Table   string   `json:"table"`
+		Columns []string `json:"columns"`
+		Limit   int32    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(payload), &queryPayload); err != nil {
+		d.logger.Debug("failed to parse osquery dispatch payload", "error", err)
+		return
+	}
+
+	query := &pm.OSQuery{
+		QueryId: queryPayload.QueryID,
+		Table:   queryPayload.Table,
+		Columns: queryPayload.Columns,
+		Limit:   queryPayload.Limit,
+	}
+
+	msg := &pm.ServerMessage{
+		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Payload: &pm.ServerMessage_Query{
+			Query: query,
+		},
+	}
+
+	if err := d.manager.Send(deviceID, msg); err != nil {
+		d.logger.Error("failed to send osquery to agent",
+			"device_id", deviceID,
+			"query_id", queryPayload.QueryID,
+			"error", err,
+		)
+		return
+	}
+
+	d.logger.Info("osquery dispatched",
+		"device_id", deviceID,
+		"query_id", queryPayload.QueryID,
+		"table", queryPayload.Table,
+	)
+}
+
+// handleRequestInventory asks the agent to re-collect and send device inventory.
+func (d *Dispatcher) handleRequestInventory(deviceID string) {
+	msg := &pm.ServerMessage{
+		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Payload: &pm.ServerMessage_RequestInventory{
+			RequestInventory: &pm.RequestInventory{},
+		},
+	}
+
+	if err := d.manager.Send(deviceID, msg); err != nil {
+		d.logger.Error("failed to send inventory request to agent",
+			"device_id", deviceID,
+			"error", err,
+		)
+		return
+	}
+
+	d.logger.Info("inventory request dispatched", "device_id", deviceID)
 }

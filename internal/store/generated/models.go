@@ -97,6 +97,13 @@ type DeviceGroupsProjection struct {
 	SyncIntervalMinutes int32              `json:"sync_interval_minutes"`
 }
 
+type DeviceInventory struct {
+	DeviceID    string             `json:"device_id"`
+	TableName   string             `json:"table_name"`
+	Rows        []byte             `json:"rows"`
+	CollectedAt pgtype.Timestamptz `json:"collected_at"`
+}
+
 type DevicesProjection struct {
 	ID                  string             `json:"id"`
 	Hostname            string             `json:"hostname"`
@@ -192,6 +199,18 @@ type LuksToken struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 	Used       bool               `json:"used"`
+}
+
+type OsqueryResult struct {
+	QueryID     string             `json:"query_id"`
+	DeviceID    string             `json:"device_id"`
+	TableName   string             `json:"table_name"`
+	Completed   bool               `json:"completed"`
+	Success     bool               `json:"success"`
+	Error       string             `json:"error"`
+	Rows        []byte             `json:"rows"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
 type ProjectionError struct {

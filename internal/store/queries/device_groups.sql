@@ -67,4 +67,4 @@ SELECT evaluate_queued_dynamic_groups() AS evaluated_count;
 -- name: CountMatchingDevicesForQuery :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
-AND evaluate_dynamic_query(labels, $1) = TRUE;
+AND evaluate_dynamic_query_v2(id, labels, $1) = TRUE;

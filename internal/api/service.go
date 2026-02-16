@@ -27,6 +27,7 @@ type ControlService struct {
 	assignment    *AssignmentHandler
 	userSelection *UserSelectionHandler
 	audit         *AuditHandler
+	osquery       *OSQueryHandler
 }
 
 // NewControlService creates a new control service.
@@ -45,6 +46,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		assignment:    NewAssignmentHandler(st, actionHandler),
 		userSelection: NewUserSelectionHandler(st),
 		audit:         NewAuditHandler(st),
+		osquery:       NewOSQueryHandler(st),
 	}
 }
 
@@ -399,4 +401,21 @@ func (s *ControlService) CreateLuksToken(ctx context.Context, req *connect.Reque
 
 func (s *ControlService) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
 	return s.device.RevokeLuksDeviceKey(ctx, req)
+}
+
+// OSQuery / Device Inventory
+func (s *ControlService) DispatchOSQuery(ctx context.Context, req *connect.Request[pm.DispatchOSQueryRequest]) (*connect.Response[pm.DispatchOSQueryResponse], error) {
+	return s.osquery.DispatchOSQuery(ctx, req)
+}
+
+func (s *ControlService) GetOSQueryResult(ctx context.Context, req *connect.Request[pm.GetOSQueryResultRequest]) (*connect.Response[pm.GetOSQueryResultResponse], error) {
+	return s.osquery.GetOSQueryResult(ctx, req)
+}
+
+func (s *ControlService) GetDeviceInventory(ctx context.Context, req *connect.Request[pm.GetDeviceInventoryRequest]) (*connect.Response[pm.GetDeviceInventoryResponse], error) {
+	return s.osquery.GetDeviceInventory(ctx, req)
+}
+
+func (s *ControlService) RefreshDeviceInventory(ctx context.Context, req *connect.Request[pm.RefreshDeviceInventoryRequest]) (*connect.Response[pm.RefreshDeviceInventoryResponse], error) {
+	return s.osquery.RefreshDeviceInventory(ctx, req)
 }
