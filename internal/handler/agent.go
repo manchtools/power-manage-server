@@ -18,6 +18,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -38,25 +39,28 @@ type AgentHandler struct {
 	manager    *connection.Manager
 	store      *store.Store
 	logger     *slog.Logger
+	encryptor  *crypto.Encryptor
 	requireTLS bool
 }
 
 // NewAgentHandler creates a new agent handler.
-func NewAgentHandler(manager *connection.Manager, s *store.Store, logger *slog.Logger) *AgentHandler {
+func NewAgentHandler(manager *connection.Manager, s *store.Store, logger *slog.Logger, enc *crypto.Encryptor) *AgentHandler {
 	return &AgentHandler{
 		manager:    manager,
 		store:      s,
 		logger:     logger,
+		encryptor:  enc,
 		requireTLS: false,
 	}
 }
 
 // NewAgentHandlerWithTLS creates a new agent handler that requires mTLS.
-func NewAgentHandlerWithTLS(manager *connection.Manager, s *store.Store, logger *slog.Logger) *AgentHandler {
+func NewAgentHandlerWithTLS(manager *connection.Manager, s *store.Store, logger *slog.Logger, enc *crypto.Encryptor) *AgentHandler {
 	return &AgentHandler{
 		manager:    manager,
 		store:      s,
 		logger:     logger,
+		encryptor:  enc,
 		requireTLS: true,
 	}
 }
@@ -443,6 +447,11 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				}
 				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil {
 					for _, r := range rotations {
+						encPassword, encErr := h.encryptor.Encrypt(r.Password)
+						if encErr != nil {
+							h.logger.Error("failed to encrypt LPS password", "error", encErr)
+							continue
+						}
 						lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 						h.store.AppendEvent(ctx, store.Event{
 							StreamType: "lps_password",
@@ -452,7 +461,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 								"device_id":       deviceID,
 								"action_id":       actionID,
 								"username":        r.Username,
-								"password":        r.Password,
+								"password":        encPassword,
 								"rotated_at":      r.RotatedAt,
 								"rotation_reason": r.Reason,
 							},
@@ -605,17 +614,43 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				},
 			})
 		}
+		// Decrypt passphrase before returning to agent
+		passphrase, err := h.encryptor.Decrypt(key.Passphrase)
+		if err != nil {
+			return h.manager.Send(deviceID, &pm.ServerMessage{
+				Id: msg.Id,
+				Payload: &pm.ServerMessage_Error{
+					Error: &pm.Error{
+						Code:    connect.CodeInternal.String(),
+						Message: "failed to decrypt passphrase",
+					},
+				},
+			})
+		}
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msg.Id,
 			Payload: &pm.ServerMessage_GetLuksKey{
 				GetLuksKey: &pm.GetLuksKeyResponse{
-					Passphrase: key.Passphrase,
+					Passphrase: passphrase,
 				},
 			},
 		})
 
 	case *pm.AgentMessage_StoreLuksKey:
 		req := p.StoreLuksKey
+		// Encrypt passphrase before storing
+		encPassphrase, err := h.encryptor.Encrypt(req.Passphrase)
+		if err != nil {
+			return h.manager.Send(deviceID, &pm.ServerMessage{
+				Id: msg.Id,
+				Payload: &pm.ServerMessage_Error{
+					Error: &pm.Error{
+						Code:    connect.CodeInternal.String(),
+						Message: "failed to encrypt passphrase",
+					},
+				},
+			})
+		}
 		// Store the LUKS key as an event
 		luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 		if err := h.store.AppendEvent(ctx, store.Event{
@@ -626,7 +661,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				"device_id":       deviceID,
 				"action_id":       req.ActionId,
 				"device_path":     req.DevicePath,
-				"passphrase":      req.Passphrase,
+				"passphrase":      encPassphrase,
 				"rotated_at":      time.Now().Format(time.RFC3339),
 				"rotation_reason": req.RotationReason,
 			},

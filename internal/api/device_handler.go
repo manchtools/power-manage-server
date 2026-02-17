@@ -17,18 +17,20 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // DeviceHandler handles device management RPCs.
 type DeviceHandler struct {
-	store *store.Store
+	store     *store.Store
+	encryptor *crypto.Encryptor
 }
 
 // NewDeviceHandler creates a new device handler.
-func NewDeviceHandler(st *store.Store) *DeviceHandler {
-	return &DeviceHandler{store: st}
+func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor) *DeviceHandler {
+	return &DeviceHandler{store: st, encryptor: enc}
 }
 
 // ListDevices returns a paginated list of devices.
@@ -469,13 +471,17 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			deviceHostname = device.Hostname
 		}
 
+		decPassword, err := h.encryptor.Decrypt(p.Password)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt LPS password: %w", err)
+		}
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
 			DeviceHostname: deviceHostname,
 			ActionId:       p.ActionID,
 			ActionName:     actionName,
 			Username:       p.Username,
-			Password:       p.Password,
+			Password:       decPassword,
 			RotationReason: p.RotationReason,
 		}
 		if p.RotatedAt.Valid {
@@ -491,12 +497,16 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			actionName = action.Name
 		}
 
+		decPassword, err := h.encryptor.Decrypt(p.Password)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt LPS password: %w", err)
+		}
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
 			ActionId:       p.ActionID,
 			ActionName:     actionName,
 			Username:       p.Username,
-			Password:       p.Password,
+			Password:       decPassword,
 			RotationReason: p.RotationReason,
 		}
 		if p.RotatedAt.Valid {
@@ -539,13 +549,17 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			deviceHostname = device.Hostname
 		}
 
+		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt LUKS passphrase: %w", err)
+		}
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,
 			DeviceHostname: deviceHostname,
 			ActionId:       k.ActionID,
 			ActionName:     actionName,
 			DevicePath:     k.DevicePath,
-			Passphrase:     k.Passphrase,
+			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
 		}
 		if k.RotatedAt.Valid {
@@ -570,12 +584,16 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			actionName = action.Name
 		}
 
+		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt LUKS passphrase: %w", err)
+		}
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,
 			ActionId:       k.ActionID,
 			ActionName:     actionName,
 			DevicePath:     k.DevicePath,
-			Passphrase:     k.Passphrase,
+			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
 		}
 		if k.RotatedAt.Valid {

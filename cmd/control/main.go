@@ -24,6 +24,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -169,11 +170,21 @@ func main() {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
 
+	// Initialize secret encryptor
+	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
+	if err != nil {
+		logger.Error("failed to initialize encryptor", "error", err)
+		os.Exit(1)
+	}
+	if encryptor == nil {
+		logger.Warn("PM_ENCRYPTION_KEY not set - secrets will be stored unencrypted")
+	}
+
 	// Initialize action signer (signs actions so agents can verify authenticity)
 	actionSigner := ca.NewActionSigner(certAuth)
 
 	// Setup Connect-RPC service
-	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger)
+	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor)
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)

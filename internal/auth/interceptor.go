@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -14,6 +15,34 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/RefreshToken": true,
 	"/pm.v1.ControlService/Logout":       true,
 	"/pm.v1.ControlService/Register":     true,
+}
+
+// clientIP extracts the real client IP, checking X-Forwarded-For and
+// X-Real-IP headers set by reverse proxies. Falls back to the peer address.
+// Only the first (leftmost) IP in X-Forwarded-For is used, as it was set
+// by the outermost proxy closest to the client.
+func clientIP(req connect.AnyRequest) string {
+	// Try X-Forwarded-For first (standard proxy header)
+	if xff := req.Header().Get("X-Forwarded-For"); xff != "" {
+		// Take only the first IP (client IP set by the outermost proxy).
+		ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
+		if parsed := net.ParseIP(ip); parsed != nil {
+			return ip
+		}
+	}
+	// Try X-Real-IP (nginx convention)
+	if xri := req.Header().Get("X-Real-IP"); xri != "" {
+		ip := strings.TrimSpace(xri)
+		if parsed := net.ParseIP(ip); parsed != nil {
+			return ip
+		}
+	}
+	// Fall back to direct peer address (strip port)
+	addr := req.Peer().Addr
+	if host, _, err := net.SplitHostPort(addr); err == nil {
+		return host
+	}
+	return addr
 }
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.
@@ -34,25 +63,25 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
 
-		// Rate limit login attempts by peer address
+		// Rate limit login attempts by client IP
 		if procedure == "/pm.v1.ControlService/Login" && i.loginLimiter != nil {
-			ip := req.Peer().Addr
+			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many login attempts, try again later"))
 			}
 		}
 
-		// Rate limit token refresh attempts by peer address
+		// Rate limit token refresh attempts by client IP
 		if procedure == "/pm.v1.ControlService/RefreshToken" && i.refreshLimiter != nil {
-			ip := req.Peer().Addr
+			ip := clientIP(req)
 			if !i.refreshLimiter.Allow(ip) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many refresh attempts, try again later"))
 			}
 		}
 
-		// Rate limit registration attempts by peer address
+		// Rate limit registration attempts by client IP
 		if procedure == "/pm.v1.ControlService/Register" && i.registerLimiter != nil {
-			ip := req.Peer().Addr
+			ip := clientIP(req)
 			if !i.registerLimiter.Allow(ip) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many registration attempts, try again later"))
 			}

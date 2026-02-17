@@ -10,6 +10,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -32,13 +33,13 @@ type ControlService struct {
 }
 
 // NewControlService creates a new control service.
-func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger) *ControlService {
+func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor) *ControlService {
 	actionHandler := NewActionHandler(st, signer)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
 		auth:          NewAuthHandler(st, jwtManager),
 		user:          NewUserHandler(st),
-		device:        NewDeviceHandler(st),
+		device:        NewDeviceHandler(st, enc),
 		token:         NewTokenHandler(st),
 		action:        actionHandler,
 		actionSet:     NewActionSetHandler(st),
