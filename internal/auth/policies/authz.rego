@@ -21,6 +21,13 @@ allow if {
     input.resource_id == input.subject_id
 }
 
+# Self-scoped without resource (creation actions) — handler enforces restriction
+allow if {
+    perm := concat(":", [input.action, "self"])
+    perm in input.permissions
+    not input.resource_id
+}
+
 # Assigned-scope: SQL-level filtering handles actual data check
 allow if {
     perm := concat(":", [input.action, "assigned"])

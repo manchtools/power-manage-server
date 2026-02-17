@@ -35,6 +35,7 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteDevice", "Devices", "Delete devices"},
 		// Tokens
 		{"CreateToken", "Tokens", "Create registration tokens"},
+		{"CreateToken:self", "Tokens", "Create one-time token for self"},
 		{"GetToken", "Tokens", "View tokens"},
 		{"ListTokens", "Tokens", "List tokens"},
 		{"RenameToken", "Tokens", "Rename tokens"},
@@ -156,7 +157,7 @@ func DefaultUserPermissions() []string {
 		"UpdateUserPassword:self",
 		"ListDevices:assigned",
 		"GetDevice:assigned",
-		"CreateToken",
+		"CreateToken:self",
 		"SetUserSelection",
 		"ListAvailableActions",
 	}

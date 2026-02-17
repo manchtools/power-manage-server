@@ -58,21 +58,22 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
 
-	// Build event data based on user role
+	// Build event data — unrestricted CreateToken can set any params,
+	// self-scoped CreateToken:self forces one-time use with 7-day expiry.
 	eventData := map[string]any{
 		"value_hash": tokenHashHex,
 		"name":       req.Msg.Name,
 	}
 
-	if auth.HasPermission(ctx, "ListTokens") {
-		// Users with full token management can set any token configuration
+	if auth.HasPermission(ctx, "CreateToken") {
+		// Unrestricted: can set any token configuration
 		eventData["one_time"] = req.Msg.OneTime
 		eventData["max_uses"] = req.Msg.MaxUses
 		if req.Msg.ExpiresAt != nil && req.Msg.ExpiresAt.IsValid() {
 			eventData["expires_at"] = req.Msg.ExpiresAt.AsTime().Format(time.RFC3339)
 		}
 	} else {
-		// Non-admin users: tokens are always one-time use with fixed 7-day validity
+		// Self-scoped: one-time use, 7-day validity, owned by creator
 		eventData["one_time"] = true
 		eventData["max_uses"] = int32(1)
 		eventData["expires_at"] = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)

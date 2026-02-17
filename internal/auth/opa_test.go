@@ -126,6 +126,29 @@ func TestAuthorizer_SelfScopeUpdatePassword(t *testing.T) {
 	assert.False(t, allowed)
 }
 
+func TestAuthorizer_SelfScopeNoResource(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	// Self-scope without resource_id (creation actions) should be allowed
+	allowed, err := authz.Authorize(ctx, AuthzInput{
+		Permissions: []string{"CreateToken:self"},
+		SubjectID:   "user-1",
+		Action:      "CreateToken",
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed)
+
+	// But unrestricted CreateToken should not match self-scope
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: []string{"CreateToken:self"},
+		SubjectID:   "user-1",
+		Action:      "DeleteToken",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+}
+
 func TestAuthorizer_AssignedScopeAllowed(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
