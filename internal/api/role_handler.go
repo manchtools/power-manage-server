@@ -60,7 +60,10 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
 
-	permsJSON, _ := json.Marshal(req.Msg.Permissions)
+	perms := req.Msg.Permissions
+	if perms == nil {
+		perms = []string{}
+	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "role",
@@ -69,7 +72,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
-			"permissions": json.RawMessage(permsJSON),
+			"permissions": perms,
 			"is_system":   false,
 		},
 		ActorType: "user",
