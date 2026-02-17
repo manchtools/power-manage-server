@@ -28,6 +28,7 @@ type ControlService struct {
 	userSelection *UserSelectionHandler
 	audit         *AuditHandler
 	osquery       *OSQueryHandler
+	role          *RoleHandler
 }
 
 // NewControlService creates a new control service.
@@ -47,6 +48,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		userSelection: NewUserSelectionHandler(st),
 		audit:         NewAuditHandler(st),
 		osquery:       NewOSQueryHandler(st),
+		role:          NewRoleHandler(st),
 	}
 }
 
@@ -93,10 +95,6 @@ func (s *ControlService) UpdateUserEmail(ctx context.Context, req *connect.Reque
 
 func (s *ControlService) UpdateUserPassword(ctx context.Context, req *connect.Request[pm.UpdateUserPasswordRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
 	return s.user.UpdateUserPassword(ctx, req)
-}
-
-func (s *ControlService) UpdateUserRole(ctx context.Context, req *connect.Request[pm.UpdateUserRoleRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
-	return s.user.UpdateUserRole(ctx, req)
 }
 
 func (s *ControlService) SetUserDisabled(ctx context.Context, req *connect.Request[pm.SetUserDisabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
@@ -418,4 +416,37 @@ func (s *ControlService) GetDeviceInventory(ctx context.Context, req *connect.Re
 
 func (s *ControlService) RefreshDeviceInventory(ctx context.Context, req *connect.Request[pm.RefreshDeviceInventoryRequest]) (*connect.Response[pm.RefreshDeviceInventoryResponse], error) {
 	return s.osquery.RefreshDeviceInventory(ctx, req)
+}
+
+// Roles & Permissions
+func (s *ControlService) CreateRole(ctx context.Context, req *connect.Request[pm.CreateRoleRequest]) (*connect.Response[pm.CreateRoleResponse], error) {
+	return s.role.CreateRole(ctx, req)
+}
+
+func (s *ControlService) GetRole(ctx context.Context, req *connect.Request[pm.GetRoleRequest]) (*connect.Response[pm.GetRoleResponse], error) {
+	return s.role.GetRole(ctx, req)
+}
+
+func (s *ControlService) ListRoles(ctx context.Context, req *connect.Request[pm.ListRolesRequest]) (*connect.Response[pm.ListRolesResponse], error) {
+	return s.role.ListRoles(ctx, req)
+}
+
+func (s *ControlService) UpdateRole(ctx context.Context, req *connect.Request[pm.UpdateRoleRequest]) (*connect.Response[pm.UpdateRoleResponse], error) {
+	return s.role.UpdateRole(ctx, req)
+}
+
+func (s *ControlService) DeleteRole(ctx context.Context, req *connect.Request[pm.DeleteRoleRequest]) (*connect.Response[pm.DeleteRoleResponse], error) {
+	return s.role.DeleteRole(ctx, req)
+}
+
+func (s *ControlService) AssignRoleToUser(ctx context.Context, req *connect.Request[pm.AssignRoleToUserRequest]) (*connect.Response[pm.AssignRoleToUserResponse], error) {
+	return s.role.AssignRoleToUser(ctx, req)
+}
+
+func (s *ControlService) RevokeRoleFromUser(ctx context.Context, req *connect.Request[pm.RevokeRoleFromUserRequest]) (*connect.Response[pm.RevokeRoleFromUserResponse], error) {
+	return s.role.RevokeRoleFromUser(ctx, req)
+}
+
+func (s *ControlService) ListPermissions(ctx context.Context, req *connect.Request[pm.ListPermissionsRequest]) (*connect.Response[pm.ListPermissionsResponse], error) {
+	return s.role.ListPermissions(ctx, req)
 }

@@ -11,9 +11,10 @@ const (
 
 // UserContext holds authenticated user information.
 type UserContext struct {
-	ID    string
-	Email string
-	Role  string
+	ID             string
+	Email          string
+	Role           string // Deprecated: kept for backward compat during migration, use permissions instead
+	SessionVersion int32
 }
 
 // DeviceContext holds authenticated device information.

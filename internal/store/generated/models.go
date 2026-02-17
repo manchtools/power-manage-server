@@ -228,6 +228,19 @@ type RevokedToken struct {
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
+type RolesProjection struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description"`
+	Permissions       []string           `json:"permissions"`
+	IsSystem          bool               `json:"is_system"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type TokensProjection struct {
 	ID                string             `json:"id"`
 	ValueHash         string             `json:"value_hash"`
@@ -242,6 +255,14 @@ type TokensProjection struct {
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
 	OwnerID           *string            `json:"owner_id"`
+}
+
+type UserRolesProjection struct {
+	UserID            string             `json:"user_id"`
+	RoleID            string             `json:"role_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
+	ProjectionVersion int64              `json:"projection_version"`
 }
 
 type UserSelectionsProjection struct {

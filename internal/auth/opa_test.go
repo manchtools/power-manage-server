@@ -15,10 +15,41 @@ func newTestAuthorizer(t *testing.T) *Authorizer {
 	return authz
 }
 
-func TestAuthorizer_AdminAllowsAll(t *testing.T) {
+// ============================================================================
+// Permission-based user access
+// ============================================================================
+
+func TestAuthorizer_UnrestrictedPermission(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
+	allowed, err := authz.Authorize(ctx, AuthzInput{
+		Permissions: []string{"CreateUser", "ListUsers", "DeleteUser"},
+		SubjectID:   "user-1",
+		Action:      "CreateUser",
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed)
+}
+
+func TestAuthorizer_UnrestrictedPermissionDenied(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	allowed, err := authz.Authorize(ctx, AuthzInput{
+		Permissions: []string{"ListUsers"},
+		SubjectID:   "user-1",
+		Action:      "CreateUser",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+}
+
+func TestAuthorizer_AdminPermissionsAllowAll(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	adminPerms := AdminPermissions()
 	actions := []string{
 		"CreateUser", "GetUser", "ListUsers", "DeleteUser",
 		"ListDevices", "GetDevice", "DeleteDevice",
@@ -28,139 +59,178 @@ func TestAuthorizer_AdminAllowsAll(t *testing.T) {
 		"CreateDeviceGroup", "DeleteDeviceGroup",
 		"CreateAssignment", "DeleteAssignment",
 		"ListAuditEvents",
+		"CreateRole", "UpdateRole", "DeleteRole",
 	}
 
 	for _, action := range actions {
 		allowed, err := authz.Authorize(ctx, AuthzInput{
-			Role:      "admin",
-			SubjectID: "admin-1",
-			Action:    action,
+			Permissions: adminPerms,
+			SubjectID:   "admin-1",
+			Action:      action,
 		})
 		require.NoError(t, err)
 		assert.True(t, allowed, "admin should be allowed %s", action)
 	}
 }
 
-func TestAuthorizer_UserGetOwnProfile(t *testing.T) {
+func TestAuthorizer_SelfScopeAllowed(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
 	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:       "user",
-		SubjectID:  "user-1",
-		Action:     "GetUser",
-		ResourceID: "user-1",
+		Permissions: []string{"GetUser:self"},
+		SubjectID:   "user-1",
+		Action:      "GetUser",
+		ResourceID:  "user-1",
 	})
 	require.NoError(t, err)
 	assert.True(t, allowed)
 }
 
-func TestAuthorizer_UserGetOtherProfile(t *testing.T) {
+func TestAuthorizer_SelfScopeDeniedForOtherUser(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
 	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:       "user",
-		SubjectID:  "user-1",
-		Action:     "GetUser",
-		ResourceID: "user-2",
+		Permissions: []string{"GetUser:self"},
+		SubjectID:   "user-1",
+		Action:      "GetUser",
+		ResourceID:  "user-2",
 	})
 	require.NoError(t, err)
 	assert.False(t, allowed)
 }
 
-func TestAuthorizer_UserGetCurrentUser(t *testing.T) {
+func TestAuthorizer_SelfScopeUpdatePassword(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
+	// Can update own password
 	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:      "user",
-		SubjectID: "user-1",
-		Action:    "GetCurrentUser",
+		Permissions: []string{"UpdateUserPassword:self"},
+		SubjectID:   "user-1",
+		Action:      "UpdateUserPassword",
+		ResourceID:  "user-1",
 	})
 	require.NoError(t, err)
 	assert.True(t, allowed)
-}
 
-func TestAuthorizer_UserUpdateOwnPassword(t *testing.T) {
-	authz := newTestAuthorizer(t)
-	ctx := context.Background()
-
-	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:       "user",
-		SubjectID:  "user-1",
-		Action:     "UpdateUserPassword",
-		ResourceID: "user-1",
-	})
-	require.NoError(t, err)
-	assert.True(t, allowed)
-}
-
-func TestAuthorizer_UserUpdateOtherPassword(t *testing.T) {
-	authz := newTestAuthorizer(t)
-	ctx := context.Background()
-
-	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:       "user",
-		SubjectID:  "user-1",
-		Action:     "UpdateUserPassword",
-		ResourceID: "user-2",
+	// Cannot update other's password
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: []string{"UpdateUserPassword:self"},
+		SubjectID:   "user-1",
+		Action:      "UpdateUserPassword",
+		ResourceID:  "user-2",
 	})
 	require.NoError(t, err)
 	assert.False(t, allowed)
 }
 
-func TestAuthorizer_UserDeniedAdminActions(t *testing.T) {
+func TestAuthorizer_AssignedScopeAllowed(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
-	adminOnly := []string{
-		"CreateUser", "ListUsers", "UpdateUserEmail", "UpdateUserRole",
-		"SetUserDisabled", "DeleteUser",
-		"SetDeviceLabel", "RemoveDeviceLabel", "DeleteDevice",
-		"DispatchAction", "DispatchToMultiple",
-		"CreateDefinition", "DeleteDefinition",
-		"CreateDeviceGroup", "DeleteDeviceGroup",
-		"CreateAssignment", "DeleteAssignment",
-		"ListAuditEvents",
-	}
-
-	for _, action := range adminOnly {
-		allowed, err := authz.Authorize(ctx, AuthzInput{
-			Role:      "user",
-			SubjectID: "user-1",
-			Action:    action,
-		})
-		require.NoError(t, err)
-		assert.False(t, allowed, "user should be denied %s", action)
-	}
-}
-
-func TestAuthorizer_UserCanListDevices(t *testing.T) {
-	authz := newTestAuthorizer(t)
-	ctx := context.Background()
-
+	// Assigned scope just requires the permission; SQL filtering handles the rest
 	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:      "user",
-		SubjectID: "user-1",
-		Action:    "ListDevices",
+		Permissions: []string{"ListDevices:assigned"},
+		SubjectID:   "user-1",
+		Action:      "ListDevices",
 	})
 	require.NoError(t, err)
 	assert.True(t, allowed)
 }
 
-func TestAuthorizer_UserCanCreateToken(t *testing.T) {
+func TestAuthorizer_NoPermissionsDenied(t *testing.T) {
 	authz := newTestAuthorizer(t)
 	ctx := context.Background()
 
 	allowed, err := authz.Authorize(ctx, AuthzInput{
-		Role:      "user",
+		Permissions: []string{},
+		SubjectID:   "user-1",
+		Action:      "CreateUser",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+}
+
+func TestAuthorizer_NilPermissionsDenied(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	allowed, err := authz.Authorize(ctx, AuthzInput{
 		SubjectID: "user-1",
-		Action:    "CreateToken",
+		Action:    "CreateUser",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+}
+
+func TestAuthorizer_DefaultUserPermissions(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	userPerms := DefaultUserPermissions()
+
+	// GetCurrentUser should work (unrestricted in user perms)
+	allowed, err := authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "GetCurrentUser",
 	})
 	require.NoError(t, err)
 	assert.True(t, allowed)
+
+	// GetUser:self should work for own user
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "GetUser",
+		ResourceID:  "user-1",
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed)
+
+	// GetUser:self should NOT work for other user
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "GetUser",
+		ResourceID:  "user-2",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+
+	// CreateUser should be denied
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "CreateUser",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
+
+	// ListDevices:assigned should work
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "ListDevices",
+	})
+	require.NoError(t, err)
+	assert.True(t, allowed)
+
+	// DeleteDevice should be denied
+	allowed, err = authz.Authorize(ctx, AuthzInput{
+		Permissions: userPerms,
+		SubjectID:   "user-1",
+		Action:      "DeleteDevice",
+	})
+	require.NoError(t, err)
+	assert.False(t, allowed)
 }
+
+// ============================================================================
+// Device access (unchanged rules)
+// ============================================================================
 
 func TestAuthorizer_DeviceGetOwnInfo(t *testing.T) {
 	authz := newTestAuthorizer(t)
@@ -221,18 +291,43 @@ func TestAuthorizer_DeviceViewOwnExecutions(t *testing.T) {
 	}
 }
 
-func TestIsAdmin(t *testing.T) {
-	assert.True(t, IsAdmin("admin"))
-	assert.False(t, IsAdmin("user"))
-	assert.False(t, IsAdmin("device"))
+func TestAuthorizer_DeviceHeartbeat(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	for _, action := range []string{"Heartbeat", "UpdateStatus"} {
+		allowed, err := authz.Authorize(ctx, AuthzInput{
+			Role:      "device",
+			SubjectID: "device-1",
+			Action:    action,
+		})
+		require.NoError(t, err)
+		assert.True(t, allowed, "device should be allowed %s", action)
+	}
 }
 
-func TestIsUser(t *testing.T) {
-	assert.True(t, IsUser("user"))
-	assert.False(t, IsUser("admin"))
+func TestAuthorizer_DeviceDeniedAdminActions(t *testing.T) {
+	authz := newTestAuthorizer(t)
+	ctx := context.Background()
+
+	denied := []string{"CreateUser", "DeleteDevice", "DispatchAction", "ListUsers"}
+	for _, action := range denied {
+		allowed, err := authz.Authorize(ctx, AuthzInput{
+			Role:      "device",
+			SubjectID: "device-1",
+			Action:    action,
+		})
+		require.NoError(t, err)
+		assert.False(t, allowed, "device should be denied %s", action)
+	}
 }
+
+// ============================================================================
+// Helpers
+// ============================================================================
 
 func TestIsDevice(t *testing.T) {
 	assert.True(t, IsDevice("device"))
 	assert.False(t, IsDevice("user"))
+	assert.False(t, IsDevice("admin"))
 }

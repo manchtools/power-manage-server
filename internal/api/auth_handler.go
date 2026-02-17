@@ -70,11 +70,19 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		ActorID:    user.ID,
 	})
 
+	protoUser := userToProto(user)
+	// Populate user roles
+	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+		for _, r := range roles {
+			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
+		}
+	}
+
 	resp := connect.NewResponse(&pm.LoginResponse{
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    timestamppb.New(tokens.ExpiresAt),
-		User:         userToProto(user),
+		User:         protoUser,
 	})
 
 	// Set httpOnly cookies with the tokens
@@ -190,7 +198,15 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
+	protoUser := userToProto(user)
+	// Populate user roles
+	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+		for _, r := range roles {
+			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
+		}
+	}
+
 	return connect.NewResponse(&pm.GetCurrentUserResponse{
-		User: userToProto(user),
+		User: protoUser,
 	}), nil
 }

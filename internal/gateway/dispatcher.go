@@ -545,6 +545,7 @@ func (d *Dispatcher) handleOSQueryDispatch(deviceID, payload string) {
 		Table   string   `json:"table"`
 		Columns []string `json:"columns"`
 		Limit   int32    `json:"limit"`
+		RawSQL  string   `json:"raw_sql"`
 	}
 	if err := json.Unmarshal([]byte(payload), &queryPayload); err != nil {
 		d.logger.Debug("failed to parse osquery dispatch payload", "error", err)
@@ -556,6 +557,7 @@ func (d *Dispatcher) handleOSQueryDispatch(deviceID, payload string) {
 		Table:   queryPayload.Table,
 		Columns: queryPayload.Columns,
 		Limit:   queryPayload.Limit,
+		RawSql:  queryPayload.RawSQL,
 	}
 
 	msg := &pm.ServerMessage{

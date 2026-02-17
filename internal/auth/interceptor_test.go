@@ -50,9 +50,15 @@ func TestAuthzInterceptor_Creation(t *testing.T) {
 	authz, err := NewAuthorizer()
 	require.NoError(t, err)
 
-	interceptor := NewAuthzInterceptor(authz)
+	mock := &mockPermissionQuerier{
+		permissions: map[string][]string{},
+	}
+	resolver := NewPermissionResolver(mock)
+
+	interceptor := NewAuthzInterceptor(authz, resolver)
 	assert.NotNil(t, interceptor)
 	assert.NotNil(t, interceptor.authorizer)
+	assert.NotNil(t, interceptor.permissionResolver)
 }
 
 func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
@@ -75,7 +81,12 @@ func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
 func TestAuthzInterceptor_StreamingPassthrough(t *testing.T) {
 	authz, err := NewAuthorizer()
 	require.NoError(t, err)
-	interceptor := NewAuthzInterceptor(authz)
+
+	mock := &mockPermissionQuerier{
+		permissions: map[string][]string{},
+	}
+	resolver := NewPermissionResolver(mock)
+	interceptor := NewAuthzInterceptor(authz, resolver)
 
 	clientFunc := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		return nil

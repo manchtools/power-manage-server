@@ -97,12 +97,13 @@ func main() {
 		Secret: []byte(cfg.JWTSecret),
 	})
 
-	// Initialize authorizer
+	// Initialize authorizer and permission resolver
 	authorizer, err := auth.NewAuthorizer()
 	if err != nil {
 		logger.Error("failed to initialize authorizer", "error", err)
 		os.Exit(1)
 	}
+	permissionResolver := auth.NewPermissionResolver(auth.NewQueriesAdapter(st.Queries()))
 
 	// Start control handler (PostgreSQL LISTEN notification processor)
 	controlHandler := control.NewHandler(st, logger)
@@ -178,7 +179,7 @@ func main() {
 
 	interceptors := connect.WithInterceptors(
 		auth.NewAuthInterceptor(jwtManager, loginLimiter, refreshLimiter, registerLimiter),
-		auth.NewAuthzInterceptor(authorizer),
+		auth.NewAuthzInterceptor(authorizer, permissionResolver),
 	)
 
 	mux := http.NewServeMux()
@@ -358,6 +359,22 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	})
 	if err != nil {
 		return fmt.Errorf("create user event: %w", err)
+	}
+
+	// Assign the Admin role to the bootstrap user
+	adminRole, err := st.Queries().GetRoleByName(ctx, "Admin")
+	if err == nil {
+		_ = st.AppendEvent(ctx, store.Event{
+			StreamType: "user_role",
+			StreamID:   id + ":" + adminRole.ID,
+			EventType:  "UserRoleAssigned",
+			Data: map[string]any{
+				"user_id": id,
+				"role_id": adminRole.ID,
+			},
+			ActorType: "system",
+			ActorID:   "bootstrap",
+		})
 	}
 
 	logger.Info("admin user created", "email", email, "id", id)

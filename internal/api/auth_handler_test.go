@@ -33,7 +33,6 @@ func TestLogin_Success(t *testing.T) {
 	assert.NotNil(t, resp.Msg.ExpiresAt)
 	assert.NotNil(t, resp.Msg.User)
 	assert.Equal(t, email, resp.Msg.User.Email)
-	assert.Equal(t, "admin", resp.Msg.User.Role)
 }
 
 func TestLogin_WrongPassword(t *testing.T) {

@@ -16,12 +16,12 @@ type Authorizer struct {
 
 // AuthzInput represents the input to the authorization policy.
 type AuthzInput struct {
-	Role          string `json:"role"`
-	SubjectID     string `json:"subject_id"`
-	Action        string `json:"action"`
-	ResourceID    string `json:"resource_id,omitempty"`
-	ResourceOwner string `json:"resource_owner,omitempty"`
-	DeviceID      string `json:"device_id,omitempty"`
+	Role        string   `json:"role"`                  // "device" for devices, empty for users
+	Permissions []string `json:"permissions,omitempty"`  // user's permissions from roles
+	SubjectID   string   `json:"subject_id"`
+	Action      string   `json:"action"`
+	ResourceID  string   `json:"resource_id,omitempty"`
+	DeviceID    string   `json:"device_id,omitempty"`
 }
 
 // NewAuthorizer creates a new Authorizer with embedded policies.
@@ -59,16 +59,6 @@ func (a *Authorizer) Authorize(ctx context.Context, input AuthzInput) (bool, err
 	}
 
 	return allowed, nil
-}
-
-// IsAdmin checks if the role is admin.
-func IsAdmin(role string) bool {
-	return role == "admin"
-}
-
-// IsUser checks if the role is user.
-func IsUser(role string) bool {
-	return role == "user"
 }
 
 // IsDevice checks if the role is device.
