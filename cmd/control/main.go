@@ -50,6 +50,7 @@ func main() {
 	cfg := parseFlags()
 
 	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
+	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
 		logger.Warn("CONTROL_GATEWAY_URL is not set - agents will not receive a gateway URL during registration")
