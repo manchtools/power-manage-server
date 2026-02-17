@@ -44,7 +44,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 	// Verify device access (non-admins can only access assigned devices)
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
 		ID:           req.Msg.DeviceId,
-		FilterUserID: userFilterID(ctx),
+		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
@@ -109,7 +109,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 	// Verify device access (non-admins can only access assigned devices)
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
 		ID:           req.Msg.DeviceId,
-		FilterUserID: userFilterID(ctx),
+		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))

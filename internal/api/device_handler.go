@@ -51,7 +51,7 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	}
 
 	q := h.store.Queries()
-	filterUID := userFilterID(ctx)
+	filterUID := userFilterID(ctx, "ListDevices")
 
 	var devices []db.DevicesProjection
 	var err error
@@ -111,7 +111,7 @@ func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.G
 
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
 		ID:           req.Msg.Id,
-		FilterUserID: userFilterID(ctx),
+		FilterUserID: userFilterID(ctx, "GetDevice"),
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

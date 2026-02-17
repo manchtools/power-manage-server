@@ -64,8 +64,8 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 		"name":       req.Msg.Name,
 	}
 
-	if userCtx.Role == "admin" {
-		// Admins can set any token configuration
+	if auth.HasPermission(ctx, "ListTokens") {
+		// Users with full token management can set any token configuration
 		eventData["one_time"] = req.Msg.OneTime
 		eventData["max_uses"] = req.Msg.MaxUses
 		if req.Msg.ExpiresAt != nil && req.Msg.ExpiresAt.IsValid() {
@@ -144,7 +144,7 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 		Column1:       req.Msg.IncludeDisabled,
 		Limit:         pageSize,
 		Offset:        offset,
-		FilterOwnerID: userFilterID(ctx),
+		FilterOwnerID: userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list tokens"))
@@ -152,7 +152,7 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 
 	count, err := h.store.Queries().CountTokens(ctx, db.CountTokensParams{
 		Column1:       req.Msg.IncludeDisabled,
-		FilterOwnerID: userFilterID(ctx),
+		FilterOwnerID: userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count tokens"))

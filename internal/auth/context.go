@@ -5,8 +5,9 @@ import "context"
 type contextKey string
 
 const (
-	userContextKey   contextKey = "user"
-	deviceContextKey contextKey = "device"
+	userContextKey        contextKey = "user"
+	deviceContextKey      contextKey = "device"
+	permissionsContextKey contextKey = "permissions"
 )
 
 // UserContext holds authenticated user information.
@@ -44,6 +45,22 @@ func WithDevice(ctx context.Context, device *DeviceContext) context.Context {
 func DeviceFromContext(ctx context.Context) (*DeviceContext, bool) {
 	device, ok := ctx.Value(deviceContextKey).(*DeviceContext)
 	return device, ok
+}
+
+// WithPermissions stores the user's resolved permissions in the context.
+func WithPermissions(ctx context.Context, perms []string) context.Context {
+	return context.WithValue(ctx, permissionsContextKey, perms)
+}
+
+// HasPermission checks if the context contains a specific permission (exact match).
+func HasPermission(ctx context.Context, perm string) bool {
+	perms, _ := ctx.Value(permissionsContextKey).([]string)
+	for _, p := range perms {
+		if p == perm {
+			return true
+		}
+	}
+	return false
 }
 
 // SubjectFromContext returns the subject ID and role from context.

@@ -204,6 +204,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 		}
 
+		ctx = WithPermissions(ctx, permissions)
 		return next(ctx, req)
 	}
 }
