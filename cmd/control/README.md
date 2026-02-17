@@ -201,6 +201,14 @@ Reusable action templates that can be dispatched to devices.
 | `GetExecution` | Get execution status by ID | admin or device (own) |
 | `ListExecutions` | List executions with filtering | admin only |
 
+#### LUKS (Disk Encryption)
+
+| Method | Description | Access |
+|--------|-------------|--------|
+| `GetDeviceLuksKeys` | Get current and historical LUKS keys for a device | admin only |
+| `CreateLuksToken` | Create a one-time token for setting a user-defined passphrase | device owner only |
+| `RevokeLuksDeviceKey` | Revoke the device-bound key in LUKS slot 7 | admin only |
+
 ## Action Types
 
 The Control Server supports various action types:
@@ -214,6 +222,7 @@ The Control Server supports various action types:
 | `SHELL` | Shell script execution |
 | `SYSTEMD` | Systemd unit management |
 | `FILE` | File management |
+| `LUKS` | LUKS disk encryption management |
 
 ### Example: Dispatch a Package Installation
 
@@ -393,6 +402,7 @@ All state changes are stored as immutable events in the `events` table:
 | `token` | TokenCreated, TokenRenamed, TokenDisabled, TokenEnabled, TokenUsed, TokenDeleted |
 | `definition` | DefinitionCreated, DefinitionRenamed, DefinitionDescriptionUpdated, DefinitionDeleted |
 | `execution` | ExecutionCreated, ExecutionDispatched, ExecutionStarted, ExecutionCompleted, ExecutionFailed, ExecutionTimedOut |
+| `luks_key` | LuksKeyRotated, LuksDeviceKeyRevoked, LuksDeviceKeyRevocationFailed, LuksDeviceKeyRevocationDispatched |
 
 ### Querying Event History
 
