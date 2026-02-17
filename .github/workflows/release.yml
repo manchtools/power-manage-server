@@ -151,13 +151,13 @@ jobs:
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
           docker manifest push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}
 
-      - name: Update control latest-dev tag
+      - name: Update control latest-rc tag
         if: ${{ needs.build.outputs.is_prerelease == 'true' }}
         run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest-dev \
+          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest-rc \
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-control:latest-dev
+          docker manifest push ghcr.io/manchtools/power-manage-control:latest-rc
 
       - name: Update control latest tag
         if: ${{ needs.build.outputs.is_prerelease == 'false' }}
@@ -174,13 +174,13 @@ jobs:
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
           docker manifest push ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}
 
-      - name: Update gateway latest-dev tag
+      - name: Update gateway latest-rc tag
         if: ${{ needs.build.outputs.is_prerelease == 'true' }}
         run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest-dev \
+          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest-rc \
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-amd64 \
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest-dev
+          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest-rc
 
       - name: Update gateway latest tag
         if: ${{ needs.build.outputs.is_prerelease == 'false' }}
