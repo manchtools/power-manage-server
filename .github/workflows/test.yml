@@ -31,6 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MANCHTOOLS/power-manage-sdk
+          ref: ${{ github.head_ref || github.ref_name }}
           path: _sdk
 
       - name: Rewrite SDK replace directive
@@ -53,6 +54,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MANCHTOOLS/power-manage-sdk
+          ref: ${{ github.head_ref || github.ref_name }}
           path: _sdk
 
       - name: Rewrite SDK replace directive
