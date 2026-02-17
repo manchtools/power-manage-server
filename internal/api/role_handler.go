@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -195,7 +194,10 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
-	permsJSON, _ := json.Marshal(req.Msg.Permissions)
+	perms := req.Msg.Permissions
+	if perms == nil {
+		perms = []string{}
+	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "role",
@@ -204,7 +206,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
-			"permissions": json.RawMessage(permsJSON),
+			"permissions": perms,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
