@@ -198,10 +198,11 @@ func main() {
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
 	mux.Handle(path, handler)
 
-	// Add health check endpoint
+	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
 	})
 
 	// Wrap with CORS and security headers middleware
