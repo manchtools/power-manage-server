@@ -27,7 +27,7 @@ func TestNewJWTManager_Defaults(t *testing.T) {
 func TestGenerateTokens(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices", "GetUser:self"}, 0)
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, pair.AccessToken)
@@ -40,7 +40,8 @@ func TestGenerateTokens(t *testing.T) {
 func TestValidateToken_Access(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 5)
+	perms := []string{"ListDevices", "GetUser:self"}
+	pair, err := m.GenerateTokens("user-1", "a@b.com", perms, 5)
 	require.NoError(t, err)
 
 	claims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)
@@ -48,7 +49,7 @@ func TestValidateToken_Access(t *testing.T) {
 
 	assert.Equal(t, "user-1", claims.UserID)
 	assert.Equal(t, "a@b.com", claims.Email)
-	assert.Equal(t, "admin", claims.Role)
+	assert.Equal(t, perms, claims.Permissions)
 	assert.Equal(t, TokenTypeAccess, claims.TokenType)
 	assert.Equal(t, int32(5), claims.SessionVersion)
 	assert.Equal(t, "user-1", claims.Subject)
@@ -56,10 +57,10 @@ func TestValidateToken_Access(t *testing.T) {
 	assert.NotEmpty(t, claims.ID)
 }
 
-func TestValidateToken_Refresh(t *testing.T) {
+func TestValidateToken_RefreshHasNoPermissions(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "user", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	claims, err := m.ValidateToken(pair.RefreshToken, TokenTypeRefresh)
@@ -67,12 +68,13 @@ func TestValidateToken_Refresh(t *testing.T) {
 
 	assert.Equal(t, "user-1", claims.UserID)
 	assert.Equal(t, TokenTypeRefresh, claims.TokenType)
+	assert.Nil(t, claims.Permissions, "refresh token should not contain permissions")
 }
 
 func TestValidateToken_WrongType(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	// Access token validated as refresh should fail
@@ -90,7 +92,7 @@ func TestValidateToken_WrongSecret(t *testing.T) {
 	m1 := newTestJWTManager()
 	m2 := NewJWTManager(JWTConfig{Secret: []byte("different-secret")})
 
-	pair, err := m1.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m1.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	_, err = m2.ValidateToken(pair.AccessToken, TokenTypeAccess)
@@ -104,7 +106,7 @@ func TestValidateToken_Expired(t *testing.T) {
 		RefreshTokenExpiry: 1 * time.Millisecond,
 	})
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	time.Sleep(10 * time.Millisecond)
@@ -123,72 +125,57 @@ func TestValidateToken_Garbage(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestRefreshAccessToken_Success(t *testing.T) {
+func TestValidateRefreshToken_Success(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 3)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 3)
 	require.NoError(t, err)
 
 	neverRevoked := func(jti string) (bool, error) { return false, nil }
 
-	result, err := m.RefreshAccessToken(pair.RefreshToken, neverRevoked)
+	result, err := m.ValidateRefreshToken(pair.RefreshToken, neverRevoked)
 	require.NoError(t, err)
 
-	assert.NotEmpty(t, result.Tokens.AccessToken)
-	assert.NotEmpty(t, result.Tokens.RefreshToken)
 	assert.Equal(t, "user-1", result.Claims.UserID)
 	assert.Equal(t, "a@b.com", result.Claims.Email)
-	assert.Equal(t, "admin", result.Claims.Role)
 	assert.Equal(t, int32(3), result.Claims.SessionVersion)
 	assert.NotEmpty(t, result.OldJTI)
 }
 
-func TestRefreshAccessToken_Revoked(t *testing.T) {
+func TestValidateRefreshToken_Revoked(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	alwaysRevoked := func(jti string) (bool, error) { return true, nil }
 
-	_, err = m.RefreshAccessToken(pair.RefreshToken, alwaysRevoked)
+	_, err = m.ValidateRefreshToken(pair.RefreshToken, alwaysRevoked)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "revoked")
 }
 
-func TestRefreshAccessToken_WithAccessToken(t *testing.T) {
+func TestValidateRefreshToken_WithAccessToken(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
 	neverRevoked := func(jti string) (bool, error) { return false, nil }
 
-	_, err = m.RefreshAccessToken(pair.AccessToken, neverRevoked)
+	_, err = m.ValidateRefreshToken(pair.AccessToken, neverRevoked)
 	assert.Error(t, err)
 }
 
-func TestRefreshAccessToken_NilCallback(t *testing.T) {
+func TestValidateRefreshToken_NilCallback(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 	require.NoError(t, err)
 
-	result, err := m.RefreshAccessToken(pair.RefreshToken, nil)
+	result, err := m.ValidateRefreshToken(pair.RefreshToken, nil)
 	require.NoError(t, err)
-	assert.NotEmpty(t, result.Tokens.AccessToken)
-}
-
-func TestValidateRefreshToken(t *testing.T) {
-	m := newTestJWTManager()
-
-	pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
-	require.NoError(t, err)
-
-	claims, err := m.ValidateRefreshToken(pair.RefreshToken)
-	require.NoError(t, err)
-	assert.Equal(t, "user-1", claims.UserID)
-	assert.Equal(t, TokenTypeRefresh, claims.TokenType)
+	assert.Equal(t, "user-1", result.Claims.UserID)
 }
 
 func TestGenerateTokens_UniqueJTIs(t *testing.T) {
@@ -196,7 +183,7 @@ func TestGenerateTokens_UniqueJTIs(t *testing.T) {
 
 	jtis := make(map[string]bool)
 	for i := 0; i < 10; i++ {
-		pair, err := m.GenerateTokens("user-1", "a@b.com", "admin", 0)
+		pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
 		require.NoError(t, err)
 
 		accessClaims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)

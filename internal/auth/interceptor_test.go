@@ -7,7 +7,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestAuthInterceptor_Creation(t *testing.T) {
@@ -47,18 +46,8 @@ func TestPublicProcedures_NonPublic(t *testing.T) {
 }
 
 func TestAuthzInterceptor_Creation(t *testing.T) {
-	authz, err := NewAuthorizer()
-	require.NoError(t, err)
-
-	mock := &mockPermissionQuerier{
-		permissions: map[string][]string{},
-	}
-	resolver := NewPermissionResolver(mock)
-
-	interceptor := NewAuthzInterceptor(authz, resolver)
+	interceptor := NewAuthzInterceptor()
 	assert.NotNil(t, interceptor)
-	assert.NotNil(t, interceptor.authorizer)
-	assert.NotNil(t, interceptor.permissionResolver)
 }
 
 func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
@@ -79,14 +68,7 @@ func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
 }
 
 func TestAuthzInterceptor_StreamingPassthrough(t *testing.T) {
-	authz, err := NewAuthorizer()
-	require.NoError(t, err)
-
-	mock := &mockPermissionQuerier{
-		permissions: map[string][]string{},
-	}
-	resolver := NewPermissionResolver(mock)
-	interceptor := NewAuthzInterceptor(authz, resolver)
+	interceptor := NewAuthzInterceptor()
 
 	clientFunc := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		return nil

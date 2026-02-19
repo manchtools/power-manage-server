@@ -5,16 +5,15 @@ import "context"
 type contextKey string
 
 const (
-	userContextKey        contextKey = "user"
-	deviceContextKey      contextKey = "device"
-	permissionsContextKey contextKey = "permissions"
+	userContextKey   contextKey = "user"
+	deviceContextKey contextKey = "device"
 )
 
 // UserContext holds authenticated user information.
 type UserContext struct {
 	ID             string
 	Email          string
-	Role           string // Deprecated: kept for backward compat during migration, use permissions instead
+	Permissions    []string
 	SessionVersion int32
 }
 
@@ -47,15 +46,13 @@ func DeviceFromContext(ctx context.Context) (*DeviceContext, bool) {
 	return device, ok
 }
 
-// WithPermissions stores the user's resolved permissions in the context.
-func WithPermissions(ctx context.Context, perms []string) context.Context {
-	return context.WithValue(ctx, permissionsContextKey, perms)
-}
-
-// HasPermission checks if the context contains a specific permission (exact match).
+// HasPermission checks if the user in context has a specific permission (exact match).
 func HasPermission(ctx context.Context, perm string) bool {
-	perms, _ := ctx.Value(permissionsContextKey).([]string)
-	for _, p := range perms {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return false
+	}
+	for _, p := range user.Permissions {
 		if p == perm {
 			return true
 		}
@@ -63,14 +60,14 @@ func HasPermission(ctx context.Context, perm string) bool {
 	return false
 }
 
-// SubjectFromContext returns the subject ID and role from context.
+// SubjectFromContext returns the subject ID from context.
 // It checks for user first, then device.
-func SubjectFromContext(ctx context.Context) (id, role string, ok bool) {
+func SubjectFromContext(ctx context.Context) (id string, isDevice bool, ok bool) {
 	if user, ok := UserFromContext(ctx); ok {
-		return user.ID, user.Role, true
+		return user.ID, false, true
 	}
 	if device, ok := DeviceFromContext(ctx); ok {
-		return device.ID, "device", true
+		return device.ID, true, true
 	}
-	return "", "", false
+	return "", false, false
 }

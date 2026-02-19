@@ -114,11 +114,11 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired token"))
 		}
 
-		// Add user context
+		// Add user context with permissions from JWT
 		userCtx := &UserContext{
 			ID:             claims.UserID,
 			Email:          claims.Email,
-			Role:           claims.Role,
+			Permissions:    claims.Permissions,
 			SessionVersion: claims.SessionVersion,
 		}
 		ctx = WithUser(ctx, userCtx)
@@ -138,14 +138,12 @@ func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 }
 
 // AuthzInterceptor provides Connect-RPC authorization interceptor.
-type AuthzInterceptor struct {
-	authorizer         *Authorizer
-	permissionResolver *PermissionResolver
-}
+// It uses the Go Authorize function with permissions already on the UserContext (from JWT).
+type AuthzInterceptor struct{}
 
 // NewAuthzInterceptor creates a new authorization interceptor.
-func NewAuthzInterceptor(authorizer *Authorizer, permissionResolver *PermissionResolver) *AuthzInterceptor {
-	return &AuthzInterceptor{authorizer: authorizer, permissionResolver: permissionResolver}
+func NewAuthzInterceptor() *AuthzInterceptor {
+	return &AuthzInterceptor{}
 }
 
 // WrapUnary implements connect.Interceptor.
@@ -165,46 +163,32 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// Check if device context
 		if deviceCtx, ok := DeviceFromContext(ctx); ok {
 			input := AuthzInput{
-				Role:      "device",
+				IsDevice:  true,
 				SubjectID: deviceCtx.ID,
 				Action:    action,
 			}
-			allowed, err := i.authorizer.Authorize(ctx, input)
-			if err != nil {
-				return nil, connect.NewError(connect.CodeInternal, errors.New("authorization check failed"))
-			}
-			if !allowed {
+			if !Authorize(input) {
 				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 			}
 			return next(ctx, req)
 		}
 
-		// User context — load permissions from roles
+		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 		}
 
-		permissions, err := i.permissionResolver.UserPermissions(ctx, userCtx.ID, userCtx.SessionVersion)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to load permissions"))
-		}
-
 		input := AuthzInput{
-			Permissions: permissions,
+			Permissions: userCtx.Permissions,
 			SubjectID:   userCtx.ID,
 			Action:      action,
 		}
 
-		allowed, err := i.authorizer.Authorize(ctx, input)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("authorization check failed"))
-		}
-		if !allowed {
+		if !Authorize(input) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 		}
 
-		ctx = WithPermissions(ctx, permissions)
 		return next(ctx, req)
 	}
 }

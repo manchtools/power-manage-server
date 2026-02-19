@@ -55,7 +55,13 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("account is disabled"))
 	}
 
-	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, user.Role, user.SessionVersion)
+	// Resolve permissions from DB and embed in JWT
+	permissions, err := h.store.Queries().GetUserPermissions(ctx, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
+	}
+
+	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, user.SessionVersion)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate tokens"))
 	}
@@ -108,12 +114,12 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing refresh token"))
 	}
 
-	// Check if the refresh token has been revoked
+	// Validate refresh token and check revocation
 	isRevoked := func(jti string) (bool, error) {
 		return h.store.Queries().IsTokenRevoked(ctx, jti)
 	}
 
-	result, err := h.jwtManager.RefreshAccessToken(refreshToken, isRevoked)
+	result, err := h.jwtManager.ValidateRefreshToken(refreshToken, isRevoked)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired refresh token"))
 	}
@@ -130,6 +136,18 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("session invalidated, please log in again"))
 	}
 
+	// Resolve fresh permissions from DB
+	permissions, err := h.store.Queries().GetUserPermissions(ctx, result.Claims.UserID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
+	}
+
+	// Generate new token pair with fresh permissions
+	tokens, err := h.jwtManager.GenerateTokens(result.Claims.UserID, result.Claims.Email, permissions, result.Claims.SessionVersion)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate tokens"))
+	}
+
 	// Revoke the old refresh token to prevent reuse
 	if result.OldJTI != "" {
 		_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
@@ -139,15 +157,15 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	resp := connect.NewResponse(&pm.RefreshTokenResponse{
-		AccessToken:  result.Tokens.AccessToken,
-		ExpiresAt:    timestamppb.New(result.Tokens.ExpiresAt),
-		RefreshToken: result.Tokens.RefreshToken,
+		AccessToken:  tokens.AccessToken,
+		ExpiresAt:    timestamppb.New(tokens.ExpiresAt),
+		RefreshToken: tokens.RefreshToken,
 	})
 
 	// Set httpOnly cookies with the new tokens
 	secure := auth.IsSecureRequest(req.Header())
 	refreshExpiry := time.Now().Add(7 * 24 * time.Hour)
-	auth.SetTokenCookies(resp.Header(), result.Tokens, refreshExpiry, secure)
+	auth.SetTokenCookies(resp.Header(), tokens, refreshExpiry, secure)
 
 	return resp, nil
 }
@@ -165,7 +183,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 	}
 
 	if refreshToken != "" {
-		claims, err := h.jwtManager.ValidateRefreshToken(refreshToken)
+		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
 			_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 				Jti:       claims.ID,

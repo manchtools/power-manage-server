@@ -112,7 +112,7 @@ func TestGetCurrentUser(t *testing.T) {
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "admin")
-	ctx := auth.WithUser(context.Background(), &auth.UserContext{ID: userID, Email: email, Role: "admin"})
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{ID: userID, Email: email, Permissions: auth.AdminPermissions()})
 
 	resp, err := h.GetCurrentUser(ctx, connect.NewRequest(&pm.GetCurrentUserRequest{}))
 	require.NoError(t, err)

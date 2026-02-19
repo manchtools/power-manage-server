@@ -24,7 +24,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 	UserID         string    `json:"uid"`
 	Email          string    `json:"email"`
-	Role           string    `json:"role"`
+	Permissions    []string  `json:"perms,omitempty"`
 	TokenType      TokenType `json:"type"`
 	SessionVersion int32     `json:"sv,omitempty"`
 }
@@ -64,7 +64,8 @@ type TokenPair struct {
 }
 
 // GenerateTokens creates a new access/refresh token pair.
-func (m *JWTManager) GenerateTokens(userID, email, role string, sessionVersion int32) (*TokenPair, error) {
+// Permissions are only embedded in the access token, not the refresh token.
+func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, sessionVersion int32) (*TokenPair, error) {
 	now := time.Now()
 	accessExpiry := now.Add(m.config.AccessTokenExpiry)
 	entropy := ulid.Monotonic(rand.Reader, 0)
@@ -80,7 +81,7 @@ func (m *JWTManager) GenerateTokens(userID, email, role string, sessionVersion i
 		},
 		UserID:         userID,
 		Email:          email,
-		Role:           role,
+		Permissions:    permissions,
 		TokenType:      TokenTypeAccess,
 		SessionVersion: sessionVersion,
 	}
@@ -102,7 +103,6 @@ func (m *JWTManager) GenerateTokens(userID, email, role string, sessionVersion i
 		},
 		UserID:         userID,
 		Email:          email,
-		Role:           role,
 		TokenType:      TokenTypeRefresh,
 		SessionVersion: sessionVersion,
 	}
@@ -144,17 +144,17 @@ func (m *JWTManager) ValidateToken(tokenString string, expectedType TokenType) (
 	return claims, nil
 }
 
-// RefreshResult contains the new token pair, the parsed refresh claims, and the old refresh token's JTI for revocation.
+// RefreshResult contains the parsed refresh claims and the old refresh token's JTI for revocation.
+// The caller is responsible for resolving fresh permissions from DB and calling GenerateTokens.
 type RefreshResult struct {
-	Tokens *TokenPair
 	Claims *Claims
 	OldJTI string
 	OldExp time.Time
 }
 
-// RefreshAccessToken validates a refresh token, checks revocation, and generates a new token pair.
-// The isRevoked callback checks whether the token's JTI has been revoked.
-func (m *JWTManager) RefreshAccessToken(refreshTokenString string, isRevoked func(string) (bool, error)) (*RefreshResult, error) {
+// ValidateRefreshToken validates a refresh token, checks revocation, and returns its claims.
+// The caller should then resolve fresh permissions from DB and generate new tokens.
+func (m *JWTManager) ValidateRefreshToken(refreshTokenString string, isRevoked func(string) (bool, error)) (*RefreshResult, error) {
 	claims, err := m.ValidateToken(refreshTokenString, TokenTypeRefresh)
 	if err != nil {
 		return nil, fmt.Errorf("validate refresh token: %w", err)
@@ -171,21 +171,9 @@ func (m *JWTManager) RefreshAccessToken(refreshTokenString string, isRevoked fun
 		}
 	}
 
-	tokens, err := m.GenerateTokens(claims.UserID, claims.Email, claims.Role, claims.SessionVersion)
-	if err != nil {
-		return nil, err
-	}
-
 	return &RefreshResult{
-		Tokens: tokens,
 		Claims: claims,
 		OldJTI: claims.ID,
 		OldExp: claims.ExpiresAt.Time,
 	}, nil
-}
-
-// ValidateRefreshToken validates a refresh token and returns its claims.
-// Used by the logout handler to extract the JTI for revocation.
-func (m *JWTManager) ValidateRefreshToken(refreshTokenString string) (*Claims, error) {
-	return m.ValidateToken(refreshTokenString, TokenTypeRefresh)
 }

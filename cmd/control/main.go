@@ -99,14 +99,6 @@ func main() {
 		Secret: []byte(cfg.JWTSecret),
 	})
 
-	// Initialize authorizer and permission resolver
-	authorizer, err := auth.NewAuthorizer()
-	if err != nil {
-		logger.Error("failed to initialize authorizer", "error", err)
-		os.Exit(1)
-	}
-	permissionResolver := auth.NewPermissionResolver(auth.NewQueriesAdapter(st.Queries()))
-
 	// Start control handler (PostgreSQL LISTEN notification processor)
 	controlHandler := control.NewHandler(st, logger)
 	go func() {
@@ -191,7 +183,7 @@ func main() {
 
 	interceptors := connect.WithInterceptors(
 		auth.NewAuthInterceptor(jwtManager, loginLimiter, refreshLimiter, registerLimiter),
-		auth.NewAuthzInterceptor(authorizer, permissionResolver),
+		auth.NewAuthzInterceptor(),
 	)
 
 	mux := http.NewServeMux()

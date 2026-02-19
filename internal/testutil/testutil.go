@@ -252,23 +252,23 @@ func CreateTestToken(t *testing.T, st *store.Store, actorID, name, valueHash str
 	return id
 }
 
-// AuthContext returns a context with the given user injected.
-func AuthContext(id, email, role string) context.Context {
+// AuthContext returns a context with the given user and permissions injected.
+func AuthContext(id, email string, permissions []string) context.Context {
 	return auth.WithUser(context.Background(), &auth.UserContext{
-		ID:    id,
-		Email: email,
-		Role:  role,
+		ID:          id,
+		Email:       email,
+		Permissions: permissions,
 	})
 }
 
-// AdminContext returns a context with an admin user.
+// AdminContext returns a context with an admin user (all permissions).
 func AdminContext(id string) context.Context {
-	return AuthContext(id, fmt.Sprintf("admin-%s@test.com", id[:8]), "admin")
+	return AuthContext(id, fmt.Sprintf("admin-%s@test.com", id[:8]), auth.AdminPermissions())
 }
 
-// UserContext returns a context with a regular user.
+// UserContext returns a context with a regular user (default permissions).
 func UserContext(id string) context.Context {
-	return AuthContext(id, fmt.Sprintf("user-%s@test.com", id[:8]), "user")
+	return AuthContext(id, fmt.Sprintf("user-%s@test.com", id[:8]), auth.DefaultUserPermissions())
 }
 
 // DisableEvent returns a store.Event that disables a user.
