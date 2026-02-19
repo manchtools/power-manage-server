@@ -272,6 +272,9 @@ func parseFlags() *Config {
 	if v := os.Getenv("CONTROL_LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v
 	}
+	if v := os.Getenv("CONTROL_LOG_FORMAT"); v != "" {
+		cfg.LogFormat = v
+	}
 	if v := os.Getenv("CONTROL_GATEWAY_URL"); v != "" {
 		cfg.GatewayURL = v
 	}
