@@ -234,7 +234,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
 		}
 
-		if !auth.VerifyPassword(req.Msg.CurrentPassword, user.PasswordHash) {
+		if !auth.VerifyPassword(req.Msg.CurrentPassword, derefPasswordHash(user.PasswordHash)) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("current password is incorrect"))
 		}
 	}
@@ -351,6 +351,7 @@ func userToProto(u db.UsersProjection) *pm.User {
 		Email:       u.Email,
 		Disabled:    u.Disabled,
 		TotpEnabled: u.TotpEnabled,
+		HasPassword: u.HasPassword,
 	}
 
 	if u.CreatedAt.Valid {
@@ -362,6 +363,14 @@ func userToProto(u db.UsersProjection) *pm.User {
 	}
 
 	return user
+}
+
+// derefPasswordHash safely dereferences a *string password hash.
+func derefPasswordHash(ph *string) string {
+	if ph == nil {
+		return ""
+	}
+	return *ph
 }
 
 // populateUserRoles loads roles for a user and attaches them to the proto User.

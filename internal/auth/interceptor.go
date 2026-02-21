@@ -16,6 +16,9 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/Logout":          true,
 	"/pm.v1.ControlService/Register":        true,
 	"/pm.v1.ControlService/VerifyLoginTOTP": true,
+	"/pm.v1.ControlService/ListAuthMethods": true,
+	"/pm.v1.ControlService/GetSSOLoginURL":  true,
+	"/pm.v1.ControlService/SSOCallback":     true,
 }
 
 // clientIP extracts the real client IP, checking X-Forwarded-For and
@@ -65,7 +68,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		procedure := req.Spec().Procedure
 
 		// Rate limit login attempts by client IP
-		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP") && i.loginLimiter != nil {
+		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.loginLimiter != nil {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many login attempts, try again later"))

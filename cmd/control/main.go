@@ -45,6 +45,8 @@ type Config struct {
 	CORSOrigins                  []string
 	GatewayURL                   string
 	DynamicGroupEvalInterval     time.Duration
+	PasswordAuthEnabled          bool
+	SSOCallbackBaseURL           string
 }
 
 func main() {
@@ -176,7 +178,10 @@ func main() {
 	actionSigner := ca.NewActionSigner(certAuth)
 
 	// Setup Connect-RPC service
-	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor)
+	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
+		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
+		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
+	})
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
@@ -289,6 +294,18 @@ func parseFlags() *Config {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.DynamicGroupEvalInterval = d
 		}
+	}
+
+	// SSO / Identity Provider configuration
+	cfg.PasswordAuthEnabled = true // default enabled
+	if v := os.Getenv("CONTROL_PASSWORD_AUTH_ENABLED"); v == "false" || v == "0" {
+		cfg.PasswordAuthEnabled = false
+	}
+	if v := os.Getenv("CONTROL_SSO_CALLBACK_BASE_URL"); v != "" {
+		cfg.SSOCallbackBaseURL = v
+	} else if len(cfg.CORSOrigins) > 0 {
+		// Derive from first CORS origin
+		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
 	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)

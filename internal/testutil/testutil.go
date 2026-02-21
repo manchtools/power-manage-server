@@ -273,6 +273,21 @@ func UserContext(id string) context.Context {
 	return AuthContext(id, fmt.Sprintf("user-%s@test.com", id[:8]), auth.DefaultUserPermissions())
 }
 
+// SSOOnlyUserEvent returns a store.Event that creates a user without a password (SSO-only).
+func SSOOnlyUserEvent(userID, email string) store.Event {
+	return store.Event{
+		StreamType: "user",
+		StreamID:   userID,
+		EventType:  "UserCreated",
+		Data: map[string]any{
+			"email": email,
+			"role":  "user",
+		},
+		ActorType: "system",
+		ActorID:   "sso",
+	}
+}
+
 // DisableEvent returns a store.Event that disables a user.
 func DisableEvent(userID string) store.Event {
 	return store.Event{
@@ -517,4 +532,67 @@ func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, ema
 	}
 
 	return key.Secret()
+}
+
+// CreateTestIdentityProvider creates an identity provider via events and returns the provider ID.
+func CreateTestIdentityProvider(t *testing.T, st *store.Store, enc *crypto.Encryptor, actorID, name, slug string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	encSecret, err := enc.Encrypt("test-client-secret")
+	if err != nil {
+		t.Fatalf("encrypt test secret: %v", err)
+	}
+
+	err = st.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   id,
+		EventType:  "IdentityProviderCreated",
+		Data: map[string]any{
+			"name":                    name,
+			"slug":                    slug,
+			"provider_type":           "oidc",
+			"client_id":              "test-client-id",
+			"client_secret_encrypted": encSecret,
+			"issuer_url":             "https://idp.example.com",
+			"scopes":                 []string{"openid", "profile", "email"},
+			"auto_create_users":      false,
+			"auto_link_by_email":     false,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("create test identity provider: %v", err)
+	}
+
+	return id
+}
+
+// CreateTestIdentityLink creates an identity link via events and returns the link ID.
+func CreateTestIdentityLink(t *testing.T, st *store.Store, userID, providerID, externalID, externalEmail string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   id,
+		EventType:  "IdentityLinked",
+		Data: map[string]any{
+			"user_id":        userID,
+			"provider_id":    providerID,
+			"external_id":    externalID,
+			"external_email": externalEmail,
+			"external_name":  "Test User",
+		},
+		ActorType: "system",
+		ActorID:   "sso",
+	})
+	if err != nil {
+		t.Fatalf("create test identity link: %v", err)
+	}
+
+	return id
 }

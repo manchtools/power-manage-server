@@ -57,6 +57,16 @@ type AssignmentsProjection struct {
 	ProjectionVersion int64              `json:"projection_version"`
 }
 
+type AuthState struct {
+	State        string             `json:"state"`
+	ProviderID   string             `json:"provider_id"`
+	Nonce        string             `json:"nonce"`
+	CodeVerifier string             `json:"code_verifier"`
+	RedirectUri  string             `json:"redirect_uri"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+}
+
 type DefinitionMembersProjection struct {
 	DefinitionID      string             `json:"definition_id"`
 	ActionSetID       string             `json:"action_set_id"`
@@ -160,6 +170,45 @@ type ExecutionsProjection struct {
 	CreatedByID       string             `json:"created_by_id"`
 	ProjectionVersion int64              `json:"projection_version"`
 	Changed           bool               `json:"changed"`
+}
+
+type IdentityLinksProjection struct {
+	ID                string             `json:"id"`
+	UserID            string             `json:"user_id"`
+	ProviderID        string             `json:"provider_id"`
+	ExternalID        string             `json:"external_id"`
+	ExternalEmail     string             `json:"external_email"`
+	ExternalName      string             `json:"external_name"`
+	LinkedAt          pgtype.Timestamptz `json:"linked_at"`
+	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type IdentityProvidersProjection struct {
+	ID                       string             `json:"id"`
+	Name                     string             `json:"name"`
+	Slug                     string             `json:"slug"`
+	ProviderType             string             `json:"provider_type"`
+	Enabled                  bool               `json:"enabled"`
+	ClientID                 string             `json:"client_id"`
+	ClientSecretEncrypted    string             `json:"client_secret_encrypted"`
+	IssuerUrl                string             `json:"issuer_url"`
+	AuthorizationUrl         string             `json:"authorization_url"`
+	TokenUrl                 string             `json:"token_url"`
+	UserinfoUrl              string             `json:"userinfo_url"`
+	Scopes                   []string           `json:"scopes"`
+	AutoCreateUsers          bool               `json:"auto_create_users"`
+	AutoLinkByEmail          bool               `json:"auto_link_by_email"`
+	DefaultRoleID            string             `json:"default_role_id"`
+	AttributeMapping         []byte             `json:"attribute_mapping"`
+	DisablePasswordForLinked bool               `json:"disable_password_for_linked"`
+	GroupClaim               string             `json:"group_claim"`
+	GroupMapping             []byte             `json:"group_mapping"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	CreatedBy                string             `json:"created_by"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	IsDeleted                bool               `json:"is_deleted"`
+	ProjectionVersion        int64              `json:"projection_version"`
 }
 
 type LpsPasswordsProjection struct {
@@ -319,7 +368,7 @@ type UserSelectionsProjection struct {
 type UsersProjection struct {
 	ID                string             `json:"id"`
 	Email             string             `json:"email"`
-	PasswordHash      string             `json:"password_hash"`
+	PasswordHash      *string            `json:"password_hash"`
 	Role              string             `json:"role"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
@@ -329,4 +378,5 @@ type UsersProjection struct {
 	ProjectionVersion int64              `json:"projection_version"`
 	SessionVersion    int32              `json:"session_version"`
 	TotpEnabled       bool               `json:"totp_enabled"`
+	HasPassword       bool               `json:"has_password"`
 }

@@ -46,7 +46,18 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up user"))
 	}
 
-	if !auth.VerifyPassword(req.Msg.Password, user.PasswordHash) {
+	// Check password eligibility
+	if !user.HasPassword {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("password login is not available for this account"))
+	}
+
+	// Check if any linked provider disables password login
+	disablingProviders, err := h.store.Queries().GetLinkedProvidersDisablingPassword(ctx, user.ID)
+	if err == nil && len(disablingProviders) > 0 {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("password login is disabled; use "+disablingProviders[0].Name+" to sign in"))
+	}
+
+	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))
 	}
 

@@ -32,10 +32,19 @@ type ControlService struct {
 	osquery       *OSQueryHandler
 	role          *RoleHandler
 	userGroup     *UserGroupHandler
+	idp           *IDPHandler
+	sso           *SSOHandler
+	identityLink  *IdentityLinkHandler
+}
+
+// ControlServiceConfig holds configuration for the control service.
+type ControlServiceConfig struct {
+	PasswordAuthEnabled bool
+	SSOCallbackBaseURL  string
 }
 
 // NewControlService creates a new control service.
-func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor) *ControlService {
+func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
 	actionHandler := NewActionHandler(st, signer)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
@@ -54,6 +63,9 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		osquery:       NewOSQueryHandler(st),
 		role:          NewRoleHandler(st),
 		userGroup:     NewUserGroupHandler(st),
+		idp:           NewIDPHandler(st, enc),
+		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
+		identityLink:  NewIdentityLinkHandler(st),
 	}
 }
 
@@ -524,4 +536,47 @@ func (s *ControlService) RevokeRoleFromUserGroup(ctx context.Context, req *conne
 
 func (s *ControlService) ListUserGroupsForUser(ctx context.Context, req *connect.Request[pm.ListUserGroupsForUserRequest]) (*connect.Response[pm.ListUserGroupsForUserResponse], error) {
 	return s.userGroup.ListUserGroupsForUser(ctx, req)
+}
+
+// Identity Providers
+func (s *ControlService) CreateIdentityProvider(ctx context.Context, req *connect.Request[pm.CreateIdentityProviderRequest]) (*connect.Response[pm.CreateIdentityProviderResponse], error) {
+	return s.idp.CreateIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) GetIdentityProvider(ctx context.Context, req *connect.Request[pm.GetIdentityProviderRequest]) (*connect.Response[pm.GetIdentityProviderResponse], error) {
+	return s.idp.GetIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) ListIdentityProviders(ctx context.Context, req *connect.Request[pm.ListIdentityProvidersRequest]) (*connect.Response[pm.ListIdentityProvidersResponse], error) {
+	return s.idp.ListIdentityProviders(ctx, req)
+}
+
+func (s *ControlService) UpdateIdentityProvider(ctx context.Context, req *connect.Request[pm.UpdateIdentityProviderRequest]) (*connect.Response[pm.UpdateIdentityProviderResponse], error) {
+	return s.idp.UpdateIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) DeleteIdentityProvider(ctx context.Context, req *connect.Request[pm.DeleteIdentityProviderRequest]) (*connect.Response[pm.DeleteIdentityProviderResponse], error) {
+	return s.idp.DeleteIdentityProvider(ctx, req)
+}
+
+// SSO
+func (s *ControlService) ListAuthMethods(ctx context.Context, req *connect.Request[pm.ListAuthMethodsRequest]) (*connect.Response[pm.ListAuthMethodsResponse], error) {
+	return s.sso.ListAuthMethods(ctx, req)
+}
+
+func (s *ControlService) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm.GetSSOLoginURLRequest]) (*connect.Response[pm.GetSSOLoginURLResponse], error) {
+	return s.sso.GetSSOLoginURL(ctx, req)
+}
+
+func (s *ControlService) SSOCallback(ctx context.Context, req *connect.Request[pm.SSOCallbackRequest]) (*connect.Response[pm.SSOCallbackResponse], error) {
+	return s.sso.SSOCallback(ctx, req)
+}
+
+// Identity Links
+func (s *ControlService) ListIdentityLinks(ctx context.Context, req *connect.Request[pm.ListIdentityLinksRequest]) (*connect.Response[pm.ListIdentityLinksResponse], error) {
+	return s.identityLink.ListIdentityLinks(ctx, req)
+}
+
+func (s *ControlService) UnlinkIdentity(ctx context.Context, req *connect.Request[pm.UnlinkIdentityRequest]) (*connect.Response[pm.UnlinkIdentityResponse], error) {
+	return s.identityLink.UnlinkIdentity(ctx, req)
 }

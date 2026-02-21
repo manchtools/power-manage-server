@@ -141,6 +141,15 @@ func AllPermissions() []PermissionInfo {
 		{"AssignRoleToUserGroup", "User Groups", "Assign roles to user groups"},
 		{"RevokeRoleFromUserGroup", "User Groups", "Revoke roles from user groups"},
 		{"ListUserGroupsForUser", "User Groups", "List user groups for a user"},
+		// Identity Providers
+		{"CreateIdentityProvider", "Identity Providers", "Create identity providers"},
+		{"GetIdentityProvider", "Identity Providers", "View identity providers"},
+		{"ListIdentityProviders", "Identity Providers", "List identity providers"},
+		{"UpdateIdentityProvider", "Identity Providers", "Update identity providers"},
+		{"DeleteIdentityProvider", "Identity Providers", "Delete identity providers"},
+		// Identity Links
+		{"ListIdentityLinks", "Authentication", "View own linked identities"},
+		{"UnlinkIdentity", "Authentication", "Unlink own identity"},
 	}
 }
 
@@ -183,6 +192,8 @@ func DefaultUserPermissions() []string {
 		"CreateToken:self",
 		"SetUserSelection",
 		"ListAvailableActions",
+		"ListIdentityLinks",
+		"UnlinkIdentity",
 	}
 }
 

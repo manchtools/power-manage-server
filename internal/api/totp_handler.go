@@ -156,7 +156,7 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
-	if !auth.VerifyPassword(req.Msg.Password, user.PasswordHash) {
+	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid password"))
 	}
 
@@ -221,7 +221,7 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
-	if !auth.VerifyPassword(req.Msg.Password, user.PasswordHash) {
+	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid password"))
 	}
 

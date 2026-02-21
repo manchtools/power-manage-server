@@ -11,6 +11,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -266,4 +267,83 @@ func TestLogin_TOTPNotRequired(t *testing.T) {
 	assert.NotEmpty(t, resp.Msg.AccessToken)
 	assert.NotEmpty(t, resp.Msg.RefreshToken)
 	assert.NotNil(t, resp.Msg.User)
+}
+
+func TestLogin_PasswordDisabledByProvider(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Create a provider with disable_password_for_linked=true
+	providerID := testutil.NewID()
+	err := st.AppendEvent(context.Background(), store.Event{
+		StreamType: "identity_provider",
+		StreamID:   providerID,
+		EventType:  "IdentityProviderCreated",
+		Data: map[string]any{
+			"name":                        "Corporate SSO",
+			"slug":                        "corporate",
+			"provider_type":               "oidc",
+			"client_id":                   "client-corp",
+			"client_secret_encrypted":     "encrypted",
+			"issuer_url":                  "https://corp.example.com",
+			"enabled":                     true,
+			"disable_password_for_linked": true,
+		},
+		ActorType: "system",
+		ActorID:   "test",
+	})
+	require.NoError(t, err)
+
+	// Link the user to this provider
+	testutil.CreateTestIdentityLink(t, st, userID, providerID, "corp-ext-123", email)
+
+	// Login with correct password should still be rejected
+	_, err = h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "password login is disabled")
+}
+
+func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.NewID()
+	err := st.AppendEvent(context.Background(), testutil.SSOOnlyUserEvent(userID, email))
+	require.NoError(t, err)
+
+	// Login attempt should fail because user has no password
+	_, err = h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "anything",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "password login is not available")
+}
+
+func TestLogin_UserHasPassword(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "password", "user")
+
+	resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	assert.True(t, resp.Msg.User.HasPassword)
 }

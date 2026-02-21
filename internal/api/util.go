@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strconv"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 )
@@ -31,4 +35,10 @@ func userFilterID(ctx context.Context, action string) *string {
 		return &u.ID
 	}
 	return nil
+}
+
+// newULID generates a new ULID string.
+func newULID() string {
+	entropy := ulid.Monotonic(rand.Reader, 0)
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }
