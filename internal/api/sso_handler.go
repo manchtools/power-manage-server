@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -125,8 +126,11 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	})
 	if err != nil {
+		slog.Error("failed to store auth state", "error", err, "provider", provider.Slug)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to store auth state"))
 	}
+
+	slog.Info("SSO auth state created", "provider", provider.Slug, "state_prefix", state[:8], "expires_at", expiresAt.UTC())
 
 	// Create OIDC provider and generate auth URL
 	callbackURL := h.callbackBaseURL + "/auth/callback/" + provider.Slug
@@ -159,11 +163,19 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 
 	// Look up and validate auth state
+	statePrefix := req.Msg.State
+	if len(statePrefix) > 8 {
+		statePrefix = statePrefix[:8]
+	}
+	slog.Info("SSO callback received", "slug", req.Msg.Slug, "state_prefix", statePrefix)
+
 	authState, err := h.store.Queries().GetAuthState(ctx, req.Msg.State)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired state"))
 		}
+		slog.Error("SSO auth state lookup failed", "error", err, "state_prefix", statePrefix)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate state"))
 	}
 
@@ -211,19 +223,24 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Exchange code for tokens
 	oauth2Token, err := oidcProvider.ExchangeCode(ctx, req.Msg.Code, authState.CodeVerifier)
 	if err != nil {
+		slog.Error("SSO code exchange failed", "error", err, "slug", req.Msg.Slug)
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("failed to exchange code"))
 	}
 
 	// Verify id_token and extract claims
 	claims, err := oidcProvider.VerifyAndExtractClaims(ctx, oauth2Token, authState.Nonce)
 	if err != nil {
+		slog.Error("SSO id_token verification failed", "error", err, "slug", req.Msg.Slug)
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("failed to verify id_token"))
 	}
+
+	slog.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
 
 	// Link or create user
 	linker := idp.NewLinker(h.store.Queries(), &storeEventAdapter{store: h.store})
 	linkResult, err := linker.LinkOrCreate(ctx, provider, claims)
 	if err != nil {
+		slog.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New(err.Error()))
 	}
 

@@ -72,6 +72,33 @@ func (q *Queries) GetIdentityLinkByProviderAndExternalID(ctx context.Context, ar
 	return i, err
 }
 
+const getIdentityLinkByProviderAndUser = `-- name: GetIdentityLinkByProviderAndUser :one
+SELECT id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at, projection_version FROM identity_links_projection
+WHERE provider_id = $1 AND user_id = $2
+`
+
+type GetIdentityLinkByProviderAndUserParams struct {
+	ProviderID string `json:"provider_id"`
+	UserID     string `json:"user_id"`
+}
+
+func (q *Queries) GetIdentityLinkByProviderAndUser(ctx context.Context, arg GetIdentityLinkByProviderAndUserParams) (IdentityLinksProjection, error) {
+	row := q.db.QueryRow(ctx, getIdentityLinkByProviderAndUser, arg.ProviderID, arg.UserID)
+	var i IdentityLinksProjection
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ProviderID,
+		&i.ExternalID,
+		&i.ExternalEmail,
+		&i.ExternalName,
+		&i.LinkedAt,
+		&i.LastLoginAt,
+		&i.ProjectionVersion,
+	)
+	return i, err
+}
+
 const listIdentityLinksForUser = `-- name: ListIdentityLinksForUser :many
 SELECT il.id, il.user_id, il.provider_id, il.external_id, il.external_email, il.external_name, il.linked_at, il.last_login_at, il.projection_version, ip.name AS provider_name, ip.slug AS provider_slug
 FROM identity_links_projection il

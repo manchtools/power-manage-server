@@ -78,6 +78,8 @@ services:
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
       - CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL=${DYNAMIC_GROUP_EVAL_INTERVAL:-1h}
+      - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
+      - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
       - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]

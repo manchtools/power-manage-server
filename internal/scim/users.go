@@ -188,8 +188,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			ExternalID: externalID,
 		})
 		if err == nil {
-			// User already linked with this external ID — return conflict
-			writeJSON(w, http.StatusConflict, findExternalIDUserRowToSCIM(existing, baseURL))
+			// User already linked with this external ID — return existing resource.
+			// Using 200 instead of 409 makes POST idempotent for SCIM clients that
+			// re-POST on every sync cycle.
+			writeJSON(w, http.StatusOK, findExternalIDUserRowToSCIM(existing, baseURL))
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -206,8 +208,8 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			Email:      email,
 		})
 		if err == nil {
-			// Already linked — return conflict
-			writeJSON(w, http.StatusConflict, findUserRowToSCIM(existing, baseURL))
+			// Already linked — return existing resource
+			writeJSON(w, http.StatusOK, findUserRowToSCIM(existing, baseURL))
 			return
 		}
 
@@ -651,6 +653,22 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to get user for delete", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get user")
 		return
+	}
+
+	// Remove the identity link for this provider so the user can be re-provisioned later
+	link, err := h.store.Queries().GetIdentityLinkByProviderAndUser(ctx, db.GetIdentityLinkByProviderAndUserParams{
+		ProviderID: provider.ID,
+		UserID:     userID,
+	})
+	if err == nil {
+		_ = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "identity_provider",
+			StreamID:   link.ID,
+			EventType:  "IdentityUnlinked",
+			Data:       map[string]any{},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
+		})
 	}
 
 	// Soft-disable (not hard delete)

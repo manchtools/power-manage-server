@@ -183,9 +183,38 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		ScimGroupID: scimGroupID,
 	})
 	if err == nil {
-		// Already exists — return conflict
-		group, _ := h.buildGroupResource(ctx, existing, baseURL)
-		writeJSON(w, http.StatusConflict, group)
+		// Already exists — update display name if changed and return existing resource.
+		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
+		if existing.ScimDisplayName != scimGroup.DisplayName {
+			_ = h.store.AppendEvent(ctx, store.Event{
+				StreamType: "scim_group_mapping",
+				StreamID:   existing.ID,
+				EventType:  "SCIMGroupMappingUpdated",
+				Data: map[string]any{
+					"provider_id":       provider.ID,
+					"scim_group_id":     scimGroupID,
+					"scim_display_name": scimGroup.DisplayName,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
+			})
+			_ = h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user_group",
+				StreamID:   existing.UserGroupID,
+				EventType:  "UserGroupUpdated",
+				Data: map[string]any{
+					"name": scimGroup.DisplayName,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
+			})
+		}
+		group, err := h.buildGroupResource(ctx, existing, baseURL)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to build group resource")
+			return
+		}
+		writeJSON(w, http.StatusOK, group)
 		return
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
