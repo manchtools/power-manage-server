@@ -20,6 +20,27 @@ func (q *Queries) CleanupExpiredAuthStates(ctx context.Context) error {
 	return err
 }
 
+const consumeAuthState = `-- name: ConsumeAuthState :one
+DELETE FROM auth_states
+WHERE state = $1 AND expires_at > now()
+RETURNING state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at
+`
+
+func (q *Queries) ConsumeAuthState(ctx context.Context, state string) (AuthState, error) {
+	row := q.db.QueryRow(ctx, consumeAuthState, state)
+	var i AuthState
+	err := row.Scan(
+		&i.State,
+		&i.ProviderID,
+		&i.Nonce,
+		&i.CodeVerifier,
+		&i.RedirectUri,
+		&i.CreatedAt,
+		&i.ExpiresAt,
+	)
+	return i, err
+}
+
 const createAuthState = `-- name: CreateAuthState :exec
 INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at)
 VALUES ($1, $2, $3, $4, $5, now(), $6)
@@ -44,33 +65,4 @@ func (q *Queries) CreateAuthState(ctx context.Context, arg CreateAuthStateParams
 		arg.ExpiresAt,
 	)
 	return err
-}
-
-const deleteAuthState = `-- name: DeleteAuthState :exec
-DELETE FROM auth_states WHERE state = $1
-`
-
-func (q *Queries) DeleteAuthState(ctx context.Context, state string) error {
-	_, err := q.db.Exec(ctx, deleteAuthState, state)
-	return err
-}
-
-const getAuthState = `-- name: GetAuthState :one
-SELECT state, provider_id, nonce, code_verifier, redirect_uri, created_at, expires_at FROM auth_states
-WHERE state = $1 AND expires_at > now()
-`
-
-func (q *Queries) GetAuthState(ctx context.Context, state string) (AuthState, error) {
-	row := q.db.QueryRow(ctx, getAuthState, state)
-	var i AuthState
-	err := row.Scan(
-		&i.State,
-		&i.ProviderID,
-		&i.Nonce,
-		&i.CodeVerifier,
-		&i.RedirectUri,
-		&i.CreatedAt,
-		&i.ExpiresAt,
-	)
-	return i, err
 }

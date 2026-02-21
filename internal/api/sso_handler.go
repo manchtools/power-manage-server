@@ -169,7 +169,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 	slog.Info("SSO callback received", "slug", req.Msg.Slug, "state_prefix", statePrefix)
 
-	authState, err := h.store.Queries().GetAuthState(ctx, req.Msg.State)
+	authState, err := h.store.Queries().ConsumeAuthState(ctx, req.Msg.State)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
@@ -178,9 +178,6 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		slog.Error("SSO auth state lookup failed", "error", err, "state_prefix", statePrefix)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate state"))
 	}
-
-	// Delete state (one-time use)
-	_ = h.store.Queries().DeleteAuthState(ctx, req.Msg.State)
 
 	// Get provider
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, authState.ProviderID)
@@ -241,18 +238,18 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	linkResult, err := linker.LinkOrCreate(ctx, provider, claims)
 	if err != nil {
 		slog.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New(err.Error()))
+		if errors.Is(err, idp.ErrNoMatchingAccount) {
+			return nil, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to authenticate"))
 	}
 
-	// Sync group memberships
-	groupMapping := idp.ParseGroupMapping(provider.GroupMapping)
-	if len(claims.Groups) > 0 && len(groupMapping) > 0 {
-		_ = linker.SyncGroupMemberships(ctx, linkResult.UserID, claims.Groups, groupMapping)
-	}
-
-	// Get user
+	// Get and validate user before proceeding
 	user, err := h.store.Queries().GetUserByID(ctx, linkResult.UserID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("account not found"))
+		}
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
@@ -260,19 +257,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("account is disabled"))
 	}
 
-	// Emit login event
-	_ = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   user.ID,
-		EventType:  "UserLoggedIn",
-		Data: map[string]any{
-			"provider": provider.Slug,
-		},
-		ActorType: "user",
-		ActorID:   user.ID,
-	})
+	// Sync group memberships (only for valid, active users)
+	groupMapping := idp.ParseGroupMapping(provider.GroupMapping)
+	if len(claims.Groups) > 0 && len(groupMapping) > 0 {
+		_ = linker.SyncGroupMemberships(ctx, linkResult.UserID, claims.Groups, groupMapping)
+	}
 
-	// Check if TOTP is required
+	// Check if TOTP is required (don't emit login event — TOTP handler will)
 	if user.TotpEnabled {
 		challenge, err := h.jwtManager.GenerateTOTPChallenge(user.ID, user.Email, user.SessionVersion)
 		if err != nil {
@@ -283,6 +274,18 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 			TotpChallenge: challenge,
 		}), nil
 	}
+
+	// Emit login event (fully authenticated — no TOTP required)
+	_ = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   user.ID,
+		EventType:  "UserLoggedIn",
+		Data: map[string]any{
+			"provider": provider.Slug,
+		},
+		ActorType: "user",
+		ActorID:   user.ID,
+	})
 
 	// Generate tokens
 	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)

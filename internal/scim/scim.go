@@ -4,6 +4,7 @@ package scim
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 )
 
 // SCIM schema URIs.
@@ -114,6 +115,6 @@ func writeError(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, SCIMError{
 		Schemas: []string{ErrorSchema},
 		Detail:  detail,
-		Status:  http.StatusText(status),
+		Status:  strconv.Itoa(status),
 	})
 }

@@ -48,13 +48,6 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	totalCount, err := h.store.Queries().CountSCIMGroupMappings(ctx, provider.ID)
-	if err != nil {
-		h.logger.Error("failed to count SCIM group mappings", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to count groups")
-		return
-	}
-
 	resources := make([]any, 0, len(mappings))
 	for _, m := range mappings {
 		group, err := h.buildGroupResource(ctx, m, baseURL)
@@ -67,7 +60,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, SCIMListResponse{
 		Schemas:      []string{ListResponseSchema},
-		TotalResults: int(totalCount),
+		TotalResults: len(resources),
 		StartIndex:   startIndex,
 		ItemsPerPage: len(resources),
 		Resources:    resources,
@@ -186,7 +179,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		// Already exists — update display name if changed and return existing resource.
 		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
 		if existing.ScimDisplayName != scimGroup.DisplayName {
-			_ = h.store.AppendEvent(ctx, store.Event{
+			h.appendEvent(ctx, store.Event{
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
 				EventType:  "SCIMGroupMappingUpdated",
@@ -198,7 +191,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				ActorType: "scim",
 				ActorID:   provider.ID,
 			})
-			_ = h.store.AppendEvent(ctx, store.Event{
+			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   existing.UserGroupID,
 				EventType:  "UserGroupUpdated",
@@ -209,6 +202,12 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				ActorID:   provider.ID,
 			})
 		}
+
+		// Reconcile members if provided
+		if len(scimGroup.Members) > 0 {
+			h.reconcileGroupMembers(ctx, provider, existing.UserGroupID, scimGroup.Members)
+		}
+
 		group, err := h.buildGroupResource(ctx, existing, baseURL)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to build group resource")
@@ -269,7 +268,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		streamID := userGroupID + ":" + member.Value
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  "UserGroupMemberAdded",
@@ -399,8 +398,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 
 	// Update display name if changed
 	if scimGroup.DisplayName != "" && scimGroup.DisplayName != mapping.ScimDisplayName {
-		// Update the SCIM group mapping display name
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
 			EventType:  "SCIMGroupMappingUpdated",
@@ -413,8 +411,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 			ActorID:   provider.ID,
 		})
 
-		// Update the user group name
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   groupID,
 			EventType:  "UserGroupUpdated",
@@ -426,62 +423,8 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Diff members: get current members, compare with requested
-	currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
-	if err != nil {
-		h.logger.Error("failed to list current group members", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to get current members")
-		return
-	}
-
-	// Build sets for diffing
-	currentSet := make(map[string]bool, len(currentMemberIDs))
-	for _, id := range currentMemberIDs {
-		currentSet[id] = true
-	}
-
-	requestedSet := make(map[string]bool, len(scimGroup.Members))
-	for _, m := range scimGroup.Members {
-		if m.Value != "" {
-			requestedSet[m.Value] = true
-		}
-	}
-
-	// Add members that are in requested but not current
-	for userID := range requestedSet {
-		if !currentSet[userID] {
-			streamID := groupID + ":" + userID
-			_ = h.store.AppendEvent(ctx, store.Event{
-				StreamType: "user_group",
-				StreamID:   streamID,
-				EventType:  "UserGroupMemberAdded",
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
-				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
-			})
-		}
-	}
-
-	// Remove members that are in current but not requested
-	for _, userID := range currentMemberIDs {
-		if !requestedSet[userID] {
-			streamID := groupID + ":" + userID
-			_ = h.store.AppendEvent(ctx, store.Event{
-				StreamType: "user_group",
-				StreamID:   streamID,
-				EventType:  "UserGroupMemberRemoved",
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
-				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
-			})
-		}
-	}
+	// Reconcile members
+	h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members)
 
 	// Read back and return
 	updatedMapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
@@ -583,7 +526,7 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider db.IdentityP
 	members := extractMembers(op.Value)
 	for _, userID := range members {
 		streamID := groupID + ":" + userID
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  "UserGroupMemberAdded",
@@ -603,10 +546,11 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.Identi
 
 	// Handle path like: members[value eq "userId"]
 	if strings.HasPrefix(path, "members[") {
-		userID := extractUserIDFromMemberFilter(path)
+		// Extract user ID from the ORIGINAL path to preserve case
+		userID := extractUserIDFromMemberFilter(op.Path)
 		if userID != "" {
 			streamID := groupID + ":" + userID
-			_ = h.store.AppendEvent(ctx, store.Event{
+			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  "UserGroupMemberRemoved",
@@ -626,7 +570,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.Identi
 		members := extractMembers(op.Value)
 		for _, userID := range members {
 			streamID := groupID + ":" + userID
-			_ = h.store.AppendEvent(ctx, store.Event{
+			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  "UserGroupMemberRemoved",
@@ -652,8 +596,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 			return
 		}
 
-		// Update SCIM group mapping display name
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
 			EventType:  "SCIMGroupMappingUpdated",
@@ -666,8 +609,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 			ActorID:   provider.ID,
 		})
 
-		// Update user group name
-		_ = h.store.AppendEvent(ctx, store.Event{
+		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   groupID,
 			EventType:  "UserGroupUpdated",
@@ -700,7 +642,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		for _, userID := range members {
 			if !currentSet[userID] {
 				streamID := groupID + ":" + userID
-				_ = h.store.AppendEvent(ctx, store.Event{
+				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  "UserGroupMemberAdded",
@@ -718,7 +660,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		for _, userID := range currentMemberIDs {
 			if !requestedSet[userID] {
 				streamID := groupID + ":" + userID
-				_ = h.store.AppendEvent(ctx, store.Event{
+				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  "UserGroupMemberRemoved",
@@ -784,6 +726,64 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// reconcileGroupMembers diffs the requested members against current members and
+// emits add/remove events as needed.
+func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, requestedMembers []SCIMMember) {
+	currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
+	if err != nil {
+		h.logger.Error("failed to list current group members for reconciliation", "error", err)
+		return
+	}
+
+	currentSet := make(map[string]bool, len(currentMemberIDs))
+	for _, id := range currentMemberIDs {
+		currentSet[id] = true
+	}
+
+	requestedSet := make(map[string]bool, len(requestedMembers))
+	for _, m := range requestedMembers {
+		if m.Value != "" {
+			requestedSet[m.Value] = true
+		}
+	}
+
+	// Add new members
+	for userID := range requestedSet {
+		if !currentSet[userID] {
+			streamID := groupID + ":" + userID
+			h.appendEvent(ctx, store.Event{
+				StreamType: "user_group",
+				StreamID:   streamID,
+				EventType:  "UserGroupMemberAdded",
+				Data: map[string]any{
+					"group_id": groupID,
+					"user_id":  userID,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
+			})
+		}
+	}
+
+	// Remove old members
+	for _, userID := range currentMemberIDs {
+		if !requestedSet[userID] {
+			streamID := groupID + ":" + userID
+			h.appendEvent(ctx, store.Event{
+				StreamType: "user_group",
+				StreamID:   streamID,
+				EventType:  "UserGroupMemberRemoved",
+				Data: map[string]any{
+					"group_id": groupID,
+					"user_id":  userID,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
+			})
+		}
+	}
 }
 
 // buildGroupResource constructs a SCIMGroup from a mapping and its associated user group.
@@ -863,18 +863,25 @@ func extractMembers(value any) []string {
 
 // extractUserIDFromMemberFilter extracts a user ID from a SCIM member filter path.
 // Example: members[value eq "userId"] -> "userId"
+// The function matches structural parts case-insensitively but preserves the value case.
 func extractUserIDFromMemberFilter(path string) string {
-	// Remove prefix "members[" and suffix "]"
-	inner := strings.TrimPrefix(path, "members[")
-	inner = strings.TrimSuffix(inner, "]")
-
-	// Parse: value eq "userId"
-	parts := strings.SplitN(inner, " eq ", 2)
-	if len(parts) != 2 {
+	lower := strings.ToLower(path)
+	if !strings.HasPrefix(lower, "members[") {
 		return ""
 	}
 
-	value := strings.TrimSpace(parts[1])
+	// Use original path (not lowercased) to preserve user ID case
+	inner := path[len("members["):]
+	inner = strings.TrimSuffix(inner, "]")
+
+	// Case-insensitive split on " eq "
+	lowerInner := strings.ToLower(inner)
+	idx := strings.Index(lowerInner, " eq ")
+	if idx < 0 {
+		return ""
+	}
+
+	value := strings.TrimSpace(inner[idx+4:])
 	value = strings.Trim(value, "\"")
 	return value
 }

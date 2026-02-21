@@ -1,11 +1,20 @@
 package scim
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
 	"github.com/manchtools/power-manage/server/internal/store"
 )
+
+// appendEvent appends an event and logs any error.
+// Use this for best-effort event appends where failure should be logged but not fatal.
+func (h *Handler) appendEvent(ctx context.Context, event store.Event) {
+	if err := h.store.AppendEvent(ctx, event); err != nil {
+		h.logger.Error("failed to append event", "event_type", event.EventType, "stream_type", event.StreamType, "error", err)
+	}
+}
 
 // contextKey is a private type for context keys in this package.
 type contextKey string

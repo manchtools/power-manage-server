@@ -14,6 +14,9 @@ import (
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
+// ErrNoMatchingAccount is returned when no local account could be found or created for the external identity.
+var ErrNoMatchingAccount = errors.New("no matching account found; contact an administrator to link your identity")
+
 // LinkResult represents the outcome of an identity linking attempt.
 type LinkResult struct {
 	UserID string
@@ -181,7 +184,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		return &LinkResult{UserID: userID, IsNew: true}, nil
 	}
 
-	return nil, fmt.Errorf("no matching account found; contact an administrator to link your identity")
+	return nil, ErrNoMatchingAccount
 }
 
 // SyncGroupMemberships synchronizes a user's group memberships based on OIDC group claims.

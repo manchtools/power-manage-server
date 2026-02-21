@@ -291,7 +291,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 
 	// Assign default role if configured
 	if provider.DefaultRoleID != "" {
-		_ = h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user_role",
 			StreamID:   userID + ":" + provider.DefaultRoleID,
 			EventType:  "UserRoleAssigned",
@@ -301,7 +301,9 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
-		})
+		}); err != nil {
+			h.logger.Error("failed to assign default role via SCIM", "error", err)
+		}
 	}
 
 	// Read back created user
@@ -416,23 +418,31 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 
 	// Update active status
 	if !scimUser.Active && !existingUser.Disabled {
-		_ = h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  "UserDisabled",
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			h.logger.Error("failed to disable user via SCIM", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update user status")
+			return
+		}
 	} else if scimUser.Active && existingUser.Disabled {
-		_ = h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  "UserEnabled",
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			h.logger.Error("failed to enable user via SCIM", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update user status")
+			return
+		}
 	}
 
 	// Read back updated user
@@ -661,21 +671,23 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		UserID:     userID,
 	})
 	if err == nil {
-		_ = h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "identity_provider",
 			StreamID:   link.ID,
 			EventType:  "IdentityUnlinked",
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			h.logger.Error("failed to unlink identity for SCIM delete", "error", err)
+		}
 	}
 
-	// Soft-disable (not hard delete)
+	// Mark as deleted so SCIM can recreate the user on next sync
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserDisabled",
+		EventType:  "UserDeleted",
 		Data:       map[string]any{},
 		ActorType:  "scim",
 		ActorID:    provider.ID,
