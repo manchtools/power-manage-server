@@ -254,6 +254,14 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("role still has %d assigned users", userCount))
 	}
 
+	groupCount, err := h.store.Queries().CountGroupsWithRole(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count user groups"))
+	}
+	if groupCount > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("role still assigned to %d user groups", groupCount))
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
@@ -419,14 +427,31 @@ func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorI
 	})
 }
 
-// bumpSessionVersionForRole bumps session_version for all users with a given role.
+// bumpSessionVersionForRole bumps session_version for all users with a given role
+// (directly assigned or via user groups).
 func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, actorID string) {
+	seen := make(map[string]bool)
+
+	// Direct role assignments
 	userIDs, err := h.store.Queries().ListUserIDsWithRole(ctx, roleID)
-	if err != nil {
-		return
+	if err == nil {
+		for _, uid := range userIDs {
+			if !seen[uid] {
+				h.bumpUserSessionVersion(ctx, uid, actorID)
+				seen[uid] = true
+			}
+		}
 	}
-	for _, uid := range userIDs {
-		h.bumpUserSessionVersion(ctx, uid, actorID)
+
+	// User group role assignments
+	groupUserIDs, err := h.store.Queries().ListUserIDsWithGroupRole(ctx, roleID)
+	if err == nil {
+		for _, uid := range groupUserIDs {
+			if !seen[uid] {
+				h.bumpUserSessionVersion(ctx, uid, actorID)
+				seen[uid] = true
+			}
+		}
 	}
 }
 

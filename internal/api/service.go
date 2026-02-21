@@ -31,6 +31,7 @@ type ControlService struct {
 	audit         *AuditHandler
 	osquery       *OSQueryHandler
 	role          *RoleHandler
+	userGroup     *UserGroupHandler
 }
 
 // NewControlService creates a new control service.
@@ -52,6 +53,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		audit:         NewAuditHandler(st),
 		osquery:       NewOSQueryHandler(st),
 		role:          NewRoleHandler(st),
+		userGroup:     NewUserGroupHandler(st),
 	}
 }
 
@@ -477,4 +479,45 @@ func (s *ControlService) RevokeRoleFromUser(ctx context.Context, req *connect.Re
 
 func (s *ControlService) ListPermissions(ctx context.Context, req *connect.Request[pm.ListPermissionsRequest]) (*connect.Response[pm.ListPermissionsResponse], error) {
 	return s.role.ListPermissions(ctx, req)
+}
+
+// User Groups
+func (s *ControlService) CreateUserGroup(ctx context.Context, req *connect.Request[pm.CreateUserGroupRequest]) (*connect.Response[pm.CreateUserGroupResponse], error) {
+	return s.userGroup.CreateUserGroup(ctx, req)
+}
+
+func (s *ControlService) GetUserGroup(ctx context.Context, req *connect.Request[pm.GetUserGroupRequest]) (*connect.Response[pm.GetUserGroupResponse], error) {
+	return s.userGroup.GetUserGroup(ctx, req)
+}
+
+func (s *ControlService) ListUserGroups(ctx context.Context, req *connect.Request[pm.ListUserGroupsRequest]) (*connect.Response[pm.ListUserGroupsResponse], error) {
+	return s.userGroup.ListUserGroups(ctx, req)
+}
+
+func (s *ControlService) UpdateUserGroup(ctx context.Context, req *connect.Request[pm.UpdateUserGroupRequest]) (*connect.Response[pm.UpdateUserGroupResponse], error) {
+	return s.userGroup.UpdateUserGroup(ctx, req)
+}
+
+func (s *ControlService) DeleteUserGroup(ctx context.Context, req *connect.Request[pm.DeleteUserGroupRequest]) (*connect.Response[pm.DeleteUserGroupResponse], error) {
+	return s.userGroup.DeleteUserGroup(ctx, req)
+}
+
+func (s *ControlService) AddUserToGroup(ctx context.Context, req *connect.Request[pm.AddUserToGroupRequest]) (*connect.Response[pm.AddUserToGroupResponse], error) {
+	return s.userGroup.AddUserToGroup(ctx, req)
+}
+
+func (s *ControlService) RemoveUserFromGroup(ctx context.Context, req *connect.Request[pm.RemoveUserFromGroupRequest]) (*connect.Response[pm.RemoveUserFromGroupResponse], error) {
+	return s.userGroup.RemoveUserFromGroup(ctx, req)
+}
+
+func (s *ControlService) AssignRoleToUserGroup(ctx context.Context, req *connect.Request[pm.AssignRoleToUserGroupRequest]) (*connect.Response[pm.AssignRoleToUserGroupResponse], error) {
+	return s.userGroup.AssignRoleToUserGroup(ctx, req)
+}
+
+func (s *ControlService) RevokeRoleFromUserGroup(ctx context.Context, req *connect.Request[pm.RevokeRoleFromUserGroupRequest]) (*connect.Response[pm.RevokeRoleFromUserGroupResponse], error) {
+	return s.userGroup.RevokeRoleFromUserGroup(ctx, req)
+}
+
+func (s *ControlService) ListUserGroupsForUser(ctx context.Context, req *connect.Request[pm.ListUserGroupsForUserRequest]) (*connect.Response[pm.ListUserGroupsForUserResponse], error) {
+	return s.userGroup.ListUserGroupsForUser(ctx, req)
 }

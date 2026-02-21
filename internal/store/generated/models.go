@@ -269,6 +269,34 @@ type TotpProjection struct {
 	ProjectionVersion int64              `json:"projection_version"`
 }
 
+type UserGroupMembersProjection struct {
+	GroupID           string             `json:"group_id"`
+	UserID            string             `json:"user_id"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	AddedBy           string             `json:"added_by"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type UserGroupRolesProjection struct {
+	GroupID           string             `json:"group_id"`
+	RoleID            string             `json:"role_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type UserGroupsProjection struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description"`
+	MemberCount       int32              `json:"member_count"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type UserRolesProjection struct {
 	UserID            string             `json:"user_id"`
 	RoleID            string             `json:"role_id"`

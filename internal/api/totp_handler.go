@@ -322,7 +322,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Resolve permissions and generate real tokens
-	permissions, err := h.store.Queries().GetUserPermissions(ctx, claims.UserID)
+	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, claims.UserID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
 	}

@@ -295,6 +295,122 @@ func NewJWTManager() *auth.JWTManager {
 	})
 }
 
+// CreateTestRole creates a role via events and returns the role ID.
+func CreateTestRole(t *testing.T, st *store.Store, actorID, name string, permissions []string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "role",
+		StreamID:   id,
+		EventType:  "RoleCreated",
+		Data: map[string]any{
+			"name":        name,
+			"description": "",
+			"permissions": permissions,
+			"is_system":   false,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("create test role: %v", err)
+	}
+
+	return id
+}
+
+// CreateTestUserGroup creates a user group via events and returns the group ID.
+func CreateTestUserGroup(t *testing.T, st *store.Store, actorID, name string) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group",
+		StreamID:   id,
+		EventType:  "UserGroupCreated",
+		Data: map[string]any{
+			"name":        name,
+			"description": "",
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("create test user group: %v", err)
+	}
+
+	return id
+}
+
+// AddUserToTestGroup adds a user to a user group via events.
+func AddUserToTestGroup(t *testing.T, st *store.Store, actorID, groupID, userID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	streamID := groupID + ":" + userID
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group",
+		StreamID:   streamID,
+		EventType:  "UserGroupMemberAdded",
+		Data: map[string]any{
+			"group_id": groupID,
+			"user_id":  userID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("add user to test group: %v", err)
+	}
+}
+
+// AssignRoleToTestGroup assigns a role to a user group via events.
+func AssignRoleToTestGroup(t *testing.T, st *store.Store, actorID, groupID, roleID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	streamID := groupID + ":role:" + roleID
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group",
+		StreamID:   streamID,
+		EventType:  "UserGroupRoleAssigned",
+		Data: map[string]any{
+			"group_id": groupID,
+			"role_id":  roleID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("assign role to test group: %v", err)
+	}
+}
+
+// AssignRoleToTestUser assigns a role to a user via events.
+func AssignRoleToTestUser(t *testing.T, st *store.Store, actorID, userID, roleID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	streamID := userID + ":" + roleID
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "user_role",
+		StreamID:   streamID,
+		EventType:  "UserRoleAssigned",
+		Data: map[string]any{
+			"user_id": userID,
+			"role_id": roleID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("assign role to test user: %v", err)
+	}
+}
+
 // NewEncryptor creates an Encryptor with a test key.
 func NewEncryptor(t *testing.T) *crypto.Encryptor {
 	t.Helper()

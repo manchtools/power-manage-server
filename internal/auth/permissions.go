@@ -129,6 +129,17 @@ func AllPermissions() []PermissionInfo {
 		{"AssignRoleToUser", "Roles", "Assign roles to users"},
 		{"RevokeRoleFromUser", "Roles", "Revoke roles from users"},
 		{"ListPermissions", "Roles", "List available permissions"},
+		// User Groups
+		{"CreateUserGroup", "User Groups", "Create user groups"},
+		{"GetUserGroup", "User Groups", "View user groups"},
+		{"ListUserGroups", "User Groups", "List user groups"},
+		{"UpdateUserGroup", "User Groups", "Update user groups"},
+		{"DeleteUserGroup", "User Groups", "Delete user groups"},
+		{"AddUserToGroup", "User Groups", "Add users to groups"},
+		{"RemoveUserFromGroup", "User Groups", "Remove users from groups"},
+		{"AssignRoleToUserGroup", "User Groups", "Assign roles to user groups"},
+		{"RevokeRoleFromUserGroup", "User Groups", "Revoke roles from user groups"},
+		{"ListUserGroupsForUser", "User Groups", "List user groups for a user"},
 	}
 }
 

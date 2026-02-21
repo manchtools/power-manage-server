@@ -67,7 +67,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	}
 
 	// Resolve permissions from DB and embed in JWT
-	permissions, err := h.store.Queries().GetUserPermissions(ctx, user.ID)
+	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
 	}
@@ -140,7 +140,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Resolve fresh permissions from DB
-	permissions, err := h.store.Queries().GetUserPermissions(ctx, result.Claims.UserID)
+	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, result.Claims.UserID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
 	}
