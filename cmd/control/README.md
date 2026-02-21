@@ -60,6 +60,8 @@ Environment variables override command-line flags:
 | `CONTROL_ADMIN_EMAIL` | Initial admin user email |
 | `CONTROL_ADMIN_PASSWORD` | Initial admin user password |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
+| `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
+| `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
 
 ## Setup
 
@@ -141,28 +143,28 @@ curl http://localhost:8081/pm.v1.ControlService/ListUsers \
 
 #### Users
 
-| Method | Description | Access |
-|--------|-------------|--------|
-| `CreateUser` | Create a new user | admin only |
-| `GetUser` | Get user by ID | admin or self |
-| `ListUsers` | List all users with pagination | admin only |
-| `UpdateUserEmail` | Update a user's email | admin only |
-| `UpdateUserPassword` | Update password | admin or self |
-| `UpdateUserRole` | Change user role | admin only |
-| `SetUserDisabled` | Enable/disable a user | admin only |
-| `DeleteUser` | Delete a user | admin only |
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateUser` | Create a new user | `CreateUser` |
+| `GetUser` | Get user by ID | `GetUser` or `GetUser:self` |
+| `ListUsers` | List all users with pagination | `ListUsers` |
+| `UpdateUserEmail` | Update a user's email | `UpdateUserEmail` or `UpdateUserEmail:self` |
+| `UpdateUserPassword` | Update password | `UpdateUserPassword` or `UpdateUserPassword:self` |
+| `SetUserDisabled` | Enable/disable a user | `SetUserDisabled` |
+| `DeleteUser` | Delete a user | `DeleteUser` |
 
 #### Devices
 
-| Method | Description | Access |
-|--------|-------------|--------|
-| `ListDevices` | List registered devices | admin or user (assigned only) |
-| `GetDevice` | Get device by ID | admin or user (assigned only) |
-| `SetDeviceLabel` | Set a label on a device | admin only |
-| `RemoveDeviceLabel` | Remove a label from a device | admin only |
-| `AssignDevice` | Assign device to a user | admin only |
-| `UnassignDevice` | Remove device assignment | admin only |
-| `DeleteDevice` | Delete a device | admin only |
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `ListDevices` | List registered devices | `ListDevices` or `ListDevices:assigned` |
+| `GetDevice` | Get device by ID | `GetDevice` or `GetDevice:assigned` |
+| `SetDeviceLabel` | Set a label on a device | `SetDeviceLabel` |
+| `RemoveDeviceLabel` | Remove a label from a device | `RemoveDeviceLabel` |
+| `AssignDevice` | Assign device to a user | `AssignDevice` |
+| `UnassignDevice` | Remove device assignment | `UnassignDevice` |
+| `SetDeviceSyncInterval` | Set device sync interval | `SetDeviceSyncInterval` |
+| `DeleteDevice` | Delete a device | `DeleteDevice` |
 
 #### Registration Tokens
 
@@ -203,11 +205,83 @@ Reusable action templates that can be dispatched to devices.
 
 #### LUKS (Disk Encryption)
 
-| Method | Description | Access |
-|--------|-------------|--------|
-| `GetDeviceLuksKeys` | Get current and historical LUKS keys for a device | admin only |
-| `CreateLuksToken` | Create a one-time token for setting a user-defined passphrase | device owner only |
-| `RevokeLuksDeviceKey` | Revoke the device-bound key in LUKS slot 7 | admin only |
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `GetDeviceLuksKeys` | Get current and historical LUKS keys for a device | `GetDeviceLuksKeys` |
+| `CreateLuksToken` | Create a one-time token for setting a user-defined passphrase | `CreateLuksToken` |
+| `RevokeLuksDeviceKey` | Revoke the device-bound key in LUKS slot 7 | `RevokeLuksDeviceKey` |
+
+#### TOTP Two-Factor Authentication
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `SetupTOTP` | Generate TOTP secret and QR code URI | `SetupTOTP` |
+| `VerifyTOTP` | Verify TOTP code to complete enrollment, returns backup codes | `VerifyTOTP` |
+| `DisableTOTP` | Disable TOTP 2FA | `DisableTOTP` |
+| `GetTOTPStatus` | Check TOTP enrollment status | `GetTOTPStatus` |
+| `RegenerateBackupCodes` | Generate new backup codes | `RegenerateBackupCodes` |
+
+#### Roles
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateRole` | Create a custom role with permissions | `CreateRole` |
+| `GetRole` | Fetch role by ID | `GetRole` |
+| `ListRoles` | List all roles | `ListRoles` |
+| `UpdateRole` | Update role name, description, or permissions | `UpdateRole` |
+| `DeleteRole` | Delete a role | `DeleteRole` |
+| `AssignRoleToUser` | Assign a role to a user | `AssignRoleToUser` |
+| `RevokeRoleFromUser` | Revoke a role from a user | `RevokeRoleFromUser` |
+| `ListPermissions` | List all available permissions | `ListPermissions` |
+
+#### User Groups
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateUserGroup` | Create a user group | `CreateUserGroup` |
+| `GetUserGroup` | Fetch group with members and roles | `GetUserGroup` |
+| `ListUserGroups` | List all user groups | `ListUserGroups` |
+| `UpdateUserGroup` | Update group name or description | `UpdateUserGroup` |
+| `DeleteUserGroup` | Delete a user group | `DeleteUserGroup` |
+| `AddUserToGroup` | Add a user to a group | `AddUserToGroup` |
+| `RemoveUserFromGroup` | Remove a user from a group | `RemoveUserFromGroup` |
+| `AssignRoleToUserGroup` | Assign a role to a group (all members inherit) | `AssignRoleToUserGroup` |
+| `RevokeRoleFromUserGroup` | Revoke a role from a group | `RevokeRoleFromUserGroup` |
+| `ListUserGroupsForUser` | List groups a user belongs to | `ListUserGroupsForUser` |
+
+#### Identity Providers (SSO)
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateIdentityProvider` | Create OIDC identity provider | `CreateIdentityProvider` |
+| `GetIdentityProvider` | Fetch provider by ID | `GetIdentityProvider` |
+| `ListIdentityProviders` | List configured providers | `ListIdentityProviders` |
+| `UpdateIdentityProvider` | Update provider settings | `UpdateIdentityProvider` |
+| `DeleteIdentityProvider` | Delete an identity provider | `DeleteIdentityProvider` |
+| `EnableSCIM` | Enable SCIM provisioning, returns bearer token | `EnableSCIM` |
+| `DisableSCIM` | Disable SCIM provisioning | `DisableSCIM` |
+| `RotateSCIMToken` | Rotate SCIM bearer token | `RotateSCIMToken` |
+
+#### Identity Links
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `ListIdentityLinks` | List own linked external identities | `ListIdentityLinks` |
+| `UnlinkIdentity` | Remove a linked identity | `UnlinkIdentity` |
+
+#### SCIM v2 Provisioning (REST, not Connect-RPC)
+
+SCIM endpoints are mounted at `/scim/v2/{provider-slug}/` and use Bearer token authentication (not JWT). They follow the SCIM v2 RFC 7643/7644 specification.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ServiceProviderConfig` | GET | SCIM service provider configuration |
+| `/Schemas` | GET | Supported SCIM schemas |
+| `/ResourceTypes` | GET | Available resource types |
+| `/Users` | GET, POST | List/create users |
+| `/Users/{id}` | GET, PUT, PATCH, DELETE | Get/replace/patch/delete user |
+| `/Groups` | GET, POST | List/create groups |
+| `/Groups/{id}` | GET, PUT, PATCH, DELETE | Get/replace/patch/delete group |
 
 ## Action Types
 
@@ -397,12 +471,16 @@ All state changes are stored as immutable events in the `events` table:
 
 | Stream Type | Events |
 |-------------|--------|
-| `user` | UserCreated, UserEmailChanged, UserPasswordChanged, UserRoleChanged, UserDisabled, UserEnabled, UserLoggedIn, UserDeleted |
+| `user` | UserCreated, UserEmailChanged, UserPasswordChanged, UserDisabled, UserEnabled, UserLoggedIn, UserDeleted, UserTOTPEnabled, UserTOTPDisabled, UserBackupCodesRegenerated, IdentityLinked, IdentityUnlinked |
 | `device` | DeviceRegistered, DeviceHeartbeat, DeviceLabelSet, DeviceLabelRemoved, DeviceAssigned, DeviceUnassigned, DeviceDeleted |
 | `token` | TokenCreated, TokenRenamed, TokenDisabled, TokenEnabled, TokenUsed, TokenDeleted |
 | `definition` | DefinitionCreated, DefinitionRenamed, DefinitionDescriptionUpdated, DefinitionDeleted |
 | `execution` | ExecutionCreated, ExecutionDispatched, ExecutionStarted, ExecutionCompleted, ExecutionFailed, ExecutionTimedOut |
 | `luks_key` | LuksKeyRotated, LuksDeviceKeyRevoked, LuksDeviceKeyRevocationFailed, LuksDeviceKeyRevocationDispatched |
+| `role` | RoleCreated, RoleUpdated, RoleDeleted, RoleAssignedToUser, RoleRevokedFromUser |
+| `user_group` | UserGroupCreated, UserGroupUpdated, UserGroupDeleted, UserGroupMemberAdded, UserGroupMemberRemoved, RoleAssignedToUserGroup, RoleRevokedFromUserGroup |
+| `identity_provider` | IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled, IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated |
+| `scim_group_mapping` | SCIMGroupMapped, SCIMGroupUnmapped, SCIMGroupMappingUpdated |
 
 ### Querying Event History
 
@@ -451,27 +529,23 @@ curl http://localhost:8081/health
 
 ## Security & Permissions
 
-### Hybrid Authorization Model
+### Dynamic RBAC Authorization Model
 
-The Control Server uses a **hybrid authorization model** combining:
+The Control Server uses **dynamic role-based access control** with:
 
-1. **OPA (Open Policy Agent)** for action-level permissions
-   - Determines if a user/device can call a specific API endpoint
+1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only).
+
+2. **User Groups** — Users can be organized into groups. Roles assigned to a group are inherited by all members. Permissions are additive — a user's effective permissions are the union of all directly assigned roles and group-inherited roles.
+
+3. **Built-in Roles** — `Admin` (all permissions) and `User` (self-service permissions) are created automatically but can be customized.
+
+4. **OPA (Open Policy Agent)** for action-level permissions
+   - Evaluates every RPC call against the user's effective permission set
    - Policies defined in `server/internal/auth/policies/authz.rego`
 
-2. **PostgreSQL Row-Level Security (RLS)** for data-level filtering
+5. **PostgreSQL Row-Level Security (RLS)** for data-level filtering
    - Automatically filters query results based on user identity
    - Defense in depth - protects data even if application code has bugs
-
-### Permission Matrix
-
-| Resource | Admin | User | Device |
-|----------|-------|------|--------|
-| **Users** | Full access | Self only | None |
-| **Devices** | Full access | Assigned only | Self only |
-| **Tokens** | Full access | Create only | None |
-| **Definitions** | Full access | None | Read only |
-| **Executions** | Full access | None | Own only |
 
 ### Self-Service Device Registration
 
