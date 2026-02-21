@@ -21,32 +21,83 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/SSOCallback":     true,
 }
 
-// clientIP extracts the real client IP, checking X-Forwarded-For and
-// X-Real-IP headers set by reverse proxies. Falls back to the peer address.
-// Only the first (leftmost) IP in X-Forwarded-For is used, as it was set
-// by the outermost proxy closest to the client.
+// TrustedProxies is the set of IP addresses/CIDRs trusted to set
+// X-Forwarded-For / X-Real-IP headers. If empty, proxy headers are ignored
+// and the direct peer address is always used.
+var TrustedProxies []*net.IPNet
+
+// SetTrustedProxies parses a list of CIDR strings (e.g. "10.0.0.0/8",
+// "172.16.0.0/12") and sets them as trusted proxy sources. Plain IPs
+// like "127.0.0.1" are treated as /32 (IPv4) or /128 (IPv6).
+func SetTrustedProxies(cidrs []string) {
+	var nets []*net.IPNet
+	for _, cidr := range cidrs {
+		if !strings.Contains(cidr, "/") {
+			// Bare IP — convert to /32 or /128
+			ip := net.ParseIP(cidr)
+			if ip == nil {
+				continue
+			}
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			nets = append(nets, ipNet)
+		}
+	}
+	TrustedProxies = nets
+}
+
+// isTrustedProxy checks if an IP is in the trusted proxy list.
+func isTrustedProxy(addr string) bool {
+	if len(TrustedProxies) == 0 {
+		return false
+	}
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+	for _, n := range TrustedProxies {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP extracts the real client IP. Proxy headers (X-Forwarded-For,
+// X-Real-IP) are only trusted when the direct peer is in TrustedProxies.
+// Falls back to the direct peer address.
 func clientIP(req connect.AnyRequest) string {
-	// Try X-Forwarded-For first (standard proxy header)
-	if xff := req.Header().Get("X-Forwarded-For"); xff != "" {
-		// Take only the first IP (client IP set by the outermost proxy).
-		ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-		if parsed := net.ParseIP(ip); parsed != nil {
-			return ip
+	// Get the direct peer address first
+	peerAddr := req.Peer().Addr
+	peerIP := peerAddr
+	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
+		peerIP = host
+	}
+
+	// Only trust proxy headers if the direct peer is a trusted proxy
+	if isTrustedProxy(peerIP) {
+		if xff := req.Header().Get("X-Forwarded-For"); xff != "" {
+			ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
+			if parsed := net.ParseIP(ip); parsed != nil {
+				return ip
+			}
+		}
+		if xri := req.Header().Get("X-Real-IP"); xri != "" {
+			ip := strings.TrimSpace(xri)
+			if parsed := net.ParseIP(ip); parsed != nil {
+				return ip
+			}
 		}
 	}
-	// Try X-Real-IP (nginx convention)
-	if xri := req.Header().Get("X-Real-IP"); xri != "" {
-		ip := strings.TrimSpace(xri)
-		if parsed := net.ParseIP(ip); parsed != nil {
-			return ip
-		}
-	}
-	// Fall back to direct peer address (strip port)
-	addr := req.Peer().Addr
-	if host, _, err := net.SplitHostPort(addr); err == nil {
-		return host
-	}
-	return addr
+
+	return peerIP
 }
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.

@@ -66,6 +66,21 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Rate limit per provider slug
+		if !h.rateLimiter.Allow(slug) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+
+		// Validate Content-Type on requests with a body
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			ct := r.Header.Get("Content-Type")
+			if ct != "" && !strings.HasPrefix(ct, "application/scim+json") && !strings.HasPrefix(ct, "application/json") {
+				writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/scim+json or application/json")
+				return
+			}
+		}
+
 		// Store provider in context and proceed
 		ctx := context.WithValue(r.Context(), providerContextKey, provider)
 		next.ServeHTTP(w, r.WithContext(ctx))

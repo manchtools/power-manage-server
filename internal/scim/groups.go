@@ -148,6 +148,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var scimGroup SCIMGroup
+	limitBody(r)
 	if err := json.NewDecoder(r.Body).Decode(&scimGroup); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -373,6 +374,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var scimGroup SCIMGroup
+	limitBody(r)
 	if err := json.NewDecoder(r.Body).Decode(&scimGroup); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -459,6 +461,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitBody(r)
 	var patch SCIMPatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")

@@ -9,7 +9,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -299,7 +298,7 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 	}
 	plainToken := hex.EncodeToString(tokenBytes)
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(plainToken), bcrypt.DefaultCost)
+	hashStr, err := auth.HashPassword(plainToken)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash token"))
 	}
@@ -309,7 +308,7 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 		StreamID:   req.Msg.Id,
 		EventType:  "IdentityProviderSCIMEnabled",
 		Data: map[string]any{
-			"scim_token_hash": string(hash),
+			"scim_token_hash": hashStr,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -394,7 +393,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 	}
 	plainToken := hex.EncodeToString(tokenBytes)
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(plainToken), bcrypt.DefaultCost)
+	hashStr, err := auth.HashPassword(plainToken)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash token"))
 	}
@@ -404,7 +403,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 		StreamID:   req.Msg.Id,
 		EventType:  "IdentityProviderSCIMTokenRotated",
 		Data: map[string]any{
-			"scim_token_hash": string(hash),
+			"scim_token_hash": hashStr,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

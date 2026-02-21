@@ -161,6 +161,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var scimUser SCIMUser
+	limitBody(r)
 	if err := json.NewDecoder(r.Body).Decode(&scimUser); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -334,6 +335,12 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
+	// Verify this provider owns the user (has an identity link)
+	if err := h.verifyProviderOwnership(ctx, provider.ID, userID); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -372,7 +379,14 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify this provider owns the user
+	if err := h.verifyProviderOwnership(r.Context(), provider.ID, userID); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
 	var scimUser SCIMUser
+	limitBody(r)
 	if err := json.NewDecoder(r.Body).Decode(&scimUser); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
@@ -482,6 +496,13 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify this provider owns the user
+	if err := h.verifyProviderOwnership(r.Context(), provider.ID, userID); err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+
+	limitBody(r)
 	var patch SCIMPatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -653,49 +674,55 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Verify user exists
-	_, err := h.store.Queries().GetUserByID(ctx, userID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		h.logger.Error("failed to get user for delete", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to get user")
-		return
-	}
-
-	// Remove the identity link for this provider so the user can be re-provisioned later
+	// Verify this provider owns the user
 	link, err := h.store.Queries().GetIdentityLinkByProviderAndUser(ctx, db.GetIdentityLinkByProviderAndUserParams{
 		ProviderID: provider.ID,
 		UserID:     userID,
 	})
-	if err == nil {
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "identity_provider",
-			StreamID:   link.ID,
-			EventType:  "IdentityUnlinked",
-			Data:       map[string]any{},
-			ActorType:  "scim",
-			ActorID:    provider.ID,
-		}); err != nil {
-			h.logger.Error("failed to unlink identity for SCIM delete", "error", err)
-		}
+	if err != nil {
+		writeError(w, http.StatusNotFound, "user not found")
+		return
 	}
 
-	// Mark as deleted so SCIM can recreate the user on next sync
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   userID,
-		EventType:  "UserDeleted",
+	// Unlink identity from this provider
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   link.ID,
+		EventType:  "IdentityUnlinked",
 		Data:       map[string]any{},
 		ActorType:  "scim",
 		ActorID:    provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to disable user via SCIM delete", "error", err)
+	}); err != nil {
+		h.logger.Error("failed to unlink identity for SCIM delete", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to delete user")
 		return
+	}
+
+	// Only delete the user if this was their last identity link.
+	// If the user is linked to other providers, just unlink — don't destroy the account.
+	linkCount, err := h.store.Queries().CountIdentityLinksForUser(ctx, userID)
+	if err != nil {
+		h.logger.Error("failed to count identity links", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete user")
+		return
+	}
+
+	// linkCount reflects state after the IdentityUnlinked event projection.
+	// If 0 remaining links, safe to delete the user.
+	if linkCount == 0 {
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserDeleted",
+			Data:       map[string]any{},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
+		})
+		if err != nil {
+			h.logger.Error("failed to delete user via SCIM", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to delete user")
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -843,11 +870,22 @@ func formatExternalName(name *SCIMName) string {
 	return strings.Join(parts, " ")
 }
 
+// verifyProviderOwnership checks that the user has an identity link to the
+// given SCIM provider. This prevents one provider from accessing or modifying
+// users provisioned by a different provider.
+func (h *Handler) verifyProviderOwnership(ctx context.Context, providerID, userID string) error {
+	_, err := h.store.Queries().GetIdentityLinkByProviderAndUser(ctx, db.GetIdentityLinkByProviderAndUserParams{
+		ProviderID: providerID,
+		UserID:     userID,
+	})
+	return err
+}
+
 // baseURLFromRequest constructs the SCIM base URL from the request.
 func baseURLFromRequest(r *http.Request, slug string) string {
 	scheme := "https"
 	if r.TLS == nil {
-		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		if fwd := r.Header.Get("X-Forwarded-Proto"); fwd == "https" || fwd == "http" {
 			scheme = fwd
 		} else {
 			scheme = "http"

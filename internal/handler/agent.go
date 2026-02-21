@@ -782,6 +782,18 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
 	}
 
+	// Verify mTLS certificate matches requested device ID
+	if h.requireTLS {
+		certDeviceID, ok := DeviceIDFromContext(ctx)
+		if !ok {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("mTLS authentication required"))
+		}
+		if certDeviceID != deviceID {
+			h.logger.Warn("SyncActions device ID mismatch", "cert_device_id", certDeviceID, "requested_device_id", deviceID)
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("device ID does not match certificate"))
+		}
+	}
+
 	h.logger.Info("agent syncing actions", "device_id", deviceID)
 
 	// Get all resolved actions for this device (device + user layers merged)

@@ -49,6 +49,7 @@ type Config struct {
 	PasswordAuthEnabled          bool
 	SSOCallbackBaseURL           string
 	SCIMBaseURL                  string
+	TrustedProxies               []string
 }
 
 func main() {
@@ -185,6 +186,12 @@ func main() {
 		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
 		SCIMBaseURL:         cfg.SCIMBaseURL,
 	})
+	// Configure trusted proxies for X-Forwarded-For header validation
+	if len(cfg.TrustedProxies) > 0 {
+		auth.SetTrustedProxies(cfg.TrustedProxies)
+		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
+	}
+
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
@@ -317,6 +324,13 @@ func parseFlags() *Config {
 	if v := os.Getenv("CONTROL_SCIM_BASE_URL"); v != "" {
 		cfg.SCIMBaseURL = v
 	}
+	if v := os.Getenv("CONTROL_TRUSTED_PROXIES"); v != "" {
+		proxies := strings.Split(v, ",")
+		for i := range proxies {
+			proxies[i] = strings.TrimSpace(proxies[i])
+		}
+		cfg.TrustedProxies = proxies
+	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
 	if cfg.DynamicGroupEvalInterval != 0 {
@@ -327,11 +341,13 @@ func parseFlags() *Config {
 		}
 	}
 
-	// Generate JWT secret if not provided
 	if cfg.JWTSecret == "" {
-		secret := make([]byte, 32)
-		rand.Read(secret)
-		cfg.JWTSecret = fmt.Sprintf("%x", secret)
+		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
+		os.Exit(1)
+	}
+	if len(cfg.JWTSecret) < 32 {
+		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET must be at least 32 characters")
+		os.Exit(1)
 	}
 
 	return cfg

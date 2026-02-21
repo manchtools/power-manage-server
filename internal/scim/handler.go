@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -24,16 +26,18 @@ const providerContextKey contextKey = "scim_provider"
 
 // Handler handles SCIM v2 API requests.
 type Handler struct {
-	store  *store.Store
-	logger *slog.Logger
+	store       *store.Store
+	logger      *slog.Logger
+	rateLimiter *auth.RateLimiter
 }
 
 // NewHandler creates an http.Handler that serves all SCIM v2 routes.
 // Routes are mounted at /scim/v2/{slug}/...
 func NewHandler(st *store.Store, logger *slog.Logger) http.Handler {
 	h := &Handler{
-		store:  st,
-		logger: logger,
+		store:       st,
+		logger:      logger,
+		rateLimiter: auth.NewRateLimiter(100, 1*time.Minute),
 	}
 
 	mux := http.NewServeMux()
