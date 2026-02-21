@@ -206,3 +206,121 @@ func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {
 	assert.Equal(t, "groups", p.GroupClaim)
 	assert.Equal(t, groupID, p.GroupMapping["engineering"])
 }
+
+func TestEnableSCIM_Success(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+
+	resp, err := h.EnableSCIM(ctx, connect.NewRequest(&pm.EnableSCIMRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, resp.Msg.Token)
+	assert.Len(t, resp.Msg.Token, 64) // 32 bytes = 64 hex chars
+	assert.Equal(t, "http://localhost:8081/scim/v2/okta", resp.Msg.EndpointUrl)
+
+	// Verify provider now shows SCIM enabled
+	getResp, err := h.GetIdentityProvider(ctx, connect.NewRequest(&pm.GetIdentityProviderRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+	assert.True(t, getResp.Msg.Provider.ScimEnabled)
+}
+
+func TestEnableSCIM_AlreadyEnabled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+	testutil.EnableSCIMForProvider(t, st, adminID, providerID)
+
+	_, err := h.EnableSCIM(ctx, connect.NewRequest(&pm.EnableSCIMRequest{
+		Id: providerID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+}
+
+func TestDisableSCIM_Success(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+	testutil.EnableSCIMForProvider(t, st, adminID, providerID)
+
+	_, err := h.DisableSCIM(ctx, connect.NewRequest(&pm.DisableSCIMRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+
+	// Verify provider now shows SCIM disabled
+	getResp, err := h.GetIdentityProvider(ctx, connect.NewRequest(&pm.GetIdentityProviderRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+	assert.False(t, getResp.Msg.Provider.ScimEnabled)
+}
+
+func TestDisableSCIM_NotEnabled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+
+	_, err := h.DisableSCIM(ctx, connect.NewRequest(&pm.DisableSCIMRequest{
+		Id: providerID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+func TestRotateSCIMToken_Success(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+	originalToken := testutil.EnableSCIMForProvider(t, st, adminID, providerID)
+
+	resp, err := h.RotateSCIMToken(ctx, connect.NewRequest(&pm.RotateSCIMTokenRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, resp.Msg.Token)
+	assert.Len(t, resp.Msg.Token, 64)
+	assert.NotEqual(t, originalToken, resp.Msg.Token) // New token must differ
+}
+
+func TestRotateSCIMToken_NotEnabled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+
+	_, err := h.RotateSCIMToken(ctx, connect.NewRequest(&pm.RotateSCIMTokenRequest{
+		Id: providerID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}

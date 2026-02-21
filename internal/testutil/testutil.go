@@ -13,6 +13,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
@@ -595,4 +597,32 @@ func CreateTestIdentityLink(t *testing.T, st *store.Store, userID, providerID, e
 	}
 
 	return id
+}
+
+// EnableSCIMForProvider enables SCIM on an identity provider and returns the plaintext bearer token.
+func EnableSCIMForProvider(t *testing.T, st *store.Store, actorID, providerID string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	token := "scim-test-token-" + NewID()
+	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash SCIM token: %v", err)
+	}
+
+	err = st.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   providerID,
+		EventType:  "IdentityProviderSCIMEnabled",
+		Data: map[string]any{
+			"scim_token_hash": string(hash),
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("enable SCIM for provider: %v", err)
+	}
+
+	return token
 }
