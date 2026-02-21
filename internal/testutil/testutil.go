@@ -14,6 +14,8 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/auth/totp"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -291,4 +293,65 @@ func NewJWTManager() *auth.JWTManager {
 		RefreshTokenExpiry: 1 * time.Hour,
 		Issuer:             "power-manage-test",
 	})
+}
+
+// NewEncryptor creates an Encryptor with a test key.
+func NewEncryptor(t *testing.T) *crypto.Encryptor {
+	t.Helper()
+	// 32-byte hex key (64 hex chars)
+	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("create test encryptor: %v", err)
+	}
+	return enc
+}
+
+// SetupTOTP enables TOTP for a user and returns the TOTP secret.
+// It creates the TOTPSetupInitiated and TOTPVerified events.
+func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, email string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	key, err := totp.GenerateKey("Test", email)
+	if err != nil {
+		t.Fatalf("generate TOTP key: %v", err)
+	}
+
+	encryptedSecret, err := enc.Encrypt(key.Secret())
+	if err != nil {
+		t.Fatalf("encrypt TOTP secret: %v", err)
+	}
+
+	// Generate backup codes
+	_, hashes, err := totp.GenerateBackupCodes()
+	if err != nil {
+		t.Fatalf("generate backup codes: %v", err)
+	}
+
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   userID,
+		EventType:  "TOTPSetupInitiated",
+		Data: map[string]any{
+			"secret_encrypted":  encryptedSecret,
+			"backup_codes_hash": hashes,
+		},
+		ActorType: "user",
+		ActorID:   userID,
+	}); err != nil {
+		t.Fatalf("setup TOTP: %v", err)
+	}
+
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   userID,
+		EventType:  "TOTPVerified",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userID,
+	}); err != nil {
+		t.Fatalf("verify TOTP: %v", err)
+	}
+
+	return key.Secret()
 }

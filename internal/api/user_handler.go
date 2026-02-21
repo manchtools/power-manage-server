@@ -347,9 +347,10 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 // userToProto converts a database user projection to a protobuf user.
 func userToProto(u db.UsersProjection) *pm.User {
 	user := &pm.User{
-		Id:       u.ID,
-		Email:    u.Email,
-		Disabled: u.Disabled,
+		Id:          u.ID,
+		Email:       u.Email,
+		Disabled:    u.Disabled,
+		TotpEnabled: u.TotpEnabled,
 	}
 
 	if u.CreatedAt.Valid {

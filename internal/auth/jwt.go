@@ -15,8 +15,9 @@ import (
 type TokenType string
 
 const (
-	TokenTypeAccess  TokenType = "access"
-	TokenTypeRefresh TokenType = "refresh"
+	TokenTypeAccess        TokenType = "access"
+	TokenTypeRefresh       TokenType = "refresh"
+	TokenTypeTOTPChallenge TokenType = "totp_challenge"
 )
 
 // Claims represents the JWT claims for user authentication.
@@ -118,6 +119,34 @@ func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, 
 		RefreshToken: refreshTokenString,
 		ExpiresAt:    accessExpiry,
 	}, nil
+}
+
+// GenerateTOTPChallenge creates a short-lived JWT (5 minutes) for TOTP verification during login.
+func (m *JWTManager) GenerateTOTPChallenge(userID, email string, sessionVersion int32) (string, error) {
+	now := time.Now()
+	entropy := ulid.Monotonic(rand.Reader, 0)
+	jti := ulid.MustNew(ulid.Timestamp(now), entropy).String()
+
+	claims := &Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			Issuer:    m.config.Issuer,
+			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+		UserID:         userID,
+		Email:          email,
+		TokenType:      TokenTypeTOTPChallenge,
+		SessionVersion: sessionVersion,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(m.config.Secret)
+	if err != nil {
+		return "", fmt.Errorf("sign TOTP challenge token: %w", err)
+	}
+	return tokenString, nil
 }
 
 // ValidateToken validates a JWT token and returns the claims.

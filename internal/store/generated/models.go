@@ -257,6 +257,18 @@ type TokensProjection struct {
 	OwnerID           *string            `json:"owner_id"`
 }
 
+type TotpProjection struct {
+	UserID            string             `json:"user_id"`
+	SecretEncrypted   string             `json:"secret_encrypted"`
+	Verified          bool               `json:"verified"`
+	Enabled           bool               `json:"enabled"`
+	BackupCodesHash   []string           `json:"backup_codes_hash"`
+	BackupCodesUsed   []bool             `json:"backup_codes_used"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type UserRolesProjection struct {
 	UserID            string             `json:"user_id"`
 	RoleID            string             `json:"role_id"`
@@ -288,4 +300,5 @@ type UsersProjection struct {
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
 	SessionVersion    int32              `json:"session_version"`
+	TotpEnabled       bool               `json:"totp_enabled"`
 }

@@ -18,6 +18,7 @@ import (
 type ControlService struct {
 	registration  *RegistrationHandler
 	auth          *AuthHandler
+	totp          *TOTPHandler
 	user          *UserHandler
 	device        *DeviceHandler
 	token         *TokenHandler
@@ -38,6 +39,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
 		auth:          NewAuthHandler(st, jwtManager),
+		totp:          NewTOTPHandler(st, jwtManager, enc, ""),
 		user:          NewUserHandler(st),
 		device:        NewDeviceHandler(st, enc),
 		token:         NewTokenHandler(st),
@@ -75,6 +77,31 @@ func (s *ControlService) Logout(ctx context.Context, req *connect.Request[pm.Log
 
 func (s *ControlService) GetCurrentUser(ctx context.Context, req *connect.Request[pm.GetCurrentUserRequest]) (*connect.Response[pm.GetCurrentUserResponse], error) {
 	return s.auth.GetCurrentUser(ctx, req)
+}
+
+func (s *ControlService) VerifyLoginTOTP(ctx context.Context, req *connect.Request[pm.VerifyLoginTOTPRequest]) (*connect.Response[pm.VerifyLoginTOTPResponse], error) {
+	return s.totp.VerifyLoginTOTP(ctx, req)
+}
+
+// TOTP Two-Factor Authentication
+func (s *ControlService) SetupTOTP(ctx context.Context, req *connect.Request[pm.SetupTOTPRequest]) (*connect.Response[pm.SetupTOTPResponse], error) {
+	return s.totp.SetupTOTP(ctx, req)
+}
+
+func (s *ControlService) VerifyTOTP(ctx context.Context, req *connect.Request[pm.VerifyTOTPRequest]) (*connect.Response[pm.VerifyTOTPResponse], error) {
+	return s.totp.VerifyTOTP(ctx, req)
+}
+
+func (s *ControlService) DisableTOTP(ctx context.Context, req *connect.Request[pm.DisableTOTPRequest]) (*connect.Response[pm.DisableTOTPResponse], error) {
+	return s.totp.DisableTOTP(ctx, req)
+}
+
+func (s *ControlService) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
+	return s.totp.GetTOTPStatus(ctx, req)
+}
+
+func (s *ControlService) RegenerateBackupCodes(ctx context.Context, req *connect.Request[pm.RegenerateBackupCodesRequest]) (*connect.Response[pm.RegenerateBackupCodesResponse], error) {
+	return s.totp.RegenerateBackupCodes(ctx, req)
 }
 
 // Users
