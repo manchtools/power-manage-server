@@ -362,6 +362,10 @@ func (s *ControlService) GetDeviceAssignments(ctx context.Context, req *connect.
 	return s.assignment.GetDeviceAssignments(ctx, req)
 }
 
+func (s *ControlService) GetUserAssignments(ctx context.Context, req *connect.Request[pm.GetUserAssignmentsRequest]) (*connect.Response[pm.GetUserAssignmentsResponse], error) {
+	return s.assignment.GetUserAssignments(ctx, req)
+}
+
 // Action Dispatch & Execution
 func (s *ControlService) DispatchAction(ctx context.Context, req *connect.Request[pm.DispatchActionRequest]) (*connect.Response[pm.DispatchActionResponse], error) {
 	return s.action.DispatchAction(ctx, req)

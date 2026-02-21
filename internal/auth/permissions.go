@@ -87,6 +87,7 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteAssignment", "Assignments", "Delete assignments"},
 		{"ListAssignments", "Assignments", "List assignments"},
 		{"GetDeviceAssignments", "Assignments", "View device assignments"},
+		{"GetUserAssignments", "Assignments", "View user assignments"},
 		// User Selections
 		{"SetUserSelection", "User Selections", "Manage user selections"},
 		{"ListAvailableActions", "User Selections", "List available actions"},

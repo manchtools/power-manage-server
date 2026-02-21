@@ -410,6 +410,144 @@ func (q *Queries) ListAssignmentsForTarget(ctx context.Context, arg ListAssignme
 	return items, nil
 }
 
+const listAssignmentsForUser = `-- name: ListAssignmentsForUser :many
+SELECT id, source_type, source_id, target_type, target_id, sort_order, mode, created_at, created_by, is_deleted, projection_version FROM assignments_projection
+WHERE is_deleted = FALSE AND (
+  (target_type = 'user' AND target_id = $1)
+  OR (target_type = 'user_group' AND target_id IN (
+    SELECT group_id FROM user_group_members_projection WHERE user_id = $1
+  ))
+)
+ORDER BY created_at DESC
+`
+
+// Get all assignments targeting a user directly or via their user groups.
+func (q *Queries) ListAssignmentsForUser(ctx context.Context, targetID string) ([]AssignmentsProjection, error) {
+	rows, err := q.db.Query(ctx, listAssignmentsForUser, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AssignmentsProjection{}
+	for rows.Next() {
+		var i AssignmentsProjection
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceType,
+			&i.SourceID,
+			&i.TargetType,
+			&i.TargetID,
+			&i.SortOrder,
+			&i.Mode,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDeleted,
+			&i.ProjectionVersion,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceLayerExcludedActionIDs = `-- name: ListDeviceLayerExcludedActionIDs :many
+WITH dev_assignments AS (
+  SELECT a.id AS action_id, asn.mode, 1 AS source_priority
+  FROM actions_projection a
+  JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, asn.mode, 1 AS source_priority
+  FROM actions_projection a
+  JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, asn.mode, 2 AS source_priority
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, asn.mode, 2 AS source_priority
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, asn.mode, 3 AS source_priority
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
+  JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, asn.mode, 3 AS source_priority
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
+  JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+),
+dev_priority AS (
+  SELECT action_id, MIN(source_priority) AS min_priority
+  FROM dev_assignments
+  GROUP BY action_id
+),
+dev_filtered AS (
+  SELECT da.action_id, da.mode
+  FROM dev_assignments da
+  JOIN dev_priority dp ON da.action_id = dp.action_id AND da.source_priority = dp.min_priority
+)
+SELECT action_id AS id FROM dev_filtered
+GROUP BY action_id
+HAVING bool_or(mode = 2)
+`
+
+// Get action IDs that are EXCLUDED at the device/device_group layer.
+// Used by the resolution merge to block these actions from the user layer.
+func (q *Queries) ListDeviceLayerExcludedActionIDs(ctx context.Context, targetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceLayerExcludedActionIDs, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDirectAssignmentsForDevice = `-- name: ListDirectAssignmentsForDevice :many
 SELECT id, source_type, source_id, target_type, target_id, sort_order, mode, created_at, created_by, is_deleted, projection_version FROM assignments_projection
 WHERE target_type = 'device' AND target_id = $1 AND is_deleted = FALSE
@@ -703,6 +841,242 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 	items := []ListResolvedActionsForDeviceRow{}
 	for rows.Next() {
 		var i ListResolvedActionsForDeviceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.TimeoutSeconds,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDeleted,
+			&i.ProjectionVersion,
+			&i.Signature,
+			&i.ParamsCanonical,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserLayerResolvedActionsForDevice = `-- name: ListUserLayerResolvedActionsForDevice :many
+WITH device_owner AS (
+  SELECT d.assigned_user_id FROM devices_projection d
+  WHERE d.id = $1 AND d.is_deleted = FALSE AND d.assigned_user_id IS NOT NULL
+),
+owner_groups AS (
+  SELECT ugm.group_id FROM user_group_members_projection ugm
+  JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+  WHERE ugm.user_id = (SELECT assigned_user_id FROM device_owner)
+),
+all_assignments AS (
+  -- Direct action → user (source_priority = 1)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    1 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
+  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Direct action → user_group (source_priority = 1)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    1 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
+  WHERE asn.target_type = 'user_group' AND asn.target_id IN (SELECT group_id FROM owner_groups)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Action set → user (source_priority = 2)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    2 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    COALESCE(sm.sort_order, 0) as action_set_sort,
+    COALESCE(sm.sort_order, 0) as action_sort
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
+  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Action set → user_group (source_priority = 2)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    2 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    COALESCE(sm.sort_order, 0) as action_set_sort,
+    COALESCE(sm.sort_order, 0) as action_sort
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
+  WHERE asn.target_type = 'user_group' AND asn.target_id IN (SELECT group_id FROM owner_groups)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Definition → user (source_priority = 3)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    3 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    COALESCE(dm.sort_order, 0) as definition_sort,
+    COALESCE(sm.sort_order, 0) as action_set_sort,
+    COALESCE(sm.sort_order, 0) as action_sort
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
+  JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Definition → user_group (source_priority = 3)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    asn.mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    3 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    COALESCE(dm.sort_order, 0) as definition_sort,
+    COALESCE(sm.sort_order, 0) as action_set_sort,
+    COALESCE(sm.sort_order, 0) as action_sort
+  FROM actions_projection a
+  JOIN action_set_members_projection sm ON sm.action_id = a.id
+  JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
+  JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  WHERE asn.target_type = 'user_group' AND asn.target_id IN (SELECT group_id FROM owner_groups)
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+),
+with_selections AS (
+  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
+    CASE WHEN aa.mode = 1 THEN us.selected ELSE NULL END AS user_selected
+  FROM all_assignments aa
+  LEFT JOIN user_selections_projection us
+    ON us.device_id = $1
+    AND us.source_type = aa.asn_source_type
+    AND us.source_id = aa.asn_source_id
+),
+priority_per_action AS (
+  SELECT id, MIN(source_priority) AS min_priority
+  FROM with_selections
+  GROUP BY id
+),
+filtered AS (
+  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
+  FROM with_selections ws
+  JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
+),
+effective AS (
+  SELECT
+    id, name, description, action_type, desired_state, params, timeout_seconds,
+    created_at, created_by, is_deleted, projection_version,
+    signature, params_canonical,
+    CASE
+      WHEN bool_or(mode = 2) THEN -1
+      WHEN bool_or(mode = 0) THEN 0
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0
+      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1
+      ELSE -1
+    END AS effective_mode,
+    MIN(assignment_sort) AS assignment_sort,
+    MIN(definition_sort) AS definition_sort,
+    MIN(action_set_sort) AS action_set_sort,
+    MIN(action_sort) AS action_sort
+  FROM filtered
+  GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
+           created_at, created_by, is_deleted, projection_version,
+           signature, params_canonical
+)
+SELECT id, name, description, action_type, desired_state,
+  params, timeout_seconds, created_at, created_by, is_deleted,
+  projection_version, signature, params_canonical
+FROM effective
+WHERE effective_mode >= 0
+ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
+`
+
+type ListUserLayerResolvedActionsForDeviceRow struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Description       *string            `json:"description"`
+	ActionType        int32              `json:"action_type"`
+	DesiredState      int32              `json:"desired_state"`
+	Params            []byte             `json:"params"`
+	TimeoutSeconds    int32              `json:"timeout_seconds"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+	Signature         []byte             `json:"signature"`
+	ParamsCanonical   []byte             `json:"params_canonical"`
+}
+
+// Get all resolved actions from user/user_group layer for a device.
+// Looks up the device's assigned_user_id, then finds assignments targeting
+// that user or any of the user's groups. Same resolution logic as device layer.
+func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]ListUserLayerResolvedActionsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listUserLayerResolvedActionsForDevice, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUserLayerResolvedActionsForDeviceRow{}
+	for rows.Next() {
+		var i ListUserLayerResolvedActionsForDeviceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,

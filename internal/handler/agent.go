@@ -20,6 +20,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/mtls"
+	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -783,10 +784,10 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 
 	h.logger.Info("agent syncing actions", "device_id", deviceID)
 
-	// Get all resolved actions for this device (with desired_state computed from assignment modes)
-	dbActions, err := h.store.Queries().ListResolvedActionsForDevice(ctx, deviceID)
+	// Get all resolved actions for this device (device + user layers merged)
+	dbActions, err := resolution.ResolveActionsForDevice(ctx, h.store.Queries(), deviceID)
 	if err != nil {
-		h.logger.Error("failed to list resolved actions", "device_id", deviceID, "error", err)
+		h.logger.Error("failed to resolve actions", "device_id", deviceID, "error", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
 	}
 

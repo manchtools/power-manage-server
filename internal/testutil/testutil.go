@@ -411,6 +411,53 @@ func AssignRoleToTestUser(t *testing.T, st *store.Store, actorID, userID, roleID
 	}
 }
 
+// AssignDeviceToUser assigns a device to a user via events.
+func AssignDeviceToUser(t *testing.T, st *store.Store, actorID, deviceID, userID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceAssigned",
+		Data: map[string]any{
+			"user_id": userID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("assign device to user: %v", err)
+	}
+}
+
+// CreateTestAssignment creates an assignment via events and returns its ID.
+func CreateTestAssignment(t *testing.T, st *store.Store, actorID, sourceType, sourceID, targetType, targetID string, mode int) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "assignment",
+		StreamID:   id,
+		EventType:  "AssignmentCreated",
+		Data: map[string]any{
+			"source_type": sourceType,
+			"source_id":   sourceID,
+			"target_type": targetType,
+			"target_id":   targetID,
+			"mode":        int32(mode),
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("create test assignment: %v", err)
+	}
+
+	return id
+}
+
 // NewEncryptor creates an Encryptor with a test key.
 func NewEncryptor(t *testing.T) *crypto.Encryptor {
 	t.Helper()
