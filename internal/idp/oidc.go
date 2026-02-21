@@ -97,7 +97,7 @@ func (p *OIDCProvider) AuthCodeURL(state, nonce, codeVerifier string) string {
 // ExchangeCode exchanges an authorization code for tokens.
 func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (*oauth2.Token, error) {
 	opts := []oauth2.AuthCodeOption{
-		oauth2.S256ChallengeOption(codeVerifier),
+		oauth2.VerifierOption(codeVerifier),
 	}
 	return p.OAuth2Cfg.Exchange(ctx, code, opts...)
 }
