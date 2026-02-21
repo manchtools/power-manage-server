@@ -209,6 +209,8 @@ type IdentityProvidersProjection struct {
 	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
 	IsDeleted                bool               `json:"is_deleted"`
 	ProjectionVersion        int64              `json:"projection_version"`
+	ScimEnabled              bool               `json:"scim_enabled"`
+	ScimTokenHash            string             `json:"scim_token_hash"`
 }
 
 type LpsPasswordsProjection struct {
@@ -287,6 +289,16 @@ type RolesProjection struct {
 	CreatedBy         string             `json:"created_by"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type ScimGroupMappingProjection struct {
+	ID                string             `json:"id"`
+	ProviderID        string             `json:"provider_id"`
+	ScimGroupID       string             `json:"scim_group_id"`
+	ScimDisplayName   string             `json:"scim_display_name"`
+	UserGroupID       string             `json:"user_group_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	ProjectionVersion int64              `json:"projection_version"`
 }
 

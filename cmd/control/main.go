@@ -25,6 +25,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -47,6 +48,7 @@ type Config struct {
 	DynamicGroupEvalInterval     time.Duration
 	PasswordAuthEnabled          bool
 	SSOCallbackBaseURL           string
+	SCIMBaseURL                  string
 }
 
 func main() {
@@ -181,6 +183,7 @@ func main() {
 	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
 		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
 		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
+		SCIMBaseURL:         cfg.SCIMBaseURL,
 	})
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
@@ -194,6 +197,10 @@ func main() {
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
 	mux.Handle(path, handler)
+
+	// Mount SCIM v2 handler
+	scimHandler := scim.NewHandler(st, logger)
+	mux.Handle("/scim/v2/", scimHandler)
 
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +313,9 @@ func parseFlags() *Config {
 	} else if len(cfg.CORSOrigins) > 0 {
 		// Derive from first CORS origin
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
+	}
+	if v := os.Getenv("CONTROL_SCIM_BASE_URL"); v != "" {
+		cfg.SCIMBaseURL = v
 	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)

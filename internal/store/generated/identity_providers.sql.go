@@ -22,7 +22,7 @@ func (q *Queries) CountIdentityProviders(ctx context.Context) (int64, error) {
 }
 
 const getIdentityProviderByID = `-- name: GetIdentityProviderByID :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -54,12 +54,14 @@ func (q *Queries) GetIdentityProviderByID(ctx context.Context, id string) (Ident
 		&i.UpdatedAt,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.ScimEnabled,
+		&i.ScimTokenHash,
 	)
 	return i, err
 }
 
 const getIdentityProviderBySlug = `-- name: GetIdentityProviderBySlug :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
 WHERE slug = $1 AND is_deleted = FALSE
 `
 
@@ -91,12 +93,14 @@ func (q *Queries) GetIdentityProviderBySlug(ctx context.Context, slug string) (I
 		&i.UpdatedAt,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.ScimEnabled,
+		&i.ScimTokenHash,
 	)
 	return i, err
 }
 
 const getLinkedProvidersDisablingPassword = `-- name: GetLinkedProvidersDisablingPassword :many
-SELECT ip.id, ip.name, ip.slug, ip.provider_type, ip.enabled, ip.client_id, ip.client_secret_encrypted, ip.issuer_url, ip.authorization_url, ip.token_url, ip.userinfo_url, ip.scopes, ip.auto_create_users, ip.auto_link_by_email, ip.default_role_id, ip.attribute_mapping, ip.disable_password_for_linked, ip.group_claim, ip.group_mapping, ip.created_at, ip.created_by, ip.updated_at, ip.is_deleted, ip.projection_version FROM identity_providers_projection ip
+SELECT ip.id, ip.name, ip.slug, ip.provider_type, ip.enabled, ip.client_id, ip.client_secret_encrypted, ip.issuer_url, ip.authorization_url, ip.token_url, ip.userinfo_url, ip.scopes, ip.auto_create_users, ip.auto_link_by_email, ip.default_role_id, ip.attribute_mapping, ip.disable_password_for_linked, ip.group_claim, ip.group_mapping, ip.created_at, ip.created_by, ip.updated_at, ip.is_deleted, ip.projection_version, ip.scim_enabled, ip.scim_token_hash FROM identity_providers_projection ip
 JOIN identity_links_projection il ON il.provider_id = ip.id
 WHERE il.user_id = $1
   AND ip.is_deleted = FALSE
@@ -138,6 +142,8 @@ func (q *Queries) GetLinkedProvidersDisablingPassword(ctx context.Context, userI
 			&i.UpdatedAt,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.ScimEnabled,
+			&i.ScimTokenHash,
 		); err != nil {
 			return nil, err
 		}
@@ -150,7 +156,7 @@ func (q *Queries) GetLinkedProvidersDisablingPassword(ctx context.Context, userI
 }
 
 const listEnabledIdentityProviders = `-- name: ListEnabledIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
 WHERE is_deleted = FALSE AND enabled = TRUE
 ORDER BY name ASC
 `
@@ -189,6 +195,8 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 			&i.UpdatedAt,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.ScimEnabled,
+			&i.ScimTokenHash,
 		); err != nil {
 			return nil, err
 		}
@@ -201,7 +209,7 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 }
 
 const listIdentityProviders = `-- name: ListIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -246,6 +254,8 @@ func (q *Queries) ListIdentityProviders(ctx context.Context, arg ListIdentityPro
 			&i.UpdatedAt,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.ScimEnabled,
+			&i.ScimTokenHash,
 		); err != nil {
 			return nil, err
 		}

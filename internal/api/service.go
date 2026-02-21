@@ -41,6 +41,7 @@ type ControlService struct {
 type ControlServiceConfig struct {
 	PasswordAuthEnabled bool
 	SSOCallbackBaseURL  string
+	SCIMBaseURL         string
 }
 
 // NewControlService creates a new control service.
@@ -63,7 +64,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		osquery:       NewOSQueryHandler(st),
 		role:          NewRoleHandler(st),
 		userGroup:     NewUserGroupHandler(st),
-		idp:           NewIDPHandler(st, enc),
+		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
 		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
 		identityLink:  NewIdentityLinkHandler(st),
 	}
@@ -579,4 +580,17 @@ func (s *ControlService) ListIdentityLinks(ctx context.Context, req *connect.Req
 
 func (s *ControlService) UnlinkIdentity(ctx context.Context, req *connect.Request[pm.UnlinkIdentityRequest]) (*connect.Response[pm.UnlinkIdentityResponse], error) {
 	return s.identityLink.UnlinkIdentity(ctx, req)
+}
+
+// SCIM
+func (s *ControlService) EnableSCIM(ctx context.Context, req *connect.Request[pm.EnableSCIMRequest]) (*connect.Response[pm.EnableSCIMResponse], error) {
+	return s.idp.EnableSCIM(ctx, req)
+}
+
+func (s *ControlService) DisableSCIM(ctx context.Context, req *connect.Request[pm.DisableSCIMRequest]) (*connect.Response[pm.DisableSCIMResponse], error) {
+	return s.idp.DisableSCIM(ctx, req)
+}
+
+func (s *ControlService) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
+	return s.idp.RotateSCIMToken(ctx, req)
 }

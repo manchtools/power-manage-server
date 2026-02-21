@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -18,13 +21,14 @@ import (
 
 // IDPHandler handles identity provider CRUD RPCs.
 type IDPHandler struct {
-	store *store.Store
-	enc   *crypto.Encryptor
+	store       *store.Store
+	enc         *crypto.Encryptor
+	scimBaseURL string
 }
 
 // NewIDPHandler creates a new identity provider handler.
-func NewIDPHandler(st *store.Store, enc *crypto.Encryptor) *IDPHandler {
-	return &IDPHandler{store: st, enc: enc}
+func NewIDPHandler(st *store.Store, enc *crypto.Encryptor, scimBaseURL string) *IDPHandler {
+	return &IDPHandler{store: st, enc: enc, scimBaseURL: scimBaseURL}
 }
 
 // CreateIdentityProvider creates a new identity provider.
@@ -91,7 +95,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 	}
 
 	return connect.NewResponse(&pm.CreateIdentityProviderResponse{
-		Provider: idpToProto(provider),
+		Provider: h.idpToProto(provider),
 	}), nil
 }
 
@@ -110,7 +114,7 @@ func (h *IDPHandler) GetIdentityProvider(ctx context.Context, req *connect.Reque
 	}
 
 	return connect.NewResponse(&pm.GetIdentityProviderResponse{
-		Provider: idpToProto(provider),
+		Provider: h.idpToProto(provider),
 	}), nil
 }
 
@@ -150,7 +154,7 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 
 	protoProviders := make([]*pm.IdentityProvider, len(providers))
 	for i, p := range providers {
-		protoProviders[i] = idpToProto(p)
+		protoProviders[i] = h.idpToProto(p)
 	}
 
 	return connect.NewResponse(&pm.ListIdentityProvidersResponse{
@@ -235,7 +239,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	}
 
 	return connect.NewResponse(&pm.UpdateIdentityProviderResponse{
-		Provider: idpToProto(provider),
+		Provider: h.idpToProto(provider),
 	}), nil
 }
 
@@ -265,9 +269,158 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	return connect.NewResponse(&pm.DeleteIdentityProviderResponse{}), nil
 }
 
+// EnableSCIM enables SCIM provisioning for an identity provider.
+func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.EnableSCIMRequest]) (*connect.Response[pm.EnableSCIMResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("provider not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get provider"))
+	}
+
+	if provider.ScimEnabled {
+		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("SCIM is already enabled for this provider"))
+	}
+
+	// Generate a 32-byte random token (64 hex characters)
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate token"))
+	}
+	plainToken := hex.EncodeToString(tokenBytes)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(plainToken), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash token"))
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   req.Msg.Id,
+		EventType:  "IdentityProviderSCIMEnabled",
+		Data: map[string]any{
+			"scim_token_hash": string(hash),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to enable SCIM"))
+	}
+
+	endpointURL := h.scimBaseURL + "/scim/v2/" + provider.Slug
+
+	return connect.NewResponse(&pm.EnableSCIMResponse{
+		Token:       plainToken,
+		EndpointUrl: endpointURL,
+	}), nil
+}
+
+// DisableSCIM disables SCIM provisioning for an identity provider.
+func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.DisableSCIMRequest]) (*connect.Response[pm.DisableSCIMResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("provider not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get provider"))
+	}
+
+	if !provider.ScimEnabled {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("SCIM is not enabled for this provider"))
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   req.Msg.Id,
+		EventType:  "IdentityProviderSCIMDisabled",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to disable SCIM"))
+	}
+
+	return connect.NewResponse(&pm.DisableSCIMResponse{}), nil
+}
+
+// RotateSCIMToken generates a new SCIM bearer token for an identity provider.
+func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("provider not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get provider"))
+	}
+
+	if !provider.ScimEnabled {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("SCIM is not enabled for this provider"))
+	}
+
+	// Generate a 32-byte random token (64 hex characters)
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate token"))
+	}
+	plainToken := hex.EncodeToString(tokenBytes)
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(plainToken), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash token"))
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   req.Msg.Id,
+		EventType:  "IdentityProviderSCIMTokenRotated",
+		Data: map[string]any{
+			"scim_token_hash": string(hash),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rotate SCIM token"))
+	}
+
+	return connect.NewResponse(&pm.RotateSCIMTokenResponse{
+		Token: plainToken,
+	}), nil
+}
+
 // idpToProto converts a database identity provider to a proto message.
 // Note: client_secret is never returned to the client.
-func idpToProto(p db.IdentityProvidersProjection) *pm.IdentityProvider {
+func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityProvider {
 	provider := &pm.IdentityProvider{
 		Id:                       p.ID,
 		Name:                     p.Name,
@@ -285,6 +438,8 @@ func idpToProto(p db.IdentityProvidersProjection) *pm.IdentityProvider {
 		DefaultRoleId:            p.DefaultRoleID,
 		DisablePasswordForLinked: p.DisablePasswordForLinked,
 		GroupClaim:               p.GroupClaim,
+		ScimEnabled:              p.ScimEnabled,
+		ScimEndpointUrl:          h.scimBaseURL + "/scim/v2/" + p.Slug,
 	}
 
 	if p.GroupMapping != nil {

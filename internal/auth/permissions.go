@@ -147,6 +147,9 @@ func AllPermissions() []PermissionInfo {
 		{"ListIdentityProviders", "Identity Providers", "List identity providers"},
 		{"UpdateIdentityProvider", "Identity Providers", "Update identity providers"},
 		{"DeleteIdentityProvider", "Identity Providers", "Delete identity providers"},
+		{"EnableSCIM", "Identity Providers", "Enable SCIM provisioning"},
+		{"DisableSCIM", "Identity Providers", "Disable SCIM provisioning"},
+		{"RotateSCIMToken", "Identity Providers", "Rotate SCIM token"},
 		// Identity Links
 		{"ListIdentityLinks", "Authentication", "View own linked identities"},
 		{"UnlinkIdentity", "Authentication", "Unlink own identity"},

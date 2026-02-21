@@ -15,7 +15,7 @@ import (
 func TestCreateIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -43,7 +43,7 @@ func TestCreateIdentityProvider_Success(t *testing.T) {
 func TestCreateIdentityProvider_DuplicateSlug(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -67,7 +67,7 @@ func TestCreateIdentityProvider_DuplicateSlug(t *testing.T) {
 func TestGetIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -86,7 +86,7 @@ func TestGetIdentityProvider_Success(t *testing.T) {
 func TestGetIdentityProvider_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -101,7 +101,7 @@ func TestGetIdentityProvider_NotFound(t *testing.T) {
 func TestListIdentityProviders_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -121,7 +121,7 @@ func TestListIdentityProviders_Success(t *testing.T) {
 func TestUpdateIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -143,7 +143,7 @@ func TestUpdateIdentityProvider_Success(t *testing.T) {
 func TestUpdateIdentityProvider_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -159,7 +159,7 @@ func TestUpdateIdentityProvider_NotFound(t *testing.T) {
 func TestDeleteIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -181,7 +181,7 @@ func TestDeleteIdentityProvider_Success(t *testing.T) {
 func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
