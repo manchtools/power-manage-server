@@ -84,7 +84,7 @@ func TestLogin_DisabledUser(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
-func TestLogin_SetsCookies(t *testing.T) {
+func TestLogin_NoCookiesSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	h := api.NewAuthHandler(st, jwtMgr)
@@ -101,8 +101,107 @@ func TestLogin_SetsCookies(t *testing.T) {
 	resp, err := h.Login(context.Background(), req)
 	require.NoError(t, err)
 
+	// Verify tokens are returned in the response body
+	assert.NotEmpty(t, resp.Msg.AccessToken)
+	assert.NotEmpty(t, resp.Msg.RefreshToken)
+
+	// Verify NO Set-Cookie headers are set (Bearer-only auth)
 	cookies := resp.Header().Values("Set-Cookie")
-	assert.Len(t, cookies, 2)
+	assert.Empty(t, cookies, "Login should not set any cookies")
+}
+
+func TestRefreshToken_RequiresBodyToken(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	// RefreshToken with empty body should fail.
+	// Proto validation catches the empty refresh_token field.
+	_, err := h.RefreshToken(context.Background(), connect.NewRequest(&pm.RefreshTokenRequest{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refresh_token")
+}
+
+func TestRefreshToken_NoCookieFallback(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Login to get a valid refresh token
+	loginResp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	// Send refresh token via cookie only (no body) — should fail.
+	// Proto validation catches the empty refresh_token field first.
+	req := connect.NewRequest(&pm.RefreshTokenRequest{})
+	req.Header().Set("Cookie", "pm_refresh="+loginResp.Msg.RefreshToken)
+
+	_, err = h.RefreshToken(context.Background(), req)
+	require.Error(t, err)
+	// Proto validation rejects the empty body before our handler runs
+	assert.Contains(t, err.Error(), "refresh_token")
+}
+
+func TestRefreshToken_BodyToken(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Login to get a valid refresh token
+	loginResp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	// Send refresh token in body — should succeed
+	refreshResp, err := h.RefreshToken(context.Background(), connect.NewRequest(&pm.RefreshTokenRequest{
+		RefreshToken: loginResp.Msg.RefreshToken,
+	}))
+	require.NoError(t, err)
+
+	assert.NotEmpty(t, refreshResp.Msg.AccessToken)
+	assert.NotEmpty(t, refreshResp.Msg.RefreshToken)
+	assert.NotNil(t, refreshResp.Msg.ExpiresAt)
+
+	// Verify NO Set-Cookie headers
+	cookies := refreshResp.Header().Values("Set-Cookie")
+	assert.Empty(t, cookies, "RefreshToken should not set any cookies")
+}
+
+func TestLogout_NoCookiesCleared(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Login to get a valid refresh token
+	loginResp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	// Logout with refresh token in body
+	logoutResp, err := h.Logout(context.Background(), connect.NewRequest(&pm.LogoutRequest{
+		RefreshToken: loginResp.Msg.RefreshToken,
+	}))
+	require.NoError(t, err)
+
+	// Verify NO Set-Cookie headers (no cookie clearing)
+	cookies := logoutResp.Header().Values("Set-Cookie")
+	assert.Empty(t, cookies, "Logout should not set any cookies")
 }
 
 func TestGetCurrentUser(t *testing.T) {
@@ -119,4 +218,52 @@ func TestGetCurrentUser(t *testing.T) {
 
 	assert.Equal(t, userID, resp.Msg.User.Id)
 	assert.Equal(t, email, resp.Msg.User.Email)
+}
+
+func TestLogin_TOTPRequired(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	enc := testutil.NewEncryptor(t)
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Enable TOTP for the user
+	testutil.SetupTOTP(t, st, enc, userID, email)
+
+	// Login should return totp_required instead of tokens
+	resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	assert.True(t, resp.Msg.TotpRequired)
+	assert.NotEmpty(t, resp.Msg.TotpChallenge)
+	assert.Empty(t, resp.Msg.AccessToken, "should not return access token when TOTP is required")
+	assert.Empty(t, resp.Msg.RefreshToken, "should not return refresh token when TOTP is required")
+	assert.Nil(t, resp.Msg.User, "should not return user when TOTP is required")
+}
+
+func TestLogin_TOTPNotRequired(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, jwtMgr)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "password", "user")
+
+	// Login without TOTP should return tokens directly
+	resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "password",
+	}))
+	require.NoError(t, err)
+
+	assert.False(t, resp.Msg.TotpRequired)
+	assert.Empty(t, resp.Msg.TotpChallenge)
+	assert.NotEmpty(t, resp.Msg.AccessToken)
+	assert.NotEmpty(t, resp.Msg.RefreshToken)
+	assert.NotNil(t, resp.Msg.User)
 }

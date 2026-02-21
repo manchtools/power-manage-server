@@ -11,10 +11,11 @@ import (
 
 // PublicProcedures are procedures that don't require authentication.
 var PublicProcedures = map[string]bool{
-	"/pm.v1.ControlService/Login":        true,
-	"/pm.v1.ControlService/RefreshToken": true,
-	"/pm.v1.ControlService/Logout":       true,
-	"/pm.v1.ControlService/Register":     true,
+	"/pm.v1.ControlService/Login":           true,
+	"/pm.v1.ControlService/RefreshToken":    true,
+	"/pm.v1.ControlService/Logout":          true,
+	"/pm.v1.ControlService/Register":        true,
+	"/pm.v1.ControlService/VerifyLoginTOTP": true,
 }
 
 // clientIP extracts the real client IP, checking X-Forwarded-For and
@@ -64,7 +65,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		procedure := req.Spec().Procedure
 
 		// Rate limit login attempts by client IP
-		if procedure == "/pm.v1.ControlService/Login" && i.loginLimiter != nil {
+		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP") && i.loginLimiter != nil {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
 				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many login attempts, try again later"))
@@ -92,18 +93,16 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return next(ctx, req)
 		}
 
-		// Extract token from Authorization header or httpOnly cookie
-		var tokenString string
+		// Extract token from Authorization: Bearer header
 		authHeader := req.Header().Get("Authorization")
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-				return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid authorization header format"))
-			}
-			tokenString = parts[1]
-		} else {
-			tokenString = CookieFromHeader(req.Header(), AccessTokenCookie)
+		if authHeader == "" {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing authentication credentials"))
 		}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid authorization header format"))
+		}
+		tokenString := parts[1]
 		if tokenString == "" {
 			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing authentication credentials"))
 		}

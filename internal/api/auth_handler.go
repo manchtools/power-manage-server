@@ -4,7 +4,6 @@ package api
 import (
 	"context"
 	"errors"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -55,6 +54,18 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("account is disabled"))
 	}
 
+	// If TOTP is enabled, return a challenge instead of tokens
+	if user.TotpEnabled {
+		challenge, err := h.jwtManager.GenerateTOTPChallenge(user.ID, user.Email, user.SessionVersion)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate TOTP challenge"))
+		}
+		return connect.NewResponse(&pm.LoginResponse{
+			TotpRequired:  true,
+			TotpChallenge: challenge,
+		}), nil
+	}
+
 	// Resolve permissions from DB and embed in JWT
 	permissions, err := h.store.Queries().GetUserPermissions(ctx, user.ID)
 	if err != nil {
@@ -91,11 +102,6 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		User:         protoUser,
 	})
 
-	// Set httpOnly cookies with the tokens
-	secure := auth.IsSecureRequest(req.Header())
-	refreshExpiry := time.Now().Add(7 * 24 * time.Hour)
-	auth.SetTokenCookies(resp.Header(), tokens, refreshExpiry, secure)
-
 	return resp, nil
 }
 
@@ -105,11 +111,8 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, err
 	}
 
-	// Read refresh token from request body, falling back to cookie
+	// Read refresh token from request body
 	refreshToken := req.Msg.RefreshToken
-	if refreshToken == "" {
-		refreshToken = auth.CookieFromHeader(req.Header(), auth.RefreshTokenCookie)
-	}
 	if refreshToken == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing refresh token"))
 	}
@@ -162,11 +165,6 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		RefreshToken: tokens.RefreshToken,
 	})
 
-	// Set httpOnly cookies with the new tokens
-	secure := auth.IsSecureRequest(req.Header())
-	refreshExpiry := time.Now().Add(7 * 24 * time.Hour)
-	auth.SetTokenCookies(resp.Header(), tokens, refreshExpiry, secure)
-
 	return resp, nil
 }
 
@@ -176,12 +174,8 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		return nil, err
 	}
 
-	// Read refresh token from request body, falling back to cookie
+	// Read refresh token from request body
 	refreshToken := req.Msg.RefreshToken
-	if refreshToken == "" {
-		refreshToken = auth.CookieFromHeader(req.Header(), auth.RefreshTokenCookie)
-	}
-
 	if refreshToken != "" {
 		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
@@ -192,13 +186,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		}
 	}
 
-	resp := connect.NewResponse(&pm.LogoutResponse{})
-
-	// Clear token cookies
-	secure := auth.IsSecureRequest(req.Header())
-	auth.ClearTokenCookies(resp.Header(), secure)
-
-	return resp, nil
+	return connect.NewResponse(&pm.LogoutResponse{}), nil
 }
 
 // GetCurrentUser returns the current authenticated user.
