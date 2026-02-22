@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -76,7 +77,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		}
 	}
 	for _, roleID := range roleIDs {
-		_ = h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user_role",
 			StreamID:   id + ":" + roleID,
 			EventType:  "UserRoleAssigned",
@@ -86,7 +87,9 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
-		})
+		}); err != nil {
+			slog.Warn("failed to append UserRoleAssigned event", "user_id", id, "role_id", roleID, "error", err)
+		}
 	}
 
 	// Read back from projection

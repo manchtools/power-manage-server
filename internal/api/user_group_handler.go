@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -497,14 +498,16 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 
 // bumpUserSessionVersion increments a user's session_version to invalidate JWT/permission cache.
 func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) {
-	_ = h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
 		EventType:  "UserSessionInvalidated",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    actorID,
-	})
+	}); err != nil {
+		slog.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+	}
 }
 
 // bumpSessionVersionForGroupMembers bumps session_version for all members of a user group.

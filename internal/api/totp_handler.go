@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -294,14 +295,16 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		if idx >= 0 {
 			codeValid = true
 			// Mark backup code as used
-			_ = h.store.AppendEvent(ctx, store.Event{
+			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "totp",
 				StreamID:   claims.UserID,
 				EventType:  "TOTPBackupCodeUsed",
 				Data:       map[string]any{"index": idx},
 				ActorType:  "user",
 				ActorID:    claims.UserID,
-			})
+			}); err != nil {
+				slog.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
+			}
 		}
 	}
 
@@ -333,14 +336,16 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Emit login event
-	_ = h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   claims.UserID,
 		EventType:  "UserLoggedIn",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    claims.UserID,
-	})
+	}); err != nil {
+		slog.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+	}
 
 	// Get full user for response
 	user, err := h.store.Queries().GetUserByID(ctx, claims.UserID)

@@ -260,7 +260,9 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Sync group memberships (only for valid, active users)
 	groupMapping := idp.ParseGroupMapping(provider.GroupMapping)
 	if len(claims.Groups) > 0 && len(groupMapping) > 0 {
-		_ = linker.SyncGroupMemberships(ctx, linkResult.UserID, claims.Groups, groupMapping)
+		if err := linker.SyncGroupMemberships(ctx, linkResult.UserID, claims.Groups, groupMapping); err != nil {
+			slog.Warn("failed to sync SSO group memberships", "user_id", linkResult.UserID, "error", err)
+		}
 	}
 
 	// Check if TOTP is required (don't emit login event — TOTP handler will)
@@ -276,7 +278,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 
 	// Emit login event (fully authenticated — no TOTP required)
-	_ = h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   user.ID,
 		EventType:  "UserLoggedIn",
@@ -285,7 +287,9 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		},
 		ActorType: "user",
 		ActorID:   user.ID,
-	})
+	}); err != nil {
+		slog.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "provider", provider.Slug, "error", err)
+	}
 
 	// Generate tokens
 	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)

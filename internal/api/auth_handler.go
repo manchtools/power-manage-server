@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -89,14 +90,16 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	}
 
 	// Emit UserLoggedIn event for auditing (non-blocking, don't fail login)
-	_ = h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   user.ID,
 		EventType:  "UserLoggedIn",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    user.ID,
-	})
+	}); err != nil {
+		slog.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "error", err)
+	}
 
 	protoUser := userToProto(user)
 	// Populate user roles

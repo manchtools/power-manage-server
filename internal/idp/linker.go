@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -148,7 +149,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 
 		// Assign default role if configured
 		if provider.DefaultRoleID != "" {
-			_ = l.appender.AppendEvent(ctx, EventInput{
+			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "user_role",
 				StreamID:   userID + ":" + provider.DefaultRoleID,
 				EventType:  "UserRoleAssigned",
@@ -158,7 +159,9 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				},
 				ActorType: "system",
 				ActorID:   "sso",
-			})
+			}); err != nil {
+				slog.Warn("failed to assign default role to SSO user", "user_id", userID, "role_id", provider.DefaultRoleID, "error", err)
+			}
 		}
 
 		// Create identity link
@@ -209,7 +212,7 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 	for _, groupID := range groupMapping {
 		if desiredGroups[groupID] {
 			// Add user to group (idempotent via ON CONFLICT DO NOTHING in projector)
-			_ = l.appender.AppendEvent(ctx, EventInput{
+			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "user_group",
 				StreamID:   groupID,
 				EventType:  "UserGroupMemberAdded",
@@ -219,10 +222,12 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 				},
 				ActorType: "system",
 				ActorID:   "sso",
-			})
+			}); err != nil {
+				slog.Warn("failed to add user to SSO group", "user_id", userID, "group_id", groupID, "error", err)
+			}
 		} else {
 			// Remove user from group
-			_ = l.appender.AppendEvent(ctx, EventInput{
+			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "user_group",
 				StreamID:   groupID,
 				EventType:  "UserGroupMemberRemoved",
@@ -232,7 +237,9 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 				},
 				ActorType: "system",
 				ActorID:   "sso",
-			})
+			}); err != nil {
+				slog.Warn("failed to remove user from SSO group", "user_id", userID, "group_id", groupID, "error", err)
+			}
 		}
 	}
 

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -417,14 +418,16 @@ func (h *RoleHandler) ListPermissions(ctx context.Context, req *connect.Request[
 
 // bumpUserSessionVersion increments a user's session_version to invalidate JWT/permission cache.
 func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) {
-	_ = h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
 		EventType:  "UserSessionInvalidated",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    actorID,
-	})
+	}); err != nil {
+		slog.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+	}
 }
 
 // bumpSessionVersionForRole bumps session_version for all users with a given role

@@ -499,6 +499,112 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			},
 		}
 
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		var params struct {
+			Name        string   `json:"name"`
+			Members     []string `json:"members"`
+			Gid         int32    `json:"gid"`
+			SystemGroup bool     `json:"systemGroup"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal group params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Group{
+			Group: &pm.GroupParams{
+				Name:        params.Name,
+				Members:     params.Members,
+				Gid:         params.Gid,
+				SystemGroup: params.SystemGroup,
+			},
+		}
+
+	case pm.ActionType_ACTION_TYPE_SSH:
+		var params struct {
+			Username      string   `json:"username"`
+			AllowPubkey   bool     `json:"allowPubkey"`
+			AllowPassword bool     `json:"allowPassword"`
+			Users         []string `json:"users"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal ssh params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Ssh{
+			Ssh: &pm.SshParams{
+				Username:      params.Username,
+				AllowPubkey:   params.AllowPubkey,
+				AllowPassword: params.AllowPassword,
+				Users:         params.Users,
+			},
+		}
+
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		var params struct {
+			Priority   uint32 `json:"priority"`
+			Directives []struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			} `json:"directives"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal sshd params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		directives := make([]*pm.SshdDirective, len(params.Directives))
+		for i, dir := range params.Directives {
+			directives[i] = &pm.SshdDirective{
+				Key:   dir.Key,
+				Value: dir.Value,
+			}
+		}
+		action.Params = &pm.Action_Sshd{
+			Sshd: &pm.SshdParams{
+				Priority:   params.Priority,
+				Directives: directives,
+			},
+		}
+
+	case pm.ActionType_ACTION_TYPE_SUDO:
+		var params struct {
+			AccessLevel  int32    `json:"accessLevel"`
+			Users        []string `json:"users"`
+			CustomConfig string   `json:"customConfig"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal sudo params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Sudo{
+			Sudo: &pm.SudoParams{
+				AccessLevel:  pm.SudoAccessLevel(params.AccessLevel),
+				Users:        params.Users,
+				CustomConfig: params.CustomConfig,
+			},
+		}
+
+	case pm.ActionType_ACTION_TYPE_LPS:
+		var params struct {
+			Usernames            []string `json:"usernames"`
+			PasswordLength       int32    `json:"passwordLength"`
+			Complexity           int32    `json:"complexity"`
+			RotationIntervalDays int32    `json:"rotationIntervalDays"`
+			GracePeriodHours     int32    `json:"gracePeriodHours"`
+		}
+		if err := json.Unmarshal(paramsJSON, &params); err != nil {
+			d.logger.Debug("failed to unmarshal lps params", "error", err, "action_type", actionTypeName)
+			return
+		}
+		action.Params = &pm.Action_Lps{
+			Lps: &pm.LpsParams{
+				Usernames:            params.Usernames,
+				PasswordLength:       params.PasswordLength,
+				Complexity:           pm.LpsPasswordComplexity(params.Complexity),
+				RotationIntervalDays: params.RotationIntervalDays,
+				GracePeriodHours:     params.GracePeriodHours,
+			},
+		}
+
 	default:
 		d.logger.Debug("unknown action type, no params to parse", "action_type", actionTypeName)
 	}

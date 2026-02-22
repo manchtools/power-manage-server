@@ -415,7 +415,7 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	// Assign the Admin role to the bootstrap user
 	adminRole, err := st.Queries().GetRoleByName(ctx, "Admin")
 	if err == nil {
-		_ = st.AppendEvent(ctx, store.Event{
+		if err := st.AppendEvent(ctx, store.Event{
 			StreamType: "user_role",
 			StreamID:   id + ":" + adminRole.ID,
 			EventType:  "UserRoleAssigned",
@@ -425,7 +425,9 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 			},
 			ActorType: "system",
 			ActorID:   "bootstrap",
-		})
+		}); err != nil {
+			logger.Warn("failed to assign admin role to bootstrap user", "user_id", id, "error", err)
+		}
 	}
 
 	logger.Info("admin user created", "email", email, "id", id)

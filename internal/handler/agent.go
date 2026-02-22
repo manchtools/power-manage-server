@@ -454,7 +454,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 							continue
 						}
 						lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-						h.store.AppendEvent(ctx, store.Event{
+						if err := h.store.AppendEvent(ctx, store.Event{
 							StreamType: "lps_password",
 							StreamID:   lpsStreamID,
 							EventType:  "LpsPasswordRotated",
@@ -468,7 +468,9 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 							},
 							ActorType: "device",
 							ActorID:   deviceID,
-						})
+						}); err != nil {
+							h.logger.Error("failed to append LpsPasswordRotated event", "device_id", deviceID, "action_id", actionID, "username", r.Username, "error", err)
+						}
 					}
 				}
 			}

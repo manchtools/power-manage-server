@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -364,7 +365,9 @@ func (s *Store) processNotifications(ctx context.Context) {
 			// Connection lost, try to reconnect
 			s.listenerMu.Lock()
 			if s.listenerConn != nil {
-				s.listenerConn.Close(context.Background())
+				if closeErr := s.listenerConn.Close(context.Background()); closeErr != nil {
+					slog.Warn("failed to close listener connection", "error", closeErr)
+				}
 				s.listenerConn = nil
 			}
 			s.listening = false
