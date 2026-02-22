@@ -18,7 +18,11 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/VerifyLoginTOTP": true,
 	"/pm.v1.ControlService/ListAuthMethods": true,
 	"/pm.v1.ControlService/GetSSOLoginURL":  true,
-	"/pm.v1.ControlService/SSOCallback":     true,
+	"/pm.v1.ControlService/SSOCallback":             true,
+	"/pm.v1.ControlService/AuthenticateDeviceUser":  true,
+	"/pm.v1.ControlService/GetDeviceLoginURL":       true,
+	"/pm.v1.ControlService/DeviceLoginCallback":     true,
+	"/pm.v1.ControlService/ListDeviceUsers":         true,
 }
 
 // TrustedProxies is the set of IP addresses/CIDRs trusted to set

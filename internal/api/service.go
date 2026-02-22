@@ -35,6 +35,7 @@ type ControlService struct {
 	idp           *IDPHandler
 	sso           *SSOHandler
 	identityLink  *IdentityLinkHandler
+	deviceAuth    *DeviceAuthHandler
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -42,6 +43,8 @@ type ControlServiceConfig struct {
 	PasswordAuthEnabled bool
 	SSOCallbackBaseURL  string
 	SCIMBaseURL         string
+	DeviceLoginURL      string // Configurable base URL for browser-based device login
+	ExternalURL         string // Server's external URL (for default device login URL)
 }
 
 // NewControlService creates a new control service.
@@ -67,6 +70,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
 		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
 		identityLink:  NewIdentityLinkHandler(st),
+		deviceAuth:    NewDeviceAuthHandler(st, jwtManager, enc, cfg.DeviceLoginURL, cfg.ExternalURL),
 	}
 }
 
@@ -593,4 +597,21 @@ func (s *ControlService) DisableSCIM(ctx context.Context, req *connect.Request[p
 
 func (s *ControlService) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
 	return s.idp.RotateSCIMToken(ctx, req)
+}
+
+// Device Authentication (PAM/NSS device login)
+func (s *ControlService) AuthenticateDeviceUser(ctx context.Context, req *connect.Request[pm.AuthenticateDeviceUserRequest]) (*connect.Response[pm.AuthenticateDeviceUserResponse], error) {
+	return s.deviceAuth.AuthenticateDeviceUser(ctx, req)
+}
+
+func (s *ControlService) GetDeviceLoginURL(ctx context.Context, req *connect.Request[pm.GetDeviceLoginURLRequest]) (*connect.Response[pm.GetDeviceLoginURLResponse], error) {
+	return s.deviceAuth.GetDeviceLoginURL(ctx, req)
+}
+
+func (s *ControlService) DeviceLoginCallback(ctx context.Context, req *connect.Request[pm.DeviceLoginCallbackRequest]) (*connect.Response[pm.DeviceLoginCallbackResponse], error) {
+	return s.deviceAuth.DeviceLoginCallback(ctx, req)
+}
+
+func (s *ControlService) ListDeviceUsers(ctx context.Context, req *connect.Request[pm.ListDeviceUsersRequest]) (*connect.Response[pm.ListDeviceUsersResponse], error) {
+	return s.deviceAuth.ListDeviceUsers(ctx, req)
 }

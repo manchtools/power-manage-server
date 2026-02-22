@@ -15,9 +15,10 @@ import (
 type TokenType string
 
 const (
-	TokenTypeAccess        TokenType = "access"
-	TokenTypeRefresh       TokenType = "refresh"
-	TokenTypeTOTPChallenge TokenType = "totp_challenge"
+	TokenTypeAccess         TokenType = "access"
+	TokenTypeRefresh        TokenType = "refresh"
+	TokenTypeTOTPChallenge  TokenType = "totp_challenge"
+	TokenTypeDeviceSession  TokenType = "device_session"
 )
 
 // Claims represents the JWT claims for user authentication.
@@ -28,6 +29,7 @@ type Claims struct {
 	Permissions    []string  `json:"perms,omitempty"`
 	TokenType      TokenType `json:"type"`
 	SessionVersion int32     `json:"sv,omitempty"`
+	DeviceID       string    `json:"did,omitempty"` // Only set for device session tokens
 }
 
 // JWTConfig holds JWT configuration.
@@ -145,6 +147,34 @@ func (m *JWTManager) GenerateTOTPChallenge(userID, email string, sessionVersion 
 	tokenString, err := token.SignedString(m.config.Secret)
 	if err != nil {
 		return "", fmt.Errorf("sign TOTP challenge token: %w", err)
+	}
+	return tokenString, nil
+}
+
+// GenerateDeviceSessionToken creates a device session JWT (8 hours) for sudo re-auth.
+func (m *JWTManager) GenerateDeviceSessionToken(userID, email, deviceID string) (string, error) {
+	now := time.Now()
+	entropy := ulid.Monotonic(rand.Reader, 0)
+	jti := ulid.MustNew(ulid.Timestamp(now), entropy).String()
+
+	claims := &Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			Issuer:    m.config.Issuer,
+			Subject:   userID,
+			ExpiresAt: jwt.NewNumericDate(now.Add(8 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+		UserID:    userID,
+		Email:     email,
+		DeviceID:  deviceID,
+		TokenType: TokenTypeDeviceSession,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(m.config.Secret)
+	if err != nil {
+		return "", fmt.Errorf("sign device session token: %w", err)
 	}
 	return tokenString, nil
 }
