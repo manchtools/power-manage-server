@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"connectrpc.com/connect"
@@ -13,6 +14,20 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/store"
 )
+
+// sensitiveEventFields are JSON keys that must be redacted from audit event data
+// to prevent exposure of secrets (passwords, passphrases, keys) through the audit log.
+var sensitiveEventFields = map[string]bool{
+	"password":       true,
+	"passphrase":     true,
+	"preshared_key":  true,
+	"password_hash":  true,
+	"lps.rotations":  true,
+	"script":         true,
+	"content":        true,
+	"unit_content":   true,
+	"gpg_key":        true,
+}
 
 // AuditHandler handles audit log RPCs.
 type AuditHandler struct {
@@ -77,6 +92,38 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+// redactEventData removes sensitive fields from JSON event data before
+// returning it through the audit log API. Fields listed in sensitiveEventFields
+// are replaced with "[REDACTED]".
+func redactEventData(data []byte) string {
+	if len(data) == 0 {
+		return string(data)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return string(data)
+	}
+
+	redacted := false
+	for key := range sensitiveEventFields {
+		if _, ok := m[key]; ok {
+			m[key] = "[REDACTED]"
+			redacted = true
+		}
+	}
+
+	if !redacted {
+		return string(data)
+	}
+
+	out, err := json.Marshal(m)
+	if err != nil {
+		return string(data)
+	}
+	return string(out)
+}
+
 func eventToProto(e db.Event) *pm.AuditEvent {
 	event := &pm.AuditEvent{
 		Id:         uuid.UUID(e.ID.Bytes).String(),
@@ -85,7 +132,7 @@ func eventToProto(e db.Event) *pm.AuditEvent {
 		StreamId:   e.StreamID,
 		ActorType:  e.ActorType,
 		ActorId:    e.ActorID,
-		Data:       string(e.Data),
+		Data:       redactEventData(e.Data),
 	}
 
 	if e.OccurredAt.Valid {

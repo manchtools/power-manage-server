@@ -23,28 +23,11 @@ func TestCreateUser_Success(t *testing.T) {
 	resp, err := h.CreateUser(ctx, connect.NewRequest(&pm.CreateUserRequest{
 		Email:    testutil.NewID() + "@new.com",
 		Password: "secure-pass-123",
-		Role:     "user",
 	}))
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, resp.Msg.User.Id)
-	assert.Equal(t, "user", resp.Msg.User.Role)
 	assert.False(t, resp.Msg.User.Disabled)
-}
-
-func TestCreateUser_RoleRequired(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
-
-	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
-	ctx := testutil.AdminContext(adminID)
-
-	_, err := h.CreateUser(ctx, connect.NewRequest(&pm.CreateUserRequest{
-		Email:    testutil.NewID() + "@new.com",
-		Password: "secure-pass-123",
-	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestCreateUser_Unauthenticated(t *testing.T) {
@@ -54,7 +37,6 @@ func TestCreateUser_Unauthenticated(t *testing.T) {
 	_, err := h.CreateUser(context.Background(), connect.NewRequest(&pm.CreateUserRequest{
 		Email:    "test@test.com",
 		Password: "secure-pass-123",
-		Role:     "user",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -172,22 +154,6 @@ func TestUpdateUserPassword_Admin(t *testing.T) {
 		NewPassword: "admin-set-password",
 	}))
 	require.NoError(t, err)
-}
-
-func TestUpdateUserRole(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
-
-	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
-	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
-	ctx := testutil.AdminContext(adminID)
-
-	resp, err := h.UpdateUserRole(ctx, connect.NewRequest(&pm.UpdateUserRoleRequest{
-		Id:   userID,
-		Role: "admin",
-	}))
-	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.User.Role)
 }
 
 func TestSetUserDisabled(t *testing.T) {

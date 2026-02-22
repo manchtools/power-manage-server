@@ -131,6 +131,14 @@ service AgentService {
 
 **Note:** Agent registration is handled by the Control Server (see [Control Server README](../control/README.md)). Agents first register with the Control Server to obtain mTLS certificates and the gateway URL, then connect to the Gateway for streaming communication.
 
+The Gateway also exposes a unary RPC for LUKS token validation:
+
+```protobuf
+rpc ValidateLuksToken(ValidateLuksTokenRequest) returns (ValidateLuksTokenResponse);
+```
+
+This is called by the agent CLI `luks set-passphrase` subcommand to validate a one-time token before accepting a user-defined passphrase.
+
 ### Streaming Protocol
 
 After registration, agents connect via the `Stream` RPC:
@@ -143,6 +151,9 @@ After registration, agents connect via the `Stream` RPC:
 | `Heartbeat` | Periodic health/metrics report (uptime, CPU, memory, disk) |
 | `ActionResult` | Result of an executed action |
 | `OSQueryResult` | Result of an OS query |
+| `GetLuksKeyRequest` | Request current LUKS managed passphrase for an action |
+| `StoreLuksKeyRequest` | Store a new LUKS managed passphrase on the server |
+| `RevokeLuksDeviceKeyResult` | Report result of a device-bound key revocation |
 
 #### Server → Agent Messages
 
@@ -151,6 +162,9 @@ After registration, agents connect via the `Stream` RPC:
 | `Welcome` | Response to Hello with server info |
 | `ActionDispatch` | Action to execute |
 | `OSQuery` | OS query to run |
+| `GetLuksKeyResponse` | Response with current LUKS managed passphrase |
+| `StoreLuksKeyResponse` | Confirmation that a LUKS passphrase was stored |
+| `RevokeLuksDeviceKey` | Instruction to revoke the device-bound key in LUKS slot 7 |
 | `Error` | Error message |
 
 ### Connection Flow
@@ -167,6 +181,14 @@ Agent                              Gateway
   │◀─── ActionDispatch ───────────────│ (from Control via pg_notify)
   │                                   │
   │──── ActionResult ─────────────────▶│
+  │                                   │
+  │──── GetLuksKeyRequest ───────────▶│ (LUKS action needs server key)
+  │                                   │
+  │◀─── GetLuksKeyResponse ──────────│
+  │                                   │
+  │──── StoreLuksKeyRequest ─────────▶│ (after key rotation)
+  │                                   │
+  │◀─── StoreLuksKeyResponse ────────│ (confirms receipt before old key removal)
   │                                   │
 ```
 
@@ -202,6 +224,9 @@ The Gateway records events directly to the PostgreSQL event store:
 | `ExecutionStarted` | Agent started executing an action |
 | `ExecutionCompleted` | Action completed successfully |
 | `ExecutionFailed` | Action failed with an error |
+| `LuksKeyRotated` | Agent stored a new LUKS managed passphrase |
+| `LuksDeviceKeyRevoked` | Agent successfully revoked device-bound key |
+| `LuksDeviceKeyRevocationFailed` | Agent failed to revoke device-bound key |
 
 ## Health Endpoints
 
@@ -234,6 +259,7 @@ The Gateway forwards these action types from Control Server to agents:
 | `SHELL` | Shell script execution | script, interpreter, run_as_root, working_directory, environment |
 | `SYSTEMD` | Systemd unit management | unit_name, desired_state, enable, unit_content |
 | `FILE` | File management | path, content, owner, group, mode |
+| `LUKS` | LUKS disk encryption | preshared_key, rotation_interval_days, min_words, device_bound_key_type |
 
 ## OS Query Support
 

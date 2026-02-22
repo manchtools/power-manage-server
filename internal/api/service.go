@@ -10,6 +10,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -17,6 +18,7 @@ import (
 type ControlService struct {
 	registration  *RegistrationHandler
 	auth          *AuthHandler
+	totp          *TOTPHandler
 	user          *UserHandler
 	device        *DeviceHandler
 	token         *TokenHandler
@@ -28,16 +30,29 @@ type ControlService struct {
 	userSelection *UserSelectionHandler
 	audit         *AuditHandler
 	osquery       *OSQueryHandler
+	role          *RoleHandler
+	userGroup     *UserGroupHandler
+	idp           *IDPHandler
+	sso           *SSOHandler
+	identityLink  *IdentityLinkHandler
+}
+
+// ControlServiceConfig holds configuration for the control service.
+type ControlServiceConfig struct {
+	PasswordAuthEnabled bool
+	SSOCallbackBaseURL  string
+	SCIMBaseURL         string
 }
 
 // NewControlService creates a new control service.
-func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger) *ControlService {
+func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
 	actionHandler := NewActionHandler(st, signer)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
 		auth:          NewAuthHandler(st, jwtManager),
+		totp:          NewTOTPHandler(st, jwtManager, enc, ""),
 		user:          NewUserHandler(st),
-		device:        NewDeviceHandler(st),
+		device:        NewDeviceHandler(st, enc),
 		token:         NewTokenHandler(st),
 		action:        actionHandler,
 		actionSet:     NewActionSetHandler(st),
@@ -47,6 +62,11 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		userSelection: NewUserSelectionHandler(st),
 		audit:         NewAuditHandler(st),
 		osquery:       NewOSQueryHandler(st),
+		role:          NewRoleHandler(st),
+		userGroup:     NewUserGroupHandler(st),
+		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
+		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
+		identityLink:  NewIdentityLinkHandler(st),
 	}
 }
 
@@ -74,6 +94,31 @@ func (s *ControlService) GetCurrentUser(ctx context.Context, req *connect.Reques
 	return s.auth.GetCurrentUser(ctx, req)
 }
 
+func (s *ControlService) VerifyLoginTOTP(ctx context.Context, req *connect.Request[pm.VerifyLoginTOTPRequest]) (*connect.Response[pm.VerifyLoginTOTPResponse], error) {
+	return s.totp.VerifyLoginTOTP(ctx, req)
+}
+
+// TOTP Two-Factor Authentication
+func (s *ControlService) SetupTOTP(ctx context.Context, req *connect.Request[pm.SetupTOTPRequest]) (*connect.Response[pm.SetupTOTPResponse], error) {
+	return s.totp.SetupTOTP(ctx, req)
+}
+
+func (s *ControlService) VerifyTOTP(ctx context.Context, req *connect.Request[pm.VerifyTOTPRequest]) (*connect.Response[pm.VerifyTOTPResponse], error) {
+	return s.totp.VerifyTOTP(ctx, req)
+}
+
+func (s *ControlService) DisableTOTP(ctx context.Context, req *connect.Request[pm.DisableTOTPRequest]) (*connect.Response[pm.DisableTOTPResponse], error) {
+	return s.totp.DisableTOTP(ctx, req)
+}
+
+func (s *ControlService) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
+	return s.totp.GetTOTPStatus(ctx, req)
+}
+
+func (s *ControlService) RegenerateBackupCodes(ctx context.Context, req *connect.Request[pm.RegenerateBackupCodesRequest]) (*connect.Response[pm.RegenerateBackupCodesResponse], error) {
+	return s.totp.RegenerateBackupCodes(ctx, req)
+}
+
 // Users
 func (s *ControlService) CreateUser(ctx context.Context, req *connect.Request[pm.CreateUserRequest]) (*connect.Response[pm.CreateUserResponse], error) {
 	return s.user.CreateUser(ctx, req)
@@ -93,10 +138,6 @@ func (s *ControlService) UpdateUserEmail(ctx context.Context, req *connect.Reque
 
 func (s *ControlService) UpdateUserPassword(ctx context.Context, req *connect.Request[pm.UpdateUserPasswordRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
 	return s.user.UpdateUserPassword(ctx, req)
-}
-
-func (s *ControlService) UpdateUserRole(ctx context.Context, req *connect.Request[pm.UpdateUserRoleRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
-	return s.user.UpdateUserRole(ctx, req)
 }
 
 func (s *ControlService) SetUserDisabled(ctx context.Context, req *connect.Request[pm.SetUserDisabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
@@ -334,6 +375,10 @@ func (s *ControlService) GetDeviceAssignments(ctx context.Context, req *connect.
 	return s.assignment.GetDeviceAssignments(ctx, req)
 }
 
+func (s *ControlService) GetUserAssignments(ctx context.Context, req *connect.Request[pm.GetUserAssignmentsRequest]) (*connect.Response[pm.GetUserAssignmentsResponse], error) {
+	return s.assignment.GetUserAssignments(ctx, req)
+}
+
 // Action Dispatch & Execution
 func (s *ControlService) DispatchAction(ctx context.Context, req *connect.Request[pm.DispatchActionRequest]) (*connect.Response[pm.DispatchActionResponse], error) {
 	return s.action.DispatchAction(ctx, req)
@@ -418,4 +463,134 @@ func (s *ControlService) GetDeviceInventory(ctx context.Context, req *connect.Re
 
 func (s *ControlService) RefreshDeviceInventory(ctx context.Context, req *connect.Request[pm.RefreshDeviceInventoryRequest]) (*connect.Response[pm.RefreshDeviceInventoryResponse], error) {
 	return s.osquery.RefreshDeviceInventory(ctx, req)
+}
+
+// Roles & Permissions
+func (s *ControlService) CreateRole(ctx context.Context, req *connect.Request[pm.CreateRoleRequest]) (*connect.Response[pm.CreateRoleResponse], error) {
+	return s.role.CreateRole(ctx, req)
+}
+
+func (s *ControlService) GetRole(ctx context.Context, req *connect.Request[pm.GetRoleRequest]) (*connect.Response[pm.GetRoleResponse], error) {
+	return s.role.GetRole(ctx, req)
+}
+
+func (s *ControlService) ListRoles(ctx context.Context, req *connect.Request[pm.ListRolesRequest]) (*connect.Response[pm.ListRolesResponse], error) {
+	return s.role.ListRoles(ctx, req)
+}
+
+func (s *ControlService) UpdateRole(ctx context.Context, req *connect.Request[pm.UpdateRoleRequest]) (*connect.Response[pm.UpdateRoleResponse], error) {
+	return s.role.UpdateRole(ctx, req)
+}
+
+func (s *ControlService) DeleteRole(ctx context.Context, req *connect.Request[pm.DeleteRoleRequest]) (*connect.Response[pm.DeleteRoleResponse], error) {
+	return s.role.DeleteRole(ctx, req)
+}
+
+func (s *ControlService) AssignRoleToUser(ctx context.Context, req *connect.Request[pm.AssignRoleToUserRequest]) (*connect.Response[pm.AssignRoleToUserResponse], error) {
+	return s.role.AssignRoleToUser(ctx, req)
+}
+
+func (s *ControlService) RevokeRoleFromUser(ctx context.Context, req *connect.Request[pm.RevokeRoleFromUserRequest]) (*connect.Response[pm.RevokeRoleFromUserResponse], error) {
+	return s.role.RevokeRoleFromUser(ctx, req)
+}
+
+func (s *ControlService) ListPermissions(ctx context.Context, req *connect.Request[pm.ListPermissionsRequest]) (*connect.Response[pm.ListPermissionsResponse], error) {
+	return s.role.ListPermissions(ctx, req)
+}
+
+// User Groups
+func (s *ControlService) CreateUserGroup(ctx context.Context, req *connect.Request[pm.CreateUserGroupRequest]) (*connect.Response[pm.CreateUserGroupResponse], error) {
+	return s.userGroup.CreateUserGroup(ctx, req)
+}
+
+func (s *ControlService) GetUserGroup(ctx context.Context, req *connect.Request[pm.GetUserGroupRequest]) (*connect.Response[pm.GetUserGroupResponse], error) {
+	return s.userGroup.GetUserGroup(ctx, req)
+}
+
+func (s *ControlService) ListUserGroups(ctx context.Context, req *connect.Request[pm.ListUserGroupsRequest]) (*connect.Response[pm.ListUserGroupsResponse], error) {
+	return s.userGroup.ListUserGroups(ctx, req)
+}
+
+func (s *ControlService) UpdateUserGroup(ctx context.Context, req *connect.Request[pm.UpdateUserGroupRequest]) (*connect.Response[pm.UpdateUserGroupResponse], error) {
+	return s.userGroup.UpdateUserGroup(ctx, req)
+}
+
+func (s *ControlService) DeleteUserGroup(ctx context.Context, req *connect.Request[pm.DeleteUserGroupRequest]) (*connect.Response[pm.DeleteUserGroupResponse], error) {
+	return s.userGroup.DeleteUserGroup(ctx, req)
+}
+
+func (s *ControlService) AddUserToGroup(ctx context.Context, req *connect.Request[pm.AddUserToGroupRequest]) (*connect.Response[pm.AddUserToGroupResponse], error) {
+	return s.userGroup.AddUserToGroup(ctx, req)
+}
+
+func (s *ControlService) RemoveUserFromGroup(ctx context.Context, req *connect.Request[pm.RemoveUserFromGroupRequest]) (*connect.Response[pm.RemoveUserFromGroupResponse], error) {
+	return s.userGroup.RemoveUserFromGroup(ctx, req)
+}
+
+func (s *ControlService) AssignRoleToUserGroup(ctx context.Context, req *connect.Request[pm.AssignRoleToUserGroupRequest]) (*connect.Response[pm.AssignRoleToUserGroupResponse], error) {
+	return s.userGroup.AssignRoleToUserGroup(ctx, req)
+}
+
+func (s *ControlService) RevokeRoleFromUserGroup(ctx context.Context, req *connect.Request[pm.RevokeRoleFromUserGroupRequest]) (*connect.Response[pm.RevokeRoleFromUserGroupResponse], error) {
+	return s.userGroup.RevokeRoleFromUserGroup(ctx, req)
+}
+
+func (s *ControlService) ListUserGroupsForUser(ctx context.Context, req *connect.Request[pm.ListUserGroupsForUserRequest]) (*connect.Response[pm.ListUserGroupsForUserResponse], error) {
+	return s.userGroup.ListUserGroupsForUser(ctx, req)
+}
+
+// Identity Providers
+func (s *ControlService) CreateIdentityProvider(ctx context.Context, req *connect.Request[pm.CreateIdentityProviderRequest]) (*connect.Response[pm.CreateIdentityProviderResponse], error) {
+	return s.idp.CreateIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) GetIdentityProvider(ctx context.Context, req *connect.Request[pm.GetIdentityProviderRequest]) (*connect.Response[pm.GetIdentityProviderResponse], error) {
+	return s.idp.GetIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) ListIdentityProviders(ctx context.Context, req *connect.Request[pm.ListIdentityProvidersRequest]) (*connect.Response[pm.ListIdentityProvidersResponse], error) {
+	return s.idp.ListIdentityProviders(ctx, req)
+}
+
+func (s *ControlService) UpdateIdentityProvider(ctx context.Context, req *connect.Request[pm.UpdateIdentityProviderRequest]) (*connect.Response[pm.UpdateIdentityProviderResponse], error) {
+	return s.idp.UpdateIdentityProvider(ctx, req)
+}
+
+func (s *ControlService) DeleteIdentityProvider(ctx context.Context, req *connect.Request[pm.DeleteIdentityProviderRequest]) (*connect.Response[pm.DeleteIdentityProviderResponse], error) {
+	return s.idp.DeleteIdentityProvider(ctx, req)
+}
+
+// SSO
+func (s *ControlService) ListAuthMethods(ctx context.Context, req *connect.Request[pm.ListAuthMethodsRequest]) (*connect.Response[pm.ListAuthMethodsResponse], error) {
+	return s.sso.ListAuthMethods(ctx, req)
+}
+
+func (s *ControlService) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm.GetSSOLoginURLRequest]) (*connect.Response[pm.GetSSOLoginURLResponse], error) {
+	return s.sso.GetSSOLoginURL(ctx, req)
+}
+
+func (s *ControlService) SSOCallback(ctx context.Context, req *connect.Request[pm.SSOCallbackRequest]) (*connect.Response[pm.SSOCallbackResponse], error) {
+	return s.sso.SSOCallback(ctx, req)
+}
+
+// Identity Links
+func (s *ControlService) ListIdentityLinks(ctx context.Context, req *connect.Request[pm.ListIdentityLinksRequest]) (*connect.Response[pm.ListIdentityLinksResponse], error) {
+	return s.identityLink.ListIdentityLinks(ctx, req)
+}
+
+func (s *ControlService) UnlinkIdentity(ctx context.Context, req *connect.Request[pm.UnlinkIdentityRequest]) (*connect.Response[pm.UnlinkIdentityResponse], error) {
+	return s.identityLink.UnlinkIdentity(ctx, req)
+}
+
+// SCIM
+func (s *ControlService) EnableSCIM(ctx context.Context, req *connect.Request[pm.EnableSCIMRequest]) (*connect.Response[pm.EnableSCIMResponse], error) {
+	return s.idp.EnableSCIM(ctx, req)
+}
+
+func (s *ControlService) DisableSCIM(ctx context.Context, req *connect.Request[pm.DisableSCIMRequest]) (*connect.Response[pm.DisableSCIMResponse], error) {
+	return s.idp.DisableSCIM(ctx, req)
+}
+
+func (s *ControlService) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
+	return s.idp.RotateSCIMToken(ctx, req)
 }

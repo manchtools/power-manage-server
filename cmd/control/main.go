@@ -24,6 +24,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
+	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -44,12 +46,17 @@ type Config struct {
 	CORSOrigins                  []string
 	GatewayURL                   string
 	DynamicGroupEvalInterval     time.Duration
+	PasswordAuthEnabled          bool
+	SSOCallbackBaseURL           string
+	SCIMBaseURL                  string
+	TrustedProxies               []string
 }
 
 func main() {
 	cfg := parseFlags()
 
 	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
+	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
 		logger.Warn("CONTROL_GATEWAY_URL is not set - agents will not receive a gateway URL during registration")
@@ -96,13 +103,6 @@ func main() {
 	jwtManager := auth.NewJWTManager(auth.JWTConfig{
 		Secret: []byte(cfg.JWTSecret),
 	})
-
-	// Initialize authorizer
-	authorizer, err := auth.NewAuthorizer()
-	if err != nil {
-		logger.Error("failed to initialize authorizer", "error", err)
-		os.Exit(1)
-	}
 
 	// Start control handler (PostgreSQL LISTEN notification processor)
 	controlHandler := control.NewHandler(st, logger)
@@ -167,28 +167,53 @@ func main() {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
 
+	// Initialize secret encryptor
+	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
+	if err != nil {
+		logger.Error("failed to initialize encryptor", "error", err)
+		os.Exit(1)
+	}
+	if encryptor == nil {
+		logger.Warn("PM_ENCRYPTION_KEY not set - secrets will be stored unencrypted")
+	}
+
 	// Initialize action signer (signs actions so agents can verify authenticity)
 	actionSigner := ca.NewActionSigner(certAuth)
 
 	// Setup Connect-RPC service
-	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger)
+	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
+		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
+		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
+		SCIMBaseURL:         cfg.SCIMBaseURL,
+	})
+	// Configure trusted proxies for X-Forwarded-For header validation
+	if len(cfg.TrustedProxies) > 0 {
+		auth.SetTrustedProxies(cfg.TrustedProxies)
+		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
+	}
+
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 
 	interceptors := connect.WithInterceptors(
 		auth.NewAuthInterceptor(jwtManager, loginLimiter, refreshLimiter, registerLimiter),
-		auth.NewAuthzInterceptor(authorizer),
+		auth.NewAuthzInterceptor(),
 	)
 
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
 	mux.Handle(path, handler)
 
-	// Add health check endpoint
+	// Mount SCIM v2 handler
+	scimHandler := scim.NewHandler(st, logger)
+	mux.Handle("/scim/v2/", scimHandler)
+
+	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
 	})
 
 	// Wrap with CORS and security headers middleware
@@ -266,6 +291,9 @@ func parseFlags() *Config {
 	if v := os.Getenv("CONTROL_LOG_LEVEL"); v != "" {
 		cfg.LogLevel = v
 	}
+	if v := os.Getenv("CONTROL_LOG_FORMAT"); v != "" {
+		cfg.LogFormat = v
+	}
 	if v := os.Getenv("CONTROL_GATEWAY_URL"); v != "" {
 		cfg.GatewayURL = v
 	}
@@ -282,6 +310,28 @@ func parseFlags() *Config {
 		}
 	}
 
+	// SSO / Identity Provider configuration
+	cfg.PasswordAuthEnabled = true // default enabled
+	if v := os.Getenv("CONTROL_PASSWORD_AUTH_ENABLED"); v == "false" || v == "0" {
+		cfg.PasswordAuthEnabled = false
+	}
+	if v := os.Getenv("CONTROL_SSO_CALLBACK_BASE_URL"); v != "" {
+		cfg.SSOCallbackBaseURL = v
+	} else if len(cfg.CORSOrigins) > 0 {
+		// Derive from first CORS origin
+		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
+	}
+	if v := os.Getenv("CONTROL_SCIM_BASE_URL"); v != "" {
+		cfg.SCIMBaseURL = v
+	}
+	if v := os.Getenv("CONTROL_TRUSTED_PROXIES"); v != "" {
+		proxies := strings.Split(v, ",")
+		for i := range proxies {
+			proxies[i] = strings.TrimSpace(proxies[i])
+		}
+		cfg.TrustedProxies = proxies
+	}
+
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
 	if cfg.DynamicGroupEvalInterval != 0 {
 		if cfg.DynamicGroupEvalInterval < 30*time.Minute {
@@ -291,11 +341,13 @@ func parseFlags() *Config {
 		}
 	}
 
-	// Generate JWT secret if not provided
 	if cfg.JWTSecret == "" {
-		secret := make([]byte, 32)
-		rand.Read(secret)
-		cfg.JWTSecret = fmt.Sprintf("%x", secret)
+		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
+		os.Exit(1)
+	}
+	if len(cfg.JWTSecret) < 32 {
+		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET must be at least 32 characters")
+		os.Exit(1)
 	}
 
 	return cfg
@@ -358,6 +410,22 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	})
 	if err != nil {
 		return fmt.Errorf("create user event: %w", err)
+	}
+
+	// Assign the Admin role to the bootstrap user
+	adminRole, err := st.Queries().GetRoleByName(ctx, "Admin")
+	if err == nil {
+		_ = st.AppendEvent(ctx, store.Event{
+			StreamType: "user_role",
+			StreamID:   id + ":" + adminRole.ID,
+			EventType:  "UserRoleAssigned",
+			Data: map[string]any{
+				"user_id": id,
+				"role_id": adminRole.ID,
+			},
+			ActorType: "system",
+			ActorID:   "bootstrap",
+		})
 	}
 
 	logger.Info("admin user created", "email", email, "id", id)

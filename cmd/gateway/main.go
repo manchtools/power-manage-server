@@ -17,6 +17,7 @@ import (
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -85,6 +86,16 @@ func main() {
 	defer db.Close()
 	logger.Info("connected to PostgreSQL")
 
+	// Initialize secret encryptor
+	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
+	if err != nil {
+		logger.Error("failed to initialize encryptor", "error", err)
+		os.Exit(1)
+	}
+	if encryptor == nil {
+		logger.Warn("PM_ENCRYPTION_KEY not set - secrets will be stored unencrypted")
+	}
+
 	// Create connection manager
 	manager := connection.NewManager()
 
@@ -106,12 +117,12 @@ func main() {
 
 	// Create handler based on TLS mode
 	if *tlsEnabled {
-		agentHandler := handler.NewAgentHandlerWithTLS(manager, db, logger)
+		agentHandler := handler.NewAgentHandlerWithTLS(manager, db, logger, encryptor)
 		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 		// Wrap with mTLS middleware to extract device ID from certificate
 		mux.Handle(path, handler.MTLSMiddleware(h, logger))
 	} else {
-		agentHandler := handler.NewAgentHandler(manager, db, logger)
+		agentHandler := handler.NewAgentHandler(manager, db, logger, encryptor)
 		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 		mux.Handle(path, h)
 	}

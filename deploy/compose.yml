@@ -75,7 +75,12 @@ services:
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - CONTROL_GATEWAY_URL=https://${GATEWAY_DOMAIN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
+      - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
+      - CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL=${DYNAMIC_GROUP_EVAL_INTERVAL:-1h}
+      - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
+      - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
+      - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
       interval: 10s
@@ -103,6 +108,8 @@ services:
         condition: service_healthy
     volumes:
       - ./certs:/certs:ro,z
+    environment:
+      - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
     command:
       - "-addr=:8080"
       - "-database-url=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable"

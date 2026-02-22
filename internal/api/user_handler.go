@@ -37,11 +37,6 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, err
 	}
 
-	role := req.Msg.Role
-	if role == "" {
-		role = "user"
-	}
-
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
@@ -62,7 +57,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		Data: map[string]any{
 			"email":         req.Msg.Email,
 			"password_hash": passwordHash,
-			"role":          role,
+			"role":          "user",
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -71,14 +66,40 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("email already exists"))
 	}
 
+	// Auto-assign specified roles, or default User role if none specified
+	roleIDs := req.Msg.RoleIds
+	if len(roleIDs) == 0 {
+		// Assign the built-in User role
+		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
+		if err == nil {
+			roleIDs = []string{userRole.ID}
+		}
+	}
+	for _, roleID := range roleIDs {
+		_ = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user_role",
+			StreamID:   id + ":" + roleID,
+			EventType:  "UserRoleAssigned",
+			Data: map[string]any{
+				"user_id": id,
+				"role_id": roleID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+	}
+
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, id)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
+	protoUser := userToProto(user)
+	h.populateUserRoles(ctx, protoUser)
+
 	return connect.NewResponse(&pm.CreateUserResponse{
-		User: userToProto(user),
+		User: protoUser,
 	}), nil
 }
 
@@ -96,8 +117,11 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
+	protoUser := userToProto(user)
+	h.populateUserRoles(ctx, protoUser)
+
 	return connect.NewResponse(&pm.GetUserResponse{
-		User: userToProto(user),
+		User: protoUser,
 	}), nil
 }
 
@@ -138,6 +162,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 	protoUsers := make([]*pm.User, len(users))
 	for i, u := range users {
 		protoUsers[i] = userToProto(u)
+		h.populateUserRoles(ctx, protoUsers[i])
 	}
 
 	return connect.NewResponse(&pm.ListUsersResponse{
@@ -209,13 +234,11 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
 		}
 
-		if !auth.VerifyPassword(req.Msg.CurrentPassword, user.PasswordHash) {
+		if !auth.VerifyPassword(req.Msg.CurrentPassword, derefPasswordHash(user.PasswordHash)) {
 			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("current password is incorrect"))
 		}
-	} else if userCtx.Role != "admin" {
-		// Non-admins can only update their own password
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 	}
+	// Note: OPA authz interceptor handles permission checks for non-self updates
 
 	passwordHash, err := auth.HashPassword(req.Msg.NewPassword)
 	if err != nil {
@@ -235,46 +258,6 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update password"))
-	}
-
-	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
-	}
-
-	return connect.NewResponse(&pm.UpdateUserResponse{
-		User: userToProto(user),
-	}), nil
-}
-
-// UpdateUserRole updates a user's role.
-func (h *UserHandler) UpdateUserRole(ctx context.Context, req *connect.Request[pm.UpdateUserRoleRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
-	if err := Validate(req.Msg); err != nil {
-		return nil, err
-	}
-
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
-	}
-
-	// Emit UserRoleChanged event
-	err := h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   req.Msg.Id,
-		EventType:  "UserRoleChanged",
-		Data: map[string]any{
-			"role": req.Msg.Role,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update role"))
 	}
 
 	// Read back from projection
@@ -364,10 +347,11 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 // userToProto converts a database user projection to a protobuf user.
 func userToProto(u db.UsersProjection) *pm.User {
 	user := &pm.User{
-		Id:       u.ID,
-		Email:    u.Email,
-		Role:     u.Role,
-		Disabled: u.Disabled,
+		Id:          u.ID,
+		Email:       u.Email,
+		Disabled:    u.Disabled,
+		TotpEnabled: u.TotpEnabled,
+		HasPassword: u.HasPassword,
 	}
 
 	if u.CreatedAt.Valid {
@@ -379,4 +363,23 @@ func userToProto(u db.UsersProjection) *pm.User {
 	}
 
 	return user
+}
+
+// derefPasswordHash safely dereferences a *string password hash.
+func derefPasswordHash(ph *string) string {
+	if ph == nil {
+		return ""
+	}
+	return *ph
+}
+
+// populateUserRoles loads roles for a user and attaches them to the proto User.
+func (h *UserHandler) populateUserRoles(ctx context.Context, user *pm.User) {
+	roles, err := h.store.Queries().GetUserRoles(ctx, user.Id)
+	if err != nil {
+		return
+	}
+	for _, r := range roles {
+		user.Roles = append(user.Roles, roleToProto(r))
+	}
 }

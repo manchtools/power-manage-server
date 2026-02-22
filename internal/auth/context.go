@@ -11,9 +11,10 @@ const (
 
 // UserContext holds authenticated user information.
 type UserContext struct {
-	ID    string
-	Email string
-	Role  string
+	ID             string
+	Email          string
+	Permissions    []string
+	SessionVersion int32
 }
 
 // DeviceContext holds authenticated device information.
@@ -45,14 +46,28 @@ func DeviceFromContext(ctx context.Context) (*DeviceContext, bool) {
 	return device, ok
 }
 
-// SubjectFromContext returns the subject ID and role from context.
+// HasPermission checks if the user in context has a specific permission (exact match).
+func HasPermission(ctx context.Context, perm string) bool {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return false
+	}
+	for _, p := range user.Permissions {
+		if p == perm {
+			return true
+		}
+	}
+	return false
+}
+
+// SubjectFromContext returns the subject ID from context.
 // It checks for user first, then device.
-func SubjectFromContext(ctx context.Context) (id, role string, ok bool) {
+func SubjectFromContext(ctx context.Context) (id string, isDevice bool, ok bool) {
 	if user, ok := UserFromContext(ctx); ok {
-		return user.ID, user.Role, true
+		return user.ID, false, true
 	}
 	if device, ok := DeviceFromContext(ctx); ok {
-		return device.ID, "device", true
+		return device.ID, true, true
 	}
-	return "", "", false
+	return "", false, false
 }

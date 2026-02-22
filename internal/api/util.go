@@ -2,8 +2,12 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"strconv"
+	"time"
+
+	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 )
@@ -18,11 +22,23 @@ func formatPageToken(offset int64) string {
 	return fmt.Sprintf("%d", offset)
 }
 
-// userFilterID returns the user's ID for non-admin users (to filter queries),
-// or nil for admins (no filter, see all rows).
-func userFilterID(ctx context.Context) *string {
-	if u, ok := auth.UserFromContext(ctx); ok && u.Role != "admin" {
+// userFilterID returns the user's ID when the user only has scoped (:assigned)
+// access, or nil when the user has unrestricted access (sees all rows).
+// The action parameter is the unscoped permission name (e.g. "ListDevices").
+func userFilterID(ctx context.Context, action string) *string {
+	// RBAC: check if user has the unrestricted permission
+	if auth.HasPermission(ctx, action) {
+		return nil
+	}
+	// Scoped — return user ID for SQL-level filtering
+	if u, ok := auth.UserFromContext(ctx); ok {
 		return &u.ID
 	}
 	return nil
+}
+
+// newULID generates a new ULID string.
+func newULID() string {
+	entropy := ulid.Monotonic(rand.Reader, 0)
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }

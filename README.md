@@ -49,19 +49,23 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 | Package | Purpose |
 |---------|---------|
-| `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, registration) |
-| `internal/auth` | JWT authentication, OPA authorization, rate limiting, cookie management |
+| `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, etc.) |
+| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management |
 | `internal/ca` | Internal CA for signing agent certificates and action payloads |
 | `internal/config` | Configuration loading |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Control Server background event processor |
+| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets) |
 | `internal/handler` | Gateway RPC handlers (agent streaming) |
+| `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/mtls` | mTLS setup, extracts device identity from client certificates |
+| `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
+| `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries, LISTEN/NOTIFY |
 
 ## API Reference
 
-The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 79 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 2 methods.
+The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 125 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
 
 ### Authentication (4 RPCs)
 
@@ -72,18 +76,17 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 79 RP
 | `Logout` | Revoke refresh token and clear cookies. |
 | `GetCurrentUser` | Return the authenticated user's profile from JWT claims. |
 
-### Users (9 RPCs)
+### Users (8 RPCs)
 
 | Method | Description |
 |--------|-------------|
-| `CreateUser` | Create user with email, password, and role (`admin` or `user`). Admin-only. |
-| `GetUser` | Fetch user by ID. Users can view their own profile; admins can view any. |
-| `ListUsers` | Paginated list of all users. Admin-only. |
-| `UpdateUserEmail` | Change a user's email address. |
-| `UpdateUserPassword` | Change password. Self-update requires current password; admins can reset without it. |
-| `UpdateUserRole` | Promote/demote between `admin` and `user`. Admin-only. |
-| `SetUserDisabled` | Enable or disable a user account. Admin-only. |
-| `DeleteUser` | Soft-delete a user. Admin-only. |
+| `CreateUser` | Create user with email and password. |
+| `GetUser` | Fetch user by ID. Users with `GetUser:self` can view their own profile; `GetUser` grants access to any user. |
+| `ListUsers` | Paginated list of all users. |
+| `UpdateUserEmail` | Change a user's email address. Supports `:self` scoped permission. |
+| `UpdateUserPassword` | Change password. Self-update requires current password; privileged users can reset without it. |
+| `SetUserDisabled` | Enable or disable a user account. |
+| `DeleteUser` | Soft-delete a user. |
 
 ### Devices (10 RPCs)
 
@@ -193,16 +196,17 @@ Static groups with manual membership or dynamic groups with a query language.
 | `EvaluateDynamicGroup` | Manually trigger re-evaluation of dynamic group membership. |
 | `SetDeviceGroupSyncInterval` | Set sync interval for all devices in the group. |
 
-### Assignments (4 RPCs)
+### Assignments (5 RPCs)
 
-Link sources (actions, action sets, definitions) to targets (devices, device groups) with an assignment mode.
+Link sources (actions, action sets, definitions) to targets (devices, device groups, users, user groups) with an assignment mode.
 
 | Method | Description |
 |--------|-------------|
-| `CreateAssignment` | Create a source-to-target assignment. Modes: `REQUIRED` (always applied), `AVAILABLE` (user opt-in), `EXCLUDED`. Idempotent. |
+| `CreateAssignment` | Create a source-to-target assignment. Targets: device, device group, user, user group. Modes: `REQUIRED` (always applied), `AVAILABLE` (user opt-in), `EXCLUDED`. Idempotent. |
 | `DeleteAssignment` | Remove an assignment. |
 | `ListAssignments` | Paginated list with optional filters. |
-| `GetDeviceAssignments` | Resolve all effective actions for a device (expands groups, definitions, and sets). |
+| `GetDeviceAssignments` | Resolve all effective actions for a device (expands groups, definitions, sets, and user/user_group targets). |
+| `GetUserAssignments` | Resolve all assignments targeting a user or their user groups. |
 
 ### User Selections (2 RPCs)
 
@@ -212,6 +216,68 @@ Allow users to opt in or out of `AVAILABLE`-mode assignments on their devices.
 |--------|-------------|
 | `SetUserSelection` | Accept or reject an available assignment for a device. |
 | `ListAvailableActions` | List available-mode items for a device with current selection state. |
+
+### TOTP Two-Factor Authentication (5 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `SetupTOTP` | Generate TOTP secret and QR code URI for enrollment. |
+| `VerifyTOTP` | Verify a TOTP code to complete 2FA enrollment. Returns backup codes. |
+| `DisableTOTP` | Disable TOTP 2FA for a user. |
+| `GetTOTPStatus` | Check whether TOTP is enabled for the current user. |
+| `RegenerateBackupCodes` | Generate new backup codes (invalidates previous codes). |
+
+### Roles (8 RPCs)
+
+Dynamic role-based access control with per-permission granularity.
+
+| Method | Description |
+|--------|-------------|
+| `CreateRole` | Create a custom role with a set of permissions. |
+| `GetRole` | Fetch role by ID with its permission list. |
+| `ListRoles` | Paginated list of all roles. |
+| `UpdateRole` | Update role name, description, or permissions. |
+| `DeleteRole` | Remove a role. |
+| `AssignRoleToUser` | Assign a role to a user. |
+| `RevokeRoleFromUser` | Revoke a role from a user. |
+| `ListPermissions` | List all available permissions with descriptions. |
+
+### User Groups (10 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `CreateUserGroup` | Create a user group. |
+| `GetUserGroup` | Fetch user group with members and roles. |
+| `ListUserGroups` | Paginated list of all user groups. |
+| `UpdateUserGroup` | Update user group name or description. |
+| `DeleteUserGroup` | Remove a user group. |
+| `AddUserToGroup` | Add a user to a group. |
+| `RemoveUserFromGroup` | Remove a user from a group. |
+| `AssignRoleToUserGroup` | Assign a role to a user group (all members inherit permissions). |
+| `RevokeRoleFromUserGroup` | Revoke a role from a user group. |
+| `ListUserGroupsForUser` | List all groups a user belongs to. |
+
+### Identity Providers (8 RPCs)
+
+OIDC identity provider management for SSO authentication.
+
+| Method | Description |
+|--------|-------------|
+| `CreateIdentityProvider` | Create an OIDC identity provider (Google, Okta, Azure AD, etc.). |
+| `GetIdentityProvider` | Fetch provider by ID. |
+| `ListIdentityProviders` | Paginated list of configured providers. |
+| `UpdateIdentityProvider` | Update provider settings (name, scopes, auto-create, group mapping, etc.). |
+| `DeleteIdentityProvider` | Remove an identity provider. |
+| `EnableSCIM` | Enable SCIM v2 provisioning for a provider. Returns bearer token and endpoint URL. |
+| `DisableSCIM` | Disable SCIM provisioning for a provider. |
+| `RotateSCIMToken` | Generate a new SCIM bearer token (invalidates the old one). |
+
+### Identity Links (2 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `ListIdentityLinks` | List the current user's linked external identities. |
+| `UnlinkIdentity` | Remove a linked external identity. |
 
 ### Audit (1 RPC)
 
@@ -236,14 +302,32 @@ Allow users to opt in or out of `AVAILABLE`-mode assignments on their devices.
 
 ### JWT Tokens (`internal/auth/jwt.go`)
 
-Access tokens (15 min) and refresh tokens (7 days) with HMAC-SHA256 signing. Refresh token rotation — each refresh revokes the old token and issues a new pair. Claims include user ID, email, role, session version, and a unique JTI (ULID). Revoked tokens tracked in PostgreSQL with automatic cleanup.
+Access tokens (15 min) and refresh tokens (7 days) with HMAC-SHA256 signing. Refresh token rotation — each refresh revokes the old token and issues a new pair. Claims include user ID, email, permissions, session version, and a unique JTI (ULID). Revoked tokens tracked in PostgreSQL with automatic cleanup.
+
+### TOTP Two-Factor Authentication
+
+Optional TOTP-based 2FA with HMAC-SHA1 (RFC 6238). Users enroll via `SetupTOTP`, verify with `VerifyTOTP`, and receive backup codes. TOTP verification is required at login when enabled. Backup codes are single-use and can be regenerated.
+
+### SSO / OIDC Identity Providers (`internal/idp/`)
+
+OIDC authorization code flow for external identity providers (Google, Okta, Azure AD, etc.). Features:
+- Auto-create users on first SSO login (configurable per provider)
+- Auto-link by email when existing user matches
+- IdP group claim → user group mapping
+- Optionally disable password authentication for SSO-linked users
+- Multiple providers can be configured simultaneously
+
+### SCIM v2 Provisioning (`internal/scim/`)
+
+REST API at `/scim/v2/{slug}/` for automated user and group provisioning from external IdPs. Bearer token authentication (per-provider, bcrypt-hashed). Supports Users (CRUD, filter by userName/externalId) and Groups (CRUD with member management).
+
+### Dynamic RBAC (`internal/auth/permissions.go`)
+
+Permission-based authorization replaces the old admin/user role model. Roles are custom collections of permissions. Users can have multiple roles (directly assigned or inherited via user groups). Permissions include scoped variants like `GetUser:self` and `ListDevices:assigned`.
 
 ### OPA Authorization (`internal/auth/opa.go`)
 
-Embedded Rego policies (`internal/auth/policies/authz.rego`) evaluate every RPC call. Rules:
-- **Admins**: allowed for all actions
-- **Users**: can view/update own profile, list devices (filtered by assignment), create tokens, view own executions
-- **Devices**: can view own info, list definitions, view own executions
+Embedded Rego policies (`internal/auth/policies/authz.rego`) evaluate every RPC call based on the user's effective permissions (union of all assigned roles).
 
 ### Rate Limiting (`internal/auth/ratelimit.go`)
 
@@ -313,7 +397,7 @@ cd ../../sdk && make generate
 
 ## Testing
 
-The server has ~196 tests across 21 files covering auth, connection management, event store projections, all API handlers, and gateway message handling.
+The server has ~328 tests across 29 files covering auth, connection management, event store projections, all API handlers, SCIM provisioning, and gateway message handling.
 
 ### Running Tests
 
@@ -358,8 +442,14 @@ The `testutil` package provides shared helpers used across all integration tests
 | `CreateTestDefinition(t, st, actorID, name)` | Creates a definition via `DefinitionCreated` event. |
 | `CreateTestDeviceGroup(t, st, actorID, name)` | Creates a device group via `DeviceGroupCreated` event. |
 | `CreateTestToken(t, st, actorID, name, hash)` | Creates a registration token via `TokenCreated` event. |
-| `AdminContext(id)` | Returns a `context.Context` with an admin user injected. |
-| `UserContext(id)` | Returns a `context.Context` with a regular user injected. |
+| `CreateTestRole(t, st, actorID, name, perms)` | Creates a role via `RoleCreated` event. |
+| `CreateTestUserGroup(t, st, actorID, name)` | Creates a user group via `UserGroupCreated` event. |
+| `CreateTestIdentityProvider(t, st, enc, actorID, name, slug)` | Creates an identity provider via `IdentityProviderCreated` event. |
+| `CreateTestIdentityLink(t, st, actorID, userID, providerID, externalID)` | Creates an identity link via `IdentityLinked` event. |
+| `EnableSCIMForProvider(t, st, actorID, providerID)` | Enables SCIM for a provider via `IdentityProviderSCIMEnabled` event. Returns the plaintext token. |
+| `NewEncryptor(t)` | Creates a test AES-GCM encryptor. |
+| `AdminContext(id)` | Returns a `context.Context` with an admin user injected (all permissions). |
+| `UserContext(id)` | Returns a `context.Context` with a regular user injected (default user permissions). |
 | `DisableEvent(userID)` | Returns a `UserDisabled` event for use with `AppendEvent`. |
 | `NewJWTManager()` | Creates a `JWTManager` with test-friendly configuration (15 min access, 1 hr refresh). |
 
@@ -391,23 +481,36 @@ No database required. Test pure Go logic.
 |------|-------|----------------|
 | `internal/store/store_test.go` | ~31 | AppendEvent basics, auto-versioning (5 events), explicit version conflict, WithTx commit/rollback, Notify. Projection tests: UserCreated/EmailChanged/Disabled/Enabled/Deleted, DeviceRegistered/Heartbeat/LabelSet, ActionCreated, ActionSetWithMembers, DefinitionCreated, DeviceGroupCreated, TokenCreated, ExecutionLifecycle (created → dispatched → completed), AssignmentCreated |
 
-#### API Handler Integration Tests (11 files, ~88 tests)
+#### API Handler Integration Tests (18 files, ~178 tests)
 
 Each test spins up a PostgreSQL container and tests handler methods directly.
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/api/validator_test.go` | 9 | Struct validation: required fields, email, ULID, min-length, optional fields, snake_case conversion |
-| `internal/api/auth_handler_test.go` | 6 | Login (success, wrong password, nonexistent user, disabled user, cookie setting), GetCurrentUser |
-| `internal/api/user_handler_test.go` | 12 | CreateUser (success, role required, unauthenticated), GetUser (found, not found), ListUsers pagination, UpdateEmail, UpdatePassword (self, wrong current, admin), UpdateRole, SetUserDisabled, DeleteUser |
-| `internal/api/device_handler_test.go` | 11 | ListDevices (empty, with devices), GetDevice (found, not found), SetDeviceLabel, RemoveDeviceLabel, DeleteDevice, AssignDevice, UnassignDevice, SetDeviceSyncInterval |
+| `internal/api/auth_handler_test.go` | 15 | Login (success, wrong password, nonexistent user, disabled user, cookie setting, TOTP verification), GetCurrentUser, SSO callback |
+| `internal/api/user_handler_test.go` | 11 | CreateUser, GetUser (found, not found), ListUsers pagination, UpdateEmail, UpdatePassword (self, wrong current, privileged), SetUserDisabled, DeleteUser |
+| `internal/api/device_handler_test.go` | 10 | ListDevices (empty, with devices), GetDevice (found, not found), SetDeviceLabel, RemoveDeviceLabel, DeleteDevice, AssignDevice, UnassignDevice, SetDeviceSyncInterval |
 | `internal/api/token_handler_test.go` | 7 | CreateToken (admin, user one-time), GetToken (value hidden), ListTokens, RenameToken, SetTokenDisabled, DeleteToken |
 | `internal/api/action_handler_test.go` | 12 | CreateAction (shell, default timeout), GetAction (found, not found), ListActions, RenameAction, DeleteAction, DispatchAction (by ID, device not found), ListExecutions, GetExecution, DispatchInstantAction |
 | `internal/api/action_set_handler_test.go` | 8 | CreateActionSet, GetActionSet, ListActionSets, RenameActionSet, DeleteActionSet, AddActionToSet, RemoveActionFromSet, ReorderActionInSet |
 | `internal/api/definition_handler_test.go` | 6 | CreateDefinition, GetDefinition, ListDefinitions, RenameDefinition, DeleteDefinition, AddActionSetToDefinition |
 | `internal/api/device_group_handler_test.go` | 10 | CreateDeviceGroup (static), GetDeviceGroup (found, not found), ListDeviceGroups, RenameDeviceGroup, DeleteDeviceGroup, AddDeviceToGroup, RemoveDeviceFromGroup, SetDeviceGroupSyncInterval, ValidateDynamicQuery |
-| `internal/api/assignment_handler_test.go` | 6 | CreateAssignment (action→device, set→group, idempotent), DeleteAssignment, ListAssignments, GetDeviceAssignments |
+| `internal/api/assignment_handler_test.go` | 10 | CreateAssignment (action→device, set→group, user target, user_group target, idempotent), DeleteAssignment, ListAssignments, GetDeviceAssignments, GetUserAssignments |
 | `internal/api/audit_handler_test.go` | 4 | ListAuditEvents, filter by stream_type, filter by event_type, pagination |
+| `internal/api/totp_handler_test.go` | 14 | SetupTOTP, VerifyTOTP (valid/invalid/replay), DisableTOTP, GetTOTPStatus, RegenerateBackupCodes, backup code login |
+| `internal/api/user_group_handler_test.go` | 20 | CreateUserGroup, GetUserGroup, ListUserGroups, UpdateUserGroup, DeleteUserGroup, AddUserToGroup, RemoveUserFromGroup, AssignRoleToUserGroup, RevokeRoleFromUserGroup, ListUserGroupsForUser, additive permissions |
+| `internal/api/idp_handler_test.go` | 15 | CreateIdentityProvider (success, duplicate slug, group mapping), Get/List/Update/Delete IDP, EnableSCIM (success, already enabled), DisableSCIM (success, not enabled), RotateSCIMToken (success, not enabled) |
+| `internal/api/sso_handler_test.go` | 6 | SSO authorization URL generation, callback handling, identity linking |
+| `internal/api/identity_link_handler_test.go` | 6 | ListIdentityLinks, UnlinkIdentity |
+| `internal/api/luks_action_test.go` | 7 | LUKS key management actions |
+| `internal/api/osquery_handler_test.go` | 11 | OSQuery dispatch, result retrieval, device inventory |
+
+#### SCIM Integration Tests (1 file, 21 tests)
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `internal/scim/handler_test.go` | 21 | Auth (missing/invalid/non-existent/valid token), Discovery (ServiceProviderConfig, Schemas, ResourceTypes), Users (create, get, list, filter, replace, patch deactivate, delete), Groups (create, get, list, patch add member, replace members, delete) |
 
 #### Gateway Handler Tests (1 file, ~11 tests)
 

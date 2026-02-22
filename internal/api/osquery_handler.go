@@ -40,11 +40,17 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	// Generate query ID
 	queryID := ulid.Make().String()
 
+	// Use "raw_sql" as table name for DB record when raw SQL is provided
+	tableName := msg.Table
+	if tableName == "" && msg.RawSql != "" {
+		tableName = "raw_sql"
+	}
+
 	// Create pending result row
 	if err := h.store.Queries().CreateOSQueryResult(ctx, generated.CreateOSQueryResultParams{
 		QueryID:   queryID,
 		DeviceID:  msg.DeviceId,
-		TableName: msg.Table,
+		TableName: tableName,
 	}); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create query result: %w", err))
 	}
@@ -54,6 +60,9 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		"type":     "osquery_dispatch",
 		"query_id": queryID,
 		"table":    msg.Table,
+	}
+	if msg.RawSql != "" {
+		payload["raw_sql"] = msg.RawSql
 	}
 	if len(msg.Columns) > 0 {
 		payload["columns"] = msg.Columns

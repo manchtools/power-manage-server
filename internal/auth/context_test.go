@@ -9,14 +9,14 @@ import (
 )
 
 func TestWithUser_UserFromContext(t *testing.T) {
-	user := &UserContext{ID: "u1", Email: "a@b.com", Role: "admin"}
+	user := &UserContext{ID: "u1", Email: "a@b.com", Permissions: []string{"ListDevices"}}
 	ctx := WithUser(context.Background(), user)
 
 	got, ok := UserFromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "u1", got.ID)
 	assert.Equal(t, "a@b.com", got.Email)
-	assert.Equal(t, "admin", got.Role)
+	assert.Equal(t, []string{"ListDevices"}, got.Permissions)
 }
 
 func TestUserFromContext_Empty(t *testing.T) {
@@ -41,38 +41,51 @@ func TestDeviceFromContext_Empty(t *testing.T) {
 }
 
 func TestSubjectFromContext_User(t *testing.T) {
-	user := &UserContext{ID: "u1", Email: "a@b.com", Role: "admin"}
+	user := &UserContext{ID: "u1", Email: "a@b.com"}
 	ctx := WithUser(context.Background(), user)
 
-	id, role, ok := SubjectFromContext(ctx)
+	id, isDevice, ok := SubjectFromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "u1", id)
-	assert.Equal(t, "admin", role)
+	assert.False(t, isDevice)
 }
 
 func TestSubjectFromContext_Device(t *testing.T) {
 	device := &DeviceContext{ID: "d1", Hostname: "host", Fingerprint: "fp"}
 	ctx := WithDevice(context.Background(), device)
 
-	id, role, ok := SubjectFromContext(ctx)
+	id, isDevice, ok := SubjectFromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "d1", id)
-	assert.Equal(t, "device", role)
+	assert.True(t, isDevice)
 }
 
 func TestSubjectFromContext_UserPrecedence(t *testing.T) {
 	// If both user and device are in context, user takes precedence
-	user := &UserContext{ID: "u1", Email: "a@b.com", Role: "admin"}
+	user := &UserContext{ID: "u1", Email: "a@b.com"}
 	device := &DeviceContext{ID: "d1", Hostname: "host", Fingerprint: "fp"}
 	ctx := WithUser(WithDevice(context.Background(), device), user)
 
-	id, role, ok := SubjectFromContext(ctx)
+	id, isDevice, ok := SubjectFromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "u1", id)
-	assert.Equal(t, "admin", role)
+	assert.False(t, isDevice)
 }
 
 func TestSubjectFromContext_Empty(t *testing.T) {
 	_, _, ok := SubjectFromContext(context.Background())
 	assert.False(t, ok)
+}
+
+func TestHasPermission_Found(t *testing.T) {
+	user := &UserContext{ID: "u1", Permissions: []string{"ListDevices", "GetUser:self"}}
+	ctx := WithUser(context.Background(), user)
+
+	assert.True(t, HasPermission(ctx, "ListDevices"))
+	assert.True(t, HasPermission(ctx, "GetUser:self"))
+	assert.False(t, HasPermission(ctx, "CreateUser"))
+}
+
+func TestHasPermission_NoUser(t *testing.T) {
+	assert.False(t, HasPermission(context.Background(), "ListDevices"))
 }

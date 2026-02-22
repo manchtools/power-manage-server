@@ -151,13 +151,13 @@ jobs:
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
           docker manifest push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}
 
-      - name: Update control latest-dev tag
+      - name: Update control latest-rc tag
         if: ${{ needs.build.outputs.is_prerelease == 'true' }}
         run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest-dev \
+          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest-rc \
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-control:latest-dev
+          docker manifest push ghcr.io/manchtools/power-manage-control:latest-rc
 
       - name: Update control latest tag
         if: ${{ needs.build.outputs.is_prerelease == 'false' }}
@@ -174,13 +174,13 @@ jobs:
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
           docker manifest push ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}
 
-      - name: Update gateway latest-dev tag
+      - name: Update gateway latest-rc tag
         if: ${{ needs.build.outputs.is_prerelease == 'true' }}
         run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest-dev \
+          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest-rc \
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-amd64 \
             ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest-dev
+          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest-rc
 
       - name: Update gateway latest tag
         if: ${{ needs.build.outputs.is_prerelease == 'false' }}
@@ -213,6 +213,55 @@ jobs:
           cp artifacts/binaries-arm64/* release/
           cd release && sha256sum * > SHA256SUMS
 
+      - name: Generate release body
+        id: body
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if [[ "${{ needs.build.outputs.is_prerelease }}" == "true" ]]; then
+            cat > body.md <<EOF
+          ## Container Images
+
+          \`\`\`bash
+          docker pull ghcr.io/manchtools/power-manage-control:latest-rc
+          docker pull ghcr.io/manchtools/power-manage-gateway:latest-rc
+          \`\`\`
+
+          Or pull this specific version:
+
+          \`\`\`bash
+          docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
+          docker pull ghcr.io/manchtools/power-manage-gateway:${VERSION}
+          \`\`\`
+          EOF
+          else
+            cat > body.md <<EOF
+          ## Container Images
+
+          \`\`\`bash
+          docker pull ghcr.io/manchtools/power-manage-control:latest
+          docker pull ghcr.io/manchtools/power-manage-gateway:latest
+          \`\`\`
+
+          Or pull this specific version:
+
+          \`\`\`bash
+          docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
+          docker pull ghcr.io/manchtools/power-manage-gateway:${VERSION}
+          \`\`\`
+          EOF
+          fi
+          cat >> body.md <<'EOF'
+
+          ## Binaries
+
+          | Binary | Platform |
+          |--------|----------|
+          | `control-linux-amd64` | Linux x86_64 |
+          | `control-linux-arm64` | Linux ARM64 |
+          | `gateway-linux-amd64` | Linux x86_64 |
+          | `gateway-linux-arm64` | Linux ARM64 |
+          EOF
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -220,19 +269,4 @@ jobs:
           name: Power Manage Server ${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: release/*
-          body: |
-            ## Container Images
-
-            ```bash
-            docker pull ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}
-            docker pull ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}
-            ```
-
-            ## Binaries
-
-            | Binary | Platform |
-            |--------|----------|
-            | `control-linux-amd64` | Linux x86_64 |
-            | `control-linux-arm64` | Linux ARM64 |
-            | `gateway-linux-amd64` | Linux x86_64 |
-            | `gateway-linux-arm64` | Linux ARM64 |
+          body_path: body.md

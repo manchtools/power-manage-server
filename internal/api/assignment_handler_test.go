@@ -133,6 +133,107 @@ func TestListAssignments(t *testing.T) {
 	assert.GreaterOrEqual(t, len(resp.Msg.Assignments), 3)
 }
 
+func TestCreateAssignment_ActionToUser(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	actionHandler := api.NewActionHandler(st, nil)
+	h := api.NewAssignmentHandler(st, actionHandler)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "User Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	targetUserID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID,
+		TargetType: "user",
+		TargetId:   targetUserID,
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Msg.Assignment.Id)
+	assert.Equal(t, "user", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, targetUserID, resp.Msg.Assignment.TargetId)
+}
+
+func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	actionHandler := api.NewActionHandler(st, nil)
+	h := api.NewAssignmentHandler(st, actionHandler)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "UG Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Assign UG")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID,
+		TargetType: "user_group",
+		TargetId:   groupID,
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Msg.Assignment.Id)
+	assert.Equal(t, "user_group", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, groupID, resp.Msg.Assignment.TargetId)
+}
+
+func TestCreateAssignment_UserNotFound(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	actionHandler := api.NewActionHandler(st, nil)
+	h := api.NewAssignmentHandler(st, actionHandler)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "NotFound Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID,
+		TargetType: "user",
+		TargetId:   testutil.NewID(),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestGetUserAssignments(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	actionHandler := api.NewActionHandler(st, nil)
+	h := api.NewAssignmentHandler(st, actionHandler)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "UA Group")
+	testutil.AddUserToTestGroup(t, st, adminID, groupID, userID)
+	ctx := testutil.AdminContext(adminID)
+
+	// Create direct user assignment
+	actionID1 := testutil.CreateTestAction(t, st, adminID, "UA Direct", int(pm.ActionType_ACTION_TYPE_SHELL))
+	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID1,
+		TargetType: "user",
+		TargetId:   userID,
+	}))
+	require.NoError(t, err)
+
+	// Create user group assignment
+	actionID2 := testutil.CreateTestAction(t, st, adminID, "UA Group", int(pm.ActionType_ACTION_TYPE_SHELL))
+	_, err = h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID2,
+		TargetType: "user_group",
+		TargetId:   groupID,
+	}))
+	require.NoError(t, err)
+
+	resp, err := h.GetUserAssignments(ctx, connect.NewRequest(&pm.GetUserAssignmentsRequest{
+		UserId: userID,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, 2, len(resp.Msg.Assignments))
+}
+
 func TestGetDeviceAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	actionHandler := api.NewActionHandler(st, nil)

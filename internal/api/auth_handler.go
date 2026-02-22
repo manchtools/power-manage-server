@@ -4,7 +4,6 @@ package api
 import (
 	"context"
 	"errors"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -47,7 +46,18 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up user"))
 	}
 
-	if !auth.VerifyPassword(req.Msg.Password, user.PasswordHash) {
+	// Check password eligibility
+	if !user.HasPassword {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("password login is not available for this account"))
+	}
+
+	// Check if any linked provider disables password login
+	disablingProviders, err := h.store.Queries().GetLinkedProvidersDisablingPassword(ctx, user.ID)
+	if err == nil && len(disablingProviders) > 0 {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("password login is disabled; use "+disablingProviders[0].Name+" to sign in"))
+	}
+
+	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))
 	}
 
@@ -55,7 +65,25 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("account is disabled"))
 	}
 
-	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, user.Role, user.SessionVersion)
+	// If TOTP is enabled, return a challenge instead of tokens
+	if user.TotpEnabled {
+		challenge, err := h.jwtManager.GenerateTOTPChallenge(user.ID, user.Email, user.SessionVersion)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate TOTP challenge"))
+		}
+		return connect.NewResponse(&pm.LoginResponse{
+			TotpRequired:  true,
+			TotpChallenge: challenge,
+		}), nil
+	}
+
+	// Resolve permissions from DB and embed in JWT
+	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
+	}
+
+	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, user.SessionVersion)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate tokens"))
 	}
@@ -70,17 +98,20 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		ActorID:    user.ID,
 	})
 
+	protoUser := userToProto(user)
+	// Populate user roles
+	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+		for _, r := range roles {
+			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
+		}
+	}
+
 	resp := connect.NewResponse(&pm.LoginResponse{
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
 		ExpiresAt:    timestamppb.New(tokens.ExpiresAt),
-		User:         userToProto(user),
+		User:         protoUser,
 	})
-
-	// Set httpOnly cookies with the tokens
-	secure := auth.IsSecureRequest(req.Header())
-	refreshExpiry := time.Now().Add(7 * 24 * time.Hour)
-	auth.SetTokenCookies(resp.Header(), tokens, refreshExpiry, secure)
 
 	return resp, nil
 }
@@ -91,21 +122,18 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, err
 	}
 
-	// Read refresh token from request body, falling back to cookie
+	// Read refresh token from request body
 	refreshToken := req.Msg.RefreshToken
-	if refreshToken == "" {
-		refreshToken = auth.CookieFromHeader(req.Header(), auth.RefreshTokenCookie)
-	}
 	if refreshToken == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing refresh token"))
 	}
 
-	// Check if the refresh token has been revoked
+	// Validate refresh token and check revocation
 	isRevoked := func(jti string) (bool, error) {
 		return h.store.Queries().IsTokenRevoked(ctx, jti)
 	}
 
-	result, err := h.jwtManager.RefreshAccessToken(refreshToken, isRevoked)
+	result, err := h.jwtManager.ValidateRefreshToken(refreshToken, isRevoked)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired refresh token"))
 	}
@@ -122,6 +150,18 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("session invalidated, please log in again"))
 	}
 
+	// Resolve fresh permissions from DB
+	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, result.Claims.UserID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
+	}
+
+	// Generate new token pair with fresh permissions
+	tokens, err := h.jwtManager.GenerateTokens(result.Claims.UserID, result.Claims.Email, permissions, result.Claims.SessionVersion)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate tokens"))
+	}
+
 	// Revoke the old refresh token to prevent reuse
 	if result.OldJTI != "" {
 		_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
@@ -131,15 +171,10 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	resp := connect.NewResponse(&pm.RefreshTokenResponse{
-		AccessToken:  result.Tokens.AccessToken,
-		ExpiresAt:    timestamppb.New(result.Tokens.ExpiresAt),
-		RefreshToken: result.Tokens.RefreshToken,
+		AccessToken:  tokens.AccessToken,
+		ExpiresAt:    timestamppb.New(tokens.ExpiresAt),
+		RefreshToken: tokens.RefreshToken,
 	})
-
-	// Set httpOnly cookies with the new tokens
-	secure := auth.IsSecureRequest(req.Header())
-	refreshExpiry := time.Now().Add(7 * 24 * time.Hour)
-	auth.SetTokenCookies(resp.Header(), result.Tokens, refreshExpiry, secure)
 
 	return resp, nil
 }
@@ -150,14 +185,10 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		return nil, err
 	}
 
-	// Read refresh token from request body, falling back to cookie
+	// Read refresh token from request body
 	refreshToken := req.Msg.RefreshToken
-	if refreshToken == "" {
-		refreshToken = auth.CookieFromHeader(req.Header(), auth.RefreshTokenCookie)
-	}
-
 	if refreshToken != "" {
-		claims, err := h.jwtManager.ValidateRefreshToken(refreshToken)
+		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
 			_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 				Jti:       claims.ID,
@@ -166,13 +197,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		}
 	}
 
-	resp := connect.NewResponse(&pm.LogoutResponse{})
-
-	// Clear token cookies
-	secure := auth.IsSecureRequest(req.Header())
-	auth.ClearTokenCookies(resp.Header(), secure)
-
-	return resp, nil
+	return connect.NewResponse(&pm.LogoutResponse{}), nil
 }
 
 // GetCurrentUser returns the current authenticated user.
@@ -190,7 +215,15 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
+	protoUser := userToProto(user)
+	// Populate user roles
+	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+		for _, r := range roles {
+			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
+		}
+	}
+
 	return connect.NewResponse(&pm.GetCurrentUserResponse{
-		User: userToProto(user),
+		User: protoUser,
 	}), nil
 }

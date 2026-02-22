@@ -90,6 +90,22 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
 		}
+	case "user":
+		_, err := h.store.Queries().GetUserByID(ctx, req.Msg.TargetId)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			}
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		}
+	case "user_group":
+		_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.TargetId)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
+			}
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+		}
 	}
 
 	// Check if an active assignment already exists
@@ -323,6 +339,27 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		Actions:     protoActions,
 		ActionSets:  protoActionSets,
 		Definitions: protoDefinitions,
+	}), nil
+}
+
+// GetUserAssignments returns all assignments targeting a user (directly or via user groups).
+func (h *AssignmentHandler) GetUserAssignments(ctx context.Context, req *connect.Request[pm.GetUserAssignmentsRequest]) (*connect.Response[pm.GetUserAssignmentsResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	assignments, err := h.store.Queries().ListAssignmentsForUser(ctx, req.Msg.UserId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list user assignments"))
+	}
+
+	protoAssignments := make([]*pm.Assignment, len(assignments))
+	for i, a := range assignments {
+		protoAssignments[i] = h.assignmentToProto(a)
+	}
+
+	return connect.NewResponse(&pm.GetUserAssignmentsResponse{
+		Assignments: protoAssignments,
 	}), nil
 }
 
