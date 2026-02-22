@@ -518,6 +518,91 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 |------|-------|----------------|
 | `internal/handler/agent_test.go` | ~11 | SyncActions (empty, with assigned actions, missing device ID), handleAgentMessage (heartbeat, action result success/failed, agent-scheduled action, security alert, output chunk), DeviceIDFromContext (present, absent) |
 
+## Dynamic Device Groups
+
+Dynamic device groups use a query language to automatically evaluate device membership based on device properties. Membership is re-evaluated whenever a device's inventory or labels change.
+
+### Supported Properties
+
+**Label properties** — custom key-value labels assigned to devices:
+
+```
+device.labels.<key>    e.g., device.labels.environment
+labels.<key>           e.g., labels.role  (shorthand)
+```
+
+**Inventory properties** — hardware and OS information collected by the agent:
+
+| Property | Description | Example Value |
+|----------|-------------|---------------|
+| `device.hostname` | Device hostname | `web-server-01` |
+| `device.name` | Device display name | `Web Server 01` |
+| `device.os` | Operating system name | `Ubuntu`, `Fedora` |
+| `device.os_version` | Full OS version string | `24.04`, `41` |
+| `device.os_major` | OS major version number | `24`, `41` |
+| `device.os_minor` | OS minor version number | `04`, `0` |
+| `device.os_arch` | CPU architecture | `x86_64`, `aarch64` |
+| `device.os_platform` | Platform family | `debian`, `rhel`, `arch` |
+| `device.cpu_type` | CPU type | `GenuineIntel` |
+| `device.cpu_brand` | CPU brand string | `Intel(R) Core(TM) i7-1265U` |
+| `device.cpu_cores` | Physical CPU core count | `10` |
+| `device.cpu_logical_cores` | Logical CPU core count | `12` |
+| `device.memory_total` | Total memory in bytes | `17179869184` |
+| `device.kernel` | Kernel version | `6.8.0-45-generic` |
+
+### Supported Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `equals` | Exact match | `device.os equals "Ubuntu"` |
+| `notEquals` | Not equal | `device.os notEquals "Windows"` |
+| `contains` | Substring match | `device.hostname contains "web"` |
+| `notContains` | No substring match | `device.hostname notContains "test"` |
+| `startsWith` | Prefix match | `device.hostname startsWith "prod-"` |
+| `endsWith` | Suffix match | `device.hostname endsWith ".local"` |
+| `greaterThan` | Numeric greater than | `device.cpu_cores greaterThan "4"` |
+| `lessThan` | Numeric less than | `device.memory_total lessThan "8589934592"` |
+| `exists` | Property exists | `device.labels.environment exists` |
+| `notExists` | Property does not exist | `device.labels.decommissioned notExists` |
+| `in` | Value in list | `device.os in ("Ubuntu", "Fedora")` |
+| `notIn` | Value not in list | `device.os_platform notIn ("arch", "gentoo")` |
+| `matches` | Regex match | `device.hostname matches "^web-[0-9]+"` |
+| `notMatches` | No regex match | `device.kernel notMatches "debug"` |
+
+### Logic and Grouping
+
+Conditions can be combined with logic operators and grouped with parentheses:
+
+- **`AND`** — both conditions must be true
+- **`OR`** — at least one condition must be true
+- **`NOT`** — negates a condition
+- **Parentheses** — control evaluation order
+
+### Examples
+
+```
+# All Ubuntu devices
+device.os equals "Ubuntu"
+
+# 64-bit devices with at least 8 GB RAM
+device.os_arch equals "x86_64" AND device.memory_total greaterThan "8589934592"
+
+# Production devices on Debian or RHEL-based systems
+device.labels.environment equals "production" AND device.os_platform in ("debian", "rhel")
+
+# Fedora or Ubuntu devices with more than 4 CPU cores
+(device.os equals "Fedora" OR device.os equals "Ubuntu") AND device.cpu_cores greaterThan "4"
+
+# Devices without a decommissioned label
+NOT device.labels.decommissioned exists
+```
+
+### Evaluation
+
+Dynamic group membership is evaluated by PostgreSQL using the `evaluate_dynamic_query_v2()` function. The query is parsed into an expression tree of conditions, logical operators, and groups. Each condition is evaluated against the device's labels (stored in `devices_projection.labels`) and inventory data (collected by the agent via OSQuery and stored in `device_inventory`).
+
+The `ValidateDynamicQuery` RPC validates syntax and returns the number of currently matching devices. The `EvaluateDynamicGroup` RPC triggers a manual re-evaluation of membership.
+
 ## License
 
 AGPL-3.0 — see [LICENSE](LICENSE).
