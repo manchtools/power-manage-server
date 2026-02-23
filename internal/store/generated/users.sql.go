@@ -22,7 +22,7 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale FROM users_projection
 WHERE email = $1 AND is_deleted = FALSE
 `
 
@@ -43,12 +43,18 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (UsersProjec
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale FROM users_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -69,6 +75,12 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (UsersProjection, 
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
 	)
 	return i, err
 }
@@ -92,7 +104,7 @@ func (q *Queries) GetUserSessionInfo(ctx context.Context, id string) (GetUserSes
 }
 
 const listAllUsers = `-- name: ListAllUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale FROM users_projection
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -125,6 +137,12 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 			&i.SessionVersion,
 			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
 		); err != nil {
 			return nil, err
 		}
@@ -137,7 +155,7 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale FROM users_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -171,6 +189,12 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersPr
 			&i.SessionVersion,
 			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
 		); err != nil {
 			return nil, err
 		}

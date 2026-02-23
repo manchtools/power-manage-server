@@ -25,7 +25,7 @@ func (q *Queries) CountGroupsWithRole(ctx context.Context, roleID string) (int64
 const countMatchingUsersForQuery = `-- name: CountMatchingUsersForQuery :one
 SELECT COUNT(*) FROM users_projection
 WHERE is_deleted = FALSE
-AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, $1) = TRUE
+AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE
 `
 
 func (q *Queries) CountMatchingUsersForQuery(ctx context.Context, query string) (int64, error) {

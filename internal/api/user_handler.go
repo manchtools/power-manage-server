@@ -56,9 +56,13 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		StreamID:   id,
 		EventType:  "UserCreated",
 		Data: map[string]any{
-			"email":         req.Msg.Email,
-			"password_hash": passwordHash,
-			"role":          "user",
+			"email":              req.Msg.Email,
+			"password_hash":      passwordHash,
+			"role":               "user",
+			"display_name":       req.Msg.DisplayName,
+			"given_name":         req.Msg.GivenName,
+			"family_name":        req.Msg.FamilyName,
+			"preferred_username": req.Msg.PreferredUsername,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -348,14 +352,65 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	return connect.NewResponse(&pm.DeleteUserResponse{}), nil
 }
 
+// UpdateUserProfile updates a user's profile fields.
+func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Request[pm.UpdateUserProfileRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Emit UserProfileUpdated event
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.Id,
+		EventType:  "UserProfileUpdated",
+		Data: map[string]any{
+			"display_name":       req.Msg.DisplayName,
+			"given_name":         req.Msg.GivenName,
+			"family_name":        req.Msg.FamilyName,
+			"preferred_username": req.Msg.PreferredUsername,
+			"picture":            req.Msg.Picture,
+			"locale":             req.Msg.Locale,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update profile"))
+	}
+
+	// Read back from projection
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+	}
+
+	return connect.NewResponse(&pm.UpdateUserResponse{
+		User: userToProto(user),
+	}), nil
+}
+
 // userToProto converts a database user projection to a protobuf user.
 func userToProto(u db.UsersProjection) *pm.User {
 	user := &pm.User{
-		Id:          u.ID,
-		Email:       u.Email,
-		Disabled:    u.Disabled,
-		TotpEnabled: u.TotpEnabled,
-		HasPassword: u.HasPassword,
+		Id:                u.ID,
+		Email:             u.Email,
+		Disabled:          u.Disabled,
+		TotpEnabled:       u.TotpEnabled,
+		HasPassword:       u.HasPassword,
+		DisplayName:       u.DisplayName,
+		GivenName:         u.GivenName,
+		FamilyName:        u.FamilyName,
+		PreferredUsername:  u.PreferredUsername,
+		Picture:           u.Picture,
+		Locale:            u.Locale,
 	}
 
 	if u.CreatedAt.Valid {

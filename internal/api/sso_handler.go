@@ -257,6 +257,25 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("account is disabled"))
 	}
 
+	// Sync profile from OIDC claims
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   linkResult.UserID,
+		EventType:  "UserProfileUpdated",
+		Data: map[string]any{
+			"display_name":       claims.Name,
+			"given_name":         claims.GivenName,
+			"family_name":        claims.FamilyName,
+			"preferred_username": claims.PreferredUsername,
+			"picture":            claims.Picture,
+			"locale":             claims.Locale,
+		},
+		ActorType: "system",
+		ActorID:   "sso",
+	}); err != nil {
+		slog.Warn("failed to sync user profile from OIDC", "user_id", linkResult.UserID, "error", err)
+	}
+
 	// Sync group memberships (only for valid, active users)
 	groupMapping := idp.ParseGroupMapping(provider.GroupMapping)
 	if len(claims.Groups) > 0 && len(groupMapping) > 0 {

@@ -21,6 +21,8 @@ func AllPermissions() []PermissionInfo {
 		{"UpdateUserPassword", "Users", "Change any user's password"},
 		{"UpdateUserPassword:self", "Users", "Change own password"},
 		{"SetUserDisabled", "Users", "Disable/enable users"},
+		{"UpdateUserProfile", "Users", "Update any user's profile"},
+		{"UpdateUserProfile:self", "Users", "Update own profile"},
 		{"DeleteUser", "Users", "Delete users"},
 		// Devices
 		{"ListDevices", "Devices", "List all devices"},
@@ -189,6 +191,7 @@ func DefaultUserPermissions() []string {
 		"GetUser:self",
 		"UpdateUserEmail:self",
 		"UpdateUserPassword:self",
+		"UpdateUserProfile:self",
 		"SetupTOTP",
 		"VerifyTOTP",
 		"DisableTOTP",

@@ -37,7 +37,7 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 }
 
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE
@@ -62,6 +62,12 @@ type FindSCIMUserByEmailRow struct {
 	SessionVersion    int32              `json:"session_version"`
 	TotpEnabled       bool               `json:"totp_enabled"`
 	HasPassword       bool               `json:"has_password"`
+	DisplayName       string             `json:"display_name"`
+	GivenName         string             `json:"given_name"`
+	FamilyName        string             `json:"family_name"`
+	PreferredUsername string             `json:"preferred_username"`
+	Picture           string             `json:"picture"`
+	Locale            string             `json:"locale"`
 	ScimExternalID    string             `json:"scim_external_id"`
 }
 
@@ -82,13 +88,19 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
 		&i.ScimExternalID,
 	)
 	return i, err
 }
 
 const findSCIMUserByExternalID = `-- name: FindSCIMUserByExternalID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
@@ -113,6 +125,12 @@ type FindSCIMUserByExternalIDRow struct {
 	SessionVersion    int32              `json:"session_version"`
 	TotpEnabled       bool               `json:"totp_enabled"`
 	HasPassword       bool               `json:"has_password"`
+	DisplayName       string             `json:"display_name"`
+	GivenName         string             `json:"given_name"`
+	FamilyName        string             `json:"family_name"`
+	PreferredUsername string             `json:"preferred_username"`
+	Picture           string             `json:"picture"`
+	Locale            string             `json:"locale"`
 	ScimExternalID    string             `json:"scim_external_id"`
 }
 
@@ -133,6 +151,12 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
 		&i.ScimExternalID,
 	)
 	return i, err
@@ -228,7 +252,7 @@ func (q *Queries) GetSCIMGroupMappingByUserGroup(ctx context.Context, arg GetSCI
 }
 
 const getUserByExternalSCIMID = `-- name: GetUserByExternalSCIMID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password FROM users_projection u
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
 `
@@ -255,6 +279,12 @@ func (q *Queries) GetUserByExternalSCIMID(ctx context.Context, arg GetUserByExte
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
 	)
 	return i, err
 }
@@ -339,7 +369,7 @@ func (q *Queries) ListSCIMGroupMappings(ctx context.Context, providerID string) 
 }
 
 const listSCIMUsers = `-- name: ListSCIMUsers :many
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.is_deleted = FALSE
@@ -367,6 +397,12 @@ type ListSCIMUsersRow struct {
 	SessionVersion    int32              `json:"session_version"`
 	TotpEnabled       bool               `json:"totp_enabled"`
 	HasPassword       bool               `json:"has_password"`
+	DisplayName       string             `json:"display_name"`
+	GivenName         string             `json:"given_name"`
+	FamilyName        string             `json:"family_name"`
+	PreferredUsername string             `json:"preferred_username"`
+	Picture           string             `json:"picture"`
+	Locale            string             `json:"locale"`
 	ScimExternalID    string             `json:"scim_external_id"`
 }
 
@@ -393,6 +429,12 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 			&i.SessionVersion,
 			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
 			&i.ScimExternalID,
 		); err != nil {
 			return nil, err

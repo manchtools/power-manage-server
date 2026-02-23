@@ -257,7 +257,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		StreamID:   userID,
 		EventType:  "UserCreated",
 		Data: map[string]any{
-			"email": email,
+			"email":        email,
+			"display_name": formatExternalName(scimUser.Name),
+			"given_name":   safeNameField(scimUser.Name, "given"),
+			"family_name":  safeNameField(scimUser.Name, "family"),
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -459,6 +462,27 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Update profile if name fields provided
+	newDisplayName := formatExternalName(scimUser.Name)
+	newGivenName := safeNameField(scimUser.Name, "given")
+	newFamilyName := safeNameField(scimUser.Name, "family")
+	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserProfileUpdated",
+			Data: map[string]any{
+				"display_name": newDisplayName,
+				"given_name":   newGivenName,
+				"family_name":  newFamilyName,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
+		}); err != nil {
+			h.logger.Warn("failed to update user profile via SCIM", "error", err)
+		}
+	}
+
 	// Read back updated user
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
@@ -637,6 +661,32 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			})
 		}
 
+	case "name":
+		nameMap, ok := op.Value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid name value")
+		}
+		data := map[string]any{}
+		if gn, ok := nameMap["givenName"].(string); ok {
+			data["given_name"] = gn
+		}
+		if fn, ok := nameMap["familyName"].(string); ok {
+			data["family_name"] = fn
+		}
+		if fm, ok := nameMap["formatted"].(string); ok {
+			data["display_name"] = fm
+		}
+		if len(data) > 0 {
+			return h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserProfileUpdated",
+				Data:       data,
+				ActorType:  "scim",
+				ActorID:    provider.ID,
+			})
+		}
+
 	case "":
 		// No path — the value is a map of attributes to replace
 		valueMap, ok := op.Value.(map[string]any)
@@ -749,6 +799,14 @@ func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
 		},
 	}
 
+	if user.DisplayName != "" || user.GivenName != "" || user.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  user.DisplayName,
+			GivenName:  user.GivenName,
+			FamilyName: user.FamilyName,
+		}
+	}
+
 	if user.CreatedAt.Valid {
 		su.Meta.Created = user.CreatedAt.Time.Format(time.RFC3339)
 	}
@@ -778,6 +836,14 @@ func userRowToSCIM(row db.ListSCIMUsersRow, baseURL string) SCIMUser {
 			ResourceType: "User",
 			Location:     baseURL + "/Users/" + row.ID,
 		},
+	}
+
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
 	}
 
 	if row.CreatedAt.Valid {
@@ -811,6 +877,14 @@ func findUserRowToSCIM(row db.FindSCIMUserByEmailRow, baseURL string) SCIMUser {
 		},
 	}
 
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
+	}
+
 	if row.CreatedAt.Valid {
 		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
 	}
@@ -842,6 +916,14 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 		},
 	}
 
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
+	}
+
 	if row.CreatedAt.Valid {
 		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
 	}
@@ -850,6 +932,21 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 	}
 
 	return su
+}
+
+// safeNameField extracts a specific name field from a SCIMName.
+func safeNameField(name *SCIMName, field string) string {
+	if name == nil {
+		return ""
+	}
+	switch field {
+	case "given":
+		return name.GivenName
+	case "family":
+		return name.FamilyName
+	default:
+		return ""
+	}
 }
 
 // formatExternalName extracts a display name from SCIM name fields.

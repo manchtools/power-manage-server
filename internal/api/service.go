@@ -152,6 +152,10 @@ func (s *ControlService) SetUserDisabled(ctx context.Context, req *connect.Reque
 	return s.user.SetUserDisabled(ctx, req)
 }
 
+func (s *ControlService) UpdateUserProfile(ctx context.Context, req *connect.Request[pm.UpdateUserProfileRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserProfile(ctx, req)
+}
+
 func (s *ControlService) DeleteUser(ctx context.Context, req *connect.Request[pm.DeleteUserRequest]) (*connect.Response[pm.DeleteUserResponse], error) {
 	return s.user.DeleteUser(ctx, req)
 }

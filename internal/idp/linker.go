@@ -136,9 +136,14 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			StreamID:   userID,
 			EventType:  "UserCreated",
 			Data: map[string]any{
-				"email": claims.Email,
-				"role":  "user",
-				// No password_hash — SSO-only user
+				"email":              claims.Email,
+				"role":               "user",
+				"display_name":       claims.Name,
+				"given_name":         claims.GivenName,
+				"family_name":        claims.FamilyName,
+				"preferred_username": claims.PreferredUsername,
+				"picture":            claims.Picture,
+				"locale":             claims.Locale,
 			},
 			ActorType: "system",
 			ActorID:   "sso",

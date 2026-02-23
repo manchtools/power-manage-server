@@ -399,4 +399,10 @@ type UsersProjection struct {
 	SessionVersion    int32              `json:"session_version"`
 	TotpEnabled       bool               `json:"totp_enabled"`
 	HasPassword       bool               `json:"has_password"`
+	DisplayName       string             `json:"display_name"`
+	GivenName         string             `json:"given_name"`
+	FamilyName        string             `json:"family_name"`
+	PreferredUsername string             `json:"preferred_username"`
+	Picture           string             `json:"picture"`
+	Locale            string             `json:"locale"`
 }
