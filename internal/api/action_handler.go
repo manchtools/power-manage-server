@@ -108,6 +108,10 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		if p.Luks != nil {
 			return Validate(p.Luks)
 		}
+	case *pm.CreateActionRequest_Wifi:
+		if p.Wifi != nil {
+			return Validate(p.Wifi)
+		}
 	}
 	return nil
 }
@@ -174,6 +178,10 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 	case *pm.UpdateActionParamsRequest_Luks:
 		if p.Luks != nil {
 			return Validate(p.Luks)
+		}
+	case *pm.UpdateActionParamsRequest_Wifi:
+		if p.Wifi != nil {
+			return Validate(p.Wifi)
 		}
 	}
 	return nil
@@ -1075,6 +1083,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.CreateActionRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.CreateActionRequest_Wifi:
+		data, err = protojson.Marshal(p.Wifi)
 	default:
 		return params, nil
 	}
@@ -1126,6 +1136,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.UpdateActionParamsRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.UpdateActionParamsRequest_Wifi:
+		data, err = protojson.Marshal(p.Wifi)
 	default:
 		return params, nil
 	}
@@ -1194,6 +1206,9 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 		json.Unmarshal(data, &params)
 	case *pm.Action_Luks:
 		data, _ := protojson.Marshal(p.Luks)
+		json.Unmarshal(data, &params)
+	case *pm.Action_Wifi:
+		data, _ := protojson.Marshal(p.Wifi)
 		json.Unmarshal(data, &params)
 	}
 
@@ -1296,6 +1311,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.LuksParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Luks{Luks: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		var p pm.WifiParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Wifi{Wifi: &p}
 		}
 	}
 }
