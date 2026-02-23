@@ -52,13 +52,26 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
 
+	// Validate dynamic query if provided
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+		}
+		if validationErr != "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(validationErr))
+		}
+	}
+
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   id,
 		EventType:  "UserGroupCreated",
 		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
+			"name":          req.Msg.Name,
+			"description":   req.Msg.Description,
+			"is_dynamic":    req.Msg.IsDynamic,
+			"dynamic_query": req.Msg.DynamicQuery,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -256,12 +269,16 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify group exists
-	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+	}
+
+	if group.IsDynamic {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot manually modify members of a dynamic group"))
 	}
 
 	// Verify user exists
@@ -316,6 +333,19 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect.Request[pm.RemoveUserFromGroupRequest]) (*connect.Response[pm.RemoveUserFromGroupResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Verify group exists and is not dynamic
+	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+	}
+
+	if group.IsDynamic {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot manually modify members of a dynamic group"))
 	}
 
 	// Verify membership
@@ -496,6 +526,144 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	}), nil
 }
 
+// UpdateUserGroupQuery updates the dynamic query settings for a user group.
+func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	// Validate dynamic query if provided
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+		}
+		if validationErr != "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(validationErr))
+		}
+	}
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user_group",
+		StreamID:   req.Msg.Id,
+		EventType:  "UserGroupQueryUpdated",
+		Data: map[string]any{
+			"is_dynamic":    req.Msg.IsDynamic,
+			"dynamic_query": req.Msg.DynamicQuery,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update query"))
+	}
+
+	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+	}
+
+	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
+
+	return connect.NewResponse(&pm.UpdateUserGroupQueryResponse{
+		Group: userGroupToProto(group, roles),
+	}), nil
+}
+
+// ValidateUserGroupQuery validates a user group dynamic query without creating a group.
+func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *connect.Request[pm.ValidateUserGroupQueryRequest]) (*connect.Response[pm.ValidateUserGroupQueryResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.Query)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+	}
+
+	if validationErr != "" {
+		return connect.NewResponse(&pm.ValidateUserGroupQueryResponse{
+			Valid: false,
+			Error: validationErr,
+		}), nil
+	}
+
+	// Count matching users
+	matchingCount, err := h.store.Queries().CountMatchingUsersForQuery(ctx, req.Msg.Query)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count matching users"))
+	}
+
+	return connect.NewResponse(&pm.ValidateUserGroupQueryResponse{
+		Valid:             true,
+		MatchingUserCount: int32(matchingCount),
+	}), nil
+}
+
+// EvaluateDynamicUserGroup triggers re-evaluation of a dynamic user group.
+func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	// Verify group exists and is dynamic
+	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+	}
+
+	if !group.IsDynamic {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("group is not dynamic"))
+	}
+
+	// Get current member count before evaluation
+	membersBefore := group.MemberCount
+
+	// Trigger evaluation
+	err = h.store.Queries().EvaluateDynamicUserGroup(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to evaluate dynamic user group"))
+	}
+
+	// Get updated group
+	group, err = h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+	}
+
+	// Calculate added/removed
+	usersAdded := int32(0)
+	usersRemoved := int32(0)
+	if group.MemberCount > membersBefore {
+		usersAdded = group.MemberCount - membersBefore
+	} else if group.MemberCount < membersBefore {
+		usersRemoved = membersBefore - group.MemberCount
+	}
+
+	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
+
+	// Bump session versions for all current members (permissions may have changed)
+	userCtx, _ := auth.UserFromContext(ctx)
+	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID)
+
+	return connect.NewResponse(&pm.EvaluateDynamicUserGroupResponse{
+		Group:        userGroupToProto(group, roles),
+		UsersAdded:   usersAdded,
+		UsersRemoved: usersRemoved,
+	}), nil
+}
+
 // bumpUserSessionVersion increments a user's session_version to invalidate JWT/permission cache.
 func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) {
 	if err := h.store.AppendEvent(ctx, store.Event{
@@ -528,6 +696,11 @@ func userGroupToProto(g db.UserGroupsProjection, roles []db.RolesProjection) *pm
 		Name:        g.Name,
 		Description: g.Description,
 		MemberCount: g.MemberCount,
+		IsDynamic:   g.IsDynamic,
+	}
+
+	if g.DynamicQuery != nil {
+		group.DynamicQuery = *g.DynamicQuery
 	}
 
 	if g.CreatedAt.Valid {

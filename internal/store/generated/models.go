@@ -136,6 +136,12 @@ type DynamicGroupEvaluationQueue struct {
 	Reason   *string            `json:"reason"`
 }
 
+type DynamicUserGroupEvaluationQueue struct {
+	GroupID  string             `json:"group_id"`
+	QueuedAt pgtype.Timestamptz `json:"queued_at"`
+	Reason   *string            `json:"reason"`
+}
+
 type Event struct {
 	ID            pgtype.UUID        `json:"id"`
 	SequenceNum   *int64             `json:"sequence_num"`
@@ -356,6 +362,8 @@ type UserGroupsProjection struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	IsDynamic         bool               `json:"is_dynamic"`
+	DynamicQuery      *string            `json:"dynamic_query"`
 }
 
 type UserRolesProjection struct {

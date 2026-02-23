@@ -65,3 +65,17 @@ WHERE r.is_deleted = FALSE AND (
         WHERE ugm.user_id = $1
     )
 );
+
+-- name: ValidateUserGroupQuery :one
+SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message;
+
+-- name: EvaluateDynamicUserGroup :exec
+SELECT evaluate_dynamic_user_group($1);
+
+-- name: EvaluateQueuedDynamicUserGroups :one
+SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count;
+
+-- name: CountMatchingUsersForQuery :one
+SELECT COUNT(*) FROM users_projection
+WHERE is_deleted = FALSE
+AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, $1) = TRUE;

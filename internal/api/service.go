@@ -547,6 +547,18 @@ func (s *ControlService) ListUserGroupsForUser(ctx context.Context, req *connect
 	return s.userGroup.ListUserGroupsForUser(ctx, req)
 }
 
+func (s *ControlService) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
+	return s.userGroup.UpdateUserGroupQuery(ctx, req)
+}
+
+func (s *ControlService) ValidateUserGroupQuery(ctx context.Context, req *connect.Request[pm.ValidateUserGroupQueryRequest]) (*connect.Response[pm.ValidateUserGroupQueryResponse], error) {
+	return s.userGroup.ValidateUserGroupQuery(ctx, req)
+}
+
+func (s *ControlService) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
+	return s.userGroup.EvaluateDynamicUserGroup(ctx, req)
+}
+
 // Identity Providers
 func (s *ControlService) CreateIdentityProvider(ctx context.Context, req *connect.Request[pm.CreateIdentityProviderRequest]) (*connect.Response[pm.CreateIdentityProviderResponse], error) {
 	return s.idp.CreateIdentityProvider(ctx, req)

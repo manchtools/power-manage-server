@@ -146,11 +146,28 @@ func main() {
 		}
 	}
 
+	evaluateDynamicUserGroups := func() {
+		for {
+			count, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
+			if err != nil {
+				logger.Error("failed to evaluate queued dynamic user groups", "error", err)
+				return
+			}
+			if count > 0 {
+				logger.Info("evaluated queued dynamic user groups", "count", count)
+			}
+			if count < 100 {
+				return // queue is drained
+			}
+		}
+	}
+
 	if cfg.DynamicGroupEvalInterval > 0 {
 		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
 		go func() {
 			// Run immediately on startup to process any groups queued during downtime
 			evaluateDynamicGroups()
+			evaluateDynamicUserGroups()
 
 			ticker := time.NewTicker(cfg.DynamicGroupEvalInterval)
 			defer ticker.Stop()
@@ -158,6 +175,7 @@ func main() {
 				select {
 				case <-ticker.C:
 					evaluateDynamicGroups()
+					evaluateDynamicUserGroups()
 				case <-ctx.Done():
 					return
 				}

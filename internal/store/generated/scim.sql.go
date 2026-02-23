@@ -260,7 +260,7 @@ func (q *Queries) GetUserByExternalSCIMID(ctx context.Context, arg GetUserByExte
 }
 
 const getUserGroupWithMembers = `-- name: GetUserGroupWithMembers :one
-SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version, (
+SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version, ug.is_dynamic, ug.dynamic_query, (
     SELECT count(*) FROM user_group_members_projection ugm
     WHERE ugm.group_id = ug.id
 ) AS actual_member_count
@@ -278,6 +278,8 @@ type GetUserGroupWithMembersRow struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	IsDynamic         bool               `json:"is_dynamic"`
+	DynamicQuery      *string            `json:"dynamic_query"`
 	ActualMemberCount int64              `json:"actual_member_count"`
 }
 
@@ -294,6 +296,8 @@ func (q *Queries) GetUserGroupWithMembers(ctx context.Context, id string) (GetUs
 		&i.UpdatedAt,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.IsDynamic,
+		&i.DynamicQuery,
 		&i.ActualMemberCount,
 	)
 	return i, err
