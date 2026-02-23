@@ -66,17 +66,20 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get identity link"))
 	}
 
-	if link.UserID != userCtx.ID {
+	// Non-admin callers can only unlink their own identities.
+	if link.UserID != userCtx.ID && !auth.HasPermission(ctx, "DeleteUser") {
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot unlink another user's identity"))
 	}
 
+	targetUserID := link.UserID
+
 	// Prevent unlinking last auth method
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
-	linkCount, err := h.store.Queries().CountIdentityLinksForUser(ctx, userCtx.ID)
+	linkCount, err := h.store.Queries().CountIdentityLinksForUser(ctx, targetUserID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count identity links"))
 	}

@@ -119,6 +119,7 @@ func AllPermissions() []PermissionInfo {
 		{"SetupTOTP", "Authentication", "Set up TOTP 2FA"},
 		{"VerifyTOTP", "Authentication", "Verify TOTP setup"},
 		{"DisableTOTP", "Authentication", "Disable TOTP 2FA"},
+		{"AdminDisableUserTOTP", "Users", "Disable TOTP for any user"},
 		{"GetTOTPStatus", "Authentication", "View TOTP status"},
 		{"RegenerateBackupCodes", "Authentication", "Regenerate backup codes"},
 		// Roles

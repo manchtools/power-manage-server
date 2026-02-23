@@ -122,6 +122,7 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 
 	protoUser := userToProto(user)
 	h.populateUserRoles(ctx, protoUser)
+	h.populateUserIdentityLinks(ctx, protoUser)
 
 	return connect.NewResponse(&pm.GetUserResponse{
 		User: protoUser,
@@ -374,6 +375,17 @@ func derefPasswordHash(ph *string) string {
 		return ""
 	}
 	return *ph
+}
+
+// populateUserIdentityLinks loads identity links for a user and attaches them to the proto User.
+func (h *UserHandler) populateUserIdentityLinks(ctx context.Context, user *pm.User) {
+	links, err := h.store.Queries().ListIdentityLinksForUser(ctx, user.Id)
+	if err != nil {
+		return
+	}
+	for _, link := range links {
+		user.IdentityLinks = append(user.IdentityLinks, identityLinkRowToProto(link))
+	}
 }
 
 // populateUserRoles loads roles for a user and attaches them to the proto User.

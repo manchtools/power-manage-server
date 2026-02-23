@@ -181,6 +181,47 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 	return connect.NewResponse(&pm.DisableTOTPResponse{}), nil
 }
 
+// AdminDisableUserTOTP disables TOTP for another user (admin only, no password required).
+func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Request[pm.AdminDisableUserTOTPRequest]) (*connect.Response[pm.AdminDisableUserTOTPResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+
+	targetUserID := req.Msg.UserId
+
+	// Check target user exists and has TOTP enabled
+	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+	}
+
+	if !user.TotpEnabled {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP is not enabled for this user"))
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   targetUserID,
+		EventType:  "TOTPDisabled",
+		Data:       map[string]any{"admin": true},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to disable TOTP"))
+	}
+
+	return connect.NewResponse(&pm.AdminDisableUserTOTPResponse{}), nil
+}
+
 // GetTOTPStatus returns whether TOTP is enabled and how many backup codes remain.
 func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
 	userCtx, ok := auth.UserFromContext(ctx)

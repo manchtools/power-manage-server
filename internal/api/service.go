@@ -115,6 +115,10 @@ func (s *ControlService) DisableTOTP(ctx context.Context, req *connect.Request[p
 	return s.totp.DisableTOTP(ctx, req)
 }
 
+func (s *ControlService) AdminDisableUserTOTP(ctx context.Context, req *connect.Request[pm.AdminDisableUserTOTPRequest]) (*connect.Response[pm.AdminDisableUserTOTPResponse], error) {
+	return s.totp.AdminDisableUserTOTP(ctx, req)
+}
+
 func (s *ControlService) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
 	return s.totp.GetTOTPStatus(ctx, req)
 }
