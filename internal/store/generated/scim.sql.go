@@ -299,6 +299,20 @@ func (q *Queries) GetUserGroupWithMembers(ctx context.Context, id string) (GetUs
 	return i, err
 }
 
+const isUserGroupSCIMManaged = `-- name: IsUserGroupSCIMManaged :one
+SELECT EXISTS(
+    SELECT 1 FROM scim_group_mapping_projection
+    WHERE user_group_id = $1
+) AS is_scim_managed
+`
+
+func (q *Queries) IsUserGroupSCIMManaged(ctx context.Context, userGroupID string) (bool, error) {
+	row := q.db.QueryRow(ctx, isUserGroupSCIMManaged, userGroupID)
+	var is_scim_managed bool
+	err := row.Scan(&is_scim_managed)
+	return is_scim_managed, err
+}
+
 const listSCIMGroupMappings = `-- name: ListSCIMGroupMappings :many
 SELECT sgm.id, sgm.provider_id, sgm.scim_group_id, sgm.scim_display_name, sgm.user_group_id, sgm.created_at, sgm.projection_version
 FROM scim_group_mapping_projection sgm

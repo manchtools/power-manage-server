@@ -50,6 +50,12 @@ FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE;
 
+-- name: IsUserGroupSCIMManaged :one
+SELECT EXISTS(
+    SELECT 1 FROM scim_group_mapping_projection
+    WHERE user_group_id = $1
+) AS is_scim_managed;
+
 -- name: GetUserGroupWithMembers :one
 SELECT ug.*, (
     SELECT count(*) FROM user_group_members_projection ugm
