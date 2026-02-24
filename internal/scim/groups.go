@@ -18,6 +18,7 @@ import (
 
 // listGroups handles GET /scim/v2/{slug}/Groups
 func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM listGroups called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -50,7 +51,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 
 	resources := make([]any, 0, len(mappings))
 	for _, m := range mappings {
-		group, err := h.buildGroupResource(ctx, m, baseURL)
+		group, err := h.buildGroupResource(ctx, provider.ID, m, baseURL)
 		if err != nil {
 			h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
 			continue
@@ -90,8 +91,9 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 
 		for _, m := range mappings {
 			if m.ScimDisplayName == f.Value {
-				group, err := h.buildGroupResource(ctx, m, baseURL)
+				group, err := h.buildGroupResource(ctx, provider.ID, m, baseURL)
 				if err != nil {
+					h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
 					continue
 				}
 				resources = append(resources, group)
@@ -112,13 +114,13 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 				return
 			}
 		} else {
-			group, err := h.buildGroupResource(ctx, mapping, baseURL)
+			group, err := h.buildGroupResource(ctx, provider.ID, mapping, baseURL)
 			if err != nil {
-				h.logger.Error("failed to build group resource", "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to build group")
-				return
+				resources = []any{}
+				h.logger.Error("failed to build group resource", "mapping_id", mapping.ID, "error", err)
+			} else {
+				resources = []any{group}
 			}
-			resources = []any{group}
 		}
 
 	default:
@@ -141,6 +143,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 
 // createGroup handles POST /scim/v2/{slug}/Groups
 func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM createGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -178,6 +181,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err == nil {
 		// Already exists — update display name if changed and return existing resource.
+			h.logger.Debug("SCIM createGroup: group already exists, syncing", "scim_group_id", scimGroupID, "user_group_id", existing.UserGroupID)
 		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
 		if existing.ScimDisplayName != scimGroup.DisplayName {
 			h.appendEvent(ctx, store.Event{
@@ -211,7 +215,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			h.reconcileGroupMembers(ctx, provider, existing.UserGroupID, scimGroup.Members)
 		}
 
-		group, err := h.buildGroupResource(ctx, existing, baseURL)
+		group, err := h.buildGroupResource(ctx, provider.ID, existing, baseURL)
 		if err != nil {
 			// User group referenced by mapping no longer exists.
 			// Remove the orphaned mapping and fall through to create
@@ -242,6 +246,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create the user group
+	h.logger.Debug("SCIM createGroup: creating new group", "scim_group_id", scimGroupID, "display_name", scimGroup.DisplayName)
 	userGroupID := newULID()
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
@@ -320,7 +325,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.buildGroupResource(ctx, mapping, baseURL)
+	group, err := h.buildGroupResource(ctx, provider.ID, mapping, baseURL)
 	if err != nil {
 		h.logger.Error("failed to build group resource after create", "error", err)
 		writeJSON(w, http.StatusCreated, SCIMGroup{
@@ -337,6 +342,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 
 // getGroup handles GET /scim/v2/{slug}/Groups/{id}
 func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM getGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -367,10 +373,9 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.buildGroupResource(ctx, mapping, baseURL)
+	group, err := h.buildGroupResource(ctx, provider.ID, mapping, baseURL)
 	if err != nil {
-		h.logger.Error("failed to build group resource", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to build group")
+		writeError(w, http.StatusNotFound, "group not found")
 		return
 	}
 
@@ -379,6 +384,7 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 
 // replaceGroup handles PUT /scim/v2/{slug}/Groups/{id}
 func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM replaceGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -460,7 +466,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		updatedMapping = mapping
 	}
 
-	group, err := h.buildGroupResource(ctx, updatedMapping, baseURL)
+	group, err := h.buildGroupResource(ctx, provider.ID, updatedMapping, baseURL)
 	if err != nil {
 		h.logger.Error("failed to build group resource after replace", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to build group")
@@ -472,6 +478,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 
 // patchGroup handles PATCH /scim/v2/{slug}/Groups/{id}
 func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM patchGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -532,7 +539,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 		updatedMapping = mapping
 	}
 
-	group, err := h.buildGroupResource(ctx, updatedMapping, baseURL)
+	group, err := h.buildGroupResource(ctx, provider.ID, updatedMapping, baseURL)
 	if err != nil {
 		h.logger.Error("failed to build group resource after patch", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to build group")
@@ -656,6 +663,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 
 		currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
 		if err != nil {
+			h.logger.Error("failed to list group members for patch replace", "group_id", groupID, "error", err)
 			return
 		}
 
@@ -667,6 +675,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		// Add new members
 		for _, userID := range members {
 			if !currentSet[userID] {
+			h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
@@ -685,6 +694,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		// Remove old members
 		for _, userID := range currentMemberIDs {
 			if !requestedSet[userID] {
+			h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
@@ -704,6 +714,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 
 // deleteGroup handles DELETE /scim/v2/{slug}/Groups/{id}
 func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM deleteGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -757,6 +768,7 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 // reconcileGroupMembers diffs the requested members against current members and
 // emits add/remove events as needed.
 func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, requestedMembers []SCIMMember) {
+	h.logger.Debug("SCIM reconcileGroupMembers", "group_id", groupID, "requested_count", len(requestedMembers))
 	currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
 	if err != nil {
 		h.logger.Error("failed to list current group members for reconciliation", "error", err)
@@ -775,9 +787,11 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 		}
 	}
 
+	h.logger.Debug("SCIM reconcileGroupMembers diff", "group_id", groupID, "current_count", len(currentMemberIDs), "requested_count", len(requestedSet))
 	// Add new members
 	for userID := range requestedSet {
 		if !currentSet[userID] {
+			h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 			streamID := groupID + ":" + userID
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
@@ -796,6 +810,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 	// Remove old members
 	for _, userID := range currentMemberIDs {
 		if !requestedSet[userID] {
+			h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
 			streamID := groupID + ":" + userID
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
@@ -813,8 +828,18 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 }
 
 // buildGroupResource constructs a SCIMGroup from a mapping and its associated user group.
-func (h *Handler) buildGroupResource(ctx context.Context, mapping db.ScimGroupMappingProjection, baseURL string) (SCIMGroup, error) {
+// If the user group was deleted but the mapping still exists (orphaned), it re-creates
+// the user group and updates the mapping to restore consistency.
+func (h *Handler) buildGroupResource(ctx context.Context, providerID string, mapping db.ScimGroupMappingProjection, baseURL string) (SCIMGroup, error) {
 	group, err := h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// User group was deleted but SCIM mapping still exists — restore it.
+		mapping, err = h.restoreOrphanedGroup(ctx, providerID, mapping)
+		if err != nil {
+			return SCIMGroup{}, fmt.Errorf("restore orphaned group: %w", err)
+		}
+		group, err = h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
+	}
 	if err != nil {
 		return SCIMGroup{}, fmt.Errorf("get user group: %w", err)
 	}
@@ -830,7 +855,6 @@ func (h *Handler) buildGroupResource(ctx context.Context, mapping db.ScimGroupMa
 			Value: uid,
 			Ref:   baseURL + "/Users/" + uid,
 		}
-		// Try to get display name (email)
 		u, err := h.store.Queries().GetUserByID(ctx, uid)
 		if err == nil {
 			member.Display = u.Email
@@ -858,6 +882,69 @@ func (h *Handler) buildGroupResource(ctx context.Context, mapping db.ScimGroupMa
 	}
 
 	return sg, nil
+}
+
+// restoreOrphanedGroup re-creates the user group and updates the SCIM mapping
+// when the original user group was deleted but the SCIM mapping still exists.
+func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m db.ScimGroupMappingProjection) (db.ScimGroupMappingProjection, error) {
+	h.logger.Warn("restoring orphaned SCIM group: re-creating user group",
+		"mapping_id", m.ID, "user_group_id", m.UserGroupID, "display_name", m.ScimDisplayName)
+
+	newGroupID := newULID()
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user_group",
+		StreamID:   newGroupID,
+		EventType:  "UserGroupCreated",
+		Data: map[string]any{
+			"name":        m.ScimDisplayName,
+			"description": "SCIM-provisioned group (restored)",
+		},
+		ActorType: "scim",
+		ActorID:   providerID,
+	}); err != nil {
+		return m, fmt.Errorf("create user group: %w", err)
+	}
+
+	// Remove old mapping
+	h.appendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping",
+		StreamID:   m.ID,
+		EventType:  "SCIMGroupUnmapped",
+		Data: map[string]any{
+			"provider_id":   providerID,
+			"scim_group_id": m.ScimGroupID,
+		},
+		ActorType: "scim",
+		ActorID:   providerID,
+	})
+
+	// Create new mapping pointing to the new user group
+	newMappingID := newULID()
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping",
+		StreamID:   newMappingID,
+		EventType:  "SCIMGroupMapped",
+		Data: map[string]any{
+			"provider_id":       providerID,
+			"scim_group_id":     m.ScimGroupID,
+			"scim_display_name": m.ScimDisplayName,
+			"user_group_id":     newGroupID,
+		},
+		ActorType: "scim",
+		ActorID:   providerID,
+	}); err != nil {
+		return m, fmt.Errorf("create mapping: %w", err)
+	}
+
+	newMapping, err := h.store.Queries().GetSCIMGroupMapping(ctx, db.GetSCIMGroupMappingParams{
+		ProviderID:  providerID,
+		ScimGroupID: m.ScimGroupID,
+	})
+	if err != nil {
+		return m, fmt.Errorf("read new mapping: %w", err)
+	}
+
+	return newMapping, nil
 }
 
 // extractMembers extracts user IDs from a SCIM members value.

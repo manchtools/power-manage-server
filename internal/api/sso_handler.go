@@ -248,6 +248,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	user, err := h.store.Queries().GetUserByID(ctx, linkResult.UserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("SSO user not found after link resolved — user may be soft-deleted",
+				"user_id", linkResult.UserID,
+				"is_new", linkResult.IsNew,
+				"slug", req.Msg.Slug,
+				"email", claims.Email,
+				"subject", claims.Subject,
+			)
 			return nil, connect.NewError(connect.CodeNotFound, errors.New("account not found"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))

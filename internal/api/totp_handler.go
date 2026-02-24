@@ -44,6 +44,15 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
 	}
 
+	// SSO-only users cannot set up TOTP — they must use their identity provider's MFA
+	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+	}
+	if !user.HasPassword {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP cannot be configured for accounts using federated login (SSO); use your identity provider's MFA instead"))
+	}
+
 	// Generate TOTP key
 	key, err := totp.GenerateKey(h.issuer, userCtx.Email)
 	if err != nil {
@@ -157,6 +166,10 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
 	}
 
+	if !user.HasPassword {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot disable TOTP for accounts using federated login (SSO); contact an administrator"))
+	}
+
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
 		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid password"))
 	}
@@ -261,6 +274,10 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+	}
+
+	if !user.HasPassword {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot regenerate backup codes for accounts using federated login (SSO); contact an administrator"))
 	}
 
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {

@@ -35,14 +35,18 @@ func TestAuthInterceptor_NilLimiters(t *testing.T) {
 
 func TestPublicProcedures(t *testing.T) {
 	expected := map[string]bool{
-		"/pm.v1.ControlService/Login":           true,
-		"/pm.v1.ControlService/RefreshToken":    true,
-		"/pm.v1.ControlService/Logout":          true,
-		"/pm.v1.ControlService/Register":        true,
-		"/pm.v1.ControlService/VerifyLoginTOTP": true,
-		"/pm.v1.ControlService/ListAuthMethods": true,
-		"/pm.v1.ControlService/GetSSOLoginURL":  true,
-		"/pm.v1.ControlService/SSOCallback":     true,
+		"/pm.v1.ControlService/Login":                  true,
+		"/pm.v1.ControlService/RefreshToken":            true,
+		"/pm.v1.ControlService/Logout":                  true,
+		"/pm.v1.ControlService/Register":                true,
+		"/pm.v1.ControlService/VerifyLoginTOTP":         true,
+		"/pm.v1.ControlService/ListAuthMethods":         true,
+		"/pm.v1.ControlService/GetSSOLoginURL":          true,
+		"/pm.v1.ControlService/SSOCallback":             true,
+		"/pm.v1.ControlService/AuthenticateDeviceUser":  true,
+		"/pm.v1.ControlService/GetDeviceLoginURL":       true,
+		"/pm.v1.ControlService/DeviceLoginCallback":     true,
+		"/pm.v1.ControlService/ListDeviceUsers":         true,
 	}
 	assert.Equal(t, expected, PublicProcedures)
 }
