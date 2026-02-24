@@ -211,13 +211,29 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 
 		group, err := h.buildGroupResource(ctx, existing, baseURL)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to build group resource")
+			// User group referenced by mapping no longer exists.
+			// Remove the orphaned mapping and fall through to create
+			// a fresh group+mapping pair below.
+			h.logger.Warn("orphaned SCIM group mapping, removing and recreating",
+				"mapping_id", existing.ID, "user_group_id", existing.UserGroupID, "error", err)
+			h.appendEvent(ctx, store.Event{
+				StreamType: "scim_group_mapping",
+				StreamID:   existing.ID,
+				EventType:  "SCIMGroupUnmapped",
+				Data: map[string]any{
+					"provider_id":   provider.ID,
+					"scim_group_id": existing.ScimGroupID,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
+			})
+			// Fall through to create a new group below
+		} else {
+			writeJSON(w, http.StatusOK, group)
 			return
 		}
-		writeJSON(w, http.StatusOK, group)
-		return
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !errors.Is(err, pgx.ErrNoRows) && err != nil {
 		h.logger.Error("failed to check existing SCIM group mapping", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
