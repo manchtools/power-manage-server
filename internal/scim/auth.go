@@ -18,20 +18,25 @@ import (
 // the provider in the request context.
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		h.logger.Debug("SCIM request received", "method", r.Method, "path", r.URL.Path)
+
 		// Extract bearer token from Authorization header
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
+			h.logger.Warn("SCIM auth failed: missing authorization header", "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusUnauthorized, "missing authorization header")
 			return
 		}
 
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			h.logger.Warn("SCIM auth failed: not a Bearer token", "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusUnauthorized, "authorization header must use Bearer scheme")
 			return
 		}
 
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if token == "" {
+			h.logger.Warn("SCIM auth failed: empty token", "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusUnauthorized, "bearer token is empty")
 			return
 		}
@@ -39,6 +44,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Get slug from path
 		slug := r.PathValue("slug")
 		if slug == "" {
+			h.logger.Warn("SCIM auth failed: missing slug", "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusBadRequest, "missing provider slug")
 			return
 		}
@@ -47,6 +53,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		provider, err := h.store.Queries().GetIdentityProviderBySlugForSCIM(r.Context(), slug)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
+				h.logger.Warn("SCIM auth failed: unknown provider or SCIM not enabled", "slug", slug)
 				writeError(w, http.StatusUnauthorized, "unknown provider or SCIM not enabled")
 				return
 			}
@@ -57,11 +64,13 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Verify bearer token against stored bcrypt hash
 		if provider.ScimTokenHash == "" {
+			h.logger.Warn("SCIM auth failed: token not configured", "slug", slug, "provider_id", provider.ID)
 			writeError(w, http.StatusUnauthorized, "SCIM token not configured")
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(provider.ScimTokenHash), []byte(token)); err != nil {
+			h.logger.Warn("SCIM auth failed: invalid bearer token", "slug", slug, "provider_id", provider.ID)
 			writeError(w, http.StatusUnauthorized, "invalid bearer token")
 			return
 		}
@@ -82,6 +91,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Store provider in context and proceed
+		h.logger.Debug("SCIM request authenticated", "slug", slug, "provider_id", provider.ID, "method", r.Method, "path", r.URL.Path)
 		ctx := context.WithValue(r.Context(), providerContextKey, provider)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
