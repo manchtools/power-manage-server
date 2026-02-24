@@ -25,6 +25,7 @@ func newULID() string {
 
 // listUsers handles GET /scim/v2/{slug}/Users
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM listUsers called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -154,6 +155,8 @@ func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, prov
 
 // createUser handles POST /scim/v2/{slug}/Users
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM listUsers called")
+	h.logger.Debug("SCIM createUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -190,6 +193,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			// User already linked with this external ID — sync data from SCIM
+			h.logger.Debug("SCIM createUser: user already exists by external ID, syncing", "user_id", existing.ID, "external_id", externalID)
 			// (source of truth) and return existing resource. Using 200 instead
 			// of 409 makes POST idempotent for SCIM clients that re-POST on
 			// every sync cycle.
@@ -231,6 +235,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		existingUser, err := h.store.Queries().GetUserByEmail(ctx, email)
 		if err == nil {
 			// User exists — create identity link
+			h.logger.Debug("SCIM createUser: linking existing user by email", "user_id", existingUser.ID, "email", email)
 			linkID := newULID()
 			err = h.store.AppendEvent(ctx, store.Event{
 				StreamType: "identity_provider",
@@ -263,6 +268,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create new user
+	h.logger.Debug("SCIM createUser: creating new user", "email", email, "external_id", externalID)
 	userID := newULID()
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -333,6 +339,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 
 // getUser handles GET /scim/v2/{slug}/Users/{id}
 func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM getUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -380,6 +387,7 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 
 // replaceUser handles PUT /scim/v2/{slug}/Users/{id}
 func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM replaceUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -504,6 +512,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 
 // patchUser handles PATCH /scim/v2/{slug}/Users/{id}
 func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM patchUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -689,6 +698,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 
 // deleteUser handles DELETE /scim/v2/{slug}/Users/{id}
 func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("SCIM deleteUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
@@ -886,6 +896,7 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active bool, name *SCIMName) {
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
+		h.logger.Error("failed to get user for SCIM sync", "user_id", userID, "error", err)
 		return
 	}
 
@@ -934,6 +945,7 @@ func (h *Handler) syncIdentityLink(ctx context.Context, provider db.IdentityProv
 		UserID:     userID,
 	})
 	if err != nil {
+		h.logger.Error("failed to get identity link for SCIM sync", "user_id", userID, "provider_id", provider.ID, "error", err)
 		return
 	}
 
