@@ -87,24 +87,46 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			"user_id", link.UserID,
 			"external_id", link.ExternalID,
 		)
-		// Existing link found — update last login
-		err = l.appender.AppendEvent(ctx, EventInput{
-			StreamType: "identity_provider",
-			StreamID:   link.ID,
-			EventType:  "IdentityLinkLoginUpdated",
-			Data: map[string]any{
-				"provider_id":    provider.ID,
-				"external_id":    claims.Subject,
-				"external_email": claims.Email,
-				"external_name":  claims.Name,
-			},
-			ActorType: "system",
-			ActorID:   "sso",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("update identity link login: %w", err)
+
+		// Verify the linked user still exists (not soft-deleted)
+		_, userErr := l.queries.GetUserByID(ctx, link.UserID)
+		if errors.Is(userErr, pgx.ErrNoRows) {
+			// User is soft-deleted — clean up the stale identity link and fall through
+			slog.Warn("SSO linker: linked user is deleted, cleaning up stale identity link",
+				"link_id", link.ID,
+				"user_id", link.UserID,
+			)
+			_ = l.appender.AppendEvent(ctx, EventInput{
+				StreamType: "identity_provider",
+				StreamID:   link.ID,
+				EventType:  "IdentityUnlinked",
+				Data:       map[string]any{},
+				ActorType:  "system",
+				ActorID:    "sso",
+			})
+			// Fall through to Step 2/3
+		} else if userErr != nil {
+			return nil, fmt.Errorf("verify linked user: %w", userErr)
+		} else {
+			// User exists — update last login and return
+			err = l.appender.AppendEvent(ctx, EventInput{
+				StreamType: "identity_provider",
+				StreamID:   link.ID,
+				EventType:  "IdentityLinkLoginUpdated",
+				Data: map[string]any{
+					"provider_id":    provider.ID,
+					"external_id":    claims.Subject,
+					"external_email": claims.Email,
+					"external_name":  claims.Name,
+				},
+				ActorType: "system",
+				ActorID:   "sso",
+			})
+			if err != nil {
+				return nil, fmt.Errorf("update identity link login: %w", err)
+			}
+			return &LinkResult{UserID: link.UserID, IsNew: false}, nil
 		}
-		return &LinkResult{UserID: link.UserID, IsNew: false}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("lookup identity link: %w", err)
