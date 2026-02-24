@@ -155,7 +155,6 @@ func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, prov
 
 // createUser handles POST /scim/v2/{slug}/Users
 func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("SCIM listUsers called")
 	h.logger.Debug("SCIM createUser called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {

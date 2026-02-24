@@ -143,7 +143,6 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 
 // createGroup handles POST /scim/v2/{slug}/Groups
 func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("SCIM listGroups called")
 	h.logger.Debug("SCIM createGroup called")
 	provider, ok := providerFromContext(r.Context())
 	if !ok {
