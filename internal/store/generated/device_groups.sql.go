@@ -244,7 +244,7 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 }
 
 const listDevicesInGroup = `-- name: ListDevicesInGroup :many
-SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.assigned_user_id, d.sync_interval_minutes FROM devices_projection d
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.assigned_user_id, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
 JOIN device_group_members_projection m ON d.id = m.device_id
 WHERE m.group_id = $1 AND d.is_deleted = FALSE
 ORDER BY d.hostname ASC
@@ -273,6 +273,10 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 			&i.ProjectionVersion,
 			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}

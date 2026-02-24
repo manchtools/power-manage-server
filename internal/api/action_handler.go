@@ -54,7 +54,13 @@ func validateCreateActionParams(req *pm.CreateActionRequest) error {
 		}
 	case *pm.CreateActionRequest_Shell:
 		if p.Shell != nil {
-			return Validate(p.Shell)
+			if err := Validate(p.Shell); err != nil {
+				return err
+			}
+			if p.Shell.Script == "" && p.Shell.DetectionScript == "" {
+				return apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
+			}
+			return nil
 		}
 	case *pm.CreateActionRequest_Systemd:
 		if p.Systemd != nil {
@@ -1361,6 +1367,14 @@ func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionEx
 
 	if e.CompletedAt.Valid {
 		exec.CompletedAt = timestamppb.New(e.CompletedAt.Time)
+	}
+
+	exec.Compliant = e.Compliant
+	if len(e.DetectionOutput) > 0 {
+		var detOutput pm.CommandOutput
+		if err := json.Unmarshal(e.DetectionOutput, &detOutput); err == nil {
+			exec.DetectionOutput = &detOutput
+		}
 	}
 
 	return exec

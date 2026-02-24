@@ -109,6 +109,9 @@ func AllPermissions() []PermissionInfo {
 		{"GetOSQueryResult", "OSQuery", "View OSQuery results"},
 		{"GetDeviceInventory", "OSQuery", "View device inventory"},
 		{"RefreshDeviceInventory", "OSQuery", "Refresh device inventory"},
+		// Compliance
+		{"GetDeviceCompliance", "Compliance", "View device compliance"},
+		{"GetDeviceCompliance:assigned", "Compliance", "View compliance for assigned devices"},
 		// Audit
 		{"ListAuditEvents", "Audit", "View audit log"},
 		// LPS
@@ -204,6 +207,7 @@ func DefaultUserPermissions() []string {
 		"ListAvailableActions",
 		"ListIdentityLinks",
 		"UnlinkIdentity",
+		"GetDeviceCompliance:assigned",
 	}
 }
 

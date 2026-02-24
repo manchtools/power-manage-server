@@ -36,6 +36,7 @@ type ControlService struct {
 	sso           *SSOHandler
 	identityLink  *IdentityLinkHandler
 	deviceAuth    *DeviceAuthHandler
+	compliance    *ComplianceHandler
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -71,6 +72,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
 		identityLink:  NewIdentityLinkHandler(st),
 		deviceAuth:    NewDeviceAuthHandler(st, jwtManager, enc, cfg.DeviceLoginURL, cfg.ExternalURL),
+		compliance:    NewComplianceHandler(st),
 	}
 }
 
@@ -634,4 +636,9 @@ func (s *ControlService) DeviceLoginCallback(ctx context.Context, req *connect.R
 
 func (s *ControlService) ListDeviceUsers(ctx context.Context, req *connect.Request[pm.ListDeviceUsersRequest]) (*connect.Response[pm.ListDeviceUsersResponse], error) {
 	return s.deviceAuth.ListDeviceUsers(ctx, req)
+}
+
+// Device Compliance
+func (s *ControlService) GetDeviceCompliance(ctx context.Context, req *connect.Request[pm.GetDeviceComplianceRequest]) (*connect.Response[pm.GetDeviceComplianceResponse], error) {
+	return s.compliance.GetDeviceCompliance(ctx, req)
 }

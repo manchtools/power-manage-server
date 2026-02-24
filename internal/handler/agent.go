@@ -382,12 +382,20 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				"duration_ms":  result.DurationMs,
 				"completed_at": completedAt.Format(time.RFC3339Nano),
 				"changed":      result.Changed,
+				"compliant":    result.Compliant,
 			}
 			if result.Output != nil {
 				data["output"] = map[string]any{
 					"stdout":    result.Output.Stdout,
 					"stderr":    result.Output.Stderr,
 					"exit_code": result.Output.ExitCode,
+				}
+			}
+			if result.DetectionOutput != nil {
+				data["detection_output"] = map[string]any{
+					"stdout":    result.DetectionOutput.Stdout,
+					"stderr":    result.DetectionOutput.Stderr,
+					"exit_code": result.DetectionOutput.ExitCode,
 				}
 			}
 
@@ -398,12 +406,20 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				"duration_ms":  result.DurationMs,
 				"completed_at": completedAt.Format(time.RFC3339Nano),
 				"changed":      result.Changed,
+				"compliant":    result.Compliant,
 			}
 			if result.Output != nil {
 				data["output"] = map[string]any{
 					"stdout":    result.Output.Stdout,
 					"stderr":    result.Output.Stderr,
 					"exit_code": result.Output.ExitCode,
+				}
+			}
+			if result.DetectionOutput != nil {
+				data["detection_output"] = map[string]any{
+					"stdout":    result.DetectionOutput.Stdout,
+					"stderr":    result.DetectionOutput.Stderr,
+					"exit_code": result.DetectionOutput.ExitCode,
 				}
 			}
 
@@ -476,14 +492,48 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			}
 		}
 
-		return h.store.AppendEvent(ctx, store.Event{
+		// Append the execution event
+		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "execution",
 			StreamID:   executionID,
 			EventType:  eventType,
 			Data:       data,
 			ActorType:  "device",
 			ActorID:    deviceID,
-		})
+		}); err != nil {
+			return fmt.Errorf("append execution event: %w", err)
+		}
+
+		// Emit compliance event if detection output is present
+		if result.DetectionOutput != nil && actionID != "" {
+			actionName := ""
+			if action, err := h.store.Queries().GetActionByID(ctx, actionID); err == nil {
+				actionName = action.Name
+			}
+			complianceData := map[string]any{
+				"device_id":   deviceID,
+				"action_id":   actionID,
+				"action_name": actionName,
+				"compliant":   result.Compliant,
+				"detection_output": map[string]any{
+					"stdout":    result.DetectionOutput.Stdout,
+					"stderr":    result.DetectionOutput.Stderr,
+					"exit_code": result.DetectionOutput.ExitCode,
+				},
+			}
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "compliance",
+				StreamID:   deviceID + "_" + actionID,
+				EventType:  "ComplianceResultUpdated",
+				Data:       complianceData,
+				ActorType:  "device",
+				ActorID:    deviceID,
+			}); err != nil {
+				h.logger.Error("failed to append compliance event", "device_id", deviceID, "action_id", actionID, "error", err)
+			}
+		}
+
+		return nil
 
 	case *pm.AgentMessage_OutputChunk:
 		// Store output chunk as an event for later retrieval

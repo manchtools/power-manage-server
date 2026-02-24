@@ -230,13 +230,14 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			},
 		}
 
-	case pm.ActionType_ACTION_TYPE_SHELL:
+	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
 		var params struct {
 			Script           string            `json:"script"`
 			Interpreter      string            `json:"interpreter"`
 			RunAsRoot        bool              `json:"runAsRoot"`
 			WorkingDirectory string            `json:"workingDirectory"`
 			Environment      map[string]string `json:"environment"`
+			DetectionScript  string            `json:"detectionScript"`
 		}
 		if err := json.Unmarshal(paramsJSON, &params); err != nil {
 			d.logger.Debug("failed to unmarshal shell params", "error", err, "action_type", actionTypeName)
@@ -249,6 +250,7 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 				RunAsRoot:        params.RunAsRoot,
 				WorkingDirectory: params.WorkingDirectory,
 				Environment:      params.Environment,
+				DetectionScript:  params.DetectionScript,
 			},
 		}
 

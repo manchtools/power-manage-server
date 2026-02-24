@@ -36,7 +36,7 @@ func (q *Queries) CountDevicesOnline(ctx context.Context) (int64, error) {
 }
 
 const getDeviceByFingerprint = `-- name: GetDeviceByFingerprint :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE
 `
 
@@ -57,12 +57,16 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 		&i.ProjectionVersion,
 		&i.AssignedUserID,
 		&i.SyncIntervalMinutes,
+		&i.ComplianceStatus,
+		&i.ComplianceCheckedAt,
+		&i.ComplianceTotal,
+		&i.CompliancePassing,
 	)
 	return i, err
 }
 
 const getDeviceByID = `-- name: GetDeviceByID :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
   AND ($2::TEXT IS NULL OR assigned_user_id = $2)
 `
@@ -89,6 +93,10 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 		&i.ProjectionVersion,
 		&i.AssignedUserID,
 		&i.SyncIntervalMinutes,
+		&i.ComplianceStatus,
+		&i.ComplianceCheckedAt,
+		&i.ComplianceTotal,
+		&i.CompliancePassing,
 	)
 	return i, err
 }
@@ -105,7 +113,7 @@ func (q *Queries) GetDeviceSyncInterval(ctx context.Context, dollar_1 string) (i
 }
 
 const getDevicesWithLabel = `-- name: GetDevicesWithLabel :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND labels->>$1 = $2
 ORDER BY last_seen_at DESC
@@ -147,6 +155,10 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 			&i.ProjectionVersion,
 			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}
@@ -159,7 +171,7 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND ($3::TEXT IS NULL OR assigned_user_id = $3)
 ORDER BY last_seen_at DESC
@@ -195,6 +207,10 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.ProjectionVersion,
 			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}
@@ -207,7 +223,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 }
 
 const listDevicesOffline = `-- name: ListDevicesOffline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at <= NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL OR assigned_user_id = $3)
@@ -244,6 +260,10 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 			&i.ProjectionVersion,
 			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}
@@ -256,7 +276,7 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 }
 
 const listDevicesOnline = `-- name: ListDevicesOnline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL OR assigned_user_id = $3)
@@ -293,6 +313,10 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 			&i.ProjectionVersion,
 			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}

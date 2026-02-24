@@ -432,6 +432,14 @@ func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
 		}
 	}
 
+	// Compliance fields
+	device.ComplianceStatus = pm.ComplianceStatus(d.ComplianceStatus)
+	device.ComplianceTotal = d.ComplianceTotal
+	device.CompliancePassing = d.CompliancePassing
+	if d.ComplianceCheckedAt.Valid {
+		device.ComplianceCheckedAt = timestamppb.New(d.ComplianceCheckedAt.Time)
+	}
+
 	return device
 }
 

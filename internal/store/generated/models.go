@@ -67,6 +67,16 @@ type AuthState struct {
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
+type ComplianceResultsProjection struct {
+	DeviceID          string             `json:"device_id"`
+	ActionID          string             `json:"action_id"`
+	ActionName        string             `json:"action_name"`
+	Compliant         bool               `json:"compliant"`
+	DetectionOutput   []byte             `json:"detection_output"`
+	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type DefinitionMembersProjection struct {
 	DefinitionID      string             `json:"definition_id"`
 	ActionSetID       string             `json:"action_set_id"`
@@ -128,6 +138,10 @@ type DevicesProjection struct {
 	ProjectionVersion   int64              `json:"projection_version"`
 	AssignedUserID      *string            `json:"assigned_user_id"`
 	SyncIntervalMinutes int32              `json:"sync_interval_minutes"`
+	ComplianceStatus    int32              `json:"compliance_status"`
+	ComplianceCheckedAt pgtype.Timestamptz `json:"compliance_checked_at"`
+	ComplianceTotal     int32              `json:"compliance_total"`
+	CompliancePassing   int32              `json:"compliance_passing"`
 }
 
 type DynamicGroupEvaluationQueue struct {
@@ -176,6 +190,8 @@ type ExecutionsProjection struct {
 	CreatedByID       string             `json:"created_by_id"`
 	ProjectionVersion int64              `json:"projection_version"`
 	Changed           bool               `json:"changed"`
+	Compliant         bool               `json:"compliant"`
+	DetectionOutput   []byte             `json:"detection_output"`
 }
 
 type IdentityLinksProjection struct {
