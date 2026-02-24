@@ -77,6 +77,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// Rate limit per provider slug
 		if !h.rateLimiter.Allow(slug) {
+			h.logger.Warn("SCIM rate limit exceeded", "slug", slug, "provider_id", provider.ID, "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}

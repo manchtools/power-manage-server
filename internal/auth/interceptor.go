@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -116,6 +117,7 @@ func clientIP(req connect.AnyRequest) string {
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.
 type AuthInterceptor struct {
+	logger          *slog.Logger
 	jwtManager      *JWTManager
 	loginLimiter    *RateLimiter
 	refreshLimiter  *RateLimiter
@@ -123,8 +125,8 @@ type AuthInterceptor struct {
 }
 
 // NewAuthInterceptor creates a new authentication interceptor.
-func NewAuthInterceptor(jwtManager *JWTManager, loginLimiter, refreshLimiter, registerLimiter *RateLimiter) *AuthInterceptor {
-	return &AuthInterceptor{jwtManager: jwtManager, loginLimiter: loginLimiter, refreshLimiter: refreshLimiter, registerLimiter: registerLimiter}
+func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, loginLimiter, refreshLimiter, registerLimiter *RateLimiter) *AuthInterceptor {
+	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, loginLimiter: loginLimiter, refreshLimiter: refreshLimiter, registerLimiter: registerLimiter}
 }
 
 // WrapUnary implements connect.Interceptor.
@@ -136,6 +138,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.loginLimiter != nil {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
 				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
 			}
 		}
@@ -144,6 +147,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if procedure == "/pm.v1.ControlService/RefreshToken" && i.refreshLimiter != nil {
 			ip := clientIP(req)
 			if !i.refreshLimiter.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
 				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
 			}
 		}
@@ -152,6 +156,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if procedure == "/pm.v1.ControlService/Register" && i.registerLimiter != nil {
 			ip := clientIP(req)
 			if !i.registerLimiter.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
 				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
 			}
 		}
