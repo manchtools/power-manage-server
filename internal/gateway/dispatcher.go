@@ -238,6 +238,7 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 			WorkingDirectory string            `json:"workingDirectory"`
 			Environment      map[string]string `json:"environment"`
 			DetectionScript  string            `json:"detectionScript"`
+			IsCompliance     bool              `json:"isCompliance"`
 		}
 		if err := json.Unmarshal(paramsJSON, &params); err != nil {
 			d.logger.Debug("failed to unmarshal shell params", "error", err, "action_type", actionTypeName)
@@ -251,6 +252,7 @@ func (d *Dispatcher) parseActionParams(action *pm.Action, actionType int32, para
 				WorkingDirectory: params.WorkingDirectory,
 				Environment:      params.Environment,
 				DetectionScript:  params.DetectionScript,
+				IsCompliance:     params.IsCompliance,
 			},
 		}
 

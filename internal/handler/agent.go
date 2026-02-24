@@ -504,11 +504,19 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			return fmt.Errorf("append execution event: %w", err)
 		}
 
-		// Emit compliance event if detection output is present
+		// Emit compliance event only for actions with is_compliance=true
 		if result.DetectionOutput != nil && actionID != "" {
 			actionName := ""
+			isCompliance := false
 			if action, err := h.store.Queries().GetActionByID(ctx, actionID); err == nil {
 				actionName = action.Name
+				var params map[string]any
+				if json.Unmarshal(action.Params, &params) == nil {
+					isCompliance, _ = params["isCompliance"].(bool)
+				}
+			}
+			if !isCompliance {
+				return nil
 			}
 			complianceData := map[string]any{
 				"device_id":   deviceID,
