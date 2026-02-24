@@ -52,7 +52,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 	for _, m := range mappings {
 		group, err := h.buildGroupResource(ctx, m, baseURL)
 		if err != nil {
-			h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
+			h.cleanupOrphanedMapping(ctx, provider.ID, m)
 			continue
 		}
 		resources = append(resources, group)
@@ -92,6 +92,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 			if m.ScimDisplayName == f.Value {
 				group, err := h.buildGroupResource(ctx, m, baseURL)
 				if err != nil {
+					h.cleanupOrphanedMapping(ctx, provider.ID, m)
 					continue
 				}
 				resources = append(resources, group)
@@ -114,11 +115,11 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 		} else {
 			group, err := h.buildGroupResource(ctx, mapping, baseURL)
 			if err != nil {
-				h.logger.Error("failed to build group resource", "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to build group")
-				return
+				h.cleanupOrphanedMapping(ctx, provider.ID, mapping)
+				resources = []any{}
+			} else {
+				resources = []any{group}
 			}
-			resources = []any{group}
 		}
 
 	default:
@@ -216,19 +217,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			// User group referenced by mapping no longer exists.
 			// Remove the orphaned mapping and fall through to create
 			// a fresh group+mapping pair below.
-			h.logger.Warn("orphaned SCIM group mapping, removing and recreating",
-				"mapping_id", existing.ID, "user_group_id", existing.UserGroupID, "error", err)
-			h.appendEvent(ctx, store.Event{
-				StreamType: "scim_group_mapping",
-				StreamID:   existing.ID,
-				EventType:  "SCIMGroupUnmapped",
-				Data: map[string]any{
-					"provider_id":   provider.ID,
-					"scim_group_id": existing.ScimGroupID,
-				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
-			})
+			h.cleanupOrphanedMapping(ctx, provider.ID, existing)
 			// Fall through to create a new group below
 		} else {
 			writeJSON(w, http.StatusOK, group)
@@ -369,8 +358,8 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 
 	group, err := h.buildGroupResource(ctx, mapping, baseURL)
 	if err != nil {
-		h.logger.Error("failed to build group resource", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to build group")
+		h.cleanupOrphanedMapping(ctx, provider.ID, mapping)
+		writeError(w, http.StatusNotFound, "group not found")
 		return
 	}
 
@@ -858,6 +847,23 @@ func (h *Handler) buildGroupResource(ctx context.Context, mapping db.ScimGroupMa
 	}
 
 	return sg, nil
+}
+
+// cleanupOrphanedMapping removes a SCIM group mapping whose user group no longer exists.
+func (h *Handler) cleanupOrphanedMapping(ctx context.Context, providerID string, m db.ScimGroupMappingProjection) {
+	h.logger.Warn("removing orphaned SCIM group mapping",
+		"mapping_id", m.ID, "user_group_id", m.UserGroupID)
+	h.appendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping",
+		StreamID:   m.ID,
+		EventType:  "SCIMGroupUnmapped",
+		Data: map[string]any{
+			"provider_id":   providerID,
+			"scim_group_id": m.ScimGroupID,
+		},
+		ActorType: "scim",
+		ActorID:   providerID,
+	})
 }
 
 // extractMembers extracts user IDs from a SCIM members value.
