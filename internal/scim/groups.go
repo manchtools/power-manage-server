@@ -425,8 +425,13 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Reconcile members
-	h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members)
+	// Reconcile members only if explicitly provided.
+	// When Authentik sends PUT to update just displayName, it omits the members
+	// field entirely. Without this guard, an omitted field (nil slice) would be
+	// interpreted as "remove all members".
+	if len(scimGroup.Members) > 0 {
+		h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members)
+	}
 
 	// Read back and return
 	updatedMapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
