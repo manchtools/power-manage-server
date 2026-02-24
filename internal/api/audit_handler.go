@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -50,7 +49,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -63,7 +62,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list audit events"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list audit events")
 	}
 
 	count, err := h.store.Queries().CountAuditEvents(ctx, db.CountAuditEventsParams{
@@ -72,7 +71,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Column3: req.Msg.EventType,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count audit events"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count audit events")
 	}
 
 	var nextPageToken string

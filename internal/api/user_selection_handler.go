@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"time"
 
 	"connectrpc.com/connect"
@@ -38,7 +37,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify device access (non-admins can only access assigned devices)
@@ -47,13 +46,13 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Verify an available-mode assignment exists for this source targeting this device
 	availableAssignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check available assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check available assignments")
 	}
 
 	found := false
@@ -64,7 +63,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		}
 	}
 	if !found {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no available assignment found for this source and device"))
+		return nil, apiError(ErrNoAssignmentFound, connect.CodeNotFound, "no available assignment found for this source and device")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -83,7 +82,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set user selection"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to set user selection")
 	}
 
 	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
@@ -92,7 +91,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		SourceID:   req.Msg.SourceId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user selection"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user selection")
 	}
 
 	return connect.NewResponse(&pm.SetUserSelectionResponse{
@@ -112,19 +111,19 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Get available assignments for this device
 	assignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list available assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list available assignments")
 	}
 
 	// Get user selections for this device
 	selections, err := h.store.Queries().ListUserSelectionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list user selections"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list user selections")
 	}
 
 	// Index selections by (source_type, source_id)

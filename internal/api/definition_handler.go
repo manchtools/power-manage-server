@@ -39,7 +39,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -56,12 +56,12 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create definition")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.CreateDefinitionResponse{
@@ -78,14 +78,14 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	members, err := h.store.Queries().ListDefinitionMembers(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition members"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition members")
 	}
 
 	protoMembers := make([]*pm.DefinitionMember, len(members))
@@ -113,7 +113,7 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -123,12 +123,12 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list definitions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list definitions")
 	}
 
 	count, err := h.store.Queries().CountDefinitions(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count definitions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count definitions")
 	}
 
 	var nextPageToken string
@@ -156,7 +156,7 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -170,15 +170,15 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename definition")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
@@ -194,7 +194,7 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -208,15 +208,15 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update description")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
@@ -232,7 +232,7 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -244,7 +244,7 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete definition")
 	}
 
 	return connect.NewResponse(&pm.DeleteDefinitionResponse{}), nil
@@ -258,25 +258,25 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify definition exists
 	_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	// Verify action set exists
 	_, err = h.store.Queries().GetActionSetByID(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -291,12 +291,12 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to add action set to definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add action set to definition")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.AddActionSetToDefinitionResponse{
@@ -312,7 +312,7 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -326,15 +326,15 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove action set from definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove action set from definition")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.RemoveActionSetFromDefinitionResponse{
@@ -350,7 +350,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -365,15 +365,15 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reorder action set in definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to reorder action set in definition")
 	}
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
 	return connect.NewResponse(&pm.ReorderActionSetInDefinitionResponse{

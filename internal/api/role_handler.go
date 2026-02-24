@@ -43,19 +43,19 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 	validPerms := auth.ValidPermissionKeys()
 	for _, p := range req.Msg.Permissions {
 		if !validPerms[p] {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid permission: %s", p))
+			return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("invalid permission: %s", p))
 		}
 	}
 
 	// Check name uniqueness
 	_, err := h.store.Queries().GetRoleByName(ctx, req.Msg.Name)
 	if err == nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("role name already exists"))
+		return nil, apiError(ErrRoleNameExists, connect.CodeAlreadyExists, "role name already exists")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -79,12 +79,12 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create role")
 	}
 
 	role, err := h.store.Queries().GetRoleByID(ctx, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to read role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read role")
 	}
 
 	return connect.NewResponse(&pm.CreateRoleResponse{
@@ -101,14 +101,14 @@ func (h *RoleHandler) GetRole(ctx context.Context, req *connect.Request[pm.GetRo
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
+			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
 	}
 
 	userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count users"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count users")
 	}
 
 	return connect.NewResponse(&pm.GetRoleResponse{
@@ -128,7 +128,7 @@ func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.Lis
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -138,12 +138,12 @@ func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.Lis
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list roles"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list roles")
 	}
 
 	count, err := h.store.Queries().CountRoles(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count roles"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count roles")
 	}
 
 	var nextPageToken string
@@ -172,27 +172,27 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
+			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
 	}
 
 	// System roles can't have their name changed
 	if role.IsSystem && req.Msg.Name != role.Name {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot rename system role"))
+		return nil, apiError(ErrCannotRenameSystemRole, connect.CodeFailedPrecondition, "cannot rename system role")
 	}
 
 	// Validate permissions
 	validPerms := auth.ValidPermissionKeys()
 	for _, p := range req.Msg.Permissions {
 		if !validPerms[p] {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid permission: %s", p))
+			return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("invalid permission: %s", p))
 		}
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	perms := req.Msg.Permissions
@@ -213,7 +213,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update role")
 	}
 
 	// Bump session_version for all users with this role to invalidate cached permissions
@@ -221,7 +221,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 
 	updated, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to read role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read role")
 	}
 
 	return connect.NewResponse(&pm.UpdateRoleResponse{
@@ -238,34 +238,34 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
+			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
 	}
 
 	if role.IsSystem {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot delete system role"))
+		return nil, apiError(ErrCannotDeleteSystemRole, connect.CodeFailedPrecondition, "cannot delete system role")
 	}
 
 	userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count users"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count users")
 	}
 	if userCount > 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("role still has %d assigned users", userCount))
+		return nil, apiError(ErrRoleInUse, connect.CodeFailedPrecondition, fmt.Sprintf("role still has %d assigned users", userCount))
 	}
 
 	groupCount, err := h.store.Queries().CountGroupsWithRole(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count user groups"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count user groups")
 	}
 	if groupCount > 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("role still assigned to %d user groups", groupCount))
+		return nil, apiError(ErrRoleInUse, connect.CodeFailedPrecondition, fmt.Sprintf("role still assigned to %d user groups", groupCount))
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -277,7 +277,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete role")
 	}
 
 	return connect.NewResponse(&pm.DeleteRoleResponse{}), nil
@@ -293,18 +293,18 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 	_, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
+			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
 	}
 
 	// Verify user exists
 	_, err = h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	// Check if already assigned
@@ -313,15 +313,15 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		RoleID: req.Msg.RoleId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check role assignment"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
 	if hasRole {
-		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("user already has this role"))
+		return nil, apiError(ErrUserAlreadyHasRole, connect.CodeAlreadyExists, "user already has this role")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
@@ -337,7 +337,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to assign role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role")
 	}
 
 	// Bump user's session version to invalidate cached permissions
@@ -356,25 +356,25 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("role not found"))
+			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
 	}
 
 	// Prevent removing the last user from the Admin system role
 	if role.IsSystem && role.Name == "Admin" {
 		userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.RoleId)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count users"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count users")
 		}
 		if userCount <= 1 {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot remove last user from Admin role"))
+			return nil, apiError(ErrCannotRenameSystemRole, connect.CodeFailedPrecondition, "cannot remove last user from Admin role")
 		}
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
@@ -390,7 +390,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to revoke role"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to revoke role")
 	}
 
 	// Bump user's session version to invalidate cached permissions

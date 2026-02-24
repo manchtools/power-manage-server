@@ -28,12 +28,12 @@ func NewIdentityLinkHandler(st *store.Store) *IdentityLinkHandler {
 func (h *IdentityLinkHandler) ListIdentityLinks(ctx context.Context, req *connect.Request[pm.ListIdentityLinksRequest]) (*connect.Response[pm.ListIdentityLinksResponse], error) {
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	links, err := h.store.Queries().ListIdentityLinksForUser(ctx, userCtx.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list identity links"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list identity links")
 	}
 
 	protoLinks := make([]*pm.IdentityLink, len(links))
@@ -54,21 +54,21 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Get the link to verify ownership
 	link, err := h.store.Queries().GetIdentityLinkByID(ctx, req.Msg.LinkId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("identity link not found"))
+			return nil, apiError(ErrIdentityLinkNotFound, connect.CodeNotFound, "identity link not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get identity link"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get identity link")
 	}
 
 	// Non-admin callers can only unlink their own identities.
 	if link.UserID != userCtx.ID && !auth.HasPermission(ctx, "DeleteUser") {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("cannot unlink another user's identity"))
+		return nil, apiError(ErrCannotUnlinkOtherUser, connect.CodePermissionDenied, "cannot unlink another user's identity")
 	}
 
 	targetUserID := link.UserID
@@ -76,16 +76,16 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 	// Prevent unlinking last auth method
 	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	linkCount, err := h.store.Queries().CountIdentityLinksForUser(ctx, targetUserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count identity links"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count identity links")
 	}
 
 	if !user.HasPassword && linkCount <= 1 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot remove last authentication method; set a password first"))
+		return nil, apiError(ErrLastAuthMethod, connect.CodeFailedPrecondition, "cannot remove last authentication method; set a password first")
 	}
 
 	// Emit unlink event
@@ -101,7 +101,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to unlink identity"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to unlink identity")
 	}
 
 	return connect.NewResponse(&pm.UnlinkIdentityResponse{}), nil

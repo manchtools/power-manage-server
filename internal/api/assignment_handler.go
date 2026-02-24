@@ -41,7 +41,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Validate source exists
@@ -50,25 +50,25 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		_, err := h.store.Queries().GetActionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+				return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 		}
 	case "action_set":
 		_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+				return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 		}
 	case "definition":
 		_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("definition not found"))
+				return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get definition"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 		}
 	}
 
@@ -78,33 +78,33 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.TargetId})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+				return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 		}
 	case "device_group":
 		_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+				return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 		}
 	case "user":
 		_, err := h.store.Queries().GetUserByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+				return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 		}
 	case "user_group":
 		_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("user group not found"))
+				return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user group"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
 		}
 	}
 
@@ -121,7 +121,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			Assignment: h.assignmentToProto(existingAssignment),
 		}), nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check existing assignment"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check existing assignment")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -141,7 +141,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create assignment"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create assignment")
 	}
 
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
@@ -153,7 +153,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		TargetID:   req.Msg.TargetId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assignment"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get assignment")
 	}
 
 	return connect.NewResponse(&pm.CreateAssignmentResponse{
@@ -169,7 +169,7 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -181,7 +181,7 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete assignment"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete assignment")
 	}
 
 	return connect.NewResponse(&pm.DeleteAssignmentResponse{}), nil
@@ -198,7 +198,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -212,7 +212,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list assignments")
 	}
 
 	count, err := h.store.Queries().CountAssignments(ctx, db.CountAssignmentsParams{
@@ -222,7 +222,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		Column4: req.Msg.TargetId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count assignments")
 	}
 
 	var nextPageToken string
@@ -251,7 +251,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	// Get all actions assigned to this device (directly or via groups/sets/definitions)
 	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get assigned actions")
 	}
 
 	protoActions := make([]*pm.ManagedAction, len(actions))
@@ -273,13 +273,13 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	// Get direct action set assignments
 	directAssignments, err := h.store.Queries().ListDirectAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get direct assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get direct assignments")
 	}
 
 	// Get group-based assignments
 	groupAssignments, err := h.store.Queries().ListGroupAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get group assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get group assignments")
 	}
 
 	// Collect unique action set IDs and definition IDs
@@ -350,7 +350,7 @@ func (h *AssignmentHandler) GetUserAssignments(ctx context.Context, req *connect
 
 	assignments, err := h.store.Queries().ListAssignmentsForUser(ctx, req.Msg.UserId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list user assignments"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list user assignments")
 	}
 
 	protoAssignments := make([]*pm.Assignment, len(assignments))

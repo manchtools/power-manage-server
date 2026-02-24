@@ -199,19 +199,19 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	params, err := h.serializeCreateActionParams(req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
 	// Auto-assign priority for SSHD actions based on creation order
 	if req.Msg.Type == pm.ActionType_ACTION_TYPE_SSHD {
 		count, countErr := h.store.Queries().CountActions(ctx, int32(pm.ActionType_ACTION_TYPE_SSHD))
 		if countErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to count SSHD actions: %w", countErr))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count SSHD actions")
 		}
 		params["priority"] = count
 	}
@@ -240,13 +240,13 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	})
 	if err != nil {
 		h.logger.Error("failed to append action event", "error", err, "id", id)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create action: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create action")
 	}
 
 	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get action after create", "error", err, "id", id)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get action: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	// Sign the action so agents can verify authenticity
@@ -266,9 +266,9 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	return connect.NewResponse(&pm.GetActionResponse{
@@ -287,7 +287,7 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -300,12 +300,12 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list actions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list actions")
 	}
 
 	count, err := h.store.Queries().CountActions(ctx, typeFilter)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count actions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count actions")
 	}
 
 	var nextPageToken string
@@ -333,7 +333,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -347,15 +347,15 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename action")
 	}
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
@@ -371,7 +371,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -385,15 +385,15 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update description")
 	}
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
@@ -413,20 +413,20 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	existing, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	params, err := h.serializeUpdateActionParams(req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
 	// Preserve server-assigned priority for SSHD actions
@@ -457,15 +457,15 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update action params"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update action params")
 	}
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	// Re-sign the action after params update
@@ -517,7 +517,7 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -529,7 +529,7 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete action")
 	}
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
@@ -543,15 +543,15 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	var actionType pm.ActionType
@@ -565,9 +565,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+				return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 		}
 		actionType = pm.ActionType(action.ActionType)
 		desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
@@ -592,7 +592,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("either action_id or inline_action is required"))
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "either action_id or inline_action is required")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -617,7 +617,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
 
 	// Notify agent channel directly with action_dispatch format.
@@ -653,7 +653,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
 	h.logger.Info("action dispatched",
@@ -712,7 +712,7 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 
 	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get assigned actions")
 	}
 
 	executions := make([]*pm.ActionExecution, 0, len(actions))
@@ -741,7 +741,7 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 
 	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get actions in set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get actions in set")
 	}
 
 	executions := make([]*pm.ActionExecution, 0, len(actions))
@@ -770,7 +770,7 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 
 	actionSets, err := h.store.Queries().ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action sets in definition"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action sets in definition")
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
@@ -805,7 +805,7 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 
 	devices, err := h.store.Queries().ListDevicesInGroup(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get devices in group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get devices in group")
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
@@ -868,9 +868,9 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
+			return nil, apiError(ErrExecutionNotFound, connect.CodeNotFound, "execution not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
 	protoExec := h.executionToProto(exec)
@@ -897,7 +897,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -914,7 +914,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list executions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list executions")
 	}
 
 	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
@@ -922,7 +922,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		Column2: statusFilter,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count executions"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count executions")
 	}
 
 	var nextPageToken string
@@ -956,19 +956,19 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	if !isInstantActionType(req.Msg.InstantAction) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid instant action type: %s", req.Msg.InstantAction.String()))
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
 	}
 
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	var timeoutSeconds int32
@@ -998,7 +998,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
 
 	// Notify agent channel directly with action_dispatch format.
@@ -1032,7 +1032,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
 	h.logger.Info("instant action dispatched",

@@ -40,12 +40,12 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	passwordHash, err := auth.HashPassword(req.Msg.Password)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash password"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to hash password")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -68,7 +68,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("email already exists"))
+		return nil, apiError(ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
 	}
 
 	// Auto-assign specified roles, or default User role if none specified
@@ -99,7 +99,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	protoUser := userToProto(user)
@@ -119,9 +119,9 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	protoUser := userToProto(user)
@@ -144,7 +144,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -154,12 +154,12 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list users"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list users")
 	}
 
 	count, err := h.store.Queries().CountUsers(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count users"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count users")
 	}
 
 	var nextPageToken string
@@ -188,7 +188,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit UserEmailChanged event
@@ -203,16 +203,16 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update email"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update email")
 	}
 
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
@@ -228,29 +228,29 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// If user is updating their own password, verify current password
 	if userCtx.ID == req.Msg.Id {
 		if req.Msg.CurrentPassword == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("current_password is required for self-update"))
+			return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "current_password is required for self-update")
 		}
 
 		user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
 
 		if !auth.VerifyPassword(req.Msg.CurrentPassword, derefPasswordHash(user.PasswordHash)) {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("current password is incorrect"))
+			return nil, apiError(ErrPasswordIncorrect, connect.CodePermissionDenied, "current password is incorrect")
 		}
 	}
 	// Note: OPA authz interceptor handles permission checks for non-self updates
 
 	passwordHash, err := auth.HashPassword(req.Msg.NewPassword)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to hash password"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to hash password")
 	}
 
 	// Emit UserPasswordChanged event
@@ -265,16 +265,16 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update password"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update password")
 	}
 
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
@@ -290,7 +290,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit appropriate event
@@ -308,16 +308,16 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update disabled status"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update disabled status")
 	}
 
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
@@ -333,7 +333,7 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit UserDeleted event
@@ -346,7 +346,7 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete user")
 	}
 
 	return connect.NewResponse(&pm.DeleteUserResponse{}), nil
@@ -360,7 +360,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit UserProfileUpdated event
@@ -380,16 +380,16 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update profile"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update profile")
 	}
 
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{

@@ -57,9 +57,9 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 
 	// 2. Look up user by email/username
@@ -73,7 +73,7 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 				Error:   "invalid credentials",
 			}), nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up user"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to look up user")
 	}
 
 	// 3. Check if user is disabled
@@ -146,11 +146,11 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 		// Validate TOTP code
 		totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, user.ID)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get TOTP data"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get TOTP data")
 		}
 		secret, err := h.encryptor.Decrypt(totpRecord.SecretEncrypted)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to decrypt TOTP secret"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to decrypt TOTP secret")
 		}
 		codeValid := false
 		if len(req.Msg.TotpCode) == 6 {
@@ -199,7 +199,7 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 	// Generate a device session token
 	sessionToken, err := h.jwtManager.GenerateDeviceSessionToken(user.ID, user.Email, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate session token"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate session token")
 	}
 
 	return connect.NewResponse(&pm.AuthenticateDeviceUserResponse{
@@ -222,9 +222,9 @@ func (h *DeviceAuthHandler) GetDeviceLoginURL(ctx context.Context, req *connect.
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 
 	// Build login URL using configurable base URL
@@ -255,7 +255,7 @@ func (h *DeviceAuthHandler) DeviceLoginCallback(ctx context.Context, req *connec
 	}
 
 	// TODO: Implement callback token validation (post-PoC)
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("device login callback not yet implemented"))
+	return nil, apiError(ErrUnimplemented, connect.CodeUnimplemented, "device login callback not yet implemented")
 }
 
 // ListDeviceUsers returns all users authorized to log into a device.
@@ -270,9 +270,9 @@ func (h *DeviceAuthHandler) ListDeviceUsers(ctx context.Context, req *connect.Re
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 
 	var users []*pm.DeviceUserInfo

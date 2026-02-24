@@ -39,7 +39,7 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -48,10 +48,10 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
 		validationErr, err := h.store.Queries().ValidateDynamicQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
 		}
 		if validationErr != "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(validationErr))
+			return nil, apiError(ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
 		}
 	}
 
@@ -69,12 +69,12 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create device group")
 	}
 
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.CreateDeviceGroupResponse{
@@ -91,14 +91,14 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	members, err := h.store.Queries().ListDeviceGroupMembers(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group members"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group members")
 	}
 
 	deviceIDs := make([]string, len(members))
@@ -123,7 +123,7 @@ func (h *DeviceGroupHandler) ListDeviceGroups(ctx context.Context, req *connect.
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -133,12 +133,12 @@ func (h *DeviceGroupHandler) ListDeviceGroups(ctx context.Context, req *connect.
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list device groups"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list device groups")
 	}
 
 	count, err := h.store.Queries().CountDeviceGroups(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count device groups"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count device groups")
 	}
 
 	var nextPageToken string
@@ -166,7 +166,7 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -180,15 +180,15 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename device group")
 	}
 
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
@@ -204,7 +204,7 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -218,15 +218,15 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update description")
 	}
 
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
@@ -242,7 +242,7 @@ func (h *DeviceGroupHandler) DeleteDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -254,7 +254,7 @@ func (h *DeviceGroupHandler) DeleteDeviceGroup(ctx context.Context, req *connect
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete device group")
 	}
 
 	return connect.NewResponse(&pm.DeleteDeviceGroupResponse{}), nil
@@ -268,30 +268,30 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify group exists and is not dynamic
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	// Cannot manually add members to dynamic groups
 	if group.IsDynamic {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot manually add members to dynamic groups"))
+		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually add members to dynamic groups")
 	}
 
 	// Verify device exists
 	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -305,12 +305,12 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to add device to group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add device to group")
 	}
 
 	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.AddDeviceToGroupResponse{
@@ -326,21 +326,21 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify group exists and is not dynamic
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	// Cannot manually remove members from dynamic groups
 	if group.IsDynamic {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot manually remove members from dynamic groups"))
+		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually remove members from dynamic groups")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -354,12 +354,12 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove device from group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove device from group")
 	}
 
 	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.RemoveDeviceFromGroupResponse{
@@ -375,17 +375,17 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
 		validationErr, err := h.store.Queries().ValidateDynamicQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
 		}
 		if validationErr != "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New(validationErr))
+			return nil, apiError(ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
 		}
 	}
 
@@ -401,15 +401,15 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update query"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update query")
 	}
 
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupQueryResponse{
@@ -425,7 +425,7 @@ func (h *DeviceGroupHandler) ValidateDynamicQuery(ctx context.Context, req *conn
 
 	validationErr, err := h.store.Queries().ValidateDynamicQuery(ctx, req.Msg.Query)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate query"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
 	}
 
 	if validationErr != "" {
@@ -438,7 +438,7 @@ func (h *DeviceGroupHandler) ValidateDynamicQuery(ctx context.Context, req *conn
 	// Count matching devices
 	matchingCount, err := h.store.Queries().CountMatchingDevicesForQuery(ctx, req.Msg.Query)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count matching devices"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count matching devices")
 	}
 
 	return connect.NewResponse(&pm.ValidateDynamicQueryResponse{
@@ -457,13 +457,13 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	if !group.IsDynamic {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("group is not dynamic"))
+		return nil, apiError(ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
 	}
 
 	// Get current member count before evaluation
@@ -472,13 +472,13 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 	// Trigger evaluation
 	err = h.store.Queries().EvaluateDynamicGroup(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to evaluate dynamic group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to evaluate dynamic group")
 	}
 
 	// Get updated group
 	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	// Calculate added/removed (simplified - actual counts would need more tracking)
@@ -505,21 +505,21 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Validate interval (0 = default, max 1440 = 24 hours)
 	if req.Msg.SyncIntervalMinutes < 0 || req.Msg.SyncIntervalMinutes > 1440 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("sync interval must be between 0 and 1440 minutes"))
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "sync interval must be between 0 and 1440 minutes")
 	}
 
 	// Verify group exists
 	_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device group not found"))
+			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -533,12 +533,12 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set sync interval"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to set sync interval")
 	}
 
 	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device group"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{

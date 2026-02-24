@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -34,7 +33,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		ID: msg.DeviceId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("device not found"))
+		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Generate query ID
@@ -52,7 +51,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		DeviceID:  msg.DeviceId,
 		TableName: tableName,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create query result: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
 	// Build notification payload
@@ -73,12 +72,12 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 
 	payloadJSON, err := json.Marshal(payload)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to marshal notification: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to marshal notification")
 	}
 
 	// Notify agent via pg_notify
 	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payloadJSON)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to notify agent")
 	}
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
@@ -90,7 +89,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Request[pm.GetOSQueryResultRequest]) (*connect.Response[pm.GetOSQueryResultResponse], error) {
 	result, err := h.store.Queries().GetOSQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("query result not found"))
+		return nil, apiError(ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
 	}
 
 	resp := &pm.GetOSQueryResultResponse{
@@ -129,7 +128,7 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 		rows, err = h.store.Queries().GetDeviceInventory(ctx, msg.DeviceId)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get inventory: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get inventory")
 	}
 
 	resp := &pm.GetDeviceInventoryResponse{}
@@ -162,7 +161,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 		ID: msg.DeviceId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("device not found"))
+		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	payload, _ := json.Marshal(map[string]string{
@@ -170,7 +169,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	})
 
 	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payload)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to notify agent")
 	}
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil

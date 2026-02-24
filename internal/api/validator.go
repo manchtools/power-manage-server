@@ -34,9 +34,9 @@ func validateULID(fl validator.FieldLevel) bool {
 func Validate(v any) error {
 	if err := validate.Struct(v); err != nil {
 		if validationErrors, ok := err.(validator.ValidationErrors); ok {
-			return connect.NewError(connect.CodeInvalidArgument, formatValidationErrors(validationErrors))
+			return apiError(ErrValidationFailed, connect.CodeInvalidArgument, formatValidationErrors(validationErrors).Error())
 		}
-		return connect.NewError(connect.CodeInvalidArgument, err)
+		return apiError(ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 	return nil
 }

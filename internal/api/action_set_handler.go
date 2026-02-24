@@ -39,7 +39,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -56,12 +56,12 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create action set")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.CreateActionSetResponse{
@@ -78,14 +78,14 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	members, err := h.store.Queries().ListActionSetMembers(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set members"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set members")
 	}
 
 	protoMembers := make([]*pm.ActionSetMember, len(members))
@@ -113,7 +113,7 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -123,12 +123,12 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list action sets"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list action sets")
 	}
 
 	count, err := h.store.Queries().CountActionSets(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count action sets"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count action sets")
 	}
 
 	var nextPageToken string
@@ -156,7 +156,7 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -170,15 +170,15 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename action set")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
@@ -194,7 +194,7 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -208,15 +208,15 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update description")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
@@ -232,7 +232,7 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -244,7 +244,7 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete action set")
 	}
 
 	return connect.NewResponse(&pm.DeleteActionSetResponse{}), nil
@@ -258,25 +258,25 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify set exists
 	_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	// Verify action exists
 	_, err = h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -291,12 +291,12 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to add action to set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add action to set")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.AddActionToSetResponse{
@@ -312,7 +312,7 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -326,15 +326,15 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove action from set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove action from set")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.RemoveActionFromSetResponse{
@@ -350,7 +350,7 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -365,15 +365,15 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reorder action in set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to reorder action in set")
 	}
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action set not found"))
+			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action set"))
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
 	return connect.NewResponse(&pm.ReorderActionInSetResponse{
