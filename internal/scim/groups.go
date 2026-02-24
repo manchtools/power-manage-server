@@ -204,8 +204,10 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		// Reconcile members if provided
-		if len(scimGroup.Members) > 0 {
+		// Reconcile members if the field was present in the JSON body.
+		// nil means the field was omitted (don't touch members).
+		// Empty slice means explicitly empty (remove all members).
+		if scimGroup.Members != nil {
 			h.reconcileGroupMembers(ctx, provider, existing.UserGroupID, scimGroup.Members)
 		}
 
@@ -441,11 +443,11 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Reconcile members only if explicitly provided.
-	// When Authentik sends PUT to update just displayName, it omits the members
-	// field entirely. Without this guard, an omitted field (nil slice) would be
-	// interpreted as "remove all members".
-	if len(scimGroup.Members) > 0 {
+	// Reconcile members if the field was present in the JSON body.
+	// nil means the field was omitted (don't touch members).
+	// Empty slice means explicitly empty (remove all members).
+	// SCIM is treated as the source of truth for group membership.
+	if scimGroup.Members != nil {
 		h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members)
 	}
 
