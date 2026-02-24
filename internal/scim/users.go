@@ -189,10 +189,17 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			ExternalID: externalID,
 		})
 		if err == nil {
-			// User already linked with this external ID — return existing resource.
-			// Using 200 instead of 409 makes POST idempotent for SCIM clients that
-			// re-POST on every sync cycle.
-			writeJSON(w, http.StatusOK, findExternalIDUserRowToSCIM(existing, baseURL))
+			// User already linked with this external ID — sync data from SCIM
+			// (source of truth) and return existing resource. Using 200 instead
+			// of 409 makes POST idempotent for SCIM clients that re-POST on
+			// every sync cycle.
+			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
+			user, err := h.store.Queries().GetUserByID(ctx, existing.ID)
+			if err != nil {
+				writeJSON(w, http.StatusOK, findExternalIDUserRowToSCIM(existing, baseURL))
+			} else {
+				writeJSON(w, http.StatusOK, userToSCIM(user, existing.ScimExternalID, baseURL))
+			}
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -209,8 +216,14 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			Email:      email,
 		})
 		if err == nil {
-			// Already linked — return existing resource
-			writeJSON(w, http.StatusOK, findUserRowToSCIM(existing, baseURL))
+			// Already linked — sync data from SCIM (source of truth) and return
+			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
+			user, readErr := h.store.Queries().GetUserByID(ctx, existing.ID)
+			if readErr != nil {
+				writeJSON(w, http.StatusOK, findUserRowToSCIM(existing, baseURL))
+			} else {
+				writeJSON(w, http.StatusOK, userToSCIM(user, existing.ScimExternalID, baseURL))
+			}
 			return
 		}
 
@@ -483,6 +496,13 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Sync identity link (external_email + external_name) from SCIM source of truth
+	effectiveEmail := newEmail
+	if effectiveEmail == "" {
+		effectiveEmail = existingUser.Email
+	}
+	h.syncIdentityLink(ctx, provider, userID, effectiveEmail, scimUser.Name)
+
 	// Read back updated user
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
@@ -562,25 +582,26 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Read back patched user
-	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	// Sync identity link with any name/email changes from PATCH ops
+	patchedUser, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to read back patched user", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to read user")
 		return
 	}
+	h.syncIdentityLink(ctx, provider, userID, patchedUser.Email, extractNameFromPatchOps(patch.Operations))
 
 	// Look up external ID
 	externalID := ""
 	linked, linkErr := h.store.Queries().FindSCIMUserByEmail(ctx, db.FindSCIMUserByEmailParams{
 		ProviderID: provider.ID,
-		Email:      user.Email,
+		Email:      patchedUser.Email,
 	})
 	if linkErr == nil {
 		externalID = linked.ScimExternalID
 	}
 
-	writeJSON(w, http.StatusOK, userToSCIM(user, externalID, baseURL))
+	writeJSON(w, http.StatusOK, userToSCIM(patchedUser, externalID, baseURL))
 }
 
 // handleUserPatchReplace processes a single "replace" patch operation on a user.
@@ -662,6 +683,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 		}
 
 	case "name":
+		// Update profile fields from name object
 		nameMap, ok := op.Value.(map[string]any)
 		if !ok {
 			return fmt.Errorf("invalid name value")
@@ -686,6 +708,10 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 				ActorID:    provider.ID,
 			})
 		}
+		// Identity link sync happens in patchUser after all ops.
+
+	case "name.givenname", "name.familyname", "name.formatted":
+		// Sub-path name changes — handled via identity link sync in patchUser.
 
 	case "":
 		// No path — the value is a map of attributes to replace
@@ -947,6 +973,149 @@ func safeNameField(name *SCIMName, field string) string {
 	default:
 		return ""
 	}
+}
+
+// syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
+// SCIM is treated as the source of truth — any differences are overwritten.
+func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active bool, name *SCIMName) {
+	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	if err != nil {
+		return
+	}
+
+	// Sync email
+	if email != "" && email != user.Email {
+		h.appendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserEmailChanged",
+			Data:       map[string]any{"email": email},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
+		})
+	}
+
+	// Sync active status
+	if !active && !user.Disabled {
+		h.appendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserDisabled",
+			Data:       map[string]any{},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
+		})
+	} else if active && user.Disabled {
+		h.appendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserEnabled",
+			Data:       map[string]any{},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
+		})
+	}
+
+	// Sync profile fields (display_name, given_name, family_name)
+	newDisplayName := formatExternalName(name)
+	newGivenName := safeNameField(name, "given")
+	newFamilyName := safeNameField(name, "family")
+	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+		h.appendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserProfileUpdated",
+			Data: map[string]any{
+				"display_name": newDisplayName,
+				"given_name":   newGivenName,
+				"family_name":  newFamilyName,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
+		})
+	}
+
+	// Sync identity link (external_email + external_name)
+	h.syncIdentityLink(ctx, provider, userID, email, name)
+}
+
+// syncIdentityLink updates the identity link's external_email and external_name
+// to reflect the latest data from the SCIM provider (source of truth).
+func (h *Handler) syncIdentityLink(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, name *SCIMName) {
+	link, err := h.store.Queries().GetIdentityLinkByProviderAndUser(ctx, db.GetIdentityLinkByProviderAndUserParams{
+		ProviderID: provider.ID,
+		UserID:     userID,
+	})
+	if err != nil {
+		return
+	}
+
+	h.appendEvent(ctx, store.Event{
+		StreamType: "identity_provider",
+		StreamID:   link.ID,
+		EventType:  "IdentityLinkLoginUpdated",
+		Data: map[string]any{
+			"provider_id":    provider.ID,
+			"external_id":    link.ExternalID,
+			"external_email": email,
+			"external_name":  formatExternalName(name),
+		},
+		ActorType: "scim",
+		ActorID:   provider.ID,
+	})
+}
+
+// extractNameFromPatchOps scans PATCH operations for name-related changes and
+// returns a SCIMName if any were found, or nil if none.
+func extractNameFromPatchOps(ops []SCIMPatchOp) *SCIMName {
+	var name SCIMName
+	found := false
+
+	for _, op := range ops {
+		if strings.ToLower(op.Op) != "replace" {
+			continue
+		}
+		path := strings.ToLower(op.Path)
+
+		switch path {
+		case "name":
+			// Value is a name object
+			if m, ok := op.Value.(map[string]any); ok {
+				if v, ok := m["givenName"].(string); ok {
+					name.GivenName = v
+					found = true
+				}
+				if v, ok := m["familyName"].(string); ok {
+					name.FamilyName = v
+					found = true
+				}
+				if v, ok := m["formatted"].(string); ok {
+					name.Formatted = v
+					found = true
+				}
+			}
+		case "name.givenname":
+			if v, ok := op.Value.(string); ok {
+				name.GivenName = v
+				found = true
+			}
+		case "name.familyname":
+			if v, ok := op.Value.(string); ok {
+				name.FamilyName = v
+				found = true
+			}
+		case "name.formatted":
+			if v, ok := op.Value.(string); ok {
+				name.Formatted = v
+				found = true
+			}
+		}
+	}
+
+	if !found {
+		return nil
+	}
+	return &name
 }
 
 // formatExternalName extracts a display name from SCIM name fields.

@@ -447,6 +447,140 @@ func TestDeleteGroup_Success(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, getResp.Code)
 }
 
+func TestCreateUser_IdempotentPostSyncsEmail(t *testing.T) {
+	env := setupSCIM(t)
+
+	// Create user with initial email
+	user := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   "original@example.com",
+		"externalId": "ext-sync",
+		"active":     true,
+	}
+	createResp := env.request("POST", "/Users", user)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+
+	var created map[string]any
+	json.Unmarshal(createResp.Body.Bytes(), &created)
+	userID := created["id"].(string)
+
+	// Re-POST with updated email (same externalId) — SCIM source of truth
+	user["userName"] = "updated@example.com"
+	syncResp := env.request("POST", "/Users", user)
+	assert.Equal(t, http.StatusOK, syncResp.Code)
+
+	var synced map[string]any
+	require.NoError(t, json.Unmarshal(syncResp.Body.Bytes(), &synced))
+	assert.Equal(t, userID, synced["id"])
+	assert.Equal(t, "updated@example.com", synced["userName"])
+}
+
+func TestCreateUser_IdempotentPostSyncsActiveStatus(t *testing.T) {
+	env := setupSCIM(t)
+
+	// Create active user
+	user := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   "active-sync@example.com",
+		"externalId": "ext-active-sync",
+		"active":     true,
+	}
+	createResp := env.request("POST", "/Users", user)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+
+	// Re-POST with active=false — SCIM source of truth
+	user["active"] = false
+	syncResp := env.request("POST", "/Users", user)
+	assert.Equal(t, http.StatusOK, syncResp.Code)
+
+	var synced map[string]any
+	require.NoError(t, json.Unmarshal(syncResp.Body.Bytes(), &synced))
+	assert.Equal(t, false, synced["active"])
+}
+
+func TestReplaceGroup_ReconcilesMembersAfterServerDeletion(t *testing.T) {
+	env := setupSCIM(t)
+
+	userID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+
+	// Create group with member
+	group := map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": "Reconcile Group",
+		"externalId":  "grp-reconcile",
+		"members":     []map[string]any{{"value": userID}},
+	}
+	createResp := env.request("POST", "/Groups", group)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+
+	var created map[string]any
+	json.Unmarshal(createResp.Body.Bytes(), &created)
+	groupID := created["id"].(string)
+
+	// Simulate server-side member removal
+	require.NoError(t, env.st.AppendEvent(t.Context(), store.Event{
+		StreamType: "user_group",
+		StreamID:   groupID + ":" + userID,
+		EventType:  "UserGroupMemberRemoved",
+		Data:       map[string]any{"group_id": groupID, "user_id": userID},
+		ActorType:  "user",
+		ActorID:    env.adminID,
+	}))
+
+	// Verify member is gone
+	getResp := env.request("GET", "/Groups/"+groupID)
+	var beforeSync map[string]any
+	json.Unmarshal(getResp.Body.Bytes(), &beforeSync)
+	assert.Empty(t, beforeSync["members"])
+
+	// PUT from SCIM with member — should re-add (source of truth)
+	w := env.request("PUT", "/Groups/"+groupID, group)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	members, ok := result["members"].([]any)
+	require.True(t, ok, "members should be present after SCIM reconciliation")
+	assert.Len(t, members, 1)
+	assert.Equal(t, userID, members[0].(map[string]any)["value"])
+}
+
+func TestReplaceGroup_PutWithoutMembersPreservesMembers(t *testing.T) {
+	env := setupSCIM(t)
+
+	userID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+
+	// Create group with member
+	group := map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": "Preserve Group",
+		"externalId":  "grp-preserve",
+		"members":     []map[string]any{{"value": userID}},
+	}
+	createResp := env.request("POST", "/Groups", group)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+
+	var created map[string]any
+	json.Unmarshal(createResp.Body.Bytes(), &created)
+	groupID := created["id"].(string)
+
+	// PUT with only displayName (no members field) — should NOT remove members
+	nameOnly := map[string]any{
+		"schemas":     []string{"urn:ietf:params:scim:schemas:core:2.0:Group"},
+		"displayName": "Preserve Group Renamed",
+	}
+	w := env.request("PUT", "/Groups/"+groupID, nameOnly)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &result))
+	assert.Equal(t, "Preserve Group Renamed", result["displayName"])
+
+	members, ok := result["members"].([]any)
+	require.True(t, ok, "members should be preserved when field is omitted")
+	assert.Len(t, members, 1)
+}
+
 func TestReplaceGroup_UpdateMembers(t *testing.T) {
 	env := setupSCIM(t)
 
