@@ -56,9 +56,20 @@ type SCIMUser struct {
 	UserName   string      `json:"userName"`
 	Name       *SCIMName   `json:"name,omitempty"`
 	Emails     []SCIMEmail `json:"emails,omitempty"`
-	Active     bool        `json:"active"`
+	Active     *bool       `json:"active,omitempty"`
 	Meta       *SCIMMeta   `json:"meta,omitempty"`
 }
+
+// IsActive returns the active status, defaulting to true per SCIM RFC 7643
+// when the field is omitted from the JSON payload.
+func (u SCIMUser) IsActive() bool {
+	if u.Active == nil {
+		return true
+	}
+	return *u.Active
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // SCIMName represents the name component of a SCIM user.
 type SCIMName struct {

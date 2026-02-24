@@ -454,7 +454,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update active status
-	if !scimUser.Active && !existingUser.Disabled {
+	if !scimUser.IsActive() && !existingUser.Disabled {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -467,7 +467,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to update user status")
 			return
 		}
-	} else if scimUser.Active && existingUser.Disabled {
+	} else if scimUser.IsActive() && existingUser.Disabled {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -820,7 +820,7 @@ func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
 		ID:         user.ID,
 		ExternalID: externalID,
 		UserName:   user.Email,
-		Active:     !user.Disabled,
+		Active:     boolPtr(!user.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   user.Email,
@@ -859,7 +859,7 @@ func userRowToSCIM(row db.ListSCIMUsersRow, baseURL string) SCIMUser {
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -898,7 +898,7 @@ func findUserRowToSCIM(row db.FindSCIMUserByEmailRow, baseURL string) SCIMUser {
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -937,7 +937,7 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -986,7 +986,7 @@ func safeNameField(name *SCIMName, field string) string {
 
 // syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
 // SCIM is treated as the source of truth — any differences are overwritten.
-func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active bool, name *SCIMName) {
+func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active *bool, name *SCIMName) {
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to get user for SCIM sync", "user_id", userID, "error", err)
@@ -1005,8 +1005,9 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		})
 	}
 
-	// Sync active status
-	if !active && !user.Disabled {
+	// Sync active status (nil = not provided, default to true per SCIM RFC 7643)
+	isActive := active == nil || *active
+	if !isActive && !user.Disabled {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -1015,7 +1016,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
-	} else if active && user.Disabled {
+	} else if isActive && user.Disabled {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
