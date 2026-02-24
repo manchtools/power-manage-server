@@ -67,12 +67,26 @@ func NewLinker(queries Querier, appender EventAppender) *Linker {
 // 3. If auto_create_users: create user (no password), assign default role, create link
 // 4. Otherwise: error
 func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProvidersProjection, claims *UserClaims) (*LinkResult, error) {
+	slog.Debug("SSO linker: starting LinkOrCreate",
+		"provider_id", provider.ID,
+		"provider_slug", provider.Slug,
+		"subject", claims.Subject,
+		"email", claims.Email,
+		"auto_link_by_email", provider.AutoLinkByEmail,
+		"auto_create_users", provider.AutoCreateUsers,
+	)
+
 	// Step 1: Check for existing link
 	link, err := l.queries.GetIdentityLinkByProviderAndExternalID(ctx, db.GetIdentityLinkByProviderAndExternalIDParams{
 		ProviderID: provider.ID,
 		ExternalID: claims.Subject,
 	})
 	if err == nil {
+		slog.Debug("SSO linker: found existing identity link",
+			"link_id", link.ID,
+			"user_id", link.UserID,
+			"external_id", link.ExternalID,
+		)
 		// Existing link found — update last login
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "identity_provider",
@@ -95,11 +109,17 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("lookup identity link: %w", err)
 	}
+	slog.Debug("SSO linker: no existing identity link found", "provider_id", provider.ID, "subject", claims.Subject)
 
 	// Step 2: Auto-link by email
 	if provider.AutoLinkByEmail && claims.Email != "" {
+		slog.Debug("SSO linker: trying auto-link by email", "email", claims.Email)
 		user, err := l.queries.GetUserByEmail(ctx, claims.Email)
 		if err == nil {
+			slog.Debug("SSO linker: found user by email, creating link",
+				"user_id", user.ID,
+				"user_email", user.Email,
+			)
 			// Found user by email — create link
 			linkID := newULID()
 			err = l.appender.AppendEvent(ctx, EventInput{
@@ -124,10 +144,16 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("lookup user by email: %w", err)
 		}
+		slog.Debug("SSO linker: no user found by email", "email", claims.Email)
+	} else if !provider.AutoLinkByEmail {
+		slog.Debug("SSO linker: auto_link_by_email is disabled, skipping email lookup")
+	} else if claims.Email == "" {
+		slog.Debug("SSO linker: email claim is empty, skipping email lookup")
 	}
 
 	// Step 3: Auto-create user
 	if provider.AutoCreateUsers && claims.Email != "" {
+		slog.Debug("SSO linker: auto-creating new user", "email", claims.Email)
 		userID := newULID()
 
 		// Create user without password
@@ -187,6 +213,14 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		return &LinkResult{UserID: userID, IsNew: true}, nil
 	}
 
+	slog.Warn("SSO linker: no matching account found",
+		"provider_id", provider.ID,
+		"provider_slug", provider.Slug,
+		"subject", claims.Subject,
+		"email", claims.Email,
+		"auto_link_by_email", provider.AutoLinkByEmail,
+		"auto_create_users", provider.AutoCreateUsers,
+	)
 	return nil, ErrNoMatchingAccount
 }
 
