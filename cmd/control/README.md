@@ -44,6 +44,7 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 | `-admin-email` | (optional) | Initial admin user email |
 | `-admin-password` | (optional) | Initial admin user password |
 | `-dynamic-group-eval-interval` | `1h` | Interval for evaluating queued dynamic groups (min 30m, max 8h, 0 to disable) |
+| `-ca-trust-bundle` | (optional) | PEM file with trusted CA certificates for verification (supports CA rotation) |
 
 ### Environment Variables
 
@@ -61,6 +62,7 @@ Environment variables override command-line flags:
 | `CONTROL_ADMIN_PASSWORD` | Initial admin user password |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
+| `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
 | `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
 
 ## Setup
@@ -140,7 +142,7 @@ curl http://localhost:8081/pm.v1.ControlService/ListUsers \
 | `RefreshToken` | Exchange refresh token for new access token |
 | `GetCurrentUser` | Get the currently authenticated user |
 | `Register` | Register an agent device (token-based, no JWT required) |
-| `RenewCertificate` | Renew an agent's mTLS certificate (presents current cert + new CSR, no JWT required) |
+| `RenewCertificate` | Renew an agent's mTLS certificate (presents current cert + new CSR, no JWT required). Returns the active CA certificate so agents can update their trust store during CA rotation. |
 
 #### Users
 
@@ -627,6 +629,25 @@ RLS is enabled on all projection tables:
 4. **Admin Credentials**: Change default admin credentials immediately
 5. **Network**: Consider running behind a reverse proxy with TLS termination
 6. **RLS**: The database enforces permissions even if application code is compromised
+
+## CA Rotation
+
+The Control Server supports CA certificate rotation without re-registering agents. This is done via a **trust bundle** approach:
+
+1. **Generate a new CA** certificate and key
+2. **Create a trust bundle** PEM file containing both the old and new CA certificates (concatenated)
+3. **Configure** the Control Server with `-ca-trust-bundle=/path/to/bundle.pem` (or `CONTROL_CA_TRUST_BUNDLE` env var)
+4. **Update** `-ca-cert` and `-ca-key` to point to the new CA certificate and key
+5. **Restart** the Control Server
+
+The server will:
+- **Sign new certificates** using the new CA (`-ca-cert`/`-ca-key`)
+- **Verify existing certificates** against all CAs in the trust bundle
+- **Return the active CA certificate** in `RenewCertificate` responses so agents automatically update their stored CA
+
+Agents pick up the new CA certificate during their regular certificate renewal cycle (at 80% of cert lifetime). Once all agents have renewed, the old CA can be removed from the trust bundle.
+
+The Gateway needs no code changes — configure its `-tls-ca` flag with the same trust bundle PEM file.
 
 ## Development
 

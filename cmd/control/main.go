@@ -50,6 +50,7 @@ type Config struct {
 	SSOCallbackBaseURL           string
 	SCIMBaseURL                  string
 	TrustedProxies               []string
+	CATrustBundlePath            string
 }
 
 func main() {
@@ -96,6 +97,18 @@ func main() {
 	if err != nil {
 		logger.Error("failed to initialize CA", "error", err)
 		os.Exit(1)
+	}
+	if cfg.CATrustBundlePath != "" {
+		bundlePEM, err := os.ReadFile(cfg.CATrustBundlePath)
+		if err != nil {
+			logger.Error("failed to read CA trust bundle", "error", err, "path", cfg.CATrustBundlePath)
+			os.Exit(1)
+		}
+		if err := certAuth.SetTrustBundle(bundlePEM); err != nil {
+			logger.Error("failed to load CA trust bundle", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("CA trust bundle loaded", "path", cfg.CATrustBundlePath)
 	}
 	logger.Info("CA initialized", "validity", cfg.CertValidity)
 
@@ -283,6 +296,7 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
+	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
 
 	flag.Parse()
 
@@ -301,6 +315,9 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_CA_KEY"); v != "" {
 		cfg.CAKeyPath = v
+	}
+	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
+		cfg.CATrustBundlePath = v
 	}
 	if v := os.Getenv("CONTROL_ADMIN_EMAIL"); v != "" {
 		cfg.AdminEmail = v

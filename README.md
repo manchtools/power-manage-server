@@ -51,7 +51,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 |---------|---------|
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, etc.) |
 | `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management, self-scope enforcement |
-| `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, and action payloads |
+| `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
 | `internal/config` | Configuration loading |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Control Server background event processor |
@@ -347,7 +347,7 @@ JWT tokens stored in httpOnly cookies (`pm_access`, `pm_refresh`) as a fallback 
 
 Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
 
-Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by the CA, checks the fingerprint matches the database record (preventing use of revoked certificates), and signs the new CSR.
+Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by a trusted CA (from the trust bundle if configured), checks the fingerprint matches the database record (preventing use of revoked certificates), signs the new CSR, and returns the active CA certificate so agents can update their trust store during CA rotation.
 
 ### Self-Scope Enforcement (`internal/auth/context.go`)
 

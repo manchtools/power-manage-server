@@ -99,7 +99,8 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	h.logger.Info("certificate renewed", "device_id", deviceID, "not_after", newCert.NotAfter)
 
 	return connect.NewResponse(&pm.RenewCertificateResponse{
-		Certificate: newCert.CertPEM,
-		NotAfter:    timestamppb.New(newCert.NotAfter),
+		Certificate:   newCert.CertPEM,
+		NotAfter:      timestamppb.New(newCert.NotAfter),
+		CaCertificate: h.ca.CACertPEM(),
 	}), nil
 }
