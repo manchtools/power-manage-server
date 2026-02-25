@@ -42,6 +42,7 @@ func TestPublicProcedures(t *testing.T) {
 		"/pm.v1.ControlService/RefreshToken":            true,
 		"/pm.v1.ControlService/Logout":                  true,
 		"/pm.v1.ControlService/Register":                true,
+		"/pm.v1.ControlService/RenewCertificate":        true,
 		"/pm.v1.ControlService/VerifyLoginTOTP":         true,
 		"/pm.v1.ControlService/ListAuthMethods":         true,
 		"/pm.v1.ControlService/GetSSOLoginURL":          true,

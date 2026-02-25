@@ -142,6 +142,32 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 	}, nil
 }
 
+// VerifyCertificate verifies a PEM-encoded certificate was signed by this CA.
+// Returns the device ID (CN) if valid.
+func (ca *CA) VerifyCertificate(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode certificate PEM")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse certificate: %w", err)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.cert)
+
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", fmt.Errorf("certificate verification failed: %w", err)
+	}
+
+	return cert.Subject.CommonName, nil
+}
+
 // Signer returns the CA's private key for action signing.
 func (ca *CA) Signer() crypto.Signer {
 	return ca.key

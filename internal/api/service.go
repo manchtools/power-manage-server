@@ -37,6 +37,7 @@ type ControlService struct {
 	identityLink  *IdentityLinkHandler
 	deviceAuth    *DeviceAuthHandler
 	compliance    *ComplianceHandler
+	certificate   *CertificateHandler
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -73,6 +74,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		identityLink:  NewIdentityLinkHandler(st),
 		deviceAuth:    NewDeviceAuthHandler(st, jwtManager, enc, cfg.DeviceLoginURL, cfg.ExternalURL),
 		compliance:    NewComplianceHandler(st),
+		certificate:   NewCertificateHandler(st, certAuth, logger),
 	}
 }
 
@@ -81,6 +83,11 @@ var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)
 // Agent Registration
 func (s *ControlService) Register(ctx context.Context, req *connect.Request[pm.RegisterRequest]) (*connect.Response[pm.RegisterResponse], error) {
 	return s.registration.Register(ctx, req)
+}
+
+// Certificate Renewal
+func (s *ControlService) RenewCertificate(ctx context.Context, req *connect.Request[pm.RenewCertificateRequest]) (*connect.Response[pm.RenewCertificateResponse], error) {
+	return s.certificate.RenewCertificate(ctx, req)
 }
 
 // Authentication

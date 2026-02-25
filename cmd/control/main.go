@@ -239,8 +239,10 @@ func main() {
 	securedHandler := securityHeadersMiddleware(corsHandler)
 
 	server := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: h2c.NewHandler(securedHandler, &http2.Server{}),
+		Addr:              cfg.ListenAddr,
+		Handler:           h2c.NewHandler(securedHandler, &http2.Server{}),
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start server

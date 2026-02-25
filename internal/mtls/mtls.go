@@ -41,7 +41,7 @@ func NewTLSConfig(cfg Config) (*tls.Config, error) {
 
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    caPool,
 		MinVersion:   tls.VersionTLS13,
 	}, nil

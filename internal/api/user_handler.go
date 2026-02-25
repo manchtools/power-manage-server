@@ -116,6 +116,10 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 		return nil, err
 	}
 
+	if err := auth.EnforceSelfScope(ctx, "GetUser", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -186,6 +190,10 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
+	if err := auth.EnforceSelfScope(ctx, "UpdateUserEmail", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
@@ -223,6 +231,10 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 // UpdateUserPassword updates a user's password.
 func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Request[pm.UpdateUserPasswordRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
 	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceSelfScope(ctx, "UpdateUserPassword", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -355,6 +367,10 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 // UpdateUserProfile updates a user's profile fields.
 func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Request[pm.UpdateUserProfileRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
 	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceSelfScope(ctx, "UpdateUserProfile", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
