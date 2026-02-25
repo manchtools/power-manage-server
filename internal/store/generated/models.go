@@ -67,6 +67,37 @@ type AuthState struct {
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
+type CompliancePoliciesProjection struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description"`
+	RuleCount         int32              `json:"rule_count"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type CompliancePolicyEvaluationProjection struct {
+	DeviceID          string             `json:"device_id"`
+	PolicyID          string             `json:"policy_id"`
+	ActionID          string             `json:"action_id"`
+	Compliant         bool               `json:"compliant"`
+	FirstFailedAt     pgtype.Timestamptz `json:"first_failed_at"`
+	Status            int32              `json:"status"`
+	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type CompliancePolicyRulesProjection struct {
+	PolicyID          string             `json:"policy_id"`
+	ActionID          string             `json:"action_id"`
+	ActionName        string             `json:"action_name"`
+	GracePeriodHours  int32              `json:"grace_period_hours"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type ComplianceResultsProjection struct {
 	DeviceID          string             `json:"device_id"`
 	ActionID          string             `json:"action_id"`

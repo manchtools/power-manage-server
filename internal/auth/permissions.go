@@ -112,6 +112,18 @@ func AllPermissions() []PermissionInfo {
 		// Compliance
 		{"GetDeviceCompliance", "Compliance", "View device compliance"},
 		{"GetDeviceCompliance:assigned", "Compliance", "View compliance for assigned devices"},
+		// Compliance Policies
+		{"CreateCompliancePolicy", "Compliance Policies", "Create compliance policies"},
+		{"GetCompliancePolicy", "Compliance Policies", "View compliance policies"},
+		{"ListCompliancePolicies", "Compliance Policies", "List compliance policies"},
+		{"RenameCompliancePolicy", "Compliance Policies", "Rename compliance policies"},
+		{"UpdateCompliancePolicyDescription", "Compliance Policies", "Update compliance policy descriptions"},
+		{"DeleteCompliancePolicy", "Compliance Policies", "Delete compliance policies"},
+		{"AddCompliancePolicyRule", "Compliance Policies", "Add rules to compliance policies"},
+		{"RemoveCompliancePolicyRule", "Compliance Policies", "Remove rules from compliance policies"},
+		{"UpdateCompliancePolicyRule", "Compliance Policies", "Update compliance policy rules"},
+		{"GetDeviceCompliancePolicyStatus", "Compliance Policies", "View device compliance policy status"},
+		{"GetDeviceCompliancePolicyStatus:assigned", "Compliance Policies", "View compliance policy status for assigned devices"},
 		// Audit
 		{"ListAuditEvents", "Audit", "View audit log"},
 		// LPS

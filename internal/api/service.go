@@ -36,8 +36,9 @@ type ControlService struct {
 	sso           *SSOHandler
 	identityLink  *IdentityLinkHandler
 	deviceAuth    *DeviceAuthHandler
-	compliance    *ComplianceHandler
-	certificate   *CertificateHandler
+	compliance       *ComplianceHandler
+	compliancePolicy *CompliancePolicyHandler
+	certificate      *CertificateHandler
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -73,8 +74,9 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
 		identityLink:  NewIdentityLinkHandler(st),
 		deviceAuth:    NewDeviceAuthHandler(st, jwtManager, enc, cfg.DeviceLoginURL, cfg.ExternalURL),
-		compliance:    NewComplianceHandler(st),
-		certificate:   NewCertificateHandler(st, certAuth, logger),
+		compliance:       NewComplianceHandler(st),
+		compliancePolicy: NewCompliancePolicyHandler(st),
+		certificate:      NewCertificateHandler(st, certAuth, logger),
 	}
 }
 
@@ -648,4 +650,45 @@ func (s *ControlService) ListDeviceUsers(ctx context.Context, req *connect.Reque
 // Device Compliance
 func (s *ControlService) GetDeviceCompliance(ctx context.Context, req *connect.Request[pm.GetDeviceComplianceRequest]) (*connect.Response[pm.GetDeviceComplianceResponse], error) {
 	return s.compliance.GetDeviceCompliance(ctx, req)
+}
+
+// Compliance Policies
+func (s *ControlService) CreateCompliancePolicy(ctx context.Context, req *connect.Request[pm.CreateCompliancePolicyRequest]) (*connect.Response[pm.CreateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.CreateCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) GetCompliancePolicy(ctx context.Context, req *connect.Request[pm.GetCompliancePolicyRequest]) (*connect.Response[pm.GetCompliancePolicyResponse], error) {
+	return s.compliancePolicy.GetCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) ListCompliancePolicies(ctx context.Context, req *connect.Request[pm.ListCompliancePoliciesRequest]) (*connect.Response[pm.ListCompliancePoliciesResponse], error) {
+	return s.compliancePolicy.ListCompliancePolicies(ctx, req)
+}
+
+func (s *ControlService) RenameCompliancePolicy(ctx context.Context, req *connect.Request[pm.RenameCompliancePolicyRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.RenameCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) UpdateCompliancePolicyDescription(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyDescriptionRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.UpdateCompliancePolicyDescription(ctx, req)
+}
+
+func (s *ControlService) DeleteCompliancePolicy(ctx context.Context, req *connect.Request[pm.DeleteCompliancePolicyRequest]) (*connect.Response[pm.DeleteCompliancePolicyResponse], error) {
+	return s.compliancePolicy.DeleteCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) AddCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.AddCompliancePolicyRuleRequest]) (*connect.Response[pm.AddCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.AddCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) RemoveCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.RemoveCompliancePolicyRuleRequest]) (*connect.Response[pm.RemoveCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.RemoveCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) UpdateCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyRuleRequest]) (*connect.Response[pm.UpdateCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.UpdateCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pm.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pm.GetDeviceCompliancePolicyStatusResponse], error) {
+	return s.compliancePolicy.GetDeviceCompliancePolicyStatus(ctx, req)
 }

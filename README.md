@@ -65,7 +65,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 ## API Reference
 
-The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 125 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
+The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
 
 ### Authentication (4 RPCs)
 
@@ -284,6 +284,22 @@ OIDC identity provider management for SSO authentication.
 | Method | Description |
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
+
+### Compliance Policies (11 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `GetDeviceCompliance` | Returns compliance check results and overall status for a device. |
+| `CreateCompliancePolicy` | Create a named compliance policy. |
+| `GetCompliancePolicy` | Get a compliance policy by ID, including its rules. |
+| `ListCompliancePolicies` | Paginated list of compliance policies. |
+| `RenameCompliancePolicy` | Rename a compliance policy. |
+| `UpdateCompliancePolicyDescription` | Update a compliance policy's description. |
+| `DeleteCompliancePolicy` | Delete a compliance policy (soft delete). |
+| `AddCompliancePolicyRule` | Add a compliance script action as a rule with a grace period. |
+| `RemoveCompliancePolicyRule` | Remove a rule from a compliance policy. |
+| `UpdateCompliancePolicyRule` | Update the grace period of an existing rule. |
+| `GetDeviceCompliancePolicyStatus` | Get per-policy, per-rule compliance evaluation status for a device, including grace period state. |
 
 ### Registration & Certificates (2 RPCs)
 

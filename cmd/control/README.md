@@ -272,6 +272,21 @@ Reusable action templates that can be dispatched to devices.
 | `ListIdentityLinks` | List own linked external identities | `ListIdentityLinks` |
 | `UnlinkIdentity` | Remove a linked identity | `UnlinkIdentity` |
 
+#### Compliance Policies
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateCompliancePolicy` | Create a compliance evaluation policy | `CreateCompliancePolicy` |
+| `GetCompliancePolicy` | View a compliance policy with rules | `GetCompliancePolicy` |
+| `ListCompliancePolicies` | List compliance policies | `ListCompliancePolicies` |
+| `RenameCompliancePolicy` | Rename a compliance policy | `RenameCompliancePolicy` |
+| `UpdateCompliancePolicyDescription` | Update policy description | `UpdateCompliancePolicyDescription` |
+| `DeleteCompliancePolicy` | Delete a compliance policy | `DeleteCompliancePolicy` |
+| `AddCompliancePolicyRule` | Add compliance script rule with grace period | `AddCompliancePolicyRule` |
+| `RemoveCompliancePolicyRule` | Remove a rule from a policy | `RemoveCompliancePolicyRule` |
+| `UpdateCompliancePolicyRule` | Update rule grace period | `UpdateCompliancePolicyRule` |
+| `GetDeviceCompliancePolicyStatus` | Per-policy compliance status for a device | `GetDeviceCompliancePolicyStatus` |
+
 #### SCIM v2 Provisioning (REST, not Connect-RPC)
 
 SCIM endpoints are mounted at `/scim/v2/{provider-slug}/` and use Bearer token authentication (not JWT). They follow the SCIM v2 RFC 7643/7644 specification.
@@ -484,6 +499,8 @@ All state changes are stored as immutable events in the `events` table:
 | `user_group` | UserGroupCreated, UserGroupUpdated, UserGroupDeleted, UserGroupMemberAdded, UserGroupMemberRemoved, RoleAssignedToUserGroup, RoleRevokedFromUserGroup |
 | `identity_provider` | IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled, IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated |
 | `scim_group_mapping` | SCIMGroupMapped, SCIMGroupUnmapped, SCIMGroupMappingUpdated |
+| `compliance` | ComplianceResultUpdated, ComplianceResultRemoved |
+| `compliance_policy` | CompliancePolicyCreated, CompliancePolicyRenamed, CompliancePolicyDescriptionUpdated, CompliancePolicyDeleted, CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved, CompliancePolicyRuleUpdated |
 
 ### Querying Event History
 

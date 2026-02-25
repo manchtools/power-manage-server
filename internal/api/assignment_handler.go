@@ -70,6 +70,14 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 		}
+	case "compliance_policy":
+		_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.SourceId)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			}
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		}
 	}
 
 	// Validate target exists

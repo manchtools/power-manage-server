@@ -75,6 +75,13 @@ const (
 	ErrLastAuthMethod            = "last_auth_method"
 )
 
+// Compliance policy error codes.
+const (
+	ErrCompliancePolicyNotFound  = "compliance_policy_not_found"
+	ErrCompliancePolicyNameExists = "compliance_policy_name_exists"
+	ErrActionNotCompliance       = "action_not_compliance"
+)
+
 // Validation error codes.
 const (
 	ErrValidationFailed = "validation_failed"
