@@ -295,10 +295,10 @@ message OSQuery {
 
 ### mTLS Authentication
 
-In production mode, the Gateway requires mutual TLS:
+In production mode, the Gateway requires mutual TLS with `RequireAndVerifyClientCert` (TLS 1.3 minimum):
 
 1. Gateway presents its server certificate
-2. Agent presents its device certificate (issued during registration)
+2. Agent **must** present its device certificate (issued during registration) — connections without a client certificate are rejected
 3. Gateway validates agent certificate against CA
 4. Device ID is extracted from the certificate Common Name
 
@@ -307,6 +307,7 @@ In production mode, the Gateway requires mutual TLS:
 - Certificates must be signed by the configured CA
 - Expired certificates are rejected
 - The device ID in the certificate CN must match the Hello message
+- Agents automatically renew certificates at 80% of their lifetime via the Control Server's `RenewCertificate` RPC
 
 ## Scaling
 

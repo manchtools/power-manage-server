@@ -115,7 +115,7 @@ The Control Server exposes a Connect-RPC API that can be consumed using:
 
 ### Authentication
 
-All endpoints except `Login` and `Register` require a JWT Bearer token:
+All endpoints except `Login`, `Register`, and `RenewCertificate` require a JWT Bearer token:
 
 ```bash
 # Login to get a token
@@ -140,6 +140,7 @@ curl http://localhost:8081/pm.v1.ControlService/ListUsers \
 | `RefreshToken` | Exchange refresh token for new access token |
 | `GetCurrentUser` | Get the currently authenticated user |
 | `Register` | Register an agent device (token-based, no JWT required) |
+| `RenewCertificate` | Renew an agent's mTLS certificate (presents current cert + new CSR, no JWT required) |
 
 #### Users
 
@@ -472,7 +473,7 @@ All state changes are stored as immutable events in the `events` table:
 | Stream Type | Events |
 |-------------|--------|
 | `user` | UserCreated, UserEmailChanged, UserPasswordChanged, UserDisabled, UserEnabled, UserLoggedIn, UserDeleted, UserTOTPEnabled, UserTOTPDisabled, UserBackupCodesRegenerated, IdentityLinked, IdentityUnlinked |
-| `device` | DeviceRegistered, DeviceHeartbeat, DeviceLabelSet, DeviceLabelRemoved, DeviceAssigned, DeviceUnassigned, DeviceDeleted |
+| `device` | DeviceRegistered, DeviceHeartbeat, DeviceLabelSet, DeviceLabelRemoved, DeviceAssigned, DeviceUnassigned, DeviceDeleted, DeviceCertRenewed |
 | `token` | TokenCreated, TokenRenamed, TokenDisabled, TokenEnabled, TokenUsed, TokenDeleted |
 | `definition` | DefinitionCreated, DefinitionRenamed, DefinitionDescriptionUpdated, DefinitionDeleted |
 | `execution` | ExecutionCreated, ExecutionDispatched, ExecutionStarted, ExecutionCompleted, ExecutionFailed, ExecutionTimedOut |
@@ -533,7 +534,7 @@ curl http://localhost:8081/health
 
 The Control Server uses **dynamic role-based access control** with:
 
-1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only).
+1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only). Scoped permissions are enforced at the handler level via `auth.EnforceSelfScope()`, which verifies the resource ID matches the caller's user ID.
 
 2. **User Groups** — Users can be organized into groups. Roles assigned to a group are inherited by all members. Permissions are additive — a user's effective permissions are the union of all directly assigned roles and group-inherited roles.
 

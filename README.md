@@ -50,15 +50,15 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | Package | Purpose |
 |---------|---------|
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, etc.) |
-| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management |
-| `internal/ca` | Internal CA for signing agent certificates and action payloads |
+| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management, self-scope enforcement |
+| `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, and action payloads |
 | `internal/config` | Configuration loading |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Control Server background event processor |
 | `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets) |
 | `internal/handler` | Gateway RPC handlers (agent streaming) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
-| `internal/mtls` | mTLS setup, extracts device identity from client certificates |
+| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries, LISTEN/NOTIFY |
@@ -285,11 +285,12 @@ OIDC identity provider management for SSO authentication.
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
 
-### Registration (1 RPC)
+### Registration & Certificates (2 RPCs)
 
 | Method | Description |
 |--------|-------------|
 | `Register` | Agent registration. Validates token (hash, expiry, disabled, max uses), signs agent CSR to issue mTLS client certificate, generates device ID, auto-assigns to token owner. Returns device ID, CA cert, signed cert, gateway URL. |
+| `RenewCertificate` | Certificate renewal. Agent presents its current (still valid) certificate and a new CSR. Server verifies the certificate was issued by the CA, checks the fingerprint matches the database, signs the new CSR, and emits a `DeviceCertRenewed` event. No JWT required. |
 
 ### Gateway — Agent Service (2 RPCs)
 
@@ -344,7 +345,17 @@ JWT tokens stored in httpOnly cookies (`pm_access`, `pm_refresh`) as a fallback 
 
 ### mTLS (`internal/ca/`)
 
-Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
+Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
+
+Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by the CA, checks the fingerprint matches the database record (preventing use of revoked certificates), and signs the new CSR.
+
+### Self-Scope Enforcement (`internal/auth/context.go`)
+
+RPCs with `:self` scoped permissions (e.g., `GetUser:self`, `UpdateUserEmail:self`) enforce that the resource ID matches the caller's user ID. The `auth.EnforceSelfScope()` helper is called in each affected handler after validation. Users with the unrestricted permission (e.g., `GetUser`) can access any resource.
+
+### HTTP Server Hardening
+
+The Control Server sets `IdleTimeout` (120s) and `ReadHeaderTimeout` (10s) on the HTTP server to prevent connection exhaustion attacks.
 
 ## Database
 
