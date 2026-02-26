@@ -1,43 +1,48 @@
 # Gateway Server
 
-The Gateway Server handles real-time bidirectional communication with Power Manage agents. It provides a Connect-RPC streaming API for agent connections and receives action dispatches from PostgreSQL LISTEN/NOTIFY.
+The Gateway Server handles real-time bidirectional communication with Power Manage agents. It provides a Connect-RPC streaming API for agent connections and receives action dispatches via Asynq (Valkey-backed task queue). The Gateway has no direct database connection — all state mutations are forwarded to the Control Server.
 
 ## Architecture
 
 ```
                             ┌─────────────────────┐
                             │   Control Server    │
-                            │  (dispatches via    │
-                            │   PostgreSQL)       │
+                            │  (InternalService)  │
                             └──────────┬──────────┘
                                        │
-                                       ▼
-                            ┌─────────────────────┐
-                            │     PostgreSQL      │
-                            │  LISTEN/NOTIFY      │
-                            │  pg_notify()        │
-                            └──────────┬──────────┘
-                                       │
-              ┌────────────────────────┼────────────────────────┐
-              │                        │                        │
-              ▼                        ▼                        ▼
-    ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-    │    Gateway      │     │    Gateway      │     │    Gateway      │
-    │    Server       │     │    Server       │     │    Server       │
-    │  (mTLS/h2c)     │     │  (mTLS/h2c)     │     │  (mTLS/h2c)     │
-    └────────┬────────┘     └────────┬────────┘     └────────┬────────┘
-             │                       │                       │
-    ┌────────┴────────┐     ┌────────┴────────┐     ┌────────┴────────┐
-    │  Agent   Agent  │     │  Agent   Agent  │     │  Agent   Agent  │
-    └─────────────────┘     └─────────────────┘     └─────────────────┘
+                        ┌──────────────┼──────────────┐
+                        │ Connect-RPC  │  Asynq tasks │
+                        │ (credentials)│  (events)    │
+                        ▼              ▼              │
+              ┌─────────────────────────────┐         │
+              │          Valkey             │         │
+              │  device:* → Gateway         │         │
+              │  control:inbox → Control    │         │
+              └──────────────┬──────────────┘         │
+                             │                        │
+              ┌──────────────┼────────────────────────┘
+              │              │
+              ▼              ▼
+    ┌──────────────────────────────┐
+    │       Gateway Server        │
+    │  (mTLS/h2c, stateless)      │
+    │                              │
+    │  - Per-device Asynq workers │
+    │  - Connect-RPC proxy        │
+    └─────────────┬────────────────┘
+                  │
+    ┌─────────────┴─────────────┐
+    │  Agent   Agent   Agent    │
+    └───────────────────────────┘
 ```
 
 The Gateway Server:
 1. Accepts agent connections via Connect-RPC streaming (agents register with the Control Server first)
 2. Authenticates agents using mTLS certificates (issued by the Control Server during registration)
-3. Subscribes to PostgreSQL LISTEN/NOTIFY for action dispatching
-4. Routes incoming actions to the appropriate connected agent
-5. Records agent events (heartbeats, action results) to the event store
+3. Starts a per-device Asynq worker on agent connect, stops it on disconnect
+4. Receives action dispatches from Valkey task queues (`device:<id>`)
+5. Forwards agent events (heartbeats, action results) to the `control:inbox` queue
+6. Proxies credential-bearing operations (LUKS keys, LPS passwords) to the Control Server via Connect-RPC
 
 ## Configuration
 
@@ -45,21 +50,30 @@ The Gateway Server:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-addr` | `:8080` | Listen address |
-| `-database-url` | (required) | PostgreSQL connection URL |
-| `-log-level` | `info` | Log level (debug, info, warn, error) |
 | `-tls` | `false` | Enable mTLS mode |
 | `-tls-cert` | (required if -tls) | Server certificate path |
 | `-tls-key` | (required if -tls) | Server private key path |
 | `-tls-ca` | (required if -tls) | CA certificate for client validation |
 
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address |
+| `VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
+| `VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
+| `VALKEY_DB` | `0` | Valkey/Redis database number |
+| `GATEWAY_CONTROL_URL` | `http://control:8081` | Control Server URL for Connect-RPC proxy |
+| `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+
 ## Setup
 
 ### Prerequisites
 
-1. **PostgreSQL 18+** - the same database used by the Control Server
+1. **Valkey/Redis** — shared with the Control Server for Asynq task queues
+2. **Control Server** — must be running and reachable for InternalService RPC
 
-2. **TLS Certificates** (for production mTLS mode):
+3. **TLS Certificates** (for production mTLS mode):
    - CA certificate (same as Control Server)
    - Server certificate signed by the CA
    - Server private key
@@ -85,10 +99,12 @@ openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
 For local development without TLS:
 
 ```bash
-go run ./server/cmd/gateway \
-  -addr=:8080 \
-  -database-url="postgres://powermanage:powermanage@localhost:5432/powermanage?sslmode=disable" \
-  -log-level=debug
+export VALKEY_ADDR=localhost:6379
+export VALKEY_PASSWORD=your-password
+export GATEWAY_CONTROL_URL=http://localhost:8081
+export LOG_LEVEL=debug
+
+go run ./server/cmd/gateway
 ```
 
 This runs in HTTP/2 cleartext (h2c) mode - **not suitable for production**.
@@ -96,14 +112,15 @@ This runs in HTTP/2 cleartext (h2c) mode - **not suitable for production**.
 ### Running in Production Mode (mTLS)
 
 ```bash
+export VALKEY_ADDR=valkey:6379
+export VALKEY_PASSWORD=your-password
+export GATEWAY_CONTROL_URL=http://control:8081
+
 go run ./server/cmd/gateway \
-  -addr=:8080 \
-  -database-url="postgres://powermanage:powermanage@localhost:5432/powermanage?sslmode=require" \
   -tls \
   -tls-cert=/certs/server.crt \
   -tls-key=/certs/server.key \
-  -tls-ca=/certs/ca.crt \
-  -log-level=info
+  -tls-ca=/certs/ca.crt
 ```
 
 ### Running with Podman Compose
@@ -111,9 +128,6 @@ go run ./server/cmd/gateway \
 ```bash
 # Start all services (includes mTLS gateway on :8080)
 podman-compose up -d
-
-# Or with the dev profile (includes h2c gateway on :8082)
-podman-compose --profile dev up -d
 ```
 
 ## Agent Service API
@@ -178,7 +192,7 @@ Agent                              Gateway
   │                                   │
   │──── Heartbeat ────────────────────▶│ (every 30s)
   │                                   │
-  │◀─── ActionDispatch ───────────────│ (from Control via pg_notify)
+  │◀─── ActionDispatch ───────────────│ (from Control via Asynq)
   │                                   │
   │──── ActionResult ─────────────────▶│
   │                                   │
@@ -192,41 +206,47 @@ Agent                              Gateway
   │                                   │
 ```
 
-## PostgreSQL LISTEN/NOTIFY
+## Asynq Task Queues
 
-The Gateway subscribes to PostgreSQL notification channels for real-time action dispatching:
+The Gateway uses Asynq (Valkey-backed) task queues for communication with the Control Server. This replaces the previous PostgreSQL LISTEN/NOTIFY mechanism and eliminates the Gateway's database dependency.
 
-### Channel Naming
+### Control → Gateway (device queues)
 
-Each agent has its own channel: `agent_{device_id}`
+Each connected device has its own Asynq queue (`device:<id>`) with a per-device worker (concurrency 1):
 
-When the Control Server dispatches an action, the database trigger sends a notification:
+| Task Type | Description |
+|-----------|-------------|
+| `action:dispatch` | Dispatch an action to the agent |
+| `osquery:dispatch` | Send an OS query to the agent |
+| `inventory:request` | Request device inventory refresh |
+| `luks:revoke_device_key` | Instruct agent to revoke device-bound LUKS key |
 
-```sql
--- Triggered automatically when ExecutionCreated event is inserted
-pg_notify('agent_01HWXYZ...', '{
-  "type": "action_dispatch",
-  "execution_id": "01HWABC...",
-  "action_type": 1,
-  "desired_state": 1,
-  "params": {...},
-  "timeout_seconds": 300
-}');
-```
+### Gateway → Control (control:inbox queue)
 
-### Event Recording
+Agent events are forwarded to the `control:inbox` queue for the Control Server to process:
 
-The Gateway records events directly to the PostgreSQL event store:
+| Task Type | Description |
+|-----------|-------------|
+| `device:hello` | Agent connected and sent Hello |
+| `device:heartbeat` | Agent sent a heartbeat with metrics |
+| `execution:result` | Agent completed an action (success or failure) |
+| `execution:output_chunk` | Streaming output from an action |
+| `osquery:result` | OS query result from agent |
+| `inventory:update` | Device inventory update |
+| `security:alert` | Security alert from agent |
+| `luks:revoke_device_key_result` | Result of device-bound key revocation |
 
-| Event | Description |
-|-------|-------------|
-| `DeviceHeartbeat` | Agent sent a heartbeat with metrics |
-| `ExecutionStarted` | Agent started executing an action |
-| `ExecutionCompleted` | Action completed successfully |
-| `ExecutionFailed` | Action failed with an error |
-| `LuksKeyRotated` | Agent stored a new LUKS managed passphrase |
-| `LuksDeviceKeyRevoked` | Agent successfully revoked device-bound key |
-| `LuksDeviceKeyRevocationFailed` | Agent failed to revoke device-bound key |
+### Gateway → Control (Connect-RPC proxy)
+
+Credential-bearing operations are proxied via Connect-RPC (`InternalService`) to avoid plaintext secrets in Valkey:
+
+| RPC | Description |
+|-----|-------------|
+| `ProxySyncActions` | Resolve all assigned actions for a device |
+| `ProxyValidateLuksToken` | Validate a one-time LUKS token |
+| `ProxyGetLuksKey` | Retrieve and decrypt a LUKS key |
+| `ProxyStoreLuksKey` | Encrypt and store a new LUKS key |
+| `ProxyStoreLpsPasswords` | Encrypt and store LPS password rotations |
 
 ## Health Endpoints
 
@@ -313,9 +333,9 @@ In production mode, the Gateway requires mutual TLS with `RequireAndVerifyClient
 
 Multiple Gateway instances can run simultaneously:
 
-- Each Gateway subscribes to PostgreSQL LISTEN channels
+- Each Gateway starts per-device Asynq workers for its connected agents
 - Agents connect to any available Gateway (via load balancer)
-- Actions are delivered to the Gateway with the connected agent
+- Asynq delivers tasks to the Gateway whose worker is processing the device queue
 - Use sticky sessions or agent-affinity for long-lived connections
 
 ### Load Balancer Configuration
@@ -331,7 +351,7 @@ When running multiple Gateways behind a load balancer:
 ### Debug Logging
 
 ```bash
-./gateway -log-level=debug -database-url="..."
+LOG_LEVEL=debug ./gateway -tls -tls-cert=... -tls-key=... -tls-ca=...
 ```
 
 ### Common Issues
@@ -340,9 +360,9 @@ When running multiple Gateways behind a load balancer:
 |-------|-------|----------|
 | "TLS enabled but missing required flags" | Missing -tls-cert, -tls-key, or -tls-ca | Provide all three certificate paths |
 | Agent connection refused | mTLS cert validation failed | Verify agent certificate is signed by the same CA |
-| "database-url is required" | Missing database URL | Provide PostgreSQL connection URL |
-| Actions not dispatched | Agent not listening to correct channel | Check device ID matches between certificate and Hello |
-| High latency | Network or database issues | Check PostgreSQL connectivity and performance |
+| Actions not dispatched | Asynq worker not started for device | Check device ID matches between certificate and Hello |
+| "failed to connect to valkey" | Valkey not reachable | Check `VALKEY_ADDR` and `VALKEY_PASSWORD` |
+| Credential operations failing | Control Server not reachable | Check `GATEWAY_CONTROL_URL` |
 
 ## Development
 
@@ -362,11 +382,14 @@ go test ./server/internal/connection/...
 ### Local Development Stack
 
 ```bash
-# Start PostgreSQL
-podman-compose up -d postgres
+# Start Valkey and Control Server
+podman-compose up -d valkey control
 
 # Run gateway in dev mode
-go run ./server/cmd/gateway \
-  -database-url="postgres://powermanage:powermanage@localhost:5432/powermanage?sslmode=disable" \
-  -log-level=debug
+export VALKEY_ADDR=localhost:6379
+export VALKEY_PASSWORD=your-password
+export GATEWAY_CONTROL_URL=http://localhost:8081
+export LOG_LEVEL=debug
+
+go run ./server/cmd/gateway
 ```

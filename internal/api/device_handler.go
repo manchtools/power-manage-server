@@ -18,6 +18,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -26,11 +27,17 @@ import (
 type DeviceHandler struct {
 	store     *store.Store
 	encryptor *crypto.Encryptor
+	aqClient  *taskqueue.Client
 }
 
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor) *DeviceHandler {
 	return &DeviceHandler{store: st, encryptor: enc}
+}
+
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *DeviceHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
 }
 
 // ListDevices returns a paginated list of devices.
@@ -729,14 +736,13 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to record revocation event")
 	}
 
-	// Send notification to gateway to dispatch to agent
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	payload, _ := json.Marshal(map[string]any{
-		"type":      "revoke_luks_device_key",
-		"action_id": req.Msg.ActionId,
-	})
-	if err := h.store.Notify(ctx, agentChannel, string(payload)); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to notify agent")
+	// Dispatch LUKS device key revocation to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
+			ActionID: req.Msg.ActionId,
+		}); err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
+		}
 	}
 
 	return connect.NewResponse(&pm.RevokeLuksDeviceKeyResponse{}), nil

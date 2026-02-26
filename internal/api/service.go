@@ -12,6 +12,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // ControlService implements the ControlService Connect-RPC service.
@@ -78,6 +79,14 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		compliancePolicy: NewCompliancePolicyHandler(st),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
 	}
+}
+
+// SetTaskQueueClient propagates the Asynq client to all sub-handlers that
+// dispatch messages to agents. This enables dual-write during migration.
+func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
+	s.action.SetTaskQueueClient(c)
+	s.osquery.SetTaskQueueClient(c)
+	s.device.SetTaskQueueClient(c)
 }
 
 var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)

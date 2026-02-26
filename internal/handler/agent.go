@@ -3,26 +3,21 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
-	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/mtls"
-	"github.com/manchtools/power-manage/server/internal/resolution"
-	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // contextKey is a custom type for context keys.
@@ -37,32 +32,47 @@ const (
 type AgentHandler struct {
 	pmv1connect.UnimplementedAgentServiceHandler
 
-	manager    *connection.Manager
-	store      *store.Store
-	logger     *slog.Logger
-	encryptor  *crypto.Encryptor
-	requireTLS bool
+	manager      *connection.Manager
+	aqClient     *taskqueue.Client
+	controlProxy *ControlProxy
+	workerMgr    *gateway.DeviceWorkerManager
+	logger       *slog.Logger
+	requireTLS   bool
 }
 
 // NewAgentHandler creates a new agent handler.
-func NewAgentHandler(manager *connection.Manager, s *store.Store, logger *slog.Logger, enc *crypto.Encryptor) *AgentHandler {
+func NewAgentHandler(
+	manager *connection.Manager,
+	aqClient *taskqueue.Client,
+	controlProxy *ControlProxy,
+	workerMgr *gateway.DeviceWorkerManager,
+	logger *slog.Logger,
+) *AgentHandler {
 	return &AgentHandler{
-		manager:    manager,
-		store:      s,
-		logger:     logger,
-		encryptor:  enc,
-		requireTLS: false,
+		manager:      manager,
+		aqClient:     aqClient,
+		controlProxy: controlProxy,
+		workerMgr:    workerMgr,
+		logger:       logger,
+		requireTLS:   false,
 	}
 }
 
 // NewAgentHandlerWithTLS creates a new agent handler that requires mTLS.
-func NewAgentHandlerWithTLS(manager *connection.Manager, s *store.Store, logger *slog.Logger, enc *crypto.Encryptor) *AgentHandler {
+func NewAgentHandlerWithTLS(
+	manager *connection.Manager,
+	aqClient *taskqueue.Client,
+	controlProxy *ControlProxy,
+	workerMgr *gateway.DeviceWorkerManager,
+	logger *slog.Logger,
+) *AgentHandler {
 	return &AgentHandler{
-		manager:    manager,
-		store:      s,
-		logger:     logger,
-		encryptor:  enc,
-		requireTLS: true,
+		manager:      manager,
+		aqClient:     aqClient,
+		controlProxy: controlProxy,
+		workerMgr:    workerMgr,
+		logger:       logger,
+		requireTLS:   true,
 	}
 }
 
@@ -99,10 +109,6 @@ func DeviceIDFromContext(ctx context.Context) (string, bool) {
 }
 
 // Stream handles the bidirectional stream between agent and server.
-// The stream is used for:
-// - Receiving heartbeats and execution results from agents
-// - Future one-off actions (like restart commands)
-// Note: Regular action sync is handled via the SyncActions RPC, not via push.
 func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]) (err error) {
 	// Recover from panics to prevent server crashes
 	defer func() {
@@ -157,31 +163,24 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	// Register the agent connection
 	h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
 
-	// Subscribe to agent-specific notification channel so dispatcher can forward actions
-	agentChannel := fmt.Sprintf("agent_%s", deviceID)
-	if err := h.store.ListenChannel(ctx, agentChannel); err != nil {
-		h.logger.Warn("failed to subscribe to agent channel", "channel", agentChannel, "error", err)
-	} else {
-		h.logger.Debug("subscribed to agent channel", "channel", agentChannel)
+	// Start per-device Asynq worker to process action dispatches
+	if err := h.workerMgr.StartWorker(deviceID); err != nil {
+		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
 	}
 
 	defer func() {
-		// Unsubscribe from agent channel
-		if err := h.store.UnlistenChannel(context.Background(), agentChannel); err != nil {
-			h.logger.Warn("failed to unsubscribe from agent channel", "channel", agentChannel, "error", err)
-		}
+		h.workerMgr.StopWorker(deviceID)
 		h.manager.Unregister(deviceID)
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
 
-	// Record heartbeat event for the hello
-	if err := h.recordHeartbeat(ctx, deviceID, hello.AgentVersion); err != nil {
-		h.logger.Warn("failed to record heartbeat", "error", err)
-	}
-
 	// Notify control server about agent connection so it can dispatch pending actions
-	if err := h.notifyControlHello(ctx, deviceID, hello.Hostname, hello.AgentVersion); err != nil {
-		h.logger.Warn("failed to notify control server", "error", err)
+	if err := h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
+		DeviceID:     deviceID,
+		Hostname:     hello.Hostname,
+		AgentVersion: hello.AgentVersion,
+	}); err != nil {
+		h.logger.Warn("failed to enqueue device hello", "error", err)
 	}
 
 	// Process incoming messages from agent
@@ -202,78 +201,29 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	}
 }
 
-// recordHeartbeat records a device heartbeat event.
-func (h *AgentHandler) recordHeartbeat(ctx context.Context, deviceID, agentVersion string) error {
-	return h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   deviceID,
-		EventType:  "DeviceHeartbeat",
-		Data: map[string]any{
-			"agent_version": agentVersion,
-		},
-		ActorType: "device",
-		ActorID:   deviceID,
-	})
-}
-
-// notifyControlHello notifies the control server that an agent has connected.
-// This triggers the control server to dispatch any pending actions to the agent.
-func (h *AgentHandler) notifyControlHello(ctx context.Context, deviceID, hostname, agentVersion string) error {
-	msgID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-
-	payload, err := json.Marshal(map[string]string{
-		"hostname":      hostname,
-		"agent_version": agentVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("marshal hello payload: %w", err)
-	}
-
-	msg := map[string]any{
-		"type":       "hello",
-		"device_id":  deviceID,
-		"message_id": msgID,
-		"payload":    json.RawMessage(payload),
-	}
-
-	msgBytes, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal control message: %w", err)
-	}
-
-	return h.store.Notify(ctx, "control_inbox", string(msgBytes))
-}
-
-// handleAgentMessage processes messages from the agent and records events.
+// handleAgentMessage processes messages from the agent.
+// All state changes are forwarded to the control server via Asynq or Connect-RPC proxy.
 func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, msg *pm.AgentMessage) error {
 	switch p := msg.Payload.(type) {
 	case *pm.AgentMessage_Heartbeat:
-		// Record heartbeat event with metrics
-		data := map[string]any{}
+		payload := taskqueue.DeviceHeartbeatPayload{
+			DeviceID: deviceID,
+		}
 		if p.Heartbeat.Uptime != nil {
-			data["uptime_seconds"] = p.Heartbeat.Uptime.Seconds
+			payload.UptimeSeconds = p.Heartbeat.Uptime.Seconds
 		}
 		if p.Heartbeat.CpuPercent > 0 {
-			data["cpu_percent"] = p.Heartbeat.CpuPercent
+			payload.CpuPercent = p.Heartbeat.CpuPercent
 		}
 		if p.Heartbeat.MemoryPercent > 0 {
-			data["memory_percent"] = p.Heartbeat.MemoryPercent
+			payload.MemoryPercent = p.Heartbeat.MemoryPercent
 		}
 		if p.Heartbeat.DiskPercent > 0 {
-			data["disk_percent"] = p.Heartbeat.DiskPercent
+			payload.DiskPercent = p.Heartbeat.DiskPercent
 		}
-
-		return h.store.AppendEvent(ctx, store.Event{
-			StreamType: "device",
-			StreamID:   deviceID,
-			EventType:  "DeviceHeartbeat",
-			Data:       data,
-			ActorType:  "device",
-			ActorID:    deviceID,
-		})
+		return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
 
 	case *pm.AgentMessage_ActionResult:
-		// Record execution result event
 		result := p.ActionResult
 		if result.ActionId == nil {
 			return fmt.Errorf("action result missing action ID")
@@ -283,177 +233,14 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			return fmt.Errorf("action result has empty action ID")
 		}
 
-		// The resultID could be either:
-		// 1. An execution ID (for dispatched actions from the server)
-		// 2. An action ID (for agent-scheduled actions)
-		//
-		// Try to look up an existing execution first. If found, we update it.
-		// If not found, we create a new execution record.
-		var executionID string
-		var actionID string
-		var needsCreate bool
+		h.logger.Info("received action result",
+			"device_id", deviceID,
+			"result_id", resultID,
+			"status", result.Status.String(),
+			"duration_ms", result.DurationMs,
+		)
 
-		existingExec, err := h.store.Queries().GetExecutionByID(ctx, resultID)
-		if err == nil {
-			// Found existing execution - this was a dispatched action
-			executionID = existingExec.ID
-			if existingExec.ActionID != nil {
-				actionID = *existingExec.ActionID
-			}
-			needsCreate = false
-			h.logger.Info("received result for dispatched action",
-				"device_id", deviceID,
-				"execution_id", executionID,
-				"action_id", actionID,
-				"status", result.Status.String(),
-				"duration_ms", result.DurationMs,
-			)
-		} else {
-			// No existing execution - this is an agent-scheduled action
-			// resultID is the action ID, generate a new execution ID
-			actionID = resultID
-			executionID = ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-			needsCreate = true
-			h.logger.Info("received result for agent-scheduled action",
-				"device_id", deviceID,
-				"action_id", actionID,
-				"execution_id", executionID,
-				"status", result.Status.String(),
-				"duration_ms", result.DurationMs,
-			)
-		}
-
-		// Calculate execution timestamps from agent data
-		// executed_at = completed_at - duration_ms (when the action started on the agent)
-		var executedAt, completedAt time.Time
-		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
-			completedAt = result.CompletedAt.AsTime()
-			executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
-		} else {
-			// Fallback to current time if agent didn't provide timestamp
-			completedAt = time.Now()
-			executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
-		}
-
-		// Only create ExecutionCreated event if this is a new execution (agent-scheduled action)
-		if needsCreate {
-			// Look up the action to get its details for the ExecutionCreated event
-			action, err := h.store.Queries().GetActionByID(ctx, actionID)
-			if err != nil {
-				h.logger.Warn("could not look up action for execution result",
-					"action_id", actionID,
-					"error", err,
-				)
-				// Fall back to creating execution with minimal data
-				action.ActionType = 0 // UNSPECIFIED
-				action.Params = nil
-				action.TimeoutSeconds = 300
-			}
-
-			createdData := map[string]any{
-				"device_id":       deviceID,
-				"action_id":       actionID,
-				"action_type":     action.ActionType,
-				"desired_state":   0, // Default to PRESENT for agent-reported results
-				"params":          json.RawMessage(action.Params),
-				"timeout_seconds": action.TimeoutSeconds,
-				"executed_at":     executedAt.Format(time.RFC3339Nano), // When execution started on agent
-			}
-			if err := h.store.AppendEvent(ctx, store.Event{
-				StreamType: "execution",
-				StreamID:   executionID,
-				EventType:  "ExecutionCreated",
-				Data:       createdData,
-				ActorType:  "device",
-				ActorID:    deviceID,
-			}); err != nil {
-				return fmt.Errorf("create execution event: %w", err)
-			}
-		}
-
-		// Now append the completion/result event
-		var eventType string
-		var data map[string]any
-
-		switch result.Status {
-		case pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS:
-			eventType = "ExecutionCompleted"
-			data = map[string]any{
-				"duration_ms":  result.DurationMs,
-				"completed_at": completedAt.Format(time.RFC3339Nano),
-				"changed":      result.Changed,
-				"compliant":    result.Compliant,
-			}
-			if result.Output != nil {
-				data["output"] = map[string]any{
-					"stdout":    result.Output.Stdout,
-					"stderr":    result.Output.Stderr,
-					"exit_code": result.Output.ExitCode,
-				}
-			}
-			if result.DetectionOutput != nil {
-				data["detection_output"] = map[string]any{
-					"stdout":    result.DetectionOutput.Stdout,
-					"stderr":    result.DetectionOutput.Stderr,
-					"exit_code": result.DetectionOutput.ExitCode,
-				}
-			}
-
-		case pm.ExecutionStatus_EXECUTION_STATUS_FAILED:
-			eventType = "ExecutionFailed"
-			data = map[string]any{
-				"error":        result.Error,
-				"duration_ms":  result.DurationMs,
-				"completed_at": completedAt.Format(time.RFC3339Nano),
-				"changed":      result.Changed,
-				"compliant":    result.Compliant,
-			}
-			if result.Output != nil {
-				data["output"] = map[string]any{
-					"stdout":    result.Output.Stdout,
-					"stderr":    result.Output.Stderr,
-					"exit_code": result.Output.ExitCode,
-				}
-			}
-			if result.DetectionOutput != nil {
-				data["detection_output"] = map[string]any{
-					"stdout":    result.DetectionOutput.Stdout,
-					"stderr":    result.DetectionOutput.Stderr,
-					"exit_code": result.DetectionOutput.ExitCode,
-				}
-			}
-
-		case pm.ExecutionStatus_EXECUTION_STATUS_RUNNING:
-			eventType = "ExecutionStarted"
-			data = map[string]any{}
-
-		case pm.ExecutionStatus_EXECUTION_STATUS_TIMEOUT:
-			eventType = "ExecutionTimedOut"
-			data = map[string]any{
-				"error":        result.Error,
-				"duration_ms":  result.DurationMs,
-				"completed_at": completedAt.Format(time.RFC3339Nano),
-			}
-			if result.Output != nil {
-				data["output"] = map[string]any{
-					"stdout":    result.Output.Stdout,
-					"stderr":    result.Output.Stderr,
-					"exit_code": result.Output.ExitCode,
-				}
-			}
-
-		case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
-			eventType = "ExecutionSkipped"
-			data = map[string]any{}
-			if result.Error != "" {
-				data["reason"] = result.Error
-			}
-
-		default:
-			return fmt.Errorf("unknown execution status: %v", result.Status)
-		}
-
-		// Check for LPS password rotations and store each separately
+		// Extract and proxy LPS password rotations via RPC (credentials never touch Valkey)
 		if result.Metadata != nil {
 			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
 				var rotations []struct {
@@ -462,89 +249,36 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					RotatedAt string `json:"rotated_at"`
 					Reason    string `json:"reason"`
 				}
-				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil {
-					for _, r := range rotations {
-						encPassword, encErr := h.encryptor.Encrypt(r.Password)
-						if encErr != nil {
-							h.logger.Error("failed to encrypt LPS password", "error", encErr)
-							continue
+				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil && len(rotations) > 0 {
+					protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
+					for i, r := range rotations {
+						protoRotations[i] = &pm.LpsPasswordRotation{
+							Username:  r.Username,
+							Password:  r.Password,
+							RotatedAt: r.RotatedAt,
+							Reason:    r.Reason,
 						}
-						lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-						if err := h.store.AppendEvent(ctx, store.Event{
-							StreamType: "lps_password",
-							StreamID:   lpsStreamID,
-							EventType:  "LpsPasswordRotated",
-							Data: map[string]any{
-								"device_id":       deviceID,
-								"action_id":       actionID,
-								"username":        r.Username,
-								"password":        encPassword,
-								"rotated_at":      r.RotatedAt,
-								"rotation_reason": r.Reason,
-							},
-							ActorType: "device",
-							ActorID:   deviceID,
-						}); err != nil {
-							h.logger.Error("failed to append LpsPasswordRotated event", "device_id", deviceID, "action_id", actionID, "username", r.Username, "error", err)
-						}
+					}
+					// Use resultID as actionID — for agent-scheduled actions it IS the action ID
+					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
+						h.logger.Error("failed to proxy LPS password rotations", "error", err)
 					}
 				}
 			}
 		}
 
-		// Append the execution event
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "execution",
-			StreamID:   executionID,
-			EventType:  eventType,
-			Data:       data,
-			ActorType:  "device",
-			ActorID:    deviceID,
-		}); err != nil {
-			return fmt.Errorf("append execution event: %w", err)
+		// Serialize ActionResult to protojson and enqueue to control:inbox
+		resultJSON, err := protojson.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal action result: %w", err)
 		}
 
-		// Emit compliance event only for actions with is_compliance=true
-		if result.DetectionOutput != nil && actionID != "" {
-			actionName := ""
-			isCompliance := false
-			if action, err := h.store.Queries().GetActionByID(ctx, actionID); err == nil {
-				actionName = action.Name
-				var params map[string]any
-				if json.Unmarshal(action.Params, &params) == nil {
-					isCompliance, _ = params["isCompliance"].(bool)
-				}
-			}
-			if !isCompliance {
-				return nil
-			}
-			complianceData := map[string]any{
-				"device_id":   deviceID,
-				"action_id":   actionID,
-				"action_name": actionName,
-				"compliant":   result.Compliant,
-				"detection_output": map[string]any{
-					"stdout":    result.DetectionOutput.Stdout,
-					"stderr":    result.DetectionOutput.Stderr,
-					"exit_code": result.DetectionOutput.ExitCode,
-				},
-			}
-			if err := h.store.AppendEvent(ctx, store.Event{
-				StreamType: "compliance",
-				StreamID:   deviceID + "_" + actionID,
-				EventType:  "ComplianceResultUpdated",
-				Data:       complianceData,
-				ActorType:  "device",
-				ActorID:    deviceID,
-			}); err != nil {
-				h.logger.Error("failed to append compliance event", "device_id", deviceID, "action_id", actionID, "error", err)
-			}
-		}
-
-		return nil
+		return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+			DeviceID:         deviceID,
+			ActionResultJSON: resultJSON,
+		})
 
 	case *pm.AgentMessage_OutputChunk:
-		// Store output chunk as an event for later retrieval
 		chunk := p.OutputChunk
 		if chunk.ExecutionId == "" {
 			return fmt.Errorf("output chunk missing execution ID")
@@ -563,17 +297,12 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"size", len(chunk.Data),
 		)
 
-		return h.store.AppendEvent(ctx, store.Event{
-			StreamType: "execution",
-			StreamID:   chunk.ExecutionId,
-			EventType:  "OutputChunk",
-			Data: map[string]any{
-				"stream":   streamType,
-				"data":     string(chunk.Data),
-				"sequence": chunk.Sequence,
-			},
-			ActorType: "device",
-			ActorID:   deviceID,
+		return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
+			DeviceID:    deviceID,
+			ExecutionID: chunk.ExecutionId,
+			Stream:      streamType,
+			Data:        string(chunk.Data),
+			Sequence:    int64(chunk.Sequence),
 		})
 
 	case *pm.AgentMessage_QueryResult:
@@ -594,11 +323,12 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			rowsBytes = []byte("[]")
 		}
 
-		return h.store.Queries().CompleteOSQueryResult(ctx, db.CompleteOSQueryResultParams{
-			QueryID: result.QueryId,
-			Success: result.Success,
-			Error:   result.Error,
-			Rows:    rowsBytes,
+		return h.aqClient.EnqueueToControl(taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
+			DeviceID: deviceID,
+			QueryID:  result.QueryId,
+			Success:  result.Success,
+			Error:    result.Error,
+			RowsJSON: rowsBytes,
 		})
 
 	case *pm.AgentMessage_Inventory:
@@ -608,8 +338,8 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"tables", len(inventory.Tables),
 		)
 
+		tables := make([]taskqueue.InventoryTable, 0, len(inventory.Tables))
 		for _, table := range inventory.Tables {
-			// Convert rows to JSON for storage
 			var rowsJSON []map[string]string
 			for _, row := range table.Rows {
 				rowsJSON = append(rowsJSON, row.Data)
@@ -618,21 +348,16 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			if err != nil {
 				continue
 			}
-
-			if err := h.store.Queries().UpsertDeviceInventory(ctx, db.UpsertDeviceInventoryParams{
-				DeviceID:  deviceID,
+			tables = append(tables, taskqueue.InventoryTable{
 				TableName: table.TableName,
-				Rows:      rowsBytes,
-			}); err != nil {
-				h.logger.Warn("failed to upsert inventory table",
-					"device_id", deviceID,
-					"table", table.TableName,
-					"error", err,
-				)
-			}
+				RowsJSON:  rowsBytes,
+			})
 		}
 
-		return nil
+		return h.aqClient.EnqueueToControl(taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
+			DeviceID: deviceID,
+			Tables:   tables,
+		})
 
 	case *pm.AgentMessage_SecurityAlert:
 		alert := p.SecurityAlert
@@ -643,28 +368,16 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"details", alert.Details,
 		)
 
-		// Store security alert as an event for audit trail
-		return h.store.AppendEvent(ctx, store.Event{
-			StreamType: "device",
-			StreamID:   deviceID,
-			EventType:  "SecurityAlert",
-			Data: map[string]any{
-				"alert_type": alert.Type.String(),
-				"message":    alert.Message,
-				"details":    alert.Details,
-			},
-			ActorType: "device",
-			ActorID:   deviceID,
+		return h.aqClient.EnqueueToControl(taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
+			DeviceID:  deviceID,
+			AlertType: alert.Type.String(),
+			Message:   alert.Message,
+			Details:   alert.Details,
 		})
 
 	case *pm.AgentMessage_GetLuksKey:
-		// Look up the current LUKS key for this device+action
-		key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
-			DeviceID: deviceID,
-			ActionID: p.GetLuksKey.ActionId,
-		})
+		resp, err := h.controlProxy.GetLuksKey(ctx, deviceID, p.GetLuksKey.ActionId)
 		if err != nil {
-			// Send error response
 			return h.manager.Send(deviceID, &pm.ServerMessage{
 				Id: msg.Id,
 				Payload: &pm.ServerMessage_Error{
@@ -675,60 +388,17 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				},
 			})
 		}
-		// Decrypt passphrase before returning to agent
-		passphrase, err := h.encryptor.Decrypt(key.Passphrase)
-		if err != nil {
-			return h.manager.Send(deviceID, &pm.ServerMessage{
-				Id: msg.Id,
-				Payload: &pm.ServerMessage_Error{
-					Error: &pm.Error{
-						Code:    connect.CodeInternal.String(),
-						Message: "failed to decrypt passphrase",
-					},
-				},
-			})
-		}
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msg.Id,
 			Payload: &pm.ServerMessage_GetLuksKey{
-				GetLuksKey: &pm.GetLuksKeyResponse{
-					Passphrase: passphrase,
-				},
+				GetLuksKey: resp,
 			},
 		})
 
 	case *pm.AgentMessage_StoreLuksKey:
 		req := p.StoreLuksKey
-		// Encrypt passphrase before storing
-		encPassphrase, err := h.encryptor.Encrypt(req.Passphrase)
+		resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.Passphrase, req.RotationReason)
 		if err != nil {
-			return h.manager.Send(deviceID, &pm.ServerMessage{
-				Id: msg.Id,
-				Payload: &pm.ServerMessage_Error{
-					Error: &pm.Error{
-						Code:    connect.CodeInternal.String(),
-						Message: "failed to encrypt passphrase",
-					},
-				},
-			})
-		}
-		// Store the LUKS key as an event
-		luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "luks_key",
-			StreamID:   luksStreamID,
-			EventType:  "LuksKeyRotated",
-			Data: map[string]any{
-				"device_id":       deviceID,
-				"action_id":       req.ActionId,
-				"device_path":     req.DevicePath,
-				"passphrase":      encPassphrase,
-				"rotated_at":      time.Now().Format(time.RFC3339),
-				"rotation_reason": req.RotationReason,
-			},
-			ActorType: "device",
-			ActorID:   deviceID,
-		}); err != nil {
 			return h.manager.Send(deviceID, &pm.ServerMessage{
 				Id: msg.Id,
 				Payload: &pm.ServerMessage_Error{
@@ -739,13 +409,10 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 				},
 			})
 		}
-		// Confirm receipt — agent waits for this before removing the old key
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msg.Id,
 			Payload: &pm.ServerMessage_StoreLuksKey{
-				StoreLuksKey: &pm.StoreLuksKeyResponse{
-					Success: true,
-				},
+				StoreLuksKey: resp,
 			},
 		})
 
@@ -758,84 +425,34 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"error", result.Error,
 		)
 
-		// Emit event so the projector updates revocation_status on the key.
-		luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-		if result.Success {
-			if err := h.store.AppendEvent(ctx, store.Event{
-				StreamType: "luks_key",
-				StreamID:   luksStreamID,
-				EventType:  "LuksDeviceKeyRevoked",
-				Data: map[string]any{
-					"device_id":  deviceID,
-					"action_id":  result.ActionId,
-					"revoked_at": time.Now().Format(time.RFC3339),
-				},
-				ActorType: "device",
-				ActorID:   deviceID,
-			}); err != nil {
-				h.logger.Error("failed to emit LuksDeviceKeyRevoked event", "error", err)
-			}
-		} else {
-			if err := h.store.AppendEvent(ctx, store.Event{
-				StreamType: "luks_key",
-				StreamID:   luksStreamID,
-				EventType:  "LuksDeviceKeyRevocationFailed",
-				Data: map[string]any{
-					"device_id": deviceID,
-					"action_id": result.ActionId,
-					"error":     result.Error,
-					"failed_at": time.Now().Format(time.RFC3339),
-				},
-				ActorType: "device",
-				ActorID:   deviceID,
-			}); err != nil {
-				h.logger.Error("failed to emit LuksDeviceKeyRevocationFailed event", "error", err)
-			}
-		}
-		return nil
+		return h.aqClient.EnqueueToControl(taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
+			DeviceID: deviceID,
+			ActionID: result.ActionId,
+			Success:  result.Success,
+			Error:    result.Error,
+		})
 
 	default:
 		return fmt.Errorf("unknown message type: %T", msg.Payload)
 	}
 }
 
-// ValidateLuksToken validates and consumes a one-time LUKS token.
-// Called by the agent CLI subcommand (not via the stream).
+// ValidateLuksToken validates and consumes a one-time LUKS token via the control server.
 func (h *AgentHandler) ValidateLuksToken(ctx context.Context, req *connect.Request[pm.ValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and token are required"))
 	}
 
-	// Validate and consume the token atomically
-	token, err := h.store.Queries().ValidateAndConsumeLuksToken(ctx, db.ValidateAndConsumeLuksTokenParams{
-		Token:    req.Msg.Token,
-		DeviceID: req.Msg.DeviceId,
-	})
+	resp, err := h.controlProxy.ValidateLuksToken(ctx, req.Msg.DeviceId, req.Msg.Token)
 	if err != nil {
 		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or has expired"))
 	}
 
-	// Look up the device_path from the stored key data
-	devicePath := ""
-	key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
-		DeviceID: req.Msg.DeviceId,
-		ActionID: token.ActionID,
-	})
-	if err == nil {
-		devicePath = key.DevicePath
-	}
-
-	return connect.NewResponse(&pm.ValidateLuksTokenResponse{
-		ActionId:   token.ActionID,
-		DevicePath: devicePath,
-		MinLength:  token.MinLength,
-		Complexity: pm.LpsPasswordComplexity(token.Complexity),
-	}), nil
+	return connect.NewResponse(resp), nil
 }
 
-// SyncActions returns all actions currently assigned to a device.
-// The agent calls this on successful connection to sync its local action store.
+// SyncActions returns all actions currently assigned to a device via the control server.
 func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.SyncActionsRequest]) (*connect.Response[pm.SyncActionsResponse], error) {
 	deviceID := req.Msg.DeviceId.GetValue()
 	if deviceID == "" {
@@ -856,158 +473,13 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 
 	h.logger.Info("agent syncing actions", "device_id", deviceID)
 
-	// Get all resolved actions for this device (device + user layers merged)
-	dbActions, err := resolution.ResolveActionsForDevice(ctx, h.store.Queries(), deviceID)
+	resp, err := h.controlProxy.SyncActions(ctx, deviceID)
 	if err != nil {
-		h.logger.Error("failed to resolve actions", "device_id", deviceID, "error", err)
+		h.logger.Error("failed to proxy sync actions", "device_id", deviceID, "error", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
 	}
 
-	// Get the effective sync interval for this device
-	syncInterval, err := h.store.Queries().GetDeviceSyncInterval(ctx, deviceID)
-	if err != nil {
-		h.logger.Warn("failed to get sync interval, using default", "device_id", deviceID, "error", err)
-		syncInterval = 0 // Use default
-	}
+	h.logger.Info("returning synced actions", "device_id", deviceID, "count", len(resp.Actions), "sync_interval_minutes", resp.SyncIntervalMinutes)
 
-	// Convert to wire format (Action messages)
-	actions := make([]*pm.Action, 0, len(dbActions))
-	for _, dbAction := range dbActions {
-		action := dbResolvedActionToWireAction(dbAction)
-		if action != nil {
-			actions = append(actions, action)
-		}
-	}
-
-	h.logger.Info("returning synced actions", "device_id", deviceID, "count", len(actions), "sync_interval_minutes", syncInterval)
-
-	return connect.NewResponse(&pm.SyncActionsResponse{
-		Actions:             actions,
-		SyncIntervalMinutes: syncInterval,
-	}), nil
-}
-
-// dbResolvedActionToWireAction converts a resolved action row (with computed desired_state) to wire format.
-func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Action {
-	action := &pm.Action{
-		Id:              &pm.ActionId{Value: a.ID},
-		Type:            pm.ActionType(a.ActionType),
-		DesiredState:    pm.DesiredState(a.DesiredState),
-		TimeoutSeconds:  a.TimeoutSeconds,
-		Signature:       a.Signature,
-		ParamsCanonical: a.ParamsCanonical,
-	}
-
-	// Parse params based on action type
-	if len(a.Params) > 0 {
-		parseActionParams(action, a.ActionType, a.Params)
-	}
-
-	return action
-}
-
-// dbActionToWireAction converts a database action projection to the wire format Action message.
-func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
-	action := &pm.Action{
-		Id:              &pm.ActionId{Value: a.ID},
-		Type:            pm.ActionType(a.ActionType),
-		DesiredState:    pm.DesiredState_DESIRED_STATE_PRESENT,
-		TimeoutSeconds:  a.TimeoutSeconds,
-		Signature:       a.Signature,
-		ParamsCanonical: a.ParamsCanonical,
-	}
-
-	if len(a.Params) > 0 {
-		parseActionParams(action, a.ActionType, a.Params)
-	}
-
-	return action
-}
-
-// parseActionParams populates the oneof Params field on a wire Action from JSON and action type.
-func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
-	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
-
-	switch pm.ActionType(actionType) {
-	case pm.ActionType_ACTION_TYPE_PACKAGE:
-		var p pm.PackageParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Package{Package: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
-		var p pm.AppInstallParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_App{App: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_FLATPAK:
-		var p pm.FlatpakParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Flatpak{Flatpak: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SHELL:
-		var p pm.ShellParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Shell{Shell: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var p pm.SystemdParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Systemd{Systemd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_FILE:
-		var p pm.FileParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_File{File: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_UPDATE:
-		var p pm.UpdateParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Update{Update: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_REPOSITORY:
-		var p pm.RepositoryParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Repository{Repository: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_DIRECTORY:
-		var p pm.DirectoryParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Directory{Directory: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_USER:
-		var p pm.UserParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_User{User: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_GROUP:
-		var p pm.GroupParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Group{Group: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSH:
-		var p pm.SshParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Ssh{Ssh: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSHD:
-		var p pm.SshdParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Sshd{Sshd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SUDO:
-		var p pm.SudoParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Sudo{Sudo: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LPS:
-		var p pm.LpsParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Lps{Lps: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LUKS:
-		var p pm.LuksParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Luks{Luks: &p}
-		}
-	}
+	return connect.NewResponse(resp), nil
 }

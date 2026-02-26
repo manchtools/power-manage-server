@@ -8,21 +8,23 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 
 - **Event Store**: All state changes are recorded as immutable events in PostgreSQL
 - **Projections**: Read models are automatically updated via database triggers
-- **LISTEN/NOTIFY**: Real-time notifications for UI updates and agent dispatching
+- **Asynq Task Queue**: Action dispatching and agent event processing via Valkey-backed task queues
+- **InternalService**: Connect-RPC service for gateway to proxy credential-bearing operations
 
 ```
 ┌─────────────────────┐     ┌─────────────────────┐
 │   Control Server    │───▶│     PostgreSQL      │
 │  (Connect-RPC API)  │     │   - events table    │
-└─────────────────────┘     │   - projections     │
-         │                  │   - triggers        │
-         │                  └─────────────────────┘
-         │                           │
-         ▼                           ▼
+│  (InternalService)  │     │   - projections     │
+└─────────┬───────────┘     │   - triggers        │
+          │                 └─────────────────────┘
+          │
+          ▼
 ┌─────────────────────┐     ┌─────────────────────┐
-│   UI / CLI Client   │     │   pg_notify()       │
-│   (JWT Auth)        │     │   → Gateway         │
-└─────────────────────┘     │   → UI WebSocket    │
+│   UI / CLI Client   │     │      Valkey         │
+│   (JWT Auth)        │     │   - device:* queues │
+└─────────────────────┘     │   - control:inbox   │
+                            │   → Gateway dispatch│
                             └─────────────────────┘
 ```
 
@@ -64,6 +66,9 @@ Environment variables override command-line flags:
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
 | `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
 | `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
+| `CONTROL_VALKEY_ADDR` | Valkey/Redis address for Asynq task queue (e.g., `localhost:6379`) |
+| `CONTROL_VALKEY_PASSWORD` | Valkey/Redis password |
+| `CONTROL_VALKEY_DB` | Valkey/Redis database number (default: `0`) |
 
 ## Setup
 

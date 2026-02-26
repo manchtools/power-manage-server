@@ -10,18 +10,25 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // OSQueryHandler handles OSQuery dispatch, result polling, and device inventory RPCs.
 type OSQueryHandler struct {
-	store *store.Store
+	store    *store.Store
+	aqClient *taskqueue.Client
 }
 
 // NewOSQueryHandler creates a new OSQuery handler.
 func NewOSQueryHandler(st *store.Store) *OSQueryHandler {
 	return &OSQueryHandler{store: st}
+}
+
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *OSQueryHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
 }
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
@@ -54,30 +61,17 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
-	// Build notification payload
-	payload := map[string]interface{}{
-		"type":     "osquery_dispatch",
-		"query_id": queryID,
-		"table":    msg.Table,
-	}
-	if msg.RawSql != "" {
-		payload["raw_sql"] = msg.RawSql
-	}
-	if len(msg.Columns) > 0 {
-		payload["columns"] = msg.Columns
-	}
-	if msg.Limit > 0 {
-		payload["limit"] = msg.Limit
-	}
-
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to marshal notification")
-	}
-
-	// Notify agent via pg_notify
-	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payloadJSON)); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to notify agent")
+	// Dispatch osquery to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
+			QueryID: queryID,
+			Table:   msg.Table,
+			Columns: msg.Columns,
+			Limit:   msg.Limit,
+			RawSQL:  msg.RawSql,
+		}); err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch osquery")
+		}
 	}
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
@@ -164,12 +158,11 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"type": "request_inventory",
-	})
-
-	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payload)); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to notify agent")
+	// Dispatch inventory request to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{}); err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
+		}
 	}
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil

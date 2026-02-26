@@ -20,6 +20,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // ActionSigner signs action payloads. Nil means signing is disabled.
@@ -29,10 +30,11 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
-	logger  *slog.Logger
-	signer  ActionSigner
+	store    *store.Store
+	entropy  *ulid.MonotonicEntropy
+	logger   *slog.Logger
+	signer   ActionSigner
+	aqClient *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
 }
 
 // NewActionHandler creates a new action handler.
@@ -43,6 +45,11 @@ func NewActionHandler(st *store.Store, signer ActionSigner) *ActionHandler {
 		logger:  slog.Default(),
 		signer:  signer,
 	}
+}
+
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *ActionHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
 }
 
 // validateCreateActionParams validates params for CreateActionRequest using struct tags.
@@ -626,33 +633,17 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
 
-	// Notify agent channel directly with action_dispatch format.
-	// The PostgreSQL trigger sends an event notification, but the gateway dispatcher
-	// only handles action_dispatch messages. This ensures the action reaches the agent
-	// immediately if connected, without waiting for the next sync.
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	dispatchPayload := map[string]any{
-		"type":            "action_dispatch",
-		"execution_id":    id,
-		"action_type":     int32(actionType),
-		"desired_state":   int32(desiredState),
-		"params":          params,
-		"timeout_seconds": timeoutSeconds,
-	}
-	payloadBytes, err := json.Marshal(dispatchPayload)
-	if err != nil {
-		h.logger.Error("failed to marshal dispatch payload", "error", err, "execution_id", id)
-	} else {
-		h.logger.Debug("sending action dispatch notification",
-			"execution_id", id,
-			"device_id", req.Msg.DeviceId,
-			"action_type", actionType.String(),
-			"channel", agentChannel,
-		)
-		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
-			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
-		} else {
-			h.logger.Debug("action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+	// Dispatch action to device via Asynq task queue
+	if h.aqClient != nil {
+		paramsJSON, _ := json.Marshal(params)
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+			ExecutionID:    id,
+			ActionType:     int32(actionType),
+			DesiredState:   int32(desiredState),
+			Params:         paramsJSON,
+			TimeoutSeconds: timeoutSeconds,
+		}); err != nil {
+			h.logger.Warn("failed to enqueue action dispatch", "error", err, "execution_id", id)
 		}
 	}
 
@@ -1007,31 +998,16 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
 
-	// Notify agent channel directly with action_dispatch format.
-	// This ensures instant actions reach the agent immediately if connected.
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	dispatchPayload := map[string]any{
-		"type":            "action_dispatch",
-		"execution_id":    id,
-		"action_type":     int32(req.Msg.InstantAction),
-		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		"params":          map[string]any{},
-		"timeout_seconds": timeoutSeconds,
-	}
-	payloadBytes, err := json.Marshal(dispatchPayload)
-	if err != nil {
-		h.logger.Error("failed to marshal instant action dispatch payload", "error", err, "execution_id", id)
-	} else {
-		h.logger.Debug("sending instant action dispatch notification",
-			"execution_id", id,
-			"device_id", req.Msg.DeviceId,
-			"action_type", req.Msg.InstantAction.String(),
-			"channel", agentChannel,
-		)
-		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
-			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
-		} else {
-			h.logger.Debug("instant action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+	// Dispatch instant action to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+			ExecutionID:    id,
+			ActionType:     int32(req.Msg.InstantAction),
+			DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+			Params:         json.RawMessage("{}"),
+			TimeoutSeconds: timeoutSeconds,
+		}); err != nil {
+			h.logger.Warn("failed to enqueue instant action dispatch", "error", err, "execution_id", id)
 		}
 	}
 

@@ -56,12 +56,29 @@ services:
     networks:
       - internal
 
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    container_name: pm-valkey
+    restart: unless-stopped
+    volumes:
+      - ./data/valkey:/data:z
+    command: ["valkey-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - internal
+
   control:
     image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:-latest}
     container_name: pm-control
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     volumes:
       - ./certs:/certs:ro,z
@@ -81,6 +98,8 @@ services:
       - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
       - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
       - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - CONTROL_VALKEY_ADDR=valkey:6379
+      - CONTROL_VALKEY_PASSWORD=${VALKEY_PASSWORD}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
       interval: 10s
@@ -102,18 +121,19 @@ services:
     container_name: pm-gateway
     restart: unless-stopped
     depends_on:
-      postgres:
+      valkey:
         condition: service_healthy
       control:
         condition: service_healthy
     volumes:
       - ./certs:/certs:ro,z
     environment:
-      - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - VALKEY_ADDR=valkey:6379
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GATEWAY_CONTROL_URL=http://control:8081
+      - GATEWAY_LISTEN_ADDR=:8080
+      - LOG_LEVEL=${LOG_LEVEL:-info}
     command:
-      - "-addr=:8080"
-      - "-database-url=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable"
-      - "-log-level=${LOG_LEVEL:-info}"
       - "-tls"
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"

@@ -1,9 +1,9 @@
 # Power Manage Server
 
-The server side of Power Manage, providing the API, web UI, agent registration, and real-time agent communication. It consists of two binaries that share a PostgreSQL database:
+The server side of Power Manage, providing the API, web UI, agent registration, and real-time agent communication. It consists of two binaries:
 
-- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing)
-- **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time
+- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing), PostgreSQL event store
+- **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time (stateless, no database)
 
 ## Architecture
 
@@ -15,25 +15,26 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
                           │  - Connect-RPC API   │
                           │  - Agent registration │
                           │  - Certificate signing│
-                          └──────────┬───────────┘
-                                     │
-                                     ▼
-                          ┌──────────────────────┐
-                          │     PostgreSQL       │
-                          │                      │
-                          │  - Event store       │
-                          │  - Projections       │
-                          │  - LISTEN/NOTIFY     │
-                          └──────────┬───────────┘
-                                     │
-                                     ▼
+                          │  - InternalService   │
+                          └───┬──────────────┬───┘
+                              │              │
+                              ▼              ▼
+                   ┌──────────────┐  ┌──────────────┐
+                   │  PostgreSQL  │  │    Valkey     │
+                   │              │  │              │
+                   │ - Event store│  │ - Asynq tasks│
+                   │ - Projections│  │ - device:*   │
+                   └──────────────┘  │ - control:*  │
+                                     └──────┬───────┘
+                                            │
+                                            ▼
                           ┌──────────────────────┐
     Agents ──────────────▶│   Gateway Server     │
     (mTLS)                │   :8080              │
                           │                      │
                           │  - Streaming RPC     │
-                          │  - Action dispatch   │
-                          │  - Status collection │
+                          │  - Asynq workers     │
+                          │  - Connect-RPC proxy │
                           └──────────────────────┘
 ```
 
@@ -41,7 +42,7 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
 
 All state changes are recorded as immutable events in a single `events` table. PostgreSQL trigger functions project events into read-optimized `*_projection` tables automatically. Queries read from projections, never from the event store directly.
 
-Inter-service communication uses PostgreSQL `LISTEN/NOTIFY` — when the Control Server dispatches an action, the Gateway picks it up instantly and streams it to the connected agent.
+Inter-service communication uses **Asynq** (Valkey-backed task queue) — when the Control Server dispatches an action, it enqueues an Asynq task to the device's queue (`device:<id>`). The Gateway runs per-device Asynq workers that pick up tasks and stream them to connected agents. Agent responses flow back via the `control:inbox` queue. Credential-bearing operations (LUKS keys, LPS passwords) are proxied via Connect-RPC (`InternalService`) to avoid plaintext secrets in the queue.
 
 See the [Control Server README](cmd/control/) for details on the event model, API endpoints, and authorization policies.
 
@@ -54,14 +55,16 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
 | `internal/config` | Configuration loading |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
-| `internal/control` | Control Server background event processor |
-| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets) |
-| `internal/handler` | Gateway RPC handlers (agent streaming) |
+| `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
+| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys) |
+| `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
+| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
-| `internal/store` | PostgreSQL event store, migrations, sqlc queries, LISTEN/NOTIFY |
+| `internal/store` | PostgreSQL event store, migrations, sqlc queries |
+| `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
 
 ## API Reference
 
@@ -394,7 +397,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.2.0" -o gateway ./cm
 
 ## Running Locally
 
-Requires a running PostgreSQL instance. See the [self-hosting guide](../docs/self-hosting.md) for Docker/Podman Compose deployment.
+Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](../docs/self-hosting.md) for Docker/Podman Compose deployment.
 
 ```bash
 # Control server
@@ -406,10 +409,11 @@ Requires a running PostgreSQL instance. See the [self-hosting guide](../docs/sel
   -ca-key=certs/ca.key \
   -gateway-url=http://localhost:8080
 
-# Gateway server
-./gateway \
-  -addr=:8080 \
-  -db="postgres://user:pass@localhost:5432/powermanage?sslmode=disable"
+# Gateway server (no database required, connects to Valkey and Control)
+export VALKEY_ADDR=localhost:6379
+export VALKEY_PASSWORD=your-valkey-password
+export GATEWAY_CONTROL_URL=http://localhost:8081
+./gateway -tls -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
 ```
 
 ## Regenerating Code
@@ -539,11 +543,11 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 |------|-------|----------------|
 | `internal/scim/handler_test.go` | 21 | Auth (missing/invalid/non-existent/valid token), Discovery (ServiceProviderConfig, Schemas, ResourceTypes), Users (create, get, list, filter, replace, patch deactivate, delete), Groups (create, get, list, patch add member, replace members, delete) |
 
-#### Gateway Handler Tests (1 file, ~11 tests)
+#### Gateway Handler Tests (1 file, ~3 tests)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `internal/handler/agent_test.go` | ~11 | SyncActions (empty, with assigned actions, missing device ID), handleAgentMessage (heartbeat, action result success/failed, agent-scheduled action, security alert, output chunk), DeviceIDFromContext (present, absent) |
+| `internal/handler/agent_test.go` | ~3 | SyncActions (missing device ID), DeviceIDFromContext (present, absent) |
 
 ## Dynamic Device Groups
 

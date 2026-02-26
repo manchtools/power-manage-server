@@ -45,6 +45,11 @@ check_env() {
         missing=1
     fi
 
+    if [[ -z "$VALKEY_PASSWORD" ]] || [[ "$VALKEY_PASSWORD" == "CHANGE_ME"* ]]; then
+        log_error "VALKEY_PASSWORD must be set in .env"
+        missing=1
+    fi
+
     if [[ -z "$JWT_SECRET" ]] || [[ "$JWT_SECRET" == "CHANGE_ME"* ]]; then
         log_error "JWT_SECRET must be set in .env"
         missing=1
@@ -184,8 +189,8 @@ main() {
     generate_ca
     generate_gateway_cert
 
-    mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/traefik"
-    log_info "Created data directories: $DATA_DIR/{postgres,traefik}"
+    mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
+    log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
     show_instructions
 }

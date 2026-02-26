@@ -1,0 +1,105 @@
+package taskqueue
+
+import "encoding/json"
+
+// === Control → Gateway payloads (device queues) ===
+
+// ActionDispatchPayload is the payload for TypeActionDispatch tasks.
+type ActionDispatchPayload struct {
+	ExecutionID    string          `json:"execution_id"`
+	ActionType     int32           `json:"action_type"`
+	DesiredState   int32           `json:"desired_state"`
+	Params         json.RawMessage `json:"params"`
+	TimeoutSeconds int32           `json:"timeout_seconds"`
+}
+
+// OSQueryDispatchPayload is the payload for TypeOSQueryDispatch tasks.
+type OSQueryDispatchPayload struct {
+	QueryID string   `json:"query_id"`
+	Table   string   `json:"table"`
+	Columns []string `json:"columns,omitempty"`
+	Limit   int32    `json:"limit,omitempty"`
+	RawSQL  string   `json:"raw_sql,omitempty"`
+}
+
+// InventoryRequestPayload is the payload for TypeInventoryRequest tasks.
+// Currently empty — the agent just needs the signal.
+type InventoryRequestPayload struct{}
+
+// RevokeLuksDeviceKeyPayload is the payload for TypeRevokeLuksDeviceKey tasks.
+type RevokeLuksDeviceKeyPayload struct {
+	ActionID string `json:"action_id"`
+}
+
+// === Gateway → Control payloads (control:inbox queue) ===
+
+// DeviceHelloPayload is the payload for TypeDeviceHello tasks.
+type DeviceHelloPayload struct {
+	DeviceID     string `json:"device_id"`
+	Hostname     string `json:"hostname"`
+	AgentVersion string `json:"agent_version"`
+}
+
+// DeviceHeartbeatPayload is the payload for TypeDeviceHeartbeat tasks.
+type DeviceHeartbeatPayload struct {
+	DeviceID       string  `json:"device_id"`
+	AgentVersion   string  `json:"agent_version,omitempty"`
+	UptimeSeconds  int64   `json:"uptime_seconds,omitempty"`
+	CpuPercent     float32 `json:"cpu_percent,omitempty"`
+	MemoryPercent  float32 `json:"memory_percent,omitempty"`
+	DiskPercent    float32 `json:"disk_percent,omitempty"`
+}
+
+// ExecutionResultPayload is the payload for TypeExecutionResult tasks.
+// Contains the protojson-encoded ActionResult plus the device ID.
+type ExecutionResultPayload struct {
+	DeviceID    string `json:"device_id"`
+	// ActionResultJSON is the protojson-serialized pm.ActionResult.
+	ActionResultJSON []byte `json:"action_result_json"`
+}
+
+// ExecutionOutputChunkPayload is the payload for TypeExecutionOutputChunk tasks.
+type ExecutionOutputChunkPayload struct {
+	DeviceID    string `json:"device_id"`
+	ExecutionID string `json:"execution_id"`
+	Stream      string `json:"stream"` // "stdout" or "stderr"
+	Data        string `json:"data"`
+	Sequence    int64  `json:"sequence"`
+}
+
+// OSQueryResultPayload is the payload for TypeOSQueryResult tasks.
+type OSQueryResultPayload struct {
+	DeviceID string `json:"device_id"`
+	QueryID  string `json:"query_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+	RowsJSON []byte `json:"rows_json"` // JSON-encoded []map[string]string
+}
+
+// InventoryUpdatePayload is the payload for TypeInventoryUpdate tasks.
+type InventoryUpdatePayload struct {
+	DeviceID string           `json:"device_id"`
+	Tables   []InventoryTable `json:"tables"`
+}
+
+// InventoryTable is a single inventory table in an update.
+type InventoryTable struct {
+	TableName string `json:"table_name"`
+	RowsJSON  []byte `json:"rows_json"` // JSON-encoded []map[string]string
+}
+
+// SecurityAlertPayload is the payload for TypeSecurityAlert tasks.
+type SecurityAlertPayload struct {
+	DeviceID  string            `json:"device_id"`
+	AlertType string            `json:"alert_type"`
+	Message   string            `json:"message"`
+	Details   map[string]string `json:"details,omitempty"`
+}
+
+// RevokeLuksDeviceKeyResultPayload is the payload for TypeRevokeLuksDeviceKeyResult tasks.
+type RevokeLuksDeviceKeyResultPayload struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+}

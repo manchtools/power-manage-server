@@ -14,7 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"strconv"
+
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
@@ -27,6 +30,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // version is set at build time via -ldflags.
@@ -51,6 +55,11 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
+
+	// Valkey (Asynq task queue)
+	ValkeyAddr     string
+	ValkeyPassword string
+	ValkeyDB       int
 }
 
 func main() {
@@ -116,14 +125,6 @@ func main() {
 	jwtManager := auth.NewJWTManager(auth.JWTConfig{
 		Secret: []byte(cfg.JWTSecret),
 	})
-
-	// Start control handler (PostgreSQL LISTEN notification processor)
-	controlHandler := control.NewHandler(st, logger)
-	go func() {
-		if err := controlHandler.Run(ctx); err != nil && ctx.Err() == nil {
-			logger.Error("control handler error", "error", err)
-		}
-	}()
 
 	// Start periodic cleanup of expired revoked tokens
 	go func() {
@@ -223,6 +224,37 @@ func main() {
 		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
 	}
 
+	// Initialize Asynq task queue (Valkey) if configured
+	if cfg.ValkeyAddr != "" {
+		aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
+		defer aqClient.Close()
+
+		// Propagate Asynq client to API handlers for dispatch
+		svc.SetTaskQueueClient(aqClient)
+
+		// Start inbox worker (Asynq server consuming control:inbox queue)
+		inboxWorker := control.NewInboxWorker(st, aqClient, logger.With("component", "inbox_worker"))
+		aqServer := asynq.NewServer(
+			asynq.RedisClientOpt{
+				Addr:     cfg.ValkeyAddr,
+				Password: cfg.ValkeyPassword,
+				DB:       cfg.ValkeyDB,
+			},
+			asynq.Config{
+				Concurrency: 10,
+				Queues:      map[string]int{taskqueue.ControlInboxQueue: 1},
+				Logger:      newAsynqLogger(logger.With("component", "asynq_server")),
+			},
+		)
+		if err := aqServer.Start(inboxWorker.NewMux()); err != nil {
+			logger.Error("failed to start Asynq inbox server", "error", err)
+			os.Exit(1)
+		}
+		defer aqServer.Shutdown()
+
+		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr)
+	}
+
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
@@ -239,6 +271,11 @@ func main() {
 	// Mount SCIM v2 handler
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
+
+	// Mount InternalService (gateway → control proxying, internal network only)
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
+	mux.Handle(internalPath, internalH)
 
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -367,6 +404,19 @@ func parseFlags() *Config {
 			proxies[i] = strings.TrimSpace(proxies[i])
 		}
 		cfg.TrustedProxies = proxies
+	}
+
+	// Valkey (Asynq task queue) configuration
+	if v := os.Getenv("CONTROL_VALKEY_ADDR"); v != "" {
+		cfg.ValkeyAddr = v
+	}
+	if v := os.Getenv("CONTROL_VALKEY_PASSWORD"); v != "" {
+		cfg.ValkeyPassword = v
+	}
+	if v := os.Getenv("CONTROL_VALKEY_DB"); v != "" {
+		if db, err := strconv.Atoi(v); err == nil {
+			cfg.ValkeyDB = db
+		}
 	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
@@ -538,6 +588,21 @@ func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Hand
 		})
 	}
 }
+
+// asynqLogger adapts slog.Logger to asynq.Logger interface.
+type asynqLogger struct {
+	logger *slog.Logger
+}
+
+func newAsynqLogger(l *slog.Logger) *asynqLogger {
+	return &asynqLogger{logger: l}
+}
+
+func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
+func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
+func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
+func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
+func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
 
 // maskDatabaseURL masks the password in a database URL for logging.
 func maskDatabaseURL(url string) string {

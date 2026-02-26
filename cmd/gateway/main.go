@@ -1,4 +1,4 @@
-// Gateway server handles agent connections and forwards messages via PostgreSQL pub/sub.
+// Gateway server handles agent connections and forwards messages via Asynq (Valkey).
 package main
 
 import (
@@ -16,38 +16,33 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
-	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/mtls"
-	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // version is set at build time via -ldflags.
 var version = "dev"
 
 func main() {
-	// Parse flags
-	addr := flag.String("addr", ":8080", "listen address")
-	databaseURL := flag.String("database-url", "", "PostgreSQL connection URL")
-	logLevel := flag.String("log-level", "info", "log level (debug, info, warn, error)")
-
-	// TLS flags
+	// Parse flags (TLS only — other config from env)
 	tlsEnabled := flag.Bool("tls", false, "enable mTLS")
 	tlsCert := flag.String("tls-cert", "", "path to server certificate")
 	tlsKey := flag.String("tls-key", "", "path to server private key")
 	tlsCA := flag.String("tls-ca", "", "path to CA certificate for client validation")
-
 	flag.Parse()
+
+	// Load config from environment
+	cfg := config.FromEnv()
 
 	// Setup logger
 	var level slog.Level
-	switch *logLevel {
+	switch cfg.LogLevel {
 	case "debug":
 		level = slog.LevelDebug
-	case "info":
-		level = slog.LevelInfo
 	case "warn":
 		level = slog.LevelWarn
 	case "error":
@@ -61,12 +56,6 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	// Validate required flags
-	if *databaseURL == "" {
-		logger.Error("database-url is required")
-		os.Exit(1)
-	}
-
 	// Validate TLS flags
 	if *tlsEnabled {
 		if *tlsCert == "" || *tlsKey == "" || *tlsCA == "" {
@@ -75,40 +64,38 @@ func main() {
 		}
 	}
 
-	// Connect to PostgreSQL (without running migrations - control server handles that)
-	ctx := context.Background()
-	logger.Info("connecting to PostgreSQL", "url", redactPassword(*databaseURL))
-	db, err := store.NewWithoutMigrations(ctx, *databaseURL)
-	if err != nil {
-		logger.Error("failed to connect to PostgreSQL", "error", err)
+	// Validate required config
+	if cfg.ValkeyAddr == "" {
+		logger.Error("VALKEY_ADDR is required")
 		os.Exit(1)
 	}
-	defer db.Close()
-	logger.Info("connected to PostgreSQL")
+	if cfg.ControlURL == "" {
+		logger.Error("GATEWAY_CONTROL_URL is required")
+		os.Exit(1)
+	}
 
-	// Initialize secret encryptor
-	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
-	if err != nil {
-		logger.Error("failed to initialize encryptor", "error", err)
-		os.Exit(1)
-	}
-	if encryptor == nil {
-		logger.Warn("PM_ENCRYPTION_KEY not set - secrets will be stored unencrypted")
-	}
+	// Create Asynq task queue client
+	aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
+	defer aqClient.Close()
+	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
+
+	// Create control proxy (Connect-RPC client to control server's InternalService)
+	controlProxy := handler.NewControlProxy(cfg.ControlURL)
+	logger.Info("control proxy initialized", "control_url", cfg.ControlURL)
 
 	// Create connection manager
 	manager := connection.NewManager()
 
-	// Create and start the dispatcher (listens for action notifications)
-	dispatcher := gateway.NewDispatcher(db, manager, logger)
-	dispatcherCtx, cancelDispatcher := context.WithCancel(ctx)
-	defer cancelDispatcher()
+	// Create task handler factory for per-device Asynq workers
+	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
 
-	go func() {
-		if err := dispatcher.Run(dispatcherCtx); err != nil && err != context.Canceled {
-			logger.Error("dispatcher error", "error", err)
-		}
-	}()
+	// Create device worker manager
+	workerMgr := gateway.NewDeviceWorkerManager(
+		cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB,
+		taskFactory.NewMux,
+		logger.With("component", "device_worker"),
+	)
+	defer workerMgr.StopAll()
 
 	logger.Info("gateway started", "version", version)
 
@@ -117,17 +104,16 @@ func main() {
 
 	// Create handler based on TLS mode
 	if *tlsEnabled {
-		agentHandler := handler.NewAgentHandlerWithTLS(manager, db, logger, encryptor)
+		agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, logger)
 		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
-		// Wrap with mTLS middleware to extract device ID from certificate
 		mux.Handle(path, handler.MTLSMiddleware(h, logger))
 	} else {
-		agentHandler := handler.NewAgentHandler(manager, db, logger, encryptor)
+		agentHandler := handler.NewAgentHandler(manager, aqClient, controlProxy, workerMgr, logger)
 		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 		mux.Handle(path, h)
 	}
 
-	// Health check endpoint for load balancer
+	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -147,7 +133,6 @@ func main() {
 	var server *http.Server
 
 	if *tlsEnabled {
-		// mTLS mode
 		tlsConfig, err := mtls.NewTLSConfig(mtls.Config{
 			CertFile: *tlsCert,
 			KeyFile:  *tlsKey,
@@ -159,23 +144,21 @@ func main() {
 		}
 
 		server = &http.Server{
-			Addr:         *addr,
+			Addr:         cfg.ListenAddr,
 			Handler:      securedMux,
 			TLSConfig:    tlsConfig,
-			ReadTimeout:  0, // No timeout for streaming
-			WriteTimeout: 0, // No timeout for streaming
+			ReadTimeout:  0,
+			WriteTimeout: 0,
 			IdleTimeout:  120 * time.Second,
 		}
 
-		// Configure HTTP/2
 		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
 			logger.Error("failed to configure HTTP/2", "error", err)
 			os.Exit(1)
 		}
 	} else {
-		// h2c mode (HTTP/2 without TLS, for development/testing)
 		server = &http.Server{
-			Addr:         *addr,
+			Addr:         cfg.ListenAddr,
 			Handler:      h2c.NewHandler(securedMux, &http2.Server{}),
 			ReadTimeout:  0,
 			WriteTimeout: 0,
@@ -190,13 +173,13 @@ func main() {
 	// Start server
 	go func() {
 		if *tlsEnabled {
-			logger.Info("starting gateway server with mTLS", "address", *addr)
+			logger.Info("starting gateway server with mTLS", "address", cfg.ListenAddr)
 			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				logger.Error("server error", "error", err)
 				os.Exit(1)
 			}
 		} else {
-			logger.Info("starting gateway server (insecure h2c mode)", "address", *addr)
+			logger.Info("starting gateway server (insecure h2c mode)", "address", cfg.ListenAddr)
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error("server error", "error", err)
 				os.Exit(1)
@@ -233,11 +216,3 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-// redactPassword redacts the password from a database URL for logging.
-func redactPassword(url string) string {
-	// Simple redaction - find :password@ pattern and replace password
-	// This is a basic implementation; production code might use url.Parse
-	return url // For now, just return as-is; the URL structure varies
-}
-
