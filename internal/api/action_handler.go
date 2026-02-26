@@ -939,9 +939,9 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	}), nil
 }
 
-// isInstantActionType returns true if the action type supports instant dispatch.
+// isInstantActionType returns true if the action type is an instant action (agent-builtin, no parameters).
 func isInstantActionType(t pm.ActionType) bool {
-	return t == pm.ActionType_ACTION_TYPE_REBOOT || t == pm.ActionType_ACTION_TYPE_SYNC || t == pm.ActionType_ACTION_TYPE_SCRIPT_RUN
+	return t == pm.ActionType_ACTION_TYPE_REBOOT || t == pm.ActionType_ACTION_TYPE_SYNC
 }
 
 // DispatchInstantAction dispatches an instant action (reboot, sync) to a device.
@@ -960,13 +960,6 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
 	}
 
-	// Validate script params when action type is SCRIPT_RUN
-	if req.Msg.InstantAction == pm.ActionType_ACTION_TYPE_SCRIPT_RUN {
-		if req.Msg.ShellParams == nil || req.Msg.ShellParams.Script == "" {
-			return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "shell_params with non-empty script is required for script actions")
-		}
-	}
-
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -981,22 +974,6 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		timeoutSeconds = 600
 	case pm.ActionType_ACTION_TYPE_SYNC:
 		timeoutSeconds = 60
-	case pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
-		timeoutSeconds = 300
-	}
-
-	// Serialize params (empty for reboot/sync, shell_params for script)
-	params := map[string]any{}
-	paramsJSON := json.RawMessage("{}")
-	if req.Msg.ShellParams != nil {
-		data, err := protojson.Marshal(req.Msg.ShellParams)
-		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to serialize shell params")
-		}
-		if err := json.Unmarshal(data, &params); err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to process shell params")
-		}
-		paramsJSON = data
 	}
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
@@ -1005,7 +982,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		"device_id":       req.Msg.DeviceId,
 		"action_type":     int32(req.Msg.InstantAction),
 		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		"params":          params,
+		"params":          map[string]any{},
 		"timeout_seconds": timeoutSeconds,
 	}
 
@@ -1027,7 +1004,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 			ExecutionID:    id,
 			ActionType:     int32(req.Msg.InstantAction),
 			DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-			Params:         paramsJSON,
+			Params:         json.RawMessage("{}"),
 			TimeoutSeconds: timeoutSeconds,
 		}); err != nil {
 			h.logger.Warn("failed to enqueue instant action dispatch", "error", err, "execution_id", id)
