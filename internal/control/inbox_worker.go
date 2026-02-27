@@ -10,7 +10,9 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -117,33 +119,16 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	}
 
 	// The ActionResultJSON is a protojson-encoded pm.ActionResult.
-	// We deserialize it to extract the fields and reconstruct the events,
-	// mirroring the logic from handler/agent.go handleAgentMessage ActionResult case.
-	var resultData struct {
-		ActionId        struct{ Value string } `json:"actionId"`
-		Status          string                 `json:"status"`
-		DurationMs      int64                  `json:"durationMs"`
-		Error           string                 `json:"error"`
-		Changed         bool                   `json:"changed"`
-		Compliant       bool                   `json:"compliant"`
-		CompletedAt     string                 `json:"completedAt"`
-		Output          *struct {
-			Stdout   string `json:"stdout"`
-			Stderr   string `json:"stderr"`
-			ExitCode int32  `json:"exitCode"`
-		} `json:"output"`
-		DetectionOutput *struct {
-			Stdout   string `json:"stdout"`
-			Stderr   string `json:"stderr"`
-			ExitCode int32  `json:"exitCode"`
-		} `json:"detectionOutput"`
-	}
-	if err := json.Unmarshal(payload.ActionResultJSON, &resultData); err != nil {
-		return fmt.Errorf("unmarshal action result json: %w", err)
+	// We must use protojson.Unmarshal (not json.Unmarshal) because protojson
+	// encodes int64 fields as JSON strings per the protobuf spec, which
+	// standard json.Unmarshal cannot decode into Go int64 fields.
+	var result pm.ActionResult
+	if err := protojson.Unmarshal(payload.ActionResultJSON, &result); err != nil {
+		return fmt.Errorf("unmarshal action result: %w", err)
 	}
 
 	deviceID := payload.DeviceID
-	resultID := resultData.ActionId.Value
+	resultID := result.GetActionId().GetValue()
 	if resultID == "" {
 		return fmt.Errorf("action result missing action ID")
 	}
@@ -169,15 +154,13 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	// Calculate timestamps
 	var executedAt, completedAt time.Time
-	if resultData.CompletedAt != "" {
-		if t, err := time.Parse(time.RFC3339Nano, resultData.CompletedAt); err == nil {
-			completedAt = t
-			executedAt = completedAt.Add(-time.Duration(resultData.DurationMs) * time.Millisecond)
-		}
+	if result.CompletedAt != nil && result.CompletedAt.IsValid() {
+		completedAt = result.CompletedAt.AsTime()
+		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 	if completedAt.IsZero() {
 		completedAt = time.Now()
-		executedAt = completedAt.Add(-time.Duration(resultData.DurationMs) * time.Millisecond)
+		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 
 	if needsCreate {
@@ -210,86 +193,86 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		}
 	}
 
-	// Map status string to event type
+	// Map proto status to event type
 	var eventType string
 	var data map[string]any
 
-	switch resultData.Status {
-	case "EXECUTION_STATUS_SUCCESS":
+	switch result.Status {
+	case pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS:
 		eventType = "ExecutionCompleted"
 		data = map[string]any{
-			"duration_ms":  resultData.DurationMs,
+			"duration_ms":  result.DurationMs,
 			"completed_at": completedAt.Format(time.RFC3339Nano),
-			"changed":      resultData.Changed,
-			"compliant":    resultData.Compliant,
+			"changed":      result.Changed,
+			"compliant":    result.Compliant,
 		}
-		if resultData.Output != nil {
+		if result.Output != nil {
 			data["output"] = map[string]any{
-				"stdout":    resultData.Output.Stdout,
-				"stderr":    resultData.Output.Stderr,
-				"exit_code": resultData.Output.ExitCode,
+				"stdout":    result.Output.Stdout,
+				"stderr":    result.Output.Stderr,
+				"exit_code": result.Output.ExitCode,
 			}
 		}
-		if resultData.DetectionOutput != nil {
+		if result.DetectionOutput != nil {
 			data["detection_output"] = map[string]any{
-				"stdout":    resultData.DetectionOutput.Stdout,
-				"stderr":    resultData.DetectionOutput.Stderr,
-				"exit_code": resultData.DetectionOutput.ExitCode,
+				"stdout":    result.DetectionOutput.Stdout,
+				"stderr":    result.DetectionOutput.Stderr,
+				"exit_code": result.DetectionOutput.ExitCode,
 			}
 		}
 
-	case "EXECUTION_STATUS_FAILED":
+	case pm.ExecutionStatus_EXECUTION_STATUS_FAILED:
 		eventType = "ExecutionFailed"
 		data = map[string]any{
-			"error":        resultData.Error,
-			"duration_ms":  resultData.DurationMs,
+			"error":        result.Error,
+			"duration_ms":  result.DurationMs,
 			"completed_at": completedAt.Format(time.RFC3339Nano),
-			"changed":      resultData.Changed,
-			"compliant":    resultData.Compliant,
+			"changed":      result.Changed,
+			"compliant":    result.Compliant,
 		}
-		if resultData.Output != nil {
+		if result.Output != nil {
 			data["output"] = map[string]any{
-				"stdout":    resultData.Output.Stdout,
-				"stderr":    resultData.Output.Stderr,
-				"exit_code": resultData.Output.ExitCode,
+				"stdout":    result.Output.Stdout,
+				"stderr":    result.Output.Stderr,
+				"exit_code": result.Output.ExitCode,
 			}
 		}
-		if resultData.DetectionOutput != nil {
+		if result.DetectionOutput != nil {
 			data["detection_output"] = map[string]any{
-				"stdout":    resultData.DetectionOutput.Stdout,
-				"stderr":    resultData.DetectionOutput.Stderr,
-				"exit_code": resultData.DetectionOutput.ExitCode,
+				"stdout":    result.DetectionOutput.Stdout,
+				"stderr":    result.DetectionOutput.Stderr,
+				"exit_code": result.DetectionOutput.ExitCode,
 			}
 		}
 
-	case "EXECUTION_STATUS_RUNNING":
+	case pm.ExecutionStatus_EXECUTION_STATUS_RUNNING:
 		eventType = "ExecutionStarted"
 		data = map[string]any{}
 
-	case "EXECUTION_STATUS_TIMEOUT":
+	case pm.ExecutionStatus_EXECUTION_STATUS_TIMEOUT:
 		eventType = "ExecutionTimedOut"
 		data = map[string]any{
-			"error":        resultData.Error,
-			"duration_ms":  resultData.DurationMs,
+			"error":        result.Error,
+			"duration_ms":  result.DurationMs,
 			"completed_at": completedAt.Format(time.RFC3339Nano),
 		}
-		if resultData.Output != nil {
+		if result.Output != nil {
 			data["output"] = map[string]any{
-				"stdout":    resultData.Output.Stdout,
-				"stderr":    resultData.Output.Stderr,
-				"exit_code": resultData.Output.ExitCode,
+				"stdout":    result.Output.Stdout,
+				"stderr":    result.Output.Stderr,
+				"exit_code": result.Output.ExitCode,
 			}
 		}
 
-	case "EXECUTION_STATUS_SKIPPED":
+	case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
 		eventType = "ExecutionSkipped"
 		data = map[string]any{}
-		if resultData.Error != "" {
-			data["reason"] = resultData.Error
+		if result.Error != "" {
+			data["reason"] = result.Error
 		}
 
 	default:
-		return fmt.Errorf("unknown execution status: %s", resultData.Status)
+		return fmt.Errorf("unknown execution status: %s", result.Status.String())
 	}
 
 	if err := w.store.AppendEvent(ctx, store.Event{
@@ -304,7 +287,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	}
 
 	// Emit compliance event for actions with is_compliance=true
-	if resultData.DetectionOutput != nil && actionID != "" {
+	if result.DetectionOutput != nil && actionID != "" {
 		actionName := ""
 		isCompliance := false
 		if action, err := w.store.Queries().GetActionByID(ctx, actionID); err == nil {
@@ -319,11 +302,11 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 				"device_id":   deviceID,
 				"action_id":   actionID,
 				"action_name": actionName,
-				"compliant":   resultData.Compliant,
+				"compliant":   result.Compliant,
 				"detection_output": map[string]any{
-					"stdout":    resultData.DetectionOutput.Stdout,
-					"stderr":    resultData.DetectionOutput.Stderr,
-					"exit_code": resultData.DetectionOutput.ExitCode,
+					"stdout":    result.DetectionOutput.Stdout,
+					"stderr":    result.DetectionOutput.Stderr,
+					"exit_code": result.DetectionOutput.ExitCode,
 				},
 			}
 			if err := w.store.AppendEvent(ctx, store.Event{
