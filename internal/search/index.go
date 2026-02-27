@@ -74,19 +74,19 @@ func (idx *Index) RDB() *redis.Client {
 	return idx.rdb
 }
 
-// FlushSearchData drops all FT indexes (with DD to delete associated hashes)
-// and removes all reverse/forward membership keys.
+// FlushSearchData drops all FT indexes and removes all search hashes,
+// reverse-lookup sets, and forward membership keys.
 func (idx *Index) FlushSearchData(ctx context.Context) error {
-	// Drop FT indexes — DD flag deletes the index AND all associated document hashes.
+	// Drop FT indexes (valkey-search does not support the DD flag).
 	for _, name := range []string{idxActions, idxActionSets, idxDefinitions} {
-		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name, "DD").Err()
+		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name).Err()
 		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
 		}
 	}
 
-	// Delete reverse and forward membership keys via SCAN.
-	for _, pattern := range []string{"reverse:*", "members:*"} {
+	// Delete search hashes, reverse-lookup sets, and forward membership keys via SCAN.
+	for _, pattern := range []string{"search:*", "reverse:*", "members:*"} {
 		var cursor uint64
 		for {
 			keys, next, err := idx.rdb.Scan(ctx, cursor, pattern, 100).Result()
