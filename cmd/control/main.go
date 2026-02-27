@@ -321,6 +321,7 @@ func main() {
 		searchWorker.RegisterHandlers(mux)
 
 		// Start Asynq server consuming control:inbox + search queues
+		aqLogger := logger.With("component", "asynq_server")
 		aqServer := asynq.NewServer(
 			asynq.RedisClientOpt{
 				Addr:     cfg.ValkeyAddr,
@@ -333,7 +334,17 @@ func main() {
 					taskqueue.ControlInboxQueue: 2,
 					taskqueue.SearchQueue:       1,
 				},
-				Logger: newAsynqLogger(logger.With("component", "asynq_server")),
+				Logger: newAsynqLogger(aqLogger),
+				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+					retried, _ := asynq.GetRetryCount(ctx)
+					maxRetry, _ := asynq.GetMaxRetry(ctx)
+					aqLogger.Error("task handler failed",
+						"task_type", task.Type(),
+						"error", err,
+						"retry", retried,
+						"max_retry", maxRetry,
+					)
+				}),
 			},
 		)
 		if err := aqServer.Start(mux); err != nil {
