@@ -516,13 +516,24 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			params = exec.Params
 		}
 
+		// Look up the action's signature if this execution references one
+		var signature, paramsCanonical []byte
+		if exec.ActionID != nil {
+			if action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
+				signature = action.Signature
+				paramsCanonical = action.ParamsCanonical
+			}
+		}
+
 		// Enqueue action dispatch to device queue via Asynq
 		if err := w.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-			ExecutionID:    exec.ID,
-			ActionType:     exec.ActionType,
-			DesiredState:   exec.DesiredState,
-			Params:         params,
-			TimeoutSeconds: exec.TimeoutSeconds,
+			ExecutionID:     exec.ID,
+			ActionType:      exec.ActionType,
+			DesiredState:    exec.DesiredState,
+			Params:          params,
+			TimeoutSeconds:  exec.TimeoutSeconds,
+			Signature:       signature,
+			ParamsCanonical: paramsCanonical,
 		}); err != nil {
 			logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
 			continue

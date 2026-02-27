@@ -6,11 +6,13 @@ import "encoding/json"
 
 // ActionDispatchPayload is the payload for TypeActionDispatch tasks.
 type ActionDispatchPayload struct {
-	ExecutionID    string          `json:"execution_id"`
-	ActionType     int32           `json:"action_type"`
-	DesiredState   int32           `json:"desired_state"`
-	Params         json.RawMessage `json:"params"`
-	TimeoutSeconds int32           `json:"timeout_seconds"`
+	ExecutionID     string          `json:"execution_id"`
+	ActionType      int32           `json:"action_type"`
+	DesiredState    int32           `json:"desired_state"`
+	Params          json.RawMessage `json:"params"`
+	TimeoutSeconds  int32           `json:"timeout_seconds"`
+	Signature       []byte          `json:"signature,omitempty"`
+	ParamsCanonical []byte          `json:"params_canonical,omitempty"`
 }
 
 // OSQueryDispatchPayload is the payload for TypeOSQueryDispatch tasks.

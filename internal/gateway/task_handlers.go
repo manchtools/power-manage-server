@@ -67,10 +67,12 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 
 	// Build Action message
 	action := &pm.Action{
-		Id:             &pm.ActionId{Value: payload.ExecutionID},
-		Type:           pm.ActionType(payload.ActionType),
-		DesiredState:   pm.DesiredState(payload.DesiredState),
-		TimeoutSeconds: payload.TimeoutSeconds,
+		Id:              &pm.ActionId{Value: payload.ExecutionID},
+		Type:            pm.ActionType(payload.ActionType),
+		DesiredState:    pm.DesiredState(payload.DesiredState),
+		TimeoutSeconds:  payload.TimeoutSeconds,
+		Signature:       payload.Signature,
+		ParamsCanonical: payload.ParamsCanonical,
 	}
 
 	// Parse params

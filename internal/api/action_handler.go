@@ -572,6 +572,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	var params any // Use any to store either parsed JSON object or raw JSON
 	var timeoutSeconds int32
 	var actionID *string
+	var signature []byte
+	var paramsCanonical []byte
 
 	switch source := req.Msg.ActionSource.(type) {
 	case *pm.DispatchActionRequest_ActionId:
@@ -593,6 +595,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
+		signature = action.Signature
+		paramsCanonical = action.ParamsCanonical
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
@@ -636,12 +640,23 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// Dispatch action to device via Asynq task queue
 	if h.aqClient != nil {
 		paramsJSON, _ := json.Marshal(params)
+
+		// For inline actions without a pre-existing signature, sign on-the-fly
+		if len(signature) == 0 && h.signer != nil {
+			if sig, err := h.signer.Sign(id, int32(actionType), paramsJSON); err == nil {
+				signature = sig
+				paramsCanonical = paramsJSON
+			}
+		}
+
 		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-			ExecutionID:    id,
-			ActionType:     int32(actionType),
-			DesiredState:   int32(desiredState),
-			Params:         paramsJSON,
-			TimeoutSeconds: timeoutSeconds,
+			ExecutionID:     id,
+			ActionType:      int32(actionType),
+			DesiredState:    int32(desiredState),
+			Params:          paramsJSON,
+			TimeoutSeconds:  timeoutSeconds,
+			Signature:       signature,
+			ParamsCanonical: paramsCanonical,
 		}); err != nil {
 			h.logger.Warn("failed to enqueue action dispatch", "error", err, "execution_id", id)
 		}
