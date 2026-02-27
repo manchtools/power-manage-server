@@ -161,7 +161,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	)
 
 	// Register the agent connection
-	h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
+	agent := h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
 
 	// Start per-device Asynq worker to process action dispatches
 	if err := h.workerMgr.StartWorker(deviceID); err != nil {
@@ -169,8 +169,13 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	}
 
 	defer func() {
-		h.workerMgr.StopWorker(deviceID)
-		h.manager.Unregister(deviceID)
+		// Only clean up if this is still the current agent connection.
+		// A newer connection may have already replaced us via Register(),
+		// and we must not stop its worker or unregister it.
+		if current, ok := h.manager.Get(deviceID); ok && current == agent {
+			h.workerMgr.StopWorker(deviceID)
+			h.manager.Unregister(deviceID)
+		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
 
