@@ -13,14 +13,17 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // DefinitionHandler handles definition (collection of action sets) RPCs.
 type DefinitionHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store     *store.Store
+	entropy   *ulid.MonotonicEntropy
+	searchIdx *search.Index
 }
 
 // NewDefinitionHandler creates a new definition handler.
@@ -29,6 +32,11 @@ func NewDefinitionHandler(st *store.Store) *DefinitionHandler {
 		store:   st,
 		entropy: ulid.Monotonic(rand.Reader, 0),
 	}
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *DefinitionHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
 }
 
 // CreateDefinition creates a new definition.
@@ -63,6 +71,8 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
+
+	h.enqueueDefinitionReindex(ctx, def)
 
 	return connect.NewResponse(&pm.CreateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -181,6 +191,8 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
+	h.enqueueDefinitionReindex(ctx, def)
+
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
@@ -219,6 +231,8 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
+	h.enqueueDefinitionReindex(ctx, def)
+
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
@@ -235,6 +249,11 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	var cascadeIDs []string
+	if h.searchIdx != nil {
+		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "definition", req.Msg.Id)
+	}
+
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
@@ -245,6 +264,10 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete definition")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueRemove(ctx, "definition", req.Msg.Id, cascadeIDs)
 	}
 
 	return connect.NewResponse(&pm.DeleteDefinitionResponse{}), nil
@@ -271,7 +294,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	// Verify action set exists
-	_, err = h.store.Queries().GetActionSetByID(ctx, req.Msg.ActionSetId)
+	actionSet, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
@@ -297,6 +320,10 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueMemberAdded(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, actionSet.Name)
 	}
 
 	return connect.NewResponse(&pm.AddActionSetToDefinitionResponse{
@@ -335,6 +362,10 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 			return nil, apiError(ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 		}
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get definition")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueMemberRemoved(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, "")
 	}
 
 	return connect.NewResponse(&pm.RemoveActionSetFromDefinitionResponse{
@@ -379,6 +410,18 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 	return connect.NewResponse(&pm.ReorderActionSetInDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
+}
+
+// enqueueDefinitionReindex enqueues a search index update for a definition.
+func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.DefinitionsProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	_ = h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
+		Name:        d.Name,
+		Description: d.Description,
+		MemberCount: d.MemberCount,
+	})
 }
 
 func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {

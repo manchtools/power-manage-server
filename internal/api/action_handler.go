@@ -19,6 +19,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -31,11 +32,12 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	store    *store.Store
-	entropy  *ulid.MonotonicEntropy
-	logger   *slog.Logger
-	signer   ActionSigner
-	aqClient *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
+	store     *store.Store
+	entropy   *ulid.MonotonicEntropy
+	logger    *slog.Logger
+	signer    ActionSigner
+	aqClient  *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
+	searchIdx *search.Index
 }
 
 // NewActionHandler creates a new action handler.
@@ -51,6 +53,11 @@ func NewActionHandler(st *store.Store, signer ActionSigner) *ActionHandler {
 // SetTaskQueueClient sets the Asynq client for dual-write dispatch.
 func (h *ActionHandler) SetTaskQueueClient(c *taskqueue.Client) {
 	h.aqClient = c
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *ActionHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
 }
 
 // validateCreateActionParams validates params for CreateActionRequest using struct tags.
@@ -266,6 +273,8 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	// Sign the action so agents can verify authenticity
 	h.signAction(ctx, &action)
 
+	h.enqueueActionReindex(ctx, action)
+
 	return connect.NewResponse(&pm.CreateActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
@@ -372,6 +381,8 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
+	h.enqueueActionReindex(ctx, action)
+
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
@@ -409,6 +420,8 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		}
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
+
+	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -485,6 +498,8 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	// Re-sign the action after params update
 	h.signAction(ctx, &action)
 
+	h.enqueueActionReindex(ctx, action)
+
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
@@ -534,6 +549,12 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	// Capture cascade IDs from Valkey before deleting.
+	var cascadeIDs []string
+	if h.searchIdx != nil {
+		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "action", req.Msg.Id)
+	}
+
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
@@ -544,6 +565,10 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete action")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs)
 	}
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
@@ -1211,6 +1236,30 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 	}
 
 	return params
+}
+
+// enqueueActionReindex enqueues a search index update for an action.
+func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	desc := ""
+	if a.Description != nil {
+		desc = *a.Description
+	}
+	isCompliance := false
+	var params map[string]any
+	if json.Unmarshal(a.Params, &params) == nil {
+		if v, ok := params["isCompliance"].(bool); ok {
+			isCompliance = v
+		}
+	}
+	_ = h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
+		Name:         a.Name,
+		Description:  desc,
+		Type:         a.ActionType,
+		IsCompliance: isCompliance,
+	})
 }
 
 func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {

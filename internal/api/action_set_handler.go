@@ -13,14 +13,17 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // ActionSetHandler handles action set RPCs.
 type ActionSetHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store     *store.Store
+	entropy   *ulid.MonotonicEntropy
+	searchIdx *search.Index
 }
 
 // NewActionSetHandler creates a new action set handler.
@@ -29,6 +32,11 @@ func NewActionSetHandler(st *store.Store) *ActionSetHandler {
 		store:   st,
 		entropy: ulid.Monotonic(rand.Reader, 0),
 	}
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *ActionSetHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
 }
 
 // CreateActionSet creates a new action set.
@@ -63,6 +71,8 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
+
+	h.enqueueSetReindex(ctx, set)
 
 	return connect.NewResponse(&pm.CreateActionSetResponse{
 		Set: h.actionSetToProto(set),
@@ -181,6 +191,8 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
+	h.enqueueSetReindex(ctx, set)
+
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
@@ -219,6 +231,8 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
+	h.enqueueSetReindex(ctx, set)
+
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
@@ -235,6 +249,11 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	var cascadeIDs []string
+	if h.searchIdx != nil {
+		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "action_set", req.Msg.Id)
+	}
+
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
@@ -245,6 +264,10 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete action set")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueRemove(ctx, "action_set", req.Msg.Id, cascadeIDs)
 	}
 
 	return connect.NewResponse(&pm.DeleteActionSetResponse{}), nil
@@ -271,7 +294,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify action exists
-	_, err = h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
+	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
@@ -297,6 +320,10 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueMemberAdded(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, action.Name)
 	}
 
 	return connect.NewResponse(&pm.AddActionToSetResponse{
@@ -335,6 +362,10 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 			return nil, apiError(ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 		}
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action set")
+	}
+
+	if h.searchIdx != nil {
+		_ = h.searchIdx.EnqueueMemberRemoved(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, "")
 	}
 
 	return connect.NewResponse(&pm.RemoveActionFromSetResponse{
@@ -379,6 +410,18 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 	return connect.NewResponse(&pm.ReorderActionInSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
+}
+
+// enqueueSetReindex enqueues a search index update for an action set.
+func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSetsProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	_ = h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
+		Name:        s.Name,
+		Description: s.Description,
+		MemberCount: s.MemberCount,
+	})
 }
 
 func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.ActionSet {

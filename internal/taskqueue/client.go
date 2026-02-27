@@ -56,6 +56,21 @@ func (c *Client) EnqueueToControl(taskType string, payload any) error {
 	return nil
 }
 
+// EnqueueToSearch enqueues a task to the search index update queue.
+func (c *Client) EnqueueToSearch(taskType string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+
+	task := asynq.NewTask(taskType, data)
+	_, err = c.client.Enqueue(task, asynq.Queue(SearchQueue))
+	if err != nil {
+		return fmt.Errorf("enqueue to search: %w", err)
+	}
+	return nil
+}
+
 // Close closes the underlying Asynq client connection.
 func (c *Client) Close() error {
 	return c.client.Close()

@@ -174,6 +174,9 @@ func AllPermissions() []PermissionInfo {
 		// Identity Links
 		{"ListIdentityLinks", "Authentication", "View own linked identities"},
 		{"UnlinkIdentity", "Authentication", "Unlink own identity"},
+		// Search
+		{"Search", "Search", "Search across entities"},
+		{"RebuildSearchIndex", "Search", "Force rebuild search index"},
 	}
 }
 

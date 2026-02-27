@@ -105,3 +105,39 @@ type RevokeLuksDeviceKeyResultPayload struct {
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
 }
+
+// === Search index payloads (search queue) ===
+
+// SearchReindexPayload is the payload for TypeSearchReindex tasks.
+// Data is pre-populated by the API handler to avoid re-reading from PG.
+type SearchReindexPayload struct {
+	Scope string            `json:"scope"` // "action", "action_set", or "definition"
+	ID    string            `json:"id"`
+	Data  *SearchEntityData `json:"data,omitempty"`
+}
+
+// SearchMemberChangePayload is the payload for TypeSearchMemberChange tasks.
+type SearchMemberChangePayload struct {
+	ParentScope string `json:"parent_scope"` // "action_set" or "definition"
+	ParentID    string `json:"parent_id"`
+	ChildScope  string `json:"child_scope"` // "action" or "action_set"
+	ChildID     string `json:"child_id"`
+	ChildName   string `json:"child_name"` // pre-resolved by handler
+	Action      string `json:"action"`     // "add" or "remove"
+}
+
+// SearchRemovePayload is the payload for TypeSearchRemove tasks.
+type SearchRemovePayload struct {
+	Scope      string   `json:"scope"`
+	ID         string   `json:"id"`
+	CascadeIDs []string `json:"cascade_ids,omitempty"`
+}
+
+// SearchEntityData carries pre-populated entity data in search payloads.
+type SearchEntityData struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	MemberCount  int32  `json:"member_count,omitempty"`
+	Type         int32  `json:"type,omitempty"`
+	IsCompliance bool   `json:"is_compliance,omitempty"`
+}

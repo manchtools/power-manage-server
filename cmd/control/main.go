@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/scim"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -284,8 +286,37 @@ func main() {
 		// Propagate Asynq client to API handlers for dispatch
 		svc.SetTaskQueueClient(aqClient)
 
-		// Start inbox worker (Asynq server consuming control:inbox queue)
+		// Initialize go-redis client for RediSearch
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     cfg.ValkeyAddr,
+			Password: cfg.ValkeyPassword,
+			DB:       cfg.ValkeyDB,
+		})
+		defer rdb.Close()
+
+		// Initialize search index (RediSearch backed)
+		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
+		svc.SetSearchIndex(searchIdx)
+
+		// Full rebuild from PG on startup (flushes stale data first)
+		go func() {
+			if err := searchIdx.Rebuild(context.Background()); err != nil {
+				logger.Error("search index rebuild failed", "error", err)
+			} else {
+				logger.Info("search index rebuilt successfully")
+			}
+		}()
+
+		// Periodic reconciliation: rebuild every hour to correct drift
+		searchIdx.StartReconciliation(ctx, 1*time.Hour)
+
+		// Build combined Asynq mux with inbox + search workers
 		inboxWorker := control.NewInboxWorker(st, aqClient, logger.With("component", "inbox_worker"))
+		mux := inboxWorker.NewMux()
+		searchWorker := search.NewWorker(rdb, logger.With("component", "search_worker"))
+		searchWorker.RegisterHandlers(mux)
+
+		// Start Asynq server consuming control:inbox + search queues
 		aqServer := asynq.NewServer(
 			asynq.RedisClientOpt{
 				Addr:     cfg.ValkeyAddr,
@@ -294,17 +325,20 @@ func main() {
 			},
 			asynq.Config{
 				Concurrency: 10,
-				Queues:      map[string]int{taskqueue.ControlInboxQueue: 1},
-				Logger:      newAsynqLogger(logger.With("component", "asynq_server")),
+				Queues: map[string]int{
+					taskqueue.ControlInboxQueue: 2,
+					taskqueue.SearchQueue:       1,
+				},
+				Logger: newAsynqLogger(logger.With("component", "asynq_server")),
 			},
 		)
-		if err := aqServer.Start(inboxWorker.NewMux()); err != nil {
-			logger.Error("failed to start Asynq inbox server", "error", err)
+		if err := aqServer.Start(mux); err != nil {
+			logger.Error("failed to start Asynq server", "error", err)
 			os.Exit(1)
 		}
 		defer aqServer.Shutdown()
 
-		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr)
+		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr, "search_enabled", true)
 	}
 
 	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)

@@ -11,6 +11,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -40,6 +41,7 @@ type ControlService struct {
 	compliance       *ComplianceHandler
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
+	search           *SearchHandler
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -78,6 +80,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		compliance:       NewComplianceHandler(st),
 		compliancePolicy: NewCompliancePolicyHandler(st),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
+		search:           NewSearchHandler(),
 	}
 }
 
@@ -87,6 +90,15 @@ func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 	s.action.SetTaskQueueClient(c)
 	s.osquery.SetTaskQueueClient(c)
 	s.device.SetTaskQueueClient(c)
+}
+
+// SetSearchIndex propagates the search index to all sub-handlers that
+// enqueue search index updates after mutations.
+func (s *ControlService) SetSearchIndex(idx *search.Index) {
+	s.search.SetSearchIndex(idx)
+	s.action.SetSearchIndex(idx)
+	s.actionSet.SetSearchIndex(idx)
+	s.definition.SetSearchIndex(idx)
 }
 
 var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)
@@ -700,4 +712,13 @@ func (s *ControlService) UpdateCompliancePolicyRule(ctx context.Context, req *co
 
 func (s *ControlService) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pm.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pm.GetDeviceCompliancePolicyStatusResponse], error) {
 	return s.compliancePolicy.GetDeviceCompliancePolicyStatus(ctx, req)
+}
+
+// Search
+func (s *ControlService) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
+	return s.search.Search(ctx, req)
+}
+
+func (s *ControlService) RebuildSearchIndex(ctx context.Context, req *connect.Request[pm.RebuildSearchIndexRequest]) (*connect.Response[pm.RebuildSearchIndexResponse], error) {
+	return s.search.RebuildSearchIndex(ctx, req)
 }

@@ -57,7 +57,7 @@ services:
       - internal
 
   valkey:
-    image: docker.io/valkey/valkey:8-alpine
+    image: docker.io/valkey/valkey-bundle:8
     container_name: pm-valkey
     restart: unless-stopped
     volumes:

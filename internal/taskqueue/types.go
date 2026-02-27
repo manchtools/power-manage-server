@@ -47,6 +47,21 @@ const (
 // ControlInboxQueue is the Asynq queue name for gateway → control messages.
 const ControlInboxQueue = "control:inbox"
 
+// Task type constants for search index updates (search queue).
+const (
+	// TypeSearchReindex updates a single entity in the search index.
+	TypeSearchReindex = "search:reindex"
+
+	// TypeSearchMemberChange updates membership relationships in the search index.
+	TypeSearchMemberChange = "search:member_change"
+
+	// TypeSearchRemove removes an entity from the search index.
+	TypeSearchRemove = "search:remove"
+)
+
+// SearchQueue is the Asynq queue name for search index update tasks.
+const SearchQueue = "search"
+
 // DeviceQueue returns the Asynq queue name for a specific device.
 // Tasks enqueued to this queue are processed by the per-device Asynq server
 // running on the gateway that has the agent connected.
