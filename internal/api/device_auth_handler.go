@@ -160,14 +160,16 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 			idx := totp.VerifyBackupCode(req.Msg.TotpCode, totpRecord.BackupCodesHash, totpRecord.BackupCodesUsed)
 			if idx >= 0 {
 				codeValid = true
-				_ = h.store.AppendEvent(ctx, store.Event{
+				if err := h.store.AppendEvent(ctx, store.Event{
 					StreamType: "totp",
 					StreamID:   user.ID,
 					EventType:  "TOTPBackupCodeUsed",
 					Data:       map[string]any{"index": idx},
 					ActorType:  "system",
 					ActorID:    "device-auth",
-				})
+				}); err != nil {
+					slog.Warn("failed to append TOTPBackupCodeUsed event", "user_id", user.ID, "error", err)
+				}
 			}
 		}
 		if !codeValid {

@@ -3,6 +3,7 @@ package scim
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 )
@@ -127,7 +128,9 @@ type SCIMPatchRequest struct {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", scimContentType)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("failed to encode SCIM JSON response", "error", err)
+	}
 }
 
 // writeError writes a SCIM-formatted error response.

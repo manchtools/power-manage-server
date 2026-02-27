@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -267,7 +268,9 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueRemove(ctx, "definition", req.Msg.Id, cascadeIDs)
+		if err := h.searchIdx.EnqueueRemove(ctx, "definition", req.Msg.Id, cascadeIDs); err != nil {
+			slog.Warn("failed to enqueue search index remove", "scope", "definition", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteDefinitionResponse{}), nil
@@ -323,7 +326,9 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueMemberAdded(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, actionSet.Name)
+		if err := h.searchIdx.EnqueueMemberAdded(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, actionSet.Name); err != nil {
+			slog.Warn("failed to enqueue search member added", "scope", "definition", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.AddActionSetToDefinitionResponse{
@@ -365,7 +370,9 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueMemberRemoved(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, "")
+		if err := h.searchIdx.EnqueueMemberRemoved(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, ""); err != nil {
+			slog.Warn("failed to enqueue search member removed", "scope", "definition", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.RemoveActionSetFromDefinitionResponse{
@@ -417,11 +424,13 @@ func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.D
 	if h.searchIdx == nil {
 		return
 	}
-	_ = h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
+	if err := h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
 		Name:        d.Name,
 		Description: d.Description,
 		MemberCount: d.MemberCount,
-	})
+	}); err != nil {
+		slog.Warn("failed to enqueue search reindex", "scope", "definition", "error", err)
+	}
 }
 
 func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {

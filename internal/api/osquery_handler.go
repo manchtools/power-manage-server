@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -98,10 +99,12 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && result.CreatedAt.Valid && time.Since(result.CreatedAt.Time) > osqueryResultTimeout {
 		timeoutErr := "query timed out: device did not respond within 5 minutes"
-		_ = h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
+		if err := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
 			QueryID: result.QueryID,
 			Error:   timeoutErr,
-		})
+		}); err != nil {
+			slog.Warn("failed to expire pending osquery result", "query_id", result.QueryID, "error", err)
+		}
 		result.Completed = true
 		result.Success = false
 		result.Error = timeoutErr

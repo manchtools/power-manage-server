@@ -96,14 +96,16 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				"link_id", link.ID,
 				"user_id", link.UserID,
 			)
-			_ = l.appender.AppendEvent(ctx, EventInput{
+			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
 				EventType:  "IdentityUnlinked",
 				Data:       map[string]any{},
 				ActorType:  "system",
 				ActorID:    "sso",
-			})
+			}); err != nil {
+				slog.Warn("failed to append IdentityUnlinked event", "link_id", link.ID, "error", err)
+			}
 			// Fall through to Step 2/3
 		} else if userErr != nil {
 			return nil, fmt.Errorf("verify linked user: %w", userErr)

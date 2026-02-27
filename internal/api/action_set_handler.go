@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -267,7 +268,9 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueRemove(ctx, "action_set", req.Msg.Id, cascadeIDs)
+		if err := h.searchIdx.EnqueueRemove(ctx, "action_set", req.Msg.Id, cascadeIDs); err != nil {
+			slog.Warn("failed to enqueue search index remove", "scope", "action_set", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteActionSetResponse{}), nil
@@ -323,7 +326,9 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueMemberAdded(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, action.Name)
+		if err := h.searchIdx.EnqueueMemberAdded(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, action.Name); err != nil {
+			slog.Warn("failed to enqueue search member added", "scope", "action_set", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.AddActionToSetResponse{
@@ -365,7 +370,9 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueMemberRemoved(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, "")
+		if err := h.searchIdx.EnqueueMemberRemoved(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, ""); err != nil {
+			slog.Warn("failed to enqueue search member removed", "scope", "action_set", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.RemoveActionFromSetResponse{
@@ -417,11 +424,13 @@ func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSet
 	if h.searchIdx == nil {
 		return
 	}
-	_ = h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
+	if err := h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
 		Name:        s.Name,
 		Description: s.Description,
 		MemberCount: s.MemberCount,
-	})
+	}); err != nil {
+		slog.Warn("failed to enqueue search reindex", "scope", "action_set", "error", err)
+	}
 }
 
 func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.ActionSet {

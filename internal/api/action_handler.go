@@ -568,7 +568,9 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	}
 
 	if h.searchIdx != nil {
-		_ = h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs)
+		if err := h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs); err != nil {
+			slog.Warn("failed to enqueue search index remove", "scope", "action", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
@@ -1254,12 +1256,14 @@ func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsPr
 			isCompliance = v
 		}
 	}
-	_ = h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
+	if err := h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
 		Name:         a.Name,
 		Description:  desc,
 		Type:         a.ActionType,
 		IsCompliance: isCompliance,
-	})
+	}); err != nil {
+		slog.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
+	}
 }
 
 func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {

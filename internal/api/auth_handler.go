@@ -167,10 +167,12 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 
 	// Revoke the old refresh token to prevent reuse
 	if result.OldJTI != "" {
-		_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
+		if err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 			Jti:       result.OldJTI,
 			ExpiresAt: pgtype.Timestamptz{Time: result.OldExp, Valid: true},
-		})
+		}); err != nil {
+			slog.Warn("failed to revoke old refresh token", "jti", result.OldJTI, "error", err)
+		}
 	}
 
 	resp := connect.NewResponse(&pm.RefreshTokenResponse{
@@ -193,10 +195,12 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 	if refreshToken != "" {
 		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
-			_ = h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
+			if err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 				Jti:       claims.ID,
 				ExpiresAt: pgtype.Timestamptz{Time: claims.ExpiresAt.Time, Valid: true},
-			})
+			}); err != nil {
+				slog.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
+			}
 		}
 	}
 
