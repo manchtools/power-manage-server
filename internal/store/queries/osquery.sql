@@ -13,6 +13,11 @@ WHERE query_id = $1;
 SELECT * FROM osquery_results
 WHERE query_id = $1;
 
+-- name: ExpirePendingOSQueryResult :exec
+UPDATE osquery_results
+SET completed = TRUE, success = FALSE, error = $2, completed_at = NOW()
+WHERE query_id = $1 AND completed = FALSE;
+
 -- name: DeleteOldOSQueryResults :exec
 DELETE FROM osquery_results
 WHERE created_at < NOW() - INTERVAL '1 hour';

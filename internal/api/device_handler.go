@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -740,7 +741,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	if h.aqClient != nil {
 		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
 			ActionID: req.Msg.ActionId,
-		}); err != nil {
+		}, asynq.MaxRetry(5)); err != nil {
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
 		}
 	}

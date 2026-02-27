@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -657,7 +658,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			TimeoutSeconds:  timeoutSeconds,
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
-		}); err != nil {
+		}, asynq.MaxRetry(5)); err != nil {
 			h.logger.Warn("failed to enqueue action dispatch", "error", err, "execution_id", id)
 		}
 	}
@@ -1021,7 +1022,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 			DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
 			Params:         json.RawMessage("{}"),
 			TimeoutSeconds: timeoutSeconds,
-		}); err != nil {
+		}, asynq.MaxRetry(3)); err != nil {
 			h.logger.Warn("failed to enqueue instant action dispatch", "error", err, "execution_id", id)
 		}
 	}

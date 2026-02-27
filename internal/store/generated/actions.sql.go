@@ -7,6 +7,8 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countActions = `-- name: CountActions :one
@@ -333,6 +335,54 @@ func (q *Queries) ListRecentExecutionsForDevice(ctx context.Context, arg ListRec
 			&i.Changed,
 			&i.Compliant,
 			&i.DetectionOutput,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleExecutions = `-- name: ListStaleExecutions :many
+SELECT id, device_id, timeout_seconds, status, created_at, dispatched_at
+FROM executions_projection
+WHERE status = 'dispatched'
+  AND dispatched_at < NOW() - make_interval(secs => GREATEST(timeout_seconds, 300) + 300)
+LIMIT 100
+`
+
+type ListStaleExecutionsRow struct {
+	ID             string             `json:"id"`
+	DeviceID       string             `json:"device_id"`
+	TimeoutSeconds int32              `json:"timeout_seconds"`
+	Status         string             `json:"status"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	DispatchedAt   pgtype.Timestamptz `json:"dispatched_at"`
+}
+
+// Find dispatched executions that exceeded their timeout + grace period.
+// Only expires 'dispatched' status — 'pending' executions are left alone
+// because they represent assigned actions waiting for an offline device
+// to reconnect. dispatchPendingActions will dispatch them on reconnect.
+func (q *Queries) ListStaleExecutions(ctx context.Context) ([]ListStaleExecutionsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleExecutions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleExecutionsRow{}
+	for rows.Next() {
+		var i ListStaleExecutionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.CreatedAt,
+			&i.DispatchedAt,
 		); err != nil {
 			return nil, err
 		}

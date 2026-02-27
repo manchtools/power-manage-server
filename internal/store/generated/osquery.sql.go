@@ -60,6 +60,22 @@ func (q *Queries) DeleteOldOSQueryResults(ctx context.Context) error {
 	return err
 }
 
+const expirePendingOSQueryResult = `-- name: ExpirePendingOSQueryResult :exec
+UPDATE osquery_results
+SET completed = TRUE, success = FALSE, error = $2, completed_at = NOW()
+WHERE query_id = $1 AND completed = FALSE
+`
+
+type ExpirePendingOSQueryResultParams struct {
+	QueryID string `json:"query_id"`
+	Error   string `json:"error"`
+}
+
+func (q *Queries) ExpirePendingOSQueryResult(ctx context.Context, arg ExpirePendingOSQueryResultParams) error {
+	_, err := q.db.Exec(ctx, expirePendingOSQueryResult, arg.QueryID, arg.Error)
+	return err
+}
+
 const getOSQueryResult = `-- name: GetOSQueryResult :one
 SELECT query_id, device_id, table_name, completed, success, error, rows, created_at, completed_at FROM osquery_results
 WHERE query_id = $1

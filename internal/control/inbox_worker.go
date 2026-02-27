@@ -534,7 +534,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			TimeoutSeconds:  exec.TimeoutSeconds,
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
-		}); err != nil {
+		}, asynq.MaxRetry(3)); err != nil {
 			logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
 			continue
 		}

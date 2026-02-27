@@ -50,6 +50,17 @@ SELECT * FROM executions_projection
 WHERE device_id = $1 AND status IN ('pending', 'dispatched')
 ORDER BY created_at ASC;
 
+-- name: ListStaleExecutions :many
+-- Find dispatched executions that exceeded their timeout + grace period.
+-- Only expires 'dispatched' status — 'pending' executions are left alone
+-- because they represent assigned actions waiting for an offline device
+-- to reconnect. dispatchPendingActions will dispatch them on reconnect.
+SELECT id, device_id, timeout_seconds, status, created_at, dispatched_at
+FROM executions_projection
+WHERE status = 'dispatched'
+  AND dispatched_at < NOW() - make_interval(secs => GREATEST(timeout_seconds, 300) + 300)
+LIMIT 100;
+
 -- name: ListRecentExecutionsForDevice :many
 SELECT * FROM executions_projection
 WHERE device_id = $1

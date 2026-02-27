@@ -199,6 +199,58 @@ func main() {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
 
+	// Start periodic expiry of stale executions (pending/dispatched too long)
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				stale, err := st.Queries().ListStaleExecutions(ctx)
+				if err != nil {
+					logger.Error("failed to list stale executions", "error", err)
+					continue
+				}
+				for _, exec := range stale {
+					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
+					if err := st.AppendEvent(ctx, store.Event{
+						StreamType: "execution",
+						StreamID:   exec.ID,
+						EventType:  "ExecutionTimedOut",
+						Data: map[string]any{
+							"error":        errMsg,
+							"completed_at": time.Now().Format(time.RFC3339Nano),
+						},
+						ActorType: "system",
+						ActorID:   "expiry",
+					}); err != nil {
+						logger.Error("failed to expire stale execution", "error", err, "execution_id", exec.ID)
+					} else {
+						logger.Info("expired stale execution", "execution_id", exec.ID, "status", exec.Status, "device_id", exec.DeviceID)
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Start periodic cleanup of stale OSQuery results
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
+					logger.Error("failed to cleanup old osquery results", "error", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Initialize secret encryptor
 	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
 	if err != nil {

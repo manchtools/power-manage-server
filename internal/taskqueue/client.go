@@ -24,14 +24,16 @@ func NewClient(addr, password string, db int) *Client {
 
 // EnqueueToDevice enqueues a task to a device-specific queue.
 // The gateway's per-device Asynq server processes these tasks.
-func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any) error {
+// Additional asynq.Option values (MaxRetry, Deadline, etc.) can be passed.
+func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any, opts ...asynq.Option) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
 	task := asynq.NewTask(taskType, data)
-	_, err = c.client.Enqueue(task, asynq.Queue(DeviceQueue(deviceID)))
+	enqueueOpts := append([]asynq.Option{asynq.Queue(DeviceQueue(deviceID))}, opts...)
+	_, err = c.client.Enqueue(task, enqueueOpts...)
 	if err != nil {
 		return fmt.Errorf("enqueue to device %s: %w", deviceID, err)
 	}

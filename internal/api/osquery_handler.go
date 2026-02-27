@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -14,6 +16,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+const osqueryResultTimeout = 5 * time.Minute
 
 // OSQueryHandler handles OSQuery dispatch, result polling, and device inventory RPCs.
 type OSQueryHandler struct {
@@ -61,7 +65,9 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
-	// Dispatch osquery to device via Asynq task queue
+	// Dispatch osquery to device via Asynq task queue.
+	// Limit retries and set a deadline so queries to offline devices fail quickly
+	// rather than sitting in the queue indefinitely.
 	if h.aqClient != nil {
 		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
 			QueryID: queryID,
@@ -69,7 +75,10 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 			Columns: msg.Columns,
 			Limit:   msg.Limit,
 			RawSQL:  msg.RawSql,
-		}); err != nil {
+		},
+			asynq.MaxRetry(3),
+			asynq.Deadline(time.Now().Add(2*time.Minute)),
+		); err != nil {
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch osquery")
 		}
 	}
@@ -84,6 +93,18 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 	result, err := h.store.Queries().GetOSQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiError(ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
+	}
+
+	// Auto-expire pending results that have been waiting too long
+	if !result.Completed && result.CreatedAt.Valid && time.Since(result.CreatedAt.Time) > osqueryResultTimeout {
+		timeoutErr := "query timed out: device did not respond within 5 minutes"
+		_ = h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
+			QueryID: result.QueryID,
+			Error:   timeoutErr,
+		})
+		result.Completed = true
+		result.Success = false
+		result.Error = timeoutErr
 	}
 
 	resp := &pm.GetOSQueryResultResponse{
@@ -160,7 +181,10 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 
 	// Dispatch inventory request to device via Asynq task queue
 	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{}); err != nil {
+		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
+			asynq.MaxRetry(3),
+			asynq.Deadline(time.Now().Add(2*time.Minute)),
+		); err != nil {
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
 		}
 	}
