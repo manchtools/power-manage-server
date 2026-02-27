@@ -24,6 +24,7 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 │   UI / CLI Client   │     │      Valkey         │
 │   (JWT Auth)        │     │   - device:* queues │
 └─────────────────────┘     │   - control:inbox   │
+                            │   - search indexes  │
                             │   → Gateway dispatch│
                             └─────────────────────┘
 ```
@@ -276,6 +277,17 @@ Reusable action templates that can be dispatched to devices.
 |--------|-------------|------------|
 | `ListIdentityLinks` | List own linked external identities | `ListIdentityLinks` |
 | `UnlinkIdentity` | Remove a linked identity | `UnlinkIdentity` |
+
+#### Search
+
+Server-side full-text search across actions, action sets, and definitions using Valkey RediSearch. The search index is populated from PostgreSQL on startup and incrementally updated via Asynq workers after every mutation. A periodic reconciliation rebuild runs hourly.
+
+**Minimum query length is 2 characters** — single-character queries return no results (RediSearch `MINPREFIX 2`).
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `Search` | Full-text prefix search with optional scope (`actions`, `action_sets`, `definitions`, or empty for all) and pagination | `Search` |
+| `RebuildSearchIndex` | Force a full rebuild of the search index from PostgreSQL | `RebuildSearchIndex` |
 
 #### Compliance Policies
 

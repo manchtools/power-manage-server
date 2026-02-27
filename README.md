@@ -25,6 +25,7 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
                    │ - Event store│  │ - Asynq tasks│
                    │ - Projections│  │ - device:*   │
                    └──────────────┘  │ - control:*  │
+                                     │ - search idx │
                                      └──────┬───────┘
                                             │
                                             ▼
@@ -64,6 +65,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries |
+| `internal/search` | Server-side search using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
 | `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
 
 ## API Reference
@@ -287,6 +289,19 @@ OIDC identity provider management for SSO authentication.
 | Method | Description |
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
+
+### Search (2 RPCs)
+
+Server-side full-text search across actions, action sets, and definitions. Backed by Valkey RediSearch (`FT.CREATE`/`FT.SEARCH`). The search index is built from PostgreSQL on startup and kept in sync via Asynq workers that process incremental updates after every mutation (create, rename, delete, member add/remove). A periodic reconciliation rebuild runs every hour to correct any drift.
+
+Search uses prefix matching — the query `"ngi"` matches `"nginx"`, `"engine"`, etc. **Minimum query length is 2 characters** (RediSearch default `MINPREFIX 2`). Single-character queries return no results.
+
+When `scope` is empty, results are returned from all three indexes (actions, action sets, definitions). When set to a specific scope, only that index is queried.
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `Search` | Full-text search across actions, action sets, and definitions. Supports scoped queries and pagination. | `Search` |
+| `RebuildSearchIndex` | Force a full rebuild of the search index from PostgreSQL. Admin-only. | `RebuildSearchIndex` |
 
 ### Compliance Policies (11 RPCs)
 
