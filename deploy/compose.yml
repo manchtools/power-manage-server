@@ -57,14 +57,14 @@ services:
       - internal
 
   valkey:
-    image: docker.io/valkey/valkey-bundle:8
+    image: docker.io/redis/redis-stack-server:latest
     container_name: pm-valkey
     restart: unless-stopped
     volumes:
       - ./data/valkey:/data:z
-    command: ["valkey-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}"]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}", "--loadmodule", "/opt/redis-stack/lib/redisearch.so"]
     healthcheck:
-      test: ["CMD", "valkey-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3
