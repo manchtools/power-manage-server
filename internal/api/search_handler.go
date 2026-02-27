@@ -77,7 +77,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		args := []any{"FT.SEARCH", idxName, ftQuery, "LIMIT", offset, pageSize}
 		raw, err := h.searchIdx.RDB().Do(ctx, args...).Result()
 		if err != nil {
-			if strings.Contains(err.Error(), "Unknown index") || strings.Contains(err.Error(), "Unknown Index") {
+			errMsg := err.Error()
+			if strings.Contains(errMsg, "Unknown index") || strings.Contains(errMsg, "Unknown Index") || strings.Contains(errMsg, "not found") {
 				continue
 			}
 			return nil, connect.NewError(connect.CodeInternal, err)

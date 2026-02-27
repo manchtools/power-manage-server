@@ -80,7 +80,7 @@ func (idx *Index) FlushSearchData(ctx context.Context) error {
 	// Drop FT indexes — DD flag deletes the index AND all associated document hashes.
 	for _, name := range []string{idxActions, idxActionSets, idxDefinitions} {
 		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name, "DD").Err()
-		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") {
+		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
 		}
 	}
