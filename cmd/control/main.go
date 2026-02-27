@@ -286,11 +286,15 @@ func main() {
 		// Propagate Asynq client to API handlers for dispatch
 		svc.SetTaskQueueClient(aqClient)
 
-		// Initialize go-redis client for RediSearch
+		// Initialize go-redis client for RediSearch.
+		// Force RESP2 protocol: go-redis v9 auto-negotiates RESP3 with Redis 7+,
+		// but RediSearch returns FT.SEARCH results in a different format under
+		// RESP3 (map vs array), which breaks our result parser.
 		rdb := redis.NewClient(&redis.Options{
 			Addr:     cfg.ValkeyAddr,
 			Password: cfg.ValkeyPassword,
 			DB:       cfg.ValkeyDB,
+			Protocol: 2,
 		})
 		defer rdb.Close()
 
