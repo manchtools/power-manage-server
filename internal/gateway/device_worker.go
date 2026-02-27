@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -52,6 +53,7 @@ func (m *DeviceWorkerManager) StartWorker(deviceID string) error {
 	}
 
 	queue := taskqueue.DeviceQueue(deviceID)
+	devLogger := m.logger.With("device_id", deviceID)
 	srv := asynq.NewServer(
 		asynq.RedisClientOpt{
 			Addr:     m.valkeyAddr,
@@ -61,7 +63,17 @@ func (m *DeviceWorkerManager) StartWorker(deviceID string) error {
 		asynq.Config{
 			Concurrency: 1,
 			Queues:      map[string]int{queue: 1},
-			Logger:      &nopLogger{},
+			Logger:      newAsynqLogger(devLogger),
+			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+				retried, _ := asynq.GetRetryCount(ctx)
+				maxRetry, _ := asynq.GetMaxRetry(ctx)
+				devLogger.Error("task handler failed",
+					"task_type", task.Type(),
+					"error", err,
+					"retry", retried,
+					"max_retry", maxRetry,
+				)
+			}),
 		},
 	)
 
@@ -106,11 +118,17 @@ func (m *DeviceWorkerManager) StopAll() {
 	}
 }
 
-// nopLogger silences Asynq's internal logging.
-type nopLogger struct{}
+// asynqLogger adapts slog.Logger to the asynq.Logger interface.
+type asynqLogger struct {
+	logger *slog.Logger
+}
 
-func (l *nopLogger) Debug(args ...any) {}
-func (l *nopLogger) Info(args ...any)  {}
-func (l *nopLogger) Warn(args ...any)  {}
-func (l *nopLogger) Error(args ...any) {}
-func (l *nopLogger) Fatal(args ...any) {}
+func newAsynqLogger(l *slog.Logger) *asynqLogger {
+	return &asynqLogger{logger: l}
+}
+
+func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
+func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
+func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
+func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
+func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
