@@ -956,9 +956,14 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		statusFilter = statusToString(req.Msg.StatusFilter)
 	}
 
+	typeFilter := int32(req.Msg.TypeFilter)
+	searchQuery := strings.TrimSpace(req.Msg.Search)
+
 	execs, err := h.store.Queries().ListExecutions(ctx, db.ListExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
 		Limit:   pageSize,
 		Offset:  offset,
 	})
@@ -969,6 +974,8 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count executions")

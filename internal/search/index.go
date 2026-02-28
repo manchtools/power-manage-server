@@ -23,9 +23,10 @@ import (
 // Valkey key prefixes and index names.
 const (
 	// Search hash prefixes — indexed by RediSearch.
-	prefixAction    = "search:action:"
-	prefixActionSet = "search:action_set:"
-	prefixDefinition = "search:definition:"
+	prefixAction           = "search:action:"
+	prefixActionSet        = "search:action_set:"
+	prefixDefinition       = "search:definition:"
+	prefixCompliancePolicy = "search:compliance_policy:"
 
 	// Reverse-lookup sets: child → set of parent IDs.
 	prefixReverseAction    = "reverse:action:"
@@ -36,16 +37,18 @@ const (
 	prefixMembersDefinition = "members:definition:"
 
 	// RediSearch index names.
-	idxActions    = "idx:actions"
-	idxActionSets = "idx:action_sets"
-	idxDefinitions = "idx:definitions"
+	idxActions           = "idx:actions"
+	idxActionSets        = "idx:action_sets"
+	idxDefinitions       = "idx:definitions"
+	idxCompliancePolicies = "idx:compliance_policies"
 )
 
 // Scope constants used in task payloads and RPC requests.
 const (
-	ScopeAction     = "action"
-	ScopeActionSet  = "action_set"
-	ScopeDefinition = "definition"
+	ScopeAction           = "action"
+	ScopeActionSet        = "action_set"
+	ScopeDefinition       = "definition"
+	ScopeCompliancePolicy = "compliance_policy"
 )
 
 // Index manages the RediSearch full-text search indexes in Valkey.
@@ -78,7 +81,7 @@ func (idx *Index) RDB() *redis.Client {
 // reverse-lookup sets, and forward membership keys.
 func (idx *Index) FlushSearchData(ctx context.Context) error {
 	// Drop FT indexes (valkey-search does not support the DD flag).
-	for _, name := range []string{idxActions, idxActionSets, idxDefinitions} {
+	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies} {
 		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name).Err()
 		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
@@ -146,6 +149,14 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"action_names", "TEXT",
 			},
 		},
+		{
+			name:   idxCompliancePolicies,
+			prefix: prefixCompliancePolicy,
+			schema: []any{
+				"name", "TEXT",
+				"description", "TEXT",
+			},
+		},
 	}
 
 	for _, ix := range indexes {
@@ -187,10 +198,17 @@ func (idx *Index) Warm(ctx context.Context) error {
 		return fmt.Errorf("warm definitions: %w", err)
 	}
 
+	// 4. Index all compliance policies.
+	policyCount, err := idx.warmCompliancePolicies(ctx)
+	if err != nil {
+		return fmt.Errorf("warm compliance policies: %w", err)
+	}
+
 	idx.logger.Info("search index warm complete",
 		"actions", actionCount,
 		"action_sets", setCount,
 		"definitions", defCount,
+		"compliance_policies", policyCount,
 		"duration", time.Since(start),
 	)
 	return nil
@@ -374,6 +392,43 @@ func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
 
 		total += len(defs)
 		if int32(len(defs)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
+	const pageSize int32 = 500
+	var offset int32
+	var total int
+
+	for {
+		policies, err := idx.store.Queries().ListCompliancePolicies(ctx, db.ListCompliancePoliciesParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(policies) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, p := range policies {
+			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, map[string]any{
+				"name":        p.Name,
+				"description": p.Description,
+			})
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(policies)
+		if int32(len(policies)) < pageSize {
 			break
 		}
 		offset += pageSize

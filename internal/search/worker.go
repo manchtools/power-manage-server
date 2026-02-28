@@ -230,6 +230,8 @@ func hashKey(scope, id string) string {
 		return prefixActionSet + id
 	case ScopeDefinition:
 		return prefixDefinition + id
+	case ScopeCompliancePolicy:
+		return prefixCompliancePolicy + id
 	}
 	return ""
 }
@@ -298,6 +300,11 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"name":         data.Name,
 			"description":  data.Description,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
+		}
+	case ScopeCompliancePolicy:
+		return map[string]any{
+			"name":        data.Name,
+			"description": data.Description,
 		}
 	}
 	return nil

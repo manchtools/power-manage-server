@@ -39,13 +39,25 @@ WHERE id = $1;
 SELECT * FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ))
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $4;
+LIMIT $5 OFFSET $6;
 
 -- name: CountExecutions :one
 SELECT COUNT(*) FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
-  AND ($2::TEXT = '' OR status = $2);
+  AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ));
 
 -- name: ListPendingExecutionsForDevice :many
 -- Include both 'pending' and 'dispatched' statuses, since dispatched executions

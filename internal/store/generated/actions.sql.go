@@ -28,15 +28,28 @@ const countExecutions = `-- name: CountExecutions :one
 SELECT COUNT(*) FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ))
 `
 
 type CountExecutionsParams struct {
 	Column1 string `json:"column_1"`
 	Column2 string `json:"column_2"`
+	Column3 int32  `json:"column_3"`
+	Column4 string `json:"column_4"`
 }
 
 func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countExecutions, arg.Column1, arg.Column2)
+	row := q.db.QueryRow(ctx, countExecutions,
+		arg.Column1,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -217,13 +230,21 @@ const listExecutions = `-- name: ListExecutions :many
 SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ))
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $4
+LIMIT $5 OFFSET $6
 `
 
 type ListExecutionsParams struct {
 	Column1 string `json:"column_1"`
 	Column2 string `json:"column_2"`
+	Column3 int32  `json:"column_3"`
+	Column4 string `json:"column_4"`
 	Limit   int32  `json:"limit"`
 	Offset  int32  `json:"offset"`
 }
@@ -232,6 +253,8 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 	rows, err := q.db.Query(ctx, listExecutions,
 		arg.Column1,
 		arg.Column2,
+		arg.Column3,
+		arg.Column4,
 		arg.Limit,
 		arg.Offset,
 	)

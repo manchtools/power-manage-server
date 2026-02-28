@@ -63,7 +63,7 @@ const countAuditEvents = `-- name: CountAuditEvents :one
 SELECT COUNT(*) FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type = $3)
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%')
 `
 
 type CountAuditEventsParams struct {
@@ -124,7 +124,7 @@ const listAuditEvents = `-- name: ListAuditEvents :many
 SELECT id, sequence_num, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id, occurred_at FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type = $3)
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%')
 ORDER BY occurred_at DESC
 LIMIT $4 OFFSET $5
 `

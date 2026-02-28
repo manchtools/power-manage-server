@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -14,14 +15,17 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // CompliancePolicyHandler handles compliance policy RPCs.
 type CompliancePolicyHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store     *store.Store
+	entropy   *ulid.MonotonicEntropy
+	searchIdx *search.Index
 }
 
 // NewCompliancePolicyHandler creates a new compliance policy handler.
@@ -29,6 +33,24 @@ func NewCompliancePolicyHandler(st *store.Store) *CompliancePolicyHandler {
 	return &CompliancePolicyHandler{
 		store:   st,
 		entropy: ulid.Monotonic(rand.Reader, 0),
+	}
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *CompliancePolicyHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
+}
+
+// enqueueCompliancePolicyReindex enqueues a search index update for a compliance policy.
+func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Context, p db.CompliancePoliciesProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, &taskqueue.SearchEntityData{
+		Name:        p.Name,
+		Description: p.Description,
+	}); err != nil {
+		slog.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
 	}
 }
 
@@ -64,6 +86,8 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
+
+	h.enqueueCompliancePolicyReindex(ctx, policy)
 
 	return connect.NewResponse(&pm.CreateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -173,6 +197,8 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
+	h.enqueueCompliancePolicyReindex(ctx, policy)
+
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
 	}), nil
@@ -211,6 +237,8 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
+	h.enqueueCompliancePolicyReindex(ctx, policy)
+
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
 	}), nil
@@ -237,6 +265,12 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete compliance policy")
+	}
+
+	if h.searchIdx != nil {
+		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeCompliancePolicy, req.Msg.Id, nil); err != nil {
+			slog.Warn("failed to enqueue compliance policy removal from search", "id", req.Msg.Id, "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteCompliancePolicyResponse{}), nil

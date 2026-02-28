@@ -52,13 +52,14 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	// Determine which scopes to search.
 	scopes := []string{req.Msg.Scope}
 	if req.Msg.Scope == "" {
-		scopes = []string{"actions", "action_sets", "definitions"}
+		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies"}
 	}
 
 	scopeToIndex := map[string]string{
-		"actions":     "idx:actions",
-		"action_sets": "idx:action_sets",
-		"definitions": "idx:definitions",
+		"actions":             "idx:actions",
+		"action_sets":         "idx:action_sets",
+		"definitions":         "idx:definitions",
+		"compliance_policies": "idx:compliance_policies",
 	}
 
 	// Escape special RediSearch characters in query.
