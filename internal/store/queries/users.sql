@@ -24,3 +24,11 @@ LIMIT $1 OFFSET $2;
 -- name: GetUserSessionInfo :one
 SELECT disabled, session_version, is_deleted FROM users_projection
 WHERE id = $1;
+
+-- name: GetNextLinuxUID :one
+SELECT nextval('linux_uid_seq')::INTEGER;
+
+-- name: ListAllNonDeletedUsers :many
+SELECT * FROM users_projection
+WHERE is_deleted = FALSE
+ORDER BY created_at;

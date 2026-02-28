@@ -164,7 +164,7 @@ func (q *Queries) ListActionSets(ctx context.Context, arg ListActionSetsParams) 
 }
 
 const listActionsInSet = `-- name: ListActionsInSet :many
-SELECT a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state FROM actions_projection a
+SELECT a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system FROM actions_projection a
 JOIN action_set_members_projection m ON a.id = m.action_id
 WHERE m.set_id = $1 AND a.is_deleted = FALSE
 ORDER BY m.sort_order ASC
@@ -193,6 +193,7 @@ func (q *Queries) ListActionsInSet(ctx context.Context, setID string) ([]Actions
 			&i.Signature,
 			&i.ParamsCanonical,
 			&i.DesiredState,
+			&i.IsSystem,
 		); err != nil {
 			return nil, err
 		}

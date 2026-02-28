@@ -57,7 +57,7 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
-	AutoProvisionAssignedUser    bool
+	SshAccessForAll              bool
 
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
@@ -272,10 +272,17 @@ func main() {
 		PasswordAuthEnabled:       cfg.PasswordAuthEnabled,
 		SSOCallbackBaseURL:        cfg.SSOCallbackBaseURL,
 		SCIMBaseURL:               cfg.SCIMBaseURL,
-		AutoProvisionAssignedUser: cfg.AutoProvisionAssignedUser,
+		SshAccessForAll: cfg.SshAccessForAll,
 	})
-	if cfg.AutoProvisionAssignedUser {
-		logger.Info("auto-provision assigned user enabled")
+	if cfg.SshAccessForAll {
+		logger.Info("SSH access for all assigned users enabled")
+	}
+
+	// Sync system actions for all users at startup (idempotent)
+	if svc.SystemActions() != nil {
+		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
+			logger.Error("failed to sync system actions at startup", "error", err)
+		}
 	}
 	// Configure trusted proxies for X-Forwarded-For header validation
 	if len(cfg.TrustedProxies) > 0 {
@@ -379,7 +386,7 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Mount InternalService (gateway → control proxying, internal network only)
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"), cfg.AutoProvisionAssignedUser)
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 	mux.Handle(internalPath, internalH)
 
@@ -512,9 +519,9 @@ func parseFlags() *Config {
 		cfg.TrustedProxies = proxies
 	}
 
-	// Auto-provision assigned user on device
-	if v := os.Getenv("CONTROL_AUTO_PROVISION_ASSIGNED_USER"); v == "true" || v == "1" {
-		cfg.AutoProvisionAssignedUser = true
+	// Global SSH access for all assigned users
+	if v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL"); v == "true" || v == "1" {
+		cfg.SshAccessForAll = true
 	}
 
 	// Valkey (Asynq task queue) configuration

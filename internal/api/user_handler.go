@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -20,15 +21,19 @@ import (
 
 // UserHandler handles user management RPCs.
 type UserHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store         *store.Store
+	entropy       *ulid.MonotonicEntropy
+	logger        *slog.Logger
+	systemActions *SystemActionManager
 }
 
 // NewUserHandler creates a new user handler.
-func NewUserHandler(st *store.Store) *UserHandler {
+func NewUserHandler(st *store.Store, logger *slog.Logger, systemActions *SystemActionManager) *UserHandler {
 	return &UserHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store:         st,
+		entropy:       ulid.Monotonic(rand.Reader, 0),
+		logger:        logger,
+		systemActions: systemActions,
 	}
 }
 
@@ -50,6 +55,16 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
 
+	// Assign Linux UID and derive username
+	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign linux uid")
+	}
+	linuxUsername := deriveLinuxUsername(req.Msg.Email, req.Msg.PreferredUsername)
+	if linuxUsername == "" {
+		linuxUsername = "user_" + id[:8]
+	}
+
 	// Emit UserCreated event
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
@@ -63,6 +78,8 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			"given_name":         req.Msg.GivenName,
 			"family_name":        req.Msg.FamilyName,
 			"preferred_username": req.Msg.PreferredUsername,
+			"linux_username":     linuxUsername,
+			"linux_uid":          linuxUID,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -100,6 +117,13 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	user, err := h.store.Queries().GetUserByID(ctx, id)
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	// Sync system actions (fire-and-forget)
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, id); err != nil {
+			h.logger.Error("failed to sync system actions after user creation", "user_id", id, "error", err)
+		}
 	}
 
 	protoUser := userToProto(user)
@@ -408,6 +432,13 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
+	// Sync system actions (display_name change affects USER action comment)
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
+			h.logger.Error("failed to sync system actions after profile update", "user_id", req.Msg.Id, "error", err)
+		}
+	}
+
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
 	}), nil
@@ -427,6 +458,11 @@ func userToProto(u db.UsersProjection) *pm.User {
 		PreferredUsername:  u.PreferredUsername,
 		Picture:           u.Picture,
 		Locale:            u.Locale,
+		LinuxUsername:      u.LinuxUsername,
+		LinuxUid:          u.LinuxUid,
+		SshAccessEnabled:   u.SshAccessEnabled,
+		SshAllowPubkey:     u.SshAllowPubkey,
+		SshAllowPassword:   u.SshAllowPassword,
 	}
 
 	if u.CreatedAt.Valid {
@@ -435,6 +471,29 @@ func userToProto(u db.UsersProjection) *pm.User {
 
 	if u.LastLoginAt.Valid {
 		user.LastLoginAt = timestamppb.New(u.LastLoginAt.Time)
+	}
+
+	// Parse SSH public keys from JSONB
+	if len(u.SshPublicKeys) > 0 {
+		var keys []struct {
+			ID        string `json:"id"`
+			PublicKey string `json:"public_key"`
+			Comment   string `json:"comment"`
+			AddedAt   string `json:"added_at"`
+		}
+		if err := json.Unmarshal(u.SshPublicKeys, &keys); err == nil {
+			for _, k := range keys {
+				pk := &pm.SshPublicKey{
+					Id:        k.ID,
+					PublicKey: k.PublicKey,
+					Comment:   k.Comment,
+				}
+				if t, err := time.Parse(time.RFC3339, k.AddedAt); err == nil {
+					pk.AddedAt = timestamppb.New(t)
+				}
+				user.SshPublicKeys = append(user.SshPublicKeys, pk)
+			}
+		}
 	}
 
 	return user
@@ -446,6 +505,191 @@ func derefPasswordHash(ph *string) string {
 		return ""
 	}
 	return *ph
+}
+
+// UpdateUserLinuxUsername updates a user's linux username.
+func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.Request[pm.UpdateUserLinuxUsernameRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// Sanitize the username the same way as during creation
+	username := deriveLinuxUsername(req.Msg.LinuxUsername, "")
+	if username == "" {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "invalid linux username")
+	}
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.UserId,
+		EventType:  "UserLinuxUsernameChanged",
+		Data: map[string]any{
+			"linux_username": username,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update linux username")
+	}
+
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
+			h.logger.Error("failed to sync system actions after username change", "user_id", req.Msg.UserId, "error", err)
+		}
+	}
+
+	return connect.NewResponse(&pm.UpdateUserResponse{
+		User: userToProto(user),
+	}), nil
+}
+
+// AddUserSshKey adds an SSH public key to a user.
+func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm.AddUserSshKeyRequest]) (*connect.Response[pm.AddUserSshKeyResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceSelfScope(ctx, "AddUserSshKey", req.Msg.UserId); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	keyID := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	now := time.Now()
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.UserId,
+		EventType:  "UserSshKeyAdded",
+		Data: map[string]any{
+			"key_id":     keyID,
+			"public_key": req.Msg.PublicKey,
+			"comment":    req.Msg.Comment,
+			"added_at":   now.Format(time.RFC3339),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add SSH key")
+	}
+
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
+			h.logger.Error("failed to sync system actions after SSH key added", "user_id", req.Msg.UserId, "error", err)
+		}
+	}
+
+	return connect.NewResponse(&pm.AddUserSshKeyResponse{
+		Key: &pm.SshPublicKey{
+			Id:        keyID,
+			PublicKey: req.Msg.PublicKey,
+			Comment:   req.Msg.Comment,
+			AddedAt:   timestamppb.New(now),
+		},
+	}), nil
+}
+
+// RemoveUserSshKey removes an SSH public key from a user.
+func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request[pm.RemoveUserSshKeyRequest]) (*connect.Response[pm.RemoveUserSshKeyResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceSelfScope(ctx, "RemoveUserSshKey", req.Msg.UserId); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.UserId,
+		EventType:  "UserSshKeyRemoved",
+		Data: map[string]any{
+			"key_id": req.Msg.KeyId,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove SSH key")
+	}
+
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
+			h.logger.Error("failed to sync system actions after SSH key removed", "user_id", req.Msg.UserId, "error", err)
+		}
+	}
+
+	return connect.NewResponse(&pm.RemoveUserSshKeyResponse{}), nil
+}
+
+// UpdateUserSshSettings updates a user's SSH access settings.
+func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Request[pm.UpdateUserSshSettingsRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.UserId,
+		EventType:  "UserSshSettingsUpdated",
+		Data: map[string]any{
+			"ssh_access_enabled": req.Msg.SshAccessEnabled,
+			"ssh_allow_pubkey":   req.Msg.SshAllowPubkey,
+			"ssh_allow_password": req.Msg.SshAllowPassword,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update SSH settings")
+	}
+
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
+			h.logger.Error("failed to sync system actions after SSH settings update", "user_id", req.Msg.UserId, "error", err)
+		}
+	}
+
+	return connect.NewResponse(&pm.UpdateUserResponse{
+		User: userToProto(user),
+	}), nil
 }
 
 // populateUserIdentityLinks loads identity links for a user and attaches them to the proto User.

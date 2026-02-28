@@ -10,14 +10,14 @@ WHERE name = $1 AND is_deleted = FALSE;
 
 -- name: ListActions :many
 SELECT * FROM actions_projection
-WHERE is_deleted = FALSE
+WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: CountActions :one
 SELECT COUNT(*) FROM actions_projection
-WHERE is_deleted = FALSE
+WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1);
 
 -- name: UpdateActionSignature :exec

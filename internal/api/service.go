@@ -42,6 +42,7 @@ type ControlService struct {
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
 	search           *SearchHandler
+	systemActions    *SystemActionManager
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -51,17 +52,18 @@ type ControlServiceConfig struct {
 	SCIMBaseURL               string
 	DeviceLoginURL            string // Configurable base URL for browser-based device login
 	ExternalURL               string // Server's external URL (for default device login URL)
-	AutoProvisionAssignedUser bool   // Auto-dispatch USER action when a user is assigned to a device
+	SshAccessForAll bool // Global toggle: all users get SSH access to assigned devices
 }
 
 // NewControlService creates a new control service.
 func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
 	actionHandler := NewActionHandler(st, signer)
+	systemActions := NewSystemActionManager(st, signer, logger, cfg.SshAccessForAll)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
 		auth:          NewAuthHandler(st, jwtManager),
 		totp:          NewTOTPHandler(st, jwtManager, enc, ""),
-		user:          NewUserHandler(st),
+		user:          NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
 		device:        NewDeviceHandler(st, enc),
 		token:         NewTokenHandler(st),
 		action:        actionHandler,
@@ -82,7 +84,13 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		compliancePolicy: NewCompliancePolicyHandler(st),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
 		search:           NewSearchHandler(),
+		systemActions:    systemActions,
 	}
+}
+
+// SystemActions returns the system action manager for startup sync.
+func (s *ControlService) SystemActions() *SystemActionManager {
+	return s.systemActions
 }
 
 // SetTaskQueueClient propagates the Asynq client to all sub-handlers that
@@ -191,6 +199,22 @@ func (s *ControlService) UpdateUserProfile(ctx context.Context, req *connect.Req
 
 func (s *ControlService) DeleteUser(ctx context.Context, req *connect.Request[pm.DeleteUserRequest]) (*connect.Response[pm.DeleteUserResponse], error) {
 	return s.user.DeleteUser(ctx, req)
+}
+
+func (s *ControlService) UpdateUserLinuxUsername(ctx context.Context, req *connect.Request[pm.UpdateUserLinuxUsernameRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserLinuxUsername(ctx, req)
+}
+
+func (s *ControlService) AddUserSshKey(ctx context.Context, req *connect.Request[pm.AddUserSshKeyRequest]) (*connect.Response[pm.AddUserSshKeyResponse], error) {
+	return s.user.AddUserSshKey(ctx, req)
+}
+
+func (s *ControlService) RemoveUserSshKey(ctx context.Context, req *connect.Request[pm.RemoveUserSshKeyRequest]) (*connect.Response[pm.RemoveUserSshKeyResponse], error) {
+	return s.user.RemoveUserSshKey(ctx, req)
+}
+
+func (s *ControlService) UpdateUserSshSettings(ctx context.Context, req *connect.Request[pm.UpdateUserSshSettingsRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserSshSettings(ctx, req)
 }
 
 // Devices

@@ -41,6 +41,7 @@ type ActionsProjection struct {
 	Signature         []byte             `json:"signature"`
 	ParamsCanonical   []byte             `json:"params_canonical"`
 	DesiredState      int32              `json:"desired_state"`
+	IsSystem          bool               `json:"is_system"`
 }
 
 type AssignmentsProjection struct {
@@ -433,23 +434,31 @@ type UserSelectionsProjection struct {
 }
 
 type UsersProjection struct {
-	ID                string             `json:"id"`
-	Email             string             `json:"email"`
-	PasswordHash      *string            `json:"password_hash"`
-	Role              string             `json:"role"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
-	Disabled          bool               `json:"disabled"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	SessionVersion    int32              `json:"session_version"`
-	TotpEnabled       bool               `json:"totp_enabled"`
-	HasPassword       bool               `json:"has_password"`
-	DisplayName       string             `json:"display_name"`
-	GivenName         string             `json:"given_name"`
-	FamilyName        string             `json:"family_name"`
-	PreferredUsername string             `json:"preferred_username"`
-	Picture           string             `json:"picture"`
-	Locale            string             `json:"locale"`
+	ID                 string             `json:"id"`
+	Email              string             `json:"email"`
+	PasswordHash       *string            `json:"password_hash"`
+	Role               string             `json:"role"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	LastLoginAt        pgtype.Timestamptz `json:"last_login_at"`
+	Disabled           bool               `json:"disabled"`
+	IsDeleted          bool               `json:"is_deleted"`
+	ProjectionVersion  int64              `json:"projection_version"`
+	SessionVersion     int32              `json:"session_version"`
+	TotpEnabled        bool               `json:"totp_enabled"`
+	HasPassword        bool               `json:"has_password"`
+	DisplayName        string             `json:"display_name"`
+	GivenName          string             `json:"given_name"`
+	FamilyName         string             `json:"family_name"`
+	PreferredUsername  string             `json:"preferred_username"`
+	Picture            string             `json:"picture"`
+	Locale             string             `json:"locale"`
+	LinuxUsername      string             `json:"linux_username"`
+	LinuxUid           int32              `json:"linux_uid"`
+	SshPublicKeys      []byte             `json:"ssh_public_keys"`
+	SshAccessEnabled   bool               `json:"ssh_access_enabled"`
+	SshAllowPubkey     bool               `json:"ssh_allow_pubkey"`
+	SshAllowPassword   bool               `json:"ssh_allow_password"`
+	SystemUserActionID string             `json:"system_user_action_id"`
+	SystemSshActionID  string             `json:"system_ssh_action_id"`
 }
