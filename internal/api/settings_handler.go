@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -63,9 +64,22 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read server settings")
 	}
 
-	// Trigger full system actions resync in background
+	// Propagate global flags to individual users when enabled.
+	// This makes the global toggle a "batch enable" — once set per user,
+	// turning off the global flag won't remove provisioning for existing users.
 	go func() {
-		if err := h.systemActions.SyncAllUsersSystemActions(context.Background()); err != nil {
+		bgCtx := context.Background()
+		if req.Msg.UserProvisioningEnabled {
+			if err := h.enableProvisioningForAllUsers(bgCtx); err != nil {
+				h.logger.Error("failed to propagate provisioning to users", "error", err)
+			}
+		}
+		if req.Msg.SshAccessForAll {
+			if err := h.enableSshAccessForAllUsers(bgCtx); err != nil {
+				h.logger.Error("failed to propagate SSH access to users", "error", err)
+			}
+		}
+		if err := h.systemActions.SyncAllUsersSystemActions(bgCtx); err != nil {
 			h.logger.Error("failed to sync system actions after settings update", "error", err)
 		}
 	}()
@@ -76,4 +90,70 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 			SshAccessForAll:         settings.SshAccessForAll,
 		},
 	}), nil
+}
+
+// enableProvisioningForAllUsers sets user_provisioning_enabled=true on every user
+// that doesn't already have it enabled.
+func (h *SettingsHandler) enableProvisioningForAllUsers(ctx context.Context) error {
+	users, err := h.store.Queries().ListAllNonDeletedUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+	var errCount int
+	for _, u := range users {
+		if u.UserProvisioningEnabled {
+			continue
+		}
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   u.ID,
+			EventType:  "UserProvisioningSettingsUpdated",
+			Data:       map[string]any{"enabled": true},
+			ActorType:  "system",
+			ActorID:    "system",
+		}); err != nil {
+			h.logger.Error("failed to enable provisioning for user", "user_id", u.ID, "error", err)
+			errCount++
+		}
+	}
+	if errCount > 0 {
+		return fmt.Errorf("failed to enable provisioning for %d users", errCount)
+	}
+	h.logger.Info("enabled provisioning for all users", "count", len(users))
+	return nil
+}
+
+// enableSshAccessForAllUsers sets ssh_access_enabled=true on every user
+// that doesn't already have it enabled.
+func (h *SettingsHandler) enableSshAccessForAllUsers(ctx context.Context) error {
+	users, err := h.store.Queries().ListAllNonDeletedUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("list users: %w", err)
+	}
+	var errCount int
+	for _, u := range users {
+		if u.SshAccessEnabled {
+			continue
+		}
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   u.ID,
+			EventType:  "UserSshSettingsUpdated",
+			Data: map[string]any{
+				"ssh_access_enabled": true,
+				"ssh_allow_pubkey":   u.SshAllowPubkey,
+				"ssh_allow_password": u.SshAllowPassword,
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}); err != nil {
+			h.logger.Error("failed to enable SSH access for user", "user_id", u.ID, "error", err)
+			errCount++
+		}
+	}
+	if errCount > 0 {
+		return fmt.Errorf("failed to enable SSH access for %d users", errCount)
+	}
+	h.logger.Info("enabled SSH access for all users", "count", len(users))
+	return nil
 }
