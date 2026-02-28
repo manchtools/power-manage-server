@@ -21,24 +21,22 @@ import (
 // assignments_projection, so the resolution engine picks them up
 // automatically for devices with assigned users.
 type SystemActionManager struct {
-	store           *store.Store
-	signer          ActionSigner
-	logger          *slog.Logger
-	sshAccessForAll bool
+	store  *store.Store
+	signer ActionSigner
+	logger *slog.Logger
 }
 
 // NewSystemActionManager creates a new system action manager.
-func NewSystemActionManager(st *store.Store, signer ActionSigner, logger *slog.Logger, sshForAll bool) *SystemActionManager {
+func NewSystemActionManager(st *store.Store, signer ActionSigner, logger *slog.Logger) *SystemActionManager {
 	return &SystemActionManager{
-		store:           st,
-		signer:          signer,
-		logger:          logger.With("component", "system_actions"),
-		sshAccessForAll: sshForAll,
+		store:  st,
+		signer: signer,
+		logger: logger.With("component", "system_actions"),
 	}
 }
 
 // SyncAllUsersSystemActions ensures all users have correct system actions.
-// Called at startup. Idempotent.
+// Called at startup and after global settings changes. Idempotent.
 func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) error {
 	users, err := m.store.Queries().ListAllNonDeletedUsers(ctx)
 	if err != nil {
@@ -63,9 +61,9 @@ func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) err
 }
 
 // SyncUserSystemActions ensures a user's system actions are up to date.
-// Every user always gets a system USER action and a system SSH action.
-// The USER action is always PRESENT. The SSH action's desired state
-// depends on per-user settings and the global sshAccessForAll toggle.
+// Actions are only created when provisioning is enabled (globally or per-user).
+// When provisioning is disabled, existing actions are cleaned up.
+// Disabled users get a disabled flag in their USER action params.
 // Idempotent and safe to call after any user mutation.
 func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID string) error {
 	user, err := m.store.Queries().GetUserByID(ctx, userID)
@@ -79,19 +77,62 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 		return nil
 	}
 
+	// Read global settings from DB
+	settings, err := m.store.Queries().GetServerSettings(ctx)
+	if err != nil {
+		return fmt.Errorf("get server settings: %w", err)
+	}
+
+	provisionNeeded := settings.UserProvisioningEnabled || user.UserProvisioningEnabled
+	sshNeeded := settings.SshAccessForAll || user.SshAccessEnabled
+
 	// Parse SSH public keys from JSONB
 	sshKeys := parseSshPublicKeys(user.SshPublicKeys)
 
 	// --- System USER action ---
-	if err := m.syncUserProvisionAction(ctx, user, sshKeys); err != nil {
-		m.logger.Error("failed to sync user provision action", "user_id", userID, "error", err)
+	if provisionNeeded {
+		if err := m.syncUserProvisionAction(ctx, user, sshKeys); err != nil {
+			m.logger.Error("failed to sync user provision action", "user_id", userID, "error", err)
+		}
+	} else {
+		if err := m.cleanupUserAction(ctx, user); err != nil {
+			m.logger.Error("failed to cleanup user provision action", "user_id", userID, "error", err)
+		}
 	}
 
 	// --- System SSH action ---
-	if err := m.syncSshAccessAction(ctx, user); err != nil {
-		m.logger.Error("failed to sync ssh access action", "user_id", userID, "error", err)
+	if sshNeeded {
+		if err := m.syncSshAccessAction(ctx, user); err != nil {
+			m.logger.Error("failed to sync ssh access action", "user_id", userID, "error", err)
+		}
+	} else {
+		if err := m.cleanupSshAction(ctx, user); err != nil {
+			m.logger.Error("failed to cleanup ssh access action", "user_id", userID, "error", err)
+		}
 	}
 
+	return nil
+}
+
+// CleanupDeletedUserActions removes all system actions for a deleted user.
+// Must be called with the user projection loaded BEFORE the delete event.
+func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, user db.UsersProjection) error {
+	if user.SystemUserActionID != "" {
+		if err := m.deleteSystemAction(ctx, user.SystemUserActionID); err != nil {
+			m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
+		}
+		if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
+			m.logger.Error("failed to unlink system user action", "user_id", user.ID, "error", err)
+		}
+	}
+	if user.SystemSshActionID != "" {
+		if err := m.deleteSystemAction(ctx, user.SystemSshActionID); err != nil {
+			m.logger.Error("failed to delete system ssh action", "action_id", user.SystemSshActionID, "error", err)
+		}
+		if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
+			m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -109,6 +150,9 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 	}
 	if len(sshKeys) > 0 {
 		params["sshAuthorizedKeys"] = sshKeys
+	}
+	if user.Disabled {
+		params["disabled"] = true
 	}
 
 	paramsJSON, err := json.Marshal(params)
@@ -147,12 +191,6 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 }
 
 func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.UsersProjection) error {
-	sshEnabled := user.SshAccessEnabled || m.sshAccessForAll
-	desiredState := int32(pm.DesiredState_DESIRED_STATE_ABSENT)
-	if sshEnabled {
-		desiredState = int32(pm.DesiredState_DESIRED_STATE_PRESENT)
-	}
-
 	params := map[string]any{
 		"users":         []string{user.LinuxUsername},
 		"allowPubkey":   user.SshAllowPubkey,
@@ -168,7 +206,7 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 
 	if user.SystemSshActionID == "" {
 		// Create new system action
-		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_SSH), desiredState, paramsJSON)
+		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_SSH), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create ssh access action: %w", err)
 		}
@@ -182,10 +220,10 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 		}
 
 		m.signActionByID(ctx, actionID)
-		m.logger.Info("created system ssh access action", "user_id", user.ID, "action_id", actionID, "enabled", sshEnabled)
+		m.logger.Info("created system ssh access action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action
-		if err := m.updateSystemAction(ctx, user.SystemSshActionID, desiredState, paramsJSON); err != nil {
+		if err := m.updateSystemAction(ctx, user.SystemSshActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update ssh access action: %w", err)
 		}
 		m.signActionByID(ctx, user.SystemSshActionID)
@@ -194,23 +232,31 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 	return nil
 }
 
-func (m *SystemActionManager) cleanupSystemActions(ctx context.Context, user db.UsersProjection) error {
-	if user.SystemUserActionID != "" {
-		if err := m.deleteSystemAction(ctx, user.SystemUserActionID); err != nil {
-			m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
-		}
-		if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
-			m.logger.Error("failed to unlink system user action", "user_id", user.ID, "error", err)
-		}
+func (m *SystemActionManager) cleanupUserAction(ctx context.Context, user db.UsersProjection) error {
+	if user.SystemUserActionID == "" {
+		return nil
 	}
-	if user.SystemSshActionID != "" {
-		if err := m.deleteSystemAction(ctx, user.SystemSshActionID); err != nil {
-			m.logger.Error("failed to delete system ssh action", "action_id", user.SystemSshActionID, "error", err)
-		}
-		if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
-			m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
-		}
+	if err := m.deleteSystemAction(ctx, user.SystemUserActionID); err != nil {
+		m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
 	}
+	if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
+		m.logger.Error("failed to unlink system user action", "user_id", user.ID, "error", err)
+	}
+	m.logger.Info("cleaned up system user provision action", "user_id", user.ID)
+	return nil
+}
+
+func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.UsersProjection) error {
+	if user.SystemSshActionID == "" {
+		return nil
+	}
+	if err := m.deleteSystemAction(ctx, user.SystemSshActionID); err != nil {
+		m.logger.Error("failed to delete system ssh action", "action_id", user.SystemSshActionID, "error", err)
+	}
+	if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
+		m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
+	}
+	m.logger.Info("cleaned up system ssh access action", "user_id", user.ID)
 	return nil
 }
 

@@ -57,7 +57,6 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
-	SshAccessForAll              bool
 
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
@@ -272,10 +271,28 @@ func main() {
 		PasswordAuthEnabled:       cfg.PasswordAuthEnabled,
 		SSOCallbackBaseURL:        cfg.SSOCallbackBaseURL,
 		SCIMBaseURL:               cfg.SCIMBaseURL,
-		SshAccessForAll: cfg.SshAccessForAll,
 	})
-	if cfg.SshAccessForAll {
-		logger.Info("SSH access for all assigned users enabled")
+
+	// Seed SSH access for all from env var (one-time: only sets if DB value is still false)
+	if v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL"); v == "true" || v == "1" {
+		settings, err := st.Queries().GetServerSettings(ctx)
+		if err == nil && !settings.SshAccessForAll {
+			if err := st.AppendEvent(ctx, store.Event{
+				StreamType: "server_settings",
+				StreamID:   "global",
+				EventType:  "ServerSettingUpdated",
+				Data: map[string]any{
+					"user_provisioning_enabled": settings.UserProvisioningEnabled,
+					"ssh_access_for_all":        true,
+				},
+				ActorType: "system",
+				ActorID:   "system",
+			}); err != nil {
+				logger.Error("failed to seed SSH access for all from env var", "error", err)
+			} else {
+				logger.Info("seeded SSH access for all from CONTROL_SSH_ACCESS_FOR_ALL env var")
+			}
+		}
 	}
 
 	// Sync system actions for all users at startup (idempotent)
@@ -517,11 +534,6 @@ func parseFlags() *Config {
 			proxies[i] = strings.TrimSpace(proxies[i])
 		}
 		cfg.TrustedProxies = proxies
-	}
-
-	// Global SSH access for all assigned users
-	if v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL"); v == "true" || v == "1" {
-		cfg.SshAccessForAll = true
 	}
 
 	// Valkey (Asynq task queue) configuration

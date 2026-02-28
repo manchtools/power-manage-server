@@ -42,6 +42,7 @@ type ControlService struct {
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
 	search           *SearchHandler
+	settings         *SettingsHandler
 	systemActions    *SystemActionManager
 }
 
@@ -52,13 +53,13 @@ type ControlServiceConfig struct {
 	SCIMBaseURL               string
 	DeviceLoginURL            string // Configurable base URL for browser-based device login
 	ExternalURL               string // Server's external URL (for default device login URL)
-	SshAccessForAll bool // Global toggle: all users get SSH access to assigned devices
 }
 
 // NewControlService creates a new control service.
 func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
 	actionHandler := NewActionHandler(st, signer)
-	systemActions := NewSystemActionManager(st, signer, logger, cfg.SshAccessForAll)
+	systemActions := NewSystemActionManager(st, signer, logger)
+	settingsHandler := NewSettingsHandler(st, logger, systemActions)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
 		auth:          NewAuthHandler(st, jwtManager),
@@ -84,6 +85,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		compliancePolicy: NewCompliancePolicyHandler(st),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
 		search:           NewSearchHandler(),
+		settings:         settingsHandler,
 		systemActions:    systemActions,
 	}
 }
@@ -746,4 +748,18 @@ func (s *ControlService) Search(ctx context.Context, req *connect.Request[pm.Sea
 
 func (s *ControlService) RebuildSearchIndex(ctx context.Context, req *connect.Request[pm.RebuildSearchIndexRequest]) (*connect.Response[pm.RebuildSearchIndexResponse], error) {
 	return s.search.RebuildSearchIndex(ctx, req)
+}
+
+// Server Settings
+func (s *ControlService) GetServerSettings(ctx context.Context, req *connect.Request[pm.GetServerSettingsRequest]) (*connect.Response[pm.GetServerSettingsResponse], error) {
+	return s.settings.GetServerSettings(ctx, req)
+}
+
+func (s *ControlService) UpdateServerSettings(ctx context.Context, req *connect.Request[pm.UpdateServerSettingsRequest]) (*connect.Response[pm.UpdateServerSettingsResponse], error) {
+	return s.settings.UpdateServerSettings(ctx, req)
+}
+
+// User Provisioning Per-User
+func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *connect.Request[pm.SetUserProvisioningEnabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.SetUserProvisioningEnabled(ctx, req)
 }

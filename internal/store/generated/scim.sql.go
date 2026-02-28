@@ -37,7 +37,7 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 }
 
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE
@@ -49,34 +49,35 @@ type FindSCIMUserByEmailParams struct {
 }
 
 type FindSCIMUserByEmailRow struct {
-	ID                 string             `json:"id"`
-	Email              string             `json:"email"`
-	PasswordHash       *string            `json:"password_hash"`
-	Role               string             `json:"role"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	LastLoginAt        pgtype.Timestamptz `json:"last_login_at"`
-	Disabled           bool               `json:"disabled"`
-	IsDeleted          bool               `json:"is_deleted"`
-	ProjectionVersion  int64              `json:"projection_version"`
-	SessionVersion     int32              `json:"session_version"`
-	TotpEnabled        bool               `json:"totp_enabled"`
-	HasPassword        bool               `json:"has_password"`
-	DisplayName        string             `json:"display_name"`
-	GivenName          string             `json:"given_name"`
-	FamilyName         string             `json:"family_name"`
-	PreferredUsername  string             `json:"preferred_username"`
-	Picture            string             `json:"picture"`
-	Locale             string             `json:"locale"`
-	LinuxUsername      string             `json:"linux_username"`
-	LinuxUid           int32              `json:"linux_uid"`
-	SshPublicKeys      []byte             `json:"ssh_public_keys"`
-	SshAccessEnabled   bool               `json:"ssh_access_enabled"`
-	SshAllowPubkey     bool               `json:"ssh_allow_pubkey"`
-	SshAllowPassword   bool               `json:"ssh_allow_password"`
-	SystemUserActionID string             `json:"system_user_action_id"`
-	SystemSshActionID  string             `json:"system_ssh_action_id"`
-	ScimExternalID     string             `json:"scim_external_id"`
+	ID                      string             `json:"id"`
+	Email                   string             `json:"email"`
+	PasswordHash            *string            `json:"password_hash"`
+	Role                    string             `json:"role"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastLoginAt             pgtype.Timestamptz `json:"last_login_at"`
+	Disabled                bool               `json:"disabled"`
+	IsDeleted               bool               `json:"is_deleted"`
+	ProjectionVersion       int64              `json:"projection_version"`
+	SessionVersion          int32              `json:"session_version"`
+	TotpEnabled             bool               `json:"totp_enabled"`
+	HasPassword             bool               `json:"has_password"`
+	DisplayName             string             `json:"display_name"`
+	GivenName               string             `json:"given_name"`
+	FamilyName              string             `json:"family_name"`
+	PreferredUsername       string             `json:"preferred_username"`
+	Picture                 string             `json:"picture"`
+	Locale                  string             `json:"locale"`
+	LinuxUsername           string             `json:"linux_username"`
+	LinuxUid                int32              `json:"linux_uid"`
+	SshPublicKeys           []byte             `json:"ssh_public_keys"`
+	SshAccessEnabled        bool               `json:"ssh_access_enabled"`
+	SshAllowPubkey          bool               `json:"ssh_allow_pubkey"`
+	SshAllowPassword        bool               `json:"ssh_allow_password"`
+	SystemUserActionID      string             `json:"system_user_action_id"`
+	SystemSshActionID       string             `json:"system_ssh_action_id"`
+	UserProvisioningEnabled bool               `json:"user_provisioning_enabled"`
+	ScimExternalID          string             `json:"scim_external_id"`
 }
 
 func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEmailParams) (FindSCIMUserByEmailRow, error) {
@@ -110,13 +111,14 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 		&i.SshAllowPassword,
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
+		&i.UserProvisioningEnabled,
 		&i.ScimExternalID,
 	)
 	return i, err
 }
 
 const findSCIMUserByExternalID = `-- name: FindSCIMUserByExternalID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
@@ -128,34 +130,35 @@ type FindSCIMUserByExternalIDParams struct {
 }
 
 type FindSCIMUserByExternalIDRow struct {
-	ID                 string             `json:"id"`
-	Email              string             `json:"email"`
-	PasswordHash       *string            `json:"password_hash"`
-	Role               string             `json:"role"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	LastLoginAt        pgtype.Timestamptz `json:"last_login_at"`
-	Disabled           bool               `json:"disabled"`
-	IsDeleted          bool               `json:"is_deleted"`
-	ProjectionVersion  int64              `json:"projection_version"`
-	SessionVersion     int32              `json:"session_version"`
-	TotpEnabled        bool               `json:"totp_enabled"`
-	HasPassword        bool               `json:"has_password"`
-	DisplayName        string             `json:"display_name"`
-	GivenName          string             `json:"given_name"`
-	FamilyName         string             `json:"family_name"`
-	PreferredUsername  string             `json:"preferred_username"`
-	Picture            string             `json:"picture"`
-	Locale             string             `json:"locale"`
-	LinuxUsername      string             `json:"linux_username"`
-	LinuxUid           int32              `json:"linux_uid"`
-	SshPublicKeys      []byte             `json:"ssh_public_keys"`
-	SshAccessEnabled   bool               `json:"ssh_access_enabled"`
-	SshAllowPubkey     bool               `json:"ssh_allow_pubkey"`
-	SshAllowPassword   bool               `json:"ssh_allow_password"`
-	SystemUserActionID string             `json:"system_user_action_id"`
-	SystemSshActionID  string             `json:"system_ssh_action_id"`
-	ScimExternalID     string             `json:"scim_external_id"`
+	ID                      string             `json:"id"`
+	Email                   string             `json:"email"`
+	PasswordHash            *string            `json:"password_hash"`
+	Role                    string             `json:"role"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastLoginAt             pgtype.Timestamptz `json:"last_login_at"`
+	Disabled                bool               `json:"disabled"`
+	IsDeleted               bool               `json:"is_deleted"`
+	ProjectionVersion       int64              `json:"projection_version"`
+	SessionVersion          int32              `json:"session_version"`
+	TotpEnabled             bool               `json:"totp_enabled"`
+	HasPassword             bool               `json:"has_password"`
+	DisplayName             string             `json:"display_name"`
+	GivenName               string             `json:"given_name"`
+	FamilyName              string             `json:"family_name"`
+	PreferredUsername       string             `json:"preferred_username"`
+	Picture                 string             `json:"picture"`
+	Locale                  string             `json:"locale"`
+	LinuxUsername           string             `json:"linux_username"`
+	LinuxUid                int32              `json:"linux_uid"`
+	SshPublicKeys           []byte             `json:"ssh_public_keys"`
+	SshAccessEnabled        bool               `json:"ssh_access_enabled"`
+	SshAllowPubkey          bool               `json:"ssh_allow_pubkey"`
+	SshAllowPassword        bool               `json:"ssh_allow_password"`
+	SystemUserActionID      string             `json:"system_user_action_id"`
+	SystemSshActionID       string             `json:"system_ssh_action_id"`
+	UserProvisioningEnabled bool               `json:"user_provisioning_enabled"`
+	ScimExternalID          string             `json:"scim_external_id"`
 }
 
 func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUserByExternalIDParams) (FindSCIMUserByExternalIDRow, error) {
@@ -189,6 +192,7 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 		&i.SshAllowPassword,
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
+		&i.UserProvisioningEnabled,
 		&i.ScimExternalID,
 	)
 	return i, err
@@ -284,7 +288,7 @@ func (q *Queries) GetSCIMGroupMappingByUserGroup(ctx context.Context, arg GetSCI
 }
 
 const getUserByExternalSCIMID = `-- name: GetUserByExternalSCIMID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id FROM users_projection u
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
 `
@@ -325,6 +329,7 @@ func (q *Queries) GetUserByExternalSCIMID(ctx context.Context, arg GetUserByExte
 		&i.SshAllowPassword,
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
+		&i.UserProvisioningEnabled,
 	)
 	return i, err
 }
@@ -423,7 +428,7 @@ func (q *Queries) ListSCIMGroupMappings(ctx context.Context, providerID string) 
 }
 
 const listSCIMUsers = `-- name: ListSCIMUsers :many
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.is_deleted = FALSE
@@ -438,34 +443,35 @@ type ListSCIMUsersParams struct {
 }
 
 type ListSCIMUsersRow struct {
-	ID                 string             `json:"id"`
-	Email              string             `json:"email"`
-	PasswordHash       *string            `json:"password_hash"`
-	Role               string             `json:"role"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	LastLoginAt        pgtype.Timestamptz `json:"last_login_at"`
-	Disabled           bool               `json:"disabled"`
-	IsDeleted          bool               `json:"is_deleted"`
-	ProjectionVersion  int64              `json:"projection_version"`
-	SessionVersion     int32              `json:"session_version"`
-	TotpEnabled        bool               `json:"totp_enabled"`
-	HasPassword        bool               `json:"has_password"`
-	DisplayName        string             `json:"display_name"`
-	GivenName          string             `json:"given_name"`
-	FamilyName         string             `json:"family_name"`
-	PreferredUsername  string             `json:"preferred_username"`
-	Picture            string             `json:"picture"`
-	Locale             string             `json:"locale"`
-	LinuxUsername      string             `json:"linux_username"`
-	LinuxUid           int32              `json:"linux_uid"`
-	SshPublicKeys      []byte             `json:"ssh_public_keys"`
-	SshAccessEnabled   bool               `json:"ssh_access_enabled"`
-	SshAllowPubkey     bool               `json:"ssh_allow_pubkey"`
-	SshAllowPassword   bool               `json:"ssh_allow_password"`
-	SystemUserActionID string             `json:"system_user_action_id"`
-	SystemSshActionID  string             `json:"system_ssh_action_id"`
-	ScimExternalID     string             `json:"scim_external_id"`
+	ID                      string             `json:"id"`
+	Email                   string             `json:"email"`
+	PasswordHash            *string            `json:"password_hash"`
+	Role                    string             `json:"role"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastLoginAt             pgtype.Timestamptz `json:"last_login_at"`
+	Disabled                bool               `json:"disabled"`
+	IsDeleted               bool               `json:"is_deleted"`
+	ProjectionVersion       int64              `json:"projection_version"`
+	SessionVersion          int32              `json:"session_version"`
+	TotpEnabled             bool               `json:"totp_enabled"`
+	HasPassword             bool               `json:"has_password"`
+	DisplayName             string             `json:"display_name"`
+	GivenName               string             `json:"given_name"`
+	FamilyName              string             `json:"family_name"`
+	PreferredUsername       string             `json:"preferred_username"`
+	Picture                 string             `json:"picture"`
+	Locale                  string             `json:"locale"`
+	LinuxUsername           string             `json:"linux_username"`
+	LinuxUid                int32              `json:"linux_uid"`
+	SshPublicKeys           []byte             `json:"ssh_public_keys"`
+	SshAccessEnabled        bool               `json:"ssh_access_enabled"`
+	SshAllowPubkey          bool               `json:"ssh_allow_pubkey"`
+	SshAllowPassword        bool               `json:"ssh_allow_password"`
+	SystemUserActionID      string             `json:"system_user_action_id"`
+	SystemSshActionID       string             `json:"system_ssh_action_id"`
+	UserProvisioningEnabled bool               `json:"user_provisioning_enabled"`
+	ScimExternalID          string             `json:"scim_external_id"`
 }
 
 func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([]ListSCIMUsersRow, error) {
@@ -505,6 +511,7 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 			&i.SshAllowPassword,
 			&i.SystemUserActionID,
 			&i.SystemSshActionID,
+			&i.UserProvisioningEnabled,
 			&i.ScimExternalID,
 		); err != nil {
 			return nil, err

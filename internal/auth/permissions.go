@@ -177,6 +177,11 @@ func AllPermissions() []PermissionInfo {
 		// Search
 		{"Search", "Search", "Search across entities"},
 		{"RebuildSearchIndex", "Search", "Force rebuild search index"},
+		// Server Settings
+		{"GetServerSettings", "Server Settings", "View server settings"},
+		{"UpdateServerSettings", "Server Settings", "Update server settings"},
+		// User Provisioning
+		{"SetUserProvisioningEnabled", "Users", "Toggle user provisioning per user"},
 	}
 }
 

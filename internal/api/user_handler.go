@@ -356,6 +356,11 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
+	// Sync system actions (disabled flag changes USER action params)
+	if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
+		h.logger.Error("failed to sync system actions after disable/enable", "user_id", req.Msg.Id, "error", err)
+	}
+
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
 	}), nil
@@ -372,8 +377,17 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	// Load user BEFORE delete to get system action IDs for cleanup
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
 	// Emit UserDeleted event
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  "UserDeleted",
@@ -383,6 +397,11 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete user")
+	}
+
+	// Clean up system actions
+	if err := h.systemActions.CleanupDeletedUserActions(ctx, user); err != nil {
+		h.logger.Error("failed to cleanup system actions for deleted user", "user_id", req.Msg.Id, "error", err)
 	}
 
 	return connect.NewResponse(&pm.DeleteUserResponse{}), nil
@@ -460,9 +479,10 @@ func userToProto(u db.UsersProjection) *pm.User {
 		Locale:            u.Locale,
 		LinuxUsername:      u.LinuxUsername,
 		LinuxUid:          u.LinuxUid,
-		SshAccessEnabled:   u.SshAccessEnabled,
-		SshAllowPubkey:     u.SshAllowPubkey,
-		SshAllowPassword:   u.SshAllowPassword,
+		SshAccessEnabled:        u.SshAccessEnabled,
+		SshAllowPubkey:          u.SshAllowPubkey,
+		SshAllowPassword:        u.SshAllowPassword,
+		UserProvisioningEnabled: u.UserProvisioningEnabled,
 	}
 
 	if u.CreatedAt.Valid {
@@ -497,6 +517,49 @@ func userToProto(u db.UsersProjection) *pm.User {
 	}
 
 	return user
+}
+
+// SetUserProvisioningEnabled toggles per-user provisioning.
+func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *connect.Request[pm.SetUserProvisioningEnabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   req.Msg.UserId,
+		EventType:  "UserProvisioningSettingsUpdated",
+		Data: map[string]any{
+			"user_provisioning_enabled": req.Msg.Enabled,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update user provisioning settings")
+	}
+
+	// Sync system actions
+	if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
+		h.logger.Error("failed to sync system actions after provisioning toggle", "user_id", req.Msg.UserId, "error", err)
+	}
+
+	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	return connect.NewResponse(&pm.UpdateUserResponse{
+		User: userToProto(user),
+	}), nil
 }
 
 // derefPasswordHash safely dereferences a *string password hash.
