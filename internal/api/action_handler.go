@@ -916,6 +916,14 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 
 	protoExec := h.executionToProto(exec)
 
+	// Fetch action name
+	if exec.ActionID != nil {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, []string{*exec.ActionID})
+		if err == nil && len(rows) > 0 {
+			protoExec.ActionName = rows[0].Name
+		}
+	}
+
 	// Load live output from output chunks
 	liveOutput := h.loadLiveOutput(ctx, req.Msg.Id)
 	if liveOutput != nil {
@@ -974,6 +982,28 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	protoExecs := make([]*pm.ActionExecution, len(execs))
 	for i, e := range execs {
 		protoExecs[i] = h.executionToProto(e)
+	}
+
+	// Batch-fetch action names to avoid N+1 queries on the client
+	actionIDs := make([]string, 0, len(execs))
+	for _, e := range execs {
+		if e.ActionID != nil {
+			actionIDs = append(actionIDs, *e.ActionID)
+		}
+	}
+	if len(actionIDs) > 0 {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, actionIDs)
+		if err == nil {
+			nameMap := make(map[string]string, len(rows))
+			for _, row := range rows {
+				nameMap[row.ID] = row.Name
+			}
+			for i, e := range execs {
+				if e.ActionID != nil {
+					protoExecs[i].ActionName = nameMap[*e.ActionID]
+				}
+			}
+		}
 	}
 
 	return connect.NewResponse(&pm.ListExecutionsResponse{

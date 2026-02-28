@@ -20,6 +20,10 @@ SELECT COUNT(*) FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1);
 
+-- name: GetActionNamesByIDs :many
+SELECT id, name FROM actions_projection
+WHERE id = ANY($1::TEXT[]);
+
 -- name: UpdateActionSignature :exec
 UPDATE actions_projection
 SET signature = $2, params_canonical = $3

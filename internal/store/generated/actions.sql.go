@@ -98,6 +98,36 @@ func (q *Queries) GetActionByName(ctx context.Context, name string) (ActionsProj
 	return i, err
 }
 
+const getActionNamesByIDs = `-- name: GetActionNamesByIDs :many
+SELECT id, name FROM actions_projection
+WHERE id = ANY($1::TEXT[])
+`
+
+type GetActionNamesByIDsRow struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (q *Queries) GetActionNamesByIDs(ctx context.Context, dollar_1 []string) ([]GetActionNamesByIDsRow, error) {
+	rows, err := q.db.Query(ctx, getActionNamesByIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetActionNamesByIDsRow{}
+	for rows.Next() {
+		var i GetActionNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getExecutionByID = `-- name: GetExecutionByID :one
 
 SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
