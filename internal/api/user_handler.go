@@ -715,6 +715,10 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
+	if err := auth.EnforceSelfScope(ctx, "UpdateUserSshSettings", req.Msg.UserId); err != nil {
+		return nil, err
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
