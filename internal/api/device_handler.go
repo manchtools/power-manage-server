@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -306,6 +308,30 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(&pm.AssignDeviceResponse{
 		Device: h.deviceToProto(device),
 	}), nil
+}
+
+// usernameSanitizeRe matches characters not allowed in Linux usernames.
+var usernameSanitizeRe = regexp.MustCompile(`[^a-z0-9_.\-]`)
+
+// deriveLinuxUsername derives a Linux username from a PM user's fields.
+// Priority: preferred_username > email prefix > email as-is.
+// Returns empty string if no valid username can be derived.
+func deriveLinuxUsername(email, preferredUsername string) string {
+	var username string
+	switch {
+	case preferredUsername != "":
+		username = preferredUsername
+	case strings.Contains(email, "@"):
+		username = email[:strings.Index(email, "@")]
+	default:
+		username = email
+	}
+	username = strings.ToLower(username)
+	username = usernameSanitizeRe.ReplaceAllString(username, "_")
+	if len(username) > 32 {
+		username = username[:32]
+	}
+	return username
 }
 
 // UnassignDevice removes a device from its assigned user.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -25,17 +26,19 @@ import (
 type InternalHandler struct {
 	pmv1connect.UnimplementedInternalServiceHandler
 
-	store     *store.Store
-	encryptor *crypto.Encryptor
-	logger    *slog.Logger
+	store                     *store.Store
+	encryptor                 *crypto.Encryptor
+	logger                    *slog.Logger
+	autoProvisionAssignedUser bool
 }
 
 // NewInternalHandler creates a new internal service handler.
-func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *InternalHandler {
+func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger, autoProvision bool) *InternalHandler {
 	return &InternalHandler{
-		store:     st,
-		encryptor: enc,
-		logger:    logger,
+		store:                     st,
+		encryptor:                 enc,
+		logger:                    logger,
+		autoProvisionAssignedUser: autoProvision,
 	}
 }
 
@@ -65,6 +68,13 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		action := dbResolvedActionToWireAction(dbAction)
 		if action != nil {
 			actions = append(actions, action)
+		}
+	}
+
+	// Inject auto-provision USER action if enabled and device has an assigned user
+	if h.autoProvisionAssignedUser {
+		if provAction := h.buildAutoProvisionAction(ctx, deviceID); provAction != nil {
+			actions = append(actions, provAction)
 		}
 	}
 
@@ -206,6 +216,51 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	}
 
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil
+}
+
+// buildAutoProvisionAction builds a synthetic USER action (PRESENT) for the
+// device's assigned user. Returns nil if the device has no assigned user or
+// if the username cannot be derived.
+func (h *InternalHandler) buildAutoProvisionAction(ctx context.Context, deviceID string) *pm.Action {
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			h.logger.Warn("auto-provision: failed to get device", "error", err, "device_id", deviceID)
+		}
+		return nil
+	}
+	if device.AssignedUserID == nil || *device.AssignedUserID == "" {
+		return nil
+	}
+
+	user, err := h.store.Queries().GetUserByID(ctx, *device.AssignedUserID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			h.logger.Warn("auto-provision: failed to get assigned user", "error", err, "user_id", *device.AssignedUserID)
+		}
+		return nil
+	}
+
+	username := deriveLinuxUsername(user.Email, user.PreferredUsername)
+	if username == "" {
+		h.logger.Warn("auto-provision: could not derive username", "user_id", *device.AssignedUserID, "email", user.Email)
+		return nil
+	}
+
+	comment := user.DisplayName
+	if comment == "" {
+		comment = user.Email
+	}
+
+	return &pm.Action{
+		Type:         pm.ActionType_ACTION_TYPE_USER,
+		DesiredState: pm.DesiredState_DESIRED_STATE_PRESENT,
+		Params: &pm.Action_User{User: &pm.UserParams{
+			Username:   username,
+			CreateHome: true,
+			Comment:    comment,
+		}},
+	}
 }
 
 // dbResolvedActionToWireAction converts a resolved action row to wire format.

@@ -57,6 +57,7 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
+	AutoProvisionAssignedUser    bool
 
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
@@ -268,10 +269,14 @@ func main() {
 
 	// Setup Connect-RPC service
 	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
-		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
-		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
-		SCIMBaseURL:         cfg.SCIMBaseURL,
+		PasswordAuthEnabled:       cfg.PasswordAuthEnabled,
+		SSOCallbackBaseURL:        cfg.SSOCallbackBaseURL,
+		SCIMBaseURL:               cfg.SCIMBaseURL,
+		AutoProvisionAssignedUser: cfg.AutoProvisionAssignedUser,
 	})
+	if cfg.AutoProvisionAssignedUser {
+		logger.Info("auto-provision assigned user enabled")
+	}
 	// Configure trusted proxies for X-Forwarded-For header validation
 	if len(cfg.TrustedProxies) > 0 {
 		auth.SetTrustedProxies(cfg.TrustedProxies)
@@ -374,7 +379,7 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Mount InternalService (gateway → control proxying, internal network only)
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"), cfg.AutoProvisionAssignedUser)
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 	mux.Handle(internalPath, internalH)
 
@@ -505,6 +510,11 @@ func parseFlags() *Config {
 			proxies[i] = strings.TrimSpace(proxies[i])
 		}
 		cfg.TrustedProxies = proxies
+	}
+
+	// Auto-provision assigned user on device
+	if v := os.Getenv("CONTROL_AUTO_PROVISION_ASSIGNED_USER"); v == "true" || v == "1" {
+		cfg.AutoProvisionAssignedUser = true
 	}
 
 	// Valkey (Asynq task queue) configuration

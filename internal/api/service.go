@@ -46,11 +46,12 @@ type ControlService struct {
 
 // ControlServiceConfig holds configuration for the control service.
 type ControlServiceConfig struct {
-	PasswordAuthEnabled bool
-	SSOCallbackBaseURL  string
-	SCIMBaseURL         string
-	DeviceLoginURL      string // Configurable base URL for browser-based device login
-	ExternalURL         string // Server's external URL (for default device login URL)
+	PasswordAuthEnabled       bool
+	SSOCallbackBaseURL        string
+	SCIMBaseURL               string
+	DeviceLoginURL            string // Configurable base URL for browser-based device login
+	ExternalURL               string // Server's external URL (for default device login URL)
+	AutoProvisionAssignedUser bool   // Auto-dispatch USER action when a user is assigned to a device
 }
 
 // NewControlService creates a new control service.
