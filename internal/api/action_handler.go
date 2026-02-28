@@ -669,8 +669,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	if h.aqClient != nil {
 		paramsJSON, _ := json.Marshal(params)
 
-		// For inline actions without a pre-existing signature, sign on-the-fly
-		if len(signature) == 0 && h.signer != nil {
+		// Always re-sign with the execution ID — the agent verifies against
+		// the received action ID, which is the execution ID for dispatched actions.
+		if h.signer != nil {
 			if sig, err := h.signer.Sign(id, int32(actionType), paramsJSON); err == nil {
 				signature = sig
 				paramsCanonical = paramsJSON
