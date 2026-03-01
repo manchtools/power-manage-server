@@ -303,8 +303,9 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		}
 	case ScopeCompliancePolicy:
 		return map[string]any{
-			"name":        data.Name,
-			"description": data.Description,
+			"name":         data.Name,
+			"description":  data.Description,
+			"action_names": data.ActionNames,
 		}
 	}
 	return nil

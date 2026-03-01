@@ -140,4 +140,5 @@ type SearchEntityData struct {
 	MemberCount  int32  `json:"member_count,omitempty"`
 	Type         int32  `json:"type,omitempty"`
 	IsCompliance bool   `json:"is_compliance,omitempty"`
+	ActionNames  string `json:"action_names,omitempty"`
 }

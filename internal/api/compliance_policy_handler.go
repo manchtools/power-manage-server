@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -46,9 +47,20 @@ func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Con
 	if h.searchIdx == nil {
 		return
 	}
+	// Collect action names from rules for search indexing
+	var actionNames []string
+	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
+	if err == nil {
+		for _, r := range rules {
+			if r.ActionName != "" {
+				actionNames = append(actionNames, r.ActionName)
+			}
+		}
+	}
 	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, &taskqueue.SearchEntityData{
 		Name:        p.Name,
 		Description: p.Description,
+		ActionNames: strings.Join(actionNames, " "),
 	}); err != nil {
 		slog.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
 	}
@@ -346,6 +358,8 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
+	h.enqueueCompliancePolicyReindex(ctx, policy)
+
 	return connect.NewResponse(&pm.AddCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
 	}), nil
@@ -388,6 +402,8 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
+
+	h.enqueueCompliancePolicyReindex(ctx, policy)
 
 	return connect.NewResponse(&pm.RemoveCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),

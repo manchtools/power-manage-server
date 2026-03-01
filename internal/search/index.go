@@ -155,6 +155,7 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 			schema: []any{
 				"name", "TEXT",
 				"description", "TEXT",
+				"action_names", "TEXT",
 			},
 		},
 	}
@@ -418,9 +419,20 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, p := range policies {
+			// Look up action names from compliance rules
+			var actionNames []string
+			rules, err := idx.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
+			if err == nil {
+				for _, r := range rules {
+					if r.ActionName != "" {
+						actionNames = append(actionNames, r.ActionName)
+					}
+				}
+			}
 			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, map[string]any{
-				"name":        p.Name,
-				"description": p.Description,
+				"name":         p.Name,
+				"description":  p.Description,
+				"action_names": strings.Join(actionNames, " "),
 			})
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
