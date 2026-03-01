@@ -108,7 +108,7 @@ func (h *SettingsHandler) enableProvisioningForAllUsers(ctx context.Context) err
 			StreamType: "user",
 			StreamID:   u.ID,
 			EventType:  "UserProvisioningSettingsUpdated",
-			Data:       map[string]any{"enabled": true},
+			Data:       map[string]any{"user_provisioning_enabled": true},
 			ActorType:  "system",
 			ActorID:    "system",
 		}); err != nil {

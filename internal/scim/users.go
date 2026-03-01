@@ -328,6 +328,40 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Auto-enable provisioning/SSH if global server settings are on
+	if settings, err := h.store.Queries().GetServerSettings(ctx); err == nil {
+		if settings.UserProvisioningEnabled {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserProvisioningSettingsUpdated",
+				Data:       map[string]any{"user_provisioning_enabled": true},
+				ActorType:  "system",
+				ActorID:    "scim",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable provisioning for SCIM user", "user_id", userID, "error", err)
+			}
+		}
+		if settings.SshAccessForAll {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserSshSettingsUpdated",
+				Data: map[string]any{
+					"ssh_access_enabled": true,
+					"ssh_allow_pubkey":   true,
+					"ssh_allow_password": true,
+				},
+				ActorType: "system",
+				ActorID:   "scim",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable SSH for SCIM user", "user_id", userID, "error", err)
+			}
+		}
+	} else {
+		h.logger.Warn("failed to check server settings for SCIM user defaults", "error", err)
+	}
+
 	// Read back created user
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {

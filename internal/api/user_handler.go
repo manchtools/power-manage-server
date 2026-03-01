@@ -113,6 +113,40 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		}
 	}
 
+	// Auto-enable provisioning/SSH if global server settings are on
+	if settings, err := h.store.Queries().GetServerSettings(ctx); err == nil {
+		if settings.UserProvisioningEnabled {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   id,
+				EventType:  "UserProvisioningSettingsUpdated",
+				Data:       map[string]any{"user_provisioning_enabled": true},
+				ActorType:  "system",
+				ActorID:    "auto",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable provisioning for new user", "user_id", id, "error", err)
+			}
+		}
+		if settings.SshAccessForAll {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   id,
+				EventType:  "UserSshSettingsUpdated",
+				Data: map[string]any{
+					"ssh_access_enabled": true,
+					"ssh_allow_pubkey":   true,
+					"ssh_allow_password": true,
+				},
+				ActorType: "system",
+				ActorID:   "auto",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable SSH for new user", "user_id", id, "error", err)
+			}
+		}
+	} else {
+		h.logger.Warn("failed to check server settings for new user defaults", "error", err)
+	}
+
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, id)
 	if err != nil {
