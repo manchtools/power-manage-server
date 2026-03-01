@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -9,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -176,6 +178,48 @@ func TestDeleteIdentityProvider_Success(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestDeleteIdentityProvider_DeletesOrphanedPasswordlessUsers(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	ctx := context.Background()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	adminCtx := testutil.AdminContext(adminID)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Okta", "okta")
+
+	// Create a passwordless user (simulating SCIM provisioning)
+	ssoUserID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   ssoUserID,
+		EventType:  "UserCreated",
+		Data:       map[string]any{"email": "sso@test.com"},
+		ActorType:  "scim",
+		ActorID:    providerID,
+	}))
+	testutil.CreateTestIdentityLink(t, st, ssoUserID, providerID, "ext-sso", "sso@test.com")
+
+	// Create a user WITH a password, also linked to this provider
+	pwUserID := testutil.CreateTestUser(t, st, "pw@test.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, st, pwUserID, providerID, "ext-pw", "pw@test.com")
+
+	// Delete the provider
+	_, err := h.DeleteIdentityProvider(adminCtx, connect.NewRequest(&pm.DeleteIdentityProviderRequest{
+		Id: providerID,
+	}))
+	require.NoError(t, err)
+
+	// Passwordless user should be auto-deleted
+	_, err = st.Queries().GetUserByID(ctx, ssoUserID)
+	assert.Error(t, err, "passwordless user should be deleted when their only provider is removed")
+
+	// User with password should still exist
+	pwUser, err := st.Queries().GetUserByID(ctx, pwUserID)
+	require.NoError(t, err)
+	assert.Equal(t, "pw@test.com", pwUser.Email)
 }
 
 func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {

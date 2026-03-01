@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -253,9 +254,18 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	providerID := req.Msg.Id
+
+	// Find all identity links for this provider before deleting it.
+	links, err := h.store.Queries().ListIdentityLinksByProvider(ctx, providerID)
+	if err != nil {
+		slog.Error("failed to list identity links for provider", "provider_id", providerID, "error", err)
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete provider")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
-		StreamID:   req.Msg.Id,
+		StreamID:   providerID,
 		EventType:  "IdentityProviderDeleted",
 		Data:       map[string]any{},
 		ActorType:  "user",
@@ -263,6 +273,43 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete provider")
+	}
+
+	// Unlink all users from this provider and auto-delete orphaned passwordless users.
+	for _, link := range links {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "identity_provider",
+			StreamID:   link.ID,
+			EventType:  "IdentityUnlinked",
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}); err != nil {
+			slog.Error("failed to unlink identity on provider delete", "link_id", link.ID, "user_id", link.UserID, "error", err)
+			continue
+		}
+
+		// If the user has no remaining identity links and no password, delete them.
+		if link.HasPassword {
+			continue
+		}
+		remaining, err := h.store.Queries().CountIdentityLinksForUser(ctx, link.UserID)
+		if err != nil {
+			slog.Error("failed to count identity links for user", "user_id", link.UserID, "error", err)
+			continue
+		}
+		if remaining == 0 {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   link.UserID,
+				EventType:  "UserDeleted",
+				Data:       map[string]any{},
+				ActorType:  "user",
+				ActorID:    userCtx.ID,
+			}); err != nil {
+				slog.Error("failed to auto-delete orphaned user", "user_id", link.UserID, "error", err)
+			}
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteIdentityProviderResponse{}), nil

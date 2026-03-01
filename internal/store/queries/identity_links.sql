@@ -24,3 +24,9 @@ WHERE provider_id = $1 AND user_id = $2;
 -- name: ListLinkedProviderIDsForUser :many
 SELECT provider_id FROM identity_links_projection
 WHERE user_id = $1;
+
+-- name: ListIdentityLinksByProvider :many
+SELECT il.*, u.has_password
+FROM identity_links_projection il
+JOIN users_projection u ON u.id = il.user_id
+WHERE il.provider_id = $1 AND u.is_deleted = FALSE;
