@@ -156,14 +156,6 @@ func TestWithTx_Rollback(t *testing.T) {
 	assert.ErrorIs(t, err, pgx.ErrNoRows)
 }
 
-func TestNotify(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	ctx := context.Background()
-
-	err := st.Notify(ctx, "test_channel", `{"key":"value"}`)
-	require.NoError(t, err)
-}
-
 // --- Projection Tests ---
 
 func TestProjection_UserCreated(t *testing.T) {

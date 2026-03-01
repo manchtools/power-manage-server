@@ -726,7 +726,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-// RevokeLuksDeviceKey sends a revocation request to the agent via pg_notify.
+// RevokeLuksDeviceKey sends a revocation request to the agent via the task queue.
 func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
