@@ -25,6 +25,7 @@ type ActionSetsProjection struct {
 	CreatedBy         string             `json:"created_by"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ActionsProjection struct {
@@ -42,6 +43,7 @@ type ActionsProjection struct {
 	ParamsCanonical   []byte             `json:"params_canonical"`
 	DesiredState      int32              `json:"desired_state"`
 	IsSystem          bool               `json:"is_system"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type AssignmentsProjection struct {
@@ -126,6 +128,7 @@ type DefinitionsProjection struct {
 	CreatedBy         string             `json:"created_by"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type DeviceGroupMembersProjection struct {

@@ -105,7 +105,7 @@ const listAssignedActionsForDevice = `-- name: ListAssignedActionsForDevice :man
 WITH assigned_actions AS (
   -- Direct action assignments (no hierarchy, use assignment sort_order only)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -119,7 +119,7 @@ WITH assigned_actions AS (
 
   -- Action assignments via device group
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -134,7 +134,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -149,7 +149,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -165,7 +165,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -181,7 +181,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -198,7 +198,7 @@ WITH assigned_actions AS (
 
   -- Actions via compliance policy assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -214,7 +214,7 @@ WITH assigned_actions AS (
 
   -- Actions via compliance policy assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,

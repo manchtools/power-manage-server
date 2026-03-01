@@ -69,7 +69,7 @@ func (q *Queries) CountExecutionsForWarm(ctx context.Context) (int64, error) {
 
 const getActionByID = `-- name: GetActionByID :one
 
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system FROM actions_projection
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -92,12 +92,13 @@ func (q *Queries) GetActionByID(ctx context.Context, id string) (ActionsProjecti
 		&i.ParamsCanonical,
 		&i.DesiredState,
 		&i.IsSystem,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getActionByName = `-- name: GetActionByName :one
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system FROM actions_projection
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -119,6 +120,7 @@ func (q *Queries) GetActionByName(ctx context.Context, name string) (ActionsProj
 		&i.ParamsCanonical,
 		&i.DesiredState,
 		&i.IsSystem,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -190,7 +192,7 @@ func (q *Queries) GetExecutionByID(ctx context.Context, id string) (ExecutionsPr
 }
 
 const listActions = `-- name: ListActions :many
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system FROM actions_projection
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
 ORDER BY created_at DESC
@@ -227,6 +229,7 @@ func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]Act
 			&i.ParamsCanonical,
 			&i.DesiredState,
 			&i.IsSystem,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

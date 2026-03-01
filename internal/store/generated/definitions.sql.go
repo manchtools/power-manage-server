@@ -23,7 +23,7 @@ func (q *Queries) CountDefinitions(ctx context.Context) (int64, error) {
 
 const getDefinitionByID = `-- name: GetDefinitionByID :one
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM definitions_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM definitions_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -40,12 +40,13 @@ func (q *Queries) GetDefinitionByID(ctx context.Context, id string) (Definitions
 		&i.CreatedBy,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getDefinitionByName = `-- name: GetDefinitionByName :one
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM definitions_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM definitions_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -61,6 +62,7 @@ func (q *Queries) GetDefinitionByName(ctx context.Context, name string) (Definit
 		&i.CreatedBy,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -89,7 +91,7 @@ func (q *Queries) GetDefinitionMember(ctx context.Context, arg GetDefinitionMemb
 }
 
 const listActionSetsInDefinition = `-- name: ListActionSetsInDefinition :many
-SELECT s.id, s.name, s.description, s.member_count, s.created_at, s.created_by, s.is_deleted, s.projection_version FROM action_sets_projection s
+SELECT s.id, s.name, s.description, s.member_count, s.created_at, s.created_by, s.is_deleted, s.projection_version, s.updated_at FROM action_sets_projection s
 JOIN definition_members_projection m ON s.id = m.action_set_id
 WHERE m.definition_id = $1 AND s.is_deleted = FALSE
 ORDER BY m.sort_order ASC
@@ -113,6 +115,7 @@ func (q *Queries) ListActionSetsInDefinition(ctx context.Context, definitionID s
 			&i.CreatedBy,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -159,7 +162,7 @@ func (q *Queries) ListDefinitionMembers(ctx context.Context, definitionID string
 }
 
 const listDefinitions = `-- name: ListDefinitions :many
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM definitions_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM definitions_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -188,6 +191,7 @@ func (q *Queries) ListDefinitions(ctx context.Context, arg ListDefinitionsParams
 			&i.CreatedBy,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

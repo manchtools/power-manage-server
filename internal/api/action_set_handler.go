@@ -446,5 +446,9 @@ func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.Actio
 		set.CreatedAt = timestamppb.New(s.CreatedAt.Time)
 	}
 
+	if s.UpdatedAt.Valid {
+		set.UpdatedAt = timestamppb.New(s.UpdatedAt.Time)
+	}
+
 	return set
 }

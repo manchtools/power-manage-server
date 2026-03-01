@@ -23,7 +23,7 @@ func (q *Queries) CountActionSets(ctx context.Context) (int64, error) {
 
 const getActionSetByID = `-- name: GetActionSetByID :one
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -40,12 +40,13 @@ func (q *Queries) GetActionSetByID(ctx context.Context, id string) (ActionSetsPr
 		&i.CreatedBy,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getActionSetByName = `-- name: GetActionSetByName :one
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -61,6 +62,7 @@ func (q *Queries) GetActionSetByName(ctx context.Context, name string) (ActionSe
 		&i.CreatedBy,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -123,7 +125,7 @@ func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]Act
 }
 
 const listActionSets = `-- name: ListActionSets :many
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -152,6 +154,7 @@ func (q *Queries) ListActionSets(ctx context.Context, arg ListActionSetsParams) 
 			&i.CreatedBy,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -164,7 +167,7 @@ func (q *Queries) ListActionSets(ctx context.Context, arg ListActionSetsParams) 
 }
 
 const listActionsInSet = `-- name: ListActionsInSet :many
-SELECT a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system FROM actions_projection a
+SELECT a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at FROM actions_projection a
 JOIN action_set_members_projection m ON a.id = m.action_id
 WHERE m.set_id = $1 AND a.is_deleted = FALSE
 ORDER BY m.sort_order ASC
@@ -194,6 +197,7 @@ func (q *Queries) ListActionsInSet(ctx context.Context, setID string) ([]Actions
 			&i.ParamsCanonical,
 			&i.DesiredState,
 			&i.IsSystem,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -446,5 +446,9 @@ func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.De
 		def.CreatedAt = timestamppb.New(d.CreatedAt.Time)
 	}
 
+	if d.UpdatedAt.Valid {
+		def.UpdatedAt = timestamppb.New(d.UpdatedAt.Time)
+	}
+
 	return def
 }

@@ -1345,6 +1345,10 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 		action.CreatedAt = timestamppb.New(a.CreatedAt.Time)
 	}
 
+	if a.UpdatedAt.Valid {
+		action.UpdatedAt = timestamppb.New(a.UpdatedAt.Time)
+	}
+
 	if len(a.Params) > 0 {
 		h.deserializeActionParams(action, pm.ActionType(a.ActionType), a.Params)
 	}
