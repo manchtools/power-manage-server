@@ -327,29 +327,22 @@ func main() {
 		})
 		defer rdb.Close()
 
-		// Initialize search index (RediSearch backed)
+		// Initialize search index (RediSearch backed).
+		// The indexer binary handles warm/rebuild/reconciliation and search task processing.
+		// The control server only enqueues search tasks and runs FT.SEARCH queries.
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
-		// Full rebuild from PG on startup (flushes stale data first)
-		go func() {
-			if err := searchIdx.Rebuild(context.Background()); err != nil {
-				logger.Error("search index rebuild failed", "error", err)
-			} else {
-				logger.Info("search index rebuilt successfully")
-			}
-		}()
+		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
+		if err := searchIdx.EnsureIndexes(context.Background()); err != nil {
+			logger.Warn("failed to ensure search indexes", "error", err)
+		}
 
-		// Periodic reconciliation: rebuild every hour to correct drift
-		searchIdx.StartReconciliation(ctx, 1*time.Hour)
-
-		// Build combined Asynq mux with inbox + search workers
+		// Build Asynq mux with inbox worker only (search worker runs in indexer binary)
 		inboxWorker := control.NewInboxWorker(st, aqClient, logger.With("component", "inbox_worker"))
 		mux := inboxWorker.NewMux()
-		searchWorker := search.NewWorker(rdb, logger.With("component", "search_worker"))
-		searchWorker.RegisterHandlers(mux)
 
-		// Start Asynq server consuming control:inbox + search queues
+		// Start Asynq server consuming control:inbox queue only
 		aqLogger := logger.With("component", "asynq_server")
 		aqServer := asynq.NewServer(
 			asynq.RedisClientOpt{
@@ -361,7 +354,6 @@ func main() {
 				Concurrency: 10,
 				Queues: map[string]int{
 					taskqueue.ControlInboxQueue: 2,
-					taskqueue.SearchQueue:       1,
 				},
 				Logger: newAsynqLogger(aqLogger),
 				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {

@@ -76,3 +76,13 @@ WHERE stream_type = 'execution'
   AND event_type = 'OutputChunk'
 ORDER BY stream_version;
 
+-- name: ListAuditEventsForWarm :many
+SELECT * FROM events
+WHERE occurred_at >= NOW() - INTERVAL '90 days'
+ORDER BY occurred_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountAuditEventsForWarm :one
+SELECT COUNT(*) FROM events
+WHERE occurred_at >= NOW() - INTERVAL '90 days';
+

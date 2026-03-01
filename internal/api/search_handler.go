@@ -60,6 +60,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		"action_sets":         "idx:action_sets",
 		"definitions":         "idx:definitions",
 		"compliance_policies": "idx:compliance_policies",
+		"executions":          "idx:executions",
+		"audit_events":        "idx:audit_events",
 	}
 
 	// Escape special RediSearch characters in query.

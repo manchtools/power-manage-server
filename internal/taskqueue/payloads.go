@@ -141,4 +141,16 @@ type SearchEntityData struct {
 	Type         int32  `json:"type,omitempty"`
 	IsCompliance bool   `json:"is_compliance,omitempty"`
 	ActionNames  string `json:"action_names,omitempty"`
+
+	// Execution fields
+	ActionName     string `json:"action_name,omitempty"`
+	DeviceHostname string `json:"device_hostname,omitempty"`
+	Status         string `json:"status,omitempty"`
+	DeviceID       string `json:"device_id,omitempty"`
+
+	// Audit event fields
+	EventType  string `json:"event_type,omitempty"`
+	StreamType string `json:"stream_type,omitempty"`
+	ActorType  string `json:"actor_type,omitempty"`
+	ActorID    string `json:"actor_id,omitempty"`
 }

@@ -55,6 +55,18 @@ func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams
 	return count, err
 }
 
+const countExecutionsForWarm = `-- name: CountExecutionsForWarm :one
+SELECT COUNT(*) FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days'
+`
+
+func (q *Queries) CountExecutionsForWarm(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countExecutionsForWarm)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const getActionByID = `-- name: GetActionByID :one
 
 SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system FROM actions_projection
@@ -258,6 +270,60 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 		arg.Limit,
 		arg.Offset,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionsProjection{}
+	for rows.Next() {
+		var i ExecutionsProjection
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.ActionID,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.Error,
+			&i.Output,
+			&i.CreatedAt,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.DurationMs,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.ProjectionVersion,
+			&i.Changed,
+			&i.Compliant,
+			&i.DetectionOutput,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionsForWarm = `-- name: ListExecutionsForWarm :many
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days'
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListExecutionsForWarmParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListExecutionsForWarm(ctx context.Context, arg ListExecutionsForWarmParams) ([]ExecutionsProjection, error) {
+	rows, err := q.db.Query(ctx, listExecutionsForWarm, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

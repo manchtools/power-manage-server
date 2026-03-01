@@ -36,11 +36,21 @@ const (
 	prefixMembersActionSet  = "members:action_set:"
 	prefixMembersDefinition = "members:definition:"
 
+	// Search hash prefixes for executions and audit events.
+	prefixExecution  = "search:execution:"
+	prefixAuditEvent = "search:audit_event:"
+
 	// RediSearch index names.
-	idxActions           = "idx:actions"
-	idxActionSets        = "idx:action_sets"
-	idxDefinitions       = "idx:definitions"
+	idxActions            = "idx:actions"
+	idxActionSets         = "idx:action_sets"
+	idxDefinitions        = "idx:definitions"
 	idxCompliancePolicies = "idx:compliance_policies"
+	idxExecutions         = "idx:executions"
+	idxAuditEvents        = "idx:audit_events"
+
+	// Warm window for high-volume data.
+	executionWarmDays = 90
+	auditWarmDays     = 90
 )
 
 // Scope constants used in task payloads and RPC requests.
@@ -49,6 +59,8 @@ const (
 	ScopeActionSet        = "action_set"
 	ScopeDefinition       = "definition"
 	ScopeCompliancePolicy = "compliance_policy"
+	ScopeExecution        = "execution"
+	ScopeAuditEvent       = "audit_event"
 )
 
 // Index manages the RediSearch full-text search indexes in Valkey.
@@ -81,7 +93,7 @@ func (idx *Index) RDB() *redis.Client {
 // reverse-lookup sets, and forward membership keys.
 func (idx *Index) FlushSearchData(ctx context.Context) error {
 	// Drop FT indexes (valkey-search does not support the DD flag).
-	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies} {
+	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies, idxExecutions, idxAuditEvents} {
 		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name).Err()
 		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
@@ -158,6 +170,27 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"action_names", "TEXT",
 			},
 		},
+		{
+			name:   idxExecutions,
+			prefix: prefixExecution,
+			schema: []any{
+				"action_name", "TEXT",
+				"device_hostname", "TEXT",
+				"status", "TAG",
+				"action_type", "TAG",
+				"device_id", "TAG",
+			},
+		},
+		{
+			name:   idxAuditEvents,
+			prefix: prefixAuditEvent,
+			schema: []any{
+				"event_type", "TEXT",
+				"stream_type", "TAG",
+				"actor_type", "TAG",
+				"actor_id", "TAG",
+			},
+		},
 	}
 
 	for _, ix := range indexes {
@@ -205,11 +238,25 @@ func (idx *Index) Warm(ctx context.Context) error {
 		return fmt.Errorf("warm compliance policies: %w", err)
 	}
 
+	// 5. Index recent executions (last 90 days).
+	execCount, err := idx.warmExecutions(ctx)
+	if err != nil {
+		return fmt.Errorf("warm executions: %w", err)
+	}
+
+	// 6. Index recent audit events (last 90 days).
+	auditCount, err := idx.warmAuditEvents(ctx)
+	if err != nil {
+		return fmt.Errorf("warm audit events: %w", err)
+	}
+
 	idx.logger.Info("search index warm complete",
 		"actions", actionCount,
 		"action_sets", setCount,
 		"definitions", defCount,
 		"compliance_policies", policyCount,
+		"executions", execCount,
+		"audit_events", auditCount,
 		"duration", time.Since(start),
 	)
 	return nil
@@ -441,6 +488,114 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 
 		total += len(policies)
 		if int32(len(policies)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
+	const pageSize int32 = 1000
+	var offset int32
+	var total int
+
+	// Build lookup caches for device hostnames and action names.
+	deviceNames := make(map[string]string)
+	actionNames := make(map[string]string)
+
+	for {
+		execs, err := idx.store.Queries().ListExecutionsForWarm(ctx, db.ListExecutionsForWarmParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(execs) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, e := range execs {
+			// Resolve device hostname (cached).
+			hostname, ok := deviceNames[e.DeviceID]
+			if !ok {
+				d, err := idx.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: e.DeviceID})
+				if err == nil {
+					hostname = d.Hostname
+				}
+				deviceNames[e.DeviceID] = hostname
+			}
+
+			// Resolve action name (cached).
+			actionName := ""
+			if e.ActionID != nil {
+				name, ok := actionNames[*e.ActionID]
+				if !ok {
+					a, err := idx.store.Queries().GetActionByID(ctx, *e.ActionID)
+					if err == nil {
+						name = a.Name
+					}
+					actionNames[*e.ActionID] = name
+				}
+				actionName = name
+			}
+
+			pipe.HSet(ctx, prefixExecution+e.ID, map[string]any{
+				"action_name":     actionName,
+				"device_hostname": hostname,
+				"status":          e.Status,
+				"action_type":     strconv.Itoa(int(e.ActionType)),
+				"device_id":       e.DeviceID,
+			})
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(execs)
+		if int32(len(execs)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+func (idx *Index) warmAuditEvents(ctx context.Context) (int, error) {
+	const pageSize int32 = 1000
+	var offset int32
+	var total int
+
+	for {
+		events, err := idx.store.Queries().ListAuditEventsForWarm(ctx, db.ListAuditEventsForWarmParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(events) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, e := range events {
+			id := fmt.Sprintf("%x", e.ID.Bytes)
+			pipe.HSet(ctx, prefixAuditEvent+id, map[string]any{
+				"event_type":  e.EventType,
+				"stream_type": e.StreamType,
+				"actor_type":  e.ActorType,
+				"actor_id":    e.ActorID,
+			})
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(events)
+		if int32(len(events)) < pageSize {
 			break
 		}
 		offset += pageSize

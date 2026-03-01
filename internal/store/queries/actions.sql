@@ -82,3 +82,13 @@ SELECT * FROM executions_projection
 WHERE device_id = $1
 ORDER BY created_at DESC
 LIMIT $2;
+
+-- name: ListExecutionsForWarm :many
+SELECT * FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days'
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2;
+
+-- name: CountExecutionsForWarm :one
+SELECT COUNT(*) FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days';

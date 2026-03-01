@@ -697,6 +697,29 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
+	// Enqueue execution for search indexing.
+	if h.searchIdx != nil {
+		actionName := ""
+		if exec.ActionID != nil {
+			if a, err := h.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
+				actionName = a.Name
+			}
+		}
+		deviceHostname := ""
+		if d, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: exec.DeviceID}); err == nil {
+			deviceHostname = d.Hostname
+		}
+		if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeExecution, exec.ID, &taskqueue.SearchEntityData{
+			ActionName:     actionName,
+			DeviceHostname: deviceHostname,
+			Status:         exec.Status,
+			Type:           exec.ActionType,
+			DeviceID:       exec.DeviceID,
+		}); err != nil {
+			slog.Warn("failed to enqueue execution search reindex", "error", err)
+		}
+	}
+
 	h.logger.Info("action dispatched",
 		"execution_id", id,
 		"device_id", req.Msg.DeviceId,

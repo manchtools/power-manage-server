@@ -116,6 +116,30 @@ services:
     networks:
       - internal
 
+  indexer:
+    image: ghcr.io/manchtools/power-manage-indexer:${IMAGE_TAG:-latest}
+    container_name: pm-indexer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      - INDEXER_DATABASE_URL=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable
+      - INDEXER_VALKEY_ADDR=valkey:6379
+      - INDEXER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - INDEXER_RECONCILE_INTERVAL=1h
+      - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
+      - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal
+
   gateway:
     image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:-latest}
     container_name: pm-gateway
