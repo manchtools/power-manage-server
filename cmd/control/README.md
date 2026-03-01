@@ -411,6 +411,21 @@ Use parentheses to group conditions and control evaluation order:
 
 ### Examples
 
+**All devices (empty query):**
+
+An empty query matches every device. This is useful for creating an "All Devices" group:
+
+```bash
+curl -X POST http://localhost:8081/pm.v1.ControlService/CreateDeviceGroup \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "All Devices",
+    "is_dynamic": true,
+    "dynamic_query": ""
+  }'
+```
+
 **All production servers:**
 ```
 device.labels.environment equals "production"
@@ -498,6 +513,7 @@ curl -X POST http://localhost:8081/pm.v1.ControlService/UpdateDeviceGroupQuery \
 - **Periodic evaluation**: Queued groups are evaluated at the configured interval (default: 1 hour, configurable via `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL`)
 - **Manual members ignored**: Dynamic groups ignore manual add/remove member operations
 - **Converting groups**: You can convert a static group to dynamic (and vice versa) using `UpdateDeviceGroupQuery`
+- **Empty query = all devices**: A dynamic group with an empty query automatically includes every registered device
 - **Query validation**: Invalid queries are rejected at creation/update time with descriptive error messages
 
 ## Event Sourcing
