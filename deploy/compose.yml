@@ -44,10 +44,12 @@ services:
     restart: unless-stopped
     volumes:
       - ./data/postgres:/var/lib/postgresql:z
+      - ./initdb.d:/docker-entrypoint-initdb.d:ro,z
     environment:
       - POSTGRES_USER=powermanage
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=powermanage
+      - INDEXER_POSTGRES_PASSWORD=${INDEXER_POSTGRES_PASSWORD}
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "powermanage"]
       interval: 5s
@@ -126,7 +128,7 @@ services:
       valkey:
         condition: service_healthy
     environment:
-      - INDEXER_DATABASE_URL=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable
+      - INDEXER_DATABASE_URL=postgres://pm_indexer:${INDEXER_POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable
       - INDEXER_VALKEY_ADDR=valkey:6379
       - INDEXER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - INDEXER_RECONCILE_INTERVAL=1h

@@ -45,6 +45,11 @@ check_env() {
         missing=1
     fi
 
+    if [[ -z "$INDEXER_POSTGRES_PASSWORD" ]] || [[ "$INDEXER_POSTGRES_PASSWORD" == "CHANGE_ME"* ]]; then
+        log_error "INDEXER_POSTGRES_PASSWORD must be set in .env"
+        missing=1
+    fi
+
     if [[ -z "$VALKEY_PASSWORD" ]] || [[ "$VALKEY_PASSWORD" == "CHANGE_ME"* ]]; then
         log_error "VALKEY_PASSWORD must be set in .env"
         missing=1
@@ -176,7 +181,11 @@ show_instructions() {
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
     echo ""
-    echo "4. Create a registration token, then install agents:"
+    echo "4. If upgrading an existing deployment, set the indexer DB password:"
+    echo "   docker exec -it pm-postgres psql -U powermanage -d powermanage \\"
+    echo "     -c \"ALTER ROLE pm_indexer PASSWORD '\$INDEXER_POSTGRES_PASSWORD'\""
+    echo ""
+    echo "5. Create a registration token, then install agents:"
     echo "   curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN} -t <TOKEN>"
     echo ""
 }
