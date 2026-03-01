@@ -398,6 +398,7 @@ func main() {
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 
 	interceptors := connect.WithInterceptors(
+		api.NewLoggingInterceptor(logger),
 		auth.NewAuthInterceptor(logger, jwtManager, loginLimiter, refreshLimiter, registerLimiter),
 		auth.NewAuthzInterceptor(),
 	)
