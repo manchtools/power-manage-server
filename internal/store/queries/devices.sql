@@ -3,6 +3,9 @@ SELECT * FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL OR assigned_user_id = sqlc.narg('filter_user_id'));
 
+-- name: IsDeviceDeleted :one
+SELECT is_deleted FROM devices_projection WHERE id = $1;
+
 -- name: GetDeviceByFingerprint :one
 SELECT * FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE;

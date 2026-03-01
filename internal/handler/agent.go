@@ -153,6 +153,15 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		return connect.NewError(connect.CodePermissionDenied, errors.New("device ID does not match certificate"))
 	}
 
+	// Verify the device exists and is not deleted on the control server.
+	if err := h.controlProxy.VerifyDevice(ctx, deviceID); err != nil {
+		h.logger.Warn("device verification failed, rejecting connection",
+			"device_id", deviceID,
+			"error", err,
+		)
+		return connect.NewError(connect.CodePermissionDenied, errors.New("device not found or deleted"))
+	}
+
 	h.logger.Info("agent connected",
 		"device_id", deviceID,
 		"hostname", hello.Hostname,

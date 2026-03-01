@@ -56,6 +56,13 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	}
 
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
+
+	// Skip processing for deleted devices.
+	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
+		logger.Warn("ignoring hello from deleted or unknown device")
+		return nil
+	}
+
 	logger.Info("agent connected", "agent_version", payload.AgentVersion)
 
 	// Emit DeviceHeartbeat event
@@ -83,6 +90,12 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 	var payload taskqueue.DeviceHeartbeatPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal device heartbeat: %w", err)
+	}
+
+	// Skip processing for deleted devices.
+	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
+		w.logger.Warn("ignoring heartbeat from deleted or unknown device", "device_id", payload.DeviceID)
+		return nil
 	}
 
 	data := map[string]any{}

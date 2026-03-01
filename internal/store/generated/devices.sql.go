@@ -170,6 +170,17 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 	return items, nil
 }
 
+const isDeviceDeleted = `-- name: IsDeviceDeleted :one
+SELECT is_deleted FROM devices_projection WHERE id = $1
+`
+
+func (q *Queries) IsDeviceDeleted(ctx context.Context, id string) (bool, error) {
+	row := q.db.QueryRow(ctx, isDeviceDeleted, id)
+	var is_deleted bool
+	err := row.Scan(&is_deleted)
+	return is_deleted, err
+}
+
 const listDevices = `-- name: ListDevices :many
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE

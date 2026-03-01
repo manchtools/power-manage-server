@@ -22,6 +22,14 @@ func NewControlProxy(controlURL string) *ControlProxy {
 	return &ControlProxy{client: client}
 }
 
+// VerifyDevice checks that a device exists and is not deleted on the control server.
+func (p *ControlProxy) VerifyDevice(ctx context.Context, deviceID string) error {
+	_, err := p.client.VerifyDevice(ctx, connect.NewRequest(&pm.VerifyDeviceRequest{
+		DeviceId: deviceID,
+	}))
+	return err
+}
+
 // SyncActions resolves all assigned actions for a device via the control server.
 func (p *ControlProxy) SyncActions(ctx context.Context, deviceID string) (*pm.SyncActionsResponse, error) {
 	resp, err := p.client.ProxySyncActions(ctx, connect.NewRequest(&pm.InternalSyncActionsRequest{

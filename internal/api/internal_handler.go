@@ -39,11 +39,34 @@ func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Log
 	}
 }
 
+// VerifyDevice checks that a device exists and is not deleted.
+// Called by the gateway before registering an agent connection.
+func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request[pm.VerifyDeviceRequest]) (*connect.Response[pm.VerifyDeviceResponse], error) {
+	deviceID := req.Msg.DeviceId
+	if deviceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
+	}
+
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
+	if err != nil {
+		h.logger.Warn("device verification failed", "device_id", deviceID, "error", err)
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found or deleted"))
+	}
+
+	return connect.NewResponse(&pm.VerifyDeviceResponse{}), nil
+}
+
 // ProxySyncActions resolves all assigned actions for a device.
 func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Request[pm.InternalSyncActionsRequest]) (*connect.Response[pm.SyncActionsResponse], error) {
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
+	}
+
+	// Verify the device exists and is not deleted.
+	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID}); err != nil {
+		h.logger.Warn("sync actions for unknown/deleted device", "device_id", deviceID)
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found or deleted"))
 	}
 
 	h.logger.Debug("proxy sync actions", "device_id", deviceID)
