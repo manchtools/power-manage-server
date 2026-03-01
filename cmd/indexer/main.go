@@ -57,8 +57,9 @@ func main() {
 		cancel()
 	}()
 
-	// Initialize store with PostgreSQL (needed for warm/rebuild)
-	st, err := store.New(ctx, cfg.DatabaseURL)
+	// Initialize store with PostgreSQL (needed for warm/rebuild).
+	// Use NewWithoutMigrations — only the control server manages the schema.
+	st, err := store.NewWithoutMigrations(ctx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("failed to initialize store", "error", err)
 		os.Exit(1)
