@@ -63,6 +63,14 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	q := h.store.Queries()
 	filterUID := userFilterID(ctx, "ListDevices")
 
+	// When my_devices_only is set, always filter by the authenticated user's ID
+	// regardless of permissions (used by the "My Devices" page).
+	if req.Msg.MyDevicesOnly {
+		if u, ok := auth.UserFromContext(ctx); ok {
+			filterUID = &u.ID
+		}
+	}
+
 	var devices []db.DevicesProjection
 	var err error
 
