@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -125,7 +125,7 @@ func redactEventData(data []byte) string {
 
 func eventToProto(e db.Event) *pm.AuditEvent {
 	event := &pm.AuditEvent{
-		Id:         uuid.UUID(e.ID.Bytes).String(),
+		Id:         ulid.ULID(e.ID.Bytes).String(),
 		EventType:  e.EventType,
 		StreamType: e.StreamType,
 		StreamId:   e.StreamID,

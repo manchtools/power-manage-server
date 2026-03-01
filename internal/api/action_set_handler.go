@@ -424,10 +424,19 @@ func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSet
 	if h.searchIdx == nil {
 		return
 	}
+	var createdAt, updatedAt int64
+	if s.CreatedAt.Valid {
+		createdAt = s.CreatedAt.Time.Unix()
+	}
+	if s.UpdatedAt.Valid {
+		updatedAt = s.UpdatedAt.Time.Unix()
+	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
 		Name:        s.Name,
 		Description: s.Description,
 		MemberCount: s.MemberCount,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 	}); err != nil {
 		slog.Warn("failed to enqueue search reindex", "scope", "action_set", "error", err)
 	}

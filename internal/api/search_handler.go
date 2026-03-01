@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -26,13 +27,29 @@ func (h *SearchHandler) SetSearchIndex(idx *search.Index) {
 	h.searchIdx = idx
 }
 
+// scopeSortField returns the default sort field for a scope, or empty if none.
+func scopeSortField(scope string) string {
+	switch scope {
+	case "actions", "action_sets", "definitions":
+		return "created_at"
+	case "executions":
+		return "created_at"
+	case "audit_events":
+		return "occurred_at"
+	}
+	return ""
+}
+
 func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
 	if h.searchIdx == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, nil)
 	}
 
 	query := strings.TrimSpace(req.Msg.Query)
-	if query == "" {
+	hasFilters := len(req.Msg.DateFilters) > 0 || len(req.Msg.TagFilters) > 0
+
+	// Allow empty query when filters or scope are provided.
+	if query == "" && !hasFilters && req.Msg.Scope == "" {
 		return connect.NewResponse(&pm.SearchResponse{}), nil
 	}
 
@@ -64,9 +81,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		"audit_events":        "idx:audit_events",
 	}
 
-	// Escape special RediSearch characters in query.
-	escaped := escapeRediSearchQuery(query)
-	ftQuery := escaped + "*"
+	// Build the FT.SEARCH query from text query + filters.
+	ftQuery := buildFTQuery(query, req.Msg.DateFilters, req.Msg.TagFilters)
 
 	var results []*pm.SearchResult
 	var totalCount int32
@@ -77,7 +93,15 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 			continue
 		}
 
-		args := []any{"FT.SEARCH", idxName, ftQuery, "LIMIT", offset, pageSize}
+		args := []any{"FT.SEARCH", idxName, ftQuery}
+
+		// Add SORTBY for scopes that have a timestamp field.
+		if sortField := scopeSortField(scope); sortField != "" {
+			args = append(args, "SORTBY", sortField, "DESC")
+		}
+
+		args = append(args, "LIMIT", offset, pageSize)
+
 		raw, err := h.searchIdx.RDB().Do(ctx, args...).Result()
 		if err != nil {
 			errMsg := err.Error()
@@ -117,6 +141,55 @@ func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&pm.RebuildSearchIndexResponse{}), nil
 }
 
+// buildFTQuery constructs a RediSearch query string from text, date filters, and tag filters.
+func buildFTQuery(textQuery string, dateFilters []*pm.SearchDateFilter, tagFilters map[string]string) string {
+	var parts []string
+
+	// Text query (prefix search).
+	if textQuery != "" {
+		escaped := escapeRediSearchQuery(textQuery)
+		parts = append(parts, escaped+"*")
+	}
+
+	// Date range filters: @field:[start end]
+	for _, df := range dateFilters {
+		if df.Field == "" {
+			continue
+		}
+		start := "-inf"
+		end := "+inf"
+		if df.Start > 0 {
+			start = strconv.FormatInt(df.Start, 10)
+		}
+		if df.End > 0 {
+			end = strconv.FormatInt(df.End, 10)
+		}
+		if start == "-inf" && end == "+inf" {
+			continue // no actual filter
+		}
+		parts = append(parts, fmt.Sprintf("@%s:[%s %s]", df.Field, start, end))
+	}
+
+	// Tag filters: @field:{val1|val2}
+	for field, value := range tagFilters {
+		if field == "" || value == "" {
+			continue
+		}
+		// Values may be pipe-separated for OR. Escape each value.
+		vals := strings.Split(value, "|")
+		var escaped []string
+		for _, v := range vals {
+			escaped = append(escaped, escapeRediSearchTagValue(v))
+		}
+		parts = append(parts, fmt.Sprintf("@%s:{%s}", field, strings.Join(escaped, "|")))
+	}
+
+	if len(parts) == 0 {
+		return "*"
+	}
+	return strings.Join(parts, " ")
+}
+
 // parseFTSearchResult parses the raw FT.SEARCH result into SearchResult protos.
 // FT.SEARCH returns: [total_count, doc_key, [field, value, ...], doc_key, ...]
 func parseFTSearchResult(raw any, scope string) ([]*pm.SearchResult, int32) {
@@ -147,14 +220,18 @@ func parseFTSearchResult(raw any, scope string) ([]*pm.SearchResult, int32) {
 		}
 
 		result := &pm.SearchResult{
-			Id:    id,
-			Scope: scope,
+			Id:     id,
+			Scope:  scope,
+			Fields: make(map[string]string),
 		}
 
-		// Parse field/value pairs.
+		// Parse ALL field/value pairs into the fields map and populate top-level fields.
 		for j := 0; j+1 < len(fields); j += 2 {
 			fieldName, _ := fields[j].(string)
 			fieldVal, _ := fields[j+1].(string)
+
+			result.Fields[fieldName] = fieldVal
+
 			switch fieldName {
 			case "name":
 				result.Name = fieldVal
@@ -179,6 +256,19 @@ func escapeRediSearchQuery(query string) string {
 		"@", "!", "{", "}", "(", ")", "|", "-", "=", ">", "[", "]", ":", ";", "~",
 	}
 	result := query
+	for _, ch := range special {
+		result = strings.ReplaceAll(result, ch, "\\"+ch)
+	}
+	return result
+}
+
+// escapeRediSearchTagValue escapes special characters in a RediSearch TAG value.
+func escapeRediSearchTagValue(val string) string {
+	special := []string{
+		",", ".", "<", ">", "{", "}", "[", "]", "\"", "'", ":", ";", "!", "@", "#",
+		"$", "%", "^", "&", "*", "(", ")", "-", "+", "=", "~",
+	}
+	result := val
 	for _, ch := range special {
 		result = strings.ReplaceAll(result, ch, "\\"+ch)
 	}

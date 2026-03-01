@@ -709,12 +709,29 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		if d, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: exec.DeviceID}); err == nil {
 			deviceHostname = d.Hostname
 		}
+		var execCreatedAt int64
+		if exec.CreatedAt.Valid {
+			execCreatedAt = exec.CreatedAt.Time.Unix()
+		}
+		var execDurationMs int64
+		if exec.DurationMs != nil {
+			execDurationMs = *exec.DurationMs
+		}
+		execActionID := ""
+		if exec.ActionID != nil {
+			execActionID = *exec.ActionID
+		}
 		if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeExecution, exec.ID, &taskqueue.SearchEntityData{
 			ActionName:     actionName,
 			DeviceHostname: deviceHostname,
 			Status:         exec.Status,
 			Type:           exec.ActionType,
 			DeviceID:       exec.DeviceID,
+			CreatedAt:      execCreatedAt,
+			DurationMs:     execDurationMs,
+			Changed:        exec.Changed,
+			DesiredState:   exec.DesiredState,
+			ActionID:       execActionID,
 		}); err != nil {
 			slog.Warn("failed to enqueue execution search reindex", "error", err)
 		}
@@ -1317,11 +1334,20 @@ func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsPr
 			isCompliance = v
 		}
 	}
+	var createdAt, updatedAt int64
+	if a.CreatedAt.Valid {
+		createdAt = a.CreatedAt.Time.Unix()
+	}
+	if a.UpdatedAt.Valid {
+		updatedAt = a.UpdatedAt.Time.Unix()
+	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
 		Name:         a.Name,
 		Description:  desc,
 		Type:         a.ActionType,
 		IsCompliance: isCompliance,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
 	}); err != nil {
 		slog.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -138,6 +139,8 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"description", "TEXT",
 				"type", "TAG",
 				"is_compliance", "TAG",
+				"created_at", "NUMERIC", "SORTABLE",
+				"updated_at", "NUMERIC", "SORTABLE",
 			},
 		},
 		{
@@ -148,6 +151,8 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"description", "TEXT",
 				"member_count", "NUMERIC",
 				"action_names", "TEXT",
+				"created_at", "NUMERIC", "SORTABLE",
+				"updated_at", "NUMERIC", "SORTABLE",
 			},
 		},
 		{
@@ -159,6 +164,8 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"member_count", "NUMERIC",
 				"set_names", "TEXT",
 				"action_names", "TEXT",
+				"created_at", "NUMERIC", "SORTABLE",
+				"updated_at", "NUMERIC", "SORTABLE",
 			},
 		},
 		{
@@ -179,6 +186,7 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"status", "TAG",
 				"action_type", "TAG",
 				"device_id", "TAG",
+				"created_at", "NUMERIC", "SORTABLE",
 			},
 		},
 		{
@@ -189,6 +197,7 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"stream_type", "TAG",
 				"actor_type", "TAG",
 				"actor_id", "TAG",
+				"occurred_at", "NUMERIC", "SORTABLE",
 			},
 		},
 	}
@@ -293,12 +302,19 @@ func (idx *Index) warmActions(ctx context.Context) (int, error) {
 					isCompliance = "true"
 				}
 			}
-			pipe.HSet(ctx, prefixAction+a.ID, map[string]any{
+			fields := map[string]any{
 				"name":          a.Name,
 				"description":   desc,
 				"type":          strconv.Itoa(int(a.ActionType)),
 				"is_compliance": isCompliance,
-			})
+			}
+			if a.CreatedAt.Valid {
+				fields["created_at"] = strconv.FormatInt(a.CreatedAt.Time.Unix(), 10)
+			}
+			if a.UpdatedAt.Valid {
+				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Time.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixAction+a.ID, fields)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -353,12 +369,19 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 				}
 			}
 
-			pipe.HSet(ctx, prefixActionSet+s.ID, map[string]any{
+			setFields := map[string]any{
 				"name":         s.Name,
 				"description":  s.Description,
 				"member_count": strconv.Itoa(int(s.MemberCount)),
 				"action_names": strings.Join(actionNames, " "),
-			})
+			}
+			if s.CreatedAt.Valid {
+				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Time.Unix(), 10)
+			}
+			if s.UpdatedAt.Valid {
+				setFields["updated_at"] = strconv.FormatInt(s.UpdatedAt.Time.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixActionSet+s.ID, setFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
 				idx.logger.Warn("failed to warm action set", "set_id", s.ID, "error", err)
@@ -425,13 +448,20 @@ func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
 				}
 			}
 
-			pipe.HSet(ctx, prefixDefinition+d.ID, map[string]any{
+			defFields := map[string]any{
 				"name":         d.Name,
 				"description":  d.Description,
 				"member_count": strconv.Itoa(int(d.MemberCount)),
 				"set_names":    strings.Join(setNames, " "),
 				"action_names": strings.Join(allActionNames, " "),
-			})
+			}
+			if d.CreatedAt.Valid {
+				defFields["created_at"] = strconv.FormatInt(d.CreatedAt.Time.Unix(), 10)
+			}
+			if d.UpdatedAt.Valid {
+				defFields["updated_at"] = strconv.FormatInt(d.UpdatedAt.Time.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixDefinition+d.ID, defFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
 				idx.logger.Warn("failed to warm definition", "def_id", d.ID, "error", err)
@@ -530,7 +560,9 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 
 			// Resolve action name (cached).
 			actionName := ""
+			actionID := ""
 			if e.ActionID != nil {
+				actionID = *e.ActionID
 				name, ok := actionNames[*e.ActionID]
 				if !ok {
 					a, err := idx.store.Queries().GetActionByID(ctx, *e.ActionID)
@@ -542,13 +574,23 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 				actionName = name
 			}
 
-			pipe.HSet(ctx, prefixExecution+e.ID, map[string]any{
+			execFields := map[string]any{
 				"action_name":     actionName,
 				"device_hostname": hostname,
 				"status":          e.Status,
 				"action_type":     strconv.Itoa(int(e.ActionType)),
 				"device_id":       e.DeviceID,
-			})
+				"action_id":       actionID,
+				"desired_state":   strconv.Itoa(int(e.DesiredState)),
+				"changed":        strconv.FormatBool(e.Changed),
+			}
+			if e.CreatedAt.Valid {
+				execFields["created_at"] = strconv.FormatInt(e.CreatedAt.Time.Unix(), 10)
+			}
+			if e.DurationMs != nil {
+				execFields["duration_ms"] = strconv.FormatInt(*e.DurationMs, 10)
+			}
+			pipe.HSet(ctx, prefixExecution+e.ID, execFields)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -582,13 +624,16 @@ func (idx *Index) warmAuditEvents(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, e := range events {
-			id := fmt.Sprintf("%x", e.ID.Bytes)
-			pipe.HSet(ctx, prefixAuditEvent+id, map[string]any{
+			id := ulid.ULID(e.ID.Bytes).String()
+			eventFields := map[string]any{
 				"event_type":  e.EventType,
 				"stream_type": e.StreamType,
 				"actor_type":  e.ActorType,
 				"actor_id":    e.ActorID,
-			})
+				"stream_id":   e.StreamID,
+				"occurred_at": strconv.FormatInt(e.OccurredAt.Time.Unix(), 10),
+			}
+			pipe.HSet(ctx, prefixAuditEvent+id, eventFields)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)

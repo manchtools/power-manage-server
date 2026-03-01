@@ -287,24 +287,45 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		if data.IsCompliance {
 			isCompliance = "true"
 		}
-		return map[string]any{
+		fields := map[string]any{
 			"name":          data.Name,
 			"description":   data.Description,
 			"type":          strconv.Itoa(int(data.Type)),
 			"is_compliance": isCompliance,
 		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
+		}
+		if data.UpdatedAt != 0 {
+			fields["updated_at"] = strconv.FormatInt(data.UpdatedAt, 10)
+		}
+		return fields
 	case ScopeActionSet:
-		return map[string]any{
+		fields := map[string]any{
 			"name":         data.Name,
 			"description":  data.Description,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
+		}
+		if data.UpdatedAt != 0 {
+			fields["updated_at"] = strconv.FormatInt(data.UpdatedAt, 10)
+		}
+		return fields
 	case ScopeDefinition:
-		return map[string]any{
+		fields := map[string]any{
 			"name":         data.Name,
 			"description":  data.Description,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
+		}
+		if data.UpdatedAt != 0 {
+			fields["updated_at"] = strconv.FormatInt(data.UpdatedAt, 10)
+		}
+		return fields
 	case ScopeCompliancePolicy:
 		return map[string]any{
 			"name":         data.Name,
@@ -312,20 +333,35 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"action_names": data.ActionNames,
 		}
 	case ScopeExecution:
-		return map[string]any{
+		fields := map[string]any{
 			"action_name":     data.ActionName,
 			"device_hostname": data.DeviceHostname,
 			"status":          data.Status,
 			"action_type":     strconv.Itoa(int(data.Type)),
 			"device_id":       data.DeviceID,
+			"action_id":       data.ActionID,
+			"desired_state":   strconv.Itoa(int(data.DesiredState)),
+			"changed":         strconv.FormatBool(data.Changed),
 		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
+		}
+		if data.DurationMs != 0 {
+			fields["duration_ms"] = strconv.FormatInt(data.DurationMs, 10)
+		}
+		return fields
 	case ScopeAuditEvent:
-		return map[string]any{
+		fields := map[string]any{
 			"event_type":  data.EventType,
 			"stream_type": data.StreamType,
 			"actor_type":  data.ActorType,
 			"actor_id":    data.ActorID,
+			"stream_id":   data.StreamID,
 		}
+		if data.OccurredAt != 0 {
+			fields["occurred_at"] = strconv.FormatInt(data.OccurredAt, 10)
+		}
+		return fields
 	}
 	return nil
 }

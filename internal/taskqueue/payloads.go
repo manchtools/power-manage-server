@@ -142,15 +142,25 @@ type SearchEntityData struct {
 	IsCompliance bool   `json:"is_compliance,omitempty"`
 	ActionNames  string `json:"action_names,omitempty"`
 
+	// Common timestamps
+	CreatedAt int64 `json:"created_at,omitempty"`
+	UpdatedAt int64 `json:"updated_at,omitempty"`
+
 	// Execution fields
 	ActionName     string `json:"action_name,omitempty"`
 	DeviceHostname string `json:"device_hostname,omitempty"`
 	Status         string `json:"status,omitempty"`
 	DeviceID       string `json:"device_id,omitempty"`
+	DurationMs     int64  `json:"duration_ms,omitempty"`
+	Changed        bool   `json:"changed,omitempty"`
+	DesiredState   int32  `json:"desired_state,omitempty"`
+	ActionID       string `json:"action_id,omitempty"`
 
 	// Audit event fields
 	EventType  string `json:"event_type,omitempty"`
 	StreamType string `json:"stream_type,omitempty"`
 	ActorType  string `json:"actor_type,omitempty"`
 	ActorID    string `json:"actor_id,omitempty"`
+	OccurredAt int64  `json:"occurred_at,omitempty"`
+	StreamID   string `json:"stream_id,omitempty"`
 }

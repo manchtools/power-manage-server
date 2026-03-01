@@ -424,10 +424,19 @@ func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.D
 	if h.searchIdx == nil {
 		return
 	}
+	var createdAt, updatedAt int64
+	if d.CreatedAt.Valid {
+		createdAt = d.CreatedAt.Time.Unix()
+	}
+	if d.UpdatedAt.Valid {
+		updatedAt = d.UpdatedAt.Time.Unix()
+	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
 		Name:        d.Name,
 		Description: d.Description,
 		MemberCount: d.MemberCount,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 	}); err != nil {
 		slog.Warn("failed to enqueue search reindex", "scope", "definition", "error", err)
 	}
