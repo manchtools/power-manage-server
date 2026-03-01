@@ -101,7 +101,7 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
+	h.enqueueCompliancePolicyReindex(ctx, policy, []db.CompliancePolicyRulesProjection{})
 
 	return connect.NewResponse(&pm.CreateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
