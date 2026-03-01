@@ -139,8 +139,9 @@ type SearchEntityData struct {
 	Description  string `json:"description"`
 	MemberCount  int32  `json:"member_count,omitempty"`
 	Type         int32  `json:"type,omitempty"`
-	IsCompliance bool   `json:"is_compliance,omitempty"`
-	ActionNames  string `json:"action_names,omitempty"`
+	IsCompliance   bool   `json:"is_compliance,omitempty"`
+	ActionNames    string `json:"action_names,omitempty"`
+	HasActionNames bool   `json:"has_action_names,omitempty"`
 
 	// Common timestamps
 	CreatedAt int64 `json:"created_at,omitempty"`

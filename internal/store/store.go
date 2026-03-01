@@ -19,6 +19,7 @@ import (
 
 // Re-export generated types for convenience
 type Queries = generated.Queries
+type PersistedEvent = generated.Event
 
 // Event represents a domain event.
 type Event struct {
@@ -35,6 +36,10 @@ type Event struct {
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
+
+	// OnEventAppended is called after every successful AppendEvent with the persisted row.
+	// Used to trigger search indexing without modifying each call site.
+	OnEventAppended func(ctx context.Context, ev PersistedEvent)
 }
 
 // New creates a new Store and runs migrations.
@@ -163,7 +168,7 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			return fmt.Errorf("get stream version: %w", err)
 		}
 
-		_, err = s.queries.AppendEvent(ctx, generated.AppendEventParams{
+		row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
 			StreamType:    event.StreamType,
 			StreamID:      event.StreamID,
 			StreamVersion: version + 1,
@@ -182,6 +187,9 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 				return fmt.Errorf("version conflict after %d retries: stream was modified concurrently", maxRetries)
 			}
 			return fmt.Errorf("append event: %w", err)
+		}
+		if s.OnEventAppended != nil {
+			s.OnEventAppended(ctx, row)
 		}
 		return nil
 	}
@@ -203,7 +211,7 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 		}
 	}
 
-	_, err = s.queries.AppendEvent(ctx, generated.AppendEventParams{
+	row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
 		StreamType:    event.StreamType,
 		StreamID:      event.StreamID,
 		StreamVersion: expectedVersion,
@@ -219,6 +227,9 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 			return fmt.Errorf("version conflict: expected version %d but stream was modified", expectedVersion)
 		}
 		return fmt.Errorf("append event: %w", err)
+	}
+	if s.OnEventAppended != nil {
+		s.OnEventAppended(ctx, row)
 	}
 
 	return nil

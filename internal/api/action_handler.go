@@ -587,7 +587,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
@@ -600,6 +600,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	var params any // Use any to store either parsed JSON object or raw JSON
 	var timeoutSeconds int32
 	var actionID *string
+	var actionName string
 	var signature []byte
 	var paramsCanonical []byte
 
@@ -623,6 +624,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
+		actionName = action.Name
 		signature = action.Signature
 		paramsCanonical = action.ParamsCanonical
 
@@ -697,18 +699,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
-	// Enqueue execution for search indexing.
+	// Enqueue execution for search indexing using already-fetched data.
 	if h.searchIdx != nil {
-		actionName := ""
-		if exec.ActionID != nil {
-			if a, err := h.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
-				actionName = a.Name
-			}
-		}
-		deviceHostname := ""
-		if d, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: exec.DeviceID}); err == nil {
-			deviceHostname = d.Hostname
-		}
 		var execCreatedAt int64
 		if exec.CreatedAt.Valid {
 			execCreatedAt = exec.CreatedAt.Time.Unix()
@@ -723,7 +715,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeExecution, exec.ID, &taskqueue.SearchEntityData{
 			ActionName:     actionName,
-			DeviceHostname: deviceHostname,
+			DeviceHostname: device.Hostname,
 			Status:         exec.Status,
 			Type:           exec.ActionType,
 			DeviceID:       exec.DeviceID,

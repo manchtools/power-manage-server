@@ -43,25 +43,27 @@ func (h *CompliancePolicyHandler) SetSearchIndex(idx *search.Index) {
 }
 
 // enqueueCompliancePolicyReindex enqueues a search index update for a compliance policy.
-func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Context, p db.CompliancePoliciesProjection) {
+// When rules is non-nil, action_names is included in the update. When nil, it is skipped
+// (HSET is additive, so existing action_names stays unchanged).
+func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Context, p db.CompliancePoliciesProjection, rules []db.CompliancePolicyRulesProjection) {
 	if h.searchIdx == nil {
 		return
 	}
-	// Collect action names from rules for search indexing
-	var actionNames []string
-	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
-	if err == nil {
+	data := &taskqueue.SearchEntityData{
+		Name:        p.Name,
+		Description: p.Description,
+	}
+	if rules != nil {
+		var actionNames []string
 		for _, r := range rules {
 			if r.ActionName != "" {
 				actionNames = append(actionNames, r.ActionName)
 			}
 		}
+		data.ActionNames = strings.Join(actionNames, " ")
+		data.HasActionNames = true
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, &taskqueue.SearchEntityData{
-		Name:        p.Name,
-		Description: p.Description,
-		ActionNames: strings.Join(actionNames, " "),
-	}); err != nil {
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, data); err != nil {
 		slog.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
 	}
 }
@@ -99,7 +101,7 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy)
+	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
 
 	return connect.NewResponse(&pm.CreateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -209,7 +211,7 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy)
+	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -249,7 +251,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy)
+	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -358,7 +360,7 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy)
+	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
 
 	return connect.NewResponse(&pm.AddCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
@@ -403,7 +405,7 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy)
+	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
 
 	return connect.NewResponse(&pm.RemoveCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
