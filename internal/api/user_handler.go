@@ -135,7 +135,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 				Data: map[string]any{
 					"ssh_access_enabled": true,
 					"ssh_allow_pubkey":   true,
-					"ssh_allow_password": true,
+					"ssh_allow_password": false,
 				},
 				ActorType: "system",
 				ActorID:   "auto",
