@@ -272,14 +272,30 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&pm.DeleteUserGroupResponse{}), nil
 }
 
-// AddUserToGroup adds a user to a user group.
+// AddUserToGroup adds one or more users to a user group.
 func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Request[pm.AddUserToGroupRequest]) (*connect.Response[pm.AddUserToGroupResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
 	}
 
+	// Collect user IDs from single + repeated fields
+	userIDs := append([]string{}, req.Msg.UserIds...)
+	if req.Msg.UserId != "" {
+		userIDs = append(userIDs, req.Msg.UserId)
+	}
+	if len(userIDs) == 0 {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one user_id or user_ids must be set")
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	q := h.store.Queries()
+
 	// Verify group exists
-	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	group, err := q.GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
@@ -291,50 +307,47 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
 	}
 
-	// Verify user exists
-	_, err = h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+	for _, userID := range userIDs {
+		// Verify user exists
+		_, err = q.GetUserByID(ctx, userID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+			}
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
-	}
 
-	// Check if already a member
-	isMember, err := h.store.Queries().IsUserInGroup(ctx, db.IsUserInGroupParams{
-		GroupID: req.Msg.GroupId,
-		UserID:  req.Msg.UserId,
-	})
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check membership")
-	}
-	if isMember {
-		return nil, apiError(ErrUserAlreadyInGroup, connect.CodeAlreadyExists, "user is already a member of this group")
-	}
+		// Check if already a member — skip silently in batch
+		isMember, err := q.IsUserInGroup(ctx, db.IsUserInGroupParams{
+			GroupID: req.Msg.GroupId,
+			UserID:  userID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check membership")
+		}
+		if isMember {
+			continue
+		}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
-	}
+		streamID := req.Msg.GroupId + ":" + userID
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  "UserGroupMemberAdded",
+			Data: map[string]any{
+				"group_id": req.Msg.GroupId,
+				"user_id":  userID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add user to group")
+		}
 
-	streamID := req.Msg.GroupId + ":" + req.Msg.UserId
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  "UserGroupMemberAdded",
-		Data: map[string]any{
-			"group_id": req.Msg.GroupId,
-			"user_id":  req.Msg.UserId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add user to group")
+		// Bump user's session version (they may gain new permissions from group roles)
+		h.bumpUserSessionVersion(ctx, userID, userCtx.ID)
 	}
-
-	// Bump user's session version (they may gain new permissions from group roles)
-	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
 
 	return connect.NewResponse(&pm.AddUserToGroupResponse{}), nil
 }
@@ -397,40 +410,19 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	return connect.NewResponse(&pm.RemoveUserFromGroupResponse{}), nil
 }
 
-// AssignRoleToUserGroup assigns a role to a user group.
+// AssignRoleToUserGroup assigns one or more roles to a user group.
 func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *connect.Request[pm.AssignRoleToUserGroupRequest]) (*connect.Response[pm.AssignRoleToUserGroupResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
 	}
 
-	// Verify group exists
-	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
-		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+	// Collect role IDs from single + repeated fields
+	roleIDs := append([]string{}, req.Msg.RoleIds...)
+	if req.Msg.RoleId != "" {
+		roleIDs = append(roleIDs, req.Msg.RoleId)
 	}
-
-	// Verify role exists
-	_, err = h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
-	}
-
-	// Check if already assigned
-	hasRole, err := h.store.Queries().UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
-		GroupID: req.Msg.GroupId,
-		RoleID:  req.Msg.RoleId,
-	})
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
-	}
-	if hasRole {
-		return nil, apiError(ErrGroupAlreadyHasRole, connect.CodeAlreadyExists, "user group already has this role")
+	if len(roleIDs) == 0 {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one role_id or role_ids must be set")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
@@ -438,23 +430,57 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	streamID := req.Msg.GroupId + ":role:" + req.Msg.RoleId
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  "UserGroupRoleAssigned",
-		Data: map[string]any{
-			"group_id": req.Msg.GroupId,
-			"role_id":  req.Msg.RoleId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
+	q := h.store.Queries()
+
+	// Verify group exists
+	_, err := q.GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role to user group")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
-	// Bump session version for all group members (they gain new permissions)
+	for _, roleID := range roleIDs {
+		// Verify role exists
+		_, err = q.GetRoleByID(ctx, roleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
+			}
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
+		}
+
+		// Check if already assigned — skip silently in batch
+		hasRole, err := q.UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
+			GroupID: req.Msg.GroupId,
+			RoleID:  roleID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
+		}
+		if hasRole {
+			continue
+		}
+
+		streamID := req.Msg.GroupId + ":role:" + roleID
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  "UserGroupRoleAssigned",
+			Data: map[string]any{
+				"group_id": req.Msg.GroupId,
+				"role_id":  roleID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role to user group")
+		}
+	}
+
+	// Bump session version for all group members once (they gain new permissions)
 	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID)
 
 	return connect.NewResponse(&pm.AssignRoleToUserGroupResponse{}), nil

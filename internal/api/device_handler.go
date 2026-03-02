@@ -263,7 +263,7 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
 }
 
-// AssignDevice assigns a device to a user or user group.
+// AssignDevice assigns a device to one or more users and/or user groups.
 func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[pm.AssignDeviceRequest]) (*connect.Response[pm.AssignDeviceResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
@@ -274,9 +274,20 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	// Exactly one of user_id or group_id must be set
-	if (req.Msg.UserId == "") == (req.Msg.GroupId == "") {
-		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "exactly one of user_id or group_id must be set")
+	// Collect user IDs from single + repeated fields
+	userIDs := append([]string{}, req.Msg.UserIds...)
+	if req.Msg.UserId != "" {
+		userIDs = append(userIDs, req.Msg.UserId)
+	}
+
+	// Collect group IDs from single + repeated fields
+	groupIDs := append([]string{}, req.Msg.GroupIds...)
+	if req.Msg.GroupId != "" {
+		groupIDs = append(groupIDs, req.Msg.GroupId)
+	}
+
+	if len(userIDs) == 0 && len(groupIDs) == 0 {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one user or group must be specified")
 	}
 
 	q := h.store.Queries()
@@ -290,9 +301,9 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
-	if req.Msg.UserId != "" {
+	for _, userID := range userIDs {
 		// Verify user exists
-		_, err = q.GetUserByID(ctx, req.Msg.UserId)
+		_, err = q.GetUserByID(ctx, userID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
@@ -300,13 +311,12 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 		}
 
-		// Emit DeviceAssigned event
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  "DeviceAssigned",
 			Data: map[string]any{
-				"user_id": req.Msg.UserId,
+				"user_id": userID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -314,9 +324,11 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		if err != nil {
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign device")
 		}
-	} else {
+	}
+
+	for _, groupID := range groupIDs {
 		// Verify user group exists
-		_, err = q.GetUserGroupByID(ctx, req.Msg.GroupId)
+		_, err = q.GetUserGroupByID(ctx, groupID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
@@ -324,13 +336,12 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
 		}
 
-		// Emit DeviceGroupAssigned event
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  "DeviceGroupAssigned",
 			Data: map[string]any{
-				"group_id": req.Msg.GroupId,
+				"group_id": groupID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,

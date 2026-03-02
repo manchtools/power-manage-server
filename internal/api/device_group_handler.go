@@ -266,13 +266,24 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		return nil, err
 	}
 
+	// Collect device IDs from single + repeated fields
+	deviceIDs := append([]string{}, req.Msg.DeviceIds...)
+	if req.Msg.DeviceId != "" {
+		deviceIDs = append(deviceIDs, req.Msg.DeviceId)
+	}
+	if len(deviceIDs) == 0 {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one device_id or device_ids must be set")
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	q := h.store.Queries()
+
 	// Verify group exists and is not dynamic
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err := q.GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, apiError(ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
@@ -285,30 +296,32 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually add members to dynamic groups")
 	}
 
-	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+	for _, deviceID := range deviceIDs {
+		// Verify device exists
+		_, err = q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+			}
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device")
+
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device_group",
+			StreamID:   req.Msg.GroupId,
+			EventType:  "DeviceGroupMemberAdded",
+			Data: map[string]any{
+				"device_id": deviceID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add device to group")
+		}
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device_group",
-		StreamID:   req.Msg.GroupId,
-		EventType:  "DeviceGroupMemberAdded",
-		Data: map[string]any{
-			"device_id": req.Msg.DeviceId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add device to group")
-	}
-
-	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err = q.GetDeviceGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get device group")
 	}

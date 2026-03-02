@@ -283,40 +283,19 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 	return connect.NewResponse(&pm.DeleteRoleResponse{}), nil
 }
 
-// AssignRoleToUser assigns a role to a user.
+// AssignRoleToUser assigns one or more roles to a user.
 func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request[pm.AssignRoleToUserRequest]) (*connect.Response[pm.AssignRoleToUserResponse], error) {
 	if err := Validate(req.Msg); err != nil {
 		return nil, err
 	}
 
-	// Verify role exists
-	_, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
+	// Collect role IDs from single + repeated fields
+	roleIDs := append([]string{}, req.Msg.RoleIds...)
+	if req.Msg.RoleId != "" {
+		roleIDs = append(roleIDs, req.Msg.RoleId)
 	}
-
-	// Verify user exists
-	_, err = h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
-	}
-
-	// Check if already assigned
-	hasRole, err := h.store.Queries().UserHasRole(ctx, db.UserHasRoleParams{
-		UserID: req.Msg.UserId,
-		RoleID: req.Msg.RoleId,
-	})
-	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
-	}
-	if hasRole {
-		return nil, apiError(ErrUserAlreadyHasRole, connect.CodeAlreadyExists, "user already has this role")
+	if len(roleIDs) == 0 {
+		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one role_id or role_ids must be set")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
@@ -324,23 +303,57 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user_role",
-		StreamID:   streamID,
-		EventType:  "UserRoleAssigned",
-		Data: map[string]any{
-			"user_id": req.Msg.UserId,
-			"role_id": req.Msg.RoleId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
+	q := h.store.Queries()
+
+	// Verify user exists
+	_, err := q.GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
-	// Bump user's session version to invalidate cached permissions
+	for _, roleID := range roleIDs {
+		// Verify role exists
+		_, err = q.GetRoleByID(ctx, roleID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
+			}
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
+		}
+
+		// Check if already assigned — skip silently in batch
+		hasRole, err := q.UserHasRole(ctx, db.UserHasRoleParams{
+			UserID: req.Msg.UserId,
+			RoleID: roleID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
+		}
+		if hasRole {
+			continue
+		}
+
+		streamID := req.Msg.UserId + ":" + roleID
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user_role",
+			StreamID:   streamID,
+			EventType:  "UserRoleAssigned",
+			Data: map[string]any{
+				"user_id": req.Msg.UserId,
+				"role_id": roleID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role")
+		}
+	}
+
+	// Bump user's session version once to invalidate cached permissions
 	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
 
 	return connect.NewResponse(&pm.AssignRoleToUserResponse{}), nil
