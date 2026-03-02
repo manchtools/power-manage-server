@@ -85,12 +85,45 @@ func (h *DeviceAuthHandler) AuthenticateDeviceUser(ctx context.Context, req *con
 	}
 
 	// 4. Check if user is authorized for this device.
-	// If no owner is assigned, any authenticated user will be accepted
+	// If no owners are assigned, any authenticated user will be accepted
 	// and automatically assigned as the device owner (see step 11).
-	hasOwner := device.AssignedUserID != nil
-	authorized := !hasOwner || *device.AssignedUserID == user.ID
+	assignedUserIDs, err := h.store.Queries().ListDeviceAssignedUserIDs(ctx, device.ID)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check device assignments")
+	}
+	assignedGroupIDs, err := h.store.Queries().ListDeviceAssignedGroupIDs(ctx, device.ID)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check device group assignments")
+	}
+	hasOwner := len(assignedUserIDs) > 0 || len(assignedGroupIDs) > 0
+	authorized := !hasOwner
 	if !authorized {
-		// TODO: Expand authorization to check user-to-device assignments, device groups, user groups
+		// Check direct user assignment
+		for _, uid := range assignedUserIDs {
+			if uid == user.ID {
+				authorized = true
+				break
+			}
+		}
+		// Check group membership
+		if !authorized && len(assignedGroupIDs) > 0 {
+			userGroups, err := h.store.Queries().ListUserGroupsForUser(ctx, user.ID)
+			if err == nil {
+				for _, gid := range assignedGroupIDs {
+					for _, ug := range userGroups {
+						if gid == ug.ID {
+							authorized = true
+							break
+						}
+					}
+					if authorized {
+						break
+					}
+				}
+			}
+		}
+	}
+	if !authorized {
 		return connect.NewResponse(&pm.AuthenticateDeviceUserResponse{
 			Success: false,
 			Error:   "user is not authorized for this device",
@@ -278,16 +311,47 @@ func (h *DeviceAuthHandler) ListDeviceUsers(ctx context.Context, req *connect.Re
 	}
 
 	var users []*pm.DeviceUserInfo
+	q := h.store.Queries()
+	seen := make(map[string]bool)
 
-	// For PoC: return the device owner as an authorized user
-	if device.AssignedUserID != nil {
-		owner, err := h.store.Queries().GetUserByID(ctx, *device.AssignedUserID)
+	// Get directly assigned users
+	assignedUserIDs, err := q.ListDeviceAssignedUserIDs(ctx, device.ID)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list assigned users")
+	}
+	for _, uid := range assignedUserIDs {
+		if seen[uid] {
+			continue
+		}
+		owner, err := q.GetUserByID(ctx, uid)
 		if err == nil && !owner.Disabled {
 			users = append(users, buildDeviceUserInfo(owner.ID, owner.Email))
+			seen[uid] = true
 		}
 	}
 
-	// TODO: Expand to include users authorized via assignments, user groups, etc.
+	// Get users via assigned groups
+	assignedGroupIDs, err := q.ListDeviceAssignedGroupIDs(ctx, device.ID)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list assigned groups")
+	}
+	for _, gid := range assignedGroupIDs {
+		members, err := q.ListUserGroupMembers(ctx, gid)
+		if err != nil {
+			continue
+		}
+		for _, m := range members {
+			if seen[m.UserID] {
+				continue
+			}
+			u, err := q.GetUserByID(ctx, m.UserID)
+			if err != nil || u.Disabled {
+				continue
+			}
+			users = append(users, buildDeviceUserInfo(m.UserID, m.Email))
+			seen[m.UserID] = true
+		}
+	}
 
 	return connect.NewResponse(&pm.ListDeviceUsersResponse{
 		Users: users,

@@ -966,14 +966,17 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 }
 
 const listUserLayerResolvedActionsForDevice = `-- name: ListUserLayerResolvedActionsForDevice :many
-WITH device_owner AS (
-  SELECT d.assigned_user_id FROM devices_projection d
-  WHERE d.id = $1 AND d.is_deleted = FALSE AND d.assigned_user_id IS NOT NULL
+WITH device_owners AS (
+  SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
+  UNION
+  SELECT ugm.user_id FROM device_assigned_groups_projection dag
+  JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id
+  WHERE dag.device_id = $1
 ),
 owner_groups AS (
-  SELECT ugm.group_id FROM user_group_members_projection ugm
+  SELECT DISTINCT ugm.group_id FROM user_group_members_projection ugm
   JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
-  WHERE ugm.user_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE ugm.user_id IN (SELECT user_id FROM device_owners)
 ),
 all_assignments AS (
   -- Direct action → user (source_priority = 1)
@@ -991,7 +994,7 @@ all_assignments AS (
     0 as action_sort
   FROM actions_projection a
   JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -1032,7 +1035,7 @@ all_assignments AS (
   FROM actions_projection a
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -1075,7 +1078,7 @@ all_assignments AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -1165,10 +1168,10 @@ type ListUserLayerResolvedActionsForDeviceRow struct {
 }
 
 // Get all resolved actions from user/user_group layer for a device.
-// Looks up the device's assigned_user_id, then finds assignments targeting
-// that user or any of the user's groups. Same resolution logic as device layer.
-func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]ListUserLayerResolvedActionsForDeviceRow, error) {
-	rows, err := q.db.Query(ctx, listUserLayerResolvedActionsForDevice, id)
+// Looks up all users assigned to the device (directly or via user groups),
+// then finds assignments targeting those users or any of their groups.
+func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, deviceID string) ([]ListUserLayerResolvedActionsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listUserLayerResolvedActionsForDevice, deviceID)
 	if err != nil {
 		return nil, err
 	}

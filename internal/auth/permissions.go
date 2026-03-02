@@ -37,8 +37,9 @@ func AllPermissions() []PermissionInfo {
 		{"GetDevice:assigned", "Devices", "View own assigned devices"},
 		{"SetDeviceLabel", "Devices", "Set device labels"},
 		{"RemoveDeviceLabel", "Devices", "Remove device labels"},
-		{"AssignDevice", "Devices", "Assign devices to users"},
-		{"UnassignDevice", "Devices", "Unassign devices"},
+		{"AssignDevice", "Devices", "Assign devices to users or groups"},
+		{"UnassignDevice", "Devices", "Unassign devices from users or groups"},
+		{"ListDeviceAssignees", "Devices", "List device assignees"},
 		{"SetDeviceSyncInterval", "Devices", "Set device sync interval"},
 		{"DeleteDevice", "Devices", "Delete devices"},
 		// Tokens

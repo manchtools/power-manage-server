@@ -253,6 +253,10 @@ func (s *ControlService) SetDeviceSyncInterval(ctx context.Context, req *connect
 	return s.device.SetDeviceSyncInterval(ctx, req)
 }
 
+func (s *ControlService) ListDeviceAssignees(ctx context.Context, req *connect.Request[pm.ListDeviceAssigneesRequest]) (*connect.Response[pm.ListDeviceAssigneesResponse], error) {
+	return s.device.ListDeviceAssignees(ctx, req)
+}
+
 // Registration Tokens
 func (s *ControlService) CreateToken(ctx context.Context, req *connect.Request[pm.CreateTokenRequest]) (*connect.Response[pm.CreateTokenResponse], error) {
 	return s.token.CreateToken(ctx, req)

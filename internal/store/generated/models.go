@@ -131,6 +131,22 @@ type DefinitionsProjection struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type DeviceAssignedGroupsProjection struct {
+	DeviceID          string             `json:"device_id"`
+	GroupID           string             `json:"group_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type DeviceAssignedUsersProjection struct {
+	DeviceID          string             `json:"device_id"`
+	UserID            string             `json:"user_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type DeviceGroupMembersProjection struct {
 	GroupID           string             `json:"group_id"`
 	DeviceID          string             `json:"device_id"`
@@ -171,7 +187,6 @@ type DevicesProjection struct {
 	Labels              []byte             `json:"labels"`
 	IsDeleted           bool               `json:"is_deleted"`
 	ProjectionVersion   int64              `json:"projection_version"`
-	AssignedUserID      *string            `json:"assigned_user_id"`
 	SyncIntervalMinutes int32              `json:"sync_interval_minutes"`
 	ComplianceStatus    int32              `json:"compliance_status"`
 	ComplianceCheckedAt pgtype.Timestamptz `json:"compliance_checked_at"`

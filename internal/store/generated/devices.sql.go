@@ -7,12 +7,17 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countDevices = `-- name: CountDevices :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
-  AND ($1::TEXT IS NULL OR assigned_user_id = $1)
+  AND ($1::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
+  )
 `
 
 func (q *Queries) CountDevices(ctx context.Context, filterUserID *string) (int64, error) {
@@ -36,7 +41,7 @@ func (q *Queries) CountDevicesOnline(ctx context.Context) (int64, error) {
 }
 
 const getDeviceByFingerprint = `-- name: GetDeviceByFingerprint :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE
 `
 
@@ -55,7 +60,6 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 		&i.Labels,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
-		&i.AssignedUserID,
 		&i.SyncIntervalMinutes,
 		&i.ComplianceStatus,
 		&i.ComplianceCheckedAt,
@@ -66,9 +70,12 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 }
 
 const getDeviceByID = `-- name: GetDeviceByID :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
-  AND ($2::TEXT IS NULL OR assigned_user_id = $2)
+  AND ($2::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $2)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $2)
+  )
 `
 
 type GetDeviceByIDParams struct {
@@ -91,7 +98,6 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 		&i.Labels,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
-		&i.AssignedUserID,
 		&i.SyncIntervalMinutes,
 		&i.ComplianceStatus,
 		&i.ComplianceCheckedAt,
@@ -113,7 +119,7 @@ func (q *Queries) GetDeviceSyncInterval(ctx context.Context, dollar_1 string) (i
 }
 
 const getDevicesWithLabel = `-- name: GetDevicesWithLabel :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND labels->>$1 = $2
 ORDER BY last_seen_at DESC
@@ -153,7 +159,6 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
-			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
 			&i.ComplianceStatus,
 			&i.ComplianceCheckedAt,
@@ -181,10 +186,129 @@ func (q *Queries) IsDeviceDeleted(ctx context.Context, id string) (bool, error) 
 	return is_deleted, err
 }
 
+const listDeviceAssignedGroupIDs = `-- name: ListDeviceAssignedGroupIDs :many
+SELECT group_id FROM device_assigned_groups_projection WHERE device_id = $1
+`
+
+func (q *Queries) ListDeviceAssignedGroupIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedGroupIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedGroups = `-- name: ListDeviceAssignedGroups :many
+SELECT dag.group_id, ug.name AS group_name, dag.assigned_at
+FROM device_assigned_groups_projection dag
+JOIN user_groups_projection ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+WHERE dag.device_id = $1
+ORDER BY dag.assigned_at
+`
+
+type ListDeviceAssignedGroupsRow struct {
+	GroupID    string             `json:"group_id"`
+	GroupName  string             `json:"group_name"`
+	AssignedAt pgtype.Timestamptz `json:"assigned_at"`
+}
+
+func (q *Queries) ListDeviceAssignedGroups(ctx context.Context, deviceID string) ([]ListDeviceAssignedGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedGroups, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedGroupsRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedGroupsRow
+		if err := rows.Scan(&i.GroupID, &i.GroupName, &i.AssignedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedUserIDs = `-- name: ListDeviceAssignedUserIDs :many
+SELECT user_id FROM device_assigned_users_projection WHERE device_id = $1
+`
+
+func (q *Queries) ListDeviceAssignedUserIDs(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedUserIDs, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedUsers = `-- name: ListDeviceAssignedUsers :many
+SELECT dau.user_id, u.email AS user_email, dau.assigned_at
+FROM device_assigned_users_projection dau
+JOIN users_projection u ON u.id = dau.user_id AND u.is_deleted = FALSE
+WHERE dau.device_id = $1
+ORDER BY dau.assigned_at
+`
+
+type ListDeviceAssignedUsersRow struct {
+	UserID     string             `json:"user_id"`
+	UserEmail  string             `json:"user_email"`
+	AssignedAt pgtype.Timestamptz `json:"assigned_at"`
+}
+
+func (q *Queries) ListDeviceAssignedUsers(ctx context.Context, deviceID string) ([]ListDeviceAssignedUsersRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedUsers, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedUsersRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedUsersRow
+		if err := rows.Scan(&i.UserID, &i.UserEmail, &i.AssignedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDevices = `-- name: ListDevices :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
-  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
+  AND ($3::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -216,7 +340,6 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
-			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
 			&i.ComplianceStatus,
 			&i.ComplianceCheckedAt,
@@ -234,10 +357,13 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 }
 
 const listDevicesOffline = `-- name: ListDevicesOffline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at <= NOW() - INTERVAL '5 minutes'
-  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
+  AND ($3::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -269,7 +395,6 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
-			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
 			&i.ComplianceStatus,
 			&i.ComplianceCheckedAt,
@@ -287,10 +412,13 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 }
 
 const listDevicesOnline = `-- name: ListDevicesOnline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, assigned_user_id, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
-  AND ($3::TEXT IS NULL OR assigned_user_id = $3)
+  AND ($3::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -322,7 +450,6 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
-			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
 			&i.ComplianceStatus,
 			&i.ComplianceCheckedAt,
