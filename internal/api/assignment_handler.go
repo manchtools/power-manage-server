@@ -290,9 +290,10 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get group assignments")
 	}
 
-	// Collect unique action set IDs and definition IDs
+	// Collect unique action set IDs, definition IDs, and compliance policy IDs
 	actionSetIDs := make(map[string]bool)
 	definitionIDs := make(map[string]bool)
+	compliancePolicyIDs := make(map[string]bool)
 
 	for _, a := range directAssignments {
 		switch a.SourceType {
@@ -300,6 +301,8 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 			actionSetIDs[a.SourceID] = true
 		case "definition":
 			definitionIDs[a.SourceID] = true
+		case "compliance_policy":
+			compliancePolicyIDs[a.SourceID] = true
 		}
 	}
 	for _, a := range groupAssignments {
@@ -308,6 +311,8 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 			actionSetIDs[a.SourceID] = true
 		case "definition":
 			definitionIDs[a.SourceID] = true
+		case "compliance_policy":
+			compliancePolicyIDs[a.SourceID] = true
 		}
 	}
 
@@ -343,10 +348,27 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		}
 	}
 
+	// Fetch compliance policies
+	protoCompliancePolicies := make([]*pm.CompliancePolicy, 0, len(compliancePolicyIDs))
+	for id := range compliancePolicyIDs {
+		cp, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
+		if err == nil {
+			protoCompliancePolicies = append(protoCompliancePolicies, &pm.CompliancePolicy{
+				Id:          cp.ID,
+				Name:        cp.Name,
+				Description: cp.Description,
+				RuleCount:   cp.RuleCount,
+				CreatedBy:   cp.CreatedBy,
+				CreatedAt:   timestamppb.New(cp.CreatedAt.Time),
+			})
+		}
+	}
+
 	return connect.NewResponse(&pm.GetDeviceAssignmentsResponse{
-		Actions:     protoActions,
-		ActionSets:  protoActionSets,
-		Definitions: protoDefinitions,
+		Actions:            protoActions,
+		ActionSets:         protoActionSets,
+		Definitions:        protoDefinitions,
+		CompliancePolicies: protoCompliancePolicies,
 	}), nil
 }
 
