@@ -82,6 +82,7 @@ func AllPermissions() []PermissionInfo {
 		{"CreateDeviceGroup", "Device Groups", "Create device groups"},
 		{"GetDeviceGroup", "Device Groups", "View device groups"},
 		{"ListDeviceGroups", "Device Groups", "List device groups"},
+		{"ListDeviceGroupsForDevice", "Device Groups", "List device groups for a device"},
 		{"RenameDeviceGroup", "Device Groups", "Rename device groups"},
 		{"UpdateDeviceGroupDescription", "Device Groups", "Update device group descriptions"},
 		{"UpdateDeviceGroupQuery", "Device Groups", "Update device group queries"},

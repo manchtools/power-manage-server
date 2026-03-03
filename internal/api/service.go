@@ -398,6 +398,10 @@ func (s *ControlService) ListDeviceGroups(ctx context.Context, req *connect.Requ
 	return s.deviceGroup.ListDeviceGroups(ctx, req)
 }
 
+func (s *ControlService) ListDeviceGroupsForDevice(ctx context.Context, req *connect.Request[pm.ListDeviceGroupsForDeviceRequest]) (*connect.Response[pm.ListDeviceGroupsForDeviceResponse], error) {
+	return s.deviceGroup.ListDeviceGroupsForDevice(ctx, req)
+}
+
 func (s *ControlService) RenameDeviceGroup(ctx context.Context, req *connect.Request[pm.RenameDeviceGroupRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
 	return s.deviceGroup.RenameDeviceGroup(ctx, req)
 }

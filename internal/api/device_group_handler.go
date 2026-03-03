@@ -158,6 +158,27 @@ func (h *DeviceGroupHandler) ListDeviceGroups(ctx context.Context, req *connect.
 	}), nil
 }
 
+// ListDeviceGroupsForDevice returns all device groups that a specific device belongs to.
+func (h *DeviceGroupHandler) ListDeviceGroupsForDevice(ctx context.Context, req *connect.Request[pm.ListDeviceGroupsForDeviceRequest]) (*connect.Response[pm.ListDeviceGroupsForDeviceResponse], error) {
+	if err := Validate(req.Msg); err != nil {
+		return nil, err
+	}
+
+	groups, err := h.store.Queries().ListGroupsForDevice(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list groups for device")
+	}
+
+	protoGroups := make([]*pm.DeviceGroup, len(groups))
+	for i, g := range groups {
+		protoGroups[i] = h.deviceGroupToProto(g)
+	}
+
+	return connect.NewResponse(&pm.ListDeviceGroupsForDeviceResponse{
+		Groups: protoGroups,
+	}), nil
+}
+
 // RenameDeviceGroup renames a device group.
 func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect.Request[pm.RenameDeviceGroupRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
 	if err := Validate(req.Msg); err != nil {
