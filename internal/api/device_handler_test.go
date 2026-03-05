@@ -144,7 +144,7 @@ func TestAssignDevice(t *testing.T) {
 		UserId:   userID,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, userID, resp.Msg.Device.AssignedUserId)
+	assert.Contains(t, resp.Msg.Device.AssignedUserIds, userID)
 }
 
 func TestUnassignDevice(t *testing.T) {
@@ -169,7 +169,7 @@ func TestUnassignDevice(t *testing.T) {
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.Device.AssignedUserId)
+	assert.Empty(t, resp.Msg.Device.AssignedUserIds)
 }
 
 func TestSetDeviceSyncInterval(t *testing.T) {

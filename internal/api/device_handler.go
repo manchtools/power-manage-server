@@ -540,10 +540,6 @@ func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjec
 	q := h.store.Queries()
 	if userIDs, err := q.ListDeviceAssignedUserIDs(ctx, d.ID); err == nil {
 		device.AssignedUserIds = userIDs
-		// Backward compatibility: set deprecated field to first user
-		if len(userIDs) > 0 {
-			device.AssignedUserId = userIDs[0]
-		}
 	}
 	if groupIDs, err := q.ListDeviceAssignedGroupIDs(ctx, d.ID); err == nil {
 		device.AssignedGroupIds = groupIDs
