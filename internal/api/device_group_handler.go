@@ -102,13 +102,23 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 	}
 
 	deviceIDs := make([]string, len(members))
+	devices := make([]*pm.DeviceGroupMember, len(members))
 	for i, m := range members {
 		deviceIDs[i] = m.DeviceID
+		devices[i] = &pm.DeviceGroupMember{
+			DeviceId:     m.DeviceID,
+			Hostname:     m.Hostname,
+			AgentVersion: m.AgentVersion,
+		}
+		if m.LastSeenAt.Valid {
+			devices[i].LastSeenAt = timestamppb.New(m.LastSeenAt.Time)
+		}
 	}
 
 	return connect.NewResponse(&pm.GetDeviceGroupResponse{
 		Group:     h.deviceGroupToProto(group),
 		DeviceIds: deviceIDs,
+		Devices:   devices,
 	}), nil
 }
 

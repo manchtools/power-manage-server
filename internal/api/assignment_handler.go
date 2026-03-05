@@ -240,7 +240,21 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 
 	protoAssignments := make([]*pm.Assignment, len(assignments))
 	for i, a := range assignments {
-		protoAssignments[i] = h.assignmentToProto(a)
+		assignment := &pm.Assignment{
+			Id:         a.ID,
+			SourceType: a.SourceType,
+			SourceId:   a.SourceID,
+			TargetType: a.TargetType,
+			TargetId:   a.TargetID,
+			CreatedBy:  a.CreatedBy,
+			Mode:       pm.AssignmentMode(a.Mode),
+			SourceName: a.SourceName,
+			TargetName: a.TargetName,
+		}
+		if a.CreatedAt.Valid {
+			assignment.CreatedAt = timestamppb.New(a.CreatedAt.Time)
+		}
+		protoAssignments[i] = assignment
 	}
 
 	return connect.NewResponse(&pm.ListAssignmentsResponse{
@@ -316,36 +330,77 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		}
 	}
 
-	// Fetch action sets
+	// Fetch action sets with members
 	protoActionSets := make([]*pm.ActionSet, 0, len(actionSetIDs))
+	protoActionSetDetails := make([]*pm.GetActionSetResponse, 0, len(actionSetIDs))
 	for id := range actionSetIDs {
 		set, err := h.store.Queries().GetActionSetByID(ctx, id)
-		if err == nil {
-			protoActionSets = append(protoActionSets, &pm.ActionSet{
-				Id:          set.ID,
-				Name:        set.Name,
-				Description: set.Description,
-				MemberCount: set.MemberCount,
-				CreatedBy:   set.CreatedBy,
-				CreatedAt:   timestamppb.New(set.CreatedAt.Time),
-			})
+		if err != nil {
+			continue
 		}
+		protoSet := &pm.ActionSet{
+			Id:          set.ID,
+			Name:        set.Name,
+			Description: set.Description,
+			MemberCount: set.MemberCount,
+			CreatedBy:   set.CreatedBy,
+			CreatedAt:   timestamppb.New(set.CreatedAt.Time),
+		}
+		protoActionSets = append(protoActionSets, protoSet)
+
+		members, err := h.store.Queries().ListActionSetMembers(ctx, id)
+		if err != nil {
+			continue
+		}
+		protoMembers := make([]*pm.ActionSetMember, len(members))
+		for i, m := range members {
+			protoMembers[i] = &pm.ActionSetMember{
+				ActionId:   m.ActionID,
+				SortOrder:  m.SortOrder,
+				ActionName: m.ActionName,
+				ActionType: pm.ActionType(m.ActionType),
+			}
+		}
+		protoActionSetDetails = append(protoActionSetDetails, &pm.GetActionSetResponse{
+			Set:     protoSet,
+			Members: protoMembers,
+		})
 	}
 
-	// Fetch definitions
+	// Fetch definitions with members
 	protoDefinitions := make([]*pm.Definition, 0, len(definitionIDs))
+	protoDefinitionDetails := make([]*pm.GetDefinitionResponse, 0, len(definitionIDs))
 	for id := range definitionIDs {
 		def, err := h.store.Queries().GetDefinitionByID(ctx, id)
-		if err == nil {
-			protoDefinitions = append(protoDefinitions, &pm.Definition{
-				Id:          def.ID,
-				Name:        def.Name,
-				Description: def.Description,
-				MemberCount: def.MemberCount,
-				CreatedBy:   def.CreatedBy,
-				CreatedAt:   timestamppb.New(def.CreatedAt.Time),
-			})
+		if err != nil {
+			continue
 		}
+		protoDef := &pm.Definition{
+			Id:          def.ID,
+			Name:        def.Name,
+			Description: def.Description,
+			MemberCount: def.MemberCount,
+			CreatedBy:   def.CreatedBy,
+			CreatedAt:   timestamppb.New(def.CreatedAt.Time),
+		}
+		protoDefinitions = append(protoDefinitions, protoDef)
+
+		members, err := h.store.Queries().ListDefinitionMembers(ctx, id)
+		if err != nil {
+			continue
+		}
+		protoMembers := make([]*pm.DefinitionMember, len(members))
+		for i, m := range members {
+			protoMembers[i] = &pm.DefinitionMember{
+				ActionSetId:   m.ActionSetID,
+				SortOrder:     m.SortOrder,
+				ActionSetName: m.ActionSetName,
+			}
+		}
+		protoDefinitionDetails = append(protoDefinitionDetails, &pm.GetDefinitionResponse{
+			Definition: protoDef,
+			Members:    protoMembers,
+		})
 	}
 
 	// Fetch compliance policies
@@ -369,6 +424,8 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		ActionSets:         protoActionSets,
 		Definitions:        protoDefinitions,
 		CompliancePolicies: protoCompliancePolicies,
+		ActionSetDetails:   protoActionSetDetails,
+		DefinitionDetails:  protoDefinitionDetails,
 	}), nil
 }
 

@@ -12,13 +12,19 @@ WHERE name = $1 AND is_deleted = FALSE;
 SELECT * FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
+  AND (sqlc.arg(unassigned_only)::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ))
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3;
 
 -- name: CountActions :one
 SELECT COUNT(*) FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
-  AND ($1::INTEGER = 0 OR action_type = $1);
+  AND ($1::INTEGER = 0 OR action_type = $1)
+  AND (sqlc.arg(unassigned_only)::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ));
 
 -- name: GetActionNamesByIDs :many
 SELECT id, name FROM actions_projection

@@ -235,6 +235,27 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		h.populateUserRoles(ctx, protoUsers[i])
 	}
 
+	// Populate inherited roles from user group memberships
+	inheritedRoles, err := h.store.Queries().ListAllInheritedRoles(ctx)
+	if err != nil {
+		slog.Warn("failed to load inherited roles", "error", err)
+	} else {
+		inheritedMap := make(map[string][]*pm.InheritedRole)
+		for _, ir := range inheritedRoles {
+			inheritedMap[ir.UserID] = append(inheritedMap[ir.UserID], &pm.InheritedRole{
+				RoleId:    ir.RoleID,
+				RoleName:  ir.RoleName,
+				GroupId:   ir.GroupID,
+				GroupName: ir.GroupName,
+			})
+		}
+		for _, u := range protoUsers {
+			if roles, ok := inheritedMap[u.Id]; ok {
+				u.InheritedRoles = roles
+			}
+		}
+	}
+
 	return connect.NewResponse(&pm.ListUsersResponse{
 		Users:         protoUsers,
 		NextPageToken: nextPageToken,

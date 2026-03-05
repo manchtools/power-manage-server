@@ -230,7 +230,9 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 
 	// Auto-assign priority for SSHD actions based on creation order
 	if req.Msg.Type == pm.ActionType_ACTION_TYPE_SSHD {
-		count, countErr := h.store.Queries().CountActions(ctx, int32(pm.ActionType_ACTION_TYPE_SSHD))
+		count, countErr := h.store.Queries().CountActions(ctx, db.CountActionsParams{
+			Column1: int32(pm.ActionType_ACTION_TYPE_SSHD),
+		})
 		if countErr != nil {
 			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count SSHD actions")
 		}
@@ -318,15 +320,19 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	typeFilter := int32(req.Msg.TypeFilter)
 
 	actions, err := h.store.Queries().ListActions(ctx, db.ListActionsParams{
-		Column1: typeFilter,
-		Limit:   pageSize,
-		Offset:  offset,
+		Column1:        typeFilter,
+		Limit:          pageSize,
+		Offset:         offset,
+		UnassignedOnly: req.Msg.UnassignedOnly,
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list actions")
 	}
 
-	count, err := h.store.Queries().CountActions(ctx, typeFilter)
+	count, err := h.store.Queries().CountActions(ctx, db.CountActionsParams{
+		Column1:        typeFilter,
+		UnassignedOnly: req.Msg.UnassignedOnly,
+	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count actions")
 	}

@@ -102,8 +102,10 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 	protoMembers := make([]*pm.ActionSetMember, len(members))
 	for i, m := range members {
 		protoMembers[i] = &pm.ActionSetMember{
-			ActionId:  m.ActionID,
-			SortOrder: m.SortOrder,
+			ActionId:   m.ActionID,
+			SortOrder:  m.SortOrder,
+			ActionName: m.ActionName,
+			ActionType: pm.ActionType(m.ActionType),
 		}
 	}
 
@@ -130,14 +132,15 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 	}
 
 	sets, err := h.store.Queries().ListActionSets(ctx, db.ListActionSetsParams{
-		Limit:  pageSize,
-		Offset: offset,
+		Limit:          pageSize,
+		Offset:         offset,
+		UnassignedOnly: req.Msg.UnassignedOnly,
 	})
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list action sets")
 	}
 
-	count, err := h.store.Queries().CountActionSets(ctx)
+	count, err := h.store.Queries().CountActionSets(ctx, req.Msg.UnassignedOnly)
 	if err != nil {
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count action sets")
 	}

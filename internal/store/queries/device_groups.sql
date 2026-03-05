@@ -21,9 +21,12 @@ WHERE is_deleted = FALSE;
 -- Device Group Members queries
 
 -- name: ListDeviceGroupMembers :many
-SELECT * FROM device_group_members_projection
-WHERE group_id = $1
-ORDER BY added_at ASC;
+SELECT m.group_id, m.device_id, m.added_at, m.projection_version,
+       d.hostname, d.agent_version, d.last_seen_at
+FROM device_group_members_projection m
+JOIN devices_projection d ON d.id = m.device_id AND d.is_deleted = FALSE
+WHERE m.group_id = $1
+ORDER BY m.added_at ASC;
 
 -- name: GetDeviceGroupMember :one
 SELECT * FROM device_group_members_projection

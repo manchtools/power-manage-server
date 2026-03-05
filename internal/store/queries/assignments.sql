@@ -9,13 +9,26 @@ SELECT * FROM assignments_projection
 WHERE source_type = $1 AND source_id = $2 AND target_type = $3 AND target_id = $4 AND is_deleted = FALSE;
 
 -- name: ListAssignments :many
-SELECT * FROM assignments_projection
-WHERE is_deleted = FALSE
-  AND ($1::TEXT = '' OR source_type = $1)
-  AND ($2::TEXT = '' OR source_id = $2)
-  AND ($3::TEXT = '' OR target_type = $3)
-  AND ($4::TEXT = '' OR target_id = $4)
-ORDER BY created_at DESC
+SELECT a.*,
+  COALESCE(CASE a.source_type
+    WHEN 'action' THEN (SELECT name FROM actions_projection WHERE id = a.source_id)
+    WHEN 'action_set' THEN (SELECT name FROM action_sets_projection WHERE id = a.source_id)
+    WHEN 'definition' THEN (SELECT name FROM definitions_projection WHERE id = a.source_id)
+    WHEN 'compliance_policy' THEN (SELECT name FROM compliance_policies_projection WHERE id = a.source_id)
+  END, '')::TEXT AS source_name,
+  COALESCE(CASE a.target_type
+    WHEN 'device' THEN (SELECT hostname FROM devices_projection WHERE id = a.target_id)
+    WHEN 'device_group' THEN (SELECT name FROM device_groups_projection WHERE id = a.target_id)
+    WHEN 'user' THEN (SELECT email FROM users_projection WHERE id = a.target_id)
+    WHEN 'user_group' THEN (SELECT name FROM user_groups_projection WHERE id = a.target_id)
+  END, '')::TEXT AS target_name
+FROM assignments_projection a
+WHERE a.is_deleted = FALSE
+  AND ($1::TEXT = '' OR a.source_type = $1)
+  AND ($2::TEXT = '' OR a.source_id = $2)
+  AND ($3::TEXT = '' OR a.target_type = $3)
+  AND ($4::TEXT = '' OR a.target_id = $4)
+ORDER BY a.created_at DESC
 LIMIT $5 OFFSET $6;
 
 -- name: CountAssignments :one

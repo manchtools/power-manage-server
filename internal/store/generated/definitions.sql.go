@@ -7,6 +7,8 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countDefinitions = `-- name: CountDefinitions :one
@@ -129,27 +131,40 @@ func (q *Queries) ListActionSetsInDefinition(ctx context.Context, definitionID s
 
 const listDefinitionMembers = `-- name: ListDefinitionMembers :many
 
-SELECT definition_id, action_set_id, sort_order, added_at, projection_version FROM definition_members_projection
-WHERE definition_id = $1
-ORDER BY sort_order ASC
+SELECT m.definition_id, m.action_set_id, m.sort_order, m.added_at, m.projection_version,
+       s.name AS action_set_name
+FROM definition_members_projection m
+JOIN action_sets_projection s ON s.id = m.action_set_id AND s.is_deleted = FALSE
+WHERE m.definition_id = $1
+ORDER BY m.sort_order ASC
 `
 
+type ListDefinitionMembersRow struct {
+	DefinitionID      string             `json:"definition_id"`
+	ActionSetID       string             `json:"action_set_id"`
+	SortOrder         int32              `json:"sort_order"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+	ActionSetName     string             `json:"action_set_name"`
+}
+
 // Definition Members queries
-func (q *Queries) ListDefinitionMembers(ctx context.Context, definitionID string) ([]DefinitionMembersProjection, error) {
+func (q *Queries) ListDefinitionMembers(ctx context.Context, definitionID string) ([]ListDefinitionMembersRow, error) {
 	rows, err := q.db.Query(ctx, listDefinitionMembers, definitionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DefinitionMembersProjection{}
+	items := []ListDefinitionMembersRow{}
 	for rows.Next() {
-		var i DefinitionMembersProjection
+		var i ListDefinitionMembersRow
 		if err := rows.Scan(
 			&i.DefinitionID,
 			&i.ActionSetID,
 			&i.SortOrder,
 			&i.AddedAt,
 			&i.ProjectionVersion,
+			&i.ActionSetName,
 		); err != nil {
 			return nil, err
 		}

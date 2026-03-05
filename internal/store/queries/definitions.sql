@@ -21,9 +21,12 @@ WHERE is_deleted = FALSE;
 -- Definition Members queries
 
 -- name: ListDefinitionMembers :many
-SELECT * FROM definition_members_projection
-WHERE definition_id = $1
-ORDER BY sort_order ASC;
+SELECT m.definition_id, m.action_set_id, m.sort_order, m.added_at, m.projection_version,
+       s.name AS action_set_name
+FROM definition_members_projection m
+JOIN action_sets_projection s ON s.id = m.action_set_id AND s.is_deleted = FALSE
+WHERE m.definition_id = $1
+ORDER BY m.sort_order ASC;
 
 -- name: GetDefinitionMember :one
 SELECT * FROM definition_members_projection

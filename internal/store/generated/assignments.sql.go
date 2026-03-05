@@ -297,13 +297,26 @@ func (q *Queries) ListAssignedActionsForDevice(ctx context.Context, targetID str
 }
 
 const listAssignments = `-- name: ListAssignments :many
-SELECT id, source_type, source_id, target_type, target_id, sort_order, mode, created_at, created_by, is_deleted, projection_version FROM assignments_projection
-WHERE is_deleted = FALSE
-  AND ($1::TEXT = '' OR source_type = $1)
-  AND ($2::TEXT = '' OR source_id = $2)
-  AND ($3::TEXT = '' OR target_type = $3)
-  AND ($4::TEXT = '' OR target_id = $4)
-ORDER BY created_at DESC
+SELECT a.id, a.source_type, a.source_id, a.target_type, a.target_id, a.sort_order, a.mode, a.created_at, a.created_by, a.is_deleted, a.projection_version,
+  COALESCE(CASE a.source_type
+    WHEN 'action' THEN (SELECT name FROM actions_projection WHERE id = a.source_id)
+    WHEN 'action_set' THEN (SELECT name FROM action_sets_projection WHERE id = a.source_id)
+    WHEN 'definition' THEN (SELECT name FROM definitions_projection WHERE id = a.source_id)
+    WHEN 'compliance_policy' THEN (SELECT name FROM compliance_policies_projection WHERE id = a.source_id)
+  END, '')::TEXT AS source_name,
+  COALESCE(CASE a.target_type
+    WHEN 'device' THEN (SELECT hostname FROM devices_projection WHERE id = a.target_id)
+    WHEN 'device_group' THEN (SELECT name FROM device_groups_projection WHERE id = a.target_id)
+    WHEN 'user' THEN (SELECT email FROM users_projection WHERE id = a.target_id)
+    WHEN 'user_group' THEN (SELECT name FROM user_groups_projection WHERE id = a.target_id)
+  END, '')::TEXT AS target_name
+FROM assignments_projection a
+WHERE a.is_deleted = FALSE
+  AND ($1::TEXT = '' OR a.source_type = $1)
+  AND ($2::TEXT = '' OR a.source_id = $2)
+  AND ($3::TEXT = '' OR a.target_type = $3)
+  AND ($4::TEXT = '' OR a.target_id = $4)
+ORDER BY a.created_at DESC
 LIMIT $5 OFFSET $6
 `
 
@@ -316,7 +329,23 @@ type ListAssignmentsParams struct {
 	Offset  int32  `json:"offset"`
 }
 
-func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams) ([]AssignmentsProjection, error) {
+type ListAssignmentsRow struct {
+	ID                string             `json:"id"`
+	SourceType        string             `json:"source_type"`
+	SourceID          string             `json:"source_id"`
+	TargetType        string             `json:"target_type"`
+	TargetID          string             `json:"target_id"`
+	SortOrder         int32              `json:"sort_order"`
+	Mode              int32              `json:"mode"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+	SourceName        string             `json:"source_name"`
+	TargetName        string             `json:"target_name"`
+}
+
+func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams) ([]ListAssignmentsRow, error) {
 	rows, err := q.db.Query(ctx, listAssignments,
 		arg.Column1,
 		arg.Column2,
@@ -329,9 +358,9 @@ func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AssignmentsProjection{}
+	items := []ListAssignmentsRow{}
 	for rows.Next() {
-		var i AssignmentsProjection
+		var i ListAssignmentsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SourceType,
@@ -344,6 +373,8 @@ func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams
 			&i.CreatedBy,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.SourceName,
+			&i.TargetName,
 		); err != nil {
 			return nil, err
 		}

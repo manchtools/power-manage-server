@@ -102,8 +102,9 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 	protoMembers := make([]*pm.DefinitionMember, len(members))
 	for i, m := range members {
 		protoMembers[i] = &pm.DefinitionMember{
-			ActionSetId: m.ActionSetID,
-			SortOrder:   m.SortOrder,
+			ActionSetId:   m.ActionSetID,
+			SortOrder:     m.SortOrder,
+			ActionSetName: m.ActionSetName,
 		}
 	}
 

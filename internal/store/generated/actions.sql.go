@@ -15,10 +15,18 @@ const countActions = `-- name: CountActions :one
 SELECT COUNT(*) FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
+  AND ($2::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ))
 `
 
-func (q *Queries) CountActions(ctx context.Context, dollar_1 int32) (int64, error) {
-	row := q.db.QueryRow(ctx, countActions, dollar_1)
+type CountActionsParams struct {
+	Column1        int32 `json:"column_1"`
+	UnassignedOnly bool  `json:"unassigned_only"`
+}
+
+func (q *Queries) CountActions(ctx context.Context, arg CountActionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActions, arg.Column1, arg.UnassignedOnly)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -195,18 +203,27 @@ const listActions = `-- name: ListActions :many
 SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
+  AND ($4::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ))
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListActionsParams struct {
-	Column1 int32 `json:"column_1"`
-	Limit   int32 `json:"limit"`
-	Offset  int32 `json:"offset"`
+	Column1        int32 `json:"column_1"`
+	Limit          int32 `json:"limit"`
+	Offset         int32 `json:"offset"`
+	UnassignedOnly bool  `json:"unassigned_only"`
 }
 
 func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]ActionsProjection, error) {
-	rows, err := q.db.Query(ctx, listActions, arg.Column1, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listActions,
+		arg.Column1,
+		arg.Limit,
+		arg.Offset,
+		arg.UnassignedOnly,
+	)
 	if err != nil {
 		return nil, err
 	}

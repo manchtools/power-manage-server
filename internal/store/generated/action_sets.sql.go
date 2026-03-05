@@ -7,15 +7,20 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countActionSets = `-- name: CountActionSets :one
 SELECT COUNT(*) FROM action_sets_projection
 WHERE is_deleted = FALSE
+  AND ($1::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM definition_members_projection dm WHERE dm.action_set_id = id
+  ))
 `
 
-func (q *Queries) CountActionSets(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countActionSets)
+func (q *Queries) CountActionSets(ctx context.Context, unassignedOnly bool) (int64, error) {
+	row := q.db.QueryRow(ctx, countActionSets, unassignedOnly)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -92,27 +97,42 @@ func (q *Queries) GetActionSetMember(ctx context.Context, arg GetActionSetMember
 
 const listActionSetMembers = `-- name: ListActionSetMembers :many
 
-SELECT set_id, action_id, sort_order, added_at, projection_version FROM action_set_members_projection
-WHERE set_id = $1
-ORDER BY sort_order ASC
+SELECT m.set_id, m.action_id, m.sort_order, m.added_at, m.projection_version,
+       a.name AS action_name, a.action_type
+FROM action_set_members_projection m
+JOIN actions_projection a ON a.id = m.action_id AND a.is_deleted = FALSE
+WHERE m.set_id = $1
+ORDER BY m.sort_order ASC
 `
 
+type ListActionSetMembersRow struct {
+	SetID             string             `json:"set_id"`
+	ActionID          string             `json:"action_id"`
+	SortOrder         int32              `json:"sort_order"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+	ActionName        string             `json:"action_name"`
+	ActionType        int32              `json:"action_type"`
+}
+
 // Action Set Members queries
-func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]ActionSetMembersProjection, error) {
+func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]ListActionSetMembersRow, error) {
 	rows, err := q.db.Query(ctx, listActionSetMembers, setID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ActionSetMembersProjection{}
+	items := []ListActionSetMembersRow{}
 	for rows.Next() {
-		var i ActionSetMembersProjection
+		var i ListActionSetMembersRow
 		if err := rows.Scan(
 			&i.SetID,
 			&i.ActionID,
 			&i.SortOrder,
 			&i.AddedAt,
 			&i.ProjectionVersion,
+			&i.ActionName,
+			&i.ActionType,
 		); err != nil {
 			return nil, err
 		}
@@ -127,17 +147,21 @@ func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]Act
 const listActionSets = `-- name: ListActionSets :many
 SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
 WHERE is_deleted = FALSE
+  AND ($3::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM definition_members_projection dm WHERE dm.action_set_id = id
+  ))
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListActionSetsParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit          int32 `json:"limit"`
+	Offset         int32 `json:"offset"`
+	UnassignedOnly bool  `json:"unassigned_only"`
 }
 
 func (q *Queries) ListActionSets(ctx context.Context, arg ListActionSetsParams) ([]ActionSetsProjection, error) {
-	rows, err := q.db.Query(ctx, listActionSets, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listActionSets, arg.Limit, arg.Offset, arg.UnassignedOnly)
 	if err != nil {
 		return nil, err
 	}
