@@ -3,10 +3,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -57,6 +57,11 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
+
+	// Internal mTLS listener (InternalService for gateway communication)
+	InternalListenAddr string
+	InternalTLSCert    string
+	InternalTLSKey     string
 
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
@@ -411,12 +416,6 @@ func main() {
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
 
-	// Mount InternalService (gateway → control proxying, internal network only)
-	// Protected by internalOnlyMiddleware — rejects requests from non-private IPs.
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
-	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
-	mux.Handle(internalPath, internalOnlyMiddleware(internalH, logger))
-
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -435,11 +434,59 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start server
+	// Mount InternalService on a separate mTLS-protected listener.
+	// The gateway presents its CA-signed certificate as a client cert.
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
+
+	internalMux := http.NewServeMux()
+	internalMux.Handle(internalPath, internalH)
+	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	internalTLSCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+	if err != nil {
+		logger.Error("failed to load internal TLS certificate", "error", err, "cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey)
+		os.Exit(1)
+	}
+
+	internalCAPool := certAuth.TrustPool()
+
+	internalTLSConfig := &tls.Config{
+		Certificates: []tls.Certificate{internalTLSCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    internalCAPool,
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	internalServer := &http.Server{
+		Addr:              cfg.InternalListenAddr,
+		Handler:           internalMux,
+		TLSConfig:         internalTLSConfig,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := http2.ConfigureServer(internalServer, &http2.Server{}); err != nil {
+		logger.Error("failed to configure HTTP/2 for internal server", "error", err)
+		os.Exit(1)
+	}
+
+	// Start public server
 	go func() {
 		logger.Info("control server listening", "addr", cfg.ListenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", "error", err)
+			cancel()
+		}
+	}()
+
+	// Start internal mTLS server
+	go func() {
+		logger.Info("internal mTLS server listening", "addr", cfg.InternalListenAddr)
+		if err := internalServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			logger.Error("internal server error", "error", err)
 			cancel()
 		}
 	}()
@@ -453,6 +500,9 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("failed to shutdown server", "error", err)
+	}
+	if err := internalServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shutdown internal server", "error", err)
 	}
 
 	logger.Info("control server stopped")
@@ -474,6 +524,9 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
+	flag.StringVar(&cfg.InternalListenAddr, "internal-listen", ":8082", "Internal mTLS listen address for gateway communication")
+	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
+	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
 
 	flag.Parse()
 
@@ -495,6 +548,15 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
 		cfg.CATrustBundlePath = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
+		cfg.InternalListenAddr = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_TLS_CERT"); v != "" {
+		cfg.InternalTLSCert = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_TLS_KEY"); v != "" {
+		cfg.InternalTLSKey = v
 	}
 	if v := os.Getenv("CONTROL_ADMIN_EMAIL"); v != "" {
 		cfg.AdminEmail = v
@@ -673,44 +735,6 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// internalOnlyMiddleware rejects requests from non-private IPs with 403 Forbidden.
-// This protects InternalService endpoints that should only be reachable from
-// the gateway (running on the same internal network).
-func internalOnlyMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			host = r.RemoteAddr
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || !isPrivateIP(ip) {
-			logger.Warn("rejected non-private request to internal service", "remote_addr", r.RemoteAddr)
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// isPrivateIP checks whether an IP is a private/loopback address.
-func isPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-	privateRanges := []net.IPNet{
-		{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
-		{IP: net.IPv4(172, 16, 0, 0), Mask: net.CIDRMask(12, 32)},
-		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
-		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
-	}
-	for _, r := range privateRanges {
-		if r.Contains(ip) {
-			return true
-		}
-	}
-	return false
 }
 
 // corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.

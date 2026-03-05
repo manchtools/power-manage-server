@@ -6,7 +6,8 @@
 # 1. Validates the .env configuration
 # 2. Generates the internal CA for agent certificate signing
 # 3. Generates the gateway server certificate (signed by the CA)
-# 4. Prepares data directories for PostgreSQL and Traefik
+# 4. Generates the control server certificate for internal mTLS (signed by the CA)
+# 5. Prepares data directories for PostgreSQL and Traefik
 #
 # Usage: ./setup.sh
 
@@ -160,6 +161,42 @@ generate_gateway_cert() {
     log_info "Gateway certificate generated (valid 825 days)"
 }
 
+generate_control_cert() {
+    if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
+        log_warn "Control certificate already exists"
+        read -p "Regenerate control certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing control certificate"
+            return
+        fi
+    fi
+
+    log_info "Generating control server certificate..."
+
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
+
+    # Generate CSR with SAN (Docker internal hostname)
+    openssl req -new -key "$CERTS_DIR/control.key" \
+        -subj "/CN=control/O=Power Manage" \
+        -addext "subjectAltName=DNS:control,DNS:localhost" \
+        -out "$CERTS_DIR/control.csr"
+
+    # Sign with CA
+    openssl x509 -req -in "$CERTS_DIR/control.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -copy_extensions copyall \
+        -out "$CERTS_DIR/control.crt"
+
+    rm -f "$CERTS_DIR/control.csr"
+    chmod 600 "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/control.crt"
+
+    log_info "Control certificate generated (valid 825 days)"
+}
+
 show_instructions() {
     echo ""
     echo "=========================================="
@@ -197,6 +234,7 @@ main() {
     check_env
     generate_ca
     generate_gateway_cert
+    generate_control_cert
 
     mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"

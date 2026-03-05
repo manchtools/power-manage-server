@@ -184,6 +184,12 @@ func (ca *CA) VerifyCertificate(certPEM []byte) (string, error) {
 	return cert.Subject.CommonName, nil
 }
 
+// TrustPool returns the CA trust pool used for certificate verification.
+// This includes additional CAs added via SetTrustBundle for rotation support.
+func (ca *CA) TrustPool() *x509.CertPool {
+	return ca.trustPool
+}
+
 // Signer returns the CA's private key for action signing.
 func (ca *CA) Signer() crypto.Signer {
 	return ca.key

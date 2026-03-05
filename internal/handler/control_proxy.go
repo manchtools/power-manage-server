@@ -17,8 +17,9 @@ type ControlProxy struct {
 }
 
 // NewControlProxy creates a new control proxy pointing at the given control server URL.
-func NewControlProxy(controlURL string) *ControlProxy {
-	client := pmv1connect.NewInternalServiceClient(http.DefaultClient, controlURL)
+// The httpClient should be configured with mTLS when TLS is enabled.
+func NewControlProxy(httpClient *http.Client, controlURL string) *ControlProxy {
+	client := pmv1connect.NewInternalServiceClient(httpClient, controlURL)
 	return &ControlProxy{client: client}
 }
 

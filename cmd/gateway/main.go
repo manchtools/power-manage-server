@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -80,8 +82,38 @@ func main() {
 	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
 
 	// Create control proxy (Connect-RPC client to control server's InternalService)
-	controlProxy := handler.NewControlProxy(cfg.ControlURL)
-	logger.Info("control proxy initialized", "control_url", cfg.ControlURL)
+	// When TLS is enabled, use mTLS to authenticate with the control server's internal listener.
+	var controlHTTPClient *http.Client
+	if *tlsEnabled {
+		controlCert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			logger.Error("failed to load gateway certificate for control proxy", "error", err)
+			os.Exit(1)
+		}
+		caCert, err := os.ReadFile(*tlsCA)
+		if err != nil {
+			logger.Error("failed to read CA certificate for control proxy", "error", err)
+			os.Exit(1)
+		}
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caCert) {
+			logger.Error("failed to parse CA certificate for control proxy")
+			os.Exit(1)
+		}
+		controlHTTPClient = &http.Client{
+			Transport: &http2.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{controlCert},
+					RootCAs:      caPool,
+					MinVersion:   tls.VersionTLS13,
+				},
+			},
+		}
+	} else {
+		controlHTTPClient = http.DefaultClient
+	}
+	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL)
+	logger.Info("control proxy initialized", "control_url", cfg.ControlURL, "mtls", *tlsEnabled)
 
 	// Create connection manager
 	manager := connection.NewManager()

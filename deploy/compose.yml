@@ -5,7 +5,7 @@
 #
 # Usage:
 #   1. cp .env.example .env && $EDITOR .env
-#   2. ./setup.sh            (generates internal CA for agent certs)
+#   2. ./setup.sh            (generates internal CA + gateway/control certs)
 #   3. docker compose up -d  (or: podman-compose up -d)
 #
 # Architecture:
@@ -100,6 +100,9 @@ services:
       - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
       - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
       - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - CONTROL_INTERNAL_LISTEN_ADDR=:8082
+      - CONTROL_INTERNAL_TLS_CERT=/certs/control.crt
+      - CONTROL_INTERNAL_TLS_KEY=/certs/control.key
       - CONTROL_VALKEY_ADDR=valkey:6379
       - CONTROL_VALKEY_PASSWORD=${VALKEY_PASSWORD}
     healthcheck:
@@ -156,7 +159,7 @@ services:
     environment:
       - VALKEY_ADDR=valkey:6379
       - VALKEY_PASSWORD=${VALKEY_PASSWORD}
-      - GATEWAY_CONTROL_URL=http://control:8081
+      - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
       - LOG_LEVEL=${LOG_LEVEL:-info}
     command:
