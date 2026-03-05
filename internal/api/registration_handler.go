@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,7 +23,6 @@ type RegistrationHandler struct {
 	ca         *ca.CA
 	gatewayURL string
 	logger     *slog.Logger
-	entropy    *ulid.MonotonicEntropy
 }
 
 // NewRegistrationHandler creates a new registration handler.
@@ -34,7 +32,6 @@ func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string,
 		ca:         certAuth,
 		gatewayURL: gatewayURL,
 		logger:     logger,
-		entropy:    ulid.Monotonic(rand.Reader, 0),
 	}
 }
 
@@ -82,7 +79,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	}
 
 	// Generate device ID
-	deviceID := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	deviceID := ulid.Make().String()
 
 	// Sign the CSR (private key stays on agent)
 	cert, err := h.ca.IssueCertificateFromCSR(deviceID, req.Msg.Csr)

@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -17,15 +15,13 @@ import (
 
 // UserSelectionHandler handles user selection RPCs.
 type UserSelectionHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store *store.Store
 }
 
 // NewUserSelectionHandler creates a new user selection handler.
 func NewUserSelectionHandler(st *store.Store) *UserSelectionHandler {
 	return &UserSelectionHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -66,7 +62,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, apiError(ErrNoAssignmentFound, connect.CodeNotFound, "no available assignment found for this source and device")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user_selection",

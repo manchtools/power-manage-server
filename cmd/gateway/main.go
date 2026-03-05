@@ -144,12 +144,13 @@ func main() {
 		}
 
 		server = &http.Server{
-			Addr:         cfg.ListenAddr,
-			Handler:      securedMux,
-			TLSConfig:    tlsConfig,
-			ReadTimeout:  0,
-			WriteTimeout: 0,
-			IdleTimeout:  120 * time.Second,
+			Addr:              cfg.ListenAddr,
+			Handler:           securedMux,
+			TLSConfig:         tlsConfig,
+			ReadTimeout:       0,
+			WriteTimeout:      0,
+			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 
 		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
@@ -158,11 +159,12 @@ func main() {
 		}
 	} else {
 		server = &http.Server{
-			Addr:         cfg.ListenAddr,
-			Handler:      h2c.NewHandler(securedMux, &http2.Server{}),
-			ReadTimeout:  0,
-			WriteTimeout: 0,
-			IdleTimeout:  120 * time.Second,
+			Addr:              cfg.ListenAddr,
+			Handler:           h2c.NewHandler(securedMux, &http2.Server{}),
+			ReadTimeout:       0,
+			WriteTimeout:      0,
+			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
 		}
 	}
 

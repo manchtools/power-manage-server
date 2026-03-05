@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -166,7 +165,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to encrypt passphrase"))
 	}
 
-	luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	luksStreamID := ulid.Make().String()
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
@@ -200,10 +199,10 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		encPassword, err := h.encryptor.Encrypt(r.Password)
 		if err != nil {
 			h.logger.Error("failed to encrypt LPS password", "error", err)
-			continue
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to encrypt password for user %s", r.Username))
 		}
 
-		lpsStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+		lpsStreamID := ulid.Make().String()
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "lps_password",
 			StreamID:   lpsStreamID,

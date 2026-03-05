@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"log/slog"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -23,15 +21,13 @@ import (
 // DefinitionHandler handles definition (collection of action sets) RPCs.
 type DefinitionHandler struct {
 	store     *store.Store
-	entropy   *ulid.MonotonicEntropy
 	searchIdx *search.Index
 }
 
 // NewDefinitionHandler creates a new definition handler.
 func NewDefinitionHandler(st *store.Store) *DefinitionHandler {
 	return &DefinitionHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -51,7 +47,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "definition",

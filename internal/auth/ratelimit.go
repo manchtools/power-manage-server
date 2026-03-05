@@ -13,6 +13,7 @@ type RateLimiter struct {
 	attempts map[string][]time.Time
 	limit    int
 	window   time.Duration
+	stopCh   chan struct{}
 }
 
 // NewRateLimiter creates a new rate limiter that allows limit attempts
@@ -23,6 +24,7 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 		attempts: make(map[string][]time.Time),
 		limit:    limit,
 		window:   window,
+		stopCh:   make(chan struct{}),
 	}
 	go rl.cleanup()
 	return rl
@@ -55,25 +57,36 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return true
 }
 
+// Stop stops the background cleanup goroutine.
+func (rl *RateLimiter) Stop() {
+	close(rl.stopCh)
+}
+
 // cleanup periodically removes stale entries from the attempts map.
 func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		rl.mu.Lock()
-		cutoff := time.Now().Add(-rl.window)
-		for key, attempts := range rl.attempts {
-			valid := attempts[:0]
-			for _, t := range attempts {
-				if t.After(cutoff) {
-					valid = append(valid, t)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			rl.mu.Lock()
+			cutoff := time.Now().Add(-rl.window)
+			for key, attempts := range rl.attempts {
+				valid := attempts[:0]
+				for _, t := range attempts {
+					if t.After(cutoff) {
+						valid = append(valid, t)
+					}
+				}
+				if len(valid) == 0 {
+					delete(rl.attempts, key)
+				} else {
+					rl.attempts[key] = valid
 				}
 			}
-			if len(valid) == 0 {
-				delete(rl.attempts, key)
-			} else {
-				rl.attempts[key] = valid
-			}
+			rl.mu.Unlock()
+		case <-rl.stopCh:
+			return
 		}
-		rl.mu.Unlock()
 	}
 }

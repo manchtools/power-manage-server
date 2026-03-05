@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -21,15 +19,13 @@ import (
 
 // UserGroupHandler handles user group management RPCs.
 type UserGroupHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store *store.Store
 }
 
 // NewUserGroupHandler creates a new user group handler.
 func NewUserGroupHandler(st *store.Store) *UserGroupHandler {
 	return &UserGroupHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -50,7 +46,7 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {

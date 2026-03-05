@@ -3,10 +3,10 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -412,9 +412,10 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Mount InternalService (gateway → control proxying, internal network only)
+	// Protected by internalOnlyMiddleware — rejects requests from non-private IPs.
 	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
-	mux.Handle(internalPath, internalH)
+	mux.Handle(internalPath, internalOnlyMiddleware(internalH, logger))
 
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -618,8 +619,7 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	entropy := ulid.Monotonic(rand.Reader, 0)
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	id := ulid.Make().String()
 
 	// Append UserCreated event - the trigger will handle projection
 	err = st.AppendEvent(ctx, store.Event{
@@ -673,6 +673,44 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// internalOnlyMiddleware rejects requests from non-private IPs with 403 Forbidden.
+// This protects InternalService endpoints that should only be reachable from
+// the gateway (running on the same internal network).
+func internalOnlyMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || !isPrivateIP(ip) {
+			logger.Warn("rejected non-private request to internal service", "remote_addr", r.RemoteAddr)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// isPrivateIP checks whether an IP is a private/loopback address.
+func isPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	privateRanges := []net.IPNet{
+		{IP: net.IPv4(10, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+		{IP: net.IPv4(172, 16, 0, 0), Mask: net.CIDRMask(12, 32)},
+		{IP: net.IPv4(192, 168, 0, 0), Mask: net.CIDRMask(16, 32)},
+		{IP: net.ParseIP("fc00::"), Mask: net.CIDRMask(7, 128)},
+	}
+	for _, r := range privateRanges {
+		if r.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.

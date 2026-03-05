@@ -206,8 +206,12 @@ func (i *AuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 }
 
 // WrapStreamingHandler implements connect.Interceptor.
+// Rejects streaming RPCs with Unauthenticated — the control server does not use streaming RPCs.
+// If streaming is ever needed, this must be updated with proper auth logic.
 func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
+	}
 }
 
 // AuthzInterceptor provides Connect-RPC authorization interceptor.
@@ -272,8 +276,11 @@ func (i *AuthzInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 }
 
 // WrapStreamingHandler implements connect.Interceptor.
+// Rejects streaming RPCs — the control server does not use streaming RPCs.
 func (i *AuthzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
+	}
 }
 
 // authError creates a connect.Error with a structured ErrorDetail containing the error code.

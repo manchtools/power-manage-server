@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -20,7 +18,6 @@ import (
 // AssignmentHandler handles assignment RPCs.
 type AssignmentHandler struct {
 	store         *store.Store
-	entropy       *ulid.MonotonicEntropy
 	actionHandler *ActionHandler
 }
 
@@ -28,7 +25,6 @@ type AssignmentHandler struct {
 func NewAssignmentHandler(st *store.Store, actionHandler *ActionHandler) *AssignmentHandler {
 	return &AssignmentHandler{
 		store:         st,
-		entropy:       ulid.Monotonic(rand.Reader, 0),
 		actionHandler: actionHandler,
 	}
 }
@@ -132,7 +128,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check existing assignment")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",

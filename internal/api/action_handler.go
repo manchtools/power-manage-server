@@ -2,13 +2,11 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
@@ -33,7 +31,6 @@ type ActionSigner interface {
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
 	store     *store.Store
-	entropy   *ulid.MonotonicEntropy
 	logger    *slog.Logger
 	signer    ActionSigner
 	aqClient  *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
@@ -43,10 +40,9 @@ type ActionHandler struct {
 // NewActionHandler creates a new action handler.
 func NewActionHandler(st *store.Store, signer ActionSigner) *ActionHandler {
 	return &ActionHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
-		logger:  slog.Default(),
-		signer:  signer,
+		store:  st,
+		logger: slog.Default(),
+		signer: signer,
 	}
 }
 
@@ -239,7 +235,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		params["priority"] = count
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	timeoutSeconds := int32(req.Msg.TimeoutSeconds)
 	if timeoutSeconds <= 0 {
@@ -365,6 +361,14 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	// Verify action exists before appending event
+	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
+	}
+
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
@@ -381,9 +385,6 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
@@ -405,6 +406,14 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
+	// Verify action exists before appending event
+	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
+		}
+		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
+	}
+
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
@@ -421,9 +430,6 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
@@ -648,7 +654,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "either action_id or inline_action is required")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
@@ -773,6 +779,7 @@ func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Req
 
 		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 		if err != nil {
+			h.logger.Warn("dispatch to device failed", "device_id", deviceID, "error", err)
 			continue
 		}
 		executions = append(executions, resp.Msg.Execution)
@@ -1095,7 +1102,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		timeoutSeconds = 60
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,

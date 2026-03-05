@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"log/slog"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -23,15 +21,13 @@ import (
 // ActionSetHandler handles action set RPCs.
 type ActionSetHandler struct {
 	store     *store.Store
-	entropy   *ulid.MonotonicEntropy
 	searchIdx *search.Index
 }
 
 // NewActionSetHandler creates a new action set handler.
 func NewActionSetHandler(st *store.Store) *ActionSetHandler {
 	return &ActionSetHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -51,7 +47,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action_set",

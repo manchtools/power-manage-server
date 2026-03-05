@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -21,15 +19,13 @@ import (
 
 // RoleHandler handles role management RPCs.
 type RoleHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store *store.Store
 }
 
 // NewRoleHandler creates a new role handler.
 func NewRoleHandler(st *store.Store) *RoleHandler {
 	return &RoleHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -58,7 +54,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	perms := req.Msg.Permissions
 	if perms == nil {

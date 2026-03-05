@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -22,7 +21,6 @@ import (
 // UserHandler handles user management RPCs.
 type UserHandler struct {
 	store         *store.Store
-	entropy       *ulid.MonotonicEntropy
 	logger        *slog.Logger
 	systemActions *SystemActionManager
 }
@@ -31,7 +29,6 @@ type UserHandler struct {
 func NewUserHandler(st *store.Store, logger *slog.Logger, systemActions *SystemActionManager) *UserHandler {
 	return &UserHandler{
 		store:         st,
-		entropy:       ulid.Monotonic(rand.Reader, 0),
 		logger:        logger,
 		systemActions: systemActions,
 	}
@@ -53,7 +50,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to hash password")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	// Assign Linux UID and derive username
 	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
@@ -690,7 +687,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	keyID := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	keyID := ulid.Make().String()
 	now := time.Now()
 
 	err := h.store.AppendEvent(ctx, store.Event{

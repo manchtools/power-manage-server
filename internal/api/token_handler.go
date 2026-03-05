@@ -22,15 +22,13 @@ import (
 
 // TokenHandler handles registration token management RPCs.
 type TokenHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store *store.Store
 }
 
 // NewTokenHandler creates a new token handler.
 func NewTokenHandler(st *store.Store) *TokenHandler {
 	return &TokenHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -56,7 +54,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	tokenHash := sha256.Sum256([]byte(tokenValue))
 	tokenHashHex := hex.EncodeToString(tokenHash[:])
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	// Build event data — unrestricted CreateToken can set any params,
 	// self-scoped CreateToken:self forces one-time use with 7-day expiry.

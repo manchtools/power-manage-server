@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -25,15 +24,13 @@ import (
 // CompliancePolicyHandler handles compliance policy RPCs.
 type CompliancePolicyHandler struct {
 	store     *store.Store
-	entropy   *ulid.MonotonicEntropy
 	searchIdx *search.Index
 }
 
 // NewCompliancePolicyHandler creates a new compliance policy handler.
 func NewCompliancePolicyHandler(st *store.Store) *CompliancePolicyHandler {
 	return &CompliancePolicyHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -79,7 +76,7 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",

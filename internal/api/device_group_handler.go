@@ -2,9 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -19,15 +17,13 @@ import (
 
 // DeviceGroupHandler handles device group RPCs.
 type DeviceGroupHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
+	store *store.Store
 }
 
 // NewDeviceGroupHandler creates a new device group handler.
 func NewDeviceGroupHandler(st *store.Store) *DeviceGroupHandler {
 	return &DeviceGroupHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
+		store: st,
 	}
 }
 
@@ -42,7 +38,7 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {

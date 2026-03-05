@@ -102,13 +102,12 @@ func (m *Manager) Get(deviceID string) (*Agent, bool) {
 
 // UpdateLastSeen updates the last seen timestamp for an agent.
 func (m *Manager) UpdateLastSeen(deviceID string) {
-	m.mu.RLock()
+	m.mu.Lock()
 	agent, ok := m.agents[deviceID]
-	m.mu.RUnlock()
-
 	if ok {
 		agent.LastSeen = time.Now()
 	}
+	m.mu.Unlock()
 }
 
 // Send sends a message to a specific agent.
