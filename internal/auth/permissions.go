@@ -117,6 +117,9 @@ func AllPermissions() []PermissionInfo {
 		{"GetOSQueryResult", "OSQuery", "View OSQuery results"},
 		{"GetDeviceInventory", "OSQuery", "View device inventory"},
 		{"RefreshDeviceInventory", "OSQuery", "Refresh device inventory"},
+		// Device Logs
+		{"QueryDeviceLogs", "Device Logs", "Query device logs"},
+		{"GetDeviceLogResult", "Device Logs", "View device log results"},
 		// Compliance
 		{"GetDeviceCompliance", "Compliance", "View device compliance"},
 		{"GetDeviceCompliance:assigned", "Compliance", "View compliance for assigned devices"},

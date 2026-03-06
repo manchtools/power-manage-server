@@ -46,6 +46,7 @@ func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeInventoryUpdate, w.handleInventoryUpdate)
 	mux.HandleFunc(taskqueue.TypeSecurityAlert, w.handleSecurityAlert)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKeyResult, w.handleRevokeLuksDeviceKeyResult)
+	mux.HandleFunc(taskqueue.TypeLogQueryResult, w.handleLogQueryResult)
 	return mux
 }
 
@@ -376,6 +377,26 @@ func (w *InboxWorker) handleOSQueryResult(ctx context.Context, t *asynq.Task) er
 		Success: payload.Success,
 		Error:   payload.Error,
 		Rows:    payload.RowsJSON,
+	})
+}
+
+func (w *InboxWorker) handleLogQueryResult(ctx context.Context, t *asynq.Task) error {
+	var payload taskqueue.LogQueryResultPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("unmarshal log query result: %w", err)
+	}
+
+	w.logger.Info("received log query result",
+		"device_id", payload.DeviceID,
+		"query_id", payload.QueryID,
+		"success", payload.Success,
+	)
+
+	return w.store.Queries().CompleteLogQueryResult(ctx, db.CompleteLogQueryResultParams{
+		QueryID: payload.QueryID,
+		Success: payload.Success,
+		Error:   payload.Error,
+		Logs:    payload.Logs,
 	})
 }
 

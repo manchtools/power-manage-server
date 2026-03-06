@@ -44,6 +44,7 @@ func (f *TaskHandlerFactory) NewMux(deviceID string) *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeOSQueryDispatch, h.handleOSQueryDispatch)
 	mux.HandleFunc(taskqueue.TypeInventoryRequest, h.handleInventoryRequest)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKey, h.handleRevokeLuksDeviceKey)
+	mux.HandleFunc(taskqueue.TypeLogQueryDispatch, h.handleLogQueryDispatch)
 	return mux
 }
 
@@ -164,6 +165,36 @@ func (h *deviceTaskHandler) handleRevokeLuksDeviceKey(_ context.Context, t *asyn
 	}
 
 	h.logger.Info("LUKS device key revocation dispatched", "action_id", payload.ActionID)
+	return nil
+}
+
+func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.Task) error {
+	var payload taskqueue.LogQueryDispatchPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("unmarshal log query dispatch: %w", err)
+	}
+
+	msg := &pm.ServerMessage{
+		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Payload: &pm.ServerMessage_LogQuery{
+			LogQuery: &pm.LogQuery{
+				QueryId:  payload.QueryID,
+				Lines:    payload.Lines,
+				Unit:     payload.Unit,
+				Since:    payload.Since,
+				Until:    payload.Until,
+				Priority: payload.Priority,
+				Grep:     payload.Grep,
+				Kernel:   payload.Kernel,
+			},
+		},
+	}
+
+	if err := h.manager.Send(h.deviceID, msg); err != nil {
+		return fmt.Errorf("send log query to agent: %w", err)
+	}
+
+	h.logger.Info("log query dispatched", "query_id", payload.QueryID, "unit", payload.Unit)
 	return nil
 }
 

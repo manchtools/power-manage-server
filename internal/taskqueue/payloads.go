@@ -33,6 +33,18 @@ type RevokeLuksDeviceKeyPayload struct {
 	ActionID string `json:"action_id"`
 }
 
+// LogQueryDispatchPayload is the payload for TypeLogQueryDispatch tasks.
+type LogQueryDispatchPayload struct {
+	QueryID  string `json:"query_id"`
+	Lines    int32  `json:"lines,omitempty"`
+	Unit     string `json:"unit,omitempty"`
+	Since    string `json:"since,omitempty"`
+	Until    string `json:"until,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	Grep     string `json:"grep,omitempty"`
+	Kernel   bool   `json:"kernel,omitempty"`
+}
+
 // === Gateway → Control payloads (control:inbox queue) ===
 
 // DeviceHelloPayload is the payload for TypeDeviceHello tasks.
@@ -104,6 +116,15 @@ type RevokeLuksDeviceKeyResultPayload struct {
 	ActionID string `json:"action_id"`
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
+}
+
+// LogQueryResultPayload is the payload for TypeLogQueryResult tasks.
+type LogQueryResultPayload struct {
+	DeviceID string `json:"device_id"`
+	QueryID  string `json:"query_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error,omitempty"`
+	Logs     string `json:"logs"`
 }
 
 // === Search index payloads (search queue) ===

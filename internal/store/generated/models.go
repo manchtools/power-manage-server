@@ -285,6 +285,17 @@ type IdentityProvidersProjection struct {
 	ScimTokenHash            string             `json:"scim_token_hash"`
 }
 
+type LogQueryResult struct {
+	QueryID     string             `json:"query_id"`
+	DeviceID    string             `json:"device_id"`
+	Completed   bool               `json:"completed"`
+	Success     bool               `json:"success"`
+	Error       string             `json:"error"`
+	Logs        string             `json:"logs"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
+}
+
 type LpsPasswordsProjection struct {
 	ID             pgtype.UUID        `json:"id"`
 	DeviceID       string             `json:"device_id"`

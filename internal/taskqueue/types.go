@@ -15,6 +15,9 @@ const (
 
 	// TypeRevokeLuksDeviceKey instructs an agent to revoke the device-bound LUKS key.
 	TypeRevokeLuksDeviceKey = "luks:revoke_device_key"
+
+	// TypeLogQueryDispatch dispatches a journalctl log query to a device's agent.
+	TypeLogQueryDispatch = "log:dispatch"
 )
 
 // Task type constants for gateway → control communication (control:inbox queue).
@@ -42,6 +45,9 @@ const (
 
 	// TypeRevokeLuksDeviceKeyResult reports the result of a LUKS key revocation.
 	TypeRevokeLuksDeviceKeyResult = "luks:revoke_device_key_result"
+
+	// TypeLogQueryResult reports the result of a journalctl log query.
+	TypeLogQueryResult = "log:result"
 )
 
 // ControlInboxQueue is the Asynq queue name for gateway → control messages.

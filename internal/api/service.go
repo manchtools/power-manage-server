@@ -32,6 +32,7 @@ type ControlService struct {
 	userSelection *UserSelectionHandler
 	audit         *AuditHandler
 	osquery       *OSQueryHandler
+	logs          *LogsHandler
 	role          *RoleHandler
 	userGroup     *UserGroupHandler
 	idp           *IDPHandler
@@ -75,6 +76,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 		userSelection: NewUserSelectionHandler(st),
 		audit:         NewAuditHandler(st),
 		osquery:       NewOSQueryHandler(st),
+		logs:          NewLogsHandler(st),
 		role:          NewRoleHandler(st),
 		userGroup:     NewUserGroupHandler(st),
 		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
@@ -100,6 +102,7 @@ func (s *ControlService) SystemActions() *SystemActionManager {
 func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 	s.action.SetTaskQueueClient(c)
 	s.osquery.SetTaskQueueClient(c)
+	s.logs.SetTaskQueueClient(c)
 	s.device.SetTaskQueueClient(c)
 }
 
@@ -543,6 +546,15 @@ func (s *ControlService) GetDeviceInventory(ctx context.Context, req *connect.Re
 
 func (s *ControlService) RefreshDeviceInventory(ctx context.Context, req *connect.Request[pm.RefreshDeviceInventoryRequest]) (*connect.Response[pm.RefreshDeviceInventoryResponse], error) {
 	return s.osquery.RefreshDeviceInventory(ctx, req)
+}
+
+// Device Logs
+func (s *ControlService) QueryDeviceLogs(ctx context.Context, req *connect.Request[pm.QueryDeviceLogsRequest]) (*connect.Response[pm.QueryDeviceLogsResponse], error) {
+	return s.logs.QueryDeviceLogs(ctx, req)
+}
+
+func (s *ControlService) GetDeviceLogResult(ctx context.Context, req *connect.Request[pm.GetDeviceLogResultRequest]) (*connect.Response[pm.GetDeviceLogResultResponse], error) {
+	return s.logs.GetDeviceLogResult(ctx, req)
 }
 
 // Roles & Permissions

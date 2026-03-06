@@ -446,6 +446,22 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			Error:    result.Error,
 		})
 
+	case *pm.AgentMessage_LogQueryResult:
+		result := p.LogQueryResult
+		h.logger.Info("received log query result",
+			"device_id", deviceID,
+			"query_id", result.QueryId,
+			"success", result.Success,
+		)
+
+		return h.aqClient.EnqueueToControl(taskqueue.TypeLogQueryResult, taskqueue.LogQueryResultPayload{
+			DeviceID: deviceID,
+			QueryID:  result.QueryId,
+			Success:  result.Success,
+			Error:    result.Error,
+			Logs:     result.Logs,
+		})
+
 	default:
 		return fmt.Errorf("unknown message type: %T", msg.Payload)
 	}
