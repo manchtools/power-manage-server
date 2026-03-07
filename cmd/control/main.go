@@ -29,10 +29,14 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/metrics"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // version is set at build time via -ldflags.
@@ -402,7 +406,11 @@ func main() {
 	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
 	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
 
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+
 	interceptors := connect.WithInterceptors(
+		metrics.NewInterceptor(promReg),
 		api.NewLoggingInterceptor(logger),
 		auth.NewAuthInterceptor(logger, jwtManager, loginLimiter, refreshLimiter, registerLimiter),
 		auth.NewAuthzInterceptor(),
@@ -415,6 +423,9 @@ func main() {
 	// Mount SCIM v2 handler
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
 
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

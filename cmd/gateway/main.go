@@ -22,8 +22,12 @@ import (
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
+	"github.com/manchtools/power-manage/server/internal/metrics"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // version is set at build time via -ldflags.
@@ -118,6 +122,11 @@ func main() {
 	// Create connection manager
 	manager := connection.NewManager()
 
+	// Prometheus metrics
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
+	metrics.RegisterGatewayMetrics(promReg, manager.Count)
+
 	// Create task handler factory for per-device Asynq workers
 	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
 
@@ -144,6 +153,9 @@ func main() {
 		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 		mux.Handle(path, h)
 	}
+
+	// Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
 
 	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
