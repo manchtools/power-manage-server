@@ -117,7 +117,9 @@ generate_ca() {
 
     log_info "Generating CA certificate..."
     openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/CN=Power Manage Internal CA/O=Power Manage"
+        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign"
 
     chmod 600 "$CERTS_DIR/ca.key"
     chmod 644 "$CERTS_DIR/ca.crt"

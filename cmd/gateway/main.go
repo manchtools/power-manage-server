@@ -106,10 +106,9 @@ func main() {
 		}
 		controlTransport := &http.Transport{
 			TLSClientConfig: &tls.Config{
-				Certificates:       []tls.Certificate{controlCert},
-				RootCAs:            caPool,
-				MinVersion:         tls.VersionTLS13,
-				InsecureSkipVerify: true, // Both services share the same Docker network; mTLS client auth is still enforced
+				Certificates: []tls.Certificate{controlCert},
+				RootCAs:      caPool,
+				MinVersion:   tls.VersionTLS13,
 			},
 		}
 		http2.ConfigureTransport(controlTransport)
