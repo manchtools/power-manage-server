@@ -354,11 +354,13 @@ curl -X POST http://localhost:8081/pm.v1.ControlService/DispatchAction \
 
 ## Dynamic Device Groups
 
-Device groups can be configured with dynamic membership rules. Instead of manually adding devices to a group, you can define a query that automatically includes devices matching certain label criteria.
+Device groups can be configured with dynamic membership rules. Instead of manually adding devices to a group, you can define a query that automatically includes devices matching certain criteria.
 
 ### Query Language
 
-The dynamic group query language uses a verbose, human-readable syntax similar to Microsoft's dynamic group rules. Queries evaluate device labels to determine membership.
+The dynamic group query language uses a verbose, human-readable syntax similar to Microsoft's dynamic group rules. Queries evaluate device labels and inventory properties to determine membership.
+
+**Data availability:** `device.labels.*` and `device.hostname` are available immediately after registration. Inventory properties (`device.os`, `device.os_version`, `device.os_arch`, `device.cpu_*`, `device.memory_total`, `device.kernel`) require the agent to have connected and sent its first inventory report via OSQuery. Devices without inventory data will not match queries using those fields.
 
 #### Basic Syntax
 
