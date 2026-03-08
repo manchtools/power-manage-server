@@ -7,7 +7,12 @@
 # 2. Generates internal PKI certificates (CA, gateway, control) using Go's crypto/x509
 # 3. Prepares data directories for PostgreSQL and Traefik
 #
-# Usage: ./setup.sh
+# Certificate modes:
+#   ./setup.sh                      Self-contained: generates CA + server certs
+#   ./setup.sh --external-ca        Uses existing CA cert+key from certs/ directory
+#   ./setup.sh --csr-only           Generates keys + CSRs for external signing (HSM/Vault)
+#
+# Usage: ./setup.sh [--external-ca | --csr-only]
 
 set -e
 
@@ -23,6 +28,15 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERTS_DIR="$SCRIPT_DIR/certs"
 DATA_DIR="$SCRIPT_DIR/data"
+
+# Parse certificate mode
+CERT_MODE="self-contained"
+for arg in "$@"; do
+    case "$arg" in
+        --external-ca)  CERT_MODE="external-ca" ;;
+        --csr-only)     CERT_MODE="csr-only" ;;
+    esac
+done
 
 check_env() {
     if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
@@ -97,20 +111,6 @@ check_env() {
 }
 
 generate_certs() {
-    if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
-        log_warn "Certificates already exist in $CERTS_DIR"
-        read -p "Regenerate all certificates? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing certificates"
-            return
-        fi
-        rm -f "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" \
-              "$CERTS_DIR/gateway.crt" "$CERTS_DIR/gateway.key" \
-              "$CERTS_DIR/control.crt" "$CERTS_DIR/control.key" \
-              "$CERTS_DIR/ca.srl"
-    fi
-
     # certgen is bundled alongside setup.sh in the deploy directory.
     # It uses Go's crypto/x509 to generate certificates, ensuring encoding
     # compatibility with Go's TLS verification (no openssl DER mismatches).
@@ -121,13 +121,61 @@ generate_certs() {
         exit 1
     fi
 
-    log_info "Generating certificates for ${GATEWAY_DOMAIN}..."
-    "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}"
+    mkdir -p "$CERTS_DIR"
 
-    chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
-    chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
+    case "$CERT_MODE" in
+        csr-only)
+            # Generate keys + CSRs for external signing (HSM, Vault, corporate PKI).
+            log_info "Generating keys and CSRs for external signing..."
+            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}" -csr-only
 
-    log_info "Certificates generated successfully"
+            chmod 600 "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
+
+            log_warn "CSR mode: sign the CSRs externally, then place the signed certificates"
+            log_warn "and your CA certificate in $CERTS_DIR before starting services."
+            return
+            ;;
+
+        external-ca)
+            # Use existing CA cert+key to sign server certificates.
+            if [[ ! -f "$CERTS_DIR/ca.crt" ]] || [[ ! -f "$CERTS_DIR/ca.key" ]]; then
+                log_error "External CA mode requires ca.crt and ca.key in $CERTS_DIR"
+                exit 1
+            fi
+            log_info "Using external CA from $CERTS_DIR..."
+            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}" \
+                -ca-cert "$CERTS_DIR/ca.crt" -ca-key "$CERTS_DIR/ca.key"
+
+            chmod 600 "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
+            chmod 644 "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
+
+            log_info "Server certificates signed with external CA"
+            ;;
+
+        *)
+            # Self-contained: generate CA + server certs.
+            if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
+                log_warn "Certificates already exist in $CERTS_DIR"
+                read -p "Regenerate all certificates? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
+                echo
+                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                    log_info "Keeping existing certificates"
+                    return
+                fi
+                rm -f "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" \
+                      "$CERTS_DIR/gateway.crt" "$CERTS_DIR/gateway.key" \
+                      "$CERTS_DIR/control.crt" "$CERTS_DIR/control.key"
+            fi
+
+            log_info "Generating certificates for ${GATEWAY_DOMAIN}..."
+            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}"
+
+            chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
+            chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
+
+            log_info "Certificates generated successfully"
+            ;;
+    esac
 }
 
 show_instructions() {
