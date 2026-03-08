@@ -104,15 +104,15 @@ func main() {
 			logger.Error("failed to parse CA certificate for control proxy")
 			os.Exit(1)
 		}
-		controlHTTPClient = &http.Client{
-			Transport: &http2.Transport{
-				TLSClientConfig: &tls.Config{
-					Certificates: []tls.Certificate{controlCert},
-					RootCAs:      caPool,
-					MinVersion:   tls.VersionTLS13,
-				},
+		controlTransport := &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{controlCert},
+				RootCAs:      caPool,
+				MinVersion:   tls.VersionTLS13,
 			},
 		}
+		http2.ConfigureTransport(controlTransport)
+		controlHTTPClient = &http.Client{Transport: controlTransport}
 	} else {
 		controlHTTPClient = http.DefaultClient
 	}
