@@ -202,18 +202,19 @@ log_info "Transfer complete"
 log_step "Loading images and restarting services on $SSH_HOST..."
 
 # Build the remote commands
-REMOTE_CMDS=""
+# Read IMAGE_TAG from server's .env so we retag images to match what compose expects
+REMOTE_CMDS="cd ~/deploy && "
+REMOTE_CMDS+="IMAGE_TAG=\$(grep -oP '(?<=^IMAGE_TAG=).*' .env 2>/dev/null || echo latest) && "
+REMOTE_CMDS+="echo '[INFO] Server IMAGE_TAG='\$IMAGE_TAG && "
 for svc in "${SERVICES[@]}"; do
     REMOTE_CMDS+="echo '[INFO] Loading pm-$svc...' && "
     REMOTE_CMDS+="docker load < /tmp/pm-$svc.tar.gz && "
     REMOTE_CMDS+="rm -f /tmp/pm-$svc.tar.gz && "
+    REMOTE_CMDS+="docker tag $REGISTRY/power-manage-$svc:latest $REGISTRY/power-manage-$svc:\$IMAGE_TAG && "
 done
-
-# Find compose directory and restart only the changed services
-REMOTE_CMDS+="cd ~/deploy && "
 for svc in "${SERVICES[@]}"; do
     REMOTE_CMDS+="echo '[INFO] Restarting $svc...' && "
-    REMOTE_CMDS+="docker compose up -d --no-deps $svc && "
+    REMOTE_CMDS+="docker compose up -d --no-deps --force-recreate $svc && "
 done
 REMOTE_CMDS+="echo '[INFO] All services restarted' && docker compose ps"
 

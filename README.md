@@ -577,12 +577,16 @@ device.labels.<key>    e.g., device.labels.environment
 labels.<key>           e.g., labels.role  (shorthand)
 ```
 
-**Inventory properties** — hardware and OS information collected by the agent:
+**Device properties** — available immediately from registration:
 
 | Property | Description | Example Value |
 |----------|-------------|---------------|
 | `device.hostname` | Device hostname | `web-server-01` |
-| `device.name` | Device display name | `Web Server 01` |
+
+**Inventory properties** — hardware and OS information collected by the agent via OSQuery. These fields are only available after the agent has connected and sent its first inventory report (typically within seconds of first connection). Queries using these fields will not match devices that have not yet reported inventory.
+
+| Property | Description | Example Value |
+|----------|-------------|---------------|
 | `device.os` | Operating system name | `Ubuntu`, `Fedora` |
 | `device.os_version` | Full OS version string | `24.04`, `41` |
 | `device.os_major` | OS major version number | `24`, `41` |
@@ -646,6 +650,13 @@ NOT device.labels.decommissioned exists
 ### Evaluation
 
 Dynamic group membership is evaluated by PostgreSQL using the `evaluate_dynamic_query_v2()` function. The query is parsed into an expression tree of conditions, logical operators, and groups. Each condition is evaluated against the device's labels (stored in `devices_projection.labels`) and inventory data (collected by the agent via OSQuery and stored in `device_inventory`).
+
+**Data availability by source:**
+
+| Source | Available | Fields |
+|--------|-----------|--------|
+| Registration | Immediately | `device.hostname`, `device.labels.*` |
+| Agent inventory (OSQuery) | After first connection | `device.os`, `device.os_version`, `device.os_arch`, `device.cpu_*`, `device.memory_total`, `device.kernel` |
 
 The `ValidateDynamicQuery` RPC validates syntax and returns the number of currently matching devices. The `EvaluateDynamicGroup` RPC triggers a manual re-evaluation of membership.
 

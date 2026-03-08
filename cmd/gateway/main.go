@@ -140,7 +140,7 @@ func main() {
 
 	logger.Info("gateway started", "version", version)
 
-	// Setup HTTP mux
+	// Setup HTTP mux for agent connections (mTLS-protected)
 	mux := http.NewServeMux()
 
 	// Create handler based on TLS mode
@@ -154,24 +154,21 @@ func main() {
 		mux.Handle(path, h)
 	}
 
-	// Prometheus metrics endpoint
-	mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
+	// Wrap with security headers
+	securedMux := securityHeadersMiddleware(mux)
 
-	// Health check endpoint
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	// Separate non-TLS mux for metrics and health (accessible without mTLS)
+	opsMux := http.NewServeMux()
+	opsMux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
+	opsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{"status":"healthy","agents":%d}`, manager.Count())
 	})
-
-	// Ready check endpoint
-	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+	opsMux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-
-	// Wrap with security headers
-	securedMux := securityHeadersMiddleware(mux)
 
 	// Create server
 	var server *http.Server
@@ -216,6 +213,19 @@ func main() {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Start ops server (metrics + health, no TLS)
+	opsServer := &http.Server{
+		Addr:              ":9090",
+		Handler:           opsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		logger.Info("ops server listening (metrics/health)", "address", ":9090")
+		if err := opsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("ops server error", "error", err)
+		}
+	}()
+
 	// Start server
 	go func() {
 		if *tlsEnabled {
@@ -241,6 +251,9 @@ func main() {
 	drainCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	if err := opsServer.Shutdown(drainCtx); err != nil {
+		logger.Error("ops server shutdown error", "error", err)
+	}
 	if err := server.Shutdown(drainCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}

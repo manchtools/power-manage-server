@@ -122,7 +122,7 @@ generate_ca() {
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -addext "subjectKeyIdentifier=hash"
 
-    chmod 600 "$CERTS_DIR/ca.key"
+    chmod 644 "$CERTS_DIR/ca.key"
     chmod 644 "$CERTS_DIR/ca.crt"
 
     log_info "CA generated successfully"
@@ -157,7 +157,7 @@ generate_gateway_cert() {
         -out "$CERTS_DIR/gateway.crt"
 
     rm -f "$CERTS_DIR/gateway.csr"
-    chmod 600 "$CERTS_DIR/gateway.key"
+    chmod 644 "$CERTS_DIR/gateway.key"
     chmod 644 "$CERTS_DIR/gateway.crt"
 
     log_info "Gateway certificate generated (valid 825 days)"
@@ -192,7 +192,7 @@ generate_control_cert() {
         -out "$CERTS_DIR/control.crt"
 
     rm -f "$CERTS_DIR/control.csr"
-    chmod 600 "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/control.key"
     chmod 644 "$CERTS_DIR/control.crt"
 
     log_info "Control certificate generated (valid 825 days)"
