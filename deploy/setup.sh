@@ -117,9 +117,12 @@ generate_ca() {
 
     log_info "Generating CA certificate..."
     openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/CN=Power Manage Internal CA/O=Power Manage"
+        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -addext "subjectKeyIdentifier=hash"
 
-    chmod 600 "$CERTS_DIR/ca.key"
+    chmod 644 "$CERTS_DIR/ca.key"
     chmod 644 "$CERTS_DIR/ca.crt"
 
     log_info "CA generated successfully"
@@ -141,21 +144,20 @@ generate_gateway_cert() {
     # Generate private key
     openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
 
-    # Generate CSR with SAN
+    # Generate CSR
     openssl req -new -key "$CERTS_DIR/gateway.key" \
         -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
-        -addext "subjectAltName=DNS:${GATEWAY_DOMAIN}" \
         -out "$CERTS_DIR/gateway.csr"
 
-    # Sign with CA
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
     openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -copy_extensions copyall \
+        -extfile <(printf "subjectAltName=DNS:%s\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
         -out "$CERTS_DIR/gateway.crt"
 
     rm -f "$CERTS_DIR/gateway.csr"
-    chmod 600 "$CERTS_DIR/gateway.key"
+    chmod 644 "$CERTS_DIR/gateway.key"
     chmod 644 "$CERTS_DIR/gateway.crt"
 
     log_info "Gateway certificate generated (valid 825 days)"
@@ -177,21 +179,20 @@ generate_control_cert() {
     # Generate private key
     openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
 
-    # Generate CSR with SAN (Docker internal hostname)
+    # Generate CSR
     openssl req -new -key "$CERTS_DIR/control.key" \
         -subj "/CN=control/O=Power Manage" \
-        -addext "subjectAltName=DNS:control,DNS:localhost" \
         -out "$CERTS_DIR/control.csr"
 
-    # Sign with CA
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
     openssl x509 -req -in "$CERTS_DIR/control.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -copy_extensions copyall \
+        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost\nauthorityKeyIdentifier=keyid:always") \
         -out "$CERTS_DIR/control.crt"
 
     rm -f "$CERTS_DIR/control.csr"
-    chmod 600 "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/control.key"
     chmod 644 "$CERTS_DIR/control.crt"
 
     log_info "Control certificate generated (valid 825 days)"
