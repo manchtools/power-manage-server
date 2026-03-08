@@ -4,10 +4,8 @@
 #
 # This script:
 # 1. Validates the .env configuration
-# 2. Generates the internal CA for agent certificate signing
-# 3. Generates the gateway server certificate (signed by the CA)
-# 4. Generates the control server certificate for internal mTLS (signed by the CA)
-# 5. Prepares data directories for PostgreSQL and Traefik
+# 2. Generates internal PKI certificates (CA, gateway, control) using Go's crypto/x509
+# 3. Prepares data directories for PostgreSQL and Traefik
 #
 # Usage: ./setup.sh
 
@@ -98,104 +96,38 @@ check_env() {
     log_info "Environment configuration validated"
 }
 
-generate_ca() {
+generate_certs() {
     if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
-        log_warn "CA already exists in $CERTS_DIR"
-        read -p "Regenerate CA? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
+        log_warn "Certificates already exist in $CERTS_DIR"
+        read -p "Regenerate all certificates? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing CA"
+            log_info "Keeping existing certificates"
             return
         fi
+        rm -f "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" \
+              "$CERTS_DIR/gateway.crt" "$CERTS_DIR/gateway.key" \
+              "$CERTS_DIR/control.crt" "$CERTS_DIR/control.key" \
+              "$CERTS_DIR/ca.srl"
     fi
 
-    log_info "Generating internal Certificate Authority..."
-    mkdir -p "$CERTS_DIR"
-
-    log_info "Generating CA private key..."
-    openssl genrsa -out "$CERTS_DIR/ca.key" 4096
-
-    log_info "Generating CA certificate..."
-    openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
-        -addext "basicConstraints=critical,CA:TRUE" \
-        -addext "keyUsage=critical,keyCertSign,cRLSign" \
-        -addext "subjectKeyIdentifier=hash"
-
-    chmod 600 "$CERTS_DIR/ca.key"
-    chmod 644 "$CERTS_DIR/ca.crt"
-
-    log_info "CA generated successfully"
-}
-
-generate_gateway_cert() {
-    if [[ -f "$CERTS_DIR/gateway.crt" ]] && [[ -f "$CERTS_DIR/gateway.key" ]]; then
-        log_warn "Gateway certificate already exists"
-        read -p "Regenerate gateway certificate? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing gateway certificate"
-            return
-        fi
+    # certgen is bundled alongside setup.sh in the deploy directory.
+    # It uses Go's crypto/x509 to generate certificates, ensuring encoding
+    # compatibility with Go's TLS verification (no openssl DER mismatches).
+    local certgen="$SCRIPT_DIR/certgen"
+    if [[ ! -x "$certgen" ]]; then
+        log_error "certgen binary not found at $certgen"
+        log_info "Build it with: go build -o deploy/certgen ./cmd/certgen"
+        exit 1
     fi
 
-    log_info "Generating gateway server certificate for ${GATEWAY_DOMAIN}..."
+    log_info "Generating certificates for ${GATEWAY_DOMAIN}..."
+    "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}"
 
-    # Generate private key
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
+    chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
 
-    # Generate CSR
-    openssl req -new -key "$CERTS_DIR/gateway.key" \
-        -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
-        -out "$CERTS_DIR/gateway.csr"
-
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
-    openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf "subjectAltName=DNS:%s\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
-        -out "$CERTS_DIR/gateway.crt"
-
-    rm -f "$CERTS_DIR/gateway.csr"
-    chmod 600 "$CERTS_DIR/gateway.key"
-    chmod 644 "$CERTS_DIR/gateway.crt"
-
-    log_info "Gateway certificate generated (valid 825 days)"
-}
-
-generate_control_cert() {
-    if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
-        log_warn "Control certificate already exists"
-        read -p "Regenerate control certificate? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing control certificate"
-            return
-        fi
-    fi
-
-    log_info "Generating control server certificate..."
-
-    # Generate private key
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
-
-    # Generate CSR
-    openssl req -new -key "$CERTS_DIR/control.key" \
-        -subj "/CN=control/O=Power Manage" \
-        -out "$CERTS_DIR/control.csr"
-
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
-    openssl x509 -req -in "$CERTS_DIR/control.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost\nauthorityKeyIdentifier=keyid:always") \
-        -out "$CERTS_DIR/control.crt"
-
-    rm -f "$CERTS_DIR/control.csr"
-    chmod 600 "$CERTS_DIR/control.key"
-    chmod 644 "$CERTS_DIR/control.crt"
-
-    log_info "Control certificate generated (valid 825 days)"
+    log_info "Certificates generated successfully"
 }
 
 show_instructions() {
@@ -233,9 +165,7 @@ main() {
     echo ""
 
     check_env
-    generate_ca
-    generate_gateway_cert
-    generate_control_cert
+    generate_certs
 
     mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
