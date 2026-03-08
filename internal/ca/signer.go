@@ -2,7 +2,9 @@ package ca
 
 import (
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
@@ -21,13 +23,17 @@ func NewActionSigner(ca *CA) *ActionSigner {
 
 // Sign produces a signature over the canonical action payload.
 // The canonical format is: "actionID:actionType:base64(paramsJSON)"
-//
-// Uses the crypto.Signer interface so any key implementation works,
-// including HSM-backed keys via PKCS#11.
 func (s *ActionSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
 	canonical := fmt.Sprintf("%s:%d:%s", actionID, actionType,
 		base64.StdEncoding.EncodeToString(paramsJSON))
 	hash := sha256.Sum256([]byte(canonical))
 
-	return s.key.Sign(rand.Reader, hash[:], crypto.SHA256)
+	switch key := s.key.(type) {
+	case *ecdsa.PrivateKey:
+		return ecdsa.SignASN1(rand.Reader, key, hash[:])
+	case *rsa.PrivateKey:
+		return rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, hash[:])
+	default:
+		return nil, fmt.Errorf("unsupported key type: %T", s.key)
+	}
 }

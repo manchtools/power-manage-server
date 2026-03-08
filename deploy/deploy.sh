@@ -128,14 +128,6 @@ for svc in "${SERVICES[@]}"; do
     log_info "  Built $DIST_DIR/$svc ($(du -h "$DIST_DIR/$svc" | cut -f1))"
 done
 
-# Build certgen for the server (used by setup.sh for certificate generation)
-log_info "  Building certgen..."
-CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
-    go build -ldflags="-s -w" \
-    -o "$DIST_DIR/certgen" \
-    "$PROJECT_ROOT/server/cmd/certgen"
-log_info "  Built $DIST_DIR/certgen ($(du -h "$DIST_DIR/certgen" | cut -f1))"
-
 ###############################################################################
 # Step 2: Build container images with podman
 ###############################################################################
@@ -199,8 +191,7 @@ log_step "Transferring images to $SSH_HOST..."
 
 scp "${SSH_OPTS[@]}" "$ARCHIVE_DIR"/pm-*.tar.gz "$SSH_HOST:/tmp/"
 
-# Also transfer certgen and setup.sh for certificate management
-scp "${SSH_OPTS[@]}" "$DIST_DIR/certgen" "$SSH_HOST:~/deploy/certgen"
+# Also transfer setup.sh for certificate management
 scp "${SSH_OPTS[@]}" "$SCRIPT_DIR/setup.sh" "$SSH_HOST:~/deploy/setup.sh"
 
 log_info "Transfer complete"

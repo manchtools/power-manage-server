@@ -4,15 +4,12 @@
 #
 # This script:
 # 1. Validates the .env configuration
-# 2. Generates internal PKI certificates (CA, gateway, control) using Go's crypto/x509
-# 3. Prepares data directories for PostgreSQL and Traefik
+# 2. Generates the internal CA for agent certificate signing
+# 3. Generates the gateway server certificate (signed by the CA)
+# 4. Generates the control server certificate for internal mTLS (signed by the CA)
+# 5. Prepares data directories for PostgreSQL and Traefik
 #
-# Certificate modes:
-#   ./setup.sh                      Self-contained: generates CA + server certs
-#   ./setup.sh --external-ca        Uses existing CA cert+key from certs/ directory
-#   ./setup.sh --csr-only           Generates keys + CSRs for external signing (HSM/Vault)
-#
-# Usage: ./setup.sh [--external-ca | --csr-only]
+# Usage: ./setup.sh
 
 set -e
 
@@ -28,15 +25,6 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERTS_DIR="$SCRIPT_DIR/certs"
 DATA_DIR="$SCRIPT_DIR/data"
-
-# Parse certificate mode
-CERT_MODE="self-contained"
-for arg in "$@"; do
-    case "$arg" in
-        --external-ca)  CERT_MODE="external-ca" ;;
-        --csr-only)     CERT_MODE="csr-only" ;;
-    esac
-done
 
 check_env() {
     if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
@@ -110,72 +98,104 @@ check_env() {
     log_info "Environment configuration validated"
 }
 
-generate_certs() {
-    # certgen is bundled alongside setup.sh in the deploy directory.
-    # It uses Go's crypto/x509 to generate certificates, ensuring encoding
-    # compatibility with Go's TLS verification (no openssl DER mismatches).
-    local certgen="$SCRIPT_DIR/certgen"
-    if [[ ! -x "$certgen" ]]; then
-        log_error "certgen binary not found at $certgen"
-        log_info "Build it with: go build -o deploy/certgen ./cmd/certgen"
-        exit 1
+generate_ca() {
+    if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
+        log_warn "CA already exists in $CERTS_DIR"
+        read -p "Regenerate CA? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing CA"
+            return
+        fi
     fi
 
+    log_info "Generating internal Certificate Authority..."
     mkdir -p "$CERTS_DIR"
 
-    case "$CERT_MODE" in
-        csr-only)
-            # Generate keys + CSRs for external signing (HSM, Vault, corporate PKI).
-            log_info "Generating keys and CSRs for external signing..."
-            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}" -csr-only
+    log_info "Generating CA private key..."
+    openssl genrsa -out "$CERTS_DIR/ca.key" 4096
 
-            chmod 600 "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
+    log_info "Generating CA certificate..."
+    openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
+        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -addext "subjectKeyIdentifier=hash"
 
-            log_warn "CSR mode: sign the CSRs externally, then place the signed certificates"
-            log_warn "and your CA certificate in $CERTS_DIR before starting services."
+    chmod 600 "$CERTS_DIR/ca.key"
+    chmod 644 "$CERTS_DIR/ca.crt"
+
+    log_info "CA generated successfully"
+}
+
+generate_gateway_cert() {
+    if [[ -f "$CERTS_DIR/gateway.crt" ]] && [[ -f "$CERTS_DIR/gateway.key" ]]; then
+        log_warn "Gateway certificate already exists"
+        read -p "Regenerate gateway certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing gateway certificate"
             return
-            ;;
+        fi
+    fi
 
-        external-ca)
-            # Use existing CA cert+key to sign server certificates.
-            if [[ ! -f "$CERTS_DIR/ca.crt" ]] || [[ ! -f "$CERTS_DIR/ca.key" ]]; then
-                log_error "External CA mode requires ca.crt and ca.key in $CERTS_DIR"
-                exit 1
-            fi
-            log_info "Using external CA from $CERTS_DIR..."
-            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}" \
-                -ca-cert "$CERTS_DIR/ca.crt" -ca-key "$CERTS_DIR/ca.key"
+    log_info "Generating gateway server certificate for ${GATEWAY_DOMAIN}..."
 
-            chmod 600 "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
-            chmod 644 "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
 
-            log_info "Server certificates signed with external CA"
-            ;;
+    # Generate CSR
+    openssl req -new -key "$CERTS_DIR/gateway.key" \
+        -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
+        -out "$CERTS_DIR/gateway.csr"
 
-        *)
-            # Self-contained: generate CA + server certs.
-            if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
-                log_warn "Certificates already exist in $CERTS_DIR"
-                read -p "Regenerate all certificates? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
-                echo
-                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                    log_info "Keeping existing certificates"
-                    return
-                fi
-                rm -f "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" \
-                      "$CERTS_DIR/gateway.crt" "$CERTS_DIR/gateway.key" \
-                      "$CERTS_DIR/control.crt" "$CERTS_DIR/control.key"
-            fi
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -extfile <(printf "subjectAltName=DNS:%s\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
+        -out "$CERTS_DIR/gateway.crt"
 
-            log_info "Generating certificates for ${GATEWAY_DOMAIN}..."
-            "$certgen" -dir "$CERTS_DIR" -gateway-domain "${GATEWAY_DOMAIN}"
+    rm -f "$CERTS_DIR/gateway.csr"
+    chmod 600 "$CERTS_DIR/gateway.key"
+    chmod 644 "$CERTS_DIR/gateway.crt"
 
-            chmod 600 "$CERTS_DIR/ca.key" "$CERTS_DIR/gateway.key" "$CERTS_DIR/control.key"
-            chmod 644 "$CERTS_DIR/ca.crt" "$CERTS_DIR/gateway.crt" "$CERTS_DIR/control.crt"
+    log_info "Gateway certificate generated (valid 825 days)"
+}
 
-            log_info "Certificates generated successfully"
-            ;;
-    esac
+generate_control_cert() {
+    if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
+        log_warn "Control certificate already exists"
+        read -p "Regenerate control certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing control certificate"
+            return
+        fi
+    fi
+
+    log_info "Generating control server certificate..."
+
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
+
+    # Generate CSR
+    openssl req -new -key "$CERTS_DIR/control.key" \
+        -subj "/CN=control/O=Power Manage" \
+        -out "$CERTS_DIR/control.csr"
+
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    openssl x509 -req -in "$CERTS_DIR/control.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost\nauthorityKeyIdentifier=keyid:always") \
+        -out "$CERTS_DIR/control.crt"
+
+    rm -f "$CERTS_DIR/control.csr"
+    chmod 600 "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/control.crt"
+
+    log_info "Control certificate generated (valid 825 days)"
 }
 
 show_instructions() {
@@ -213,7 +233,9 @@ main() {
     echo ""
 
     check_env
-    generate_certs
+    generate_ca
+    generate_gateway_cert
+    generate_control_cert
 
     mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
