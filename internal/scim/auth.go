@@ -49,6 +49,13 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Rate limit per provider slug (before bcrypt to prevent CPU DoS)
+		if !h.rateLimiter.Allow(slug) {
+			h.logger.Warn("SCIM rate limit exceeded", "slug", slug, "method", r.Method, "path", r.URL.Path)
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+
 		// Look up provider by slug with SCIM enabled
 		provider, err := h.store.Queries().GetIdentityProviderBySlugForSCIM(r.Context(), slug)
 		if err != nil {
@@ -72,13 +79,6 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		if err := bcrypt.CompareHashAndPassword([]byte(provider.ScimTokenHash), []byte(token)); err != nil {
 			h.logger.Warn("SCIM auth failed: invalid bearer token", "slug", slug, "provider_id", provider.ID)
 			writeError(w, http.StatusUnauthorized, "invalid bearer token")
-			return
-		}
-
-		// Rate limit per provider slug
-		if !h.rateLimiter.Allow(slug) {
-			h.logger.Warn("SCIM rate limit exceeded", "slug", slug, "provider_id", provider.ID, "method", r.Method, "path", r.URL.Path)
-			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
 
