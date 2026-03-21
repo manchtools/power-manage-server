@@ -27,12 +27,12 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 
 	results, err := h.store.Queries().GetDeviceComplianceResults(ctx, deviceID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to query compliance results")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance results")
 	}
 
 	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, deviceID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to query compliance summary")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance summary")
 	}
 
 	checks := make([]*pm.ComplianceCheckResult, len(results))

@@ -79,40 +79,40 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 
 // GetSSOLoginURL generates the SSO authorization URL.
 func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm.GetSSOLoginURLRequest]) (*connect.Response[pm.GetSSOLoginURLResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderBySlug(ctx, req.Msg.Slug)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	if !provider.Enabled {
-		return nil, apiError(ErrProviderDisabled, connect.CodeFailedPrecondition, "provider is disabled")
+		return nil, apiErrorCtx(ctx, ErrProviderDisabled, connect.CodeFailedPrecondition, "provider is disabled")
 	}
 
 	// Decrypt client secret
 	clientSecret, err := h.enc.Decrypt(provider.ClientSecretEncrypted)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
 	}
 
 	// Generate state, nonce, and PKCE code verifier
 	state, err := idp.GenerateState()
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate state")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate state")
 	}
 	nonce, err := idp.GenerateNonce()
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate nonce")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate nonce")
 	}
 	codeVerifier, err := idp.GenerateCodeVerifier()
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate code verifier")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate code verifier")
 	}
 
 	// Store auth state (10 min expiry)
@@ -127,7 +127,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 	})
 	if err != nil {
 		slog.Error("failed to store auth state", "error", err, "provider", provider.Slug)
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to store auth state")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store auth state")
 	}
 
 	slog.Info("SSO auth state created", "provider", provider.Slug, "state_prefix", state[:8], "expires_at", expiresAt.UTC())
@@ -146,7 +146,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		GroupClaim:        provider.GroupClaim,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")
 	}
 
 	loginURL := oidcProvider.AuthCodeURL(state, nonce, codeVerifier)
@@ -158,7 +158,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 
 // SSOCallback handles the OIDC callback after user authentication.
 func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SSOCallbackRequest]) (*connect.Response[pm.SSOCallbackResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -173,31 +173,31 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			slog.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
-			return nil, apiError(ErrSSOStateExpired, connect.CodeUnauthenticated, "invalid or expired state")
+			return nil, apiErrorCtx(ctx, ErrSSOStateExpired, connect.CodeUnauthenticated, "invalid or expired state")
 		}
 		slog.Error("SSO auth state lookup failed", "error", err, "state_prefix", statePrefix)
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate state")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate state")
 	}
 
 	// Get provider
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, authState.ProviderID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	if !provider.Enabled {
-		return nil, apiError(ErrProviderDisabled, connect.CodeFailedPrecondition, "provider is disabled")
+		return nil, apiErrorCtx(ctx, ErrProviderDisabled, connect.CodeFailedPrecondition, "provider is disabled")
 	}
 
 	// Verify slug matches
 	if provider.Slug != req.Msg.Slug {
-		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "slug mismatch")
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "slug mismatch")
 	}
 
 	// Decrypt client secret
 	clientSecret, err := h.enc.Decrypt(provider.ClientSecretEncrypted)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
 	}
 
 	// Create OIDC provider
@@ -214,21 +214,21 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		GroupClaim:        provider.GroupClaim,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")
 	}
 
 	// Exchange code for tokens
 	oauth2Token, err := oidcProvider.ExchangeCode(ctx, req.Msg.Code, authState.CodeVerifier)
 	if err != nil {
 		slog.Error("SSO code exchange failed", "error", err, "slug", req.Msg.Slug)
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to exchange code")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to exchange code")
 	}
 
 	// Verify id_token and extract claims
 	claims, err := oidcProvider.VerifyAndExtractClaims(ctx, oauth2Token, authState.Nonce)
 	if err != nil {
 		slog.Error("SSO id_token verification failed", "error", err, "slug", req.Msg.Slug)
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to verify id_token")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to verify id_token")
 	}
 
 	slog.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
@@ -239,9 +239,9 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if err != nil {
 		slog.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
 		if errors.Is(err, idp.ErrNoMatchingAccount) {
-			return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, err.Error())
+			return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, err.Error())
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to authenticate")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to authenticate")
 	}
 
 	// Get and validate user before proceeding
@@ -255,13 +255,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 				"email", claims.Email,
 				"subject", claims.Subject,
 			)
-			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "account not found")
+			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "account not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	if user.Disabled {
-		return nil, apiError(ErrNotAuthenticated, connect.CodePermissionDenied, "account is disabled")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodePermissionDenied, "account is disabled")
 	}
 
 	// Sync profile from OIDC claims
@@ -295,7 +295,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if user.TotpEnabled {
 		challenge, err := h.jwtManager.GenerateTOTPChallenge(user.ID, user.Email, user.SessionVersion)
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate TOTP challenge")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate TOTP challenge")
 		}
 		return connect.NewResponse(&pm.SSOCallbackResponse{
 			TotpRequired:  true,
@@ -320,12 +320,12 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Generate tokens
 	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to resolve permissions")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
 
 	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, user.SessionVersion)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate tokens")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}
 
 	protoUser := userToProto(user)

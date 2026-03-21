@@ -438,7 +438,7 @@ func main() {
 
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
-	securedHandler := middleware.SecurityHeaders(corsHandler)
+	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,

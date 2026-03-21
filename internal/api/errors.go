@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"errors"
 
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 )
 
 // Authentication & authorization error codes.
@@ -95,7 +97,19 @@ const (
 	ErrUnimplemented = "unimplemented"
 )
 
-// apiError creates a connect.Error with a structured ErrorDetail containing the error code.
+// apiErrorCtx creates a connect.Error with a structured ErrorDetail containing the error code
+// and the request ID from context for client-side correlation.
+func apiErrorCtx(ctx context.Context, code string, connectCode connect.Code, msg string) *connect.Error {
+	e := connect.NewError(connectCode, errors.New(msg))
+	detail := &pm.ErrorDetail{Code: code, RequestId: middleware.RequestIDFromContext(ctx)}
+	if d, err := connect.NewErrorDetail(detail); err == nil {
+		e.AddDetail(d)
+	}
+	return e
+}
+
+// apiError creates a connect.Error without request ID context.
+// Prefer apiErrorCtx when a context is available.
 func apiError(code string, connectCode connect.Code, msg string) *connect.Error {
 	e := connect.NewError(connectCode, errors.New(msg))
 	if detail, detailErr := connect.NewErrorDetail(&pm.ErrorDetail{Code: code}); detailErr == nil {

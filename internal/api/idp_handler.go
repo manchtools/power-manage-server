@@ -33,28 +33,28 @@ func NewIDPHandler(st *store.Store, enc *crypto.Encryptor, scimBaseURL string) *
 
 // CreateIdentityProvider creates a new identity provider.
 func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Request[pm.CreateIdentityProviderRequest]) (*connect.Response[pm.CreateIdentityProviderResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Check for duplicate slug
 	_, err := h.store.Queries().GetIdentityProviderBySlug(ctx, req.Msg.Slug)
 	if err == nil {
-		return nil, apiError(ErrProviderSlugExists, connect.CodeAlreadyExists, "provider with this slug already exists")
+		return nil, apiErrorCtx(ctx, ErrProviderSlugExists, connect.CodeAlreadyExists, "provider with this slug already exists")
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check slug")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check slug")
 	}
 
 	// Encrypt client secret
 	encryptedSecret, err := h.enc.Encrypt(req.Msg.ClientSecret)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
 	}
 
 	groupMappingJSON, _ := json.Marshal(req.Msg.GroupMapping)
@@ -86,12 +86,12 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create provider")
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read back provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read back provider")
 	}
 
 	return connect.NewResponse(&pm.CreateIdentityProviderResponse{
@@ -101,16 +101,16 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 
 // GetIdentityProvider returns an identity provider by ID.
 func (h *IDPHandler) GetIdentityProvider(ctx context.Context, req *connect.Request[pm.GetIdentityProviderRequest]) (*connect.Response[pm.GetIdentityProviderResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	return connect.NewResponse(&pm.GetIdentityProviderResponse{
@@ -129,7 +129,7 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -139,12 +139,12 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list providers")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list providers")
 	}
 
 	count, err := h.store.Queries().CountIdentityProviders(ctx)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count providers")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count providers")
 	}
 
 	var nextPageToken string
@@ -166,22 +166,22 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 
 // UpdateIdentityProvider updates an existing identity provider.
 func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Request[pm.UpdateIdentityProviderRequest]) (*connect.Response[pm.UpdateIdentityProviderResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify provider exists
 	_, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	data := map[string]any{
@@ -211,7 +211,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	if req.Msg.ClientSecret != "" {
 		encryptedSecret, err := h.enc.Encrypt(req.Msg.ClientSecret)
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
 		}
 		data["client_secret_encrypted"] = encryptedSecret
 	}
@@ -230,12 +230,12 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update provider")
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read back provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read back provider")
 	}
 
 	return connect.NewResponse(&pm.UpdateIdentityProviderResponse{
@@ -245,13 +245,13 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 
 // DeleteIdentityProvider deletes an identity provider.
 func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Request[pm.DeleteIdentityProviderRequest]) (*connect.Response[pm.DeleteIdentityProviderResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	providerID := req.Msg.Id
@@ -260,7 +260,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	links, err := h.store.Queries().ListIdentityLinksByProvider(ctx, providerID)
 	if err != nil {
 		slog.Error("failed to list identity links for provider", "provider_id", providerID, "error", err)
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete provider")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -272,7 +272,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete provider")
 	}
 
 	// Unlink all users from this provider and auto-delete orphaned passwordless users.
@@ -317,37 +317,37 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 
 // EnableSCIM enables SCIM provisioning for an identity provider.
 func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.EnableSCIMRequest]) (*connect.Response[pm.EnableSCIMResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	if provider.ScimEnabled {
-		return nil, apiError(ErrSCIMAlreadyEnabled, connect.CodeAlreadyExists, "SCIM is already enabled for this provider")
+		return nil, apiErrorCtx(ctx, ErrSCIMAlreadyEnabled, connect.CodeAlreadyExists, "SCIM is already enabled for this provider")
 	}
 
 	// Generate a 32-byte random token (64 hex characters)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate token")
 	}
 	plainToken := hex.EncodeToString(tokenBytes)
 
 	hashStr, err := auth.HashPassword(plainToken)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to hash token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to hash token")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -361,7 +361,7 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to enable SCIM")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enable SCIM")
 	}
 
 	endpointURL := h.scimBaseURL + "/scim/v2/" + provider.Slug
@@ -374,25 +374,25 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 
 // DisableSCIM disables SCIM provisioning for an identity provider.
 func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.DisableSCIMRequest]) (*connect.Response[pm.DisableSCIMResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	if !provider.ScimEnabled {
-		return nil, apiError(ErrSCIMNotEnabled, connect.CodeFailedPrecondition, "SCIM is not enabled for this provider")
+		return nil, apiErrorCtx(ctx, ErrSCIMNotEnabled, connect.CodeFailedPrecondition, "SCIM is not enabled for this provider")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -404,7 +404,7 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to disable SCIM")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable SCIM")
 	}
 
 	return connect.NewResponse(&pm.DisableSCIMResponse{}), nil
@@ -412,37 +412,37 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 
 // RotateSCIMToken generates a new SCIM bearer token for an identity provider.
 func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrProviderNotFound, connect.CodeNotFound, "provider not found")
+			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
 
 	if !provider.ScimEnabled {
-		return nil, apiError(ErrSCIMNotEnabled, connect.CodeFailedPrecondition, "SCIM is not enabled for this provider")
+		return nil, apiErrorCtx(ctx, ErrSCIMNotEnabled, connect.CodeFailedPrecondition, "SCIM is not enabled for this provider")
 	}
 
 	// Generate a 32-byte random token (64 hex characters)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate token")
 	}
 	plainToken := hex.EncodeToString(tokenBytes)
 
 	hashStr, err := auth.HashPassword(plainToken)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to hash token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to hash token")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -456,7 +456,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rotate SCIM token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rotate SCIM token")
 	}
 
 	return connect.NewResponse(&pm.RotateSCIMTokenResponse{

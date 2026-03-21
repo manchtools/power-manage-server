@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
 
@@ -16,10 +18,10 @@ func init() {
 
 // Validate validates a struct using the go-playground validator.
 // It returns a connect error with CodeInvalidArgument if validation fails.
-func Validate(v any) error {
+func Validate(ctx context.Context, v any) error {
 	msg, ok := sdkvalidate.Struct(validate, v)
 	if !ok {
-		return apiError(ErrValidationFailed, connect.CodeInvalidArgument, msg)
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, msg)
 	}
 	return nil
 }

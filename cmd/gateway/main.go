@@ -143,7 +143,7 @@ func main() {
 	}
 
 	// Wrap with security headers
-	securedMux := middleware.SecurityHeaders(mux)
+	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))
 
 	// Separate non-TLS mux for metrics and health (accessible without mTLS)
 	opsMux := http.NewServeMux()

@@ -49,7 +49,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -62,7 +62,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list audit events")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list audit events")
 	}
 
 	count, err := h.store.Queries().CountAuditEvents(ctx, db.CountAuditEventsParams{
@@ -71,7 +71,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Column3: req.Msg.EventType,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count audit events")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count audit events")
 	}
 
 	var nextPageToken string

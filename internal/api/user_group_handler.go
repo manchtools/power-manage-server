@@ -31,19 +31,19 @@ func NewUserGroupHandler(st *store.Store) *UserGroupHandler {
 
 // CreateUserGroup creates a new user group.
 func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Request[pm.CreateUserGroupRequest]) (*connect.Response[pm.CreateUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	// Check name uniqueness
 	_, err := h.store.Queries().GetUserGroupByName(ctx, req.Msg.Name)
 	if err == nil {
-		return nil, apiError(ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
+		return nil, apiErrorCtx(ctx, ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.Make().String()
@@ -52,10 +52,10 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
 		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
 		}
 		if validationErr != "" {
-			return nil, apiError(ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
 		}
 	}
 
@@ -73,12 +73,12 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user group")
 	}
 
 	group, err := h.store.Queries().GetUserGroupByID(ctx, id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
 
 	return connect.NewResponse(&pm.CreateUserGroupResponse{
@@ -88,26 +88,26 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 
 // GetUserGroup returns a user group by ID with members and roles.
 func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Request[pm.GetUserGroupRequest]) (*connect.Response[pm.GetUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	roles, err := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get group roles")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get group roles")
 	}
 
 	members, err := h.store.Queries().ListUserGroupMembers(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get group members")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get group members")
 	}
 
 	protoMembers := make([]*pm.UserGroupMember, len(members))
@@ -140,7 +140,7 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -150,12 +150,12 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list user groups")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
 	}
 
 	count, err := h.store.Queries().CountUserGroups(ctx)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count user groups")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count user groups")
 	}
 
 	var nextPageToken string
@@ -179,21 +179,21 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 
 // UpdateUserGroup updates a user group's name and description.
 func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Request[pm.UpdateUserGroupRequest]) (*connect.Response[pm.UpdateUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -208,12 +208,12 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update user group")
 	}
 
 	updated, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.GroupId)
@@ -227,27 +227,27 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 
 // DeleteUserGroup deletes a user group.
 func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Request[pm.DeleteUserGroupRequest]) (*connect.Response[pm.DeleteUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	// Prevent deletion of SCIM-managed groups
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 	if isScimManaged {
-		return nil, apiError(ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
+		return nil, apiErrorCtx(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Bump session version for all members (they may lose permissions)
@@ -262,7 +262,7 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user group")
 	}
 
 	return connect.NewResponse(&pm.DeleteUserGroupResponse{}), nil
@@ -270,7 +270,7 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 
 // AddUserToGroup adds one or more users to a user group.
 func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Request[pm.AddUserToGroupRequest]) (*connect.Response[pm.AddUserToGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -280,12 +280,12 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		userIDs = append(userIDs, req.Msg.UserId)
 	}
 	if len(userIDs) == 0 {
-		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one user_id or user_ids must be set")
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one user_id or user_ids must be set")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	q := h.store.Queries()
@@ -294,13 +294,13 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 	group, err := q.GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	if group.IsDynamic {
-		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
+		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
 	}
 
 	for _, userID := range userIDs {
@@ -308,9 +308,9 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		_, err = q.GetUserByID(ctx, userID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+				return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 			}
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 		}
 
 		// Check if already a member — skip silently in batch
@@ -319,7 +319,7 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 			UserID:  userID,
 		})
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check membership")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check membership")
 		}
 		if isMember {
 			continue
@@ -338,7 +338,7 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 			ActorID:   userCtx.ID,
 		})
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add user to group")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add user to group")
 		}
 
 		// Bump user's session version (they may gain new permissions from group roles)
@@ -350,7 +350,7 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 
 // RemoveUserFromGroup removes a user from a user group.
 func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect.Request[pm.RemoveUserFromGroupRequest]) (*connect.Response[pm.RemoveUserFromGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -358,13 +358,13 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	if group.IsDynamic {
-		return nil, apiError(ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
+		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
 	}
 
 	// Verify membership
@@ -373,15 +373,15 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		UserID:  req.Msg.UserId,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check membership")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check membership")
 	}
 	if !isMember {
-		return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user is not a member of this group")
+		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user is not a member of this group")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	streamID := req.Msg.GroupId + ":" + req.Msg.UserId
@@ -397,7 +397,7 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove user from group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove user from group")
 	}
 
 	// Bump user's session version (they may lose permissions from group roles)
@@ -408,7 +408,7 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 
 // AssignRoleToUserGroup assigns one or more roles to a user group.
 func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *connect.Request[pm.AssignRoleToUserGroupRequest]) (*connect.Response[pm.AssignRoleToUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -418,12 +418,12 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		roleIDs = append(roleIDs, req.Msg.RoleId)
 	}
 	if len(roleIDs) == 0 {
-		return nil, apiError(ErrValidationFailed, connect.CodeInvalidArgument, "at least one role_id or role_ids must be set")
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one role_id or role_ids must be set")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	q := h.store.Queries()
@@ -432,9 +432,9 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 	_, err := q.GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	for _, roleID := range roleIDs {
@@ -442,9 +442,9 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		_, err = q.GetRoleByID(ctx, roleID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "role not found")
+				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
 			}
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get role")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
 		}
 
 		// Check if already assigned — skip silently in batch
@@ -453,7 +453,7 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 			RoleID:  roleID,
 		})
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 		}
 		if hasRole {
 			continue
@@ -472,7 +472,7 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 			ActorID:   userCtx.ID,
 		})
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to assign role to user group")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign role to user group")
 		}
 	}
 
@@ -484,7 +484,7 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 
 // RevokeRoleFromUserGroup revokes a role from a user group.
 func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *connect.Request[pm.RevokeRoleFromUserGroupRequest]) (*connect.Response[pm.RevokeRoleFromUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -494,15 +494,15 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 		RoleID:  req.Msg.RoleId,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check role assignment")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
 	if !hasRole {
-		return nil, apiError(ErrRoleNotFound, connect.CodeNotFound, "user group does not have this role")
+		return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "user group does not have this role")
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	streamID := req.Msg.GroupId + ":role:" + req.Msg.RoleId
@@ -518,7 +518,7 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to revoke role from user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke role from user group")
 	}
 
 	// Bump session version for all group members (they may lose permissions)
@@ -529,7 +529,7 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 
 // ListUserGroupsForUser returns all groups a user belongs to.
 func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *connect.Request[pm.ListUserGroupsForUserRequest]) (*connect.Response[pm.ListUserGroupsForUserResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -537,14 +537,14 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	_, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserNotFound, connect.CodeNotFound, "user not found")
+			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	groups, err := h.store.Queries().ListUserGroupsForUser(ctx, req.Msg.UserId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list user groups")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
 	}
 
 	protoGroups := make([]*pm.UserGroup, len(groups))
@@ -561,23 +561,23 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 
 // UpdateUserGroupQuery updates the dynamic query settings for a user group.
 func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
 		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
 		}
 		if validationErr != "" {
-			return nil, apiError(ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
 		}
 	}
 
@@ -593,15 +593,15 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update query")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update query")
 	}
 
 	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
@@ -614,13 +614,13 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 
 // ValidateUserGroupQuery validates a user group dynamic query without creating a group.
 func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *connect.Request[pm.ValidateUserGroupQueryRequest]) (*connect.Response[pm.ValidateUserGroupQueryResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.Query)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to validate query")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
 	}
 
 	if validationErr != "" {
@@ -633,7 +633,7 @@ func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *conn
 	// Count matching users
 	matchingCount, err := h.store.Queries().CountMatchingUsersForQuery(ctx, req.Msg.Query)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count matching users")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count matching users")
 	}
 
 	return connect.NewResponse(&pm.ValidateUserGroupQueryResponse{
@@ -644,7 +644,7 @@ func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *conn
 
 // EvaluateDynamicUserGroup triggers re-evaluation of a dynamic user group.
 func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -652,13 +652,13 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	if !group.IsDynamic {
-		return nil, apiError(ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
+		return nil, apiErrorCtx(ctx, ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
 	}
 
 	// Get current member count before evaluation
@@ -667,13 +667,13 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	// Trigger evaluation
 	err = h.store.Queries().EvaluateDynamicUserGroup(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to evaluate dynamic user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to evaluate dynamic user group")
 	}
 
 	// Get updated group
 	group, err = h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user group")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
 	// Calculate added/removed

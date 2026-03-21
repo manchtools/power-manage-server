@@ -67,13 +67,13 @@ func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Con
 
 // CreateCompliancePolicy creates a new compliance policy.
 func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, req *connect.Request[pm.CreateCompliancePolicyRequest]) (*connect.Response[pm.CreateCompliancePolicyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	id := ulid.Make().String()
@@ -90,12 +90,12 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create compliance policy")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	h.enqueueCompliancePolicyReindex(ctx, policy, []db.CompliancePolicyRulesProjection{})
@@ -107,21 +107,21 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 
 // GetCompliancePolicy returns a compliance policy by ID.
 func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *connect.Request[pm.GetCompliancePolicyRequest]) (*connect.Response[pm.GetCompliancePolicyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.Id)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
 	return connect.NewResponse(&pm.GetCompliancePolicyResponse{
@@ -140,7 +140,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -150,12 +150,12 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 		Offset: offset,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list compliance policies")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list compliance policies")
 	}
 
 	count, err := h.store.Queries().CountCompliancePolicies(ctx)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count compliance policies")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count compliance policies")
 	}
 
 	var nextPageToken string
@@ -177,13 +177,13 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 
 // RenameCompliancePolicy renames a compliance policy.
 func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, req *connect.Request[pm.RenameCompliancePolicyRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -197,15 +197,15 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename compliance policy")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
@@ -217,13 +217,13 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 
 // UpdateCompliancePolicyDescription updates a compliance policy's description.
 func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyDescriptionRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -237,15 +237,15 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update description")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
@@ -257,13 +257,13 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 
 // DeleteCompliancePolicy deletes a compliance policy.
 func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, req *connect.Request[pm.DeleteCompliancePolicyRequest]) (*connect.Response[pm.DeleteCompliancePolicyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -275,7 +275,7 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete compliance policy")
 	}
 
 	if h.searchIdx != nil {
@@ -289,46 +289,46 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 
 // AddCompliancePolicyRule adds a rule to a compliance policy.
 func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.AddCompliancePolicyRuleRequest]) (*connect.Response[pm.AddCompliancePolicyRuleResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify policy exists
 	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	// Verify action exists and is a compliance action
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrActionNotFound, connect.CodeNotFound, "action not found")
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get action")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	// Check action type is SHELL and is_compliance is true
 	if action.ActionType != 200 { // ACTION_TYPE_SHELL
-		return nil, apiError(ErrActionNotCompliance, connect.CodeInvalidArgument, "action must be a shell script type")
+		return nil, apiErrorCtx(ctx, ErrActionNotCompliance, connect.CodeInvalidArgument, "action must be a shell script type")
 	}
 
 	var params map[string]any
 	if json.Unmarshal(action.Params, &params) == nil {
 		isCompliance, _ := params["isCompliance"].(bool)
 		if !isCompliance {
-			return nil, apiError(ErrActionNotCompliance, connect.CodeInvalidArgument, "action must have is_compliance enabled")
+			return nil, apiErrorCtx(ctx, ErrActionNotCompliance, connect.CodeInvalidArgument, "action must have is_compliance enabled")
 		}
 	} else {
-		return nil, apiError(ErrActionNotCompliance, connect.CodeInvalidArgument, "action must have is_compliance enabled")
+		return nil, apiErrorCtx(ctx, ErrActionNotCompliance, connect.CodeInvalidArgument, "action must have is_compliance enabled")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -344,17 +344,17 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to add rule")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add rule")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
 	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
@@ -366,13 +366,13 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 
 // RemoveCompliancePolicyRule removes a rule from a compliance policy.
 func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.RemoveCompliancePolicyRuleRequest]) (*connect.Response[pm.RemoveCompliancePolicyRuleResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -386,20 +386,20 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to remove rule")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove rule")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
 	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
@@ -411,13 +411,13 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 
 // UpdateCompliancePolicyRule updates the grace period of a rule.
 func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyRuleRequest]) (*connect.Response[pm.UpdateCompliancePolicyRuleResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -432,20 +432,20 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update rule")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update rule")
 	}
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
 	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyRuleResponse{
@@ -455,19 +455,19 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 
 // GetDeviceCompliancePolicyStatus returns the per-policy compliance status for a device.
 func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pm.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pm.GetDeviceCompliancePolicyStatusResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	evals, err := h.store.Queries().GetDeviceCompliancePolicyEvaluations(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance evaluations")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance evaluations")
 	}
 
 	// Also get compliance results for detection output
 	results, err := h.store.Queries().GetDeviceComplianceResults(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance results")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance results")
 	}
 	resultMap := make(map[string]db.ComplianceResultsProjection)
 	for _, r := range results {
@@ -478,9 +478,9 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, req.Msg.DeviceId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get compliance summary")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance summary")
 	}
 
 	// Group evaluations by policy

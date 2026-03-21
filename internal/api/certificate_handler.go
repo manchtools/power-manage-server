@@ -34,7 +34,7 @@ func NewCertificateHandler(st *store.Store, certAuth *ca.CA, logger *slog.Logger
 // RenewCertificate renews a device certificate.
 // The agent authenticates by presenting its current (still valid) certificate.
 func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.Request[pm.RenewCertificateRequest]) (*connect.Response[pm.RenewCertificateResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -42,7 +42,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	deviceID, err := h.ca.VerifyCertificate(req.Msg.CurrentCertificate)
 	if err != nil {
 		h.logger.Warn("certificate verification failed", "error", err)
-		return nil, apiError(ErrPermissionDenied, connect.CodePermissionDenied, "invalid certificate")
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "invalid certificate")
 	}
 
 	// Verify the device exists and is not deleted
@@ -51,33 +51,33 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	})
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to look up device")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 	if device.IsDeleted {
-		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Verify the certificate fingerprint matches what's in the database
 	// This prevents use of revoked or superseded certificates
 	currentFP, err := ca.FingerprintFromPEM(req.Msg.CurrentCertificate)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to compute fingerprint")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to compute fingerprint")
 	}
 	if device.CertFingerprint == nil || *device.CertFingerprint != currentFP {
 		h.logger.Warn("certificate fingerprint mismatch",
 			"device_id", deviceID,
 			"presented", currentFP,
 		)
-		return nil, apiError(ErrPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
 	}
 
 	// Sign the new CSR
 	newCert, err := h.ca.IssueCertificateFromCSR(deviceID, req.Msg.Csr)
 	if err != nil {
 		h.logger.Error("failed to sign CSR", "error", err, "device_id", deviceID)
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to issue certificate")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to issue certificate")
 	}
 
 	// Emit DeviceCertRenewed event (projection handler already exists in migration 001)
@@ -93,7 +93,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 		ActorID:   deviceID,
 	}); err != nil {
 		h.logger.Error("failed to append cert renewed event", "error", err, "device_id", deviceID)
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to record certificate renewal")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record certificate renewal")
 	}
 
 	h.logger.Info("certificate renewed", "device_id", deviceID, "not_after", newCert.NotAfter)
