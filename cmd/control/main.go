@@ -24,12 +24,14 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/metrics"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -76,7 +78,7 @@ type Config struct {
 func main() {
 	cfg := parseFlags()
 
-	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
+	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
@@ -402,9 +404,9 @@ func main() {
 		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr, "search_enabled", true)
 	}
 
-	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
-	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
-	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
+	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	registerLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 
 	promReg := prometheus.NewRegistry()
 	promReg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
@@ -436,7 +438,7 @@ func main() {
 
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
-	securedHandler := securityHeadersMiddleware(corsHandler)
+	securedHandler := middleware.SecurityHeaders(corsHandler)
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
@@ -653,31 +655,6 @@ func parseFlags() *Config {
 	return cfg
 }
 
-func setupLogger(level, format string) *slog.Logger {
-	var logLevel slog.Level
-	switch level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: logLevel}
-
-	var handler slog.Handler
-	if format == "json" {
-		handler = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stderr, opts)
-	}
-
-	return slog.New(handler)
-}
-
 func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
 	// Check if user exists via the projection
 	_, err := st.Queries().GetUserByEmail(ctx, email)
@@ -731,21 +708,6 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	logger.Info("admin user created", "email", email, "id", id)
 	return nil
-}
-
-// securityHeadersMiddleware adds standard security headers to all responses.
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.

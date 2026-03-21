@@ -6,6 +6,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	sdkvalidate "github.com/manchtools/power-manage/sdk/go/validate"
 )
 
 type validStruct struct {
@@ -95,6 +97,6 @@ func TestToSnakeCase(t *testing.T) {
 		"HTTPStatusCode":  "h_t_t_p_status_code",
 	}
 	for input, expected := range tests {
-		assert.Equal(t, expected, toSnakeCase(input), "toSnakeCase(%q)", input)
+		assert.Equal(t, expected, sdkvalidate.ToSnakeCase(input), "ToSnakeCase(%q)", input)
 	}
 }

@@ -18,11 +18,13 @@ import (
 	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/metrics"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -45,21 +47,7 @@ func main() {
 	cfg := config.FromEnv()
 
 	// Setup logger
-	var level slog.Level
-	switch cfg.LogLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-	}))
+	logger := logging.SetupLogger(cfg.LogLevel, "json", os.Stdout)
 	slog.SetDefault(logger)
 
 	// Validate TLS flags
@@ -155,7 +143,7 @@ func main() {
 	}
 
 	// Wrap with security headers
-	securedMux := securityHeadersMiddleware(mux)
+	securedMux := middleware.SecurityHeaders(mux)
 
 	// Separate non-TLS mux for metrics and health (accessible without mTLS)
 	opsMux := http.NewServeMux()
@@ -259,19 +247,4 @@ func main() {
 	}
 
 	logger.Info("server stopped")
-}
-
-// securityHeadersMiddleware adds standard security headers to all responses.
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		next.ServeHTTP(w, r)
-	})
 }
