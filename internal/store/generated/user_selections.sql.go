@@ -39,6 +39,18 @@ func (q *Queries) GetUserSelection(ctx context.Context, arg GetUserSelectionPara
 }
 
 const listAvailableAssignmentsForDevice = `-- name: ListAvailableAssignmentsForDevice :many
+WITH device_owners AS (
+  SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
+  UNION
+  SELECT ugm.user_id FROM device_assigned_groups_projection dag
+  JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id
+  WHERE dag.device_id = $1
+),
+owner_groups AS (
+  SELECT DISTINCT ugm.group_id FROM user_group_members_projection ugm
+  JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+  WHERE ugm.user_id IN (SELECT user_id FROM device_owners)
+)
 SELECT DISTINCT asn.id, asn.source_type, asn.source_id, asn.target_type, asn.target_id, asn.sort_order, asn.mode, asn.created_at, asn.created_by, asn.is_deleted, asn.projection_version FROM assignments_projection asn
 WHERE asn.mode = 1 AND asn.is_deleted = FALSE
   AND (
@@ -46,12 +58,15 @@ WHERE asn.mode = 1 AND asn.is_deleted = FALSE
     OR (asn.target_type = 'device_group' AND asn.target_id IN (
       SELECT m.group_id FROM device_group_members_projection m WHERE m.device_id = $1
     ))
+    OR (asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners))
+    OR (asn.target_type = 'user_group' AND asn.target_id IN (SELECT group_id FROM owner_groups))
   )
 ORDER BY asn.created_at DESC
 `
 
-// List all available-mode assignments targeting a device (directly or via groups)
-// Used to build the catalog of items a user can select/deselect
+// List all available-mode assignments targeting a device (directly, via device groups,
+// via the device's assigned users, or via their user groups).
+// Used to build the catalog of items a user can select/deselect.
 func (q *Queries) ListAvailableAssignmentsForDevice(ctx context.Context, targetID string) ([]AssignmentsProjection, error) {
 	rows, err := q.db.Query(ctx, listAvailableAssignmentsForDevice, targetID)
 	if err != nil {

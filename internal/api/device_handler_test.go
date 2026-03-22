@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestListDevices_Empty(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -27,7 +28,7 @@ func TestListDevices_Empty(t *testing.T) {
 
 func TestListDevices_WithDevices(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -43,7 +44,7 @@ func TestListDevices_WithDevices(t *testing.T) {
 
 func TestGetDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -58,7 +59,7 @@ func TestGetDevice(t *testing.T) {
 
 func TestGetDevice_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -70,7 +71,7 @@ func TestGetDevice_NotFound(t *testing.T) {
 
 func TestSetDeviceLabel(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -88,7 +89,7 @@ func TestSetDeviceLabel(t *testing.T) {
 
 func TestRemoveDeviceLabel(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -114,7 +115,7 @@ func TestRemoveDeviceLabel(t *testing.T) {
 
 func TestDeleteDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -131,7 +132,7 @@ func TestDeleteDevice(t *testing.T) {
 
 func TestAssignDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -144,12 +145,12 @@ func TestAssignDevice(t *testing.T) {
 		UserId:   userID,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, userID, resp.Msg.Device.AssignedUserId)
+	assert.Contains(t, resp.Msg.Device.AssignedUserIds, userID)
 }
 
 func TestUnassignDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -167,14 +168,15 @@ func TestUnassignDevice(t *testing.T) {
 	// Unassign
 	resp, err := h.UnassignDevice(ctx, connect.NewRequest(&pm.UnassignDeviceRequest{
 		DeviceId: deviceID,
+		UserId:   userID,
 	}))
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.Device.AssignedUserId)
+	assert.Empty(t, resp.Msg.Device.AssignedUserIds)
 }
 
 func TestSetDeviceSyncInterval(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

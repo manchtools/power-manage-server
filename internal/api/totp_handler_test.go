@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func TestSetupTOTP(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -45,7 +46,7 @@ func TestVerifyTOTP_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -75,7 +76,7 @@ func TestVerifyTOTP_InvalidCode(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -95,7 +96,7 @@ func TestVerifyTOTP_NoSetup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -110,7 +111,7 @@ func TestDisableTOTP(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -133,7 +134,7 @@ func TestDisableTOTP_WrongPassword(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -150,7 +151,7 @@ func TestDisableTOTP_NotEnabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -165,7 +166,7 @@ func TestGetTOTPStatus_NotSetup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -181,7 +182,7 @@ func TestRegenerateBackupCodes(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -203,7 +204,7 @@ func TestRegenerateBackupCodes_WrongPassword(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -220,7 +221,7 @@ func TestVerifyLoginTOTP_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -252,7 +253,7 @@ func TestVerifyLoginTOTP_InvalidCode(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -267,28 +268,28 @@ func TestVerifyLoginTOTP_InvalidCode(t *testing.T) {
 		Code:      "000000",
 	}))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestVerifyLoginTOTP_InvalidChallenge(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	_, err := h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
 		Challenge: "invalid-token",
 		Code:      "123456",
 	}))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 func TestVerifyLoginTOTP_BackupCode(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewTOTPHandler(st, jwtMgr, enc, "TestApp")
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")

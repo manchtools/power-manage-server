@@ -46,6 +46,9 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 			count = v
 		}
 	}
+	if count > 200 {
+		count = 200
+	}
 
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
@@ -275,7 +278,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		StreamID:   userID,
 		EventType:  "UserCreated",
 		Data: map[string]any{
-			"email": email,
+			"email":        email,
+			"display_name": formatExternalName(scimUser.Name),
+			"given_name":   safeNameField(scimUser.Name, "given"),
+			"family_name":  safeNameField(scimUser.Name, "family"),
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -323,6 +329,40 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		}); err != nil {
 			h.logger.Error("failed to assign default role via SCIM", "error", err)
 		}
+	}
+
+	// Auto-enable provisioning/SSH if global server settings are on
+	if settings, err := h.store.Queries().GetServerSettings(ctx); err == nil {
+		if settings.UserProvisioningEnabled {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserProvisioningSettingsUpdated",
+				Data:       map[string]any{"user_provisioning_enabled": true},
+				ActorType:  "system",
+				ActorID:    "scim",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable provisioning for SCIM user", "user_id", userID, "error", err)
+			}
+		}
+		if settings.SshAccessForAll {
+			if err := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserSshSettingsUpdated",
+				Data: map[string]any{
+					"ssh_access_enabled": true,
+					"ssh_allow_pubkey":   true,
+					"ssh_allow_password": false,
+				},
+				ActorType: "system",
+				ActorID:   "scim",
+			}); err != nil {
+				h.logger.Warn("failed to auto-enable SSH for SCIM user", "user_id", userID, "error", err)
+			}
+		}
+	} else {
+		h.logger.Warn("failed to check server settings for SCIM user defaults", "error", err)
 	}
 
 	// Read back created user
@@ -451,7 +491,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update active status
-	if !scimUser.Active && !existingUser.Disabled {
+	if !scimUser.IsActive() && !existingUser.Disabled {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -464,7 +504,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to update user status")
 			return
 		}
-	} else if scimUser.Active && existingUser.Disabled {
+	} else if scimUser.IsActive() && existingUser.Disabled {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -476,6 +516,27 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("failed to enable user via SCIM", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to update user status")
 			return
+		}
+	}
+
+	// Update profile if name fields provided
+	newDisplayName := formatExternalName(scimUser.Name)
+	newGivenName := safeNameField(scimUser.Name, "given")
+	newFamilyName := safeNameField(scimUser.Name, "family")
+	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserProfileUpdated",
+			Data: map[string]any{
+				"display_name": newDisplayName,
+				"given_name":   newGivenName,
+				"family_name":  newFamilyName,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
+		}); err != nil {
+			h.logger.Warn("failed to update user profile via SCIM", "error", err)
 		}
 	}
 
@@ -667,9 +728,32 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 		}
 
 	case "name":
-		// Name object — stored in identity link's external_name.
-		// The actual identity link update happens in patchUser after all ops.
-		// Nothing to do here since we don't have name columns on the user table.
+		// Update profile fields from name object
+		nameMap, ok := op.Value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("invalid name value")
+		}
+		data := map[string]any{}
+		if gn, ok := nameMap["givenName"].(string); ok {
+			data["given_name"] = gn
+		}
+		if fn, ok := nameMap["familyName"].(string); ok {
+			data["family_name"] = fn
+		}
+		if fm, ok := nameMap["formatted"].(string); ok {
+			data["display_name"] = fm
+		}
+		if len(data) > 0 {
+			return h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   userID,
+				EventType:  "UserProfileUpdated",
+				Data:       data,
+				ActorType:  "scim",
+				ActorID:    provider.ID,
+			})
+		}
+		// Identity link sync happens in patchUser after all ops.
 
 	case "name.givenname", "name.familyname", "name.formatted":
 		// Sub-path name changes — handled via identity link sync in patchUser.
@@ -773,7 +857,7 @@ func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
 		ID:         user.ID,
 		ExternalID: externalID,
 		UserName:   user.Email,
-		Active:     !user.Disabled,
+		Active:     boolPtr(!user.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   user.Email,
@@ -785,6 +869,14 @@ func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
 			ResourceType: "User",
 			Location:     baseURL + "/Users/" + user.ID,
 		},
+	}
+
+	if user.DisplayName != "" || user.GivenName != "" || user.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  user.DisplayName,
+			GivenName:  user.GivenName,
+			FamilyName: user.FamilyName,
+		}
 	}
 
 	if user.CreatedAt.Valid {
@@ -804,7 +896,7 @@ func userRowToSCIM(row db.ListSCIMUsersRow, baseURL string) SCIMUser {
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -816,6 +908,14 @@ func userRowToSCIM(row db.ListSCIMUsersRow, baseURL string) SCIMUser {
 			ResourceType: "User",
 			Location:     baseURL + "/Users/" + row.ID,
 		},
+	}
+
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
 	}
 
 	if row.CreatedAt.Valid {
@@ -835,7 +935,7 @@ func findUserRowToSCIM(row db.FindSCIMUserByEmailRow, baseURL string) SCIMUser {
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -847,6 +947,14 @@ func findUserRowToSCIM(row db.FindSCIMUserByEmailRow, baseURL string) SCIMUser {
 			ResourceType: "User",
 			Location:     baseURL + "/Users/" + row.ID,
 		},
+	}
+
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
 	}
 
 	if row.CreatedAt.Valid {
@@ -866,7 +974,7 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 		ID:         row.ID,
 		ExternalID: row.ScimExternalID,
 		UserName:   row.Email,
-		Active:     !row.Disabled,
+		Active:     boolPtr(!row.Disabled),
 		Emails: []SCIMEmail{
 			{
 				Value:   row.Email,
@@ -880,6 +988,14 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 		},
 	}
 
+	if row.DisplayName != "" || row.GivenName != "" || row.FamilyName != "" {
+		su.Name = &SCIMName{
+			Formatted:  row.DisplayName,
+			GivenName:  row.GivenName,
+			FamilyName: row.FamilyName,
+		}
+	}
+
 	if row.CreatedAt.Valid {
 		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
 	}
@@ -890,9 +1006,24 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 	return su
 }
 
-// syncUserFromSCIM syncs email, active status, and identity link data from SCIM.
+// safeNameField extracts a specific name field from a SCIMName.
+func safeNameField(name *SCIMName, field string) string {
+	if name == nil {
+		return ""
+	}
+	switch field {
+	case "given":
+		return name.GivenName
+	case "family":
+		return name.FamilyName
+	default:
+		return ""
+	}
+}
+
+// syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
 // SCIM is treated as the source of truth — any differences are overwritten.
-func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active bool, name *SCIMName) {
+func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProvidersProjection, userID, email string, active *bool, name *SCIMName) {
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to get user for SCIM sync", "user_id", userID, "error", err)
@@ -911,8 +1042,9 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		})
 	}
 
-	// Sync active status
-	if !active && !user.Disabled {
+	// Sync active status (nil = not provided, default to true per SCIM RFC 7643)
+	isActive := active == nil || *active
+	if !isActive && !user.Disabled {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -921,7 +1053,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
-	} else if active && user.Disabled {
+	} else if isActive && user.Disabled {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -929,6 +1061,25 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
+		})
+	}
+
+	// Sync profile fields (display_name, given_name, family_name)
+	newDisplayName := formatExternalName(name)
+	newGivenName := safeNameField(name, "given")
+	newFamilyName := safeNameField(name, "family")
+	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+		h.appendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  "UserProfileUpdated",
+			Data: map[string]any{
+				"display_name": newDisplayName,
+				"given_name":   newGivenName,
+				"family_name":  newFamilyName,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
 		})
 	}
 

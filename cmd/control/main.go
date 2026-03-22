@@ -3,7 +3,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -14,19 +14,26 @@ import (
 	"syscall"
 	"time"
 
+	"strconv"
+
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/scim"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // version is set at build time via -ldflags.
@@ -50,12 +57,28 @@ type Config struct {
 	SSOCallbackBaseURL           string
 	SCIMBaseURL                  string
 	TrustedProxies               []string
+	CATrustBundlePath            string
+
+	// Public listener TLS (optional — plain HTTP/1.1 when disabled)
+	TLSEnabled bool
+	TLSCert    string
+	TLSKey     string
+
+	// Internal mTLS listener (InternalService for gateway communication)
+	InternalListenAddr string
+	InternalTLSCert    string
+	InternalTLSKey     string
+
+	// Valkey (Asynq task queue)
+	ValkeyAddr     string
+	ValkeyPassword string
+	ValkeyDB       int
 }
 
 func main() {
 	cfg := parseFlags()
 
-	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
+	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
@@ -97,20 +120,24 @@ func main() {
 		logger.Error("failed to initialize CA", "error", err)
 		os.Exit(1)
 	}
+	if cfg.CATrustBundlePath != "" {
+		bundlePEM, err := os.ReadFile(cfg.CATrustBundlePath)
+		if err != nil {
+			logger.Error("failed to read CA trust bundle", "error", err, "path", cfg.CATrustBundlePath)
+			os.Exit(1)
+		}
+		if err := certAuth.SetTrustBundle(bundlePEM); err != nil {
+			logger.Error("failed to load CA trust bundle", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("CA trust bundle loaded", "path", cfg.CATrustBundlePath)
+	}
 	logger.Info("CA initialized", "validity", cfg.CertValidity)
 
 	// Initialize JWT manager
 	jwtManager := auth.NewJWTManager(auth.JWTConfig{
 		Secret: []byte(cfg.JWTSecret),
 	})
-
-	// Start control handler (PostgreSQL LISTEN notification processor)
-	controlHandler := control.NewHandler(st, logger)
-	go func() {
-		if err := controlHandler.Run(ctx); err != nil && ctx.Err() == nil {
-			logger.Error("control handler error", "error", err)
-		}
-	}()
 
 	// Start periodic cleanup of expired revoked tokens
 	go func() {
@@ -146,11 +173,28 @@ func main() {
 		}
 	}
 
+	evaluateDynamicUserGroups := func() {
+		for {
+			count, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
+			if err != nil {
+				logger.Error("failed to evaluate queued dynamic user groups", "error", err)
+				return
+			}
+			if count > 0 {
+				logger.Info("evaluated queued dynamic user groups", "count", count)
+			}
+			if count < 100 {
+				return // queue is drained
+			}
+		}
+	}
+
 	if cfg.DynamicGroupEvalInterval > 0 {
 		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
 		go func() {
 			// Run immediately on startup to process any groups queued during downtime
 			evaluateDynamicGroups()
+			evaluateDynamicUserGroups()
 
 			ticker := time.NewTicker(cfg.DynamicGroupEvalInterval)
 			defer ticker.Stop()
@@ -158,6 +202,7 @@ func main() {
 				select {
 				case <-ticker.C:
 					evaluateDynamicGroups()
+					evaluateDynamicUserGroups()
 				case <-ctx.Done():
 					return
 				}
@@ -166,6 +211,58 @@ func main() {
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
+
+	// Start periodic expiry of stale executions (pending/dispatched too long)
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				stale, err := st.Queries().ListStaleExecutions(ctx)
+				if err != nil {
+					logger.Error("failed to list stale executions", "error", err)
+					continue
+				}
+				for _, exec := range stale {
+					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
+					if err := st.AppendEvent(ctx, store.Event{
+						StreamType: "execution",
+						StreamID:   exec.ID,
+						EventType:  "ExecutionTimedOut",
+						Data: map[string]any{
+							"error":        errMsg,
+							"completed_at": time.Now().Format(time.RFC3339Nano),
+						},
+						ActorType: "system",
+						ActorID:   "expiry",
+					}); err != nil {
+						logger.Error("failed to expire stale execution", "error", err, "execution_id", exec.ID)
+					} else {
+						logger.Info("expired stale execution", "execution_id", exec.ID, "status", exec.Status, "device_id", exec.DeviceID)
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Start periodic cleanup of stale OSQuery results
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
+					logger.Error("failed to cleanup old osquery results", "error", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Initialize secret encryptor
 	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
@@ -182,22 +279,138 @@ func main() {
 
 	// Setup Connect-RPC service
 	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
-		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
-		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
-		SCIMBaseURL:         cfg.SCIMBaseURL,
+		PasswordAuthEnabled:       cfg.PasswordAuthEnabled,
+		SSOCallbackBaseURL:        cfg.SSOCallbackBaseURL,
+		SCIMBaseURL:               cfg.SCIMBaseURL,
 	})
+
+	// Seed SSH access for all from env var (one-time: only sets if DB value is still false)
+	if v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL"); v == "true" || v == "1" {
+		settings, err := st.Queries().GetServerSettings(ctx)
+		if err == nil && !settings.SshAccessForAll {
+			if err := st.AppendEvent(ctx, store.Event{
+				StreamType: "server_settings",
+				StreamID:   "global",
+				EventType:  "ServerSettingUpdated",
+				Data: map[string]any{
+					"user_provisioning_enabled": settings.UserProvisioningEnabled,
+					"ssh_access_for_all":        true,
+				},
+				ActorType: "system",
+				ActorID:   "system",
+			}); err != nil {
+				logger.Error("failed to seed SSH access for all from env var", "error", err)
+			} else {
+				logger.Info("seeded SSH access for all from CONTROL_SSH_ACCESS_FOR_ALL env var")
+			}
+		}
+	}
+
+	// Sync system actions for all users at startup (idempotent)
+	if svc.SystemActions() != nil {
+		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
+			logger.Error("failed to sync system actions at startup", "error", err)
+		}
+	}
 	// Configure trusted proxies for X-Forwarded-For header validation
 	if len(cfg.TrustedProxies) > 0 {
 		auth.SetTrustedProxies(cfg.TrustedProxies)
 		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
 	}
 
-	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
-	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
-	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
+	// Initialize Asynq task queue (Valkey) if configured
+	if cfg.ValkeyAddr != "" {
+		aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
+		defer aqClient.Close()
+
+		// Propagate Asynq client to API handlers for dispatch
+		svc.SetTaskQueueClient(aqClient)
+
+		// Initialize go-redis client for RediSearch.
+		// Force RESP2 protocol: go-redis v9 auto-negotiates RESP3 with Redis 7+,
+		// but RediSearch returns FT.SEARCH results in a different format under
+		// RESP3 (map vs array), which breaks our result parser.
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     cfg.ValkeyAddr,
+			Password: cfg.ValkeyPassword,
+			DB:       cfg.ValkeyDB,
+			Protocol: 2,
+		})
+		defer rdb.Close()
+
+		// Initialize search index (RediSearch backed).
+		// The indexer binary handles warm/rebuild/reconciliation and search task processing.
+		// The control server only enqueues search tasks and runs FT.SEARCH queries.
+		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
+		svc.SetSearchIndex(searchIdx)
+
+		// Index audit events on insertion — the hook fires after every AppendEvent
+		// and enqueues the persisted row directly (no DB lookup in the search worker).
+		st.OnEventAppended = func(ctx context.Context, ev store.PersistedEvent) {
+			id := ulid.ULID(ev.ID.Bytes).String()
+			if err := searchIdx.EnqueueReindex(ctx, search.ScopeAuditEvent, id, &taskqueue.SearchEntityData{
+				EventType:  ev.EventType,
+				StreamType: ev.StreamType,
+				ActorType:  ev.ActorType,
+				ActorID:    ev.ActorID,
+				StreamID:   ev.StreamID,
+				OccurredAt: ev.OccurredAt.Time.Unix(),
+			}); err != nil {
+				logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
+			}
+		}
+
+		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
+		if err := searchIdx.EnsureIndexes(context.Background()); err != nil {
+			logger.Warn("failed to ensure search indexes", "error", err)
+		}
+
+		// Build Asynq mux with inbox worker only (search worker runs in indexer binary)
+		inboxWorker := control.NewInboxWorker(st, aqClient, logger.With("component", "inbox_worker"))
+		mux := inboxWorker.NewMux()
+
+		// Start Asynq server consuming control:inbox queue only
+		aqLogger := logger.With("component", "asynq_server")
+		aqServer := asynq.NewServer(
+			asynq.RedisClientOpt{
+				Addr:     cfg.ValkeyAddr,
+				Password: cfg.ValkeyPassword,
+				DB:       cfg.ValkeyDB,
+			},
+			asynq.Config{
+				Concurrency: 10,
+				Queues: map[string]int{
+					taskqueue.ControlInboxQueue: 2,
+				},
+				Logger: newAsynqLogger(aqLogger),
+				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+					retried, _ := asynq.GetRetryCount(ctx)
+					maxRetry, _ := asynq.GetMaxRetry(ctx)
+					aqLogger.Error("task handler failed",
+						"task_type", task.Type(),
+						"error", err,
+						"retry", retried,
+						"max_retry", maxRetry,
+					)
+				}),
+			},
+		)
+		if err := aqServer.Start(mux); err != nil {
+			logger.Error("failed to start Asynq server", "error", err)
+			os.Exit(1)
+		}
+		defer aqServer.Shutdown()
+
+		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr, "search_enabled", true)
+	}
+
+	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	registerLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 
 	interceptors := connect.WithInterceptors(
-		auth.NewAuthInterceptor(jwtManager, loginLimiter, refreshLimiter, registerLimiter),
+		api.NewLoggingInterceptor(logger),
+		auth.NewAuthInterceptor(logger, jwtManager, loginLimiter, refreshLimiter, registerLimiter),
 		auth.NewAuthzInterceptor(),
 	)
 
@@ -218,18 +431,93 @@ func main() {
 
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
-	securedHandler := securityHeadersMiddleware(corsHandler)
+	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
-		Addr:    cfg.ListenAddr,
-		Handler: h2c.NewHandler(securedHandler, &http2.Server{}),
+		Addr:              cfg.ListenAddr,
+		Handler:           securedHandler,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start server
+	// Configure TLS for public listener if enabled
+	if cfg.TLSEnabled {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			logger.Error("failed to load public TLS certificate", "error", err)
+			os.Exit(1)
+		}
+		server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+			logger.Error("failed to configure HTTP/2 for public server", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// Mount InternalService on a separate mTLS-protected listener.
+	// The gateway presents its CA-signed certificate as a client cert.
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
+
+	internalMux := http.NewServeMux()
+	internalMux.Handle(internalPath, internalH)
+	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	internalTLSCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+	if err != nil {
+		logger.Error("failed to load internal TLS certificate", "error", err, "cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey)
+		os.Exit(1)
+	}
+
+	internalCAPool := certAuth.TrustPool()
+
+	internalTLSConfig := &tls.Config{
+		Certificates: []tls.Certificate{internalTLSCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    internalCAPool,
+		MinVersion:   tls.VersionTLS13,
+	}
+
+	internalServer := &http.Server{
+		Addr:              cfg.InternalListenAddr,
+		Handler:           internalMux,
+		TLSConfig:         internalTLSConfig,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := http2.ConfigureServer(internalServer, &http2.Server{}); err != nil {
+		logger.Error("failed to configure HTTP/2 for internal server", "error", err)
+		os.Exit(1)
+	}
+
+	// Start public server
 	go func() {
-		logger.Info("control server listening", "addr", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err)
+		if cfg.TLSEnabled {
+			logger.Info("control server listening (TLS)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
+		} else {
+			logger.Info("control server listening (plain HTTP)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
+		}
+	}()
+
+	// Start internal mTLS server
+	go func() {
+		logger.Info("internal mTLS server listening", "addr", cfg.InternalListenAddr)
+		if err := internalServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			logger.Error("internal server error", "error", err)
 			cancel()
 		}
 	}()
@@ -243,6 +531,9 @@ func main() {
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("failed to shutdown server", "error", err)
+	}
+	if err := internalServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("failed to shutdown internal server", "error", err)
 	}
 
 	logger.Info("control server stopped")
@@ -263,6 +554,13 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
+	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
+	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
+	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
+	flag.StringVar(&cfg.TLSKey, "tls-key", "", "TLS private key for public listener")
+	flag.StringVar(&cfg.InternalListenAddr, "internal-listen", ":8082", "Internal mTLS listen address for gateway communication")
+	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
+	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
 
 	flag.Parse()
 
@@ -281,6 +579,27 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_CA_KEY"); v != "" {
 		cfg.CAKeyPath = v
+	}
+	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
+		cfg.CATrustBundlePath = v
+	}
+	if v := os.Getenv("CONTROL_TLS_ENABLED"); v == "true" || v == "1" {
+		cfg.TLSEnabled = true
+	}
+	if v := os.Getenv("CONTROL_TLS_CERT"); v != "" {
+		cfg.TLSCert = v
+	}
+	if v := os.Getenv("CONTROL_TLS_KEY"); v != "" {
+		cfg.TLSKey = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
+		cfg.InternalListenAddr = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_TLS_CERT"); v != "" {
+		cfg.InternalTLSCert = v
+	}
+	if v := os.Getenv("CONTROL_INTERNAL_TLS_KEY"); v != "" {
+		cfg.InternalTLSKey = v
 	}
 	if v := os.Getenv("CONTROL_ADMIN_EMAIL"); v != "" {
 		cfg.AdminEmail = v
@@ -332,6 +651,19 @@ func parseFlags() *Config {
 		cfg.TrustedProxies = proxies
 	}
 
+	// Valkey (Asynq task queue) configuration
+	if v := os.Getenv("CONTROL_VALKEY_ADDR"); v != "" {
+		cfg.ValkeyAddr = v
+	}
+	if v := os.Getenv("CONTROL_VALKEY_PASSWORD"); v != "" {
+		cfg.ValkeyPassword = v
+	}
+	if v := os.Getenv("CONTROL_VALKEY_DB"); v != "" {
+		if db, err := strconv.Atoi(v); err == nil {
+			cfg.ValkeyDB = db
+		}
+	}
+
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
 	if cfg.DynamicGroupEvalInterval != 0 {
 		if cfg.DynamicGroupEvalInterval < 30*time.Minute {
@@ -350,32 +682,12 @@ func parseFlags() *Config {
 		os.Exit(1)
 	}
 
+	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
+		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert and -tls-key are required when TLS is enabled")
+		os.Exit(1)
+	}
+
 	return cfg
-}
-
-func setupLogger(level, format string) *slog.Logger {
-	var logLevel slog.Level
-	switch level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: logLevel}
-
-	var handler slog.Handler
-	if format == "json" {
-		handler = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stderr, opts)
-	}
-
-	return slog.New(handler)
 }
 
 func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
@@ -392,8 +704,7 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 		return fmt.Errorf("hash password: %w", err)
 	}
 
-	entropy := ulid.Monotonic(rand.Reader, 0)
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	id := ulid.Make().String()
 
 	// Append UserCreated event - the trigger will handle projection
 	err = st.AppendEvent(ctx, store.Event{
@@ -432,21 +743,6 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	logger.Info("admin user created", "email", email, "id", id)
 	return nil
-}
-
-// securityHeadersMiddleware adds standard security headers to all responses.
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.
@@ -501,6 +797,21 @@ func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Hand
 		})
 	}
 }
+
+// asynqLogger adapts slog.Logger to asynq.Logger interface.
+type asynqLogger struct {
+	logger *slog.Logger
+}
+
+func newAsynqLogger(l *slog.Logger) *asynqLogger {
+	return &asynqLogger{logger: l}
+}
+
+func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
+func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
+func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
+func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
+func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
 
 // maskDatabaseURL masks the password in a database URL for logging.
 func maskDatabaseURL(url string) string {

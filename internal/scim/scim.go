@@ -3,6 +3,7 @@ package scim
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 )
@@ -56,9 +57,20 @@ type SCIMUser struct {
 	UserName   string      `json:"userName"`
 	Name       *SCIMName   `json:"name,omitempty"`
 	Emails     []SCIMEmail `json:"emails,omitempty"`
-	Active     bool        `json:"active"`
+	Active     *bool       `json:"active,omitempty"`
 	Meta       *SCIMMeta   `json:"meta,omitempty"`
 }
+
+// IsActive returns the active status, defaulting to true per SCIM RFC 7643
+// when the field is omitted from the JSON payload.
+func (u SCIMUser) IsActive() bool {
+	if u.Active == nil {
+		return true
+	}
+	return *u.Active
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // SCIMName represents the name component of a SCIM user.
 type SCIMName struct {
@@ -116,7 +128,9 @@ type SCIMPatchRequest struct {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", scimContentType)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("failed to encode SCIM JSON response", "error", err)
+	}
 }
 
 // writeError writes a SCIM-formatted error response.

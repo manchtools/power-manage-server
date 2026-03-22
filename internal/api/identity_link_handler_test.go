@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -17,7 +18,7 @@ import (
 func TestListIdentityLinks_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -45,7 +46,7 @@ func TestListIdentityLinks_Success(t *testing.T) {
 
 func TestListIdentityLinks_Empty(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -64,7 +65,7 @@ func TestListIdentityLinks_Empty(t *testing.T) {
 func TestUnlinkIdentity_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -92,7 +93,7 @@ func TestUnlinkIdentity_Success(t *testing.T) {
 func TestUnlinkIdentity_NotOwned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	// Create two users
 	email1 := testutil.NewID() + "@test.com"
@@ -119,7 +120,7 @@ func TestUnlinkIdentity_NotOwned(t *testing.T) {
 
 func TestUnlinkIdentity_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -140,7 +141,7 @@ func TestUnlinkIdentity_NotFound(t *testing.T) {
 func TestUnlinkIdentity_LastAuthMethod(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIdentityLinkHandler(st)
+	h := api.NewIdentityLinkHandler(st, slog.Default())
 
 	// Create SSO-only user (no password)
 	email := testutil.NewID() + "@test.com"

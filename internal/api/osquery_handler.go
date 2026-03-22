@@ -3,26 +3,38 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const osqueryResultTimeout = 5 * time.Minute
+
 // OSQueryHandler handles OSQuery dispatch, result polling, and device inventory RPCs.
 type OSQueryHandler struct {
-	store *store.Store
+	store    *store.Store
+	aqClient *taskqueue.Client
+	logger   *slog.Logger
 }
 
 // NewOSQueryHandler creates a new OSQuery handler.
-func NewOSQueryHandler(st *store.Store) *OSQueryHandler {
-	return &OSQueryHandler{store: st}
+func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
+	return &OSQueryHandler{store: st, logger: logger}
+}
+
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *OSQueryHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
 }
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
@@ -34,7 +46,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		ID: msg.DeviceId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("device not found"))
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Generate query ID
@@ -52,33 +64,30 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		DeviceID:  msg.DeviceId,
 		TableName: tableName,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create query result: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
-	// Build notification payload
-	payload := map[string]interface{}{
-		"type":     "osquery_dispatch",
-		"query_id": queryID,
-		"table":    msg.Table,
-	}
-	if msg.RawSql != "" {
-		payload["raw_sql"] = msg.RawSql
-	}
-	if len(msg.Columns) > 0 {
-		payload["columns"] = msg.Columns
-	}
-	if msg.Limit > 0 {
-		payload["limit"] = msg.Limit
-	}
-
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to marshal notification: %w", err))
-	}
-
-	// Notify agent via pg_notify
-	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payloadJSON)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+	// Dispatch osquery to device via Asynq task queue.
+	// Limit retries and set a deadline so queries to offline devices fail quickly
+	// rather than sitting in the queue indefinitely.
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
+			QueryID: queryID,
+			Table:   msg.Table,
+			Columns: msg.Columns,
+			Limit:   msg.Limit,
+			RawSQL:  msg.RawSql,
+		},
+			asynq.MaxRetry(3),
+			asynq.Deadline(time.Now().Add(2*time.Minute)),
+		); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch osquery")
+		}
+		h.logger.Info("osquery dispatched to device",
+			"query_id", queryID,
+			"device_id", msg.DeviceId,
+			"table", tableName,
+		)
 	}
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
@@ -90,7 +99,21 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Request[pm.GetOSQueryResultRequest]) (*connect.Response[pm.GetOSQueryResultResponse], error) {
 	result, err := h.store.Queries().GetOSQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("query result not found"))
+		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
+	}
+
+	// Auto-expire pending results that have been waiting too long
+	if !result.Completed && result.CreatedAt.Valid && time.Since(result.CreatedAt.Time) > osqueryResultTimeout {
+		timeoutErr := "query timed out: device did not respond within 5 minutes"
+		if err := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
+			QueryID: result.QueryID,
+			Error:   timeoutErr,
+		}); err != nil {
+			h.logger.Warn("failed to expire pending osquery result", "query_id", result.QueryID, "error", err)
+		}
+		result.Completed = true
+		result.Success = false
+		result.Error = timeoutErr
 	}
 
 	resp := &pm.GetOSQueryResultResponse{
@@ -129,7 +152,7 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 		rows, err = h.store.Queries().GetDeviceInventory(ctx, msg.DeviceId)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get inventory: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get inventory")
 	}
 
 	resp := &pm.GetDeviceInventoryResponse{}
@@ -162,15 +185,20 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 		ID: msg.DeviceId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("device not found"))
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
-	payload, _ := json.Marshal(map[string]string{
-		"type": "request_inventory",
-	})
-
-	if err := h.store.Notify(ctx, "agent_"+msg.DeviceId, string(payload)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+	// Dispatch inventory request to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
+			asynq.MaxRetry(3),
+			asynq.Deadline(time.Now().Add(2*time.Minute)),
+		); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
+		}
+		h.logger.Info("inventory refresh dispatched to device",
+			"device_id", msg.DeviceId,
+		)
 	}
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil

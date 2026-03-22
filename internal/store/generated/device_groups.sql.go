@@ -7,6 +7,8 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countDeviceGroups = `-- name: CountDeviceGroups :one
@@ -168,26 +170,42 @@ func (q *Queries) GetDynamicGroupsNeedingEvaluation(ctx context.Context, limit i
 
 const listDeviceGroupMembers = `-- name: ListDeviceGroupMembers :many
 
-SELECT group_id, device_id, added_at, projection_version FROM device_group_members_projection
-WHERE group_id = $1
-ORDER BY added_at ASC
+SELECT m.group_id, m.device_id, m.added_at, m.projection_version,
+       d.hostname, d.agent_version, d.last_seen_at
+FROM device_group_members_projection m
+JOIN devices_projection d ON d.id = m.device_id AND d.is_deleted = FALSE
+WHERE m.group_id = $1
+ORDER BY m.added_at ASC
 `
 
+type ListDeviceGroupMembersRow struct {
+	GroupID           string             `json:"group_id"`
+	DeviceID          string             `json:"device_id"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+	Hostname          string             `json:"hostname"`
+	AgentVersion      string             `json:"agent_version"`
+	LastSeenAt        pgtype.Timestamptz `json:"last_seen_at"`
+}
+
 // Device Group Members queries
-func (q *Queries) ListDeviceGroupMembers(ctx context.Context, groupID string) ([]DeviceGroupMembersProjection, error) {
+func (q *Queries) ListDeviceGroupMembers(ctx context.Context, groupID string) ([]ListDeviceGroupMembersRow, error) {
 	rows, err := q.db.Query(ctx, listDeviceGroupMembers, groupID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DeviceGroupMembersProjection{}
+	items := []ListDeviceGroupMembersRow{}
 	for rows.Next() {
-		var i DeviceGroupMembersProjection
+		var i ListDeviceGroupMembersRow
 		if err := rows.Scan(
 			&i.GroupID,
 			&i.DeviceID,
 			&i.AddedAt,
 			&i.ProjectionVersion,
+			&i.Hostname,
+			&i.AgentVersion,
+			&i.LastSeenAt,
 		); err != nil {
 			return nil, err
 		}
@@ -244,7 +262,7 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 }
 
 const listDevicesInGroup = `-- name: ListDevicesInGroup :many
-SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.assigned_user_id, d.sync_interval_minutes FROM devices_projection d
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
 JOIN device_group_members_projection m ON d.id = m.device_id
 WHERE m.group_id = $1 AND d.is_deleted = FALSE
 ORDER BY d.hostname ASC
@@ -271,8 +289,11 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
-			&i.AssignedUserID,
 			&i.SyncIntervalMinutes,
+			&i.ComplianceStatus,
+			&i.ComplianceCheckedAt,
+			&i.ComplianceTotal,
+			&i.CompliancePassing,
 		); err != nil {
 			return nil, err
 		}

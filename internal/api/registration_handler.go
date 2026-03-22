@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -24,7 +23,6 @@ type RegistrationHandler struct {
 	ca         *ca.CA
 	gatewayURL string
 	logger     *slog.Logger
-	entropy    *ulid.MonotonicEntropy
 }
 
 // NewRegistrationHandler creates a new registration handler.
@@ -34,7 +32,6 @@ func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string,
 		ca:         certAuth,
 		gatewayURL: gatewayURL,
 		logger:     logger,
-		entropy:    ulid.Monotonic(rand.Reader, 0),
 	}
 }
 
@@ -46,7 +43,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 
 	// Validate CSR is present
 	if len(req.Msg.Csr) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("CSR is required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "CSR is required")
 	}
 
 	// Hash the token and look it up
@@ -57,38 +54,38 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			logger.Warn("invalid registration token")
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("invalid registration token"))
+			return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "invalid registration token")
 		}
 		logger.Error("failed to look up token", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to validate token"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate token")
 	}
 
 	// Check if token is disabled
 	if token.Disabled {
 		logger.Warn("token is disabled")
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("registration token is disabled"))
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token is disabled")
 	}
 
 	// Check if token is expired
 	if token.ExpiresAt.Valid && time.Now().After(token.ExpiresAt.Time) {
 		logger.Warn("token is expired")
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("registration token has expired"))
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has expired")
 	}
 
 	// Check max uses for reusable tokens
 	if !token.OneTime && token.MaxUses > 0 && token.CurrentUses >= token.MaxUses {
 		logger.Warn("token max uses reached")
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("registration token has reached max uses"))
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has reached max uses")
 	}
 
 	// Generate device ID
-	deviceID := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	deviceID := ulid.Make().String()
 
 	// Sign the CSR (private key stays on agent)
 	cert, err := h.ca.IssueCertificateFromCSR(deviceID, req.Msg.Csr)
 	if err != nil {
 		logger.Error("failed to sign CSR", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to issue certificate"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to issue certificate")
 	}
 
 	// Build event data for device registration
@@ -118,7 +115,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		ActorID:    "registration",
 	}); err != nil {
 		logger.Error("failed to append device registered event", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to register device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to register device")
 	}
 
 	// Emit token used event
@@ -137,7 +134,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		ActorID:   "registration",
 	}); err != nil {
 		logger.Error("failed to append token event", "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to consume registration token"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume registration token")
 	}
 
 	logger.Info("device registered successfully", "device_id", deviceID)

@@ -1,6 +1,11 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"errors"
+
+	"connectrpc.com/connect"
+)
 
 type contextKey string
 
@@ -58,6 +63,26 @@ func HasPermission(ctx context.Context, perm string) bool {
 		}
 	}
 	return false
+}
+
+// EnforceSelfScope checks whether the caller has the unrestricted permission
+// or only the :self scoped variant. When only :self is present, it verifies
+// that resourceID matches the caller's ID.
+func EnforceSelfScope(ctx context.Context, action, resourceID string) error {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if HasPermission(ctx, action) {
+		return nil
+	}
+	if HasPermission(ctx, action+":self") {
+		if resourceID == user.ID {
+			return nil
+		}
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 }
 
 // SubjectFromContext returns the subject ID from context.

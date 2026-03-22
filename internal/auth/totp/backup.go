@@ -12,8 +12,8 @@ import (
 const (
 	// BackupCodeCount is the number of backup codes generated.
 	BackupCodeCount = 10
-	// BackupCodeLength is the byte length of each backup code (8 hex chars).
-	BackupCodeLength = 4
+	// BackupCodeLength is the byte length of each backup code (16 hex chars = 64 bits).
+	BackupCodeLength = 8
 	bcryptCost       = 12
 )
 

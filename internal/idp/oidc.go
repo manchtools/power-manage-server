@@ -104,10 +104,15 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 
 // UserClaims holds the extracted claims from an OIDC id_token or userinfo.
 type UserClaims struct {
-	Subject string
-	Email   string
-	Name    string
-	Groups  []string
+	Subject          string
+	Email            string
+	Name             string
+	GivenName        string
+	FamilyName       string
+	PreferredUsername string
+	Picture          string
+	Locale           string
+	Groups           []string
 }
 
 // VerifyAndExtractClaims verifies the id_token and extracts claims.
@@ -140,6 +145,21 @@ func (p *OIDCProvider) VerifyAndExtractClaims(ctx context.Context, oauth2Token *
 	}
 	if name, ok := claims["name"].(string); ok {
 		userClaims.Name = name
+	}
+	if v, ok := claims["given_name"].(string); ok {
+		userClaims.GivenName = v
+	}
+	if v, ok := claims["family_name"].(string); ok {
+		userClaims.FamilyName = v
+	}
+	if v, ok := claims["preferred_username"].(string); ok {
+		userClaims.PreferredUsername = v
+	}
+	if v, ok := claims["picture"].(string); ok {
+		userClaims.Picture = v
+	}
+	if v, ok := claims["locale"].(string); ok {
+		userClaims.Locale = v
 	}
 
 	// Extract groups from the configured claim

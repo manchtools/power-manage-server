@@ -3,6 +3,7 @@ package connection
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -102,13 +103,12 @@ func (m *Manager) Get(deviceID string) (*Agent, bool) {
 
 // UpdateLastSeen updates the last seen timestamp for an agent.
 func (m *Manager) UpdateLastSeen(deviceID string) {
-	m.mu.RLock()
+	m.mu.Lock()
 	agent, ok := m.agents[deviceID]
-	m.mu.RUnlock()
-
 	if ok {
 		agent.LastSeen = time.Now()
 	}
+	m.mu.Unlock()
 }
 
 // Send sends a message to a specific agent.
@@ -134,7 +134,9 @@ func (m *Manager) Broadcast(msg *pm.ServerMessage) {
 	m.mu.RUnlock()
 
 	for _, agent := range agents {
-		_ = agent.Send(msg) // Ignore errors for broadcast
+		if err := agent.Send(msg); err != nil {
+			slog.Warn("broadcast send failed", "device_id", agent.DeviceID, "error", err)
+		}
 	}
 }
 

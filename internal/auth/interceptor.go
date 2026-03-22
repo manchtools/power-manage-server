@@ -3,10 +3,22 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 
 	"connectrpc.com/connect"
+
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/middleware"
+)
+
+// Error code constants for structured error details.
+const (
+	errRateLimited      = "rate_limited"
+	errNotAuthenticated = "not_authenticated"
+	errTokenExpired     = "token_expired"
+	errPermissionDenied = "permission_denied"
 )
 
 // PublicProcedures are procedures that don't require authentication.
@@ -14,11 +26,12 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/Login":           true,
 	"/pm.v1.ControlService/RefreshToken":    true,
 	"/pm.v1.ControlService/Logout":          true,
-	"/pm.v1.ControlService/Register":        true,
+	"/pm.v1.ControlService/Register":         true,
+	"/pm.v1.ControlService/RenewCertificate": true,
 	"/pm.v1.ControlService/VerifyLoginTOTP": true,
 	"/pm.v1.ControlService/ListAuthMethods": true,
 	"/pm.v1.ControlService/GetSSOLoginURL":  true,
-	"/pm.v1.ControlService/SSOCallback":     true,
+	"/pm.v1.ControlService/SSOCallback":             true,
 }
 
 // TrustedProxies is the set of IP addresses/CIDRs trusted to set
@@ -102,6 +115,7 @@ func clientIP(req connect.AnyRequest) string {
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.
 type AuthInterceptor struct {
+	logger          *slog.Logger
 	jwtManager      *JWTManager
 	loginLimiter    *RateLimiter
 	refreshLimiter  *RateLimiter
@@ -109,8 +123,8 @@ type AuthInterceptor struct {
 }
 
 // NewAuthInterceptor creates a new authentication interceptor.
-func NewAuthInterceptor(jwtManager *JWTManager, loginLimiter, refreshLimiter, registerLimiter *RateLimiter) *AuthInterceptor {
-	return &AuthInterceptor{jwtManager: jwtManager, loginLimiter: loginLimiter, refreshLimiter: refreshLimiter, registerLimiter: registerLimiter}
+func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, loginLimiter, refreshLimiter, registerLimiter *RateLimiter) *AuthInterceptor {
+	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, loginLimiter: loginLimiter, refreshLimiter: refreshLimiter, registerLimiter: registerLimiter}
 }
 
 // WrapUnary implements connect.Interceptor.
@@ -122,7 +136,8 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.loginLimiter != nil {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
-				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many login attempts, try again later"))
+				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
 			}
 		}
 
@@ -130,7 +145,8 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if procedure == "/pm.v1.ControlService/RefreshToken" && i.refreshLimiter != nil {
 			ip := clientIP(req)
 			if !i.refreshLimiter.Allow(ip) {
-				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many refresh attempts, try again later"))
+				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
 			}
 		}
 
@@ -138,7 +154,8 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		if procedure == "/pm.v1.ControlService/Register" && i.registerLimiter != nil {
 			ip := clientIP(req)
 			if !i.registerLimiter.Allow(ip) {
-				return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("too many registration attempts, try again later"))
+				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
 			}
 		}
 
@@ -150,21 +167,21 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// Extract token from Authorization: Bearer header
 		authHeader := req.Header().Get("Authorization")
 		if authHeader == "" {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing authentication credentials"))
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid authorization header format"))
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
 		}
 		tokenString := parts[1]
 		if tokenString == "" {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("missing authentication credentials"))
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 
 		// Validate token
 		claims, err := i.jwtManager.ValidateToken(tokenString, TokenTypeAccess)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired token"))
+			return nil, authErrorCtx(ctx,errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
 		}
 
 		// Add user context with permissions from JWT
@@ -186,8 +203,12 @@ func (i *AuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 }
 
 // WrapStreamingHandler implements connect.Interceptor.
+// Rejects streaming RPCs with Unauthenticated — the control server does not use streaming RPCs.
+// If streaming is ever needed, this must be updated with proper auth logic.
 func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
+	}
 }
 
 // AuthzInterceptor provides Connect-RPC authorization interceptor.
@@ -221,7 +242,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 				Action:    action,
 			}
 			if !Authorize(input) {
-				return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+				return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 			}
 			return next(ctx, req)
 		}
@@ -229,7 +250,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 		}
 
 		input := AuthzInput{
@@ -239,7 +260,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 
 		if !Authorize(input) {
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+			return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
 
 		return next(ctx, req)
@@ -252,6 +273,20 @@ func (i *AuthzInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 }
 
 // WrapStreamingHandler implements connect.Interceptor.
+// Rejects streaming RPCs — the control server does not use streaming RPCs.
 func (i *AuthzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
+	}
+}
+
+// authErrorCtx creates a connect.Error with a structured ErrorDetail containing the error code
+// and the request ID from context for client-side correlation.
+func authErrorCtx(ctx context.Context, code string, connectCode connect.Code, msg string) *connect.Error {
+	e := connect.NewError(connectCode, errors.New(msg))
+	detail := &pm.ErrorDetail{Code: code, RequestId: middleware.RequestIDFromContext(ctx)}
+	if d, err := connect.NewErrorDetail(detail); err == nil {
+		e.AddDetail(d)
+	}
+	return e
 }

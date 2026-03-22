@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	sdkvalidate "github.com/manchtools/power-manage/sdk/go/validate"
 )
 
 type validStruct struct {
@@ -19,7 +22,7 @@ type optionalStruct struct {
 }
 
 func TestValidate_ValidStruct(t *testing.T) {
-	err := Validate(validStruct{
+	err := Validate(context.Background(), validStruct{
 		Name:  "Alice",
 		Email: "alice@example.com",
 		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -28,7 +31,7 @@ func TestValidate_ValidStruct(t *testing.T) {
 }
 
 func TestValidate_MissingRequired(t *testing.T) {
-	err := Validate(validStruct{})
+	err := Validate(context.Background(), validStruct{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "name is required")
@@ -36,7 +39,7 @@ func TestValidate_MissingRequired(t *testing.T) {
 }
 
 func TestValidate_InvalidEmail(t *testing.T) {
-	err := Validate(validStruct{
+	err := Validate(context.Background(), validStruct{
 		Name:  "Alice",
 		Email: "not-an-email",
 		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -46,7 +49,7 @@ func TestValidate_InvalidEmail(t *testing.T) {
 }
 
 func TestValidate_InvalidULID(t *testing.T) {
-	err := Validate(validStruct{
+	err := Validate(context.Background(), validStruct{
 		Name:  "Alice",
 		Email: "alice@example.com",
 		ID:    "not-a-ulid",
@@ -56,7 +59,7 @@ func TestValidate_InvalidULID(t *testing.T) {
 }
 
 func TestValidate_ValidULID(t *testing.T) {
-	err := Validate(validStruct{
+	err := Validate(context.Background(), validStruct{
 		Name:  "Alice",
 		Email: "alice@example.com",
 		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -65,7 +68,7 @@ func TestValidate_ValidULID(t *testing.T) {
 }
 
 func TestValidate_TooShort(t *testing.T) {
-	err := Validate(validStruct{
+	err := Validate(context.Background(), validStruct{
 		Name:  "A",
 		Email: "alice@example.com",
 		ID:    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -75,12 +78,12 @@ func TestValidate_TooShort(t *testing.T) {
 }
 
 func TestValidate_Optional_Empty(t *testing.T) {
-	err := Validate(optionalStruct{Name: ""})
+	err := Validate(context.Background(), optionalStruct{Name: ""})
 	assert.NoError(t, err)
 }
 
 func TestValidate_Optional_TooShort(t *testing.T) {
-	err := Validate(optionalStruct{Name: "A"})
+	err := Validate(context.Background(), optionalStruct{Name: "A"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "name must be at least 2 characters")
 }
@@ -95,6 +98,6 @@ func TestToSnakeCase(t *testing.T) {
 		"HTTPStatusCode":  "h_t_t_p_status_code",
 	}
 	for input, expected := range tests {
-		assert.Equal(t, expected, toSnakeCase(input), "toSnakeCase(%q)", input)
+		assert.Equal(t, expected, sdkvalidate.ToSnakeCase(input), "ToSnakeCase(%q)", input)
 	}
 }

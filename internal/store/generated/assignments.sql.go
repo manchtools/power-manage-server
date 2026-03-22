@@ -105,7 +105,7 @@ const listAssignedActionsForDevice = `-- name: ListAssignedActionsForDevice :man
 WITH assigned_actions AS (
   -- Direct action assignments (no hierarchy, use assignment sort_order only)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -119,7 +119,7 @@ WITH assigned_actions AS (
 
   -- Action assignments via device group
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -134,7 +134,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -149,7 +149,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -165,7 +165,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -181,7 +181,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -190,6 +190,39 @@ WITH assigned_actions AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (direct to device)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (via device group)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
@@ -264,13 +297,26 @@ func (q *Queries) ListAssignedActionsForDevice(ctx context.Context, targetID str
 }
 
 const listAssignments = `-- name: ListAssignments :many
-SELECT id, source_type, source_id, target_type, target_id, sort_order, mode, created_at, created_by, is_deleted, projection_version FROM assignments_projection
-WHERE is_deleted = FALSE
-  AND ($1::TEXT = '' OR source_type = $1)
-  AND ($2::TEXT = '' OR source_id = $2)
-  AND ($3::TEXT = '' OR target_type = $3)
-  AND ($4::TEXT = '' OR target_id = $4)
-ORDER BY created_at DESC
+SELECT a.id, a.source_type, a.source_id, a.target_type, a.target_id, a.sort_order, a.mode, a.created_at, a.created_by, a.is_deleted, a.projection_version,
+  COALESCE(CASE a.source_type
+    WHEN 'action' THEN (SELECT name FROM actions_projection WHERE id = a.source_id)
+    WHEN 'action_set' THEN (SELECT name FROM action_sets_projection WHERE id = a.source_id)
+    WHEN 'definition' THEN (SELECT name FROM definitions_projection WHERE id = a.source_id)
+    WHEN 'compliance_policy' THEN (SELECT name FROM compliance_policies_projection WHERE id = a.source_id)
+  END, '')::TEXT AS source_name,
+  COALESCE(CASE a.target_type
+    WHEN 'device' THEN (SELECT hostname FROM devices_projection WHERE id = a.target_id)
+    WHEN 'device_group' THEN (SELECT name FROM device_groups_projection WHERE id = a.target_id)
+    WHEN 'user' THEN (SELECT email FROM users_projection WHERE id = a.target_id)
+    WHEN 'user_group' THEN (SELECT name FROM user_groups_projection WHERE id = a.target_id)
+  END, '')::TEXT AS target_name
+FROM assignments_projection a
+WHERE a.is_deleted = FALSE
+  AND ($1::TEXT = '' OR a.source_type = $1)
+  AND ($2::TEXT = '' OR a.source_id = $2)
+  AND ($3::TEXT = '' OR a.target_type = $3)
+  AND ($4::TEXT = '' OR a.target_id = $4)
+ORDER BY a.created_at DESC
 LIMIT $5 OFFSET $6
 `
 
@@ -283,7 +329,23 @@ type ListAssignmentsParams struct {
 	Offset  int32  `json:"offset"`
 }
 
-func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams) ([]AssignmentsProjection, error) {
+type ListAssignmentsRow struct {
+	ID                string             `json:"id"`
+	SourceType        string             `json:"source_type"`
+	SourceID          string             `json:"source_id"`
+	TargetType        string             `json:"target_type"`
+	TargetID          string             `json:"target_id"`
+	SortOrder         int32              `json:"sort_order"`
+	Mode              int32              `json:"mode"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+	SourceName        string             `json:"source_name"`
+	TargetName        string             `json:"target_name"`
+}
+
+func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams) ([]ListAssignmentsRow, error) {
 	rows, err := q.db.Query(ctx, listAssignments,
 		arg.Column1,
 		arg.Column2,
@@ -296,9 +358,9 @@ func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AssignmentsProjection{}
+	items := []ListAssignmentsRow{}
 	for rows.Next() {
-		var i AssignmentsProjection
+		var i ListAssignmentsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SourceType,
@@ -311,6 +373,8 @@ func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams
 			&i.CreatedBy,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.SourceName,
+			&i.TargetName,
 		); err != nil {
 			return nil, err
 		}
@@ -507,6 +571,27 @@ WITH dev_assignments AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, 0 AS mode, 4 AS source_priority
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, 0 AS mode, 4 AS source_priority
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
@@ -757,6 +842,51 @@ WITH all_assignments AS (
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (direct to device, source_priority = 4)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    0 AS mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    4 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (via device group, source_priority = 4)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    0 AS mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    4 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 with_selections AS (
   SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
@@ -867,14 +997,17 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 }
 
 const listUserLayerResolvedActionsForDevice = `-- name: ListUserLayerResolvedActionsForDevice :many
-WITH device_owner AS (
-  SELECT d.assigned_user_id FROM devices_projection d
-  WHERE d.id = $1 AND d.is_deleted = FALSE AND d.assigned_user_id IS NOT NULL
+WITH device_owners AS (
+  SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
+  UNION
+  SELECT ugm.user_id FROM device_assigned_groups_projection dag
+  JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id
+  WHERE dag.device_id = $1
 ),
 owner_groups AS (
-  SELECT ugm.group_id FROM user_group_members_projection ugm
+  SELECT DISTINCT ugm.group_id FROM user_group_members_projection ugm
   JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
-  WHERE ugm.user_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE ugm.user_id IN (SELECT user_id FROM device_owners)
 ),
 all_assignments AS (
   -- Direct action → user (source_priority = 1)
@@ -892,7 +1025,7 @@ all_assignments AS (
     0 as action_sort
   FROM actions_projection a
   JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -933,7 +1066,7 @@ all_assignments AS (
   FROM actions_projection a
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -976,7 +1109,7 @@ all_assignments AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -1066,10 +1199,10 @@ type ListUserLayerResolvedActionsForDeviceRow struct {
 }
 
 // Get all resolved actions from user/user_group layer for a device.
-// Looks up the device's assigned_user_id, then finds assignments targeting
-// that user or any of the user's groups. Same resolution logic as device layer.
-func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]ListUserLayerResolvedActionsForDeviceRow, error) {
-	rows, err := q.db.Query(ctx, listUserLayerResolvedActionsForDevice, id)
+// Looks up all users assigned to the device (directly or via user groups),
+// then finds assignments targeting those users or any of their groups.
+func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, deviceID string) ([]ListUserLayerResolvedActionsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listUserLayerResolvedActionsForDevice, deviceID)
 	if err != nil {
 		return nil, err
 	}

@@ -11,7 +11,9 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // ControlService implements the ControlService Connect-RPC service.
@@ -30,44 +32,84 @@ type ControlService struct {
 	userSelection *UserSelectionHandler
 	audit         *AuditHandler
 	osquery       *OSQueryHandler
+	logs          *LogsHandler
 	role          *RoleHandler
 	userGroup     *UserGroupHandler
 	idp           *IDPHandler
 	sso           *SSOHandler
 	identityLink  *IdentityLinkHandler
+	compliance       *ComplianceHandler
+	compliancePolicy *CompliancePolicyHandler
+	certificate      *CertificateHandler
+	search           *SearchHandler
+	settings         *SettingsHandler
+	systemActions    *SystemActionManager
 }
 
 // ControlServiceConfig holds configuration for the control service.
 type ControlServiceConfig struct {
-	PasswordAuthEnabled bool
-	SSOCallbackBaseURL  string
-	SCIMBaseURL         string
+	PasswordAuthEnabled       bool
+	SSOCallbackBaseURL        string
+	SCIMBaseURL               string
 }
 
 // NewControlService creates a new control service.
 func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
-	actionHandler := NewActionHandler(st, signer)
+	actionHandler := NewActionHandler(st, logger.With("component", "action_handler"), signer)
+	systemActions := NewSystemActionManager(st, signer, logger)
+	settingsHandler := NewSettingsHandler(st, logger, systemActions)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
-		auth:          NewAuthHandler(st, jwtManager),
-		totp:          NewTOTPHandler(st, jwtManager, enc, ""),
-		user:          NewUserHandler(st),
-		device:        NewDeviceHandler(st, enc),
-		token:         NewTokenHandler(st),
+		auth:          NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager),
+		totp:          NewTOTPHandler(st, logger.With("component", "totp_handler"), jwtManager, enc, ""),
+		user:          NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
+		device:        NewDeviceHandler(st, enc, logger.With("component", "device_handler")),
+		token:         NewTokenHandler(st, logger.With("component", "token_handler")),
 		action:        actionHandler,
-		actionSet:     NewActionSetHandler(st),
-		definition:    NewDefinitionHandler(st),
-		deviceGroup:   NewDeviceGroupHandler(st),
-		assignment:    NewAssignmentHandler(st, actionHandler),
-		userSelection: NewUserSelectionHandler(st),
-		audit:         NewAuditHandler(st),
-		osquery:       NewOSQueryHandler(st),
-		role:          NewRoleHandler(st),
-		userGroup:     NewUserGroupHandler(st),
-		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
-		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
-		identityLink:  NewIdentityLinkHandler(st),
+		actionSet:     NewActionSetHandler(st, logger.With("component", "action_set_handler")),
+		definition:    NewDefinitionHandler(st, logger.With("component", "definition_handler")),
+		deviceGroup:   NewDeviceGroupHandler(st, logger.With("component", "device_group_handler")),
+		assignment:    NewAssignmentHandler(st, logger.With("component", "assignment_handler"), actionHandler),
+		userSelection: NewUserSelectionHandler(st, logger.With("component", "user_selection_handler")),
+		audit:         NewAuditHandler(st, logger.With("component", "audit_handler")),
+		osquery:       NewOSQueryHandler(st, logger.With("component", "osquery_handler")),
+		logs:          NewLogsHandler(st, logger.With("component", "logs_handler")),
+		role:          NewRoleHandler(st, logger.With("component", "role_handler")),
+		userGroup:     NewUserGroupHandler(st, logger.With("component", "user_group_handler")),
+		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL, logger.With("component", "idp_handler")),
+		sso:           NewSSOHandler(st, logger.With("component", "sso_handler"), jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
+		identityLink:  NewIdentityLinkHandler(st, logger.With("component", "identity_link_handler")),
+		compliance:       NewComplianceHandler(st, logger.With("component", "compliance_handler")),
+		compliancePolicy: NewCompliancePolicyHandler(st, logger.With("component", "compliance_policy_handler")),
+		certificate:      NewCertificateHandler(st, certAuth, logger),
+		search:           NewSearchHandler(logger.With("component", "search_handler")),
+		settings:         settingsHandler,
+		systemActions:    systemActions,
 	}
+}
+
+// SystemActions returns the system action manager for startup sync.
+func (s *ControlService) SystemActions() *SystemActionManager {
+	return s.systemActions
+}
+
+// SetTaskQueueClient propagates the Asynq client to all sub-handlers that
+// dispatch messages to agents. This enables dual-write during migration.
+func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
+	s.action.SetTaskQueueClient(c)
+	s.osquery.SetTaskQueueClient(c)
+	s.logs.SetTaskQueueClient(c)
+	s.device.SetTaskQueueClient(c)
+}
+
+// SetSearchIndex propagates the search index to all sub-handlers that
+// enqueue search index updates after mutations.
+func (s *ControlService) SetSearchIndex(idx *search.Index) {
+	s.search.SetSearchIndex(idx)
+	s.action.SetSearchIndex(idx)
+	s.actionSet.SetSearchIndex(idx)
+	s.definition.SetSearchIndex(idx)
+	s.compliancePolicy.SetSearchIndex(idx)
 }
 
 var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)
@@ -75,6 +117,11 @@ var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)
 // Agent Registration
 func (s *ControlService) Register(ctx context.Context, req *connect.Request[pm.RegisterRequest]) (*connect.Response[pm.RegisterResponse], error) {
 	return s.registration.Register(ctx, req)
+}
+
+// Certificate Renewal
+func (s *ControlService) RenewCertificate(ctx context.Context, req *connect.Request[pm.RenewCertificateRequest]) (*connect.Response[pm.RenewCertificateResponse], error) {
+	return s.certificate.RenewCertificate(ctx, req)
 }
 
 // Authentication
@@ -111,6 +158,10 @@ func (s *ControlService) DisableTOTP(ctx context.Context, req *connect.Request[p
 	return s.totp.DisableTOTP(ctx, req)
 }
 
+func (s *ControlService) AdminDisableUserTOTP(ctx context.Context, req *connect.Request[pm.AdminDisableUserTOTPRequest]) (*connect.Response[pm.AdminDisableUserTOTPResponse], error) {
+	return s.totp.AdminDisableUserTOTP(ctx, req)
+}
+
 func (s *ControlService) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
 	return s.totp.GetTOTPStatus(ctx, req)
 }
@@ -144,8 +195,28 @@ func (s *ControlService) SetUserDisabled(ctx context.Context, req *connect.Reque
 	return s.user.SetUserDisabled(ctx, req)
 }
 
+func (s *ControlService) UpdateUserProfile(ctx context.Context, req *connect.Request[pm.UpdateUserProfileRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserProfile(ctx, req)
+}
+
 func (s *ControlService) DeleteUser(ctx context.Context, req *connect.Request[pm.DeleteUserRequest]) (*connect.Response[pm.DeleteUserResponse], error) {
 	return s.user.DeleteUser(ctx, req)
+}
+
+func (s *ControlService) UpdateUserLinuxUsername(ctx context.Context, req *connect.Request[pm.UpdateUserLinuxUsernameRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserLinuxUsername(ctx, req)
+}
+
+func (s *ControlService) AddUserSshKey(ctx context.Context, req *connect.Request[pm.AddUserSshKeyRequest]) (*connect.Response[pm.AddUserSshKeyResponse], error) {
+	return s.user.AddUserSshKey(ctx, req)
+}
+
+func (s *ControlService) RemoveUserSshKey(ctx context.Context, req *connect.Request[pm.RemoveUserSshKeyRequest]) (*connect.Response[pm.RemoveUserSshKeyResponse], error) {
+	return s.user.RemoveUserSshKey(ctx, req)
+}
+
+func (s *ControlService) UpdateUserSshSettings(ctx context.Context, req *connect.Request[pm.UpdateUserSshSettingsRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.UpdateUserSshSettings(ctx, req)
 }
 
 // Devices
@@ -179,6 +250,10 @@ func (s *ControlService) UnassignDevice(ctx context.Context, req *connect.Reques
 
 func (s *ControlService) SetDeviceSyncInterval(ctx context.Context, req *connect.Request[pm.SetDeviceSyncIntervalRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
 	return s.device.SetDeviceSyncInterval(ctx, req)
+}
+
+func (s *ControlService) ListDeviceAssignees(ctx context.Context, req *connect.Request[pm.ListDeviceAssigneesRequest]) (*connect.Response[pm.ListDeviceAssigneesResponse], error) {
+	return s.device.ListDeviceAssignees(ctx, req)
 }
 
 // Registration Tokens
@@ -320,6 +395,10 @@ func (s *ControlService) GetDeviceGroup(ctx context.Context, req *connect.Reques
 
 func (s *ControlService) ListDeviceGroups(ctx context.Context, req *connect.Request[pm.ListDeviceGroupsRequest]) (*connect.Response[pm.ListDeviceGroupsResponse], error) {
 	return s.deviceGroup.ListDeviceGroups(ctx, req)
+}
+
+func (s *ControlService) ListDeviceGroupsForDevice(ctx context.Context, req *connect.Request[pm.ListDeviceGroupsForDeviceRequest]) (*connect.Response[pm.ListDeviceGroupsForDeviceResponse], error) {
+	return s.deviceGroup.ListDeviceGroupsForDevice(ctx, req)
 }
 
 func (s *ControlService) RenameDeviceGroup(ctx context.Context, req *connect.Request[pm.RenameDeviceGroupRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
@@ -465,6 +544,15 @@ func (s *ControlService) RefreshDeviceInventory(ctx context.Context, req *connec
 	return s.osquery.RefreshDeviceInventory(ctx, req)
 }
 
+// Device Logs
+func (s *ControlService) QueryDeviceLogs(ctx context.Context, req *connect.Request[pm.QueryDeviceLogsRequest]) (*connect.Response[pm.QueryDeviceLogsResponse], error) {
+	return s.logs.QueryDeviceLogs(ctx, req)
+}
+
+func (s *ControlService) GetDeviceLogResult(ctx context.Context, req *connect.Request[pm.GetDeviceLogResultRequest]) (*connect.Response[pm.GetDeviceLogResultResponse], error) {
+	return s.logs.GetDeviceLogResult(ctx, req)
+}
+
 // Roles & Permissions
 func (s *ControlService) CreateRole(ctx context.Context, req *connect.Request[pm.CreateRoleRequest]) (*connect.Response[pm.CreateRoleResponse], error) {
 	return s.role.CreateRole(ctx, req)
@@ -539,6 +627,18 @@ func (s *ControlService) ListUserGroupsForUser(ctx context.Context, req *connect
 	return s.userGroup.ListUserGroupsForUser(ctx, req)
 }
 
+func (s *ControlService) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
+	return s.userGroup.UpdateUserGroupQuery(ctx, req)
+}
+
+func (s *ControlService) ValidateUserGroupQuery(ctx context.Context, req *connect.Request[pm.ValidateUserGroupQueryRequest]) (*connect.Response[pm.ValidateUserGroupQueryResponse], error) {
+	return s.userGroup.ValidateUserGroupQuery(ctx, req)
+}
+
+func (s *ControlService) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
+	return s.userGroup.EvaluateDynamicUserGroup(ctx, req)
+}
+
 // Identity Providers
 func (s *ControlService) CreateIdentityProvider(ctx context.Context, req *connect.Request[pm.CreateIdentityProviderRequest]) (*connect.Response[pm.CreateIdentityProviderResponse], error) {
 	return s.idp.CreateIdentityProvider(ctx, req)
@@ -593,4 +693,73 @@ func (s *ControlService) DisableSCIM(ctx context.Context, req *connect.Request[p
 
 func (s *ControlService) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
 	return s.idp.RotateSCIMToken(ctx, req)
+}
+
+// Device Compliance
+func (s *ControlService) GetDeviceCompliance(ctx context.Context, req *connect.Request[pm.GetDeviceComplianceRequest]) (*connect.Response[pm.GetDeviceComplianceResponse], error) {
+	return s.compliance.GetDeviceCompliance(ctx, req)
+}
+
+// Compliance Policies
+func (s *ControlService) CreateCompliancePolicy(ctx context.Context, req *connect.Request[pm.CreateCompliancePolicyRequest]) (*connect.Response[pm.CreateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.CreateCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) GetCompliancePolicy(ctx context.Context, req *connect.Request[pm.GetCompliancePolicyRequest]) (*connect.Response[pm.GetCompliancePolicyResponse], error) {
+	return s.compliancePolicy.GetCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) ListCompliancePolicies(ctx context.Context, req *connect.Request[pm.ListCompliancePoliciesRequest]) (*connect.Response[pm.ListCompliancePoliciesResponse], error) {
+	return s.compliancePolicy.ListCompliancePolicies(ctx, req)
+}
+
+func (s *ControlService) RenameCompliancePolicy(ctx context.Context, req *connect.Request[pm.RenameCompliancePolicyRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.RenameCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) UpdateCompliancePolicyDescription(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyDescriptionRequest]) (*connect.Response[pm.UpdateCompliancePolicyResponse], error) {
+	return s.compliancePolicy.UpdateCompliancePolicyDescription(ctx, req)
+}
+
+func (s *ControlService) DeleteCompliancePolicy(ctx context.Context, req *connect.Request[pm.DeleteCompliancePolicyRequest]) (*connect.Response[pm.DeleteCompliancePolicyResponse], error) {
+	return s.compliancePolicy.DeleteCompliancePolicy(ctx, req)
+}
+
+func (s *ControlService) AddCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.AddCompliancePolicyRuleRequest]) (*connect.Response[pm.AddCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.AddCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) RemoveCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.RemoveCompliancePolicyRuleRequest]) (*connect.Response[pm.RemoveCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.RemoveCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) UpdateCompliancePolicyRule(ctx context.Context, req *connect.Request[pm.UpdateCompliancePolicyRuleRequest]) (*connect.Response[pm.UpdateCompliancePolicyRuleResponse], error) {
+	return s.compliancePolicy.UpdateCompliancePolicyRule(ctx, req)
+}
+
+func (s *ControlService) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pm.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pm.GetDeviceCompliancePolicyStatusResponse], error) {
+	return s.compliancePolicy.GetDeviceCompliancePolicyStatus(ctx, req)
+}
+
+// Search
+func (s *ControlService) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
+	return s.search.Search(ctx, req)
+}
+
+func (s *ControlService) RebuildSearchIndex(ctx context.Context, req *connect.Request[pm.RebuildSearchIndexRequest]) (*connect.Response[pm.RebuildSearchIndexResponse], error) {
+	return s.search.RebuildSearchIndex(ctx, req)
+}
+
+// Server Settings
+func (s *ControlService) GetServerSettings(ctx context.Context, req *connect.Request[pm.GetServerSettingsRequest]) (*connect.Response[pm.GetServerSettingsResponse], error) {
+	return s.settings.GetServerSettings(ctx, req)
+}
+
+func (s *ControlService) UpdateServerSettings(ctx context.Context, req *connect.Request[pm.UpdateServerSettingsRequest]) (*connect.Response[pm.UpdateServerSettingsResponse], error) {
+	return s.settings.UpdateServerSettings(ctx, req)
+}
+
+// User Provisioning Per-User
+func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *connect.Request[pm.SetUserProvisioningEnabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
+	return s.user.SetUserProvisioningEnabled(ctx, req)
 }

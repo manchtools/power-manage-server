@@ -8,21 +8,24 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 
 - **Event Store**: All state changes are recorded as immutable events in PostgreSQL
 - **Projections**: Read models are automatically updated via database triggers
-- **LISTEN/NOTIFY**: Real-time notifications for UI updates and agent dispatching
+- **Asynq Task Queue**: Action dispatching and agent event processing via Valkey-backed task queues
+- **InternalService**: Connect-RPC service for gateway to proxy credential-bearing operations
 
 ```
 ┌─────────────────────┐     ┌─────────────────────┐
 │   Control Server    │───▶│     PostgreSQL      │
 │  (Connect-RPC API)  │     │   - events table    │
-└─────────────────────┘     │   - projections     │
-         │                  │   - triggers        │
-         │                  └─────────────────────┘
-         │                           │
-         ▼                           ▼
+│  (InternalService)  │     │   - projections     │
+└─────────┬───────────┘     │   - triggers        │
+          │                 └─────────────────────┘
+          │
+          ▼
 ┌─────────────────────┐     ┌─────────────────────┐
-│   UI / CLI Client   │     │   pg_notify()       │
-│   (JWT Auth)        │     │   → Gateway         │
-└─────────────────────┘     │   → UI WebSocket    │
+│   UI / CLI Client   │     │      Valkey         │
+│   (JWT Auth)        │     │   - device:* queues │
+└─────────────────────┘     │   - control:inbox   │
+                            │   - search indexes  │
+                            │   → Gateway dispatch│
                             └─────────────────────┘
 ```
 
@@ -44,6 +47,7 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 | `-admin-email` | (optional) | Initial admin user email |
 | `-admin-password` | (optional) | Initial admin user password |
 | `-dynamic-group-eval-interval` | `1h` | Interval for evaluating queued dynamic groups (min 30m, max 8h, 0 to disable) |
+| `-ca-trust-bundle` | (optional) | PEM file with trusted CA certificates for verification (supports CA rotation) |
 
 ### Environment Variables
 
@@ -61,7 +65,11 @@ Environment variables override command-line flags:
 | `CONTROL_ADMIN_PASSWORD` | Initial admin user password |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
+| `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
 | `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
+| `CONTROL_VALKEY_ADDR` | Valkey/Redis address for Asynq task queue (e.g., `localhost:6379`) |
+| `CONTROL_VALKEY_PASSWORD` | Valkey/Redis password |
+| `CONTROL_VALKEY_DB` | Valkey/Redis database number (default: `0`) |
 
 ## Setup
 
@@ -115,7 +123,7 @@ The Control Server exposes a Connect-RPC API that can be consumed using:
 
 ### Authentication
 
-All endpoints except `Login` and `Register` require a JWT Bearer token:
+All endpoints except `Login`, `Register`, and `RenewCertificate` require a JWT Bearer token:
 
 ```bash
 # Login to get a token
@@ -140,6 +148,7 @@ curl http://localhost:8081/pm.v1.ControlService/ListUsers \
 | `RefreshToken` | Exchange refresh token for new access token |
 | `GetCurrentUser` | Get the currently authenticated user |
 | `Register` | Register an agent device (token-based, no JWT required) |
+| `RenewCertificate` | Renew an agent's mTLS certificate (presents current cert + new CSR, no JWT required). Returns the active CA certificate so agents can update their trust store during CA rotation. |
 
 #### Users
 
@@ -269,6 +278,32 @@ Reusable action templates that can be dispatched to devices.
 | `ListIdentityLinks` | List own linked external identities | `ListIdentityLinks` |
 | `UnlinkIdentity` | Remove a linked identity | `UnlinkIdentity` |
 
+#### Search
+
+Server-side full-text search across actions, action sets, and definitions using Valkey RediSearch. The search index is populated from PostgreSQL on startup and incrementally updated via Asynq workers after every mutation. A periodic reconciliation rebuild runs hourly.
+
+**Minimum query length is 2 characters** — single-character queries return no results (RediSearch `MINPREFIX 2`).
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `Search` | Full-text prefix search with optional scope (`actions`, `action_sets`, `definitions`, or empty for all) and pagination | `Search` |
+| `RebuildSearchIndex` | Force a full rebuild of the search index from PostgreSQL | `RebuildSearchIndex` |
+
+#### Compliance Policies
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `CreateCompliancePolicy` | Create a compliance evaluation policy | `CreateCompliancePolicy` |
+| `GetCompliancePolicy` | View a compliance policy with rules | `GetCompliancePolicy` |
+| `ListCompliancePolicies` | List compliance policies | `ListCompliancePolicies` |
+| `RenameCompliancePolicy` | Rename a compliance policy | `RenameCompliancePolicy` |
+| `UpdateCompliancePolicyDescription` | Update policy description | `UpdateCompliancePolicyDescription` |
+| `DeleteCompliancePolicy` | Delete a compliance policy | `DeleteCompliancePolicy` |
+| `AddCompliancePolicyRule` | Add compliance script rule with grace period | `AddCompliancePolicyRule` |
+| `RemoveCompliancePolicyRule` | Remove a rule from a policy | `RemoveCompliancePolicyRule` |
+| `UpdateCompliancePolicyRule` | Update rule grace period | `UpdateCompliancePolicyRule` |
+| `GetDeviceCompliancePolicyStatus` | Per-policy compliance status for a device | `GetDeviceCompliancePolicyStatus` |
+
 #### SCIM v2 Provisioning (REST, not Connect-RPC)
 
 SCIM endpoints are mounted at `/scim/v2/{provider-slug}/` and use Bearer token authentication (not JWT). They follow the SCIM v2 RFC 7643/7644 specification.
@@ -319,11 +354,13 @@ curl -X POST http://localhost:8081/pm.v1.ControlService/DispatchAction \
 
 ## Dynamic Device Groups
 
-Device groups can be configured with dynamic membership rules. Instead of manually adding devices to a group, you can define a query that automatically includes devices matching certain label criteria.
+Device groups can be configured with dynamic membership rules. Instead of manually adding devices to a group, you can define a query that automatically includes devices matching certain criteria.
 
 ### Query Language
 
-The dynamic group query language uses a verbose, human-readable syntax similar to Microsoft's dynamic group rules. Queries evaluate device labels to determine membership.
+The dynamic group query language uses a verbose, human-readable syntax similar to Microsoft's dynamic group rules. Queries evaluate device labels and inventory properties to determine membership.
+
+**Data availability:** `device.labels.*` and `device.hostname` are available immediately after registration. Inventory properties (`device.os`, `device.os_version`, `device.os_arch`, `device.cpu_*`, `device.memory_total`, `device.kernel`) require the agent to have connected and sent its first inventory report via OSQuery. Devices without inventory data will not match queries using those fields.
 
 #### Basic Syntax
 
@@ -375,6 +412,21 @@ Use parentheses to group conditions and control evaluation order:
 ```
 
 ### Examples
+
+**All devices (empty query):**
+
+An empty query matches every device. This is useful for creating an "All Devices" group:
+
+```bash
+curl -X POST http://localhost:8081/pm.v1.ControlService/CreateDeviceGroup \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "All Devices",
+    "is_dynamic": true,
+    "dynamic_query": ""
+  }'
+```
 
 **All production servers:**
 ```
@@ -463,6 +515,7 @@ curl -X POST http://localhost:8081/pm.v1.ControlService/UpdateDeviceGroupQuery \
 - **Periodic evaluation**: Queued groups are evaluated at the configured interval (default: 1 hour, configurable via `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL`)
 - **Manual members ignored**: Dynamic groups ignore manual add/remove member operations
 - **Converting groups**: You can convert a static group to dynamic (and vice versa) using `UpdateDeviceGroupQuery`
+- **Empty query = all devices**: A dynamic group with an empty query automatically includes every registered device
 - **Query validation**: Invalid queries are rejected at creation/update time with descriptive error messages
 
 ## Event Sourcing
@@ -472,7 +525,7 @@ All state changes are stored as immutable events in the `events` table:
 | Stream Type | Events |
 |-------------|--------|
 | `user` | UserCreated, UserEmailChanged, UserPasswordChanged, UserDisabled, UserEnabled, UserLoggedIn, UserDeleted, UserTOTPEnabled, UserTOTPDisabled, UserBackupCodesRegenerated, IdentityLinked, IdentityUnlinked |
-| `device` | DeviceRegistered, DeviceHeartbeat, DeviceLabelSet, DeviceLabelRemoved, DeviceAssigned, DeviceUnassigned, DeviceDeleted |
+| `device` | DeviceRegistered, DeviceHeartbeat, DeviceLabelSet, DeviceLabelRemoved, DeviceAssigned, DeviceUnassigned, DeviceDeleted, DeviceCertRenewed |
 | `token` | TokenCreated, TokenRenamed, TokenDisabled, TokenEnabled, TokenUsed, TokenDeleted |
 | `definition` | DefinitionCreated, DefinitionRenamed, DefinitionDescriptionUpdated, DefinitionDeleted |
 | `execution` | ExecutionCreated, ExecutionDispatched, ExecutionStarted, ExecutionCompleted, ExecutionFailed, ExecutionTimedOut |
@@ -481,6 +534,8 @@ All state changes are stored as immutable events in the `events` table:
 | `user_group` | UserGroupCreated, UserGroupUpdated, UserGroupDeleted, UserGroupMemberAdded, UserGroupMemberRemoved, RoleAssignedToUserGroup, RoleRevokedFromUserGroup |
 | `identity_provider` | IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled, IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated |
 | `scim_group_mapping` | SCIMGroupMapped, SCIMGroupUnmapped, SCIMGroupMappingUpdated |
+| `compliance` | ComplianceResultUpdated, ComplianceResultRemoved |
+| `compliance_policy` | CompliancePolicyCreated, CompliancePolicyRenamed, CompliancePolicyDescriptionUpdated, CompliancePolicyDeleted, CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved, CompliancePolicyRuleUpdated |
 
 ### Querying Event History
 
@@ -533,7 +588,7 @@ curl http://localhost:8081/health
 
 The Control Server uses **dynamic role-based access control** with:
 
-1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only).
+1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only). Scoped permissions are enforced at the handler level via `auth.EnforceSelfScope()`, which verifies the resource ID matches the caller's user ID.
 
 2. **User Groups** — Users can be organized into groups. Roles assigned to a group are inherited by all members. Permissions are additive — a user's effective permissions are the union of all directly assigned roles and group-inherited roles.
 
@@ -626,6 +681,25 @@ RLS is enabled on all projection tables:
 4. **Admin Credentials**: Change default admin credentials immediately
 5. **Network**: Consider running behind a reverse proxy with TLS termination
 6. **RLS**: The database enforces permissions even if application code is compromised
+
+## CA Rotation
+
+The Control Server supports CA certificate rotation without re-registering agents. This is done via a **trust bundle** approach:
+
+1. **Generate a new CA** certificate and key
+2. **Create a trust bundle** PEM file containing both the old and new CA certificates (concatenated)
+3. **Configure** the Control Server with `-ca-trust-bundle=/path/to/bundle.pem` (or `CONTROL_CA_TRUST_BUNDLE` env var)
+4. **Update** `-ca-cert` and `-ca-key` to point to the new CA certificate and key
+5. **Restart** the Control Server
+
+The server will:
+- **Sign new certificates** using the new CA (`-ca-cert`/`-ca-key`)
+- **Verify existing certificates** against all CAs in the trust bundle
+- **Return the active CA certificate** in `RenewCertificate` responses so agents automatically update their stored CA
+
+Agents pick up the new CA certificate during their regular certificate renewal cycle (at 80% of cert lifetime). Once all agents have renewed, the old CA can be removed from the trust bundle.
+
+The Gateway needs no code changes — configure its `-tls-ca` flag with the same trust bundle PEM file.
 
 ## Development
 

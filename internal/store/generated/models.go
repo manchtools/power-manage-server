@@ -25,6 +25,7 @@ type ActionSetsProjection struct {
 	CreatedBy         string             `json:"created_by"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type ActionsProjection struct {
@@ -41,6 +42,8 @@ type ActionsProjection struct {
 	Signature         []byte             `json:"signature"`
 	ParamsCanonical   []byte             `json:"params_canonical"`
 	DesiredState      int32              `json:"desired_state"`
+	IsSystem          bool               `json:"is_system"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
 type AssignmentsProjection struct {
@@ -67,6 +70,47 @@ type AuthState struct {
 	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
 }
 
+type CompliancePoliciesProjection struct {
+	ID                string             `json:"id"`
+	Name              string             `json:"name"`
+	Description       string             `json:"description"`
+	RuleCount         int32              `json:"rule_count"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	CreatedBy         string             `json:"created_by"`
+	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type CompliancePolicyEvaluationProjection struct {
+	DeviceID          string             `json:"device_id"`
+	PolicyID          string             `json:"policy_id"`
+	ActionID          string             `json:"action_id"`
+	Compliant         bool               `json:"compliant"`
+	FirstFailedAt     pgtype.Timestamptz `json:"first_failed_at"`
+	Status            int32              `json:"status"`
+	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type CompliancePolicyRulesProjection struct {
+	PolicyID          string             `json:"policy_id"`
+	ActionID          string             `json:"action_id"`
+	ActionName        string             `json:"action_name"`
+	GracePeriodHours  int32              `json:"grace_period_hours"`
+	AddedAt           pgtype.Timestamptz `json:"added_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type ComplianceResultsProjection struct {
+	DeviceID          string             `json:"device_id"`
+	ActionID          string             `json:"action_id"`
+	ActionName        string             `json:"action_name"`
+	Compliant         bool               `json:"compliant"`
+	DetectionOutput   []byte             `json:"detection_output"`
+	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
 type DefinitionMembersProjection struct {
 	DefinitionID      string             `json:"definition_id"`
 	ActionSetID       string             `json:"action_set_id"`
@@ -83,6 +127,23 @@ type DefinitionsProjection struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	CreatedBy         string             `json:"created_by"`
 	IsDeleted         bool               `json:"is_deleted"`
+	ProjectionVersion int64              `json:"projection_version"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type DeviceAssignedGroupsProjection struct {
+	DeviceID          string             `json:"device_id"`
+	GroupID           string             `json:"group_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
+	ProjectionVersion int64              `json:"projection_version"`
+}
+
+type DeviceAssignedUsersProjection struct {
+	DeviceID          string             `json:"device_id"`
+	UserID            string             `json:"user_id"`
+	AssignedAt        pgtype.Timestamptz `json:"assigned_at"`
+	AssignedBy        string             `json:"assigned_by"`
 	ProjectionVersion int64              `json:"projection_version"`
 }
 
@@ -126,11 +187,20 @@ type DevicesProjection struct {
 	Labels              []byte             `json:"labels"`
 	IsDeleted           bool               `json:"is_deleted"`
 	ProjectionVersion   int64              `json:"projection_version"`
-	AssignedUserID      *string            `json:"assigned_user_id"`
 	SyncIntervalMinutes int32              `json:"sync_interval_minutes"`
+	ComplianceStatus    int32              `json:"compliance_status"`
+	ComplianceCheckedAt pgtype.Timestamptz `json:"compliance_checked_at"`
+	ComplianceTotal     int32              `json:"compliance_total"`
+	CompliancePassing   int32              `json:"compliance_passing"`
 }
 
 type DynamicGroupEvaluationQueue struct {
+	GroupID  string             `json:"group_id"`
+	QueuedAt pgtype.Timestamptz `json:"queued_at"`
+	Reason   *string            `json:"reason"`
+}
+
+type DynamicUserGroupEvaluationQueue struct {
 	GroupID  string             `json:"group_id"`
 	QueuedAt pgtype.Timestamptz `json:"queued_at"`
 	Reason   *string            `json:"reason"`
@@ -170,6 +240,8 @@ type ExecutionsProjection struct {
 	CreatedByID       string             `json:"created_by_id"`
 	ProjectionVersion int64              `json:"projection_version"`
 	Changed           bool               `json:"changed"`
+	Compliant         bool               `json:"compliant"`
+	DetectionOutput   []byte             `json:"detection_output"`
 }
 
 type IdentityLinksProjection struct {
@@ -211,6 +283,17 @@ type IdentityProvidersProjection struct {
 	ProjectionVersion        int64              `json:"projection_version"`
 	ScimEnabled              bool               `json:"scim_enabled"`
 	ScimTokenHash            string             `json:"scim_token_hash"`
+}
+
+type LogQueryResult struct {
+	QueryID     string             `json:"query_id"`
+	DeviceID    string             `json:"device_id"`
+	Completed   bool               `json:"completed"`
+	Success     bool               `json:"success"`
+	Error       string             `json:"error"`
+	Logs        string             `json:"logs"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	CompletedAt pgtype.Timestamptz `json:"completed_at"`
 }
 
 type LpsPasswordsProjection struct {
@@ -302,6 +385,14 @@ type ScimGroupMappingProjection struct {
 	ProjectionVersion int64              `json:"projection_version"`
 }
 
+type ServerSettingsProjection struct {
+	ID                      string             `json:"id"`
+	UserProvisioningEnabled bool               `json:"user_provisioning_enabled"`
+	SshAccessForAll         bool               `json:"ssh_access_for_all"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	ProjectionVersion       int64              `json:"projection_version"`
+}
+
 type TokensProjection struct {
 	ID                string             `json:"id"`
 	ValueHash         string             `json:"value_hash"`
@@ -356,6 +447,8 @@ type UserGroupsProjection struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	IsDeleted         bool               `json:"is_deleted"`
 	ProjectionVersion int64              `json:"projection_version"`
+	IsDynamic         bool               `json:"is_dynamic"`
+	DynamicQuery      *string            `json:"dynamic_query"`
 }
 
 type UserRolesProjection struct {
@@ -378,17 +471,32 @@ type UserSelectionsProjection struct {
 }
 
 type UsersProjection struct {
-	ID                string             `json:"id"`
-	Email             string             `json:"email"`
-	PasswordHash      *string            `json:"password_hash"`
-	Role              string             `json:"role"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
-	Disabled          bool               `json:"disabled"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	SessionVersion    int32              `json:"session_version"`
-	TotpEnabled       bool               `json:"totp_enabled"`
-	HasPassword       bool               `json:"has_password"`
+	ID                      string             `json:"id"`
+	Email                   string             `json:"email"`
+	PasswordHash            *string            `json:"password_hash"`
+	Role                    string             `json:"role"`
+	CreatedAt               pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
+	LastLoginAt             pgtype.Timestamptz `json:"last_login_at"`
+	Disabled                bool               `json:"disabled"`
+	IsDeleted               bool               `json:"is_deleted"`
+	ProjectionVersion       int64              `json:"projection_version"`
+	SessionVersion          int32              `json:"session_version"`
+	TotpEnabled             bool               `json:"totp_enabled"`
+	HasPassword             bool               `json:"has_password"`
+	DisplayName             string             `json:"display_name"`
+	GivenName               string             `json:"given_name"`
+	FamilyName              string             `json:"family_name"`
+	PreferredUsername       string             `json:"preferred_username"`
+	Picture                 string             `json:"picture"`
+	Locale                  string             `json:"locale"`
+	LinuxUsername           string             `json:"linux_username"`
+	LinuxUid                int32              `json:"linux_uid"`
+	SshPublicKeys           []byte             `json:"ssh_public_keys"`
+	SshAccessEnabled        bool               `json:"ssh_access_enabled"`
+	SshAllowPubkey          bool               `json:"ssh_allow_pubkey"`
+	SshAllowPassword        bool               `json:"ssh_allow_password"`
+	SystemUserActionID      string             `json:"system_user_action_id"`
+	SystemSshActionID       string             `json:"system_ssh_action_id"`
+	UserProvisioningEnabled bool               `json:"user_provisioning_enabled"`
 }

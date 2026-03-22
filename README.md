@@ -1,9 +1,9 @@
 # Power Manage Server
 
-The server side of Power Manage, providing the API, web UI, agent registration, and real-time agent communication. It consists of two binaries that share a PostgreSQL database:
+The server side of Power Manage, providing the API, web UI, agent registration, and real-time agent communication. It consists of two binaries:
 
-- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing)
-- **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time
+- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing), PostgreSQL event store
+- **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time (stateless, no database)
 
 ## Architecture
 
@@ -15,25 +15,27 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
                           │  - Connect-RPC API   │
                           │  - Agent registration │
                           │  - Certificate signing│
-                          └──────────┬───────────┘
-                                     │
-                                     ▼
-                          ┌──────────────────────┐
-                          │     PostgreSQL       │
-                          │                      │
-                          │  - Event store       │
-                          │  - Projections       │
-                          │  - LISTEN/NOTIFY     │
-                          └──────────┬───────────┘
-                                     │
-                                     ▼
+                          │  - InternalService   │
+                          └───┬──────────────┬───┘
+                              │              │
+                              ▼              ▼
+                   ┌──────────────┐  ┌──────────────┐
+                   │  PostgreSQL  │  │    Valkey     │
+                   │              │  │              │
+                   │ - Event store│  │ - Asynq tasks│
+                   │ - Projections│  │ - device:*   │
+                   └──────────────┘  │ - control:*  │
+                                     │ - search idx │
+                                     └──────┬───────┘
+                                            │
+                                            ▼
                           ┌──────────────────────┐
     Agents ──────────────▶│   Gateway Server     │
     (mTLS)                │   :8080              │
                           │                      │
                           │  - Streaming RPC     │
-                          │  - Action dispatch   │
-                          │  - Status collection │
+                          │  - Asynq workers     │
+                          │  - Connect-RPC proxy │
                           └──────────────────────┘
 ```
 
@@ -41,7 +43,7 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
 
 All state changes are recorded as immutable events in a single `events` table. PostgreSQL trigger functions project events into read-optimized `*_projection` tables automatically. Queries read from projections, never from the event store directly.
 
-Inter-service communication uses PostgreSQL `LISTEN/NOTIFY` — when the Control Server dispatches an action, the Gateway picks it up instantly and streams it to the connected agent.
+Inter-service communication uses **Asynq** (Valkey-backed task queue) — when the Control Server dispatches an action, it enqueues an Asynq task to the device's queue (`device:<id>`). The Gateway runs per-device Asynq workers that pick up tasks and stream them to connected agents. Agent responses flow back via the `control:inbox` queue. Credential-bearing operations (LUKS keys, LPS passwords) are proxied via Connect-RPC (`InternalService`) to avoid plaintext secrets in the queue.
 
 See the [Control Server README](cmd/control/) for details on the event model, API endpoints, and authorization policies.
 
@@ -50,22 +52,25 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | Package | Purpose |
 |---------|---------|
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, etc.) |
-| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management |
-| `internal/ca` | Internal CA for signing agent certificates and action payloads |
+| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management, self-scope enforcement |
+| `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
 | `internal/config` | Configuration loading |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
-| `internal/control` | Control Server background event processor |
-| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets) |
-| `internal/handler` | Gateway RPC handlers (agent streaming) |
+| `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
+| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys) |
+| `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
+| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
-| `internal/mtls` | mTLS setup, extracts device identity from client certificates |
+| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
-| `internal/store` | PostgreSQL event store, migrations, sqlc queries, LISTEN/NOTIFY |
+| `internal/store` | PostgreSQL event store, migrations, sqlc queries |
+| `internal/search` | Server-side search using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
+| `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
 
 ## API Reference
 
-The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 125 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
+The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
 
 ### Authentication (4 RPCs)
 
@@ -285,11 +290,41 @@ OIDC identity provider management for SSO authentication.
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
 
-### Registration (1 RPC)
+### Search (2 RPCs)
+
+Server-side full-text search across actions, action sets, and definitions. Backed by Valkey RediSearch (`FT.CREATE`/`FT.SEARCH`). The search index is built from PostgreSQL on startup and kept in sync via Asynq workers that process incremental updates after every mutation (create, rename, delete, member add/remove). A periodic reconciliation rebuild runs every hour to correct any drift.
+
+Search uses prefix matching — the query `"ngi"` matches `"nginx"`, `"engine"`, etc. **Minimum query length is 2 characters** (RediSearch default `MINPREFIX 2`). Single-character queries return no results.
+
+When `scope` is empty, results are returned from all three indexes (actions, action sets, definitions). When set to a specific scope, only that index is queried.
+
+| Method | Description | Permission |
+|--------|-------------|------------|
+| `Search` | Full-text search across actions, action sets, and definitions. Supports scoped queries and pagination. | `Search` |
+| `RebuildSearchIndex` | Force a full rebuild of the search index from PostgreSQL. Admin-only. | `RebuildSearchIndex` |
+
+### Compliance Policies (11 RPCs)
+
+| Method | Description |
+|--------|-------------|
+| `GetDeviceCompliance` | Returns compliance check results and overall status for a device. |
+| `CreateCompliancePolicy` | Create a named compliance policy. |
+| `GetCompliancePolicy` | Get a compliance policy by ID, including its rules. |
+| `ListCompliancePolicies` | Paginated list of compliance policies. |
+| `RenameCompliancePolicy` | Rename a compliance policy. |
+| `UpdateCompliancePolicyDescription` | Update a compliance policy's description. |
+| `DeleteCompliancePolicy` | Delete a compliance policy (soft delete). |
+| `AddCompliancePolicyRule` | Add a compliance script action as a rule with a grace period. |
+| `RemoveCompliancePolicyRule` | Remove a rule from a compliance policy. |
+| `UpdateCompliancePolicyRule` | Update the grace period of an existing rule. |
+| `GetDeviceCompliancePolicyStatus` | Get per-policy, per-rule compliance evaluation status for a device, including grace period state. |
+
+### Registration & Certificates (2 RPCs)
 
 | Method | Description |
 |--------|-------------|
 | `Register` | Agent registration. Validates token (hash, expiry, disabled, max uses), signs agent CSR to issue mTLS client certificate, generates device ID, auto-assigns to token owner. Returns device ID, CA cert, signed cert, gateway URL. |
+| `RenewCertificate` | Certificate renewal. Agent presents its current (still valid) certificate and a new CSR. Server verifies the certificate was issued by the CA, checks the fingerprint matches the database, signs the new CSR, and emits a `DeviceCertRenewed` event. No JWT required. |
 
 ### Gateway — Agent Service (2 RPCs)
 
@@ -344,7 +379,17 @@ JWT tokens stored in httpOnly cookies (`pm_access`, `pm_refresh`) as a fallback 
 
 ### mTLS (`internal/ca/`)
 
-Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
+Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
+
+Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by a trusted CA (from the trust bundle if configured), checks the fingerprint matches the database record (preventing use of revoked certificates), signs the new CSR, and returns the active CA certificate so agents can update their trust store during CA rotation.
+
+### Self-Scope Enforcement (`internal/auth/context.go`)
+
+RPCs with `:self` scoped permissions (e.g., `GetUser:self`, `UpdateUserEmail:self`) enforce that the resource ID matches the caller's user ID. The `auth.EnforceSelfScope()` helper is called in each affected handler after validation. Users with the unrestricted permission (e.g., `GetUser`) can access any resource.
+
+### HTTP Server Hardening
+
+The Control Server sets `IdleTimeout` (120s) and `ReadHeaderTimeout` (10s) on the HTTP server to prevent connection exhaustion attacks.
 
 ## Database
 
@@ -367,7 +412,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.2.0" -o gateway ./cm
 
 ## Running Locally
 
-Requires a running PostgreSQL instance. See the [self-hosting guide](../docs/self-hosting.md) for Docker/Podman Compose deployment.
+Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](../docs/self-hosting.md) for Docker/Podman Compose deployment.
 
 ```bash
 # Control server
@@ -379,10 +424,11 @@ Requires a running PostgreSQL instance. See the [self-hosting guide](../docs/sel
   -ca-key=certs/ca.key \
   -gateway-url=http://localhost:8080
 
-# Gateway server
-./gateway \
-  -addr=:8080 \
-  -db="postgres://user:pass@localhost:5432/powermanage?sslmode=disable"
+# Gateway server (no database required, connects to Valkey and Control)
+export VALKEY_ADDR=localhost:6379
+export VALKEY_PASSWORD=your-valkey-password
+export GATEWAY_CONTROL_URL=http://localhost:8081
+./gateway -tls -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
 ```
 
 ## Regenerating Code
@@ -512,11 +558,11 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 |------|-------|----------------|
 | `internal/scim/handler_test.go` | 21 | Auth (missing/invalid/non-existent/valid token), Discovery (ServiceProviderConfig, Schemas, ResourceTypes), Users (create, get, list, filter, replace, patch deactivate, delete), Groups (create, get, list, patch add member, replace members, delete) |
 
-#### Gateway Handler Tests (1 file, ~11 tests)
+#### Gateway Handler Tests (1 file, ~3 tests)
 
 | File | Tests | What it covers |
 |------|-------|----------------|
-| `internal/handler/agent_test.go` | ~11 | SyncActions (empty, with assigned actions, missing device ID), handleAgentMessage (heartbeat, action result success/failed, agent-scheduled action, security alert, output chunk), DeviceIDFromContext (present, absent) |
+| `internal/handler/agent_test.go` | ~3 | SyncActions (missing device ID), DeviceIDFromContext (present, absent) |
 
 ## Dynamic Device Groups
 
@@ -531,12 +577,16 @@ device.labels.<key>    e.g., device.labels.environment
 labels.<key>           e.g., labels.role  (shorthand)
 ```
 
-**Inventory properties** — hardware and OS information collected by the agent:
+**Device properties** — available immediately from registration:
 
 | Property | Description | Example Value |
 |----------|-------------|---------------|
 | `device.hostname` | Device hostname | `web-server-01` |
-| `device.name` | Device display name | `Web Server 01` |
+
+**Inventory properties** — hardware and OS information collected by the agent via OSQuery. These fields are only available after the agent has connected and sent its first inventory report (typically within seconds of first connection). Queries using these fields will not match devices that have not yet reported inventory.
+
+| Property | Description | Example Value |
+|----------|-------------|---------------|
 | `device.os` | Operating system name | `Ubuntu`, `Fedora` |
 | `device.os_version` | Full OS version string | `24.04`, `41` |
 | `device.os_major` | OS major version number | `24`, `41` |
@@ -600,6 +650,13 @@ NOT device.labels.decommissioned exists
 ### Evaluation
 
 Dynamic group membership is evaluated by PostgreSQL using the `evaluate_dynamic_query_v2()` function. The query is parsed into an expression tree of conditions, logical operators, and groups. Each condition is evaluated against the device's labels (stored in `devices_projection.labels`) and inventory data (collected by the agent via OSQuery and stored in `device_inventory`).
+
+**Data availability by source:**
+
+| Source | Available | Fields |
+|--------|-----------|--------|
+| Registration | Immediately | `device.hostname`, `device.labels.*` |
+| Agent inventory (OSQuery) | After first connection | `device.os`, `device.os_version`, `device.os_arch`, `device.cpu_*`, `device.memory_total`, `device.kernel` |
 
 The `ValidateDynamicQuery` RPC validates syntax and returns the number of currently matching devices. The `EvaluateDynamicGroup` RPC triggers a manual re-evaluation of membership.
 

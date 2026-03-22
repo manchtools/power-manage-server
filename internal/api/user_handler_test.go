@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,7 +16,7 @@ import (
 
 func TestCreateUser_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -32,7 +33,7 @@ func TestCreateUser_Success(t *testing.T) {
 
 func TestCreateUser_Unauthenticated(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	_, err := h.CreateUser(context.Background(), connect.NewRequest(&pm.CreateUserRequest{
 		Email:    "test@test.com",
@@ -44,7 +45,7 @@ func TestCreateUser_Unauthenticated(t *testing.T) {
 
 func TestGetUser_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -59,7 +60,7 @@ func TestGetUser_Success(t *testing.T) {
 
 func TestGetUser_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 	ctx := testutil.AdminContext(testutil.NewID())
 
 	_, err := h.GetUser(ctx, connect.NewRequest(&pm.GetUserRequest{Id: testutil.NewID()}))
@@ -69,7 +70,7 @@ func TestGetUser_NotFound(t *testing.T) {
 
 func TestListUsers_Pagination(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	for i := 0; i < 5; i++ {
 		testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -94,7 +95,7 @@ func TestListUsers_Pagination(t *testing.T) {
 
 func TestUpdateUserEmail(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -111,7 +112,7 @@ func TestUpdateUserEmail(t *testing.T) {
 
 func TestUpdateUserPassword_Self(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "old-password", "user")
@@ -127,7 +128,7 @@ func TestUpdateUserPassword_Self(t *testing.T) {
 
 func TestUpdateUserPassword_Self_WrongCurrent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "real-password", "user")
 	ctx := testutil.UserContext(userID)
@@ -143,7 +144,7 @@ func TestUpdateUserPassword_Self_WrongCurrent(t *testing.T) {
 
 func TestUpdateUserPassword_Admin(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -158,7 +159,7 @@ func TestUpdateUserPassword_Admin(t *testing.T) {
 
 func TestSetUserDisabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -181,7 +182,7 @@ func TestSetUserDisabled(t *testing.T) {
 
 func TestDeleteUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserHandler(st)
+	h := api.NewUserHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")

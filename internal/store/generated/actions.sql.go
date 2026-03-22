@@ -7,16 +7,26 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const countActions = `-- name: CountActions :one
 SELECT COUNT(*) FROM actions_projection
-WHERE is_deleted = FALSE
+WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
+  AND ($2::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ))
 `
 
-func (q *Queries) CountActions(ctx context.Context, dollar_1 int32) (int64, error) {
-	row := q.db.QueryRow(ctx, countActions, dollar_1)
+type CountActionsParams struct {
+	Column1        int32 `json:"column_1"`
+	UnassignedOnly bool  `json:"unassigned_only"`
+}
+
+func (q *Queries) CountActions(ctx context.Context, arg CountActionsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActions, arg.Column1, arg.UnassignedOnly)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -26,15 +36,40 @@ const countExecutions = `-- name: CountExecutions :one
 SELECT COUNT(*) FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ))
 `
 
 type CountExecutionsParams struct {
 	Column1 string `json:"column_1"`
 	Column2 string `json:"column_2"`
+	Column3 int32  `json:"column_3"`
+	Column4 string `json:"column_4"`
 }
 
 func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countExecutions, arg.Column1, arg.Column2)
+	row := q.db.QueryRow(ctx, countExecutions,
+		arg.Column1,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countExecutionsForWarm = `-- name: CountExecutionsForWarm :one
+SELECT COUNT(*) FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days'
+`
+
+func (q *Queries) CountExecutionsForWarm(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countExecutionsForWarm)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -42,7 +77,7 @@ func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams
 
 const getActionByID = `-- name: GetActionByID :one
 
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state FROM actions_projection
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -64,12 +99,14 @@ func (q *Queries) GetActionByID(ctx context.Context, id string) (ActionsProjecti
 		&i.Signature,
 		&i.ParamsCanonical,
 		&i.DesiredState,
+		&i.IsSystem,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
 const getActionByName = `-- name: GetActionByName :one
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state FROM actions_projection
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -90,13 +127,45 @@ func (q *Queries) GetActionByName(ctx context.Context, name string) (ActionsProj
 		&i.Signature,
 		&i.ParamsCanonical,
 		&i.DesiredState,
+		&i.IsSystem,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
+const getActionNamesByIDs = `-- name: GetActionNamesByIDs :many
+SELECT id, name FROM actions_projection
+WHERE id = ANY($1::TEXT[])
+`
+
+type GetActionNamesByIDsRow struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func (q *Queries) GetActionNamesByIDs(ctx context.Context, dollar_1 []string) ([]GetActionNamesByIDsRow, error) {
+	rows, err := q.db.Query(ctx, getActionNamesByIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetActionNamesByIDsRow{}
+	for rows.Next() {
+		var i GetActionNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getExecutionByID = `-- name: GetExecutionByID :one
 
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
 WHERE id = $1
 `
 
@@ -124,26 +193,37 @@ func (q *Queries) GetExecutionByID(ctx context.Context, id string) (ExecutionsPr
 		&i.CreatedByID,
 		&i.ProjectionVersion,
 		&i.Changed,
+		&i.Compliant,
+		&i.DetectionOutput,
 	)
 	return i, err
 }
 
 const listActions = `-- name: ListActions :many
-SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state FROM actions_projection
-WHERE is_deleted = FALSE
+SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at FROM actions_projection
+WHERE is_deleted = FALSE AND is_system = FALSE
   AND ($1::INTEGER = 0 OR action_type = $1)
+  AND ($4::BOOLEAN = FALSE OR NOT EXISTS (
+    SELECT 1 FROM action_set_members_projection asm WHERE asm.action_id = id
+  ))
 ORDER BY created_at DESC
 LIMIT $2 OFFSET $3
 `
 
 type ListActionsParams struct {
-	Column1 int32 `json:"column_1"`
-	Limit   int32 `json:"limit"`
-	Offset  int32 `json:"offset"`
+	Column1        int32 `json:"column_1"`
+	Limit          int32 `json:"limit"`
+	Offset         int32 `json:"offset"`
+	UnassignedOnly bool  `json:"unassigned_only"`
 }
 
 func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]ActionsProjection, error) {
-	rows, err := q.db.Query(ctx, listActions, arg.Column1, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listActions,
+		arg.Column1,
+		arg.Limit,
+		arg.Offset,
+		arg.UnassignedOnly,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +245,8 @@ func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]Act
 			&i.Signature,
 			&i.ParamsCanonical,
 			&i.DesiredState,
+			&i.IsSystem,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -177,16 +259,24 @@ func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]Act
 }
 
 const listExecutions = `-- name: ListExecutions :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
+  AND ($3::INTEGER = 0 OR action_type = $3)
+  AND ($4::TEXT = '' OR EXISTS (
+    SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
+  ) OR EXISTS (
+    SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
+  ))
 ORDER BY created_at DESC
-LIMIT $3 OFFSET $4
+LIMIT $5 OFFSET $6
 `
 
 type ListExecutionsParams struct {
 	Column1 string `json:"column_1"`
 	Column2 string `json:"column_2"`
+	Column3 int32  `json:"column_3"`
+	Column4 string `json:"column_4"`
 	Limit   int32  `json:"limit"`
 	Offset  int32  `json:"offset"`
 }
@@ -195,6 +285,8 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 	rows, err := q.db.Query(ctx, listExecutions,
 		arg.Column1,
 		arg.Column2,
+		arg.Column3,
+		arg.Column4,
 		arg.Limit,
 		arg.Offset,
 	)
@@ -225,6 +317,62 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 			&i.CreatedByID,
 			&i.ProjectionVersion,
 			&i.Changed,
+			&i.Compliant,
+			&i.DetectionOutput,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listExecutionsForWarm = `-- name: ListExecutionsForWarm :many
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+WHERE created_at >= NOW() - INTERVAL '90 days'
+ORDER BY created_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListExecutionsForWarmParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListExecutionsForWarm(ctx context.Context, arg ListExecutionsForWarmParams) ([]ExecutionsProjection, error) {
+	rows, err := q.db.Query(ctx, listExecutionsForWarm, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ExecutionsProjection{}
+	for rows.Next() {
+		var i ExecutionsProjection
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.ActionID,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.Error,
+			&i.Output,
+			&i.CreatedAt,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.DurationMs,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.ProjectionVersion,
+			&i.Changed,
+			&i.Compliant,
+			&i.DetectionOutput,
 		); err != nil {
 			return nil, err
 		}
@@ -237,7 +385,7 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 }
 
 const listPendingExecutionsForDevice = `-- name: ListPendingExecutionsForDevice :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
 WHERE device_id = $1 AND status IN ('pending', 'dispatched')
 ORDER BY created_at ASC
 `
@@ -273,6 +421,8 @@ func (q *Queries) ListPendingExecutionsForDevice(ctx context.Context, deviceID s
 			&i.CreatedByID,
 			&i.ProjectionVersion,
 			&i.Changed,
+			&i.Compliant,
+			&i.DetectionOutput,
 		); err != nil {
 			return nil, err
 		}
@@ -285,7 +435,7 @@ func (q *Queries) ListPendingExecutionsForDevice(ctx context.Context, deviceID s
 }
 
 const listRecentExecutionsForDevice = `-- name: ListRecentExecutionsForDevice :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
 WHERE device_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -325,6 +475,56 @@ func (q *Queries) ListRecentExecutionsForDevice(ctx context.Context, arg ListRec
 			&i.CreatedByID,
 			&i.ProjectionVersion,
 			&i.Changed,
+			&i.Compliant,
+			&i.DetectionOutput,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleExecutions = `-- name: ListStaleExecutions :many
+SELECT id, device_id, timeout_seconds, status, created_at, dispatched_at
+FROM executions_projection
+WHERE status = 'dispatched'
+  AND dispatched_at < NOW() - make_interval(secs => GREATEST(timeout_seconds, 300) + 300)
+LIMIT 100
+`
+
+type ListStaleExecutionsRow struct {
+	ID             string             `json:"id"`
+	DeviceID       string             `json:"device_id"`
+	TimeoutSeconds int32              `json:"timeout_seconds"`
+	Status         string             `json:"status"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	DispatchedAt   pgtype.Timestamptz `json:"dispatched_at"`
+}
+
+// Find dispatched executions that exceeded their timeout + grace period.
+// Only expires 'dispatched' status — 'pending' executions are left alone
+// because they represent assigned actions waiting for an offline device
+// to reconnect. dispatchPendingActions will dispatch them on reconnect.
+func (q *Queries) ListStaleExecutions(ctx context.Context) ([]ListStaleExecutionsRow, error) {
+	rows, err := q.db.Query(ctx, listStaleExecutions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListStaleExecutionsRow{}
+	for rows.Next() {
+		var i ListStaleExecutionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DeviceID,
+			&i.TimeoutSeconds,
+			&i.Status,
+			&i.CreatedAt,
+			&i.DispatchedAt,
 		); err != nil {
 			return nil, err
 		}

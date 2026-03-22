@@ -5,7 +5,7 @@
 #
 # Usage:
 #   1. cp .env.example .env && $EDITOR .env
-#   2. ./setup.sh            (generates internal CA for agent certs)
+#   2. ./setup.sh            (generates internal CA + gateway/control certs)
 #   3. docker compose up -d  (or: podman-compose up -d)
 #
 # Architecture:
@@ -43,13 +43,30 @@ services:
     container_name: pm-postgres
     restart: unless-stopped
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data:z
+      - ./data/postgres:/var/lib/postgresql:z
+      - ./initdb.d:/docker-entrypoint-initdb.d:ro,z
     environment:
       - POSTGRES_USER=powermanage
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=powermanage
+      - INDEXER_POSTGRES_PASSWORD=${INDEXER_POSTGRES_PASSWORD}
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "powermanage"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    networks:
+      - internal
+
+  valkey:
+    image: docker.io/redis/redis-stack-server:latest
+    container_name: pm-valkey
+    restart: unless-stopped
+    volumes:
+      - ./data/valkey:/data:z
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}", "--loadmodule", "/opt/redis-stack/lib/redisearch.so"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 3
@@ -62,6 +79,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
     volumes:
       - ./certs:/certs:ro,z
@@ -81,6 +100,11 @@ services:
       - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
       - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
       - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - CONTROL_INTERNAL_LISTEN_ADDR=:8082
+      - CONTROL_INTERNAL_TLS_CERT=/certs/control.crt
+      - CONTROL_INTERNAL_TLS_KEY=/certs/control.key
+      - CONTROL_VALKEY_ADDR=valkey:6379
+      - CONTROL_VALKEY_PASSWORD=${VALKEY_PASSWORD}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
       interval: 10s
@@ -97,29 +121,54 @@ services:
     networks:
       - internal
 
+  indexer:
+    image: ghcr.io/manchtools/power-manage-indexer:${IMAGE_TAG:-latest}
+    container_name: pm-indexer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      - INDEXER_DATABASE_URL=postgres://pm_indexer:${INDEXER_POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable
+      - INDEXER_VALKEY_ADDR=valkey:6379
+      - INDEXER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - INDEXER_RECONCILE_INTERVAL=1h
+      - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
+      - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - internal
+
   gateway:
     image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:-latest}
     container_name: pm-gateway
     restart: unless-stopped
     depends_on:
-      postgres:
+      valkey:
         condition: service_healthy
       control:
         condition: service_healthy
     volumes:
       - ./certs:/certs:ro,z
     environment:
-      - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - VALKEY_ADDR=valkey:6379
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GATEWAY_CONTROL_URL=https://control:8082
+      - GATEWAY_LISTEN_ADDR=:8080
+      - LOG_LEVEL=${LOG_LEVEL:-info}
     command:
-      - "-addr=:8080"
-      - "-database-url=postgres://powermanage:${POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable"
-      - "-log-level=${LOG_LEVEL:-info}"
       - "-tls"
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"
       - "-tls-ca=/certs/ca.crt"
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "--no-check-certificate", "https://localhost:8080/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
       interval: 10s
       timeout: 5s
       retries: 3

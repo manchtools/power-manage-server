@@ -7,9 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -18,19 +22,28 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // DeviceHandler handles device management RPCs.
 type DeviceHandler struct {
 	store     *store.Store
+	logger    *slog.Logger
 	encryptor *crypto.Encryptor
+	aqClient  *taskqueue.Client
 }
 
 // NewDeviceHandler creates a new device handler.
-func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor) *DeviceHandler {
-	return &DeviceHandler{store: st, encryptor: enc}
+func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
+	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
+}
+
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *DeviceHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
 }
 
 // ListDevices returns a paginated list of devices.
@@ -45,13 +58,21 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
 
 	q := h.store.Queries()
 	filterUID := userFilterID(ctx, "ListDevices")
+
+	// When my_devices_only is set, always filter by the authenticated user's ID
+	// regardless of permissions (used by the "My Devices" page).
+	if req.Msg.MyDevicesOnly {
+		if u, ok := auth.UserFromContext(ctx); ok {
+			filterUID = &u.ID
+		}
+	}
 
 	var devices []db.DevicesProjection
 	var err error
@@ -77,12 +98,12 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		})
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list devices"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list devices")
 	}
 
 	count, err := q.CountDevices(ctx, filterUID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count devices"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count devices")
 	}
 
 	var nextPageToken string
@@ -92,7 +113,7 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 
 	protoDevices := make([]*pm.Device, len(devices))
 	for i, d := range devices {
-		protoDevices[i] = h.deviceToProto(d)
+		protoDevices[i] = h.deviceToProtoCtx(ctx, d)
 	}
 
 	return connect.NewResponse(&pm.ListDevicesResponse{
@@ -105,7 +126,7 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 // GetDevice returns a device by ID.
 // Admins see all devices; regular users see only their assigned devices.
 func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.GetDeviceRequest]) (*connect.Response[pm.GetDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -115,34 +136,34 @@ func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.G
 	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	return connect.NewResponse(&pm.GetDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
 // SetDeviceLabel sets a label on a device.
 func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request[pm.SetDeviceLabelRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	// Emit DeviceLabelSet event
@@ -158,38 +179,44 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set label"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set label")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceLabelSet",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
 // RemoveDeviceLabel removes a label from a device.
 func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Request[pm.RemoveDeviceLabelRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	// Emit DeviceLabelRemoved event
@@ -204,29 +231,35 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to remove label"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove label")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceLabelRemoved",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
 // DeleteDevice deletes a device.
 func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[pm.DeleteDeviceRequest]) (*connect.Response[pm.DeleteDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit DeviceDeleted event
@@ -239,129 +272,251 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete device")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
 }
 
-// AssignDevice assigns a device to a user.
+// AssignDevice assigns a device to one or more users and/or user groups.
 func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[pm.AssignDeviceRequest]) (*connect.Response[pm.AssignDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
+
+	// Collect user IDs from single + repeated fields
+	userIDs := append([]string{}, req.Msg.UserIds...)
+	if req.Msg.UserId != "" {
+		userIDs = append(userIDs, req.Msg.UserId)
+	}
+
+	// Collect group IDs from single + repeated fields
+	groupIDs := append([]string{}, req.Msg.GroupIds...)
+	if req.Msg.GroupId != "" {
+		groupIDs = append(groupIDs, req.Msg.GroupId)
+	}
+
+	if len(userIDs) == 0 && len(groupIDs) == 0 {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one user or group must be specified")
+	}
+
+	q := h.store.Queries()
 
 	// Verify device exists
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
-	// Verify user exists
-	_, err = h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("user not found"))
+	for _, userID := range userIDs {
+		// Verify user exists
+		_, err = q.GetUserByID(ctx, userID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
+			}
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   req.Msg.DeviceId,
+			EventType:  "DeviceAssigned",
+			Data: map[string]any{
+				"user_id": userID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign device")
+		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceAssigned",
+		)
 	}
 
-	// Emit DeviceAssigned event
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   req.Msg.DeviceId,
-		EventType:  "DeviceAssigned",
-		Data: map[string]any{
-			"user_id": req.Msg.UserId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to assign device"))
+	for _, groupID := range groupIDs {
+		// Verify user group exists
+		_, err = q.GetUserGroupByID(ctx, groupID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
+			}
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
+		}
+
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   req.Msg.DeviceId,
+			EventType:  "DeviceGroupAssigned",
+			Data: map[string]any{
+				"group_id": groupID,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign device to group")
+		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceGroupAssigned",
+		)
 	}
 
 	// Read back updated device
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	device, err := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
 	return connect.NewResponse(&pm.AssignDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
-// UnassignDevice removes a device from its assigned user.
+// usernameSanitizeRe matches characters not allowed in Linux usernames.
+var usernameSanitizeRe = regexp.MustCompile(`[^a-z0-9_.\-]`)
+
+// deriveLinuxUsername derives a Linux username from a PM user's fields.
+// Priority: preferred_username > email prefix > email as-is.
+// Returns empty string if no valid username can be derived.
+func deriveLinuxUsername(email, preferredUsername string) string {
+	var username string
+	switch {
+	case preferredUsername != "":
+		username = preferredUsername
+	case strings.Contains(email, "@"):
+		username = email[:strings.Index(email, "@")]
+	default:
+		username = email
+	}
+	username = strings.ToLower(username)
+	username = usernameSanitizeRe.ReplaceAllString(username, "_")
+	if len(username) > 32 {
+		username = username[:32]
+	}
+	return username
+}
+
+// UnassignDevice removes a user or user group assignment from a device.
 func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request[pm.UnassignDeviceRequest]) (*connect.Response[pm.UnassignDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// Exactly one of user_id or group_id must be set
+	if (req.Msg.UserId == "") == (req.Msg.GroupId == "") {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "exactly one of user_id or group_id must be set")
 	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
-	// Emit DeviceUnassigned event
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   req.Msg.DeviceId,
-		EventType:  "DeviceUnassigned",
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to unassign device"))
+	if req.Msg.UserId != "" {
+		// Emit DeviceUnassigned event
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   req.Msg.DeviceId,
+			EventType:  "DeviceUnassigned",
+			Data: map[string]any{
+				"user_id": req.Msg.UserId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unassign device")
+		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceUnassigned",
+		)
+	} else {
+		// Emit DeviceGroupUnassigned event
+		err = h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   req.Msg.DeviceId,
+			EventType:  "DeviceGroupUnassigned",
+			Data: map[string]any{
+				"group_id": req.Msg.GroupId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unassign device from group")
+		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceGroupUnassigned",
+		)
 	}
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
 	return connect.NewResponse(&pm.UnassignDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
 // SetDeviceSyncInterval sets the sync interval for a device.
 func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.Request[pm.SetDeviceSyncIntervalRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	// Emit DeviceSyncIntervalSet event
@@ -376,22 +531,34 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to set sync interval"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set sync interval")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceSyncIntervalSet",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get updated device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
-		Device: h.deviceToProto(device),
+		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
 }
 
 // deviceToProto converts a database device projection to a protobuf device.
 func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
+	return h.deviceToProtoCtx(context.Background(), d)
+}
+
+// deviceToProtoCtx converts a database device projection to a protobuf device,
+// populating assigned user/group IDs from junction tables.
+func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjection) *pm.Device {
 	device := &pm.Device{
 		Id:                  d.ID,
 		Hostname:            d.Hostname,
@@ -420,8 +587,13 @@ func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
 		device.CertExpiresAt = timestamppb.New(d.CertNotAfter.Time)
 	}
 
-	if d.AssignedUserID != nil {
-		device.AssignedUserId = *d.AssignedUserID
+	// Populate assigned user/group IDs from junction tables
+	q := h.store.Queries()
+	if userIDs, err := q.ListDeviceAssignedUserIDs(ctx, d.ID); err == nil {
+		device.AssignedUserIds = userIDs
+	}
+	if groupIDs, err := q.ListDeviceAssignedGroupIDs(ctx, d.ID); err == nil {
+		device.AssignedGroupIds = groupIDs
 	}
 
 	// Parse labels from JSONB
@@ -432,12 +604,20 @@ func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
 		}
 	}
 
+	// Compliance fields
+	device.ComplianceStatus = pm.ComplianceStatus(d.ComplianceStatus)
+	device.ComplianceTotal = d.ComplianceTotal
+	device.CompliancePassing = d.CompliancePassing
+	if d.ComplianceCheckedAt.Valid {
+		device.ComplianceCheckedAt = timestamppb.New(d.ComplianceCheckedAt.Time)
+	}
+
 	return device
 }
 
 // GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
 func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -520,7 +700,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 
 // GetDeviceLuksKeys returns current and historical LUKS keys for a device.
 func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pm.GetDeviceLuksKeysRequest]) (*connect.Response[pm.GetDeviceLuksKeysResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -608,39 +788,50 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 // CreateLuksToken creates a one-time token for setting a user-defined LUKS passphrase.
 // Only the device's assigned owner can create a token (admins cannot).
 func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Request[pm.CreateLuksTokenRequest]) (*connect.Response[pm.CreateLuksTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	// Verify device exists and get assigned user
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	// Verify device exists
+	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
-	// Only the assigned owner can create a LUKS token
-	if device.AssignedUserID == nil || *device.AssignedUserID != userCtx.ID {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only the assigned device owner can create a LUKS passphrase token"))
+	// Only an assigned owner can create a LUKS token
+	assignedUserIDs, err := h.store.Queries().ListDeviceAssignedUserIDs(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check device assignments")
+	}
+	isAssigned := false
+	for _, uid := range assignedUserIDs {
+		if uid == userCtx.ID {
+			isAssigned = true
+			break
+		}
+	}
+	if !isAssigned {
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "only the assigned device owner can create a LUKS passphrase token")
 	}
 
 	// Verify the action exists and is a LUKS action
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 	if pm.ActionType(action.ActionType) != pm.ActionType_ACTION_TYPE_LUKS {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action is not a LUKS action"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not a LUKS action")
 	}
 
 	// Parse LUKS params to get complexity requirements
@@ -658,7 +849,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	// Generate one-time token
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate token"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate token")
 	}
 	token := hex.EncodeToString(tokenBytes)
 
@@ -671,7 +862,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 		Complexity: complexity,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create token: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create token")
 	}
 
 	uri := fmt.Sprintf("power-manage://luks/set-passphrase?token=%s", token)
@@ -684,9 +875,9 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-// RevokeLuksDeviceKey sends a revocation request to the agent via pg_notify.
+// RevokeLuksDeviceKey sends a revocation request to the agent via the task queue.
 func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -694,9 +885,9 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	// Record dispatched event so the UI can show "dispatched" status
@@ -718,18 +909,73 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		ActorType: "user",
 		ActorID:   actorID,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to record revocation event: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation event")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "luks_key",
+		"stream_id", luksStreamID,
+		"event_type", "LuksDeviceKeyRevocationDispatched",
+	)
 
-	// Send notification to gateway to dispatch to agent
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	payload, _ := json.Marshal(map[string]any{
-		"type":      "revoke_luks_device_key",
-		"action_id": req.Msg.ActionId,
-	})
-	if err := h.store.Notify(ctx, agentChannel, string(payload)); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to notify agent: %w", err))
+	// Dispatch LUKS device key revocation to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
+			ActionID: req.Msg.ActionId,
+		}, asynq.MaxRetry(5)); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
+		}
 	}
 
 	return connect.NewResponse(&pm.RevokeLuksDeviceKeyResponse{}), nil
+}
+
+// ListDeviceAssignees returns the users and user groups assigned to a device.
+func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Request[pm.ListDeviceAssigneesRequest]) (*connect.Response[pm.ListDeviceAssigneesResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	q := h.store.Queries()
+
+	// Verify device exists
+	_, err := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
+	}
+
+	var assignees []*pm.DeviceAssignee
+
+	// Get assigned users
+	users, err := q.ListDeviceAssignedUsers(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list assigned users")
+	}
+	for _, u := range users {
+		assignees = append(assignees, &pm.DeviceAssignee{
+			Id:   u.UserID,
+			Type: "user",
+			Name: u.UserEmail,
+		})
+	}
+
+	// Get assigned groups
+	groups, err := q.ListDeviceAssignedGroups(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list assigned groups")
+	}
+	for _, g := range groups {
+		assignees = append(assignees, &pm.DeviceAssignee{
+			Id:   g.GroupID,
+			Type: "user_group",
+			Name: g.GroupName,
+		})
+	}
+
+	return connect.NewResponse(&pm.ListDeviceAssigneesResponse{
+		Assignees: assignees,
+	}), nil
 }

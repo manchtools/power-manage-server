@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/oklog/ulid/v2"
 
@@ -37,8 +35,7 @@ func userFilterID(ctx context.Context, action string) *string {
 	return nil
 }
 
-// newULID generates a new ULID string.
+// newULID generates a new ULID string (thread-safe).
 func newULID() string {
-	entropy := ulid.Monotonic(rand.Reader, 0)
-	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+	return ulid.Make().String()
 }

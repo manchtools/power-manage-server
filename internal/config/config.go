@@ -16,6 +16,9 @@ type Config struct {
 	ValkeyPassword string
 	ValkeyDB       int
 
+	// Control server URL for internal RPC proxying
+	ControlURL string
+
 	// Logging
 	LogLevel string
 }
@@ -27,6 +30,7 @@ func FromEnv() *Config {
 		ValkeyAddr:     getEnv("VALKEY_ADDR", "localhost:6379"),
 		ValkeyPassword: getEnv("VALKEY_PASSWORD", ""),
 		ValkeyDB:       getEnvInt("VALKEY_DB", 0),
+		ControlURL:     getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
 		LogLevel:       getEnv("LOG_LEVEL", "info"),
 	}
 }

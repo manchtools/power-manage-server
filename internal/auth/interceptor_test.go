@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,13 +14,15 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+var testLogger = slog.Default()
+
 func TestAuthInterceptor_Creation(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
 	loginLimiter := NewRateLimiter(10, time.Minute)
 	refreshLimiter := NewRateLimiter(20, time.Minute)
 	registerLimiter := NewRateLimiter(5, time.Minute)
 
-	interceptor := NewAuthInterceptor(jwtMgr, loginLimiter, refreshLimiter, registerLimiter)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, loginLimiter, refreshLimiter, registerLimiter)
 	assert.NotNil(t, interceptor)
 	assert.NotNil(t, interceptor.jwtManager)
 	assert.NotNil(t, interceptor.loginLimiter)
@@ -29,20 +32,21 @@ func TestAuthInterceptor_Creation(t *testing.T) {
 
 func TestAuthInterceptor_NilLimiters(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
-	interceptor := NewAuthInterceptor(jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
 	assert.NotNil(t, interceptor)
 }
 
 func TestPublicProcedures(t *testing.T) {
 	expected := map[string]bool{
-		"/pm.v1.ControlService/Login":           true,
-		"/pm.v1.ControlService/RefreshToken":    true,
-		"/pm.v1.ControlService/Logout":          true,
-		"/pm.v1.ControlService/Register":        true,
-		"/pm.v1.ControlService/VerifyLoginTOTP": true,
-		"/pm.v1.ControlService/ListAuthMethods": true,
-		"/pm.v1.ControlService/GetSSOLoginURL":  true,
-		"/pm.v1.ControlService/SSOCallback":     true,
+		"/pm.v1.ControlService/Login":                  true,
+		"/pm.v1.ControlService/RefreshToken":            true,
+		"/pm.v1.ControlService/Logout":                  true,
+		"/pm.v1.ControlService/Register":                true,
+		"/pm.v1.ControlService/RenewCertificate":        true,
+		"/pm.v1.ControlService/VerifyLoginTOTP":         true,
+		"/pm.v1.ControlService/ListAuthMethods":         true,
+		"/pm.v1.ControlService/GetSSOLoginURL":          true,
+		"/pm.v1.ControlService/SSOCallback":             true,
 	}
 	assert.Equal(t, expected, PublicProcedures)
 }
@@ -60,7 +64,7 @@ func TestAuthzInterceptor_Creation(t *testing.T) {
 
 func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
-	interceptor := NewAuthInterceptor(jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
 
 	clientFunc := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		return nil
@@ -100,7 +104,7 @@ func setupInterceptorTest(t *testing.T) (string, *JWTManager) {
 		Secret:            []byte("test-secret-for-interceptor-test"),
 		AccessTokenExpiry: 15 * time.Minute,
 	})
-	interceptor := NewAuthInterceptor(jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
 
 	mux := http.NewServeMux()
 

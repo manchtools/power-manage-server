@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -29,7 +30,7 @@ func TestCreateDefinition(t *testing.T) {
 
 func TestGetDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	defID := testutil.CreateTestDefinition(t, st, adminID, "Test Def")
@@ -43,7 +44,7 @@ func TestGetDefinition(t *testing.T) {
 
 func TestListDefinitions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -59,7 +60,7 @@ func TestListDefinitions(t *testing.T) {
 
 func TestRenameDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	defID := testutil.CreateTestDefinition(t, st, adminID, "Old")
@@ -75,7 +76,7 @@ func TestRenameDefinition(t *testing.T) {
 
 func TestDeleteDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	defID := testutil.CreateTestDefinition(t, st, adminID, "To Delete")
@@ -91,7 +92,7 @@ func TestDeleteDefinition(t *testing.T) {
 
 func TestAddActionSetToDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDefinitionHandler(st)
+	h := api.NewDefinitionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	defID := testutil.CreateTestDefinition(t, st, adminID, "Test Def")

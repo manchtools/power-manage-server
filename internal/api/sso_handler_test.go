@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -18,7 +19,7 @@ func TestListAuthMethods_PasswordEnabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, true, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, true, "https://app.example.com")
 
 	resp, err := h.ListAuthMethods(context.Background(), connect.NewRequest(&pm.ListAuthMethodsRequest{}))
 	require.NoError(t, err)
@@ -32,7 +33,7 @@ func TestListAuthMethods_PasswordDisabledGlobally(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, false, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, false, "https://app.example.com")
 
 	resp, err := h.ListAuthMethods(context.Background(), connect.NewRequest(&pm.ListAuthMethodsRequest{}))
 	require.NoError(t, err)
@@ -44,7 +45,7 @@ func TestListAuthMethods_WithProviders(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, true, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, true, "https://app.example.com")
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Google", "google")
@@ -77,7 +78,7 @@ func TestListAuthMethods_WithEmailUserHasTOTP(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, true, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, true, "https://app.example.com")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -96,7 +97,7 @@ func TestListAuthMethods_WithEmailPasswordDisabledByProvider(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, true, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, true, "https://app.example.com")
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
@@ -137,7 +138,7 @@ func TestListAuthMethods_NonexistentEmailShowsDefaults(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewSSOHandler(st, jwtMgr, enc, true, "https://app.example.com")
+	h := api.NewSSOHandler(st, slog.Default(), jwtMgr, enc, true, "https://app.example.com")
 
 	resp, err := h.ListAuthMethods(context.Background(), connect.NewRequest(&pm.ListAuthMethodsRequest{
 		Email: "nonexistent@test.com",

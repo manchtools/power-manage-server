@@ -9,13 +9,26 @@ SELECT * FROM assignments_projection
 WHERE source_type = $1 AND source_id = $2 AND target_type = $3 AND target_id = $4 AND is_deleted = FALSE;
 
 -- name: ListAssignments :many
-SELECT * FROM assignments_projection
-WHERE is_deleted = FALSE
-  AND ($1::TEXT = '' OR source_type = $1)
-  AND ($2::TEXT = '' OR source_id = $2)
-  AND ($3::TEXT = '' OR target_type = $3)
-  AND ($4::TEXT = '' OR target_id = $4)
-ORDER BY created_at DESC
+SELECT a.*,
+  COALESCE(CASE a.source_type
+    WHEN 'action' THEN (SELECT name FROM actions_projection WHERE id = a.source_id)
+    WHEN 'action_set' THEN (SELECT name FROM action_sets_projection WHERE id = a.source_id)
+    WHEN 'definition' THEN (SELECT name FROM definitions_projection WHERE id = a.source_id)
+    WHEN 'compliance_policy' THEN (SELECT name FROM compliance_policies_projection WHERE id = a.source_id)
+  END, '')::TEXT AS source_name,
+  COALESCE(CASE a.target_type
+    WHEN 'device' THEN (SELECT hostname FROM devices_projection WHERE id = a.target_id)
+    WHEN 'device_group' THEN (SELECT name FROM device_groups_projection WHERE id = a.target_id)
+    WHEN 'user' THEN (SELECT email FROM users_projection WHERE id = a.target_id)
+    WHEN 'user_group' THEN (SELECT name FROM user_groups_projection WHERE id = a.target_id)
+  END, '')::TEXT AS target_name
+FROM assignments_projection a
+WHERE a.is_deleted = FALSE
+  AND ($1::TEXT = '' OR a.source_type = $1)
+  AND ($2::TEXT = '' OR a.source_id = $2)
+  AND ($3::TEXT = '' OR a.target_type = $3)
+  AND ($4::TEXT = '' OR a.target_id = $4)
+ORDER BY a.created_at DESC
 LIMIT $5 OFFSET $6;
 
 -- name: CountAssignments :one
@@ -145,6 +158,39 @@ WITH assigned_actions AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (direct to device)
+  SELECT
+    a.*,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (via device group)
+  SELECT
+    a.*,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
@@ -297,6 +343,51 @@ WITH all_assignments AS (
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (direct to device, source_priority = 4)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    0 AS mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    4 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  -- Actions via compliance policy assignments (via device group, source_priority = 4)
+  SELECT
+    a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
+    a.created_at, a.created_by, a.is_deleted, a.projection_version,
+    a.signature, a.params_canonical,
+    0 AS mode,
+    asn.source_type AS asn_source_type,
+    asn.source_id AS asn_source_id,
+    4 AS source_priority,
+    COALESCE(asn.sort_order, 0) as assignment_sort,
+    0 as definition_sort,
+    0 as action_set_sort,
+    0 as action_sort
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 -- Join with user selections for available assignments
 with_selections AS (
@@ -408,6 +499,27 @@ WITH dev_assignments AS (
   JOIN device_group_members_projection m ON asn.target_id = m.group_id
   WHERE asn.target_type = 'device_group' AND m.device_id = $1
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, 0 AS mode, 4 AS source_priority
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  WHERE asn.target_type = 'device' AND asn.target_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
+
+  UNION ALL
+
+  SELECT a.id AS action_id, 0 AS mode, 4 AS source_priority
+  FROM actions_projection a
+  JOIN compliance_policy_rules_projection r ON r.action_id = a.id
+  JOIN compliance_policies_projection p ON p.id = r.policy_id AND p.is_deleted = FALSE
+  JOIN assignments_projection asn ON asn.source_type = 'compliance_policy' AND asn.source_id = r.policy_id
+  JOIN device_group_members_projection m ON asn.target_id = m.group_id
+  WHERE asn.target_type = 'device_group' AND m.device_id = $1
+    AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 dev_priority AS (
   SELECT action_id, MIN(source_priority) AS min_priority
@@ -424,17 +536,20 @@ GROUP BY action_id
 HAVING bool_or(mode = 2);
 
 -- Get all resolved actions from user/user_group layer for a device.
--- Looks up the device's assigned_user_id, then finds assignments targeting
--- that user or any of the user's groups. Same resolution logic as device layer.
+-- Looks up all users assigned to the device (directly or via user groups),
+-- then finds assignments targeting those users or any of their groups.
 -- name: ListUserLayerResolvedActionsForDevice :many
-WITH device_owner AS (
-  SELECT d.assigned_user_id FROM devices_projection d
-  WHERE d.id = $1 AND d.is_deleted = FALSE AND d.assigned_user_id IS NOT NULL
+WITH device_owners AS (
+  SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
+  UNION
+  SELECT ugm.user_id FROM device_assigned_groups_projection dag
+  JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id
+  WHERE dag.device_id = $1
 ),
 owner_groups AS (
-  SELECT ugm.group_id FROM user_group_members_projection ugm
+  SELECT DISTINCT ugm.group_id FROM user_group_members_projection ugm
   JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
-  WHERE ugm.user_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE ugm.user_id IN (SELECT user_id FROM device_owners)
 ),
 all_assignments AS (
   -- Direct action → user (source_priority = 1)
@@ -452,7 +567,7 @@ all_assignments AS (
     0 as action_sort
   FROM actions_projection a
   JOIN assignments_projection asn ON asn.source_type = 'action' AND asn.source_id = a.id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -493,7 +608,7 @@ all_assignments AS (
   FROM actions_projection a
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN assignments_projection asn ON asn.source_type = 'action_set' AND asn.source_id = sm.set_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL
@@ -536,7 +651,7 @@ all_assignments AS (
   JOIN action_set_members_projection sm ON sm.action_id = a.id
   JOIN definition_members_projection dm ON dm.action_set_id = sm.set_id
   JOIN assignments_projection asn ON asn.source_type = 'definition' AND asn.source_id = dm.definition_id
-  WHERE asn.target_type = 'user' AND asn.target_id = (SELECT assigned_user_id FROM device_owner)
+  WHERE asn.target_type = 'user' AND asn.target_id IN (SELECT user_id FROM device_owners)
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 
   UNION ALL

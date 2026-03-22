@@ -21,7 +21,15 @@ func AllPermissions() []PermissionInfo {
 		{"UpdateUserPassword", "Users", "Change any user's password"},
 		{"UpdateUserPassword:self", "Users", "Change own password"},
 		{"SetUserDisabled", "Users", "Disable/enable users"},
+		{"UpdateUserProfile", "Users", "Update any user's profile"},
+		{"UpdateUserProfile:self", "Users", "Update own profile"},
 		{"DeleteUser", "Users", "Delete users"},
+		{"UpdateUserSshSettings", "Users", "Update any user's SSH settings"},
+		{"UpdateUserSshSettings:self", "Users", "Update own SSH settings"},
+		{"AddUserSshKey", "Users", "Add SSH key to any user"},
+		{"AddUserSshKey:self", "Users", "Add own SSH key"},
+		{"RemoveUserSshKey", "Users", "Remove SSH key from any user"},
+		{"RemoveUserSshKey:self", "Users", "Remove own SSH key"},
 		// Devices
 		{"ListDevices", "Devices", "List all devices"},
 		{"ListDevices:assigned", "Devices", "List own assigned devices"},
@@ -29,8 +37,9 @@ func AllPermissions() []PermissionInfo {
 		{"GetDevice:assigned", "Devices", "View own assigned devices"},
 		{"SetDeviceLabel", "Devices", "Set device labels"},
 		{"RemoveDeviceLabel", "Devices", "Remove device labels"},
-		{"AssignDevice", "Devices", "Assign devices to users"},
-		{"UnassignDevice", "Devices", "Unassign devices"},
+		{"AssignDevice", "Devices", "Assign devices to users or groups"},
+		{"UnassignDevice", "Devices", "Unassign devices from users or groups"},
+		{"ListDeviceAssignees", "Devices", "List device assignees"},
 		{"SetDeviceSyncInterval", "Devices", "Set device sync interval"},
 		{"DeleteDevice", "Devices", "Delete devices"},
 		// Tokens
@@ -73,6 +82,7 @@ func AllPermissions() []PermissionInfo {
 		{"CreateDeviceGroup", "Device Groups", "Create device groups"},
 		{"GetDeviceGroup", "Device Groups", "View device groups"},
 		{"ListDeviceGroups", "Device Groups", "List device groups"},
+		{"ListDeviceGroupsForDevice", "Device Groups", "List device groups for a device"},
 		{"RenameDeviceGroup", "Device Groups", "Rename device groups"},
 		{"UpdateDeviceGroupDescription", "Device Groups", "Update device group descriptions"},
 		{"UpdateDeviceGroupQuery", "Device Groups", "Update device group queries"},
@@ -107,6 +117,24 @@ func AllPermissions() []PermissionInfo {
 		{"GetOSQueryResult", "OSQuery", "View OSQuery results"},
 		{"GetDeviceInventory", "OSQuery", "View device inventory"},
 		{"RefreshDeviceInventory", "OSQuery", "Refresh device inventory"},
+		// Device Logs
+		{"QueryDeviceLogs", "Device Logs", "Query device logs"},
+		{"GetDeviceLogResult", "Device Logs", "View device log results"},
+		// Compliance
+		{"GetDeviceCompliance", "Compliance", "View device compliance"},
+		{"GetDeviceCompliance:assigned", "Compliance", "View compliance for assigned devices"},
+		// Compliance Policies
+		{"CreateCompliancePolicy", "Compliance Policies", "Create compliance policies"},
+		{"GetCompliancePolicy", "Compliance Policies", "View compliance policies"},
+		{"ListCompliancePolicies", "Compliance Policies", "List compliance policies"},
+		{"RenameCompliancePolicy", "Compliance Policies", "Rename compliance policies"},
+		{"UpdateCompliancePolicyDescription", "Compliance Policies", "Update compliance policy descriptions"},
+		{"DeleteCompliancePolicy", "Compliance Policies", "Delete compliance policies"},
+		{"AddCompliancePolicyRule", "Compliance Policies", "Add rules to compliance policies"},
+		{"RemoveCompliancePolicyRule", "Compliance Policies", "Remove rules from compliance policies"},
+		{"UpdateCompliancePolicyRule", "Compliance Policies", "Update compliance policy rules"},
+		{"GetDeviceCompliancePolicyStatus", "Compliance Policies", "View device compliance policy status"},
+		{"GetDeviceCompliancePolicyStatus:assigned", "Compliance Policies", "View compliance policy status for assigned devices"},
 		// Audit
 		{"ListAuditEvents", "Audit", "View audit log"},
 		// LPS
@@ -119,6 +147,7 @@ func AllPermissions() []PermissionInfo {
 		{"SetupTOTP", "Authentication", "Set up TOTP 2FA"},
 		{"VerifyTOTP", "Authentication", "Verify TOTP setup"},
 		{"DisableTOTP", "Authentication", "Disable TOTP 2FA"},
+		{"AdminDisableUserTOTP", "Users", "Disable TOTP for any user"},
 		{"GetTOTPStatus", "Authentication", "View TOTP status"},
 		{"RegenerateBackupCodes", "Authentication", "Regenerate backup codes"},
 		// Roles
@@ -141,6 +170,9 @@ func AllPermissions() []PermissionInfo {
 		{"AssignRoleToUserGroup", "User Groups", "Assign roles to user groups"},
 		{"RevokeRoleFromUserGroup", "User Groups", "Revoke roles from user groups"},
 		{"ListUserGroupsForUser", "User Groups", "List user groups for a user"},
+		{"UpdateUserGroupQuery", "User Groups", "Update user group queries"},
+		{"ValidateUserGroupQuery", "User Groups", "Validate user group queries"},
+		{"EvaluateDynamicUserGroup", "User Groups", "Evaluate dynamic user groups"},
 		// Identity Providers
 		{"CreateIdentityProvider", "Identity Providers", "Create identity providers"},
 		{"GetIdentityProvider", "Identity Providers", "View identity providers"},
@@ -153,6 +185,14 @@ func AllPermissions() []PermissionInfo {
 		// Identity Links
 		{"ListIdentityLinks", "Authentication", "View own linked identities"},
 		{"UnlinkIdentity", "Authentication", "Unlink own identity"},
+		// Search
+		{"Search", "Search", "Search across entities"},
+		{"RebuildSearchIndex", "Search", "Force rebuild search index"},
+		// Server Settings
+		{"GetServerSettings", "Server Settings", "View server settings"},
+		{"UpdateServerSettings", "Server Settings", "Update server settings"},
+		// User Provisioning
+		{"SetUserProvisioningEnabled", "Users", "Toggle user provisioning per user"},
 	}
 }
 
@@ -185,6 +225,7 @@ func DefaultUserPermissions() []string {
 		"GetUser:self",
 		"UpdateUserEmail:self",
 		"UpdateUserPassword:self",
+		"UpdateUserProfile:self",
 		"SetupTOTP",
 		"VerifyTOTP",
 		"DisableTOTP",
@@ -197,6 +238,9 @@ func DefaultUserPermissions() []string {
 		"ListAvailableActions",
 		"ListIdentityLinks",
 		"UnlinkIdentity",
+		"GetDeviceCompliance:assigned",
+		"AddUserSshKey:self",
+		"RemoveUserSshKey:self",
 	}
 }
 

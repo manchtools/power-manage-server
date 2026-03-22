@@ -65,3 +65,26 @@ WHERE r.is_deleted = FALSE AND (
         WHERE ugm.user_id = $1
     )
 );
+
+-- name: ListAllInheritedRoles :many
+SELECT ugm.user_id, r.id AS role_id, r.name AS role_name,
+       ug.id AS group_id, ug.name AS group_name
+FROM user_group_members_projection ugm
+JOIN user_group_roles_projection ugr ON ugr.group_id = ugm.group_id
+JOIN roles_projection r ON r.id = ugr.role_id AND r.is_deleted = FALSE
+JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+ORDER BY ugm.user_id, ug.name, r.name;
+
+-- name: ValidateUserGroupQuery :one
+SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message;
+
+-- name: EvaluateDynamicUserGroup :exec
+SELECT evaluate_dynamic_user_group($1);
+
+-- name: EvaluateQueuedDynamicUserGroups :one
+SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count;
+
+-- name: CountMatchingUsersForQuery :one
+SELECT COUNT(*) FROM users_projection
+WHERE is_deleted = FALSE
+AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE;

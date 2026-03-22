@@ -15,9 +15,9 @@ import (
 type TokenType string
 
 const (
-	TokenTypeAccess        TokenType = "access"
-	TokenTypeRefresh       TokenType = "refresh"
-	TokenTypeTOTPChallenge TokenType = "totp_challenge"
+	TokenTypeAccess         TokenType = "access"
+	TokenTypeRefresh        TokenType = "refresh"
+	TokenTypeTOTPChallenge  TokenType = "totp_challenge"
 )
 
 // Claims represents the JWT claims for user authentication.

@@ -63,7 +63,7 @@ const countAuditEvents = `-- name: CountAuditEvents :one
 SELECT COUNT(*) FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type = $3)
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%')
 `
 
 type CountAuditEventsParams struct {
@@ -74,6 +74,18 @@ type CountAuditEventsParams struct {
 
 func (q *Queries) CountAuditEvents(ctx context.Context, arg CountAuditEventsParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countAuditEvents, arg.Column1, arg.Column2, arg.Column3)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countAuditEventsForWarm = `-- name: CountAuditEventsForWarm :one
+SELECT COUNT(*) FROM events
+WHERE occurred_at >= NOW() - INTERVAL '90 days'
+`
+
+func (q *Queries) CountAuditEventsForWarm(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countAuditEventsForWarm)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -124,7 +136,7 @@ const listAuditEvents = `-- name: ListAuditEvents :many
 SELECT id, sequence_num, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id, occurred_at FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type = $3)
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%')
 ORDER BY occurred_at DESC
 LIMIT $4 OFFSET $5
 `
@@ -145,6 +157,50 @@ func (q *Queries) ListAuditEvents(ctx context.Context, arg ListAuditEventsParams
 		arg.Limit,
 		arg.Offset,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.SequenceNum,
+			&i.StreamType,
+			&i.StreamID,
+			&i.StreamVersion,
+			&i.EventType,
+			&i.Data,
+			&i.Metadata,
+			&i.ActorType,
+			&i.ActorID,
+			&i.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuditEventsForWarm = `-- name: ListAuditEventsForWarm :many
+SELECT id, sequence_num, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id, occurred_at FROM events
+WHERE occurred_at >= NOW() - INTERVAL '90 days'
+ORDER BY occurred_at DESC
+LIMIT $1 OFFSET $2
+`
+
+type ListAuditEventsForWarmParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListAuditEventsForWarm(ctx context.Context, arg ListAuditEventsForWarmParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listAuditEventsForWarm, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}

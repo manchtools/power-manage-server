@@ -22,6 +22,19 @@ func (q *Queries) CountGroupsWithRole(ctx context.Context, roleID string) (int64
 	return count, err
 }
 
+const countMatchingUsersForQuery = `-- name: CountMatchingUsersForQuery :one
+SELECT COUNT(*) FROM users_projection
+WHERE is_deleted = FALSE
+AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE
+`
+
+func (q *Queries) CountMatchingUsersForQuery(ctx context.Context, query string) (int64, error) {
+	row := q.db.QueryRow(ctx, countMatchingUsersForQuery, query)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUserGroups = `-- name: CountUserGroups :one
 SELECT count(*) FROM user_groups_projection WHERE is_deleted = FALSE
 `
@@ -33,8 +46,28 @@ func (q *Queries) CountUserGroups(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const evaluateDynamicUserGroup = `-- name: EvaluateDynamicUserGroup :exec
+SELECT evaluate_dynamic_user_group($1)
+`
+
+func (q *Queries) EvaluateDynamicUserGroup(ctx context.Context, groupIDParam string) error {
+	_, err := q.db.Exec(ctx, evaluateDynamicUserGroup, groupIDParam)
+	return err
+}
+
+const evaluateQueuedDynamicUserGroups = `-- name: EvaluateQueuedDynamicUserGroups :one
+SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count
+`
+
+func (q *Queries) EvaluateQueuedDynamicUserGroups(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, evaluateQueuedDynamicUserGroups)
+	var evaluated_count int32
+	err := row.Scan(&evaluated_count)
+	return evaluated_count, err
+}
+
 const getUserGroupByID = `-- name: GetUserGroupByID :one
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version FROM user_groups_projection WHERE id = $1 AND is_deleted = FALSE
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query FROM user_groups_projection WHERE id = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUserGroupByID(ctx context.Context, id string) (UserGroupsProjection, error) {
@@ -50,12 +83,14 @@ func (q *Queries) GetUserGroupByID(ctx context.Context, id string) (UserGroupsPr
 		&i.UpdatedAt,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.IsDynamic,
+		&i.DynamicQuery,
 	)
 	return i, err
 }
 
 const getUserGroupByName = `-- name: GetUserGroupByName :one
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version FROM user_groups_projection WHERE name = $1 AND is_deleted = FALSE
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query FROM user_groups_projection WHERE name = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUserGroupByName(ctx context.Context, name string) (UserGroupsProjection, error) {
@@ -71,6 +106,8 @@ func (q *Queries) GetUserGroupByName(ctx context.Context, name string) (UserGrou
 		&i.UpdatedAt,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
+		&i.IsDynamic,
+		&i.DynamicQuery,
 	)
 	return i, err
 }
@@ -166,6 +203,50 @@ func (q *Queries) IsUserInGroup(ctx context.Context, arg IsUserInGroupParams) (b
 	return is_member, err
 }
 
+const listAllInheritedRoles = `-- name: ListAllInheritedRoles :many
+SELECT ugm.user_id, r.id AS role_id, r.name AS role_name,
+       ug.id AS group_id, ug.name AS group_name
+FROM user_group_members_projection ugm
+JOIN user_group_roles_projection ugr ON ugr.group_id = ugm.group_id
+JOIN roles_projection r ON r.id = ugr.role_id AND r.is_deleted = FALSE
+JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+ORDER BY ugm.user_id, ug.name, r.name
+`
+
+type ListAllInheritedRolesRow struct {
+	UserID    string `json:"user_id"`
+	RoleID    string `json:"role_id"`
+	RoleName  string `json:"role_name"`
+	GroupID   string `json:"group_id"`
+	GroupName string `json:"group_name"`
+}
+
+func (q *Queries) ListAllInheritedRoles(ctx context.Context) ([]ListAllInheritedRolesRow, error) {
+	rows, err := q.db.Query(ctx, listAllInheritedRoles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllInheritedRolesRow{}
+	for rows.Next() {
+		var i ListAllInheritedRolesRow
+		if err := rows.Scan(
+			&i.UserID,
+			&i.RoleID,
+			&i.RoleName,
+			&i.GroupID,
+			&i.GroupName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserGroupMemberIDs = `-- name: ListUserGroupMemberIDs :many
 SELECT user_id FROM user_group_members_projection WHERE group_id = $1
 `
@@ -225,7 +306,7 @@ func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]L
 }
 
 const listUserGroups = `-- name: ListUserGroups :many
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
 `
 
 type ListUserGroupsParams struct {
@@ -252,6 +333,8 @@ func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) 
 			&i.UpdatedAt,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.IsDynamic,
+			&i.DynamicQuery,
 		); err != nil {
 			return nil, err
 		}
@@ -264,7 +347,7 @@ func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) 
 }
 
 const listUserGroupsForUser = `-- name: ListUserGroupsForUser :many
-SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version FROM user_groups_projection ug
+SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version, ug.is_dynamic, ug.dynamic_query FROM user_groups_projection ug
 JOIN user_group_members_projection ugm ON ugm.group_id = ug.id
 WHERE ugm.user_id = $1 AND ug.is_deleted = FALSE
 ORDER BY ug.name
@@ -289,6 +372,8 @@ func (q *Queries) ListUserGroupsForUser(ctx context.Context, userID string) ([]U
 			&i.UpdatedAt,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
+			&i.IsDynamic,
+			&i.DynamicQuery,
 		); err != nil {
 			return nil, err
 		}
@@ -344,4 +429,15 @@ func (q *Queries) UserGroupHasRole(ctx context.Context, arg UserGroupHasRolePara
 	var has_role bool
 	err := row.Scan(&has_role)
 	return has_role, err
+}
+
+const validateUserGroupQuery = `-- name: ValidateUserGroupQuery :one
+SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message
+`
+
+func (q *Queries) ValidateUserGroupQuery(ctx context.Context, query string) (string, error) {
+	row := q.db.QueryRow(ctx, validateUserGroupQuery, query)
+	var error_message string
+	err := row.Scan(&error_message)
+	return error_message, err
 }

@@ -21,8 +21,19 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const getNextLinuxUID = `-- name: GetNextLinuxUID :one
+SELECT nextval('linux_uid_seq')::INTEGER
+`
+
+func (q *Queries) GetNextLinuxUID(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, getNextLinuxUID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled FROM users_projection
 WHERE email = $1 AND is_deleted = FALSE
 `
 
@@ -43,12 +54,27 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (UsersProjec
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshPublicKeys,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.UserProvisioningEnabled,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled FROM users_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -69,6 +95,21 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (UsersProjection, 
 		&i.SessionVersion,
 		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshPublicKeys,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.UserProvisioningEnabled,
 	)
 	return i, err
 }
@@ -91,8 +132,63 @@ func (q *Queries) GetUserSessionInfo(ctx context.Context, id string) (GetUserSes
 	return i, err
 }
 
+const listAllNonDeletedUsers = `-- name: ListAllNonDeletedUsers :many
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled FROM users_projection
+WHERE is_deleted = FALSE
+ORDER BY created_at
+`
+
+func (q *Queries) ListAllNonDeletedUsers(ctx context.Context) ([]UsersProjection, error) {
+	rows, err := q.db.Query(ctx, listAllNonDeletedUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsersProjection{}
+	for rows.Next() {
+		var i UsersProjection
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.PasswordHash,
+			&i.Role,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastLoginAt,
+			&i.Disabled,
+			&i.IsDeleted,
+			&i.ProjectionVersion,
+			&i.SessionVersion,
+			&i.TotpEnabled,
+			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
+			&i.LinuxUsername,
+			&i.LinuxUid,
+			&i.SshPublicKeys,
+			&i.SshAccessEnabled,
+			&i.SshAllowPubkey,
+			&i.SshAllowPassword,
+			&i.SystemUserActionID,
+			&i.SystemSshActionID,
+			&i.UserProvisioningEnabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllUsers = `-- name: ListAllUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled FROM users_projection
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -125,6 +221,21 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 			&i.SessionVersion,
 			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
+			&i.LinuxUsername,
+			&i.LinuxUid,
+			&i.SshPublicKeys,
+			&i.SshAccessEnabled,
+			&i.SshAllowPubkey,
+			&i.SshAllowPassword,
+			&i.SystemUserActionID,
+			&i.SystemSshActionID,
+			&i.UserProvisioningEnabled,
 		); err != nil {
 			return nil, err
 		}
@@ -137,7 +248,7 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, totp_enabled, has_password, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled FROM users_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -171,6 +282,21 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersPr
 			&i.SessionVersion,
 			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
+			&i.LinuxUsername,
+			&i.LinuxUid,
+			&i.SshPublicKeys,
+			&i.SshAccessEnabled,
+			&i.SshAllowPubkey,
+			&i.SshAllowPassword,
+			&i.SystemUserActionID,
+			&i.SystemSshActionID,
+			&i.UserProvisioningEnabled,
 		); err != nil {
 			return nil, err
 		}

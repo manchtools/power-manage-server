@@ -3,10 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -31,12 +31,13 @@ var sensitiveEventFields = map[string]bool{
 
 // AuditHandler handles audit log RPCs.
 type AuditHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewAuditHandler creates a new audit handler.
-func NewAuditHandler(st *store.Store) *AuditHandler {
-	return &AuditHandler{store: st}
+func NewAuditHandler(st *store.Store, logger *slog.Logger) *AuditHandler {
+	return &AuditHandler{store: st, logger: logger}
 }
 
 // ListAuditEvents returns a paginated list of audit events.
@@ -50,7 +51,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -63,7 +64,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list audit events"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list audit events")
 	}
 
 	count, err := h.store.Queries().CountAuditEvents(ctx, db.CountAuditEventsParams{
@@ -72,7 +73,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Column3: req.Msg.EventType,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count audit events"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count audit events")
 	}
 
 	var nextPageToken string
@@ -126,7 +127,7 @@ func redactEventData(data []byte) string {
 
 func eventToProto(e db.Event) *pm.AuditEvent {
 	event := &pm.AuditEvent{
-		Id:         uuid.UUID(e.ID.Bytes).String(),
+		Id:         ulid.ULID(e.ID.Bytes).String(),
 		EventType:  e.EventType,
 		StreamType: e.StreamType,
 		StreamId:   e.StreamID,

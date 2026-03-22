@@ -99,6 +99,57 @@ func (q *Queries) GetIdentityLinkByProviderAndUser(ctx context.Context, arg GetI
 	return i, err
 }
 
+const listIdentityLinksByProvider = `-- name: ListIdentityLinksByProvider :many
+SELECT il.id, il.user_id, il.provider_id, il.external_id, il.external_email, il.external_name, il.linked_at, il.last_login_at, il.projection_version, u.has_password
+FROM identity_links_projection il
+JOIN users_projection u ON u.id = il.user_id
+WHERE il.provider_id = $1 AND u.is_deleted = FALSE
+`
+
+type ListIdentityLinksByProviderRow struct {
+	ID                string             `json:"id"`
+	UserID            string             `json:"user_id"`
+	ProviderID        string             `json:"provider_id"`
+	ExternalID        string             `json:"external_id"`
+	ExternalEmail     string             `json:"external_email"`
+	ExternalName      string             `json:"external_name"`
+	LinkedAt          pgtype.Timestamptz `json:"linked_at"`
+	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
+	ProjectionVersion int64              `json:"projection_version"`
+	HasPassword       bool               `json:"has_password"`
+}
+
+func (q *Queries) ListIdentityLinksByProvider(ctx context.Context, providerID string) ([]ListIdentityLinksByProviderRow, error) {
+	rows, err := q.db.Query(ctx, listIdentityLinksByProvider, providerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIdentityLinksByProviderRow{}
+	for rows.Next() {
+		var i ListIdentityLinksByProviderRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.ProviderID,
+			&i.ExternalID,
+			&i.ExternalEmail,
+			&i.ExternalName,
+			&i.LinkedAt,
+			&i.LastLoginAt,
+			&i.ProjectionVersion,
+			&i.HasPassword,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIdentityLinksForUser = `-- name: ListIdentityLinksForUser :many
 SELECT il.id, il.user_id, il.provider_id, il.external_id, il.external_email, il.external_name, il.linked_at, il.last_login_at, il.projection_version, ip.name AS provider_name, ip.slug AS provider_slug
 FROM identity_links_projection il

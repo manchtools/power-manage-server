@@ -2,15 +2,14 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -18,8 +17,11 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // ActionSigner signs action payloads. Nil means signing is disabled.
@@ -29,151 +31,175 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	store   *store.Store
-	entropy *ulid.MonotonicEntropy
-	logger  *slog.Logger
-	signer  ActionSigner
+	store     *store.Store
+	logger    *slog.Logger
+	signer    ActionSigner
+	aqClient  *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
+	searchIdx *search.Index
 }
 
 // NewActionHandler creates a new action handler.
-func NewActionHandler(st *store.Store, signer ActionSigner) *ActionHandler {
+func NewActionHandler(st *store.Store, logger *slog.Logger, signer ActionSigner) *ActionHandler {
 	return &ActionHandler{
-		store:   st,
-		entropy: ulid.Monotonic(rand.Reader, 0),
-		logger:  slog.Default(),
-		signer:  signer,
+		store:  st,
+		logger: logger,
+		signer: signer,
 	}
 }
 
+// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
+func (h *ActionHandler) SetTaskQueueClient(c *taskqueue.Client) {
+	h.aqClient = c
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *ActionHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
+}
+
 // validateCreateActionParams validates params for CreateActionRequest using struct tags.
-func validateCreateActionParams(req *pm.CreateActionRequest) error {
+func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest) error {
 	switch p := req.Params.(type) {
 	case *pm.CreateActionRequest_Package:
 		if p.Package != nil {
-			return Validate(p.Package)
+			return Validate(ctx, p.Package)
 		}
 	case *pm.CreateActionRequest_Shell:
 		if p.Shell != nil {
-			return Validate(p.Shell)
+			if err := Validate(ctx, p.Shell); err != nil {
+				return err
+			}
+			if p.Shell.Script == "" && p.Shell.DetectionScript == "" {
+				return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
+			}
+			return nil
 		}
 	case *pm.CreateActionRequest_Systemd:
 		if p.Systemd != nil {
-			return Validate(p.Systemd)
+			return Validate(ctx, p.Systemd)
 		}
 	case *pm.CreateActionRequest_File:
 		if p.File != nil {
-			return Validate(p.File)
+			return Validate(ctx, p.File)
 		}
 	case *pm.CreateActionRequest_App:
 		if p.App != nil {
-			return Validate(p.App)
+			return Validate(ctx, p.App)
 		}
 	case *pm.CreateActionRequest_Flatpak:
 		if p.Flatpak != nil {
-			return Validate(p.Flatpak)
+			return Validate(ctx, p.Flatpak)
 		}
 	case *pm.CreateActionRequest_Update:
 		if p.Update != nil {
-			return Validate(p.Update)
+			return Validate(ctx, p.Update)
 		}
 	case *pm.CreateActionRequest_Repository:
 		if p.Repository != nil {
-			return Validate(p.Repository)
+			return Validate(ctx, p.Repository)
 		}
 	case *pm.CreateActionRequest_Directory:
 		if p.Directory != nil {
-			return Validate(p.Directory)
+			return Validate(ctx, p.Directory)
 		}
 	case *pm.CreateActionRequest_User:
 		if p.User != nil {
-			return Validate(p.User)
+			return Validate(ctx, p.User)
 		}
 	case *pm.CreateActionRequest_Ssh:
 		if p.Ssh != nil {
-			return Validate(p.Ssh)
+			return Validate(ctx, p.Ssh)
 		}
 	case *pm.CreateActionRequest_Sshd:
 		if p.Sshd != nil {
-			return Validate(p.Sshd)
+			return Validate(ctx, p.Sshd)
 		}
 	case *pm.CreateActionRequest_Sudo:
 		if p.Sudo != nil {
-			return Validate(p.Sudo)
+			return Validate(ctx, p.Sudo)
 		}
 	case *pm.CreateActionRequest_Lps:
 		if p.Lps != nil {
-			return Validate(p.Lps)
+			return Validate(ctx, p.Lps)
 		}
 	case *pm.CreateActionRequest_Luks:
 		if p.Luks != nil {
-			return Validate(p.Luks)
+			return Validate(ctx, p.Luks)
+		}
+	case *pm.CreateActionRequest_Wifi:
+		if p.Wifi != nil {
+			return Validate(ctx, p.Wifi)
 		}
 	}
 	return nil
 }
 
 // validateUpdateActionParams validates params for UpdateActionParamsRequest using struct tags.
-func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
+func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsRequest) error {
 	switch p := req.Params.(type) {
 	case *pm.UpdateActionParamsRequest_Package:
 		if p.Package != nil {
-			return Validate(p.Package)
+			return Validate(ctx, p.Package)
 		}
 	case *pm.UpdateActionParamsRequest_Shell:
 		if p.Shell != nil {
-			return Validate(p.Shell)
+			return Validate(ctx, p.Shell)
 		}
 	case *pm.UpdateActionParamsRequest_Systemd:
 		if p.Systemd != nil {
-			return Validate(p.Systemd)
+			return Validate(ctx, p.Systemd)
 		}
 	case *pm.UpdateActionParamsRequest_File:
 		if p.File != nil {
-			return Validate(p.File)
+			return Validate(ctx, p.File)
 		}
 	case *pm.UpdateActionParamsRequest_App:
 		if p.App != nil {
-			return Validate(p.App)
+			return Validate(ctx, p.App)
 		}
 	case *pm.UpdateActionParamsRequest_Flatpak:
 		if p.Flatpak != nil {
-			return Validate(p.Flatpak)
+			return Validate(ctx, p.Flatpak)
 		}
 	case *pm.UpdateActionParamsRequest_Update:
 		if p.Update != nil {
-			return Validate(p.Update)
+			return Validate(ctx, p.Update)
 		}
 	case *pm.UpdateActionParamsRequest_Repository:
 		if p.Repository != nil {
-			return Validate(p.Repository)
+			return Validate(ctx, p.Repository)
 		}
 	case *pm.UpdateActionParamsRequest_Directory:
 		if p.Directory != nil {
-			return Validate(p.Directory)
+			return Validate(ctx, p.Directory)
 		}
 	case *pm.UpdateActionParamsRequest_User:
 		if p.User != nil {
-			return Validate(p.User)
+			return Validate(ctx, p.User)
 		}
 	case *pm.UpdateActionParamsRequest_Ssh:
 		if p.Ssh != nil {
-			return Validate(p.Ssh)
+			return Validate(ctx, p.Ssh)
 		}
 	case *pm.UpdateActionParamsRequest_Sshd:
 		if p.Sshd != nil {
-			return Validate(p.Sshd)
+			return Validate(ctx, p.Sshd)
 		}
 	case *pm.UpdateActionParamsRequest_Sudo:
 		if p.Sudo != nil {
-			return Validate(p.Sudo)
+			return Validate(ctx, p.Sudo)
 		}
 	case *pm.UpdateActionParamsRequest_Lps:
 		if p.Lps != nil {
-			return Validate(p.Lps)
+			return Validate(ctx, p.Lps)
 		}
 	case *pm.UpdateActionParamsRequest_Luks:
 		if p.Luks != nil {
-			return Validate(p.Luks)
+			return Validate(ctx, p.Luks)
+		}
+	case *pm.UpdateActionParamsRequest_Wifi:
+		if p.Wifi != nil {
+			return Validate(ctx, p.Wifi)
 		}
 	}
 	return nil
@@ -181,34 +207,36 @@ func validateUpdateActionParams(req *pm.UpdateActionParamsRequest) error {
 
 // CreateAction creates a new action (single executable).
 func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[pm.CreateActionRequest]) (*connect.Response[pm.CreateActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
-	if err := validateCreateActionParams(req.Msg); err != nil {
+	if err := validateCreateActionParams(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	params, err := h.serializeCreateActionParams(req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
 	// Auto-assign priority for SSHD actions based on creation order
 	if req.Msg.Type == pm.ActionType_ACTION_TYPE_SSHD {
-		count, countErr := h.store.Queries().CountActions(ctx, int32(pm.ActionType_ACTION_TYPE_SSHD))
+		count, countErr := h.store.Queries().CountActions(ctx, db.CountActionsParams{
+			Column1: int32(pm.ActionType_ACTION_TYPE_SSHD),
+		})
 		if countErr != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to count SSHD actions: %w", countErr))
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count SSHD actions")
 		}
 		params["priority"] = count
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	timeoutSeconds := int32(req.Msg.TimeoutSeconds)
 	if timeoutSeconds <= 0 {
@@ -232,17 +260,25 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	})
 	if err != nil {
 		h.logger.Error("failed to append action event", "error", err, "id", id)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to create action: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create action")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", id,
+		"event_type", "ActionCreated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get action after create", "error", err, "id", id)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to get action: %w", err))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	// Sign the action so agents can verify authenticity
 	h.signAction(ctx, &action)
+
+	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.CreateActionResponse{
 		Action: h.actionToProto(action),
@@ -251,16 +287,16 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 
 // GetAction returns an action by ID.
 func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.GetActionRequest]) (*connect.Response[pm.GetActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	return connect.NewResponse(&pm.GetActionResponse{
@@ -279,7 +315,7 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -287,17 +323,21 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	typeFilter := int32(req.Msg.TypeFilter)
 
 	actions, err := h.store.Queries().ListActions(ctx, db.ListActionsParams{
-		Column1: typeFilter,
-		Limit:   pageSize,
-		Offset:  offset,
+		Column1:        typeFilter,
+		Limit:          pageSize,
+		Offset:         offset,
+		UnassignedOnly: req.Msg.UnassignedOnly,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list actions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
 	}
 
-	count, err := h.store.Queries().CountActions(ctx, typeFilter)
+	count, err := h.store.Queries().CountActions(ctx, db.CountActionsParams{
+		Column1:        typeFilter,
+		UnassignedOnly: req.Msg.UnassignedOnly,
+	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count actions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count actions")
 	}
 
 	var nextPageToken string
@@ -319,13 +359,21 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 
 // RenameAction renames an action.
 func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[pm.RenameActionRequest]) (*connect.Response[pm.UpdateActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// Verify action exists before appending event
+	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -339,16 +387,21 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to rename action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename action")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionRenamed",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
+
+	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -357,13 +410,21 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 
 // UpdateActionDescription updates an action's description.
 func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connect.Request[pm.UpdateActionDescriptionRequest]) (*connect.Response[pm.UpdateActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// Verify action exists before appending event
+	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -377,16 +438,21 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update description"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionDescriptionUpdated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
-		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
+
+	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -395,30 +461,30 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 
 // UpdateActionParams updates an action's parameters, desired state, and timeout.
 func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Request[pm.UpdateActionParamsRequest]) (*connect.Response[pm.UpdateActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
-	if err := validateUpdateActionParams(req.Msg); err != nil {
+	if err := validateUpdateActionParams(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	existing, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	params, err := h.serializeUpdateActionParams(req.Msg)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
 	// Preserve server-assigned priority for SSHD actions
@@ -449,19 +515,27 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update action params"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update action params")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionParamsUpdated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
 	// Re-sign the action after params update
 	h.signAction(ctx, &action)
+
+	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -503,13 +577,19 @@ func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjec
 
 // DeleteAction deletes an action.
 func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[pm.DeleteActionRequest]) (*connect.Response[pm.DeleteActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// Capture cascade IDs from Valkey before deleting.
+	var cascadeIDs []string
+	if h.searchIdx != nil {
+		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "action", req.Msg.Id)
 	}
 
 	err := h.store.AppendEvent(ctx, store.Event{
@@ -521,7 +601,19 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete action")
+	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionDeleted",
+	)
+
+	if h.searchIdx != nil {
+		if err := h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs); err != nil {
+			h.logger.Warn("failed to enqueue search index remove", "scope", "action", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
@@ -529,21 +621,21 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 
 // DispatchAction dispatches an action to a device.
 func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request[pm.DispatchActionRequest]) (*connect.Response[pm.DispatchActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	var actionType pm.ActionType
@@ -551,15 +643,18 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	var params any // Use any to store either parsed JSON object or raw JSON
 	var timeoutSeconds int32
 	var actionID *string
+	var actionName string
+	var signature []byte
+	var paramsCanonical []byte
 
 	switch source := req.Msg.ActionSource.(type) {
 	case *pm.DispatchActionRequest_ActionId:
 		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, connect.NewError(connect.CodeNotFound, errors.New("action not found"))
+				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action"))
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 		}
 		actionType = pm.ActionType(action.ActionType)
 		desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
@@ -572,6 +667,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
+		actionName = action.Name
+		signature = action.Signature
+		paramsCanonical = action.ParamsCanonical
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
@@ -584,10 +682,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("either action_id or inline_action is required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "either action_id or inline_action is required")
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
@@ -609,43 +707,75 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "execution",
+		"stream_id", id,
+		"event_type", "ExecutionCreated",
+	)
 
-	// Notify agent channel directly with action_dispatch format.
-	// The PostgreSQL trigger sends an event notification, but the gateway dispatcher
-	// only handles action_dispatch messages. This ensures the action reaches the agent
-	// immediately if connected, without waiting for the next sync.
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	dispatchPayload := map[string]any{
-		"type":            "action_dispatch",
-		"execution_id":    id,
-		"action_type":     int32(actionType),
-		"desired_state":   int32(desiredState),
-		"params":          params,
-		"timeout_seconds": timeoutSeconds,
-	}
-	payloadBytes, err := json.Marshal(dispatchPayload)
-	if err != nil {
-		h.logger.Error("failed to marshal dispatch payload", "error", err, "execution_id", id)
-	} else {
-		h.logger.Debug("sending action dispatch notification",
-			"execution_id", id,
-			"device_id", req.Msg.DeviceId,
-			"action_type", actionType.String(),
-			"channel", agentChannel,
-		)
-		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
-			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
-		} else {
-			h.logger.Debug("action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+	// Dispatch action to device via Asynq task queue
+	if h.aqClient != nil {
+		paramsJSON, _ := json.Marshal(params)
+
+		// Always re-sign with the execution ID — the agent verifies against
+		// the received action ID, which is the execution ID for dispatched actions.
+		if h.signer != nil {
+			if sig, err := h.signer.Sign(id, int32(actionType), paramsJSON); err == nil {
+				signature = sig
+				paramsCanonical = paramsJSON
+			}
+		}
+
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+			ExecutionID:     id,
+			ActionType:      int32(actionType),
+			DesiredState:    int32(desiredState),
+			Params:          paramsJSON,
+			TimeoutSeconds:  timeoutSeconds,
+			Signature:       signature,
+			ParamsCanonical: paramsCanonical,
+		}, asynq.MaxRetry(5)); err != nil {
+			h.logger.Warn("failed to enqueue action dispatch", "error", err, "execution_id", id)
 		}
 	}
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
+	}
+
+	// Enqueue execution for search indexing using already-fetched data.
+	if h.searchIdx != nil {
+		var execCreatedAt int64
+		if exec.CreatedAt.Valid {
+			execCreatedAt = exec.CreatedAt.Time.Unix()
+		}
+		var execDurationMs int64
+		if exec.DurationMs != nil {
+			execDurationMs = *exec.DurationMs
+		}
+		execActionID := ""
+		if exec.ActionID != nil {
+			execActionID = *exec.ActionID
+		}
+		if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeExecution, exec.ID, &taskqueue.SearchEntityData{
+			ActionName:     actionName,
+			DeviceHostname: device.Hostname,
+			Status:         exec.Status,
+			Type:           exec.ActionType,
+			DeviceID:       exec.DeviceID,
+			CreatedAt:      execCreatedAt,
+			DurationMs:     execDurationMs,
+			Changed:        exec.Changed,
+			DesiredState:   exec.DesiredState,
+			ActionID:       execActionID,
+		}); err != nil {
+			h.logger.Warn("failed to enqueue execution search reindex", "error", err)
+		}
 	}
 
 	h.logger.Info("action dispatched",
@@ -661,7 +791,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 // DispatchToMultiple dispatches an action to multiple devices.
 func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Request[pm.DispatchToMultipleRequest]) (*connect.Response[pm.DispatchToMultipleResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -686,6 +816,7 @@ func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Req
 
 		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 		if err != nil {
+			h.logger.Warn("dispatch to device failed", "device_id", deviceID, "error", err)
 			continue
 		}
 		executions = append(executions, resp.Msg.Execution)
@@ -698,13 +829,13 @@ func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Req
 
 // DispatchAssignedActions dispatches all actions assigned to a device.
 func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connect.Request[pm.DispatchAssignedActionsRequest]) (*connect.Response[pm.DispatchAssignedActionsResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assigned actions")
 	}
 
 	executions := make([]*pm.ActionExecution, 0, len(actions))
@@ -727,13 +858,13 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 
 // DispatchActionSet dispatches all actions from an action set to a device.
 func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Request[pm.DispatchActionSetRequest]) (*connect.Response[pm.DispatchActionSetResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get actions in set"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get actions in set")
 	}
 
 	executions := make([]*pm.ActionExecution, 0, len(actions))
@@ -756,13 +887,13 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 
 // DispatchDefinition dispatches all actions from a definition to a device.
 func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Request[pm.DispatchDefinitionRequest]) (*connect.Response[pm.DispatchDefinitionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	actionSets, err := h.store.Queries().ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get action sets in definition"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action sets in definition")
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
@@ -791,13 +922,13 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 
 // DispatchToGroup dispatches an action/set/definition to all devices in a group.
 func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Request[pm.DispatchToGroupRequest]) (*connect.Response[pm.DispatchToGroupResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	devices, err := h.store.Queries().ListDevicesInGroup(ctx, req.Msg.GroupId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get devices in group"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get devices in group")
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
@@ -853,19 +984,27 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 
 // GetExecution returns an execution by ID.
 func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[pm.GetExecutionRequest]) (*connect.Response[pm.GetExecutionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
+			return nil, apiErrorCtx(ctx, ErrExecutionNotFound, connect.CodeNotFound, "execution not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
 	protoExec := h.executionToProto(exec)
+
+	// Fetch action name
+	if exec.ActionID != nil {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, []string{*exec.ActionID})
+		if err == nil && len(rows) > 0 {
+			protoExec.ActionName = rows[0].Name
+		}
+	}
 
 	// Load live output from output chunks
 	liveOutput := h.loadLiveOutput(ctx, req.Msg.Id)
@@ -889,7 +1028,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid page token"))
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -899,22 +1038,29 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		statusFilter = statusToString(req.Msg.StatusFilter)
 	}
 
+	typeFilter := int32(req.Msg.TypeFilter)
+	searchQuery := strings.TrimSpace(req.Msg.Search)
+
 	execs, err := h.store.Queries().ListExecutions(ctx, db.ListExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
 		Limit:   pageSize,
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list executions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list executions")
 	}
 
 	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
 		Column1: req.Msg.DeviceId,
 		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to count executions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count executions")
 	}
 
 	var nextPageToken string
@@ -925,6 +1071,28 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	protoExecs := make([]*pm.ActionExecution, len(execs))
 	for i, e := range execs {
 		protoExecs[i] = h.executionToProto(e)
+	}
+
+	// Batch-fetch action names to avoid N+1 queries on the client
+	actionIDs := make([]string, 0, len(execs))
+	for _, e := range execs {
+		if e.ActionID != nil {
+			actionIDs = append(actionIDs, *e.ActionID)
+		}
+	}
+	if len(actionIDs) > 0 {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, actionIDs)
+		if err == nil {
+			nameMap := make(map[string]string, len(rows))
+			for _, row := range rows {
+				nameMap[row.ID] = row.Name
+			}
+			for i, e := range execs {
+				if e.ActionID != nil {
+					protoExecs[i].ActionName = nameMap[*e.ActionID]
+				}
+			}
+		}
 	}
 
 	return connect.NewResponse(&pm.ListExecutionsResponse{
@@ -942,25 +1110,25 @@ func isInstantActionType(t pm.ActionType) bool {
 // DispatchInstantAction dispatches an instant action (reboot, sync) to a device.
 // Instant actions are agent-builtin and require no parameters.
 func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.Request[pm.DispatchInstantActionRequest]) (*connect.Response[pm.DispatchInstantActionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	if !isInstantActionType(req.Msg.InstantAction) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid instant action type: %s", req.Msg.InstantAction.String()))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
 	}
 
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get device"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
 	var timeoutSeconds int32
@@ -971,7 +1139,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		timeoutSeconds = 60
 	}
 
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), h.entropy).String()
+	id := ulid.Make().String()
 
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
@@ -990,41 +1158,32 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create execution"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "execution",
+		"stream_id", id,
+		"event_type", "ExecutionCreated",
+	)
 
-	// Notify agent channel directly with action_dispatch format.
-	// This ensures instant actions reach the agent immediately if connected.
-	agentChannel := fmt.Sprintf("agent_%s", req.Msg.DeviceId)
-	dispatchPayload := map[string]any{
-		"type":            "action_dispatch",
-		"execution_id":    id,
-		"action_type":     int32(req.Msg.InstantAction),
-		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		"params":          map[string]any{},
-		"timeout_seconds": timeoutSeconds,
-	}
-	payloadBytes, err := json.Marshal(dispatchPayload)
-	if err != nil {
-		h.logger.Error("failed to marshal instant action dispatch payload", "error", err, "execution_id", id)
-	} else {
-		h.logger.Debug("sending instant action dispatch notification",
-			"execution_id", id,
-			"device_id", req.Msg.DeviceId,
-			"action_type", req.Msg.InstantAction.String(),
-			"channel", agentChannel,
-		)
-		if err := h.store.Notify(ctx, agentChannel, string(payloadBytes)); err != nil {
-			h.logger.Warn("failed to notify agent channel", "error", err, "channel", agentChannel)
-		} else {
-			h.logger.Debug("instant action dispatch notification sent", "execution_id", id, "channel", agentChannel)
+	// Dispatch instant action to device via Asynq task queue
+	if h.aqClient != nil {
+		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+			ExecutionID:    id,
+			ActionType:     int32(req.Msg.InstantAction),
+			DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+			Params:         json.RawMessage("{}"),
+			TimeoutSeconds: timeoutSeconds,
+		}, asynq.MaxRetry(3)); err != nil {
+			h.logger.Warn("failed to enqueue instant action dispatch", "error", err, "execution_id", id)
 		}
 	}
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get execution"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
 	h.logger.Info("instant action dispatched",
@@ -1075,6 +1234,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.CreateActionRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.CreateActionRequest_Wifi:
+		data, err = protojson.Marshal(p.Wifi)
 	default:
 		return params, nil
 	}
@@ -1126,6 +1287,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.UpdateActionParamsRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.UpdateActionParamsRequest_Wifi:
+		data, err = protojson.Marshal(p.Wifi)
 	default:
 		return params, nil
 	}
@@ -1195,9 +1358,47 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 	case *pm.Action_Luks:
 		data, _ := protojson.Marshal(p.Luks)
 		json.Unmarshal(data, &params)
+	case *pm.Action_Wifi:
+		data, _ := protojson.Marshal(p.Wifi)
+		json.Unmarshal(data, &params)
 	}
 
 	return params
+}
+
+// enqueueActionReindex enqueues a search index update for an action.
+func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	desc := ""
+	if a.Description != nil {
+		desc = *a.Description
+	}
+	isCompliance := false
+	var params map[string]any
+	if json.Unmarshal(a.Params, &params) == nil {
+		if v, ok := params["isCompliance"].(bool); ok {
+			isCompliance = v
+		}
+	}
+	var createdAt, updatedAt int64
+	if a.CreatedAt.Valid {
+		createdAt = a.CreatedAt.Time.Unix()
+	}
+	if a.UpdatedAt.Valid {
+		updatedAt = a.UpdatedAt.Time.Unix()
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
+		Name:         a.Name,
+		Description:  desc,
+		Type:         a.ActionType,
+		IsCompliance: isCompliance,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}); err != nil {
+		h.logger.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
+	}
 }
 
 func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {
@@ -1216,6 +1417,10 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 
 	if a.CreatedAt.Valid {
 		action.CreatedAt = timestamppb.New(a.CreatedAt.Time)
+	}
+
+	if a.UpdatedAt.Valid {
+		action.UpdatedAt = timestamppb.New(a.UpdatedAt.Time)
 	}
 
 	if len(a.Params) > 0 {
@@ -1297,6 +1502,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Luks{Luks: &p}
 		}
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		var p pm.WifiParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_Wifi{Wifi: &p}
+		}
 	}
 }
 
@@ -1341,6 +1551,14 @@ func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionEx
 
 	if e.CompletedAt.Valid {
 		exec.CompletedAt = timestamppb.New(e.CompletedAt.Time)
+	}
+
+	exec.Compliant = e.Compliant
+	if len(e.DetectionOutput) > 0 {
+		var detOutput pm.CommandOutput
+		if err := json.Unmarshal(e.DetectionOutput, &detOutput); err == nil {
+			exec.DetectionOutput = &detOutput
+		}
 	}
 
 	return exec

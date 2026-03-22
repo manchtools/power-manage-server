@@ -13,24 +13,27 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // TOTPHandler handles TOTP two-factor authentication RPCs.
 type TOTPHandler struct {
 	store      *store.Store
+	logger     *slog.Logger
 	jwtManager *auth.JWTManager
 	encryptor  *crypto.Encryptor
 	issuer     string
 }
 
 // NewTOTPHandler creates a new TOTP handler.
-func NewTOTPHandler(st *store.Store, jwtManager *auth.JWTManager, enc *crypto.Encryptor, issuer string) *TOTPHandler {
+func NewTOTPHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager, enc *crypto.Encryptor, issuer string) *TOTPHandler {
 	if issuer == "" {
 		issuer = totp.DefaultIssuer
 	}
 	return &TOTPHandler{
 		store:      st,
+		logger:     logger,
 		jwtManager: jwtManager,
 		encryptor:  enc,
 		issuer:     issuer,
@@ -41,25 +44,34 @@ func NewTOTPHandler(st *store.Store, jwtManager *auth.JWTManager, enc *crypto.En
 func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.SetupTOTPRequest]) (*connect.Response[pm.SetupTOTPResponse], error) {
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	// SSO-only users cannot set up TOTP — they must use their identity provider's MFA
+	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+	if !user.HasPassword {
+		return nil, apiErrorCtx(ctx, ErrTOTPSSONotAllowed, connect.CodeFailedPrecondition, "TOTP cannot be configured for accounts using federated login (SSO); use your identity provider's MFA instead")
 	}
 
 	// Generate TOTP key
 	key, err := totp.GenerateKey(h.issuer, userCtx.Email)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate TOTP key"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate TOTP key")
 	}
 
 	// Generate backup codes
 	codes, hashes, err := totp.GenerateBackupCodes()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate backup codes"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate backup codes")
 	}
 
 	// Encrypt the TOTP secret
 	encryptedSecret, err := h.encryptor.Encrypt(key.Secret())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to encrypt TOTP secret"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt TOTP secret")
 	}
 
 	// Store via event
@@ -80,8 +92,14 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save TOTP setup"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to save TOTP setup")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPSetupInitiated",
+	)
 
 	return connect.NewResponse(&pm.SetupTOTPResponse{
 		Secret:      key.Secret(),
@@ -92,32 +110,32 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 
 // VerifyTOTP confirms TOTP setup by validating a code from the user's authenticator app.
 func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.VerifyTOTPRequest]) (*connect.Response[pm.VerifyTOTPResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Get pending TOTP setup
 	totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, userCtx.ID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP not set up, call SetupTOTP first"))
+			return nil, apiErrorCtx(ctx, ErrTOTPNotSetUp, connect.CodeFailedPrecondition, "TOTP not set up, call SetupTOTP first")
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get TOTP status"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get TOTP status")
 	}
 
 	if totpRecord.Enabled {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP is already enabled"))
+		return nil, apiErrorCtx(ctx, ErrTOTPAlreadyEnabled, connect.CodeFailedPrecondition, "TOTP is already enabled")
 	}
 
 	// Decrypt secret and validate code
 	secret, err := h.encryptor.Decrypt(totpRecord.SecretEncrypted)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to decrypt TOTP secret"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt TOTP secret")
 	}
 
 	if !totp.ValidateCode(req.Msg.Code, secret) {
@@ -134,36 +152,46 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to verify TOTP"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify TOTP")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPVerified",
+	)
 
 	return connect.NewResponse(&pm.VerifyTOTPResponse{Success: true}), nil
 }
 
 // DisableTOTP disables TOTP for the current user (requires password confirmation).
 func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.DisableTOTPRequest]) (*connect.Response[pm.DisableTOTPResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify password
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	if !user.HasPassword {
+		return nil, apiErrorCtx(ctx, ErrTOTPSSONotAllowed, connect.CodeFailedPrecondition, "cannot disable TOTP for accounts using federated login (SSO); contact an administrator")
 	}
 
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid password"))
+		return nil, apiErrorCtx(ctx, ErrPasswordIncorrect, connect.CodeUnauthenticated, "invalid password")
 	}
 
 	// Check TOTP is enabled
 	if !user.TotpEnabled {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP is not enabled"))
+		return nil, apiErrorCtx(ctx, ErrTOTPNotEnabled, connect.CodeFailedPrecondition, "TOTP is not enabled")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -175,17 +203,70 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to disable TOTP"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable TOTP")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPDisabled",
+	)
 
 	return connect.NewResponse(&pm.DisableTOTPResponse{}), nil
+}
+
+// AdminDisableUserTOTP disables TOTP for another user (admin only, no password required).
+func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Request[pm.AdminDisableUserTOTPRequest]) (*connect.Response[pm.AdminDisableUserTOTPResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
+	targetUserID := req.Msg.UserId
+
+	// Check target user exists and has TOTP enabled
+	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	if !user.TotpEnabled {
+		return nil, apiErrorCtx(ctx, ErrTOTPNotEnabled, connect.CodeFailedPrecondition, "TOTP is not enabled for this user")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   targetUserID,
+		EventType:  "TOTPDisabled",
+		Data:       map[string]any{"admin": true},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable TOTP")
+	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", targetUserID,
+		"event_type", "TOTPDisabled",
+	)
+
+	return connect.NewResponse(&pm.AdminDisableUserTOTPResponse{}), nil
 }
 
 // GetTOTPStatus returns whether TOTP is enabled and how many backup codes remain.
 func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	status, err := h.store.Queries().GetTOTPStatus(ctx, userCtx.ID)
@@ -196,7 +277,7 @@ func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm
 				BackupCodesRemaining: 0,
 			}), nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get TOTP status"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get TOTP status")
 	}
 
 	return connect.NewResponse(&pm.GetTOTPStatusResponse{
@@ -207,33 +288,37 @@ func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm
 
 // RegenerateBackupCodes generates new backup codes (requires password confirmation).
 func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Request[pm.RegenerateBackupCodesRequest]) (*connect.Response[pm.RegenerateBackupCodesResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify password
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+	}
+
+	if !user.HasPassword {
+		return nil, apiErrorCtx(ctx, ErrTOTPSSONotAllowed, connect.CodeFailedPrecondition, "cannot regenerate backup codes for accounts using federated login (SSO); contact an administrator")
 	}
 
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid password"))
+		return nil, apiErrorCtx(ctx, ErrPasswordIncorrect, connect.CodeUnauthenticated, "invalid password")
 	}
 
 	if !user.TotpEnabled {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP is not enabled"))
+		return nil, apiErrorCtx(ctx, ErrTOTPNotEnabled, connect.CodeFailedPrecondition, "TOTP is not enabled")
 	}
 
 	// Generate new backup codes
 	codes, hashes, err := totp.GenerateBackupCodes()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate backup codes"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate backup codes")
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -247,8 +332,14 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to regenerate backup codes"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to regenerate backup codes")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPBackupCodesRegenerated",
+	)
 
 	return connect.NewResponse(&pm.RegenerateBackupCodesResponse{
 		BackupCodes: codes,
@@ -257,30 +348,30 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 
 // VerifyLoginTOTP validates a TOTP code during the login flow (after password auth).
 func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[pm.VerifyLoginTOTPRequest]) (*connect.Response[pm.VerifyLoginTOTPResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	// Validate the challenge token
 	claims, err := h.jwtManager.ValidateToken(req.Msg.Challenge, auth.TokenTypeTOTPChallenge)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid or expired TOTP challenge"))
+		return nil, apiErrorCtx(ctx, ErrTOTPChallengeExpired, connect.CodeFailedPrecondition, "invalid or expired TOTP challenge")
 	}
 
 	// Get TOTP record
 	totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, claims.UserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get TOTP data"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get TOTP data")
 	}
 
 	if !totpRecord.Enabled {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("TOTP is not enabled"))
+		return nil, apiErrorCtx(ctx, ErrTOTPNotEnabled, connect.CodeFailedPrecondition, "TOTP is not enabled")
 	}
 
 	// Decrypt secret
 	secret, err := h.encryptor.Decrypt(totpRecord.SecretEncrypted)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to decrypt TOTP secret"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt TOTP secret")
 	}
 
 	// Try TOTP code first (6 digits)
@@ -303,36 +394,43 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 				ActorType:  "user",
 				ActorID:    claims.UserID,
 			}); err != nil {
-				slog.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
+				h.logger.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
+			} else {
+				h.logger.Debug("event appended",
+					"request_id", middleware.RequestIDFromContext(ctx),
+					"stream_type", "totp",
+					"stream_id", claims.UserID,
+					"event_type", "TOTPBackupCodeUsed",
+				)
 			}
 		}
 	}
 
 	if !codeValid {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("invalid TOTP code"))
+		return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
 	}
 
 	// Check user status
 	info, err := h.store.Queries().GetUserSessionInfo(ctx, claims.UserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("user not found"))
+		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeUnauthenticated, "user not found")
 	}
 	if info.IsDeleted || info.Disabled {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("account is disabled or deleted"))
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "account is disabled")
 	}
 	if info.SessionVersion != claims.SessionVersion {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("session invalidated, please log in again"))
+		return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "session invalidated, please log in again")
 	}
 
 	// Resolve permissions and generate real tokens
 	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, claims.UserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve permissions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
 
 	tokens, err := h.jwtManager.GenerateTokens(claims.UserID, claims.Email, permissions, claims.SessionVersion)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to generate tokens"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}
 
 	// Emit login event
@@ -344,13 +442,20 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		ActorType:  "user",
 		ActorID:    claims.UserID,
 	}); err != nil {
-		slog.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+		h.logger.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", claims.UserID,
+			"event_type", "UserLoggedIn",
+		)
 	}
 
 	// Get full user for response
 	user, err := h.store.Queries().GetUserByID(ctx, claims.UserID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get user"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
 	protoUser := userToProto(user)

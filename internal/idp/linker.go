@@ -35,6 +35,7 @@ type Querier interface {
 	GetIdentityLinkByProviderAndExternalID(ctx context.Context, arg db.GetIdentityLinkByProviderAndExternalIDParams) (db.IdentityLinksProjection, error)
 	GetUserByEmail(ctx context.Context, email string) (db.UsersProjection, error)
 	GetUserByID(ctx context.Context, id string) (db.UsersProjection, error)
+	GetServerSettings(ctx context.Context) (db.ServerSettingsProjection, error)
 }
 
 // EventAppender is the interface for appending events.
@@ -96,14 +97,16 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				"link_id", link.ID,
 				"user_id", link.UserID,
 			)
-			_ = l.appender.AppendEvent(ctx, EventInput{
+			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
 				EventType:  "IdentityUnlinked",
 				Data:       map[string]any{},
 				ActorType:  "system",
 				ActorID:    "sso",
-			})
+			}); err != nil {
+				slog.Warn("failed to append IdentityUnlinked event", "link_id", link.ID, "error", err)
+			}
 			// Fall through to Step 2/3
 		} else if userErr != nil {
 			return nil, fmt.Errorf("verify linked user: %w", userErr)
@@ -184,9 +187,14 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			StreamID:   userID,
 			EventType:  "UserCreated",
 			Data: map[string]any{
-				"email": claims.Email,
-				"role":  "user",
-				// No password_hash — SSO-only user
+				"email":              claims.Email,
+				"role":               "user",
+				"display_name":       claims.Name,
+				"given_name":         claims.GivenName,
+				"family_name":        claims.FamilyName,
+				"preferred_username": claims.PreferredUsername,
+				"picture":            claims.Picture,
+				"locale":             claims.Locale,
 			},
 			ActorType: "system",
 			ActorID:   "sso",
@@ -210,6 +218,40 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			}); err != nil {
 				slog.Warn("failed to assign default role to SSO user", "user_id", userID, "role_id", provider.DefaultRoleID, "error", err)
 			}
+		}
+
+		// Auto-enable provisioning/SSH if global server settings are on
+		if settings, err := l.queries.GetServerSettings(ctx); err == nil {
+			if settings.UserProvisioningEnabled {
+				if err := l.appender.AppendEvent(ctx, EventInput{
+					StreamType: "user",
+					StreamID:   userID,
+					EventType:  "UserProvisioningSettingsUpdated",
+					Data:       map[string]any{"user_provisioning_enabled": true},
+					ActorType:  "system",
+					ActorID:    "sso",
+				}); err != nil {
+					slog.Warn("failed to auto-enable provisioning for SSO user", "user_id", userID, "error", err)
+				}
+			}
+			if settings.SshAccessForAll {
+				if err := l.appender.AppendEvent(ctx, EventInput{
+					StreamType: "user",
+					StreamID:   userID,
+					EventType:  "UserSshSettingsUpdated",
+					Data: map[string]any{
+						"ssh_access_enabled": true,
+						"ssh_allow_pubkey":   true,
+						"ssh_allow_password": false,
+					},
+					ActorType: "system",
+					ActorID:   "sso",
+				}); err != nil {
+					slog.Warn("failed to auto-enable SSH for SSO user", "user_id", userID, "error", err)
+				}
+			}
+		} else {
+			slog.Warn("failed to check server settings for SSO user defaults", "error", err)
 		}
 
 		// Create identity link

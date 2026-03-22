@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -15,7 +16,7 @@ import (
 
 func TestCreateUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -33,7 +34,7 @@ func TestCreateUserGroup(t *testing.T) {
 
 func TestCreateUserGroup_DuplicateName(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -52,7 +53,7 @@ func TestCreateUserGroup_DuplicateName(t *testing.T) {
 
 func TestGetUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Test Group")
@@ -66,7 +67,7 @@ func TestGetUserGroup(t *testing.T) {
 
 func TestGetUserGroup_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -78,7 +79,7 @@ func TestGetUserGroup_NotFound(t *testing.T) {
 
 func TestListUserGroups(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -94,7 +95,7 @@ func TestListUserGroups(t *testing.T) {
 
 func TestUpdateUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Old Name")
@@ -112,7 +113,7 @@ func TestUpdateUserGroup(t *testing.T) {
 
 func TestDeleteUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "To Delete")
@@ -128,7 +129,7 @@ func TestDeleteUserGroup(t *testing.T) {
 
 func TestAddUserToGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -151,7 +152,7 @@ func TestAddUserToGroup(t *testing.T) {
 
 func TestAddUserToGroup_AlreadyMember(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -164,17 +165,17 @@ func TestAddUserToGroup_AlreadyMember(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	// Adding an already-member user is silently skipped (batch mode).
 	_, err = h.AddUserToGroup(ctx, connect.NewRequest(&pm.AddUserToGroupRequest{
 		GroupId: groupID,
 		UserId:  userID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+	require.NoError(t, err)
 }
 
 func TestRemoveUserFromGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -197,7 +198,7 @@ func TestRemoveUserFromGroup(t *testing.T) {
 
 func TestRemoveUserFromGroup_NotMember(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -214,7 +215,7 @@ func TestRemoveUserFromGroup_NotMember(t *testing.T) {
 
 func TestAssignRoleToUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Role Group")
@@ -236,7 +237,7 @@ func TestAssignRoleToUserGroup(t *testing.T) {
 
 func TestAssignRoleToUserGroup_AlreadyAssigned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Dup Role Group")
@@ -249,17 +250,17 @@ func TestAssignRoleToUserGroup_AlreadyAssigned(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	// Assigning an already-assigned role is silently skipped (batch mode).
 	_, err = h.AssignRoleToUserGroup(ctx, connect.NewRequest(&pm.AssignRoleToUserGroupRequest{
 		GroupId: groupID,
 		RoleId:  roleID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+	require.NoError(t, err)
 }
 
 func TestRevokeRoleFromUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Revoke Group")
@@ -281,7 +282,7 @@ func TestRevokeRoleFromUserGroup(t *testing.T) {
 
 func TestRevokeRoleFromUserGroup_NotAssigned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestUserGroup(t, st, adminID, "NR Group")
@@ -298,7 +299,7 @@ func TestRevokeRoleFromUserGroup_NotAssigned(t *testing.T) {
 
 func TestListUserGroupsForUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -415,7 +416,7 @@ func TestAdditivePermissions_MultipleGroups(t *testing.T) {
 
 func TestDeleteUserGroup_CleansUpMembersAndRoles(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewUserGroupHandler(st)
+	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")

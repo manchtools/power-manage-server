@@ -17,9 +17,10 @@ import (
 
 // CA is a certificate authority that issues device certificates.
 type CA struct {
-	cert     *x509.Certificate
-	key      crypto.Signer
-	validity time.Duration
+	cert      *x509.Certificate
+	key       crypto.Signer
+	validity  time.Duration
+	trustPool *x509.CertPool // trust bundle for verification (supports CA rotation)
 }
 
 // Certificate holds a PEM-encoded certificate and private key.
@@ -67,10 +68,14 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration) (*CA, error) {
 		return nil, fmt.Errorf("parse CA key: %w", err)
 	}
 
+	pool := x509.NewCertPool()
+	pool.AddCert(cert)
+
 	return &CA{
-		cert:     cert,
-		key:      key,
-		validity: validity,
+		cert:      cert,
+		key:       key,
+		validity:  validity,
+		trustPool: pool,
 	}, nil
 }
 
@@ -140,6 +145,49 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 		Fingerprint: hex.EncodeToString(fingerprint[:]),
 		NotAfter:    notAfter,
 	}, nil
+}
+
+// SetTrustBundle replaces the verification trust pool with all CA certificates
+// parsed from the given PEM data. This supports CA rotation: the bundle should
+// contain both the old and new CA certificates so that agent certs signed by
+// either CA are accepted during the transition period.
+func (ca *CA) SetTrustBundle(pemData []byte) error {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemData) {
+		return fmt.Errorf("failed to parse any certificates from trust bundle")
+	}
+	ca.trustPool = pool
+	return nil
+}
+
+// VerifyCertificate verifies a PEM-encoded certificate was signed by a trusted CA.
+// Uses the trust pool (which may contain multiple CA certs for rotation).
+// Returns the device ID (CN) if valid.
+func (ca *CA) VerifyCertificate(certPEM []byte) (string, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode certificate PEM")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse certificate: %w", err)
+	}
+
+	if _, err := cert.Verify(x509.VerifyOptions{
+		Roots:     ca.trustPool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		return "", fmt.Errorf("certificate verification failed: %w", err)
+	}
+
+	return cert.Subject.CommonName, nil
+}
+
+// TrustPool returns the CA trust pool used for certificate verification.
+// This includes additional CAs added via SetTrustBundle for rotation support.
+func (ca *CA) TrustPool() *x509.CertPool {
+	return ca.trustPool
 }
 
 // Signer returns the CA's private key for action signing.

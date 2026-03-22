@@ -6,7 +6,9 @@
 # 1. Validates the .env configuration
 # 2. Generates the internal CA for agent certificate signing
 # 3. Generates the gateway server certificate (signed by the CA)
-# 4. Prepares data directories for PostgreSQL and Traefik
+# 4. Generates the control server certificate for internal mTLS (signed by the CA)
+# 5. Generates the control public TLS certificate (signed by the CA, for web UI / API)
+# 6. Prepares data directories for PostgreSQL and Traefik
 #
 # Usage: ./setup.sh
 
@@ -42,6 +44,16 @@ check_env() {
 
     if [[ -z "$POSTGRES_PASSWORD" ]] || [[ "$POSTGRES_PASSWORD" == "CHANGE_ME"* ]]; then
         log_error "POSTGRES_PASSWORD must be set in .env"
+        missing=1
+    fi
+
+    if [[ -z "$INDEXER_POSTGRES_PASSWORD" ]] || [[ "$INDEXER_POSTGRES_PASSWORD" == "CHANGE_ME"* ]]; then
+        log_error "INDEXER_POSTGRES_PASSWORD must be set in .env"
+        missing=1
+    fi
+
+    if [[ -z "$VALKEY_PASSWORD" ]] || [[ "$VALKEY_PASSWORD" == "CHANGE_ME"* ]]; then
+        log_error "VALKEY_PASSWORD must be set in .env"
         missing=1
     fi
 
@@ -106,9 +118,12 @@ generate_ca() {
 
     log_info "Generating CA certificate..."
     openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/CN=Power Manage Internal CA/O=Power Manage"
+        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -addext "subjectKeyIdentifier=hash"
 
-    chmod 600 "$CERTS_DIR/ca.key"
+    chmod 644 "$CERTS_DIR/ca.key"
     chmod 644 "$CERTS_DIR/ca.crt"
 
     log_info "CA generated successfully"
@@ -130,24 +145,93 @@ generate_gateway_cert() {
     # Generate private key
     openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
 
-    # Generate CSR with SAN
+    # Generate CSR
     openssl req -new -key "$CERTS_DIR/gateway.key" \
         -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
-        -addext "subjectAltName=DNS:${GATEWAY_DOMAIN}" \
         -out "$CERTS_DIR/gateway.csr"
 
-    # Sign with CA
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
     openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -copy_extensions copyall \
+        -extfile <(printf "subjectAltName=DNS:%s\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
         -out "$CERTS_DIR/gateway.crt"
 
     rm -f "$CERTS_DIR/gateway.csr"
-    chmod 600 "$CERTS_DIR/gateway.key"
+    chmod 644 "$CERTS_DIR/gateway.key"
     chmod 644 "$CERTS_DIR/gateway.crt"
 
     log_info "Gateway certificate generated (valid 825 days)"
+}
+
+generate_control_cert() {
+    if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
+        log_warn "Control certificate already exists"
+        read -p "Regenerate control certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing control certificate"
+            return
+        fi
+    fi
+
+    log_info "Generating control server certificate..."
+
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
+
+    # Generate CSR
+    openssl req -new -key "$CERTS_DIR/control.key" \
+        -subj "/CN=control/O=Power Manage" \
+        -out "$CERTS_DIR/control.csr"
+
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    openssl x509 -req -in "$CERTS_DIR/control.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost\nauthorityKeyIdentifier=keyid:always") \
+        -out "$CERTS_DIR/control.crt"
+
+    rm -f "$CERTS_DIR/control.csr"
+    chmod 644 "$CERTS_DIR/control.key"
+    chmod 644 "$CERTS_DIR/control.crt"
+
+    log_info "Control certificate generated (valid 825 days)"
+}
+
+generate_control_public_cert() {
+    if [[ -f "$CERTS_DIR/control-public.crt" ]] && [[ -f "$CERTS_DIR/control-public.key" ]]; then
+        log_warn "Control public certificate already exists"
+        read -p "Regenerate control public certificate? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing control public certificate"
+            return
+        fi
+    fi
+
+    log_info "Generating control public TLS certificate for ${CONTROL_DOMAIN}..."
+
+    # Generate private key
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control-public.key"
+
+    # Generate CSR
+    openssl req -new -key "$CERTS_DIR/control-public.key" \
+        -subj "/CN=${CONTROL_DOMAIN}/O=Power Manage" \
+        -out "$CERTS_DIR/control-public.csr"
+
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    openssl x509 -req -in "$CERTS_DIR/control-public.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -extfile <(printf "subjectAltName=DNS:%s,DNS:localhost\nauthorityKeyIdentifier=keyid:always" "${CONTROL_DOMAIN}") \
+        -out "$CERTS_DIR/control-public.crt"
+
+    rm -f "$CERTS_DIR/control-public.csr"
+    chmod 644 "$CERTS_DIR/control-public.key"
+    chmod 644 "$CERTS_DIR/control-public.crt"
+
+    log_info "Control public certificate generated (valid 825 days)"
 }
 
 show_instructions() {
@@ -171,7 +255,11 @@ show_instructions() {
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
     echo ""
-    echo "4. Create a registration token, then install agents:"
+    echo "4. If upgrading an existing deployment, set the indexer DB password:"
+    echo "   docker exec -it pm-postgres psql -U powermanage -d powermanage \\"
+    echo "     -c \"ALTER ROLE pm_indexer PASSWORD '\$INDEXER_POSTGRES_PASSWORD'\""
+    echo ""
+    echo "5. Create a registration token, then install agents:"
     echo "   curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN} -t <TOKEN>"
     echo ""
 }
@@ -183,9 +271,11 @@ main() {
     check_env
     generate_ca
     generate_gateway_cert
+    generate_control_cert
+    generate_control_public_cert
 
-    mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/traefik"
-    log_info "Created data directories: $DATA_DIR/{postgres,traefik}"
+    mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
+    log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
     show_instructions
 }
