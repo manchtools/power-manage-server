@@ -98,8 +98,10 @@ CREATE TABLE devices_projection (
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     projection_version BIGINT NOT NULL DEFAULT 0,
     sync_interval_minutes INTEGER NOT NULL DEFAULT 0,
-    compliance_status TEXT NOT NULL DEFAULT '',
-    compliance_score INTEGER NOT NULL DEFAULT 0
+    compliance_status INTEGER NOT NULL DEFAULT 0,
+    compliance_checked_at TIMESTAMPTZ,
+    compliance_total INTEGER NOT NULL DEFAULT 0,
+    compliance_passing INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_devices_labels ON devices_projection USING GIN (labels);
@@ -142,8 +144,6 @@ CREATE TABLE executions_projection (
     created_by_id TEXT NOT NULL DEFAULT '',
     projection_version BIGINT NOT NULL DEFAULT 0,
     changed BOOLEAN NOT NULL DEFAULT TRUE,
-    compliance_action_id TEXT,
-    compliance_result_id TEXT,
     compliant BOOLEAN NOT NULL DEFAULT FALSE,
     detection_output JSONB
 );
