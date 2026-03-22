@@ -183,6 +183,10 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		// and we must not stop its worker or unregister it.
 		if current, ok := h.manager.Get(deviceID); ok && current == agent {
 			h.workerMgr.StopWorker(deviceID)
+		}
+		// Re-check after StopWorker because it blocks during Shutdown().
+		// The agent may have reconnected and replaced us while we waited.
+		if current, ok := h.manager.Get(deviceID); ok && current == agent {
 			h.manager.Unregister(deviceID)
 		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
