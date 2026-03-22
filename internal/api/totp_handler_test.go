@@ -268,7 +268,7 @@ func TestVerifyLoginTOTP_InvalidCode(t *testing.T) {
 		Code:      "000000",
 	}))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestVerifyLoginTOTP_InvalidChallenge(t *testing.T) {
