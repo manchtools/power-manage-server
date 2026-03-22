@@ -165,12 +165,12 @@ func TestAddUserToGroup_AlreadyMember(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	// Adding an already-member user is silently skipped (batch mode).
 	_, err = h.AddUserToGroup(ctx, connect.NewRequest(&pm.AddUserToGroupRequest{
 		GroupId: groupID,
 		UserId:  userID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+	require.NoError(t, err)
 }
 
 func TestRemoveUserFromGroup(t *testing.T) {
@@ -250,12 +250,12 @@ func TestAssignRoleToUserGroup_AlreadyAssigned(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
+	// Assigning an already-assigned role is silently skipped (batch mode).
 	_, err = h.AssignRoleToUserGroup(ctx, connect.NewRequest(&pm.AssignRoleToUserGroupRequest{
 		GroupId: groupID,
 		RoleId:  roleID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
+	require.NoError(t, err)
 }
 
 func TestRevokeRoleFromUserGroup(t *testing.T) {

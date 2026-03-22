@@ -282,7 +282,7 @@ func TestVerifyLoginTOTP_InvalidChallenge(t *testing.T) {
 		Code:      "123456",
 	}))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 func TestVerifyLoginTOTP_BackupCode(t *testing.T) {
