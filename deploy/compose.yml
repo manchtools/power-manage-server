@@ -163,7 +163,6 @@ services:
       - GATEWAY_LISTEN_ADDR=:8080
       - LOG_LEVEL=${LOG_LEVEL:-info}
     command:
-      - "-tls"
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"
       - "-tls-ca=/certs/ca.crt"
