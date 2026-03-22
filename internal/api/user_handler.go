@@ -409,8 +409,10 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	}
 
 	// Sync system actions (disabled flag changes USER action params)
-	if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
-		h.logger.Error("failed to sync system actions after disable/enable", "user_id", req.Msg.Id, "error", err)
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
+			h.logger.Error("failed to sync system actions after disable/enable", "user_id", req.Msg.Id, "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{

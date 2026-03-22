@@ -160,8 +160,8 @@ func TestWarmExecutions(t *testing.T) {
 	count, _ := arr[0].(int64)
 	assert.Equal(t, int64(1), count)
 
-	// Verify FT.SEARCH by hostname
-	result, err = rdb.Do(ctx, "FT.SEARCH", "idx:executions", "web\\-server*", "LIMIT", 0, 10).Result()
+	// Verify FT.SEARCH by hostname (TEXT fields tokenize on hyphens, so search by token)
+	result, err = rdb.Do(ctx, "FT.SEARCH", "idx:executions", "@device_hostname:server*", "LIMIT", 0, 10).Result()
 	require.NoError(t, err)
 	arr, ok = result.([]any)
 	require.True(t, ok)

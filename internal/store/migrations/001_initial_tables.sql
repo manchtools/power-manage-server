@@ -344,6 +344,24 @@ CREATE TABLE device_inventory (
 CREATE INDEX idx_device_inventory_device ON device_inventory(device_id);
 
 -- ============================================================================
+-- OSQUERY ON-DEMAND RESULTS
+-- ============================================================================
+
+CREATE TABLE osquery_results (
+    query_id     TEXT PRIMARY KEY,
+    device_id    TEXT NOT NULL,
+    table_name   TEXT NOT NULL,
+    completed    BOOLEAN NOT NULL DEFAULT FALSE,
+    success      BOOLEAN NOT NULL DEFAULT FALSE,
+    error        TEXT NOT NULL DEFAULT '',
+    rows         JSONB NOT NULL DEFAULT '[]'::JSONB,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_osquery_results_device ON osquery_results(device_id);
+
+-- ============================================================================
 -- RBAC TABLES (from 007)
 -- ============================================================================
 
