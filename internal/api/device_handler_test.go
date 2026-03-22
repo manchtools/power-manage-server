@@ -168,6 +168,7 @@ func TestUnassignDevice(t *testing.T) {
 	// Unassign
 	resp, err := h.UnassignDevice(ctx, connect.NewRequest(&pm.UnassignDeviceRequest{
 		DeviceId: deviceID,
+		UserId:   userID,
 	}))
 	require.NoError(t, err)
 	assert.Empty(t, resp.Msg.Device.AssignedUserIds)
