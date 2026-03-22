@@ -15,6 +15,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -24,13 +25,15 @@ import (
 // CompliancePolicyHandler handles compliance policy RPCs.
 type CompliancePolicyHandler struct {
 	store     *store.Store
+	logger    *slog.Logger
 	searchIdx *search.Index
 }
 
 // NewCompliancePolicyHandler creates a new compliance policy handler.
-func NewCompliancePolicyHandler(st *store.Store) *CompliancePolicyHandler {
+func NewCompliancePolicyHandler(st *store.Store, logger *slog.Logger) *CompliancePolicyHandler {
 	return &CompliancePolicyHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -61,7 +64,7 @@ func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Con
 		data.HasActionNames = true
 	}
 	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, data); err != nil {
-		slog.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
+		h.logger.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
 	}
 }
 
@@ -92,6 +95,12 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create compliance policy")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", id,
+		"event_type", "CompliancePolicyCreated",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
 	if err != nil {
@@ -199,6 +208,12 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename compliance policy")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.Id,
+		"event_type", "CompliancePolicyRenamed",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -239,6 +254,12 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.Id,
+		"event_type", "CompliancePolicyDescriptionUpdated",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -277,10 +298,16 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete compliance policy")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.Id,
+		"event_type", "CompliancePolicyDeleted",
+	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeCompliancePolicy, req.Msg.Id, nil); err != nil {
-			slog.Warn("failed to enqueue compliance policy removal from search", "id", req.Msg.Id, "error", err)
+			h.logger.Warn("failed to enqueue compliance policy removal from search", "id", req.Msg.Id, "error", err)
 		}
 	}
 
@@ -346,6 +373,12 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add rule")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.PolicyId,
+		"event_type", "CompliancePolicyRuleAdded",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -388,6 +421,12 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove rule")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.PolicyId,
+		"event_type", "CompliancePolicyRuleRemoved",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -434,6 +473,12 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update rule")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "compliance_policy",
+		"stream_id", req.Msg.PolicyId,
+		"event_type", "CompliancePolicyRuleUpdated",
+	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {

@@ -21,7 +21,6 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
@@ -30,15 +29,11 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
-	"github.com/manchtools/power-manage/server/internal/metrics"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // version is set at build time via -ldflags.
@@ -63,6 +58,11 @@ type Config struct {
 	SCIMBaseURL                  string
 	TrustedProxies               []string
 	CATrustBundlePath            string
+
+	// Public listener TLS (optional — plain HTTP/1.1 when disabled)
+	TLSEnabled bool
+	TLSCert    string
+	TLSKey     string
 
 	// Internal mTLS listener (InternalService for gateway communication)
 	InternalListenAddr string
@@ -408,11 +408,7 @@ func main() {
 	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 	registerLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 
-	promReg := prometheus.NewRegistry()
-	promReg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-
 	interceptors := connect.WithInterceptors(
-		metrics.NewInterceptor(promReg),
 		api.NewLoggingInterceptor(logger),
 		auth.NewAuthInterceptor(logger, jwtManager, loginLimiter, refreshLimiter, registerLimiter),
 		auth.NewAuthzInterceptor(),
@@ -425,9 +421,6 @@ func main() {
 	// Mount SCIM v2 handler
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
-
-	// Prometheus metrics endpoint
-	mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
 
 	// Add health check endpoint (returns server version)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -442,9 +435,26 @@ func main() {
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           h2c.NewHandler(securedHandler, &http2.Server{}),
+		Handler:           securedHandler,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Configure TLS for public listener if enabled
+	if cfg.TLSEnabled {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			logger.Error("failed to load public TLS certificate", "error", err)
+			os.Exit(1)
+		}
+		server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+			logger.Error("failed to configure HTTP/2 for public server", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Mount InternalService on a separate mTLS-protected listener.
@@ -488,10 +498,18 @@ func main() {
 
 	// Start public server
 	go func() {
-		logger.Info("control server listening", "addr", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err)
-			cancel()
+		if cfg.TLSEnabled {
+			logger.Info("control server listening (TLS)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
+		} else {
+			logger.Info("control server listening (plain HTTP)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
 		}
 	}()
 
@@ -537,6 +555,9 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
+	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
+	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
+	flag.StringVar(&cfg.TLSKey, "tls-key", "", "TLS private key for public listener")
 	flag.StringVar(&cfg.InternalListenAddr, "internal-listen", ":8082", "Internal mTLS listen address for gateway communication")
 	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
 	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
@@ -561,6 +582,15 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
 		cfg.CATrustBundlePath = v
+	}
+	if v := os.Getenv("CONTROL_TLS_ENABLED"); v == "true" || v == "1" {
+		cfg.TLSEnabled = true
+	}
+	if v := os.Getenv("CONTROL_TLS_CERT"); v != "" {
+		cfg.TLSCert = v
+	}
+	if v := os.Getenv("CONTROL_TLS_KEY"); v != "" {
+		cfg.TLSKey = v
 	}
 	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
 		cfg.InternalListenAddr = v
@@ -649,6 +679,11 @@ func parseFlags() *Config {
 	}
 	if len(cfg.JWTSecret) < 32 {
 		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET must be at least 32 characters")
+		os.Exit(1)
+	}
+
+	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
+		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert and -tls-key are required when TLS is enabled")
 		os.Exit(1)
 	}
 

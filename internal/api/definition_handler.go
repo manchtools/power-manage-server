@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -21,13 +22,15 @@ import (
 // DefinitionHandler handles definition (collection of action sets) RPCs.
 type DefinitionHandler struct {
 	store     *store.Store
+	logger    *slog.Logger
 	searchIdx *search.Index
 }
 
 // NewDefinitionHandler creates a new definition handler.
-func NewDefinitionHandler(st *store.Store) *DefinitionHandler {
+func NewDefinitionHandler(st *store.Store, logger *slog.Logger) *DefinitionHandler {
 	return &DefinitionHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -63,6 +66,12 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", id,
+		"event_type", "DefinitionCreated",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, id)
 	if err != nil {
@@ -180,6 +189,12 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.Id,
+		"event_type", "DefinitionRenamed",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -220,6 +235,12 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.Id,
+		"event_type", "DefinitionDescriptionUpdated",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -263,10 +284,16 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.Id,
+		"event_type", "DefinitionDeleted",
+	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, "definition", req.Msg.Id, cascadeIDs); err != nil {
-			slog.Warn("failed to enqueue search index remove", "scope", "definition", "error", err)
+			h.logger.Warn("failed to enqueue search index remove", "scope", "definition", "error", err)
 		}
 	}
 
@@ -316,6 +343,12 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add action set to definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.DefinitionId,
+		"event_type", "DefinitionMemberAdded",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
@@ -324,7 +357,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueMemberAdded(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, actionSet.Name); err != nil {
-			slog.Warn("failed to enqueue search member added", "scope", "definition", "error", err)
+			h.logger.Warn("failed to enqueue search member added", "scope", "definition", "error", err)
 		}
 	}
 
@@ -357,6 +390,12 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove action set from definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.DefinitionId,
+		"event_type", "DefinitionMemberRemoved",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
@@ -368,7 +407,7 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueMemberRemoved(ctx, "definition", req.Msg.DefinitionId, "action_set", req.Msg.ActionSetId, ""); err != nil {
-			slog.Warn("failed to enqueue search member removed", "scope", "definition", "error", err)
+			h.logger.Warn("failed to enqueue search member removed", "scope", "definition", "error", err)
 		}
 	}
 
@@ -402,6 +441,12 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to reorder action set in definition")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "definition",
+		"stream_id", req.Msg.DefinitionId,
+		"event_type", "DefinitionMemberReordered",
+	)
 
 	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
 	if err != nil {
@@ -435,7 +480,7 @@ func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.D
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}); err != nil {
-		slog.Warn("failed to enqueue search reindex", "scope", "definition", "error", err)
+		h.logger.Warn("failed to enqueue search reindex", "scope", "definition", "error", err)
 	}
 }
 

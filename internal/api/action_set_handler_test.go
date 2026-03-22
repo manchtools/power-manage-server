@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateActionSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -29,7 +30,7 @@ func TestCreateActionSet(t *testing.T) {
 
 func TestGetActionSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Test Set")
@@ -43,7 +44,7 @@ func TestGetActionSet(t *testing.T) {
 
 func TestListActionSets(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -59,7 +60,7 @@ func TestListActionSets(t *testing.T) {
 
 func TestRenameActionSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Old Name")
@@ -75,7 +76,7 @@ func TestRenameActionSet(t *testing.T) {
 
 func TestDeleteActionSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "To Delete")
@@ -91,7 +92,7 @@ func TestDeleteActionSet(t *testing.T) {
 
 func TestAddActionToSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Test Set")
@@ -113,7 +114,7 @@ func TestAddActionToSet(t *testing.T) {
 
 func TestRemoveActionFromSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Test Set")
@@ -136,7 +137,7 @@ func TestRemoveActionFromSet(t *testing.T) {
 
 func TestReorderActionInSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionSetHandler(st)
+	h := api.NewActionSetHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Test Set")

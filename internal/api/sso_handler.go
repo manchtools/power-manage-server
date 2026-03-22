@@ -15,6 +15,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/idp"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -22,6 +23,7 @@ import (
 // SSOHandler handles SSO authentication flow RPCs.
 type SSOHandler struct {
 	store              *store.Store
+	logger             *slog.Logger
 	jwtManager         *auth.JWTManager
 	enc                *crypto.Encryptor
 	passwordAuthEnabled bool
@@ -29,9 +31,10 @@ type SSOHandler struct {
 }
 
 // NewSSOHandler creates a new SSO handler.
-func NewSSOHandler(st *store.Store, jwtManager *auth.JWTManager, enc *crypto.Encryptor, passwordAuthEnabled bool, callbackBaseURL string) *SSOHandler {
+func NewSSOHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager, enc *crypto.Encryptor, passwordAuthEnabled bool, callbackBaseURL string) *SSOHandler {
 	return &SSOHandler{
 		store:              st,
+		logger:             logger,
 		jwtManager:         jwtManager,
 		enc:                enc,
 		passwordAuthEnabled: passwordAuthEnabled,
@@ -126,11 +129,11 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	})
 	if err != nil {
-		slog.Error("failed to store auth state", "error", err, "provider", provider.Slug)
+		h.logger.Error("failed to store auth state", "error", err, "provider", provider.Slug)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store auth state")
 	}
 
-	slog.Info("SSO auth state created", "provider", provider.Slug, "state_prefix", state[:8], "expires_at", expiresAt.UTC())
+	h.logger.Info("SSO auth state created", "provider", provider.Slug, "state_prefix", state[:8], "expires_at", expiresAt.UTC())
 
 	// Create OIDC provider and generate auth URL
 	callbackURL := h.callbackBaseURL + "/auth/callback/" + provider.Slug
@@ -167,15 +170,15 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if len(statePrefix) > 8 {
 		statePrefix = statePrefix[:8]
 	}
-	slog.Info("SSO callback received", "slug", req.Msg.Slug, "state_prefix", statePrefix)
+	h.logger.Info("SSO callback received", "slug", req.Msg.Slug, "state_prefix", statePrefix)
 
 	authState, err := h.store.Queries().ConsumeAuthState(ctx, req.Msg.State)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
+			h.logger.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
 			return nil, apiErrorCtx(ctx, ErrSSOStateExpired, connect.CodeUnauthenticated, "invalid or expired state")
 		}
-		slog.Error("SSO auth state lookup failed", "error", err, "state_prefix", statePrefix)
+		h.logger.Error("SSO auth state lookup failed", "error", err, "state_prefix", statePrefix)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate state")
 	}
 
@@ -220,24 +223,24 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Exchange code for tokens
 	oauth2Token, err := oidcProvider.ExchangeCode(ctx, req.Msg.Code, authState.CodeVerifier)
 	if err != nil {
-		slog.Error("SSO code exchange failed", "error", err, "slug", req.Msg.Slug)
+		h.logger.Error("SSO code exchange failed", "error", err, "slug", req.Msg.Slug)
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to exchange code")
 	}
 
 	// Verify id_token and extract claims
 	claims, err := oidcProvider.VerifyAndExtractClaims(ctx, oauth2Token, authState.Nonce)
 	if err != nil {
-		slog.Error("SSO id_token verification failed", "error", err, "slug", req.Msg.Slug)
+		h.logger.Error("SSO id_token verification failed", "error", err, "slug", req.Msg.Slug)
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to verify id_token")
 	}
 
-	slog.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
+	h.logger.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
 
 	// Link or create user
 	linker := idp.NewLinker(h.store.Queries(), &storeEventAdapter{store: h.store})
 	linkResult, err := linker.LinkOrCreate(ctx, provider, claims)
 	if err != nil {
-		slog.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
+		h.logger.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
 		if errors.Is(err, idp.ErrNoMatchingAccount) {
 			return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, err.Error())
 		}
@@ -248,7 +251,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	user, err := h.store.Queries().GetUserByID(ctx, linkResult.UserID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			slog.Error("SSO user not found after link resolved — user may be soft-deleted",
+			h.logger.Error("SSO user not found after link resolved — user may be soft-deleted",
 				"user_id", linkResult.UserID,
 				"is_new", linkResult.IsNew,
 				"slug", req.Msg.Slug,
@@ -280,14 +283,21 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		ActorType: "system",
 		ActorID:   "sso",
 	}); err != nil {
-		slog.Warn("failed to sync user profile from OIDC", "user_id", linkResult.UserID, "error", err)
+		h.logger.Warn("failed to sync user profile from OIDC", "user_id", linkResult.UserID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", linkResult.UserID,
+			"event_type", "UserProfileUpdated",
+		)
 	}
 
 	// Sync group memberships (only for valid, active users)
 	groupMapping := idp.ParseGroupMapping(provider.GroupMapping)
 	if len(claims.Groups) > 0 && len(groupMapping) > 0 {
 		if err := linker.SyncGroupMemberships(ctx, linkResult.UserID, claims.Groups, groupMapping); err != nil {
-			slog.Warn("failed to sync SSO group memberships", "user_id", linkResult.UserID, "error", err)
+			h.logger.Warn("failed to sync SSO group memberships", "user_id", linkResult.UserID, "error", err)
 		}
 	}
 
@@ -314,7 +324,14 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		ActorType: "user",
 		ActorID:   user.ID,
 	}); err != nil {
-		slog.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "provider", provider.Slug, "error", err)
+		h.logger.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "provider", provider.Slug, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", user.ID,
+			"event_type", "UserLoggedIn",
+		)
 	}
 
 	// Generate tokens

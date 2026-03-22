@@ -13,24 +13,27 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // TOTPHandler handles TOTP two-factor authentication RPCs.
 type TOTPHandler struct {
 	store      *store.Store
+	logger     *slog.Logger
 	jwtManager *auth.JWTManager
 	encryptor  *crypto.Encryptor
 	issuer     string
 }
 
 // NewTOTPHandler creates a new TOTP handler.
-func NewTOTPHandler(st *store.Store, jwtManager *auth.JWTManager, enc *crypto.Encryptor, issuer string) *TOTPHandler {
+func NewTOTPHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager, enc *crypto.Encryptor, issuer string) *TOTPHandler {
 	if issuer == "" {
 		issuer = totp.DefaultIssuer
 	}
 	return &TOTPHandler{
 		store:      st,
+		logger:     logger,
 		jwtManager: jwtManager,
 		encryptor:  enc,
 		issuer:     issuer,
@@ -91,6 +94,12 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to save TOTP setup")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPSetupInitiated",
+	)
 
 	return connect.NewResponse(&pm.SetupTOTPResponse{
 		Secret:      key.Secret(),
@@ -145,6 +154,12 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify TOTP")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPVerified",
+	)
 
 	return connect.NewResponse(&pm.VerifyTOTPResponse{Success: true}), nil
 }
@@ -190,6 +205,12 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable TOTP")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPDisabled",
+	)
 
 	return connect.NewResponse(&pm.DisableTOTPResponse{}), nil
 }
@@ -231,6 +252,12 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable TOTP")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", targetUserID,
+		"event_type", "TOTPDisabled",
+	)
 
 	return connect.NewResponse(&pm.AdminDisableUserTOTPResponse{}), nil
 }
@@ -307,6 +334,12 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to regenerate backup codes")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "totp",
+		"stream_id", userCtx.ID,
+		"event_type", "TOTPBackupCodesRegenerated",
+	)
 
 	return connect.NewResponse(&pm.RegenerateBackupCodesResponse{
 		BackupCodes: codes,
@@ -361,7 +394,14 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 				ActorType:  "user",
 				ActorID:    claims.UserID,
 			}); err != nil {
-				slog.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
+				h.logger.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
+			} else {
+				h.logger.Debug("event appended",
+					"request_id", middleware.RequestIDFromContext(ctx),
+					"stream_type", "totp",
+					"stream_id", claims.UserID,
+					"event_type", "TOTPBackupCodeUsed",
+				)
 			}
 		}
 	}
@@ -402,7 +442,14 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		ActorType:  "user",
 		ActorID:    claims.UserID,
 	}); err != nil {
-		slog.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+		h.logger.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", claims.UserID,
+			"event_type", "UserLoggedIn",
+		)
 	}
 
 	// Get full user for response

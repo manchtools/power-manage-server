@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -21,13 +22,15 @@ import (
 // ActionSetHandler handles action set RPCs.
 type ActionSetHandler struct {
 	store     *store.Store
+	logger    *slog.Logger
 	searchIdx *search.Index
 }
 
 // NewActionSetHandler creates a new action set handler.
-func NewActionSetHandler(st *store.Store) *ActionSetHandler {
+func NewActionSetHandler(st *store.Store, logger *slog.Logger) *ActionSetHandler {
 	return &ActionSetHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -63,6 +66,12 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create action set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", id,
+		"event_type", "ActionSetCreated",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, id)
 	if err != nil {
@@ -182,6 +191,12 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename action set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionSetRenamed",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -222,6 +237,12 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionSetDescriptionUpdated",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -265,10 +286,16 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete action set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionSetDeleted",
+	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, "action_set", req.Msg.Id, cascadeIDs); err != nil {
-			slog.Warn("failed to enqueue search index remove", "scope", "action_set", "error", err)
+			h.logger.Warn("failed to enqueue search index remove", "scope", "action_set", "error", err)
 		}
 	}
 
@@ -318,6 +345,12 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add action to set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.SetId,
+		"event_type", "ActionSetMemberAdded",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
@@ -326,7 +359,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueMemberAdded(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, action.Name); err != nil {
-			slog.Warn("failed to enqueue search member added", "scope", "action_set", "error", err)
+			h.logger.Warn("failed to enqueue search member added", "scope", "action_set", "error", err)
 		}
 	}
 
@@ -359,6 +392,12 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove action from set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.SetId,
+		"event_type", "ActionSetMemberRemoved",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
@@ -370,7 +409,7 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueMemberRemoved(ctx, "action_set", req.Msg.SetId, "action", req.Msg.ActionId, ""); err != nil {
-			slog.Warn("failed to enqueue search member removed", "scope", "action_set", "error", err)
+			h.logger.Warn("failed to enqueue search member removed", "scope", "action_set", "error", err)
 		}
 	}
 
@@ -404,6 +443,12 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to reorder action in set")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action_set",
+		"stream_id", req.Msg.SetId,
+		"event_type", "ActionSetMemberReordered",
+	)
 
 	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
 	if err != nil {
@@ -437,7 +482,7 @@ func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSet
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
 	}); err != nil {
-		slog.Warn("failed to enqueue search reindex", "scope", "action_set", "error", err)
+		h.logger.Warn("failed to enqueue search reindex", "scope", "action_set", "error", err)
 	}
 }
 

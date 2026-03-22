@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
@@ -23,25 +22,25 @@ import (
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/handler"
-	"github.com/manchtools/power-manage/server/internal/metrics"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
-
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // version is set at build time via -ldflags.
 var version = "dev"
 
 func main() {
-	// Parse flags (TLS only — other config from env)
-	tlsEnabled := flag.Bool("tls", false, "enable mTLS")
-	tlsCert := flag.String("tls-cert", "", "path to server certificate")
-	tlsKey := flag.String("tls-key", "", "path to server private key")
-	tlsCA := flag.String("tls-ca", "", "path to CA certificate for client validation")
+	// Parse flags — TLS is always required for mTLS agent connections
+	tlsCert := flag.String("tls-cert", "", "path to server certificate (required)")
+	tlsKey := flag.String("tls-key", "", "path to server private key (required)")
+	tlsCA := flag.String("tls-ca", "", "path to CA certificate for client validation (required)")
 	flag.Parse()
+
+	if *tlsCert == "" || *tlsKey == "" || *tlsCA == "" {
+		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert, -tls-key, and -tls-ca flags are required")
+		os.Exit(1)
+	}
 
 	// Load config from environment
 	cfg := config.FromEnv()
@@ -49,14 +48,6 @@ func main() {
 	// Setup logger
 	logger := logging.SetupLogger(cfg.LogLevel, "json", os.Stdout)
 	slog.SetDefault(logger)
-
-	// Validate TLS flags
-	if *tlsEnabled {
-		if *tlsCert == "" || *tlsKey == "" || *tlsCA == "" {
-			logger.Error("TLS enabled but missing required flags: -tls-cert, -tls-key, -tls-ca")
-			os.Exit(1)
-		}
-	}
 
 	// Validate required config
 	if cfg.ValkeyAddr == "" {
@@ -74,46 +65,36 @@ func main() {
 	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
 
 	// Create control proxy (Connect-RPC client to control server's InternalService)
-	// When TLS is enabled, use mTLS to authenticate with the control server's internal listener.
-	var controlHTTPClient *http.Client
-	if *tlsEnabled {
-		controlCert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
-		if err != nil {
-			logger.Error("failed to load gateway certificate for control proxy", "error", err)
-			os.Exit(1)
-		}
-		caCert, err := os.ReadFile(*tlsCA)
-		if err != nil {
-			logger.Error("failed to read CA certificate for control proxy", "error", err)
-			os.Exit(1)
-		}
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM(caCert) {
-			logger.Error("failed to parse CA certificate for control proxy")
-			os.Exit(1)
-		}
-		controlTransport := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{controlCert},
-				RootCAs:      caPool,
-				MinVersion:   tls.VersionTLS13,
-			},
-		}
-		http2.ConfigureTransport(controlTransport)
-		controlHTTPClient = &http.Client{Transport: controlTransport}
-	} else {
-		controlHTTPClient = http.DefaultClient
+	// Uses mTLS to authenticate with the control server's internal listener.
+	controlCert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+	if err != nil {
+		logger.Error("failed to load gateway certificate for control proxy", "error", err)
+		os.Exit(1)
 	}
+	caCert, err := os.ReadFile(*tlsCA)
+	if err != nil {
+		logger.Error("failed to read CA certificate for control proxy", "error", err)
+		os.Exit(1)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caCert) {
+		logger.Error("failed to parse CA certificate for control proxy")
+		os.Exit(1)
+	}
+	controlTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			Certificates: []tls.Certificate{controlCert},
+			RootCAs:      caPool,
+			MinVersion:   tls.VersionTLS13,
+		},
+	}
+	http2.ConfigureTransport(controlTransport)
+	controlHTTPClient := &http.Client{Transport: controlTransport}
 	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL)
-	logger.Info("control proxy initialized", "control_url", cfg.ControlURL, "mtls", *tlsEnabled)
+	logger.Info("control proxy initialized", "control_url", cfg.ControlURL)
 
 	// Create connection manager
 	manager := connection.NewManager()
-
-	// Prometheus metrics
-	promReg := prometheus.NewRegistry()
-	promReg.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
-	metrics.RegisterGatewayMetrics(promReg, manager.Count)
 
 	// Create task handler factory for per-device Asynq workers
 	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
@@ -131,23 +112,16 @@ func main() {
 	// Setup HTTP mux for agent connections (mTLS-protected)
 	mux := http.NewServeMux()
 
-	// Create handler based on TLS mode
-	if *tlsEnabled {
-		agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, logger)
-		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
-		mux.Handle(path, handler.MTLSMiddleware(h, logger))
-	} else {
-		agentHandler := handler.NewAgentHandler(manager, aqClient, controlProxy, workerMgr, logger)
-		path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
-		mux.Handle(path, h)
-	}
+	// Create agent handler (always mTLS)
+	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, logger)
+	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
+	mux.Handle(path, handler.MTLSMiddleware(h, logger))
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))
 
-	// Separate non-TLS mux for metrics and health (accessible without mTLS)
+	// Separate mux for health checks (accessible without mTLS)
 	opsMux := http.NewServeMux()
-	opsMux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
 	opsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -158,76 +132,55 @@ func main() {
 		w.Write([]byte("ok"))
 	})
 
-	// Create server
-	var server *http.Server
+	// Create mTLS server
+	tlsConfig, err := mtls.NewTLSConfig(mtls.Config{
+		CertFile: *tlsCert,
+		KeyFile:  *tlsKey,
+		CAFile:   *tlsCA,
+	})
+	if err != nil {
+		logger.Error("failed to configure TLS", "error", err)
+		os.Exit(1)
+	}
 
-	if *tlsEnabled {
-		tlsConfig, err := mtls.NewTLSConfig(mtls.Config{
-			CertFile: *tlsCert,
-			KeyFile:  *tlsKey,
-			CAFile:   *tlsCA,
-		})
-		if err != nil {
-			logger.Error("failed to configure TLS", "error", err)
-			os.Exit(1)
-		}
+	server := &http.Server{
+		Addr:              cfg.ListenAddr,
+		Handler:           securedMux,
+		TLSConfig:         tlsConfig,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
-		server = &http.Server{
-			Addr:              cfg.ListenAddr,
-			Handler:           securedMux,
-			TLSConfig:         tlsConfig,
-			ReadTimeout:       0,
-			WriteTimeout:      0,
-			IdleTimeout:       120 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
-
-		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
-			logger.Error("failed to configure HTTP/2", "error", err)
-			os.Exit(1)
-		}
-	} else {
-		server = &http.Server{
-			Addr:              cfg.ListenAddr,
-			Handler:           h2c.NewHandler(securedMux, &http2.Server{}),
-			ReadTimeout:       0,
-			WriteTimeout:      0,
-			IdleTimeout:       120 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
-		}
+	if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+		logger.Error("failed to configure HTTP/2", "error", err)
+		os.Exit(1)
 	}
 
 	// Graceful shutdown
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Start ops server (metrics + health, no TLS)
+	// Start ops server (health checks, no TLS)
 	opsServer := &http.Server{
 		Addr:              ":9090",
 		Handler:           opsMux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
-		logger.Info("ops server listening (metrics/health)", "address", ":9090")
+		logger.Info("ops server listening (health)", "address", ":9090")
 		if err := opsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("ops server error", "error", err)
 		}
 	}()
 
-	// Start server
+	// Start mTLS server
 	go func() {
-		if *tlsEnabled {
-			logger.Info("starting gateway server with mTLS", "address", cfg.ListenAddr)
-			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				logger.Error("server error", "error", err)
-				os.Exit(1)
-			}
-		} else {
-			logger.Info("starting gateway server (insecure h2c mode)", "address", cfg.ListenAddr)
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("server error", "error", err)
-				os.Exit(1)
-			}
+		logger.Info("starting gateway server with mTLS", "address", cfg.ListenAddr)
+		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			logger.Error("server error", "error", err)
+			os.Exit(1)
 		}
 	}()
 

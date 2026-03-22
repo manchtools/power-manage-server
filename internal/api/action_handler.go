@@ -17,6 +17,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -38,10 +39,10 @@ type ActionHandler struct {
 }
 
 // NewActionHandler creates a new action handler.
-func NewActionHandler(st *store.Store, signer ActionSigner) *ActionHandler {
+func NewActionHandler(st *store.Store, logger *slog.Logger, signer ActionSigner) *ActionHandler {
 	return &ActionHandler{
 		store:  st,
-		logger: slog.Default(),
+		logger: logger,
 		signer: signer,
 	}
 }
@@ -261,6 +262,12 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		h.logger.Error("failed to append action event", "error", err, "id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create action")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", id,
+		"event_type", "ActionCreated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
@@ -382,6 +389,12 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename action")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionRenamed",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -427,6 +440,12 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionDescriptionUpdated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -498,6 +517,12 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update action params")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionParamsUpdated",
+	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -578,10 +603,16 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete action")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "action",
+		"stream_id", req.Msg.Id,
+		"event_type", "ActionDeleted",
+	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs); err != nil {
-			slog.Warn("failed to enqueue search index remove", "scope", "action", "error", err)
+			h.logger.Warn("failed to enqueue search index remove", "scope", "action", "error", err)
 		}
 	}
 
@@ -678,6 +709,12 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "execution",
+		"stream_id", id,
+		"event_type", "ExecutionCreated",
+	)
 
 	// Dispatch action to device via Asynq task queue
 	if h.aqClient != nil {
@@ -737,7 +774,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			DesiredState:   exec.DesiredState,
 			ActionID:       execActionID,
 		}); err != nil {
-			slog.Warn("failed to enqueue execution search reindex", "error", err)
+			h.logger.Warn("failed to enqueue execution search reindex", "error", err)
 		}
 	}
 
@@ -1123,6 +1160,12 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "execution",
+		"stream_id", id,
+		"event_type", "ExecutionCreated",
+	)
 
 	// Dispatch instant action to device via Asynq task queue
 	if h.aqClient != nil {
@@ -1354,7 +1397,7 @@ func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsPr
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 	}); err != nil {
-		slog.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
+		h.logger.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
 	}
 }
 

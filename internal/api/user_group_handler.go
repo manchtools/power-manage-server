@@ -13,19 +13,22 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // UserGroupHandler handles user group management RPCs.
 type UserGroupHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewUserGroupHandler creates a new user group handler.
-func NewUserGroupHandler(st *store.Store) *UserGroupHandler {
+func NewUserGroupHandler(st *store.Store, logger *slog.Logger) *UserGroupHandler {
 	return &UserGroupHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -75,6 +78,12 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user group")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", id,
+		"event_type", "UserGroupCreated",
+	)
 
 	group, err := h.store.Queries().GetUserGroupByID(ctx, id)
 	if err != nil {
@@ -210,6 +219,12 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update user group")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", req.Msg.GroupId,
+		"event_type", "UserGroupUpdated",
+	)
 
 	updated, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
 	if err != nil {
@@ -264,6 +279,12 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user group")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", req.Msg.Id,
+		"event_type", "UserGroupDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteUserGroupResponse{}), nil
 }
@@ -340,6 +361,12 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add user to group")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user_group",
+			"stream_id", streamID,
+			"event_type", "UserGroupMemberAdded",
+		)
 
 		// Bump user's session version (they may gain new permissions from group roles)
 		h.bumpUserSessionVersion(ctx, userID, userCtx.ID)
@@ -399,6 +426,12 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove user from group")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", streamID,
+		"event_type", "UserGroupMemberRemoved",
+	)
 
 	// Bump user's session version (they may lose permissions from group roles)
 	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
@@ -474,6 +507,12 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign role to user group")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user_group",
+			"stream_id", streamID,
+			"event_type", "UserGroupRoleAssigned",
+		)
 	}
 
 	// Bump session version for all group members once (they gain new permissions)
@@ -520,6 +559,12 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke role from user group")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", streamID,
+		"event_type", "UserGroupRoleRevoked",
+	)
 
 	// Bump session version for all group members (they may lose permissions)
 	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID)
@@ -595,6 +640,12 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update query")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_group",
+		"stream_id", req.Msg.Id,
+		"event_type", "UserGroupQueryUpdated",
+	)
 
 	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -709,7 +760,14 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 		ActorType:  "user",
 		ActorID:    actorID,
 	}); err != nil {
-		slog.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+		h.logger.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", userID,
+			"event_type", "UserSessionInvalidated",
+		)
 	}
 }
 

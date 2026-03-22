@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateDeviceGroup_Static(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -30,7 +31,7 @@ func TestCreateDeviceGroup_Static(t *testing.T) {
 
 func TestGetDeviceGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Test Group")
@@ -44,7 +45,7 @@ func TestGetDeviceGroup(t *testing.T) {
 
 func TestGetDeviceGroup_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -56,7 +57,7 @@ func TestGetDeviceGroup_NotFound(t *testing.T) {
 
 func TestListDeviceGroups(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -72,7 +73,7 @@ func TestListDeviceGroups(t *testing.T) {
 
 func TestRenameDeviceGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Old")
@@ -88,7 +89,7 @@ func TestRenameDeviceGroup(t *testing.T) {
 
 func TestDeleteDeviceGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "To Delete")
@@ -104,7 +105,7 @@ func TestDeleteDeviceGroup(t *testing.T) {
 
 func TestAddDeviceToGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Members Group")
@@ -121,7 +122,7 @@ func TestAddDeviceToGroup(t *testing.T) {
 
 func TestRemoveDeviceFromGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Remove Group")
@@ -146,7 +147,7 @@ func TestRemoveDeviceFromGroup(t *testing.T) {
 
 func TestSetDeviceGroupSyncInterval(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Sync Group")
@@ -162,7 +163,7 @@ func TestSetDeviceGroupSyncInterval(t *testing.T) {
 
 func TestValidateDynamicQuery(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceGroupHandler(st)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

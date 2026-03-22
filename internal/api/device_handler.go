@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -21,21 +22,23 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // DeviceHandler handles device management RPCs.
 type DeviceHandler struct {
 	store     *store.Store
+	logger    *slog.Logger
 	encryptor *crypto.Encryptor
 	aqClient  *taskqueue.Client
 }
 
 // NewDeviceHandler creates a new device handler.
-func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor) *DeviceHandler {
-	return &DeviceHandler{store: st, encryptor: enc}
+func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
+	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
 }
 
 // SetTaskQueueClient sets the Asynq client for dual-write dispatch.
@@ -178,6 +181,12 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set label")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceLabelSet",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
@@ -224,6 +233,12 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove label")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceLabelRemoved",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
@@ -259,6 +274,12 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete device")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
 }
@@ -324,6 +345,12 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign device")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceAssigned",
+		)
 	}
 
 	for _, groupID := range groupIDs {
@@ -349,6 +376,12 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign device to group")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceGroupAssigned",
+		)
 	}
 
 	// Read back updated device
@@ -426,6 +459,12 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unassign device")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceUnassigned",
+		)
 	} else {
 		// Emit DeviceGroupUnassigned event
 		err = h.store.AppendEvent(ctx, store.Event{
@@ -441,6 +480,12 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unassign device from group")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "device",
+			"stream_id", req.Msg.DeviceId,
+			"event_type", "DeviceGroupUnassigned",
+		)
 	}
 
 	// Read back updated device
@@ -488,6 +533,12 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set sync interval")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "device",
+		"stream_id", req.Msg.Id,
+		"event_type", "DeviceSyncIntervalSet",
+	)
 
 	// Read back updated device
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
@@ -860,6 +911,12 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	}); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation event")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "luks_key",
+		"stream_id", luksStreamID,
+		"event_type", "LuksDeviceKeyRevocationDispatched",
+	)
 
 	// Dispatch LUKS device key revocation to device via Asynq task queue
 	if h.aqClient != nil {

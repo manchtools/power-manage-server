@@ -31,10 +31,19 @@ func (i *LoggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc
 		resp, err := next(ctx, req)
 
 		duration := time.Since(start)
+		hdrs := req.Header()
 		attrs := []any{
 			"procedure", req.Spec().Procedure,
 			"request_id", middleware.RequestIDFromContext(ctx),
 			"duration_ms", duration.Milliseconds(),
+			slog.Group("headers",
+				"user_agent", hdrs.Get("User-Agent"),
+				"content_type", hdrs.Get("Content-Type"),
+				"origin", hdrs.Get("Origin"),
+				"accept_language", hdrs.Get("Accept-Language"),
+				"x_forwarded_for", hdrs.Get("X-Forwarded-For"),
+				"has_authorization", hdrs.Get("Authorization") != "",
+			),
 		}
 
 		// Add user ID if available (set by auth interceptor downstream)

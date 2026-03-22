@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -16,19 +17,22 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // TokenHandler handles registration token management RPCs.
 type TokenHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewTokenHandler creates a new token handler.
-func NewTokenHandler(st *store.Store) *TokenHandler {
+func NewTokenHandler(st *store.Store, logger *slog.Logger) *TokenHandler {
 	return &TokenHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -89,6 +93,12 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", id,
+		"event_type", "TokenCreated",
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: id})
@@ -199,6 +209,12 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", "TokenRenamed",
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
@@ -242,6 +258,12 @@ func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", eventType,
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
@@ -280,6 +302,12 @@ func (h *TokenHandler) DeleteToken(ctx context.Context, req *connect.Request[pm.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", "TokenDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteTokenResponse{}), nil
 }

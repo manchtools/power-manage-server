@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -11,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -18,13 +20,15 @@ import (
 // AssignmentHandler handles assignment RPCs.
 type AssignmentHandler struct {
 	store         *store.Store
+	logger        *slog.Logger
 	actionHandler *ActionHandler
 }
 
 // NewAssignmentHandler creates a new assignment handler.
-func NewAssignmentHandler(st *store.Store, actionHandler *ActionHandler) *AssignmentHandler {
+func NewAssignmentHandler(st *store.Store, logger *slog.Logger, actionHandler *ActionHandler) *AssignmentHandler {
 	return &AssignmentHandler{
 		store:         st,
+		logger:        logger,
 		actionHandler: actionHandler,
 	}
 }
@@ -147,6 +151,12 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create assignment")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "assignment",
+		"stream_id", id,
+		"event_type", "AssignmentCreated",
+	)
 
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
 	// may have updated an existing soft-deleted record with a different ID
@@ -187,6 +197,12 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete assignment")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "assignment",
+		"stream_id", req.Msg.Id,
+		"event_type", "AssignmentDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteAssignmentResponse{}), nil
 }

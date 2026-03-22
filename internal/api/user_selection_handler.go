@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -9,19 +10,22 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // UserSelectionHandler handles user selection RPCs.
 type UserSelectionHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewUserSelectionHandler creates a new user selection handler.
-func NewUserSelectionHandler(st *store.Store) *UserSelectionHandler {
+func NewUserSelectionHandler(st *store.Store, logger *slog.Logger) *UserSelectionHandler {
 	return &UserSelectionHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -80,6 +84,12 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set user selection")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_selection",
+		"stream_id", id,
+		"event_type", "UserSelectionChanged",
+	)
 
 	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
 		DeviceID:   req.Msg.DeviceId,

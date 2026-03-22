@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -30,12 +31,13 @@ var sensitiveEventFields = map[string]bool{
 
 // AuditHandler handles audit log RPCs.
 type AuditHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewAuditHandler creates a new audit handler.
-func NewAuditHandler(st *store.Store) *AuditHandler {
-	return &AuditHandler{store: st}
+func NewAuditHandler(st *store.Store, logger *slog.Logger) *AuditHandler {
+	return &AuditHandler{store: st, logger: logger}
 }
 
 // ListAuditEvents returns a paginated list of audit events.

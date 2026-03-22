@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -16,7 +17,7 @@ import (
 
 func TestDispatchOSQuery(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -40,7 +41,7 @@ func TestDispatchOSQuery(t *testing.T) {
 
 func TestDispatchOSQuery_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -55,7 +56,7 @@ func TestDispatchOSQuery_DeviceNotFound(t *testing.T) {
 
 func TestGetOSQueryResult_Pending(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -79,7 +80,7 @@ func TestGetOSQueryResult_Pending(t *testing.T) {
 
 func TestGetOSQueryResult_Completed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -123,7 +124,7 @@ func TestGetOSQueryResult_Completed(t *testing.T) {
 
 func TestGetOSQueryResult_CompletedWithError(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -158,7 +159,7 @@ func TestGetOSQueryResult_CompletedWithError(t *testing.T) {
 
 func TestGetOSQueryResult_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -172,7 +173,7 @@ func TestGetOSQueryResult_NotFound(t *testing.T) {
 
 func TestGetDeviceInventory(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -226,7 +227,7 @@ func TestGetDeviceInventory(t *testing.T) {
 
 func TestGetDeviceInventory_FilterByTables(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -255,7 +256,7 @@ func TestGetDeviceInventory_FilterByTables(t *testing.T) {
 
 func TestGetDeviceInventory_Empty(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -270,7 +271,7 @@ func TestGetDeviceInventory_Empty(t *testing.T) {
 
 func TestRefreshDeviceInventory(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -285,7 +286,7 @@ func TestRefreshDeviceInventory(t *testing.T) {
 
 func TestRefreshDeviceInventory_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewOSQueryHandler(st)
+	h := api.NewOSQueryHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

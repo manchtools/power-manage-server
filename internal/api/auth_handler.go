@@ -13,6 +13,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -20,13 +21,15 @@ import (
 // AuthHandler handles authentication RPCs.
 type AuthHandler struct {
 	store      *store.Store
+	logger     *slog.Logger
 	jwtManager *auth.JWTManager
 }
 
 // NewAuthHandler creates a new auth handler.
-func NewAuthHandler(st *store.Store, jwtManager *auth.JWTManager) *AuthHandler {
+func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager) *AuthHandler {
 	return &AuthHandler{
 		store:      st,
+		logger:     logger,
 		jwtManager: jwtManager,
 	}
 }
@@ -98,8 +101,17 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		ActorType:  "user",
 		ActorID:    user.ID,
 	}); err != nil {
-		slog.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "error", err)
+		h.logger.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user",
+			"stream_id", user.ID,
+			"event_type", "UserLoggedIn",
+		)
 	}
+
+	h.logger.Info("user logged in", "user_id", user.ID, "email", user.Email)
 
 	protoUser := userToProto(user)
 	// Populate user roles
@@ -171,7 +183,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 			Jti:       result.OldJTI,
 			ExpiresAt: pgtype.Timestamptz{Time: result.OldExp, Valid: true},
 		}); err != nil {
-			slog.Warn("failed to revoke old refresh token", "jti", result.OldJTI, "error", err)
+			h.logger.Warn("failed to revoke old refresh token", "jti", result.OldJTI, "error", err)
 		}
 	}
 
@@ -199,7 +211,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 				Jti:       claims.ID,
 				ExpiresAt: pgtype.Timestamptz{Time: claims.ExpiresAt.Time, Valid: true},
 			}); err != nil {
-				slog.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
+				h.logger.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
 			}
 		}
 	}

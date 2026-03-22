@@ -13,19 +13,22 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // RoleHandler handles role management RPCs.
 type RoleHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewRoleHandler creates a new role handler.
-func NewRoleHandler(st *store.Store) *RoleHandler {
+func NewRoleHandler(st *store.Store, logger *slog.Logger) *RoleHandler {
 	return &RoleHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
@@ -77,6 +80,12 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create role")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "role",
+		"stream_id", id,
+		"event_type", "RoleCreated",
+	)
 
 	role, err := h.store.Queries().GetRoleByID(ctx, id)
 	if err != nil {
@@ -211,6 +220,12 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update role")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "role",
+		"stream_id", req.Msg.RoleId,
+		"event_type", "RoleUpdated",
+	)
 
 	// Bump session_version for all users with this role to invalidate cached permissions
 	h.bumpSessionVersionForRole(ctx, req.Msg.RoleId, userCtx.ID)
@@ -275,6 +290,12 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete role")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "role",
+		"stream_id", req.Msg.Id,
+		"event_type", "RoleDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteRoleResponse{}), nil
 }
@@ -347,6 +368,12 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign role")
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "user_role",
+			"stream_id", streamID,
+			"event_type", "UserRoleAssigned",
+		)
 	}
 
 	// Bump user's session version once to invalidate cached permissions
@@ -401,6 +428,12 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke role")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_role",
+		"stream_id", streamID,
+		"event_type", "UserRoleRevoked",
+	)
 
 	// Bump user's session version to invalidate cached permissions
 	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
@@ -435,7 +468,13 @@ func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorI
 		ActorType:  "user",
 		ActorID:    actorID,
 	}); err != nil {
-		slog.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+		h.logger.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
+	} else {
+		h.logger.Debug("event appended",
+			"stream_type", "user",
+			"stream_id", userID,
+			"event_type", "UserSessionInvalidated",
+		)
 	}
 }
 

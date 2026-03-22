@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -14,12 +15,15 @@ import (
 
 // SearchHandler handles search and search index management RPCs.
 type SearchHandler struct {
+	logger    *slog.Logger
 	searchIdx *search.Index
 }
 
 // NewSearchHandler creates a new search handler.
-func NewSearchHandler() *SearchHandler {
-	return &SearchHandler{}
+func NewSearchHandler(logger *slog.Logger) *SearchHandler {
+	return &SearchHandler{
+		logger: logger,
+	}
 }
 
 // SetSearchIndex sets the search index used by the handler.

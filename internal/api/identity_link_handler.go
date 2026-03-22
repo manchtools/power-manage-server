@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -10,18 +11,20 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // IdentityLinkHandler handles self-service identity linking RPCs.
 type IdentityLinkHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewIdentityLinkHandler creates a new identity link handler.
-func NewIdentityLinkHandler(st *store.Store) *IdentityLinkHandler {
-	return &IdentityLinkHandler{store: st}
+func NewIdentityLinkHandler(st *store.Store, logger *slog.Logger) *IdentityLinkHandler {
+	return &IdentityLinkHandler{store: st, logger: logger}
 }
 
 // ListIdentityLinks returns the current user's linked identities.
@@ -103,6 +106,12 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unlink identity")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", link.ID,
+		"event_type", "IdentityUnlinked",
+	)
 
 	return connect.NewResponse(&pm.UnlinkIdentityResponse{}), nil
 }

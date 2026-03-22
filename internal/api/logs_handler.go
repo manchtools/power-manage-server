@@ -22,11 +22,12 @@ const logQueryResultTimeout = 5 * time.Minute
 type LogsHandler struct {
 	store    *store.Store
 	aqClient *taskqueue.Client
+	logger   *slog.Logger
 }
 
 // NewLogsHandler creates a new logs handler.
-func NewLogsHandler(st *store.Store) *LogsHandler {
-	return &LogsHandler{store: st}
+func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
+	return &LogsHandler{store: st, logger: logger}
 }
 
 // SetTaskQueueClient sets the Asynq client for dispatch.
@@ -74,6 +75,10 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		); err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch log query")
 		}
+		h.logger.Info("log query dispatched to device",
+			"query_id", queryID,
+			"device_id", msg.DeviceId,
+		)
 	}
 
 	return connect.NewResponse(&pm.QueryDeviceLogsResponse{
@@ -95,7 +100,7 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 			QueryID: result.QueryID,
 			Error:   timeoutErr,
 		}); err != nil {
-			slog.Warn("failed to expire pending log query result", "query_id", result.QueryID, "error", err)
+			h.logger.Warn("failed to expire pending log query result", "query_id", result.QueryID, "error", err)
 		}
 		result.Completed = true
 		result.Success = false

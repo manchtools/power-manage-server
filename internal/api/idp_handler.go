@@ -9,12 +9,14 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
+
 	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -24,11 +26,12 @@ type IDPHandler struct {
 	store       *store.Store
 	enc         *crypto.Encryptor
 	scimBaseURL string
+	logger      *slog.Logger
 }
 
 // NewIDPHandler creates a new identity provider handler.
-func NewIDPHandler(st *store.Store, enc *crypto.Encryptor, scimBaseURL string) *IDPHandler {
-	return &IDPHandler{store: st, enc: enc, scimBaseURL: scimBaseURL}
+func NewIDPHandler(st *store.Store, enc *crypto.Encryptor, scimBaseURL string, logger *slog.Logger) *IDPHandler {
+	return &IDPHandler{store: st, enc: enc, scimBaseURL: scimBaseURL, logger: logger}
 }
 
 // CreateIdentityProvider creates a new identity provider.
@@ -88,6 +91,12 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create provider")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", id,
+		"event_type", "IdentityProviderCreated",
+	)
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, id)
 	if err != nil {
@@ -232,6 +241,12 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update provider")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", req.Msg.Id,
+		"event_type", "IdentityProviderUpdated",
+	)
 
 	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -259,7 +274,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	// Find all identity links for this provider before deleting it.
 	links, err := h.store.Queries().ListIdentityLinksByProvider(ctx, providerID)
 	if err != nil {
-		slog.Error("failed to list identity links for provider", "provider_id", providerID, "error", err)
+		h.logger.Error("failed to list identity links for provider", "provider_id", providerID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete provider")
 	}
 
@@ -274,6 +289,12 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete provider")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", providerID,
+		"event_type", "IdentityProviderDeleted",
+	)
 
 	// Unlink all users from this provider and auto-delete orphaned passwordless users.
 	for _, link := range links {
@@ -285,9 +306,15 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 			ActorType:  "user",
 			ActorID:    userCtx.ID,
 		}); err != nil {
-			slog.Error("failed to unlink identity on provider delete", "link_id", link.ID, "user_id", link.UserID, "error", err)
+			h.logger.Error("failed to unlink identity on provider delete", "link_id", link.ID, "user_id", link.UserID, "error", err)
 			continue
 		}
+		h.logger.Debug("event appended",
+			"request_id", middleware.RequestIDFromContext(ctx),
+			"stream_type", "identity_provider",
+			"stream_id", link.ID,
+			"event_type", "IdentityUnlinked",
+		)
 
 		// If the user has no remaining identity links and no password, delete them.
 		if link.HasPassword {
@@ -295,7 +322,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 		}
 		remaining, err := h.store.Queries().CountIdentityLinksForUser(ctx, link.UserID)
 		if err != nil {
-			slog.Error("failed to count identity links for user", "user_id", link.UserID, "error", err)
+			h.logger.Error("failed to count identity links for user", "user_id", link.UserID, "error", err)
 			continue
 		}
 		if remaining == 0 {
@@ -307,7 +334,14 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 				ActorType:  "user",
 				ActorID:    userCtx.ID,
 			}); err != nil {
-				slog.Error("failed to auto-delete orphaned user", "user_id", link.UserID, "error", err)
+				h.logger.Error("failed to auto-delete orphaned user", "user_id", link.UserID, "error", err)
+			} else {
+				h.logger.Debug("event appended",
+					"request_id", middleware.RequestIDFromContext(ctx),
+					"stream_type", "user",
+					"stream_id", link.UserID,
+					"event_type", "UserDeleted",
+				)
 			}
 		}
 	}
@@ -363,6 +397,12 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enable SCIM")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", req.Msg.Id,
+		"event_type", "IdentityProviderSCIMEnabled",
+	)
 
 	endpointURL := h.scimBaseURL + "/scim/v2/" + provider.Slug
 
@@ -406,6 +446,12 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to disable SCIM")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", req.Msg.Id,
+		"event_type", "IdentityProviderSCIMDisabled",
+	)
 
 	return connect.NewResponse(&pm.DisableSCIMResponse{}), nil
 }
@@ -458,6 +504,12 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rotate SCIM token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "identity_provider",
+		"stream_id", req.Msg.Id,
+		"event_type", "IdentityProviderSCIMTokenRotated",
+	)
 
 	return connect.NewResponse(&pm.RotateSCIMTokenResponse{
 		Token: plainToken,
