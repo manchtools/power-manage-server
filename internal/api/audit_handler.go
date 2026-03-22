@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -30,12 +31,13 @@ var sensitiveEventFields = map[string]bool{
 
 // AuditHandler handles audit log RPCs.
 type AuditHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewAuditHandler creates a new audit handler.
-func NewAuditHandler(st *store.Store) *AuditHandler {
-	return &AuditHandler{store: st}
+func NewAuditHandler(st *store.Store, logger *slog.Logger) *AuditHandler {
+	return &AuditHandler{store: st, logger: logger}
 }
 
 // ListAuditEvents returns a paginated list of audit events.
@@ -49,7 +51,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -62,7 +64,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Offset:  offset,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list audit events")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list audit events")
 	}
 
 	count, err := h.store.Queries().CountAuditEvents(ctx, db.CountAuditEventsParams{
@@ -71,7 +73,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		Column3: req.Msg.EventType,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count audit events")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count audit events")
 	}
 
 	var nextPageToken string

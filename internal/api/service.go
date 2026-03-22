@@ -38,7 +38,6 @@ type ControlService struct {
 	idp           *IDPHandler
 	sso           *SSOHandler
 	identityLink  *IdentityLinkHandler
-	deviceAuth    *DeviceAuthHandler
 	compliance       *ComplianceHandler
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
@@ -52,41 +51,38 @@ type ControlServiceConfig struct {
 	PasswordAuthEnabled       bool
 	SSOCallbackBaseURL        string
 	SCIMBaseURL               string
-	DeviceLoginURL            string // Configurable base URL for browser-based device login
-	ExternalURL               string // Server's external URL (for default device login URL)
 }
 
 // NewControlService creates a new control service.
 func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
-	actionHandler := NewActionHandler(st, signer)
+	actionHandler := NewActionHandler(st, logger.With("component", "action_handler"), signer)
 	systemActions := NewSystemActionManager(st, signer, logger)
 	settingsHandler := NewSettingsHandler(st, logger, systemActions)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
-		auth:          NewAuthHandler(st, jwtManager),
-		totp:          NewTOTPHandler(st, jwtManager, enc, ""),
+		auth:          NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager),
+		totp:          NewTOTPHandler(st, logger.With("component", "totp_handler"), jwtManager, enc, ""),
 		user:          NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
-		device:        NewDeviceHandler(st, enc),
-		token:         NewTokenHandler(st),
+		device:        NewDeviceHandler(st, enc, logger.With("component", "device_handler")),
+		token:         NewTokenHandler(st, logger.With("component", "token_handler")),
 		action:        actionHandler,
-		actionSet:     NewActionSetHandler(st),
-		definition:    NewDefinitionHandler(st),
-		deviceGroup:   NewDeviceGroupHandler(st),
-		assignment:    NewAssignmentHandler(st, actionHandler),
-		userSelection: NewUserSelectionHandler(st),
-		audit:         NewAuditHandler(st),
-		osquery:       NewOSQueryHandler(st),
-		logs:          NewLogsHandler(st),
-		role:          NewRoleHandler(st),
-		userGroup:     NewUserGroupHandler(st),
-		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL),
-		sso:           NewSSOHandler(st, jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
-		identityLink:  NewIdentityLinkHandler(st),
-		deviceAuth:    NewDeviceAuthHandler(st, jwtManager, enc, cfg.DeviceLoginURL, cfg.ExternalURL),
-		compliance:       NewComplianceHandler(st),
-		compliancePolicy: NewCompliancePolicyHandler(st),
+		actionSet:     NewActionSetHandler(st, logger.With("component", "action_set_handler")),
+		definition:    NewDefinitionHandler(st, logger.With("component", "definition_handler")),
+		deviceGroup:   NewDeviceGroupHandler(st, logger.With("component", "device_group_handler")),
+		assignment:    NewAssignmentHandler(st, logger.With("component", "assignment_handler"), actionHandler),
+		userSelection: NewUserSelectionHandler(st, logger.With("component", "user_selection_handler")),
+		audit:         NewAuditHandler(st, logger.With("component", "audit_handler")),
+		osquery:       NewOSQueryHandler(st, logger.With("component", "osquery_handler")),
+		logs:          NewLogsHandler(st, logger.With("component", "logs_handler")),
+		role:          NewRoleHandler(st, logger.With("component", "role_handler")),
+		userGroup:     NewUserGroupHandler(st, logger.With("component", "user_group_handler")),
+		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL, logger.With("component", "idp_handler")),
+		sso:           NewSSOHandler(st, logger.With("component", "sso_handler"), jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
+		identityLink:  NewIdentityLinkHandler(st, logger.With("component", "identity_link_handler")),
+		compliance:       NewComplianceHandler(st, logger.With("component", "compliance_handler")),
+		compliancePolicy: NewCompliancePolicyHandler(st, logger.With("component", "compliance_policy_handler")),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
-		search:           NewSearchHandler(),
+		search:           NewSearchHandler(logger.With("component", "search_handler")),
 		settings:         settingsHandler,
 		systemActions:    systemActions,
 	}
@@ -697,23 +693,6 @@ func (s *ControlService) DisableSCIM(ctx context.Context, req *connect.Request[p
 
 func (s *ControlService) RotateSCIMToken(ctx context.Context, req *connect.Request[pm.RotateSCIMTokenRequest]) (*connect.Response[pm.RotateSCIMTokenResponse], error) {
 	return s.idp.RotateSCIMToken(ctx, req)
-}
-
-// Device Authentication (PAM/NSS device login)
-func (s *ControlService) AuthenticateDeviceUser(ctx context.Context, req *connect.Request[pm.AuthenticateDeviceUserRequest]) (*connect.Response[pm.AuthenticateDeviceUserResponse], error) {
-	return s.deviceAuth.AuthenticateDeviceUser(ctx, req)
-}
-
-func (s *ControlService) GetDeviceLoginURL(ctx context.Context, req *connect.Request[pm.GetDeviceLoginURLRequest]) (*connect.Response[pm.GetDeviceLoginURLResponse], error) {
-	return s.deviceAuth.GetDeviceLoginURL(ctx, req)
-}
-
-func (s *ControlService) DeviceLoginCallback(ctx context.Context, req *connect.Request[pm.DeviceLoginCallbackRequest]) (*connect.Response[pm.DeviceLoginCallbackResponse], error) {
-	return s.deviceAuth.DeviceLoginCallback(ctx, req)
-}
-
-func (s *ControlService) ListDeviceUsers(ctx context.Context, req *connect.Request[pm.ListDeviceUsersRequest]) (*connect.Response[pm.ListDeviceUsersResponse], error) {
-	return s.deviceAuth.ListDeviceUsers(ctx, req)
 }
 
 // Device Compliance

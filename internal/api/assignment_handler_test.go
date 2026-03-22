@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,8 +15,8 @@ import (
 
 func TestCreateAssignment_ActionToDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Assign Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -38,8 +39,8 @@ func TestCreateAssignment_ActionToDevice(t *testing.T) {
 
 func TestCreateAssignment_SetToGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setID := testutil.CreateTestActionSet(t, st, adminID, "Assign Set")
@@ -59,8 +60,8 @@ func TestCreateAssignment_SetToGroup(t *testing.T) {
 
 func TestCreateAssignment_Idempotent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Idem Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -86,8 +87,8 @@ func TestCreateAssignment_Idempotent(t *testing.T) {
 
 func TestDeleteAssignment(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Del Assign", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -110,8 +111,8 @@ func TestDeleteAssignment(t *testing.T) {
 
 func TestListAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "list-host")
@@ -135,8 +136,8 @@ func TestListAssignments(t *testing.T) {
 
 func TestCreateAssignment_ActionToUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "User Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -157,8 +158,8 @@ func TestCreateAssignment_ActionToUser(t *testing.T) {
 
 func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "UG Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -179,8 +180,8 @@ func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
 
 func TestCreateAssignment_UserNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "NotFound Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -198,8 +199,8 @@ func TestCreateAssignment_UserNotFound(t *testing.T) {
 
 func TestGetUserAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -236,8 +237,8 @@ func TestGetUserAssignments(t *testing.T) {
 
 func TestGetDeviceAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Device Assign", int(pm.ActionType_ACTION_TYPE_SHELL))

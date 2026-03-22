@@ -168,8 +168,8 @@ services:
       - "-tls-key=/certs/gateway.key"
       - "-tls-ca=/certs/ca.crt"
     healthcheck:
-      test: ["CMD", "kill", "-0", "1"]
-      interval: 30s
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 10s
       timeout: 5s
       retries: 3
     labels:

@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 )
 
 // Error code constants for structured error details.
@@ -31,10 +32,6 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/ListAuthMethods": true,
 	"/pm.v1.ControlService/GetSSOLoginURL":  true,
 	"/pm.v1.ControlService/SSOCallback":             true,
-	"/pm.v1.ControlService/AuthenticateDeviceUser":  true,
-	"/pm.v1.ControlService/GetDeviceLoginURL":       true,
-	"/pm.v1.ControlService/DeviceLoginCallback":     true,
-	"/pm.v1.ControlService/ListDeviceUsers":         true,
 }
 
 // TrustedProxies is the set of IP addresses/CIDRs trusted to set
@@ -140,7 +137,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
-				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
 			}
 		}
 
@@ -149,7 +146,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.refreshLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
-				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
 			}
 		}
 
@@ -158,7 +155,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.registerLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
-				return nil, authError(errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
+				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
 			}
 		}
 
@@ -170,21 +167,21 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// Extract token from Authorization: Bearer header
 		authHeader := req.Header().Get("Authorization")
 		if authHeader == "" {
-			return nil, authError(errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return nil, authError(errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
 		}
 		tokenString := parts[1]
 		if tokenString == "" {
-			return nil, authError(errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 
 		// Validate token
 		claims, err := i.jwtManager.ValidateToken(tokenString, TokenTypeAccess)
 		if err != nil {
-			return nil, authError(errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
+			return nil, authErrorCtx(ctx,errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
 		}
 
 		// Add user context with permissions from JWT
@@ -245,7 +242,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 				Action:    action,
 			}
 			if !Authorize(input) {
-				return nil, authError(errPermissionDenied, connect.CodePermissionDenied, "permission denied")
+				return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 			}
 			return next(ctx, req)
 		}
@@ -253,7 +250,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
-			return nil, authError(errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 		}
 
 		input := AuthzInput{
@@ -263,7 +260,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 
 		if !Authorize(input) {
-			return nil, authError(errPermissionDenied, connect.CodePermissionDenied, "permission denied")
+			return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
 
 		return next(ctx, req)
@@ -283,11 +280,13 @@ func (i *AuthzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFun
 	}
 }
 
-// authError creates a connect.Error with a structured ErrorDetail containing the error code.
-func authError(code string, connectCode connect.Code, msg string) *connect.Error {
+// authErrorCtx creates a connect.Error with a structured ErrorDetail containing the error code
+// and the request ID from context for client-side correlation.
+func authErrorCtx(ctx context.Context, code string, connectCode connect.Code, msg string) *connect.Error {
 	e := connect.NewError(connectCode, errors.New(msg))
-	if detail, detailErr := connect.NewErrorDetail(&pm.ErrorDetail{Code: code}); detailErr == nil {
-		e.AddDetail(detail)
+	detail := &pm.ErrorDetail{Code: code, RequestId: middleware.RequestIDFromContext(ctx)}
+	if d, err := connect.NewErrorDetail(detail); err == nil {
+		e.AddDetail(d)
 	}
 	return e
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -13,12 +14,16 @@ import (
 
 // ComplianceHandler handles compliance-related RPCs.
 type ComplianceHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewComplianceHandler creates a new compliance handler.
-func NewComplianceHandler(st *store.Store) *ComplianceHandler {
-	return &ComplianceHandler{store: st}
+func NewComplianceHandler(st *store.Store, logger *slog.Logger) *ComplianceHandler {
+	return &ComplianceHandler{
+		store:  st,
+		logger: logger,
+	}
 }
 
 // GetDeviceCompliance returns the compliance status and individual check results for a device.
@@ -27,12 +32,12 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 
 	results, err := h.store.Queries().GetDeviceComplianceResults(ctx, deviceID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to query compliance results")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance results")
 	}
 
 	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, deviceID)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to query compliance summary")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance summary")
 	}
 
 	checks := make([]*pm.ComplianceCheckResult, len(results))

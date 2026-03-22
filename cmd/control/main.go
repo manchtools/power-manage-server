@@ -21,14 +21,15 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -58,6 +59,11 @@ type Config struct {
 	TrustedProxies               []string
 	CATrustBundlePath            string
 
+	// Public listener TLS (optional — plain HTTP/1.1 when disabled)
+	TLSEnabled bool
+	TLSCert    string
+	TLSKey     string
+
 	// Internal mTLS listener (InternalService for gateway communication)
 	InternalListenAddr string
 	InternalTLSCert    string
@@ -72,7 +78,7 @@ type Config struct {
 func main() {
 	cfg := parseFlags()
 
-	logger := setupLogger(cfg.LogLevel, cfg.LogFormat)
+	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	if cfg.GatewayURL == "" {
@@ -398,9 +404,9 @@ func main() {
 		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr, "search_enabled", true)
 	}
 
-	loginLimiter := auth.NewRateLimiter(10, 15*time.Minute)
-	refreshLimiter := auth.NewRateLimiter(30, 15*time.Minute)
-	registerLimiter := auth.NewRateLimiter(10, 15*time.Minute)
+	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	registerLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 
 	interceptors := connect.WithInterceptors(
 		api.NewLoggingInterceptor(logger),
@@ -425,13 +431,30 @@ func main() {
 
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
-	securedHandler := securityHeadersMiddleware(corsHandler)
+	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           h2c.NewHandler(securedHandler, &http2.Server{}),
+		Handler:           securedHandler,
 		IdleTimeout:       120 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// Configure TLS for public listener if enabled
+	if cfg.TLSEnabled {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			logger.Error("failed to load public TLS certificate", "error", err)
+			os.Exit(1)
+		}
+		server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
+			logger.Error("failed to configure HTTP/2 for public server", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Mount InternalService on a separate mTLS-protected listener.
@@ -475,10 +498,18 @@ func main() {
 
 	// Start public server
 	go func() {
-		logger.Info("control server listening", "addr", cfg.ListenAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("server error", "error", err)
-			cancel()
+		if cfg.TLSEnabled {
+			logger.Info("control server listening (TLS)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
+		} else {
+			logger.Info("control server listening (plain HTTP)", "addr", cfg.ListenAddr)
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("server error", "error", err)
+				cancel()
+			}
 		}
 	}()
 
@@ -524,6 +555,9 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
+	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
+	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
+	flag.StringVar(&cfg.TLSKey, "tls-key", "", "TLS private key for public listener")
 	flag.StringVar(&cfg.InternalListenAddr, "internal-listen", ":8082", "Internal mTLS listen address for gateway communication")
 	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
 	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
@@ -548,6 +582,15 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
 		cfg.CATrustBundlePath = v
+	}
+	if v := os.Getenv("CONTROL_TLS_ENABLED"); v == "true" || v == "1" {
+		cfg.TLSEnabled = true
+	}
+	if v := os.Getenv("CONTROL_TLS_CERT"); v != "" {
+		cfg.TLSCert = v
+	}
+	if v := os.Getenv("CONTROL_TLS_KEY"); v != "" {
+		cfg.TLSKey = v
 	}
 	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
 		cfg.InternalListenAddr = v
@@ -639,32 +682,12 @@ func parseFlags() *Config {
 		os.Exit(1)
 	}
 
+	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
+		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert and -tls-key are required when TLS is enabled")
+		os.Exit(1)
+	}
+
 	return cfg
-}
-
-func setupLogger(level, format string) *slog.Logger {
-	var logLevel slog.Level
-	switch level {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
-	}
-
-	opts := &slog.HandlerOptions{Level: logLevel}
-
-	var handler slog.Handler
-	if format == "json" {
-		handler = slog.NewJSONHandler(os.Stderr, opts)
-	} else {
-		handler = slog.NewTextHandler(os.Stderr, opts)
-	}
-
-	return slog.New(handler)
 }
 
 func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
@@ -720,21 +743,6 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	logger.Info("admin user created", "email", email, "id", id)
 	return nil
-}
-
-// securityHeadersMiddleware adds standard security headers to all responses.
-func securityHeadersMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("X-XSS-Protection", "0")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.

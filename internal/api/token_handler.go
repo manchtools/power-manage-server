@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -16,37 +17,40 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // TokenHandler handles registration token management RPCs.
 type TokenHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewTokenHandler creates a new token handler.
-func NewTokenHandler(st *store.Store) *TokenHandler {
+func NewTokenHandler(st *store.Store, logger *slog.Logger) *TokenHandler {
 	return &TokenHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
 // CreateToken creates a new registration token.
 func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.CreateTokenRequest]) (*connect.Response[pm.CreateTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Generate token value (32 bytes = 256 bits)
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to generate token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate token")
 	}
 	tokenValue := base64.URLEncoding.EncodeToString(tokenBytes)
 
@@ -87,13 +91,19 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", id,
+		"event_type", "TokenCreated",
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: id})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get token")
 	}
 
 	protoToken := tokenToProto(token)
@@ -106,16 +116,16 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 
 // GetToken returns a token by ID.
 func (h *TokenHandler) GetToken(ctx context.Context, req *connect.Request[pm.GetTokenRequest]) (*connect.Response[pm.GetTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrTokenNotFound, connect.CodeNotFound, "token not found")
+			return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get token")
 	}
 
 	return connect.NewResponse(&pm.GetTokenResponse{
@@ -134,7 +144,7 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 	if req.Msg.PageToken != "" {
 		offset64, err := parsePageToken(req.Msg.PageToken)
 		if err != nil {
-			return nil, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
+			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
 	}
@@ -146,7 +156,7 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 		FilterOwnerID: userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list tokens")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list tokens")
 	}
 
 	count, err := h.store.Queries().CountTokens(ctx, db.CountTokensParams{
@@ -154,7 +164,7 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 		FilterOwnerID: userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to count tokens")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count tokens")
 	}
 
 	var nextPageToken string
@@ -176,13 +186,13 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 
 // RenameToken renames a token.
 func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.RenameTokenRequest]) (*connect.Response[pm.UpdateTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit TokenRenamed event
@@ -197,16 +207,22 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to rename token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", "TokenRenamed",
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrTokenNotFound, connect.CodeNotFound, "token not found")
+			return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get token")
 	}
 
 	return connect.NewResponse(&pm.UpdateTokenResponse{
@@ -216,13 +232,13 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 
 // SetTokenDisabled enables or disables a token.
 func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Request[pm.SetTokenDisabledRequest]) (*connect.Response[pm.UpdateTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit appropriate event
@@ -240,16 +256,22 @@ func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Reques
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", eventType,
+	)
 
 	// Read back from projection
 	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiError(ErrTokenNotFound, connect.CodeNotFound, "token not found")
+			return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token not found")
 		}
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get token")
 	}
 
 	return connect.NewResponse(&pm.UpdateTokenResponse{
@@ -259,13 +281,13 @@ func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Reques
 
 // DeleteToken deletes a token.
 func (h *TokenHandler) DeleteToken(ctx context.Context, req *connect.Request[pm.DeleteTokenRequest]) (*connect.Response[pm.DeleteTokenResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Emit TokenDeleted event
@@ -278,8 +300,14 @@ func (h *TokenHandler) DeleteToken(ctx context.Context, req *connect.Request[pm.
 		ActorID:    userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to delete token")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete token")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "token",
+		"stream_id", req.Msg.Id,
+		"event_type", "TokenDeleted",
+	)
 
 	return connect.NewResponse(&pm.DeleteTokenResponse{}), nil
 }

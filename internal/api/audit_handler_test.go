@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestListAuditEvents(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewAuditHandler(st)
+	h := api.NewAuditHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -27,7 +28,7 @@ func TestListAuditEvents(t *testing.T) {
 
 func TestListAuditEvents_FilterByStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewAuditHandler(st)
+	h := api.NewAuditHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	testutil.CreateTestDevice(t, st, "audit-host")
@@ -44,7 +45,7 @@ func TestListAuditEvents_FilterByStreamType(t *testing.T) {
 
 func TestListAuditEvents_FilterByEventType(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewAuditHandler(st)
+	h := api.NewAuditHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -60,7 +61,7 @@ func TestListAuditEvents_FilterByEventType(t *testing.T) {
 
 func TestListAuditEvents_Pagination(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewAuditHandler(st)
+	h := api.NewAuditHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

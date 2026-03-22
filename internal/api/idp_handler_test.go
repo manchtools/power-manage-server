@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -17,7 +18,7 @@ import (
 func TestCreateIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -45,7 +46,7 @@ func TestCreateIdentityProvider_Success(t *testing.T) {
 func TestCreateIdentityProvider_DuplicateSlug(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -69,7 +70,7 @@ func TestCreateIdentityProvider_DuplicateSlug(t *testing.T) {
 func TestGetIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -88,7 +89,7 @@ func TestGetIdentityProvider_Success(t *testing.T) {
 func TestGetIdentityProvider_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -103,7 +104,7 @@ func TestGetIdentityProvider_NotFound(t *testing.T) {
 func TestListIdentityProviders_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -123,7 +124,7 @@ func TestListIdentityProviders_Success(t *testing.T) {
 func TestUpdateIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -145,7 +146,7 @@ func TestUpdateIdentityProvider_Success(t *testing.T) {
 func TestUpdateIdentityProvider_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -161,7 +162,7 @@ func TestUpdateIdentityProvider_NotFound(t *testing.T) {
 func TestDeleteIdentityProvider_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -183,7 +184,7 @@ func TestDeleteIdentityProvider_Success(t *testing.T) {
 func TestDeleteIdentityProvider_DeletesOrphanedPasswordlessUsers(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 	ctx := context.Background()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -225,7 +226,7 @@ func TestDeleteIdentityProvider_DeletesOrphanedPasswordlessUsers(t *testing.T) {
 func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -254,7 +255,7 @@ func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {
 func TestEnableSCIM_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -280,7 +281,7 @@ func TestEnableSCIM_Success(t *testing.T) {
 func TestEnableSCIM_AlreadyEnabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -297,7 +298,7 @@ func TestEnableSCIM_AlreadyEnabled(t *testing.T) {
 func TestDisableSCIM_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -320,7 +321,7 @@ func TestDisableSCIM_Success(t *testing.T) {
 func TestDisableSCIM_NotEnabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -336,7 +337,7 @@ func TestDisableSCIM_NotEnabled(t *testing.T) {
 func TestRotateSCIMToken_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -356,7 +357,7 @@ func TestRotateSCIMToken_Success(t *testing.T) {
 func TestRotateSCIMToken_NotEnabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewIDPHandler(st, enc, "http://localhost:8081")
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

@@ -22,11 +22,12 @@ const logQueryResultTimeout = 5 * time.Minute
 type LogsHandler struct {
 	store    *store.Store
 	aqClient *taskqueue.Client
+	logger   *slog.Logger
 }
 
 // NewLogsHandler creates a new logs handler.
-func NewLogsHandler(st *store.Store) *LogsHandler {
-	return &LogsHandler{store: st}
+func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
+	return &LogsHandler{store: st, logger: logger}
 }
 
 // SetTaskQueueClient sets the Asynq client for dispatch.
@@ -43,7 +44,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		ID: msg.DeviceId,
 	})
 	if err != nil {
-		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Generate query ID
@@ -54,7 +55,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		QueryID:  queryID,
 		DeviceID: msg.DeviceId,
 	}); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to create log query result")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create log query result")
 	}
 
 	// Dispatch log query to device via Asynq task queue
@@ -72,8 +73,12 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 			asynq.MaxRetry(3),
 			asynq.Deadline(time.Now().Add(2*time.Minute)),
 		); err != nil {
-			return nil, apiError(ErrInternal, connect.CodeInternal, "failed to dispatch log query")
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch log query")
 		}
+		h.logger.Info("log query dispatched to device",
+			"query_id", queryID,
+			"device_id", msg.DeviceId,
+		)
 	}
 
 	return connect.NewResponse(&pm.QueryDeviceLogsResponse{
@@ -85,7 +90,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Request[pm.GetDeviceLogResultRequest]) (*connect.Response[pm.GetDeviceLogResultResponse], error) {
 	result, err := h.store.Queries().GetLogQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
-		return nil, apiError(ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
+		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
 	}
 
 	// Auto-expire pending results that have been waiting too long
@@ -95,7 +100,7 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 			QueryID: result.QueryID,
 			Error:   timeoutErr,
 		}); err != nil {
-			slog.Warn("failed to expire pending log query result", "query_id", result.QueryID, "error", err)
+			h.logger.Warn("failed to expire pending log query result", "query_id", result.QueryID, "error", err)
 		}
 		result.Completed = true
 		result.Success = false

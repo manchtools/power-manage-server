@@ -3,6 +3,7 @@ package connection
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -133,7 +134,9 @@ func (m *Manager) Broadcast(msg *pm.ServerMessage) {
 	m.mu.RUnlock()
 
 	for _, agent := range agents {
-		_ = agent.Send(msg) // Ignore errors for broadcast
+		if err := agent.Send(msg); err != nil {
+			slog.Warn("broadcast send failed", "device_id", agent.DeviceID, "error", err)
+		}
 	}
 }
 

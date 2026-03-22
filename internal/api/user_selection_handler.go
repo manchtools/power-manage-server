@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -9,31 +10,34 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // UserSelectionHandler handles user selection RPCs.
 type UserSelectionHandler struct {
-	store *store.Store
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewUserSelectionHandler creates a new user selection handler.
-func NewUserSelectionHandler(st *store.Store) *UserSelectionHandler {
+func NewUserSelectionHandler(st *store.Store, logger *slog.Logger) *UserSelectionHandler {
 	return &UserSelectionHandler{
-		store: st,
+		store:  st,
+		logger: logger,
 	}
 }
 
 // SetUserSelection sets a user's selection for an available assignment.
 func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connect.Request[pm.SetUserSelectionRequest]) (*connect.Response[pm.SetUserSelectionResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
-		return nil, apiError(ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
 	// Verify device access (non-admins can only access assigned devices)
@@ -42,13 +46,13 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
-		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Verify an available-mode assignment exists for this source targeting this device
 	availableAssignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to check available assignments")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check available assignments")
 	}
 
 	found := false
@@ -59,7 +63,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		}
 	}
 	if !found {
-		return nil, apiError(ErrNoAssignmentFound, connect.CodeNotFound, "no available assignment found for this source and device")
+		return nil, apiErrorCtx(ctx, ErrNoAssignmentFound, connect.CodeNotFound, "no available assignment found for this source and device")
 	}
 
 	id := ulid.Make().String()
@@ -78,8 +82,14 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to set user selection")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set user selection")
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user_selection",
+		"stream_id", id,
+		"event_type", "UserSelectionChanged",
+	)
 
 	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
 		DeviceID:   req.Msg.DeviceId,
@@ -87,7 +97,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		SourceID:   req.Msg.SourceId,
 	})
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get user selection")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user selection")
 	}
 
 	return connect.NewResponse(&pm.SetUserSelectionResponse{
@@ -97,7 +107,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 
 // ListAvailableActions returns all available-mode items for a device with their selection status.
 func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *connect.Request[pm.ListAvailableActionsRequest]) (*connect.Response[pm.ListAvailableActionsResponse], error) {
-	if err := Validate(req.Msg); err != nil {
+	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
@@ -107,19 +117,19 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
-		return nil, apiError(ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
 	// Get available assignments for this device
 	assignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list available assignments")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list available assignments")
 	}
 
 	// Get user selections for this device
 	selections, err := h.store.Queries().ListUserSelectionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to list user selections")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user selections")
 	}
 
 	// Index selections by (source_type, source_id)

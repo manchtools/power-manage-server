@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateAction_Luks(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -39,7 +40,7 @@ func TestCreateAction_Luks(t *testing.T) {
 
 func TestCreateAction_Luks_WithTPM(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -70,7 +71,7 @@ func TestCreateAction_Luks_WithTPM(t *testing.T) {
 
 func TestCreateAction_Luks_WithUserPassphrase(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -100,7 +101,7 @@ func TestCreateAction_Luks_WithUserPassphrase(t *testing.T) {
 
 func TestCreateAction_Luks_GetAfterCreate(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -134,7 +135,7 @@ func TestCreateAction_Luks_GetAfterCreate(t *testing.T) {
 
 func TestCreateAction_Luks_UpdateParams(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -175,7 +176,7 @@ func TestCreateAction_Luks_UpdateParams(t *testing.T) {
 
 func TestCreateAction_Luks_DeleteAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -207,7 +208,7 @@ func TestCreateAction_Luks_DeleteAction(t *testing.T) {
 
 func TestCreateAction_Luks_ListIncludesLuks(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, nil)
+	h := api.NewActionHandler(st, slog.Default(), nil)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

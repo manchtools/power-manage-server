@@ -31,7 +31,7 @@ func NewSettingsHandler(st *store.Store, logger *slog.Logger, systemActions *Sys
 func (h *SettingsHandler) GetServerSettings(ctx context.Context, req *connect.Request[pm.GetServerSettingsRequest]) (*connect.Response[pm.GetServerSettingsResponse], error) {
 	settings, err := h.store.Queries().GetServerSettings(ctx)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to get server settings")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get server settings")
 	}
 
 	return connect.NewResponse(&pm.GetServerSettingsResponse{
@@ -55,13 +55,13 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		ActorType: "system",
 		ActorID:   "system",
 	}); err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to update server settings")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update server settings")
 	}
 
 	// Read back from projection
 	settings, err := h.store.Queries().GetServerSettings(ctx)
 	if err != nil {
-		return nil, apiError(ErrInternal, connect.CodeInternal, "failed to read server settings")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read server settings")
 	}
 
 	// Propagate global flags to individual users when enabled.

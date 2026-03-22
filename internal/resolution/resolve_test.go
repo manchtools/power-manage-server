@@ -1,6 +1,7 @@
 package resolution_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -170,8 +171,8 @@ func TestResolveActions_MergeDeviceAndUserActions(t *testing.T) {
 // Test that user assignment works via the handler (CreateAssignment + GetUserAssignments)
 func TestCreateAssignment_UserTargetViaHandler(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, nil)
-	h := api.NewAssignmentHandler(st, actionHandler)
+	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")

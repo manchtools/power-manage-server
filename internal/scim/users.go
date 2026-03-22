@@ -46,6 +46,9 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 			count = v
 		}
 	}
+	if count > 200 {
+		count = 200
+	}
 
 	baseURL := baseURLFromRequest(r, provider.Slug)
 

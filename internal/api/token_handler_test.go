@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"log/slog"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,7 +15,7 @@ import (
 
 func TestCreateToken_Admin(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -30,7 +31,7 @@ func TestCreateToken_Admin(t *testing.T) {
 
 func TestCreateToken_User(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
 	ctx := testutil.UserContext(userID)
@@ -44,7 +45,7 @@ func TestCreateToken_User(t *testing.T) {
 
 func TestGetToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -63,7 +64,7 @@ func TestGetToken(t *testing.T) {
 
 func TestListTokens(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -82,7 +83,7 @@ func TestListTokens(t *testing.T) {
 
 func TestRenameToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -102,7 +103,7 @@ func TestRenameToken(t *testing.T) {
 
 func TestSetTokenDisabled(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -129,7 +130,7 @@ func TestSetTokenDisabled(t *testing.T) {
 
 func TestDeleteToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewTokenHandler(st)
+	h := api.NewTokenHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
