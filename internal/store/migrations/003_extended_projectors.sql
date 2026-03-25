@@ -730,14 +730,14 @@ BEGIN
                 COALESCE((event.data->>'compliant')::boolean, false),
                 event.data->'detection_output',
                 event.occurred_at,
-                event.id
+                event.sequence_num
             )
             ON CONFLICT (device_id, action_id) DO UPDATE SET
                 action_name = COALESCE(event.data->>'action_name', compliance_results_projection.action_name),
                 compliant = COALESCE((event.data->>'compliant')::boolean, false),
                 detection_output = event.data->'detection_output',
                 checked_at = event.occurred_at,
-                projection_version = event.id;
+                projection_version = event.sequence_num;
 
             -- Evaluate compliance policies (falls back to simple check if no policies assigned)
             PERFORM evaluate_device_compliance_policies(event.data->>'device_id');

@@ -304,10 +304,15 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	if result.DetectionOutput != nil && actionID != "" {
 		actionName := ""
 		isCompliance := false
-		if action, err := w.store.Queries().GetActionByID(ctx, actionID); err == nil {
+		action, err := w.store.Queries().GetActionByID(ctx, actionID)
+		if err != nil {
+			logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
+		} else {
 			actionName = action.Name
 			var params map[string]any
-			if json.Unmarshal(action.Params, &params) == nil {
+			if err := json.Unmarshal(action.Params, &params); err != nil {
+				logger.Warn("failed to unmarshal action params for compliance check", "action_id", actionID, "error", err)
+			} else {
 				isCompliance, _ = params["isCompliance"].(bool)
 			}
 		}
