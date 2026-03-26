@@ -1219,6 +1219,25 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 -- +goose StatementEnd
 
+-- 23. queue_all_dynamic_groups() — periodic full re-evaluation safety net.
+-- +goose StatementBegin
+CREATE OR REPLACE FUNCTION queue_all_dynamic_groups() RETURNS void AS $$
+BEGIN
+    INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
+    SELECT id, clock_timestamp(), 'periodic_full_evaluation'
+    FROM device_groups_projection
+    WHERE is_dynamic = TRUE AND is_deleted = FALSE
+    ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
+
+    INSERT INTO dynamic_user_group_evaluation_queue (group_id, queued_at, reason)
+    SELECT id, clock_timestamp(), 'periodic_full_evaluation'
+    FROM user_groups_projection
+    WHERE is_dynamic = TRUE AND is_deleted = FALSE
+    ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
+END;
+$$ LANGUAGE plpgsql;
+-- +goose StatementEnd
+
 -- +goose Down
 -- Full teardown is handled by Part 5 down migration.
 -- This stub exists for goose compatibility.

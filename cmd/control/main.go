@@ -208,6 +208,25 @@ func main() {
 				}
 			}
 		}()
+
+		// Periodic full re-evaluation as a safety net (every 24h).
+		// Queues all dynamic groups for evaluation; the worker above drains them.
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
+						logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
+					} else {
+						logger.Info("queued full dynamic group re-evaluation")
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}

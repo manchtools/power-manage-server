@@ -384,6 +384,15 @@ func (q *Queries) ListGroupsForDevice(ctx context.Context, deviceID string) ([]D
 	return items, nil
 }
 
+const queueAllDynamicGroups = `-- name: QueueAllDynamicGroups :exec
+SELECT queue_all_dynamic_groups()
+`
+
+func (q *Queries) QueueAllDynamicGroups(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, queueAllDynamicGroups)
+	return err
+}
+
 const validateDynamicQuery = `-- name: ValidateDynamicQuery :one
 SELECT COALESCE(validate_dynamic_query($1), '')::TEXT AS error_message
 `

@@ -67,6 +67,9 @@ SELECT evaluate_dynamic_group($1);
 -- name: EvaluateQueuedDynamicGroups :one
 SELECT evaluate_queued_dynamic_groups() AS evaluated_count;
 
+-- name: QueueAllDynamicGroups :exec
+SELECT queue_all_dynamic_groups();
+
 -- name: CountMatchingDevicesForQuery :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
