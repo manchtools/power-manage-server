@@ -37,7 +37,7 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 }
 
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE
@@ -60,8 +60,8 @@ type FindSCIMUserByEmailRow struct {
 	IsDeleted               bool               `json:"is_deleted"`
 	ProjectionVersion       int64              `json:"projection_version"`
 	SessionVersion          int32              `json:"session_version"`
-	TotpEnabled             bool               `json:"totp_enabled"`
 	HasPassword             bool               `json:"has_password"`
+	TotpEnabled             bool               `json:"totp_enabled"`
 	DisplayName             string             `json:"display_name"`
 	GivenName               string             `json:"given_name"`
 	FamilyName              string             `json:"family_name"`
@@ -95,8 +95,8 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.SessionVersion,
-		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.TotpEnabled,
 		&i.DisplayName,
 		&i.GivenName,
 		&i.FamilyName,
@@ -118,7 +118,7 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 }
 
 const findSCIMUserByExternalID = `-- name: FindSCIMUserByExternalID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
@@ -141,8 +141,8 @@ type FindSCIMUserByExternalIDRow struct {
 	IsDeleted               bool               `json:"is_deleted"`
 	ProjectionVersion       int64              `json:"projection_version"`
 	SessionVersion          int32              `json:"session_version"`
-	TotpEnabled             bool               `json:"totp_enabled"`
 	HasPassword             bool               `json:"has_password"`
+	TotpEnabled             bool               `json:"totp_enabled"`
 	DisplayName             string             `json:"display_name"`
 	GivenName               string             `json:"given_name"`
 	FamilyName              string             `json:"family_name"`
@@ -176,8 +176,8 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.SessionVersion,
-		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.TotpEnabled,
 		&i.DisplayName,
 		&i.GivenName,
 		&i.FamilyName,
@@ -288,7 +288,7 @@ func (q *Queries) GetSCIMGroupMappingByUserGroup(ctx context.Context, arg GetSCI
 }
 
 const getUserByExternalSCIMID = `-- name: GetUserByExternalSCIMID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled FROM users_projection u
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
 `
@@ -313,8 +313,8 @@ func (q *Queries) GetUserByExternalSCIMID(ctx context.Context, arg GetUserByExte
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.SessionVersion,
-		&i.TotpEnabled,
 		&i.HasPassword,
+		&i.TotpEnabled,
 		&i.DisplayName,
 		&i.GivenName,
 		&i.FamilyName,
@@ -428,7 +428,7 @@ func (q *Queries) ListSCIMGroupMappings(ctx context.Context, providerID string) 
 }
 
 const listSCIMUsers = `-- name: ListSCIMUsers :many
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.totp_enabled, u.has_password, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.is_deleted = FALSE
@@ -454,8 +454,8 @@ type ListSCIMUsersRow struct {
 	IsDeleted               bool               `json:"is_deleted"`
 	ProjectionVersion       int64              `json:"projection_version"`
 	SessionVersion          int32              `json:"session_version"`
-	TotpEnabled             bool               `json:"totp_enabled"`
 	HasPassword             bool               `json:"has_password"`
+	TotpEnabled             bool               `json:"totp_enabled"`
 	DisplayName             string             `json:"display_name"`
 	GivenName               string             `json:"given_name"`
 	FamilyName              string             `json:"family_name"`
@@ -495,8 +495,8 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SessionVersion,
-			&i.TotpEnabled,
 			&i.HasPassword,
+			&i.TotpEnabled,
 			&i.DisplayName,
 			&i.GivenName,
 			&i.FamilyName,

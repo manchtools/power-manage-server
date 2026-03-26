@@ -482,8 +482,8 @@ type UsersProjection struct {
 	IsDeleted               bool               `json:"is_deleted"`
 	ProjectionVersion       int64              `json:"projection_version"`
 	SessionVersion          int32              `json:"session_version"`
-	TotpEnabled             bool               `json:"totp_enabled"`
 	HasPassword             bool               `json:"has_password"`
+	TotpEnabled             bool               `json:"totp_enabled"`
 	DisplayName             string             `json:"display_name"`
 	GivenName               string             `json:"given_name"`
 	FamilyName              string             `json:"family_name"`
