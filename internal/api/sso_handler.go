@@ -135,8 +135,14 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 
 	h.logger.Info("SSO auth state created", "provider", provider.Slug, "state_prefix", state[:8], "expires_at", expiresAt.UTC())
 
-	// Create OIDC provider and generate auth URL
-	callbackURL := h.callbackBaseURL + "/auth/callback/" + provider.Slug
+	// Create OIDC provider and generate auth URL.
+	// Use the client-provided redirect URL if given, otherwise fall back to the
+	// server-configured callback base URL. This allows non-browser clients (e.g.
+	// pm-enroll) to receive the OIDC callback on a local address.
+	callbackURL := req.Msg.RedirectUrl
+	if callbackURL == "" {
+		callbackURL = h.callbackBaseURL + "/auth/callback/" + provider.Slug
+	}
 	oidcProvider, err := idp.NewOIDCProvider(ctx, idp.ProviderConfig{
 		IssuerURL:        provider.IssuerUrl,
 		AuthorizationURL: provider.AuthorizationUrl,
@@ -203,8 +209,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
 	}
 
-	// Create OIDC provider
-	callbackURL := h.callbackBaseURL + "/auth/callback/" + provider.Slug
+	// Create OIDC provider.
+	// Use the redirect URI stored during GetSSOLoginURL so the token exchange
+	// redirect_uri matches the one used in the authorization request.
+	callbackURL := authState.RedirectUri
+	if callbackURL == "" {
+		callbackURL = h.callbackBaseURL + "/auth/callback/" + provider.Slug
+	}
 	oidcProvider, err := idp.NewOIDCProvider(ctx, idp.ProviderConfig{
 		IssuerURL:        provider.IssuerUrl,
 		AuthorizationURL: provider.AuthorizationUrl,
