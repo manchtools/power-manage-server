@@ -859,8 +859,8 @@ BEGIN
 
             IF is_dyn THEN
                 INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
-                VALUES (event.stream_id, NOW(), 'group_created')
-                ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW();
+                VALUES (event.stream_id, clock_timestamp(), 'group_created')
+                ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
             END IF;
 
         WHEN 'DeviceGroupRenamed' THEN
@@ -890,8 +890,8 @@ BEGIN
                 UPDATE device_groups_projection SET member_count = 0 WHERE id = event.stream_id;
 
                 INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
-                VALUES (event.stream_id, NOW(), 'query_updated')
-                ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW();
+                VALUES (event.stream_id, clock_timestamp(), 'query_updated')
+                ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
             END IF;
 
         WHEN 'DeviceGroupSyncIntervalSet' THEN

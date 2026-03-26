@@ -599,6 +599,8 @@ $$ LANGUAGE plpgsql STABLE;
 -- +goose StatementEnd
 
 -- 7. evaluate_dynamic_group() — from 006. Uses evaluate_dynamic_query_v2.
+-- Uses clock_timestamp() to avoid race condition: if a trigger re-queues the group
+-- during evaluation, the conditional DELETE preserves the newer queue entry.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION evaluate_dynamic_group(group_id_param TEXT) RETURNS void AS $$
 DECLARE
@@ -611,7 +613,10 @@ DECLARE
     members_to_add TEXT[];
     members_to_remove TEXT[];
     member_id TEXT;
+    eval_started_at TIMESTAMPTZ;
 BEGIN
+    eval_started_at := clock_timestamp();
+
     SELECT id, dynamic_query, is_dynamic INTO group_record
     FROM device_groups_projection
     WHERE id = group_id_param AND is_deleted = FALSE;
@@ -663,7 +668,10 @@ BEGIN
     SET member_count = COALESCE(array_length(new_members, 1), 0)
     WHERE id = group_id_param;
 
-    DELETE FROM dynamic_group_evaluation_queue WHERE group_id = group_id_param;
+    -- Only delete queue entries queued before evaluation started.
+    -- If a trigger re-queued this group during evaluation, the newer entry survives.
+    DELETE FROM dynamic_group_evaluation_queue
+    WHERE group_id = group_id_param AND queued_at <= eval_started_at;
 END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
@@ -687,15 +695,15 @@ END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
 
--- 9. queue_dynamic_groups_for_device() — from 001 (unchanged).
+-- 9. queue_dynamic_groups_for_device() — uses clock_timestamp() for accurate ordering.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION queue_dynamic_groups_for_device(device_id_param TEXT) RETURNS void AS $$
 BEGIN
     INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
-    SELECT id, NOW(), 'device_' || device_id_param || '_changed'
+    SELECT id, clock_timestamp(), 'device_' || device_id_param || '_changed'
     FROM device_groups_projection
     WHERE is_dynamic = TRUE AND is_deleted = FALSE
-    ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW();
+    ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
 END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
@@ -1022,6 +1030,7 @@ $$ LANGUAGE plpgsql IMMUTABLE;
 -- +goose StatementEnd
 
 -- 16. evaluate_dynamic_user_group() — from 016 (FINAL). Passes profile columns from users_projection.
+-- Uses clock_timestamp() to avoid race condition (same as evaluate_dynamic_group).
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION evaluate_dynamic_user_group(group_id_param TEXT) RETURNS void AS $$
 DECLARE
@@ -1034,7 +1043,10 @@ DECLARE
     members_to_add TEXT[];
     members_to_remove TEXT[];
     member_id TEXT;
+    eval_started_at TIMESTAMPTZ;
 BEGIN
+    eval_started_at := clock_timestamp();
+
     SELECT id, dynamic_query, is_dynamic INTO group_record
     FROM user_groups_projection
     WHERE id = group_id_param AND is_deleted = FALSE;
@@ -1086,7 +1098,8 @@ BEGIN
     SET member_count = COALESCE(array_length(new_members, 1), 0)
     WHERE id = group_id_param;
 
-    DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = group_id_param;
+    DELETE FROM dynamic_user_group_evaluation_queue
+    WHERE group_id = group_id_param AND queued_at <= eval_started_at;
 END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
@@ -1110,15 +1123,15 @@ END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
 
--- 18. queue_dynamic_user_groups_on_user_change() — from 015 (unchanged).
+-- 18. queue_dynamic_user_groups_on_user_change() — uses clock_timestamp() for accurate ordering.
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION queue_dynamic_user_groups_on_user_change() RETURNS trigger AS $$
 BEGIN
     INSERT INTO dynamic_user_group_evaluation_queue (group_id, queued_at, reason)
-    SELECT id, NOW(), 'user_' || COALESCE(NEW.id, OLD.id) || '_changed'
+    SELECT id, clock_timestamp(), 'user_' || COALESCE(NEW.id, OLD.id) || '_changed'
     FROM user_groups_projection
     WHERE is_dynamic = TRUE AND is_deleted = FALSE
-    ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW(), reason = EXCLUDED.reason;
+    ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp(), reason = EXCLUDED.reason;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;

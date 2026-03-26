@@ -430,6 +430,20 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 		}
 	}
 
+	// Immediately evaluate dynamic groups queued by the device_inventory_changed trigger.
+	// Without this, groups are only evaluated on the periodic ticker (default 1h).
+	if count, err := w.store.Queries().EvaluateQueuedDynamicGroups(ctx); err != nil {
+		w.logger.Warn("failed to evaluate dynamic groups after inventory update",
+			"device_id", payload.DeviceID,
+			"error", err,
+		)
+	} else if count > 0 {
+		w.logger.Info("evaluated dynamic groups after inventory update",
+			"device_id", payload.DeviceID,
+			"count", count,
+		)
+	}
+
 	return nil
 }
 

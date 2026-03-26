@@ -195,7 +195,7 @@ BEGIN
             IF is_dyn THEN
                 INSERT INTO dynamic_user_group_evaluation_queue (group_id, reason)
                 VALUES (event.stream_id, 'group_created')
-                ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW();
+                ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
             END IF;
 
         WHEN 'UserGroupUpdated' THEN
@@ -221,7 +221,7 @@ BEGIN
                 UPDATE user_groups_projection SET member_count = 0 WHERE id = event.stream_id;
                 INSERT INTO dynamic_user_group_evaluation_queue (group_id, reason)
                 VALUES (event.stream_id, 'query_updated')
-                ON CONFLICT (group_id) DO UPDATE SET queued_at = NOW();
+                ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
             END IF;
 
         WHEN 'UserGroupDeleted' THEN
