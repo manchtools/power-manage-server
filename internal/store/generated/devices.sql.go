@@ -27,14 +27,35 @@ func (q *Queries) CountDevices(ctx context.Context, filterUserID *string) (int64
 	return count, err
 }
 
+const countDevicesOffline = `-- name: CountDevicesOffline :one
+SELECT COUNT(*) FROM devices_projection
+WHERE is_deleted = FALSE
+  AND last_seen_at <= NOW() - INTERVAL '5 minutes'
+  AND ($1::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
+  )
+`
+
+func (q *Queries) CountDevicesOffline(ctx context.Context, filterUserID *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesOffline, filterUserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countDevicesOnline = `-- name: CountDevicesOnline :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
+  AND ($1::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
+  )
 `
 
-func (q *Queries) CountDevicesOnline(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevicesOnline)
+func (q *Queries) CountDevicesOnline(ctx context.Context, filterUserID *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesOnline, filterUserID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -210,6 +231,35 @@ func (q *Queries) ListDeviceAssignedGroupIDs(ctx context.Context, deviceID strin
 	return items, nil
 }
 
+const listDeviceAssignedGroupIDsBatch = `-- name: ListDeviceAssignedGroupIDsBatch :many
+SELECT device_id, group_id FROM device_assigned_groups_projection WHERE device_id = ANY($1::text[])
+`
+
+type ListDeviceAssignedGroupIDsBatchRow struct {
+	DeviceID string `json:"device_id"`
+	GroupID  string `json:"group_id"`
+}
+
+func (q *Queries) ListDeviceAssignedGroupIDsBatch(ctx context.Context, deviceIds []string) ([]ListDeviceAssignedGroupIDsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedGroupIDsBatch, deviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedGroupIDsBatchRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedGroupIDsBatchRow
+		if err := rows.Scan(&i.DeviceID, &i.GroupID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceAssignedGroups = `-- name: ListDeviceAssignedGroups :many
 SELECT dag.group_id, ug.name AS group_name, dag.assigned_at
 FROM device_assigned_groups_projection dag
@@ -261,6 +311,35 @@ func (q *Queries) ListDeviceAssignedUserIDs(ctx context.Context, deviceID string
 			return nil, err
 		}
 		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceAssignedUserIDsBatch = `-- name: ListDeviceAssignedUserIDsBatch :many
+SELECT device_id, user_id FROM device_assigned_users_projection WHERE device_id = ANY($1::text[])
+`
+
+type ListDeviceAssignedUserIDsBatchRow struct {
+	DeviceID string `json:"device_id"`
+	UserID   string `json:"user_id"`
+}
+
+func (q *Queries) ListDeviceAssignedUserIDsBatch(ctx context.Context, deviceIds []string) ([]ListDeviceAssignedUserIDsBatchRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceAssignedUserIDsBatch, deviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceAssignedUserIDsBatchRow{}
+	for rows.Next() {
+		var i ListDeviceAssignedUserIDsBatchRow
+		if err := rows.Scan(&i.DeviceID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

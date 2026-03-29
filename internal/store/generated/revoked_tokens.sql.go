@@ -31,8 +31,9 @@ func (q *Queries) IsTokenRevoked(ctx context.Context, jti string) (bool, error) 
 	return exists, err
 }
 
-const revokeToken = `-- name: RevokeToken :exec
+const revokeToken = `-- name: RevokeToken :one
 INSERT INTO revoked_tokens (jti, expires_at) VALUES ($1, $2) ON CONFLICT (jti) DO NOTHING
+RETURNING jti
 `
 
 type RevokeTokenParams struct {
@@ -40,7 +41,9 @@ type RevokeTokenParams struct {
 	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
-func (q *Queries) RevokeToken(ctx context.Context, arg RevokeTokenParams) error {
-	_, err := q.db.Exec(ctx, revokeToken, arg.Jti, arg.ExpiresAt)
-	return err
+func (q *Queries) RevokeToken(ctx context.Context, arg RevokeTokenParams) (string, error) {
+	row := q.db.QueryRow(ctx, revokeToken, arg.Jti, arg.ExpiresAt)
+	var jti string
+	err := row.Scan(&jti)
+	return jti, err
 }

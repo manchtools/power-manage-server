@@ -165,6 +165,21 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "session invalidated, please log in again")
 	}
 
+	// Atomically revoke the old refresh token BEFORE generating new tokens.
+	// RevokeToken uses INSERT ... ON CONFLICT DO NOTHING RETURNING jti, so it
+	// returns pgx.ErrNoRows when the token was already revoked by a concurrent
+	// request. This prevents a race where two concurrent RefreshToken calls
+	// with the same token both succeed.
+	if result.OldJTI != "" {
+		_, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
+			Jti:       result.OldJTI,
+			ExpiresAt: pgtype.Timestamptz{Time: result.OldExp, Valid: true},
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "refresh token already used")
+		}
+	}
+
 	// Resolve fresh permissions from DB
 	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, result.Claims.UserID)
 	if err != nil {
@@ -175,16 +190,6 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	tokens, err := h.jwtManager.GenerateTokens(result.Claims.UserID, result.Claims.Email, permissions, result.Claims.SessionVersion)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
-	}
-
-	// Revoke the old refresh token to prevent reuse
-	if result.OldJTI != "" {
-		if err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
-			Jti:       result.OldJTI,
-			ExpiresAt: pgtype.Timestamptz{Time: result.OldExp, Valid: true},
-		}); err != nil {
-			h.logger.Warn("failed to revoke old refresh token", "jti", result.OldJTI, "error", err)
-		}
 	}
 
 	resp := connect.NewResponse(&pm.RefreshTokenResponse{
@@ -207,7 +212,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 	if refreshToken != "" {
 		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
-			if err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
+			if _, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 				Jti:       claims.ID,
 				ExpiresAt: pgtype.Timestamptz{Time: claims.ExpiresAt.Time, Valid: true},
 			}); err != nil {

@@ -195,7 +195,16 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify policy exists before emitting event
+	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyRenamed",
@@ -217,9 +226,6 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
@@ -241,7 +247,16 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify policy exists before emitting event
+	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyDescriptionUpdated",
@@ -263,9 +278,6 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
@@ -287,7 +299,16 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify policy exists before emitting delete event
+	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyDeleted",
@@ -408,7 +429,16 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify policy exists before emitting event
+	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  "CompliancePolicyRuleRemoved",
@@ -430,9 +460,6 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
@@ -459,7 +486,16 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify policy exists before emitting event
+	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  "CompliancePolicyRuleUpdated",
@@ -482,9 +518,6 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 

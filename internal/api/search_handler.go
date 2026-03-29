@@ -145,6 +145,24 @@ func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&pm.RebuildSearchIndexResponse{}), nil
 }
 
+// allowedSearchFields is the set of field names that can be used in search
+// date and tag filters. This prevents query injection via crafted field names.
+var allowedSearchFields = map[string]bool{
+	// NUMERIC fields (date filters)
+	"created_at":  true,
+	"updated_at":  true,
+	"occurred_at": true,
+	// TAG fields (tag filters)
+	"type":          true,
+	"is_compliance": true,
+	"status":        true,
+	"action_type":   true,
+	"device_id":     true,
+	"stream_type":   true,
+	"actor_type":    true,
+	"actor_id":      true,
+}
+
 // buildFTQuery constructs a RediSearch query string from text, date filters, and tag filters.
 func buildFTQuery(textQuery string, dateFilters []*pm.SearchDateFilter, tagFilters map[string]string) string {
 	var parts []string
@@ -157,7 +175,7 @@ func buildFTQuery(textQuery string, dateFilters []*pm.SearchDateFilter, tagFilte
 
 	// Date range filters: @field:[start end]
 	for _, df := range dateFilters {
-		if df.Field == "" {
+		if df.Field == "" || !allowedSearchFields[df.Field] {
 			continue
 		}
 		start := "-inf"
@@ -176,7 +194,7 @@ func buildFTQuery(textQuery string, dateFilters []*pm.SearchDateFilter, tagFilte
 
 	// Tag filters: @field:{val1|val2}
 	for field, value := range tagFilters {
-		if field == "" || value == "" {
+		if field == "" || value == "" || !allowedSearchFields[field] {
 			continue
 		}
 		// Values may be pipe-separated for OR. Escape each value.

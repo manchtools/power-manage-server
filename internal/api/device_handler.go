@@ -101,7 +101,16 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list devices")
 	}
 
-	count, err := q.CountDevices(ctx, filterUID)
+	// Use the matching count query for the active status filter
+	var count int64
+	switch req.Msg.StatusFilter {
+	case "online":
+		count, err = q.CountDevicesOnline(ctx, filterUID)
+	case "offline":
+		count, err = q.CountDevicesOffline(ctx, filterUID)
+	default:
+		count, err = q.CountDevices(ctx, filterUID)
+	}
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count devices")
 	}
@@ -112,8 +121,29 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	}
 
 	protoDevices := make([]*pm.Device, len(devices))
+
+	// Batch-fetch all assignment IDs for the page to avoid N+1 queries
+	deviceIDs := make([]string, len(devices))
 	for i, d := range devices {
-		protoDevices[i] = h.deviceToProtoCtx(ctx, d)
+		deviceIDs[i] = d.ID
+	}
+	userAssignMap := make(map[string][]string)
+	groupAssignMap := make(map[string][]string)
+	if len(deviceIDs) > 0 {
+		if rows, err := q.ListDeviceAssignedUserIDsBatch(ctx, deviceIDs); err == nil {
+			for _, r := range rows {
+				userAssignMap[r.DeviceID] = append(userAssignMap[r.DeviceID], r.UserID)
+			}
+		}
+		if rows, err := q.ListDeviceAssignedGroupIDsBatch(ctx, deviceIDs); err == nil {
+			for _, r := range rows {
+				groupAssignMap[r.DeviceID] = append(groupAssignMap[r.DeviceID], r.GroupID)
+			}
+		}
+	}
+
+	for i, d := range devices {
+		protoDevices[i] = h.deviceToProtoWithAssignments(d, userAssignMap[d.ID], groupAssignMap[d.ID])
 	}
 
 	return connect.NewResponse(&pm.ListDevicesResponse{
@@ -322,7 +352,23 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 	}
 
+	// Build sets of already-assigned user/group IDs to prevent duplicate events
+	existingUserIDs, _ := q.ListDeviceAssignedUserIDs(ctx, req.Msg.DeviceId)
+	existingUserSet := make(map[string]bool, len(existingUserIDs))
+	for _, id := range existingUserIDs {
+		existingUserSet[id] = true
+	}
+	existingGroupIDs, _ := q.ListDeviceAssignedGroupIDs(ctx, req.Msg.DeviceId)
+	existingGroupSet := make(map[string]bool, len(existingGroupIDs))
+	for _, id := range existingGroupIDs {
+		existingGroupSet[id] = true
+	}
+
 	for _, userID := range userIDs {
+		if existingUserSet[userID] {
+			continue // already assigned, skip
+		}
+
 		// Verify user exists
 		_, err = q.GetUserByID(ctx, userID)
 		if err != nil {
@@ -354,6 +400,10 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	}
 
 	for _, groupID := range groupIDs {
+		if existingGroupSet[groupID] {
+			continue // already assigned, skip
+		}
+
 		// Verify user group exists
 		_, err = q.GetUserGroupByID(ctx, groupID)
 		if err != nil {
@@ -551,20 +601,31 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}), nil
 }
 
-// deviceToProto converts a database device projection to a protobuf device.
-func (h *DeviceHandler) deviceToProto(d db.DevicesProjection) *pm.Device {
-	return h.deviceToProtoCtx(context.Background(), d)
-}
-
 // deviceToProtoCtx converts a database device projection to a protobuf device,
 // populating assigned user/group IDs from junction tables.
 func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjection) *pm.Device {
+	q := h.store.Queries()
+	var userIDs, groupIDs []string
+	if rows, err := q.ListDeviceAssignedUserIDs(ctx, d.ID); err == nil {
+		userIDs = rows
+	}
+	if rows, err := q.ListDeviceAssignedGroupIDs(ctx, d.ID); err == nil {
+		groupIDs = rows
+	}
+	return h.deviceToProtoWithAssignments(d, userIDs, groupIDs)
+}
+
+// deviceToProtoWithAssignments converts a database device projection to a protobuf
+// device using pre-fetched assignment data. Used by list endpoints with batch queries.
+func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, assignedUserIDs, assignedGroupIDs []string) *pm.Device {
 	device := &pm.Device{
 		Id:                  d.ID,
 		Hostname:            d.Hostname,
 		AgentVersion:        d.AgentVersion,
 		Labels:              make(map[string]string),
 		SyncIntervalMinutes: d.SyncIntervalMinutes,
+		AssignedUserIds:     assignedUserIDs,
+		AssignedGroupIds:    assignedGroupIDs,
 	}
 
 	// Determine status based on last_seen
@@ -585,15 +646,6 @@ func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjec
 
 	if d.CertNotAfter.Valid {
 		device.CertExpiresAt = timestamppb.New(d.CertNotAfter.Time)
-	}
-
-	// Populate assigned user/group IDs from junction tables
-	q := h.store.Queries()
-	if userIDs, err := q.ListDeviceAssignedUserIDs(ctx, d.ID); err == nil {
-		device.AssignedUserIds = userIDs
-	}
-	if groupIDs, err := q.ListDeviceAssignedGroupIDs(ctx, d.ID); err == nil {
-		device.AssignedGroupIds = groupIDs
 	}
 
 	// Parse labels from JSONB

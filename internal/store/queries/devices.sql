@@ -56,7 +56,26 @@ WHERE is_deleted = FALSE
 -- name: CountDevicesOnline :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
-  AND last_seen_at > NOW() - INTERVAL '5 minutes';
+  AND last_seen_at > NOW() - INTERVAL '5 minutes'
+  AND (sqlc.narg('filter_user_id')::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  );
+
+-- name: CountDevicesOffline :one
+SELECT COUNT(*) FROM devices_projection
+WHERE is_deleted = FALSE
+  AND last_seen_at <= NOW() - INTERVAL '5 minutes'
+  AND (sqlc.narg('filter_user_id')::TEXT IS NULL
+    OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
+    OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  );
+
+-- name: ListDeviceAssignedUserIDsBatch :many
+SELECT device_id, user_id FROM device_assigned_users_projection WHERE device_id = ANY(@device_ids::text[]);
+
+-- name: ListDeviceAssignedGroupIDsBatch :many
+SELECT device_id, group_id FROM device_assigned_groups_projection WHERE device_id = ANY(@device_ids::text[]);
 
 -- name: GetDevicesWithLabel :many
 SELECT * FROM devices_projection

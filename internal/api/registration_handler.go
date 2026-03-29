@@ -105,20 +105,11 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		logger.Info("auto-assigning device to token owner", "owner_id", *token.OwnerID)
 	}
 
-	// Emit DeviceRegistered event
-	if err := h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   deviceID,
-		EventType:  "DeviceRegistered",
-		Data:       eventData,
-		ActorType:  "system",
-		ActorID:    "registration",
-	}); err != nil {
-		logger.Error("failed to append device registered event", "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to register device")
-	}
-
-	// Emit token used event
+	// Consume the token FIRST to prevent race conditions with one-time tokens.
+	// The token stream has optimistic locking (version conflict on concurrent
+	// writes), so only one concurrent registration can succeed for a one-time
+	// token. If we registered the device first, a second concurrent request
+	// could create an orphaned device before failing on the token event.
 	eventType := "TokenUsed"
 	if token.OneTime {
 		eventType = "TokenDisabled"
@@ -133,8 +124,21 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		ActorType: "system",
 		ActorID:   "registration",
 	}); err != nil {
-		logger.Error("failed to append token event", "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume registration token")
+		logger.Error("failed to consume token (possible concurrent use)", "error", err)
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has already been used")
+	}
+
+	// Emit DeviceRegistered event (token is already consumed, safe to proceed)
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceRegistered",
+		Data:       eventData,
+		ActorType:  "system",
+		ActorID:    "registration",
+	}); err != nil {
+		logger.Error("failed to append device registered event", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to register device")
 	}
 
 	logger.Info("device registered successfully", "device_id", deviceID)

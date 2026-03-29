@@ -186,7 +186,16 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	// Verify assignment exists before emitting delete event
+	_, err := h.store.Queries().GetAssignmentByID(ctx, req.Msg.Id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrAssignmentNotFound, connect.CodeNotFound, "assignment not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assignment")
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",
 		StreamID:   req.Msg.Id,
 		EventType:  "AssignmentDeleted",
