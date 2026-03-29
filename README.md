@@ -4,6 +4,7 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
 
 - **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing), PostgreSQL event store
 - **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time (stateless, no database)
+- **[Indexer](cmd/indexer/)** — Full-text search indexer, reads from PostgreSQL and writes to Valkey RediSearch
 
 ## Architecture
 
@@ -24,11 +25,13 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
                    │              │  │              │
                    │ - Event store│  │ - Asynq tasks│
                    │ - Projections│  │ - device:*   │
-                   └──────────────┘  │ - control:*  │
-                                     │ - search idx │
-                                     └──────┬───────┘
-                                            │
-                                            ▼
+                   └──────┬───────┘  │ - control:*  │
+                          │          │ - search idx │
+                          ▼          └──┬────────┬──┘
+                   ┌──────────────┐     │        │
+                   │   Indexer    │─────┘        │
+                   │  (search)   │              │
+                   └──────────────┘              ▼
                           ┌──────────────────────┐
     Agents ──────────────▶│   Gateway Server     │
     (mTLS)                │   :8080              │
@@ -51,22 +54,24 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 | Package | Purpose |
 |---------|---------|
-| `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, etc.) |
+| `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, compliance, etc.) |
 | `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management, self-scope enforcement |
 | `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
-| `internal/config` | Configuration loading |
+| `internal/config` | Configuration loading (gateway) |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
-| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys) |
+| `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys, LPS passwords) |
 | `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
 | `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
+| `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
 | `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
+| `internal/search` | Full-text search indexer using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries |
-| `internal/search` | Server-side search using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
 | `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
+| `internal/testutil` | Test helpers — PostgreSQL testcontainers, test entity factories, auth context injection |
 
 ## API Reference
 
@@ -97,12 +102,12 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 
 | Method | Description |
 |--------|-------------|
-| `ListDevices` | Paginated device list with optional status filter (online/offline). Users see only assigned devices. |
+| `ListDevices` | Paginated device list with optional status filter (online/offline). Supports `my_devices_only` flag for users to see only their assigned devices. |
 | `GetDevice` | Fetch device by ID. Online status based on 5-minute heartbeat threshold. |
 | `SetDeviceLabel` | Add or update a key-value label on a device. |
 | `RemoveDeviceLabel` | Remove a label by key. |
-| `AssignDevice` | Assign a device to a user. Admin-only. |
-| `UnassignDevice` | Remove device-user assignment. Admin-only. |
+| `AssignDevice` | Assign a device to one or more users. Devices support multi-user assignment. |
+| `UnassignDevice` | Remove a specific user's assignment from a device. |
 | `SetDeviceSyncInterval` | Configure how often the agent syncs (0-1440 minutes). |
 | `DeleteDevice` | Remove a device. Admin-only. |
 | `GetDeviceLpsPasswords` | Retrieve current and historical LPS (Local Password Solution) passwords. |
@@ -120,11 +125,12 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 
 ### Actions (7 RPCs)
 
-Manages action definitions. Supports 15 action types:
+Manages action definitions. Supports 16 action types:
 
 **Package management**: `PACKAGE`, `UPDATE`, `REPOSITORY`, `APP_IMAGE`, `DEB`, `RPM`, `FLATPAK`
-**System**: `SHELL`, `SYSTEMD`, `FILE`, `DIRECTORY`, `REBOOT`, `SYNC`
+**System**: `SHELL`, `SYSTEMD`, `FILE`, `DIRECTORY`
 **Identity**: `USER`, `GROUP`, `SSH`, `SSHD`, `SUDO`, `LPS`
+**Security**: `LUKS`
 
 | Method | Description |
 |--------|-------------|
@@ -182,7 +188,7 @@ Ordered collections of action sets forming a complete configuration policy.
 | `RemoveActionSetFromDefinition` | Remove a member. |
 | `ReorderActionSetInDefinition` | Change sort order. |
 
-### Device Groups (11 RPCs)
+### Device Groups (12 RPCs)
 
 Static groups with manual membership or dynamic groups with a query language.
 
@@ -191,6 +197,7 @@ Static groups with manual membership or dynamic groups with a query language.
 | `CreateDeviceGroup` | Create a static or dynamic group. Dynamic groups use a query like `(device.labels.environment equals "production")`. |
 | `GetDeviceGroup` | Fetch group with member device IDs. |
 | `ListDeviceGroups` | Paginated list. |
+| `ListDeviceGroupsForDevice` | List all groups a device belongs to (static and dynamic). |
 | `RenameDeviceGroup` | Change name. |
 | `UpdateDeviceGroupDescription` | Update description. |
 | `UpdateDeviceGroupQuery` | Change the dynamic query expression. |
@@ -203,14 +210,14 @@ Static groups with manual membership or dynamic groups with a query language.
 
 ### Assignments (5 RPCs)
 
-Link sources (actions, action sets, definitions) to targets (devices, device groups, users, user groups) with an assignment mode.
+Link sources (actions, action sets, definitions, compliance policies) to targets (devices, device groups, users, user groups) with an assignment mode. Batch support: `CreateAssignment` and `DeleteAssignment` accept multiple assignments per call.
 
 | Method | Description |
 |--------|-------------|
-| `CreateAssignment` | Create a source-to-target assignment. Targets: device, device group, user, user group. Modes: `REQUIRED` (always applied), `AVAILABLE` (user opt-in), `EXCLUDED`. Idempotent. |
-| `DeleteAssignment` | Remove an assignment. |
+| `CreateAssignment` | Create source-to-target assignments. Sources: action, action set, definition, compliance policy. Targets: device, device group, user, user group. Modes: `REQUIRED` (always applied), `AVAILABLE` (user opt-in), `EXCLUDED`. Supports batch (multiple assignments per request). Idempotent. |
+| `DeleteAssignment` | Remove assignments. Supports batch. |
 | `ListAssignments` | Paginated list with optional filters. |
-| `GetDeviceAssignments` | Resolve all effective actions for a device (expands groups, definitions, sets, and user/user_group targets). |
+| `GetDeviceAssignments` | Resolve all effective actions and compliance policies for a device (expands groups, definitions, sets, and user/user_group targets). |
 | `GetUserAssignments` | Resolve all assignments targeting a user or their user groups. |
 
 ### User Selections (2 RPCs)
@@ -292,7 +299,7 @@ OIDC identity provider management for SSO authentication.
 
 ### Search (2 RPCs)
 
-Server-side full-text search across actions, action sets, and definitions. Backed by Valkey RediSearch (`FT.CREATE`/`FT.SEARCH`). The search index is built from PostgreSQL on startup and kept in sync via Asynq workers that process incremental updates after every mutation (create, rename, delete, member add/remove). A periodic reconciliation rebuild runs every hour to correct any drift.
+Server-side full-text search across actions, action sets, and definitions. Backed by Valkey RediSearch (`FT.CREATE`/`FT.SEARCH`). The search index is managed by the **Indexer** service (`cmd/indexer/`), which reads from PostgreSQL and writes to Valkey. Incremental updates are processed via Asynq workers after every mutation. A periodic reconciliation rebuild runs every hour to correct any drift. Supports server-side date and tag filtering.
 
 Search uses prefix matching — the query `"ngi"` matches `"nginx"`, `"engine"`, etc. **Minimum query length is 2 characters** (RediSearch default `MINPREFIX 2`). Single-character queries return no results.
 
@@ -330,7 +337,7 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 
 | Method | Description |
 |--------|-------------|
-| `Stream` | Bidirectional streaming. Agent sends Hello, then Heartbeat, ActionResult, OutputChunk, SecurityAlert. Server sends Welcome, ActionDispatch. |
+| `Stream` | Bidirectional streaming. Agent sends Hello, Heartbeat, ActionResult, OutputChunk, LogQueryResult, SecurityAlert. Server sends Welcome, ActionDispatch, LogQuery. |
 | `SyncActions` | Agent pulls all assigned actions for offline storage. Returns effective sync interval. |
 
 ## Auth System
@@ -351,6 +358,8 @@ OIDC authorization code flow for external identity providers (Google, Okta, Azur
 - IdP group claim → user group mapping
 - Optionally disable password authentication for SSO-linked users
 - Multiple providers can be configured simultaneously
+- Client-provided redirect URL support (enables non-browser OIDC flows, e.g. pm-enroll)
+- Auto-delete orphaned users when an identity provider is deleted
 
 ### SCIM v2 Provisioning (`internal/scim/`)
 
@@ -401,13 +410,14 @@ The Control Server sets `IdleTimeout` (120s) and `ReadHeaderTimeout` (10s) on th
 ## Building
 
 ```bash
-# Both binaries
+# All binaries
 CGO_ENABLED=0 go build -ldflags="-s -w" -o control ./cmd/control
 CGO_ENABLED=0 go build -ldflags="-s -w" -o gateway ./cmd/gateway
+CGO_ENABLED=0 go build -ldflags="-s -w" -o indexer ./cmd/indexer
 
 # With version injection
-CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.2.0" -o control ./cmd/control
-CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.2.0" -o gateway ./cmd/gateway
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o control ./cmd/control
+CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cmd/gateway
 ```
 
 ## Running Locally

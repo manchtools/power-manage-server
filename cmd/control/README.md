@@ -67,6 +67,9 @@ Environment variables override command-line flags:
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
 | `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
 | `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
+| `CONTROL_PASSWORD_AUTH_ENABLED` | Enable password-based login (default: `true`). Set to `false` for SSO-only. |
+| `CONTROL_TRUSTED_PROXIES` | Comma-separated trusted proxy IPs/CIDRs for client IP parsing |
+| `CONTROL_SSH_ACCESS_FOR_ALL` | Grant SSH access to all devices by default (default: `false`) |
 | `CONTROL_VALKEY_ADDR` | Valkey/Redis address for Asynq task queue (e.g., `localhost:6379`) |
 | `CONTROL_VALKEY_PASSWORD` | Valkey/Redis password |
 | `CONTROL_VALKEY_DB` | Valkey/Redis database number (default: `0`) |
@@ -166,12 +169,12 @@ curl http://localhost:8081/pm.v1.ControlService/ListUsers \
 
 | Method | Description | Permission |
 |--------|-------------|------------|
-| `ListDevices` | List registered devices | `ListDevices` or `ListDevices:assigned` |
+| `ListDevices` | List registered devices. Supports `my_devices_only` flag. | `ListDevices` or `ListDevices:assigned` |
 | `GetDevice` | Get device by ID | `GetDevice` or `GetDevice:assigned` |
 | `SetDeviceLabel` | Set a label on a device | `SetDeviceLabel` |
 | `RemoveDeviceLabel` | Remove a label from a device | `RemoveDeviceLabel` |
-| `AssignDevice` | Assign device to a user | `AssignDevice` |
-| `UnassignDevice` | Remove device assignment | `UnassignDevice` |
+| `AssignDevice` | Assign device to one or more users (multi-user) | `AssignDevice` |
+| `UnassignDevice` | Remove a specific user's assignment | `UnassignDevice` |
 | `SetDeviceSyncInterval` | Set device sync interval | `SetDeviceSyncInterval` |
 | `DeleteDevice` | Delete a device | `DeleteDevice` |
 
@@ -324,13 +327,23 @@ The Control Server supports various action types:
 
 | Type | Description |
 |------|-------------|
-| `PACKAGE` | Package management (apt/dnf/pacman) |
+| `PACKAGE` | Package management (apt/dnf/pacman/zypper) |
+| `UPDATE` | System-wide package updates |
+| `REPOSITORY` | Package manager repository management |
 | `APP_IMAGE` | AppImage installation |
 | `DEB` | Direct .deb package installation |
 | `RPM` | Direct .rpm package installation |
+| `FLATPAK` | Flatpak application management |
 | `SHELL` | Shell script execution |
 | `SYSTEMD` | Systemd unit management |
 | `FILE` | File management |
+| `DIRECTORY` | Directory management |
+| `USER` | System user management |
+| `GROUP` | System group management |
+| `SSH` | SSH access policy management |
+| `SSHD` | SSHD configuration management |
+| `SUDO` | Sudoers policy management |
+| `LPS` | Local Password Solution (automated password rotation) |
 | `LUKS` | LUKS disk encryption management |
 
 ### Example: Dispatch a Package Installation
@@ -645,20 +658,20 @@ power-manage://server:port?token=xxx[&skip-verify=true][&tls=false]
 
 ### Device Assignment
 
-Devices can be assigned to users, allowing users to view only their assigned devices:
+Devices support multi-user assignment, allowing multiple users to be assigned to the same device. Users with `ListDevices:assigned` see only their assigned devices.
 
 ```bash
-# Assign a device to a user (admin only)
+# Assign a device to a user (admin only) — multiple users can be assigned
 curl -X POST http://localhost:8081/pm.v1.ControlService/AssignDevice \
   -H "Authorization: Bearer <admin_token>" \
   -H "Content-Type: application/json" \
   -d '{"device_id": "01HWXYZ...", "user_id": "01HWABC..."}'
 
-# Unassign a device (admin only)
+# Unassign a specific user from a device (admin only)
 curl -X POST http://localhost:8081/pm.v1.ControlService/UnassignDevice \
   -H "Authorization: Bearer <admin_token>" \
   -H "Content-Type: application/json" \
-  -d '{"device_id": "01HWXYZ..."}'
+  -d '{"device_id": "01HWXYZ...", "user_id": "01HWABC..."}'
 ```
 
 ### Row-Level Security Policies

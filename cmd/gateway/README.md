@@ -165,6 +165,7 @@ After registration, agents connect via the `Stream` RPC:
 | `Heartbeat` | Periodic health/metrics report (uptime, CPU, memory, disk) |
 | `ActionResult` | Result of an executed action |
 | `OSQueryResult` | Result of an OS query |
+| `LogQueryResult` | Result of a remote journalctl log query |
 | `GetLuksKeyRequest` | Request current LUKS managed passphrase for an action |
 | `StoreLuksKeyRequest` | Store a new LUKS managed passphrase on the server |
 | `RevokeLuksDeviceKeyResult` | Report result of a device-bound key revocation |
@@ -176,6 +177,7 @@ After registration, agents connect via the `Stream` RPC:
 | `Welcome` | Response to Hello with server info |
 | `ActionDispatch` | Action to execute |
 | `OSQuery` | OS query to run |
+| `LogQuery` | Remote journalctl log query (unit, lines, priority, grep filter) |
 | `GetLuksKeyResponse` | Response with current LUKS managed passphrase |
 | `StoreLuksKeyResponse` | Confirmation that a LUKS passphrase was stored |
 | `RevokeLuksDeviceKey` | Instruction to revoke the device-bound key in LUKS slot 7 |
@@ -204,6 +206,10 @@ Agent                              Gateway
   │                                   │
   │◀─── StoreLuksKeyResponse ────────│ (confirms receipt before old key removal)
   │                                   │
+  │◀─── LogQuery ────────────────────│ (remote journalctl query)
+  │                                   │
+  │──── LogQueryResult ──────────────▶│
+  │                                   │
 ```
 
 ## Asynq Task Queues
@@ -219,6 +225,7 @@ Each connected device has its own Asynq queue (`device:<id>`) with a per-device 
 | `action:dispatch` | Dispatch an action to the agent |
 | `osquery:dispatch` | Send an OS query to the agent |
 | `inventory:request` | Request device inventory refresh |
+| `log:query` | Send a remote journalctl log query to the agent |
 | `luks:revoke_device_key` | Instruct agent to revoke device-bound LUKS key |
 
 ### Gateway → Control (control:inbox queue)
@@ -232,6 +239,7 @@ Agent events are forwarded to the `control:inbox` queue for the Control Server t
 | `execution:result` | Agent completed an action (success or failure) |
 | `execution:output_chunk` | Streaming output from an action |
 | `osquery:result` | OS query result from agent |
+| `log:result` | Log query result from agent |
 | `inventory:update` | Device inventory update |
 | `security:alert` | Security alert from agent |
 | `luks:revoke_device_key_result` | Result of device-bound key revocation |
