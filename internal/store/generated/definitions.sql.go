@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countDefinitions = `-- name: CountDefinitions :one
@@ -140,12 +139,12 @@ ORDER BY m.sort_order ASC
 `
 
 type ListDefinitionMembersRow struct {
-	DefinitionID      string             `json:"definition_id"`
-	ActionSetID       string             `json:"action_set_id"`
-	SortOrder         int32              `json:"sort_order"`
-	AddedAt           pgtype.Timestamptz `json:"added_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	ActionSetName     string             `json:"action_set_name"`
+	DefinitionID      string     `json:"definition_id"`
+	ActionSetID       string     `json:"action_set_id"`
+	SortOrder         int32      `json:"sort_order"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ActionSetName     string     `json:"action_set_name"`
 }
 
 // Definition Members queries

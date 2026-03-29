@@ -125,9 +125,7 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 			UserId: m.UserID,
 			Email:  m.Email,
 		}
-		if m.AddedAt.Valid {
-			protoMembers[i].AddedAt = timestamppb.New(m.AddedAt.Time)
-		}
+		protoMembers[i].AddedAt = timestamppb.New(m.AddedAt)
 	}
 
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
@@ -797,9 +795,7 @@ func userGroupToProto(g db.UserGroupsProjection, roles []db.RolesProjection, isS
 		group.DynamicQuery = *g.DynamicQuery
 	}
 
-	if g.CreatedAt.Valid {
-		group.CreatedAt = timestamppb.New(g.CreatedAt.Time)
-	}
+	group.CreatedAt = timestamppb.New(g.CreatedAt)
 
 	for _, r := range roles {
 		group.Roles = append(group.Roles, roleToProto(r))

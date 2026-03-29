@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countCompliancePolicies = `-- name: CountCompliancePolicies :one
@@ -90,17 +89,17 @@ ORDER BY p.name, r.action_name
 `
 
 type GetDeviceCompliancePolicyEvaluationsRow struct {
-	DeviceID          string             `json:"device_id"`
-	PolicyID          string             `json:"policy_id"`
-	ActionID          string             `json:"action_id"`
-	Compliant         bool               `json:"compliant"`
-	FirstFailedAt     pgtype.Timestamptz `json:"first_failed_at"`
-	Status            int32              `json:"status"`
-	CheckedAt         pgtype.Timestamptz `json:"checked_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	GracePeriodHours  int32              `json:"grace_period_hours"`
-	ActionName        string             `json:"action_name"`
-	PolicyName        string             `json:"policy_name"`
+	DeviceID          string     `json:"device_id"`
+	PolicyID          string     `json:"policy_id"`
+	ActionID          string     `json:"action_id"`
+	Compliant         bool       `json:"compliant"`
+	FirstFailedAt     *time.Time `json:"first_failed_at"`
+	Status            int32      `json:"status"`
+	CheckedAt         *time.Time `json:"checked_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	GracePeriodHours  int32      `json:"grace_period_hours"`
+	ActionName        string     `json:"action_name"`
+	PolicyName        string     `json:"policy_name"`
 }
 
 func (q *Queries) GetDeviceCompliancePolicyEvaluations(ctx context.Context, deviceID string) ([]GetDeviceCompliancePolicyEvaluationsRow, error) {

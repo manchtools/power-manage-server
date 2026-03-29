@@ -47,9 +47,7 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 			ActionName: r.ActionName,
 			Compliant:  r.Compliant,
 		}
-		if r.CheckedAt.Valid {
-			check.CheckedAt = timestamppb.New(r.CheckedAt.Time)
-		}
+		check.CheckedAt = timestamppb.New(r.CheckedAt)
 		if len(r.DetectionOutput) > 0 {
 			var output struct {
 				Stdout   string `json:"stdout"`

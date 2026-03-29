@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const cleanupExpiredRevocations = `-- name: CleanupExpiredRevocations :exec
@@ -37,8 +36,8 @@ RETURNING jti
 `
 
 type RevokeTokenParams struct {
-	Jti       string             `json:"jti"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	Jti       string    `json:"jti"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 func (q *Queries) RevokeToken(ctx context.Context, arg RevokeTokenParams) (string, error) {

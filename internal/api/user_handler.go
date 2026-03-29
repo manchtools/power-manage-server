@@ -539,12 +539,12 @@ func userToProto(u db.UsersProjection) *pm.User {
 		UserProvisioningEnabled: u.UserProvisioningEnabled,
 	}
 
-	if u.CreatedAt.Valid {
-		user.CreatedAt = timestamppb.New(u.CreatedAt.Time)
+	if u.CreatedAt != nil {
+		user.CreatedAt = timestamppb.New(*u.CreatedAt)
 	}
 
-	if u.LastLoginAt.Valid {
-		user.LastLoginAt = timestamppb.New(u.LastLoginAt.Time)
+	if u.LastLoginAt != nil {
+		user.LastLoginAt = timestamppb.New(*u.LastLoginAt)
 	}
 
 	// Parse SSH public keys from JSONB

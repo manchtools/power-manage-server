@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countAssignments = `-- name: CountAssignments :one
@@ -242,19 +241,19 @@ ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
 `
 
 type ListAssignedActionsForDeviceRow struct {
-	ID                string             `json:"id"`
-	Name              string             `json:"name"`
-	Description       *string            `json:"description"`
-	ActionType        int32              `json:"action_type"`
-	DesiredState      int32              `json:"desired_state"`
-	Params            []byte             `json:"params"`
-	TimeoutSeconds    int32              `json:"timeout_seconds"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CreatedBy         string             `json:"created_by"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	Signature         []byte             `json:"signature"`
-	ParamsCanonical   []byte             `json:"params_canonical"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	IsDeleted         bool       `json:"is_deleted"`
+	ProjectionVersion int64      `json:"projection_version"`
+	Signature         []byte     `json:"signature"`
+	ParamsCanonical   []byte     `json:"params_canonical"`
 }
 
 // Get all actions assigned to a device (directly or via groups) with proper ordering
@@ -330,19 +329,19 @@ type ListAssignmentsParams struct {
 }
 
 type ListAssignmentsRow struct {
-	ID                string             `json:"id"`
-	SourceType        string             `json:"source_type"`
-	SourceID          string             `json:"source_id"`
-	TargetType        string             `json:"target_type"`
-	TargetID          string             `json:"target_id"`
-	SortOrder         int32              `json:"sort_order"`
-	Mode              int32              `json:"mode"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CreatedBy         string             `json:"created_by"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	SourceName        string             `json:"source_name"`
-	TargetName        string             `json:"target_name"`
+	ID                string     `json:"id"`
+	SourceType        string     `json:"source_type"`
+	SourceID          string     `json:"source_id"`
+	TargetType        string     `json:"target_type"`
+	TargetID          string     `json:"target_id"`
+	SortOrder         int32      `json:"sort_order"`
+	Mode              int32      `json:"mode"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	IsDeleted         bool       `json:"is_deleted"`
+	ProjectionVersion int64      `json:"projection_version"`
+	SourceName        string     `json:"source_name"`
+	TargetName        string     `json:"target_name"`
 }
 
 func (q *Queries) ListAssignments(ctx context.Context, arg ListAssignmentsParams) ([]ListAssignmentsRow, error) {
@@ -937,19 +936,19 @@ ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
 `
 
 type ListResolvedActionsForDeviceRow struct {
-	ID                string             `json:"id"`
-	Name              string             `json:"name"`
-	Description       *string            `json:"description"`
-	ActionType        int32              `json:"action_type"`
-	DesiredState      int32              `json:"desired_state"`
-	Params            []byte             `json:"params"`
-	TimeoutSeconds    int32              `json:"timeout_seconds"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CreatedBy         string             `json:"created_by"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	Signature         []byte             `json:"signature"`
-	ParamsCanonical   []byte             `json:"params_canonical"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	IsDeleted         bool       `json:"is_deleted"`
+	ProjectionVersion int64      `json:"projection_version"`
+	Signature         []byte     `json:"signature"`
+	ParamsCanonical   []byte     `json:"params_canonical"`
 }
 
 // Get all resolved actions for a device with conflict resolution.
@@ -1183,19 +1182,19 @@ ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
 `
 
 type ListUserLayerResolvedActionsForDeviceRow struct {
-	ID                string             `json:"id"`
-	Name              string             `json:"name"`
-	Description       *string            `json:"description"`
-	ActionType        int32              `json:"action_type"`
-	DesiredState      int32              `json:"desired_state"`
-	Params            []byte             `json:"params"`
-	TimeoutSeconds    int32              `json:"timeout_seconds"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	CreatedBy         string             `json:"created_by"`
-	IsDeleted         bool               `json:"is_deleted"`
-	ProjectionVersion int64              `json:"projection_version"`
-	Signature         []byte             `json:"signature"`
-	ParamsCanonical   []byte             `json:"params_canonical"`
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	IsDeleted         bool       `json:"is_deleted"`
+	ProjectionVersion int64      `json:"projection_version"`
+	Signature         []byte     `json:"signature"`
+	ParamsCanonical   []byte     `json:"params_canonical"`
 }
 
 // Get all resolved actions from user/user_group layer for a device.

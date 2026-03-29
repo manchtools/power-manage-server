@@ -94,7 +94,7 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 	}
 
 	// Auto-expire pending results that have been waiting too long
-	if !result.Completed && result.CreatedAt.Valid && time.Since(result.CreatedAt.Time) > logQueryResultTimeout {
+	if !result.Completed && time.Since(result.CreatedAt) > logQueryResultTimeout {
 		timeoutErr := "log query timed out: device did not respond within 5 minutes"
 		if err := h.store.Queries().ExpirePendingLogQueryResult(ctx, generated.ExpirePendingLogQueryResultParams{
 			QueryID: result.QueryID,

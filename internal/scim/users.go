@@ -879,11 +879,11 @@ func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
 		}
 	}
 
-	if user.CreatedAt.Valid {
-		su.Meta.Created = user.CreatedAt.Time.Format(time.RFC3339)
+	if user.CreatedAt != nil {
+		su.Meta.Created = user.CreatedAt.Format(time.RFC3339)
 	}
-	if user.UpdatedAt.Valid {
-		su.Meta.LastModified = user.UpdatedAt.Time.Format(time.RFC3339)
+	if user.UpdatedAt != nil {
+		su.Meta.LastModified = user.UpdatedAt.Format(time.RFC3339)
 	}
 
 	return su
@@ -918,11 +918,11 @@ func userRowToSCIM(row db.ListSCIMUsersRow, baseURL string) SCIMUser {
 		}
 	}
 
-	if row.CreatedAt.Valid {
-		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
+	if row.CreatedAt != nil {
+		su.Meta.Created = row.CreatedAt.Format(time.RFC3339)
 	}
-	if row.UpdatedAt.Valid {
-		su.Meta.LastModified = row.UpdatedAt.Time.Format(time.RFC3339)
+	if row.UpdatedAt != nil {
+		su.Meta.LastModified = row.UpdatedAt.Format(time.RFC3339)
 	}
 
 	return su
@@ -957,11 +957,11 @@ func findUserRowToSCIM(row db.FindSCIMUserByEmailRow, baseURL string) SCIMUser {
 		}
 	}
 
-	if row.CreatedAt.Valid {
-		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
+	if row.CreatedAt != nil {
+		su.Meta.Created = row.CreatedAt.Format(time.RFC3339)
 	}
-	if row.UpdatedAt.Valid {
-		su.Meta.LastModified = row.UpdatedAt.Time.Format(time.RFC3339)
+	if row.UpdatedAt != nil {
+		su.Meta.LastModified = row.UpdatedAt.Format(time.RFC3339)
 	}
 
 	return su
@@ -996,11 +996,11 @@ func findExternalIDUserRowToSCIM(row db.FindSCIMUserByExternalIDRow, baseURL str
 		}
 	}
 
-	if row.CreatedAt.Valid {
-		su.Meta.Created = row.CreatedAt.Time.Format(time.RFC3339)
+	if row.CreatedAt != nil {
+		su.Meta.Created = row.CreatedAt.Format(time.RFC3339)
 	}
-	if row.UpdatedAt.Valid {
-		su.Meta.LastModified = row.UpdatedAt.Time.Format(time.RFC3339)
+	if row.UpdatedAt != nil {
+		su.Meta.LastModified = row.UpdatedAt.Format(time.RFC3339)
 	}
 
 	return su

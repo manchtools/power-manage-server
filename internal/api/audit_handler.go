@@ -127,7 +127,7 @@ func redactEventData(data []byte) string {
 
 func eventToProto(e db.Event) *pm.AuditEvent {
 	event := &pm.AuditEvent{
-		Id:         ulid.ULID(e.ID.Bytes).String(),
+		Id:         ulid.ULID(e.ID).String(),
 		EventType:  e.EventType,
 		StreamType: e.StreamType,
 		StreamId:   e.StreamID,
@@ -136,9 +136,7 @@ func eventToProto(e db.Event) *pm.AuditEvent {
 		Data:       redactEventData(e.Data),
 	}
 
-	if e.OccurredAt.Valid {
-		event.OccurredAt = timestamppb.New(e.OccurredAt.Time)
-	}
+	event.OccurredAt = timestamppb.New(e.OccurredAt)
 
 	return event
 }

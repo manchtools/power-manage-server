@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countActionSets = `-- name: CountActionSets :one
@@ -106,13 +105,13 @@ ORDER BY m.sort_order ASC
 `
 
 type ListActionSetMembersRow struct {
-	SetID             string             `json:"set_id"`
-	ActionID          string             `json:"action_id"`
-	SortOrder         int32              `json:"sort_order"`
-	AddedAt           pgtype.Timestamptz `json:"added_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	ActionName        string             `json:"action_name"`
-	ActionType        int32              `json:"action_type"`
+	SetID             string     `json:"set_id"`
+	ActionID          string     `json:"action_id"`
+	SortOrder         int32      `json:"sort_order"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ActionName        string     `json:"action_name"`
+	ActionType        int32      `json:"action_type"`
 }
 
 // Action Set Members queries

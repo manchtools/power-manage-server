@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countGroupsWithRole = `-- name: CountGroupsWithRole :one
@@ -280,9 +279,9 @@ ORDER BY ugm.added_at
 `
 
 type ListUserGroupMembersRow struct {
-	UserID  string             `json:"user_id"`
-	Email   string             `json:"email"`
-	AddedAt pgtype.Timestamptz `json:"added_at"`
+	UserID  string    `json:"user_id"`
+	Email   string    `json:"email"`
+	AddedAt time.Time `json:"added_at"`
 }
 
 func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]ListUserGroupMembersRow, error) {

@@ -272,8 +272,8 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 			SourceName: a.SourceName,
 			TargetName: a.TargetName,
 		}
-		if a.CreatedAt.Valid {
-			assignment.CreatedAt = timestamppb.New(a.CreatedAt.Time)
+		if a.CreatedAt != nil {
+			assignment.CreatedAt = timestamppb.New(*a.CreatedAt)
 		}
 		protoAssignments[i] = assignment
 	}
@@ -365,7 +365,9 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 			Description: set.Description,
 			MemberCount: set.MemberCount,
 			CreatedBy:   set.CreatedBy,
-			CreatedAt:   timestamppb.New(set.CreatedAt.Time),
+		}
+		if set.CreatedAt != nil {
+			protoSet.CreatedAt = timestamppb.New(*set.CreatedAt)
 		}
 		protoActionSets = append(protoActionSets, protoSet)
 
@@ -402,7 +404,9 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 			Description: def.Description,
 			MemberCount: def.MemberCount,
 			CreatedBy:   def.CreatedBy,
-			CreatedAt:   timestamppb.New(def.CreatedAt.Time),
+		}
+		if def.CreatedAt != nil {
+			protoDef.CreatedAt = timestamppb.New(*def.CreatedAt)
 		}
 		protoDefinitions = append(protoDefinitions, protoDef)
 
@@ -429,14 +433,17 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	for id := range compliancePolicyIDs {
 		cp, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
 		if err == nil {
-			protoCompliancePolicies = append(protoCompliancePolicies, &pm.CompliancePolicy{
+			protoPolicy := &pm.CompliancePolicy{
 				Id:          cp.ID,
 				Name:        cp.Name,
 				Description: cp.Description,
 				RuleCount:   cp.RuleCount,
 				CreatedBy:   cp.CreatedBy,
-				CreatedAt:   timestamppb.New(cp.CreatedAt.Time),
-			})
+			}
+			if cp.CreatedAt != nil {
+				protoPolicy.CreatedAt = timestamppb.New(*cp.CreatedAt)
+			}
+			protoCompliancePolicies = append(protoCompliancePolicies, protoPolicy)
 		}
 	}
 
@@ -482,8 +489,8 @@ func (h *AssignmentHandler) assignmentToProto(a db.AssignmentsProjection) *pm.As
 		Mode:       pm.AssignmentMode(a.Mode),
 	}
 
-	if a.CreatedAt.Valid {
-		assignment.CreatedAt = timestamppb.New(a.CreatedAt.Time)
+	if a.CreatedAt != nil {
+		assignment.CreatedAt = timestamppb.New(*a.CreatedAt)
 	}
 
 	return assignment

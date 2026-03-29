@@ -67,7 +67,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	}
 
 	// Check if token is expired
-	if token.ExpiresAt.Valid && time.Now().After(token.ExpiresAt.Time) {
+	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
 		logger.Warn("token is expired")
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has expired")
 	}

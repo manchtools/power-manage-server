@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countIdentityLinksForUser = `-- name: CountIdentityLinksForUser :one
@@ -107,16 +106,16 @@ WHERE il.provider_id = $1 AND u.is_deleted = FALSE
 `
 
 type ListIdentityLinksByProviderRow struct {
-	ID                string             `json:"id"`
-	UserID            string             `json:"user_id"`
-	ProviderID        string             `json:"provider_id"`
-	ExternalID        string             `json:"external_id"`
-	ExternalEmail     string             `json:"external_email"`
-	ExternalName      string             `json:"external_name"`
-	LinkedAt          pgtype.Timestamptz `json:"linked_at"`
-	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	HasPassword       bool               `json:"has_password"`
+	ID                string     `json:"id"`
+	UserID            string     `json:"user_id"`
+	ProviderID        string     `json:"provider_id"`
+	ExternalID        string     `json:"external_id"`
+	ExternalEmail     string     `json:"external_email"`
+	ExternalName      string     `json:"external_name"`
+	LinkedAt          time.Time  `json:"linked_at"`
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	HasPassword       bool       `json:"has_password"`
 }
 
 func (q *Queries) ListIdentityLinksByProvider(ctx context.Context, providerID string) ([]ListIdentityLinksByProviderRow, error) {
@@ -159,17 +158,17 @@ ORDER BY il.linked_at DESC
 `
 
 type ListIdentityLinksForUserRow struct {
-	ID                string             `json:"id"`
-	UserID            string             `json:"user_id"`
-	ProviderID        string             `json:"provider_id"`
-	ExternalID        string             `json:"external_id"`
-	ExternalEmail     string             `json:"external_email"`
-	ExternalName      string             `json:"external_name"`
-	LinkedAt          pgtype.Timestamptz `json:"linked_at"`
-	LastLoginAt       pgtype.Timestamptz `json:"last_login_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	ProviderName      string             `json:"provider_name"`
-	ProviderSlug      string             `json:"provider_slug"`
+	ID                string     `json:"id"`
+	UserID            string     `json:"user_id"`
+	ProviderID        string     `json:"provider_id"`
+	ExternalID        string     `json:"external_id"`
+	ExternalEmail     string     `json:"external_email"`
+	ExternalName      string     `json:"external_name"`
+	LinkedAt          time.Time  `json:"linked_at"`
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ProviderName      string     `json:"provider_name"`
+	ProviderSlug      string     `json:"provider_slug"`
 }
 
 func (q *Queries) ListIdentityLinksForUser(ctx context.Context, userID string) ([]ListIdentityLinksForUserRow, error) {

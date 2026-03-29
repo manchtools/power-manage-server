@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countActions = `-- name: CountActions :one
@@ -497,12 +496,12 @@ LIMIT 100
 `
 
 type ListStaleExecutionsRow struct {
-	ID             string             `json:"id"`
-	DeviceID       string             `json:"device_id"`
-	TimeoutSeconds int32              `json:"timeout_seconds"`
-	Status         string             `json:"status"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-	DispatchedAt   pgtype.Timestamptz `json:"dispatched_at"`
+	ID             string     `json:"id"`
+	DeviceID       string     `json:"device_id"`
+	TimeoutSeconds int32      `json:"timeout_seconds"`
+	Status         string     `json:"status"`
+	CreatedAt      *time.Time `json:"created_at"`
+	DispatchedAt   *time.Time `json:"dispatched_at"`
 }
 
 // Find dispatched executions that exceeded their timeout + grace period.

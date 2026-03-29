@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countDevices = `-- name: CountDevices :one
@@ -269,9 +268,9 @@ ORDER BY dag.assigned_at
 `
 
 type ListDeviceAssignedGroupsRow struct {
-	GroupID    string             `json:"group_id"`
-	GroupName  string             `json:"group_name"`
-	AssignedAt pgtype.Timestamptz `json:"assigned_at"`
+	GroupID    string    `json:"group_id"`
+	GroupName  string    `json:"group_name"`
+	AssignedAt time.Time `json:"assigned_at"`
 }
 
 func (q *Queries) ListDeviceAssignedGroups(ctx context.Context, deviceID string) ([]ListDeviceAssignedGroupsRow, error) {
@@ -356,9 +355,9 @@ ORDER BY dau.assigned_at
 `
 
 type ListDeviceAssignedUsersRow struct {
-	UserID     string             `json:"user_id"`
-	UserEmail  string             `json:"user_email"`
-	AssignedAt pgtype.Timestamptz `json:"assigned_at"`
+	UserID     string    `json:"user_id"`
+	UserEmail  string    `json:"user_email"`
+	AssignedAt time.Time `json:"assigned_at"`
 }
 
 func (q *Queries) ListDeviceAssignedUsers(ctx context.Context, deviceID string) ([]ListDeviceAssignedUsersRow, error) {

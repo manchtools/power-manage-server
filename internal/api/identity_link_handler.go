@@ -129,11 +129,9 @@ func identityLinkRowToProto(link db.ListIdentityLinksForUserRow) *pm.IdentityLin
 		ExternalName:  link.ExternalName,
 	}
 
-	if link.LinkedAt.Valid {
-		protoLink.LinkedAt = timestamppb.New(link.LinkedAt.Time)
-	}
-	if link.LastLoginAt.Valid {
-		protoLink.LastLoginAt = timestamppb.New(link.LastLoginAt.Time)
+	protoLink.LinkedAt = timestamppb.New(link.LinkedAt)
+	if link.LastLoginAt != nil {
+		protoLink.LastLoginAt = timestamppb.New(*link.LastLoginAt)
 	}
 
 	return protoLink

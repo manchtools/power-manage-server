@@ -324,12 +324,12 @@ func tokenToProto(t db.TokensProjection) *pm.RegistrationToken {
 		Disabled:    t.Disabled,
 	}
 
-	if t.ExpiresAt.Valid {
-		token.ExpiresAt = timestamppb.New(t.ExpiresAt.Time)
+	if t.ExpiresAt != nil {
+		token.ExpiresAt = timestamppb.New(*t.ExpiresAt)
 	}
 
-	if t.CreatedAt.Valid {
-		token.CreatedAt = timestamppb.New(t.CreatedAt.Time)
+	if t.CreatedAt != nil {
+		token.CreatedAt = timestamppb.New(*t.CreatedAt)
 	}
 
 	if t.OwnerID != nil {

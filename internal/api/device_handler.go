@@ -629,9 +629,9 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 	}
 
 	// Determine status based on last_seen
-	if d.LastSeenAt.Valid {
-		device.LastSeenAt = timestamppb.New(d.LastSeenAt.Time)
-		if time.Since(d.LastSeenAt.Time) < 5*time.Minute {
+	if d.LastSeenAt != nil {
+		device.LastSeenAt = timestamppb.New(*d.LastSeenAt)
+		if time.Since(*d.LastSeenAt) < 5*time.Minute {
 			device.Status = "online"
 		} else {
 			device.Status = "offline"
@@ -640,12 +640,12 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 		device.Status = "offline"
 	}
 
-	if d.RegisteredAt.Valid {
-		device.RegisteredAt = timestamppb.New(d.RegisteredAt.Time)
+	if d.RegisteredAt != nil {
+		device.RegisteredAt = timestamppb.New(*d.RegisteredAt)
 	}
 
-	if d.CertNotAfter.Valid {
-		device.CertExpiresAt = timestamppb.New(d.CertNotAfter.Time)
+	if d.CertNotAfter != nil {
+		device.CertExpiresAt = timestamppb.New(*d.CertNotAfter)
 	}
 
 	// Parse labels from JSONB
@@ -660,8 +660,8 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 	device.ComplianceStatus = pm.ComplianceStatus(d.ComplianceStatus)
 	device.ComplianceTotal = d.ComplianceTotal
 	device.CompliancePassing = d.CompliancePassing
-	if d.ComplianceCheckedAt.Valid {
-		device.ComplianceCheckedAt = timestamppb.New(d.ComplianceCheckedAt.Time)
+	if d.ComplianceCheckedAt != nil {
+		device.ComplianceCheckedAt = timestamppb.New(*d.ComplianceCheckedAt)
 	}
 
 	return device
@@ -716,9 +716,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			Password:       decPassword,
 			RotationReason: p.RotationReason,
 		}
-		if p.RotatedAt.Valid {
-			entry.RotatedAt = timestamppb.New(p.RotatedAt.Time)
-		}
+		entry.RotatedAt = timestamppb.New(p.RotatedAt)
 		resp.Current = append(resp.Current, entry)
 	}
 
@@ -741,9 +739,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			Password:       decPassword,
 			RotationReason: p.RotationReason,
 		}
-		if p.RotatedAt.Valid {
-			entry.RotatedAt = timestamppb.New(p.RotatedAt.Time)
-		}
+		entry.RotatedAt = timestamppb.New(p.RotatedAt)
 		resp.History = append(resp.History, entry)
 	}
 
@@ -794,17 +790,15 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
 		}
-		if k.RotatedAt.Valid {
-			entry.RotatedAt = timestamppb.New(k.RotatedAt.Time)
-		}
+		entry.RotatedAt = timestamppb.New(k.RotatedAt)
 		if k.RevocationStatus != nil {
 			entry.RevocationStatus = *k.RevocationStatus
 		}
 		if k.RevocationError != nil {
 			entry.RevocationError = *k.RevocationError
 		}
-		if k.RevocationAt.Valid {
-			entry.RevocationAt = timestamppb.New(k.RevocationAt.Time)
+		if k.RevocationAt != nil {
+			entry.RevocationAt = timestamppb.New(*k.RevocationAt)
 		}
 		resp.Current = append(resp.Current, entry)
 	}
@@ -828,9 +822,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
 		}
-		if k.RotatedAt.Valid {
-			entry.RotatedAt = timestamppb.New(k.RotatedAt.Time)
-		}
+		entry.RotatedAt = timestamppb.New(k.RotatedAt)
 		resp.History = append(resp.History, entry)
 	}
 

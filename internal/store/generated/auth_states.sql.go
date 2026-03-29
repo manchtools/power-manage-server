@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const cleanupExpiredAuthStates = `-- name: CleanupExpiredAuthStates :exec
@@ -47,12 +46,12 @@ VALUES ($1, $2, $3, $4, $5, now(), $6)
 `
 
 type CreateAuthStateParams struct {
-	State        string             `json:"state"`
-	ProviderID   string             `json:"provider_id"`
-	Nonce        string             `json:"nonce"`
-	CodeVerifier string             `json:"code_verifier"`
-	RedirectUri  string             `json:"redirect_uri"`
-	ExpiresAt    pgtype.Timestamptz `json:"expires_at"`
+	State        string    `json:"state"`
+	ProviderID   string    `json:"provider_id"`
+	Nonce        string    `json:"nonce"`
+	CodeVerifier string    `json:"code_verifier"`
+	RedirectUri  string    `json:"redirect_uri"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 func (q *Queries) CreateAuthState(ctx context.Context, arg CreateAuthStateParams) error {

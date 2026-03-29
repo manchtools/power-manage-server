@@ -751,8 +751,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// Enqueue execution for search indexing using already-fetched data.
 	if h.searchIdx != nil {
 		var execCreatedAt int64
-		if exec.CreatedAt.Valid {
-			execCreatedAt = exec.CreatedAt.Time.Unix()
+		if exec.CreatedAt != nil {
+			execCreatedAt = exec.CreatedAt.Unix()
 		}
 		var execDurationMs int64
 		if exec.DurationMs != nil {
@@ -1383,11 +1383,11 @@ func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsPr
 		}
 	}
 	var createdAt, updatedAt int64
-	if a.CreatedAt.Valid {
-		createdAt = a.CreatedAt.Time.Unix()
+	if a.CreatedAt != nil {
+		createdAt = a.CreatedAt.Unix()
 	}
-	if a.UpdatedAt.Valid {
-		updatedAt = a.UpdatedAt.Time.Unix()
+	if a.UpdatedAt != nil {
+		updatedAt = a.UpdatedAt.Unix()
 	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
 		Name:         a.Name,
@@ -1415,12 +1415,12 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 		action.Description = *a.Description
 	}
 
-	if a.CreatedAt.Valid {
-		action.CreatedAt = timestamppb.New(a.CreatedAt.Time)
+	if a.CreatedAt != nil {
+		action.CreatedAt = timestamppb.New(*a.CreatedAt)
 	}
 
-	if a.UpdatedAt.Valid {
-		action.UpdatedAt = timestamppb.New(a.UpdatedAt.Time)
+	if a.UpdatedAt != nil {
+		action.UpdatedAt = timestamppb.New(*a.UpdatedAt)
 	}
 
 	if len(a.Params) > 0 {
@@ -1541,16 +1541,16 @@ func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionEx
 
 	exec.CreatedBy = e.CreatedByID
 
-	if e.CreatedAt.Valid {
-		exec.CreatedAt = timestamppb.New(e.CreatedAt.Time)
+	if e.CreatedAt != nil {
+		exec.CreatedAt = timestamppb.New(*e.CreatedAt)
 	}
 
-	if e.DispatchedAt.Valid {
-		exec.DispatchedAt = timestamppb.New(e.DispatchedAt.Time)
+	if e.DispatchedAt != nil {
+		exec.DispatchedAt = timestamppb.New(*e.DispatchedAt)
 	}
 
-	if e.CompletedAt.Valid {
-		exec.CompletedAt = timestamppb.New(e.CompletedAt.Time)
+	if e.CompletedAt != nil {
+		exec.CompletedAt = timestamppb.New(*e.CompletedAt)
 	}
 
 	exec.Compliant = e.Compliant

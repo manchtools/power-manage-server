@@ -8,7 +8,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -126,7 +125,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		Nonce:        nonce,
 		CodeVerifier: codeVerifier,
 		RedirectUri:  req.Msg.RedirectUrl,
-		ExpiresAt:    pgtype.Timestamptz{Time: expiresAt, Valid: true},
+		ExpiresAt:    expiresAt,
 	})
 	if err != nil {
 		h.logger.Error("failed to store auth state", "error", err, "provider", provider.Slug)

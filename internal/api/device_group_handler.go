@@ -116,8 +116,8 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 			Hostname:     m.Hostname,
 			AgentVersion: m.AgentVersion,
 		}
-		if m.LastSeenAt.Valid {
-			devices[i].LastSeenAt = timestamppb.New(m.LastSeenAt.Time)
+		if m.LastSeenAt != nil {
+			devices[i].LastSeenAt = timestamppb.New(*m.LastSeenAt)
 		}
 	}
 
@@ -653,8 +653,8 @@ func (h *DeviceGroupHandler) deviceGroupToProto(g db.DeviceGroupsProjection) *pm
 		group.DynamicQuery = *g.DynamicQuery
 	}
 
-	if g.CreatedAt.Valid {
-		group.CreatedAt = timestamppb.New(g.CreatedAt.Time)
+	if g.CreatedAt != nil {
+		group.CreatedAt = timestamppb.New(*g.CreatedAt)
 	}
 
 	return group

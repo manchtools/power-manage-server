@@ -874,12 +874,8 @@ func (h *Handler) buildGroupResource(ctx context.Context, providerID string, map
 		},
 	}
 
-	if mapping.CreatedAt.Valid {
-		sg.Meta.Created = mapping.CreatedAt.Time.Format(time.RFC3339)
-	}
-	if group.UpdatedAt.Valid {
-		sg.Meta.LastModified = group.UpdatedAt.Time.Format(time.RFC3339)
-	}
+	sg.Meta.Created = mapping.CreatedAt.Format(time.RFC3339)
+	sg.Meta.LastModified = group.UpdatedAt.Format(time.RFC3339)
 
 	return sg, nil
 }

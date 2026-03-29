@@ -467,11 +467,11 @@ func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.D
 		return
 	}
 	var createdAt, updatedAt int64
-	if d.CreatedAt.Valid {
-		createdAt = d.CreatedAt.Time.Unix()
+	if d.CreatedAt != nil {
+		createdAt = d.CreatedAt.Unix()
 	}
-	if d.UpdatedAt.Valid {
-		updatedAt = d.UpdatedAt.Time.Unix()
+	if d.UpdatedAt != nil {
+		updatedAt = d.UpdatedAt.Unix()
 	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
 		Name:        d.Name,
@@ -493,12 +493,12 @@ func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.De
 		CreatedBy:   d.CreatedBy,
 	}
 
-	if d.CreatedAt.Valid {
-		def.CreatedAt = timestamppb.New(d.CreatedAt.Time)
+	if d.CreatedAt != nil {
+		def.CreatedAt = timestamppb.New(*d.CreatedAt)
 	}
 
-	if d.UpdatedAt.Valid {
-		def.UpdatedAt = timestamppb.New(d.UpdatedAt.Time)
+	if d.UpdatedAt != nil {
+		def.UpdatedAt = timestamppb.New(*d.UpdatedAt)
 	}
 
 	return def

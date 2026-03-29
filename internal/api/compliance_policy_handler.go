@@ -581,13 +581,13 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 			Compliant:        e.Compliant,
 			GracePeriodHours: e.GracePeriodHours,
 		}
-		if e.CheckedAt.Valid {
-			ruleEval.CheckedAt = timestamppb.New(e.CheckedAt.Time)
+		if e.CheckedAt != nil {
+			ruleEval.CheckedAt = timestamppb.New(*e.CheckedAt)
 		}
-		if e.FirstFailedAt.Valid {
-			ruleEval.FirstFailedAt = timestamppb.New(e.FirstFailedAt.Time)
+		if e.FirstFailedAt != nil {
+			ruleEval.FirstFailedAt = timestamppb.New(*e.FirstFailedAt)
 			if e.GracePeriodHours > 0 {
-				graceExpires := e.FirstFailedAt.Time.Add(time.Duration(e.GracePeriodHours) * time.Hour)
+				graceExpires := e.FirstFailedAt.Add(time.Duration(e.GracePeriodHours) * time.Hour)
 				ruleEval.GraceExpiresAt = timestamppb.New(graceExpires)
 			}
 		}
@@ -642,8 +642,8 @@ func (h *CompliancePolicyHandler) policyToProto(p db.CompliancePoliciesProjectio
 		CreatedBy:   p.CreatedBy,
 	}
 
-	if p.CreatedAt.Valid {
-		policy.CreatedAt = timestamppb.New(p.CreatedAt.Time)
+	if p.CreatedAt != nil {
+		policy.CreatedAt = timestamppb.New(*p.CreatedAt)
 	}
 
 	if rules != nil {

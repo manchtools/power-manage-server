@@ -103,7 +103,7 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 	}
 
 	// Auto-expire pending results that have been waiting too long
-	if !result.Completed && result.CreatedAt.Valid && time.Since(result.CreatedAt.Time) > osqueryResultTimeout {
+	if !result.Completed && time.Since(result.CreatedAt) > osqueryResultTimeout {
 		timeoutErr := "query timed out: device did not respond within 5 minutes"
 		if err := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
 			QueryID: result.QueryID,
@@ -159,7 +159,7 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 	for _, row := range rows {
 		table := &pm.InventoryTableResult{
 			TableName:   row.TableName,
-			CollectedAt: timestamppb.New(row.CollectedAt.Time),
+			CollectedAt: timestamppb.New(row.CollectedAt),
 		}
 
 		// Parse JSONB rows

@@ -469,11 +469,11 @@ func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSet
 		return
 	}
 	var createdAt, updatedAt int64
-	if s.CreatedAt.Valid {
-		createdAt = s.CreatedAt.Time.Unix()
+	if s.CreatedAt != nil {
+		createdAt = s.CreatedAt.Unix()
 	}
-	if s.UpdatedAt.Valid {
-		updatedAt = s.UpdatedAt.Time.Unix()
+	if s.UpdatedAt != nil {
+		updatedAt = s.UpdatedAt.Unix()
 	}
 	if err := h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
 		Name:        s.Name,
@@ -495,12 +495,12 @@ func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.Actio
 		CreatedBy:   s.CreatedBy,
 	}
 
-	if s.CreatedAt.Valid {
-		set.CreatedAt = timestamppb.New(s.CreatedAt.Time)
+	if s.CreatedAt != nil {
+		set.CreatedAt = timestamppb.New(*s.CreatedAt)
 	}
 
-	if s.UpdatedAt.Valid {
-		set.UpdatedAt = timestamppb.New(s.UpdatedAt.Time)
+	if s.UpdatedAt != nil {
+		set.UpdatedAt = timestamppb.New(*s.UpdatedAt)
 	}
 
 	return set

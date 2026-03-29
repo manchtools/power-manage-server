@@ -192,9 +192,7 @@ func userSelectionToProto(s db.UserSelectionsProjection) *pm.UserSelection {
 		Selected:   s.Selected,
 	}
 
-	if s.UpdatedAt.Valid {
-		sel.UpdatedAt = timestamppb.New(s.UpdatedAt.Time)
-	}
+	sel.UpdatedAt = timestamppb.New(s.UpdatedAt)
 
 	return sel
 }

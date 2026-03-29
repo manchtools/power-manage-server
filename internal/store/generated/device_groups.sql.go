@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const countDeviceGroups = `-- name: CountDeviceGroups :one
@@ -179,13 +178,13 @@ ORDER BY m.added_at ASC
 `
 
 type ListDeviceGroupMembersRow struct {
-	GroupID           string             `json:"group_id"`
-	DeviceID          string             `json:"device_id"`
-	AddedAt           pgtype.Timestamptz `json:"added_at"`
-	ProjectionVersion int64              `json:"projection_version"`
-	Hostname          string             `json:"hostname"`
-	AgentVersion      string             `json:"agent_version"`
-	LastSeenAt        pgtype.Timestamptz `json:"last_seen_at"`
+	GroupID           string     `json:"group_id"`
+	DeviceID          string     `json:"device_id"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	Hostname          string     `json:"hostname"`
+	AgentVersion      string     `json:"agent_version"`
+	LastSeenAt        *time.Time `json:"last_seen_at"`
 }
 
 // Device Group Members queries

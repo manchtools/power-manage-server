@@ -516,9 +516,7 @@ func roleToProto(r db.RolesProjection) *pm.Role {
 		IsSystem:    r.IsSystem,
 	}
 
-	if r.CreatedAt.Valid {
-		role.CreatedAt = timestamppb.New(r.CreatedAt.Time)
-	}
+	role.CreatedAt = timestamppb.New(r.CreatedAt)
 
 	return role
 }

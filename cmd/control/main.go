@@ -366,14 +366,14 @@ func main() {
 		// Index audit events on insertion — the hook fires after every AppendEvent
 		// and enqueues the persisted row directly (no DB lookup in the search worker).
 		st.OnEventAppended = func(ctx context.Context, ev store.PersistedEvent) {
-			id := ulid.ULID(ev.ID.Bytes).String()
+			id := ulid.ULID(ev.ID).String()
 			if err := searchIdx.EnqueueReindex(ctx, search.ScopeAuditEvent, id, &taskqueue.SearchEntityData{
 				EventType:  ev.EventType,
 				StreamType: ev.StreamType,
 				ActorType:  ev.ActorType,
 				ActorID:    ev.ActorID,
 				StreamID:   ev.StreamID,
-				OccurredAt: ev.OccurredAt.Time.Unix(),
+				OccurredAt: ev.OccurredAt.Unix(),
 			}); err != nil {
 				logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
 			}

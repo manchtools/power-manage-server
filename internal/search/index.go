@@ -308,11 +308,11 @@ func (idx *Index) warmActions(ctx context.Context) (int, error) {
 				"type":          strconv.Itoa(int(a.ActionType)),
 				"is_compliance": isCompliance,
 			}
-			if a.CreatedAt.Valid {
-				fields["created_at"] = strconv.FormatInt(a.CreatedAt.Time.Unix(), 10)
+			if a.CreatedAt != nil {
+				fields["created_at"] = strconv.FormatInt(a.CreatedAt.Unix(), 10)
 			}
-			if a.UpdatedAt.Valid {
-				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Time.Unix(), 10)
+			if a.UpdatedAt != nil {
+				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Unix(), 10)
 			}
 			pipe.HSet(ctx, prefixAction+a.ID, fields)
 		}
@@ -375,11 +375,11 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 				"member_count": strconv.Itoa(int(s.MemberCount)),
 				"action_names": strings.Join(actionNames, " "),
 			}
-			if s.CreatedAt.Valid {
-				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Time.Unix(), 10)
+			if s.CreatedAt != nil {
+				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Unix(), 10)
 			}
-			if s.UpdatedAt.Valid {
-				setFields["updated_at"] = strconv.FormatInt(s.UpdatedAt.Time.Unix(), 10)
+			if s.UpdatedAt != nil {
+				setFields["updated_at"] = strconv.FormatInt(s.UpdatedAt.Unix(), 10)
 			}
 			pipe.HSet(ctx, prefixActionSet+s.ID, setFields)
 
@@ -455,11 +455,11 @@ func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
 				"set_names":    strings.Join(setNames, " "),
 				"action_names": strings.Join(allActionNames, " "),
 			}
-			if d.CreatedAt.Valid {
-				defFields["created_at"] = strconv.FormatInt(d.CreatedAt.Time.Unix(), 10)
+			if d.CreatedAt != nil {
+				defFields["created_at"] = strconv.FormatInt(d.CreatedAt.Unix(), 10)
 			}
-			if d.UpdatedAt.Valid {
-				defFields["updated_at"] = strconv.FormatInt(d.UpdatedAt.Time.Unix(), 10)
+			if d.UpdatedAt != nil {
+				defFields["updated_at"] = strconv.FormatInt(d.UpdatedAt.Unix(), 10)
 			}
 			pipe.HSet(ctx, prefixDefinition+d.ID, defFields)
 
@@ -584,8 +584,8 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 				"desired_state":   strconv.Itoa(int(e.DesiredState)),
 				"changed":        strconv.FormatBool(e.Changed),
 			}
-			if e.CreatedAt.Valid {
-				execFields["created_at"] = strconv.FormatInt(e.CreatedAt.Time.Unix(), 10)
+			if e.CreatedAt != nil {
+				execFields["created_at"] = strconv.FormatInt(e.CreatedAt.Unix(), 10)
 			}
 			if e.DurationMs != nil {
 				execFields["duration_ms"] = strconv.FormatInt(*e.DurationMs, 10)
@@ -624,14 +624,14 @@ func (idx *Index) warmAuditEvents(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, e := range events {
-			id := ulid.ULID(e.ID.Bytes).String()
+			id := ulid.ULID(e.ID).String()
 			eventFields := map[string]any{
 				"event_type":  e.EventType,
 				"stream_type": e.StreamType,
 				"actor_type":  e.ActorType,
 				"actor_id":    e.ActorID,
 				"stream_id":   e.StreamID,
-				"occurred_at": strconv.FormatInt(e.OccurredAt.Time.Unix(), 10),
+				"occurred_at": strconv.FormatInt(e.OccurredAt.Unix(), 10),
 			}
 			pipe.HSet(ctx, prefixAuditEvent+id, eventFields)
 		}

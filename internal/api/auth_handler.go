@@ -8,7 +8,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -173,7 +172,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	if result.OldJTI != "" {
 		_, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 			Jti:       result.OldJTI,
-			ExpiresAt: pgtype.Timestamptz{Time: result.OldExp, Valid: true},
+			ExpiresAt: result.OldExp,
 		})
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "refresh token already used")
@@ -214,7 +213,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		if err == nil && claims.ID != "" {
 			if _, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
 				Jti:       claims.ID,
-				ExpiresAt: pgtype.Timestamptz{Time: claims.ExpiresAt.Time, Valid: true},
+				ExpiresAt: claims.ExpiresAt.Time,
 			}); err != nil {
 				h.logger.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
 			}

@@ -7,8 +7,7 @@ package generated
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
+	"time"
 )
 
 const getDeviceComplianceResults = `-- name: GetDeviceComplianceResults :many
@@ -53,10 +52,10 @@ FROM devices_projection WHERE id = $1
 `
 
 type GetDeviceComplianceSummaryRow struct {
-	ComplianceStatus    int32              `json:"compliance_status"`
-	ComplianceTotal     int32              `json:"compliance_total"`
-	CompliancePassing   int32              `json:"compliance_passing"`
-	ComplianceCheckedAt pgtype.Timestamptz `json:"compliance_checked_at"`
+	ComplianceStatus    int32      `json:"compliance_status"`
+	ComplianceTotal     int32      `json:"compliance_total"`
+	CompliancePassing   int32      `json:"compliance_passing"`
+	ComplianceCheckedAt *time.Time `json:"compliance_checked_at"`
 }
 
 func (q *Queries) GetDeviceComplianceSummary(ctx context.Context, id string) (GetDeviceComplianceSummaryRow, error) {

@@ -547,12 +547,8 @@ func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityPr
 		}
 	}
 
-	if p.CreatedAt.Valid {
-		provider.CreatedAt = timestamppb.New(p.CreatedAt.Time)
-	}
-	if p.UpdatedAt.Valid {
-		provider.UpdatedAt = timestamppb.New(p.UpdatedAt.Time)
-	}
+	provider.CreatedAt = timestamppb.New(p.CreatedAt)
+	provider.UpdatedAt = timestamppb.New(p.UpdatedAt)
 
 	return provider
 }
