@@ -173,7 +173,7 @@ func TestProjection_UserCreated(t *testing.T) {
 	assert.Equal(t, "admin", user.Role)
 	assert.False(t, user.Disabled)
 	assert.False(t, user.IsDeleted)
-	assert.True(t, user.CreatedAt.Valid)
+	assert.NotNil(t, user.CreatedAt)
 }
 
 func TestProjection_UserEmailChanged(t *testing.T) {
