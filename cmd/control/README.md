@@ -73,6 +73,8 @@ Environment variables override command-line flags:
 | `CONTROL_VALKEY_ADDR` | Valkey/Redis address for Asynq task queue (e.g., `localhost:6379`) |
 | `CONTROL_VALKEY_PASSWORD` | Valkey/Redis password |
 | `CONTROL_VALKEY_DB` | Valkey/Redis database number (default: `0`) |
+| `CONTROL_AUTO_UPDATE_REPO` | GitHub repo for agent releases in `owner/repo` format (default: `MANCHTOOLS/power-manage-agent`) |
+| `CONTROL_DISABLE_AUTO_UPDATE` | Disable agent auto-update entirely (set to `true` or `1`) |
 
 ## Setup
 

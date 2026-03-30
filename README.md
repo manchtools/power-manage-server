@@ -61,8 +61,9 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
 | `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys, LPS passwords) |
+| `internal/agentrelease` | GitHub Releases polling cache — fetches latest agent binary version, per-arch download URLs, and SHA256 checksums every 5 minutes |
 | `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
-| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control) |
+| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control, auto-update info) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
 | `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
@@ -337,7 +338,7 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 
 | Method | Description |
 |--------|-------------|
-| `Stream` | Bidirectional streaming. Agent sends Hello, Heartbeat, ActionResult, OutputChunk, LogQueryResult, SecurityAlert. Server sends Welcome, ActionDispatch, LogQuery. |
+| `Stream` | Bidirectional streaming. Agent sends Hello (with `arch`), Heartbeat, ActionResult, OutputChunk, LogQueryResult, SecurityAlert. Server sends Welcome (with auto-update info), ActionDispatch, LogQuery. |
 | `SyncActions` | Agent pulls all assigned actions for offline storage. Returns effective sync interval. |
 
 ## Auth System
