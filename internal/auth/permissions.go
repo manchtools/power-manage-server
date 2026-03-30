@@ -26,6 +26,8 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteUser", "Users", "Delete users"},
 		{"UpdateUserSshSettings", "Users", "Update any user's SSH settings"},
 		{"UpdateUserSshSettings:self", "Users", "Update own SSH settings"},
+		{"UpdateUserLinuxUsername", "Users", "Change any user's linux username"},
+		{"UpdateUserLinuxUsername:self", "Users", "Change own linux username"},
 		{"AddUserSshKey", "Users", "Add SSH key to any user"},
 		{"AddUserSshKey:self", "Users", "Add own SSH key"},
 		{"RemoveUserSshKey", "Users", "Remove SSH key from any user"},
@@ -239,6 +241,8 @@ func DefaultUserPermissions() []string {
 		"ListIdentityLinks",
 		"UnlinkIdentity",
 		"GetDeviceCompliance:assigned",
+		"UpdateUserSshSettings:self",
+		"UpdateUserLinuxUsername:self",
 		"AddUserSshKey:self",
 		"RemoveUserSshKey:self",
 	}
