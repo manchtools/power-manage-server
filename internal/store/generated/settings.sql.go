@@ -10,7 +10,7 @@ import (
 )
 
 const getServerSettings = `-- name: GetServerSettings :one
-SELECT id, user_provisioning_enabled, ssh_access_for_all, updated_at, projection_version FROM server_settings_projection WHERE id = 'global'
+SELECT id, user_provisioning_enabled, ssh_access_for_all, updated_at, projection_version, auto_update_agents FROM server_settings_projection WHERE id = 'global'
 `
 
 func (q *Queries) GetServerSettings(ctx context.Context) (ServerSettingsProjection, error) {
@@ -22,6 +22,7 @@ func (q *Queries) GetServerSettings(ctx context.Context) (ServerSettingsProjecti
 		&i.SshAccessForAll,
 		&i.UpdatedAt,
 		&i.ProjectionVersion,
+		&i.AutoUpdateAgents,
 	)
 	return i, err
 }

@@ -38,6 +38,7 @@ func (h *SettingsHandler) GetServerSettings(ctx context.Context, req *connect.Re
 		Settings: &pm.ServerSettings{
 			UserProvisioningEnabled: settings.UserProvisioningEnabled,
 			SshAccessForAll:         settings.SshAccessForAll,
+			AutoUpdateAgents:        settings.AutoUpdateAgents,
 		},
 	}), nil
 }
@@ -51,6 +52,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		Data: map[string]any{
 			"user_provisioning_enabled": req.Msg.UserProvisioningEnabled,
 			"ssh_access_for_all":        req.Msg.SshAccessForAll,
+			"auto_update_agents":        req.Msg.AutoUpdateAgents,
 		},
 		ActorType: "system",
 		ActorID:   "system",
@@ -88,6 +90,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		Settings: &pm.ServerSettings{
 			UserProvisioningEnabled: settings.UserProvisioningEnabled,
 			SshAccessForAll:         settings.SshAccessForAll,
+			AutoUpdateAgents:        settings.AutoUpdateAgents,
 		},
 	}), nil
 }
