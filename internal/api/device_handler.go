@@ -66,14 +66,25 @@ func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesPr
 	if d.LastSeenAt != nil {
 		lastSeenAt = d.LastSeenAt.Unix()
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDevice, d.ID, &taskqueue.SearchEntityData{
+	data := &taskqueue.SearchEntityData{
 		Hostname:         d.Hostname,
 		AgentVersion:     d.AgentVersion,
 		Labels:           labels,
 		ComplianceStatus: d.ComplianceStatus,
 		RegisteredAt:     registeredAt,
 		LastSeenAt:       lastSeenAt,
-	}); err != nil {
+	}
+	// Enrich with inventory data (best-effort).
+	inv, err := h.store.Queries().GetDeviceInventoryByTables(ctx, db.GetDeviceInventoryByTablesParams{
+		DeviceID: d.ID,
+		Column2:  []string{"os_version", "kernel_info"},
+	})
+	if err == nil {
+		for _, t := range inv {
+			search.EnrichDeviceInventory(data, t.TableName, t.Rows)
+		}
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDevice, d.ID, data); err != nil {
 		h.logger.Warn("failed to enqueue search reindex", "scope", "device", "error", err)
 	}
 }

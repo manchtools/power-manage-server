@@ -190,6 +190,10 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 				"hostname", "TEXT",
 				"agent_version", "TAG",
 				"labels", "TEXT",
+				"os_name", "TEXT",
+				"os_version", "TEXT",
+				"os_arch", "TAG",
+				"kernel", "TEXT",
 				"compliance_status", "TAG",
 				"registered_at", "NUMERIC", "SORTABLE",
 				"last_seen_at", "NUMERIC", "SORTABLE",
@@ -601,6 +605,30 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 			if d.LastSeenAt != nil {
 				fields["last_seen_at"] = strconv.FormatInt(d.LastSeenAt.Unix(), 10)
 			}
+
+			// Enrich with inventory data (os_version, system_info, kernel_info).
+			inv, err := idx.store.Queries().GetDeviceInventoryByTables(ctx, db.GetDeviceInventoryByTablesParams{
+				DeviceID: d.ID,
+				Column2:  []string{"os_version", "system_info", "kernel_info"},
+			})
+			if err == nil {
+				for _, t := range inv {
+					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)
+					if osName != "" {
+						fields["os_name"] = osName
+					}
+					if osVer != "" {
+						fields["os_version"] = osVer
+					}
+					if osArch != "" {
+						fields["os_arch"] = osArch
+					}
+					if kernel != "" {
+						fields["kernel"] = kernel
+					}
+				}
+			}
+
 			pipe.HSet(ctx, prefixDevice+d.ID, fields)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
@@ -614,6 +642,41 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 		offset += pageSize
 	}
 	return total, nil
+}
+
+// EnrichDeviceInventory populates inventory fields on a SearchEntityData from a single inventory table.
+func EnrichDeviceInventory(data *taskqueue.SearchEntityData, tableName string, rowsJSON []byte) {
+	osName, osVer, osArch, kernel := extractInventoryFields(tableName, rowsJSON)
+	if osName != "" {
+		data.OSName = osName
+	}
+	if osVer != "" {
+		data.OSVersion = osVer
+	}
+	if osArch != "" {
+		data.OSArch = osArch
+	}
+	if kernel != "" {
+		data.Kernel = kernel
+	}
+}
+
+// extractInventoryFields extracts searchable fields from an inventory table's JSON rows.
+func extractInventoryFields(tableName string, rowsJSON []byte) (osName, osVersion, osArch, kernel string) {
+	var rows []map[string]string
+	if json.Unmarshal(rowsJSON, &rows) != nil || len(rows) == 0 {
+		return
+	}
+	row := rows[0]
+	switch tableName {
+	case "os_version":
+		osName = row["name"]
+		osVersion = row["version"]
+		osArch = row["arch"]
+	case "kernel_info":
+		kernel = row["version"]
+	}
+	return
 }
 
 func (idx *Index) warmUsers(ctx context.Context) (int, error) {

@@ -345,6 +345,10 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"agent_version":     data.AgentVersion,
 			"labels":            data.Labels,
 			"compliance_status": strconv.Itoa(int(data.ComplianceStatus)),
+			"os_name":           data.OSName,
+			"os_version":        data.OSVersion,
+			"os_arch":           data.OSArch,
+			"kernel":            data.Kernel,
 		}
 		if data.RegisteredAt != 0 {
 			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)

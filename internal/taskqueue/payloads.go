@@ -185,6 +185,10 @@ type SearchEntityData struct {
 	ComplianceStatus int32  `json:"compliance_status,omitempty"`
 	LastSeenAt       int64  `json:"last_seen_at,omitempty"`
 	RegisteredAt     int64  `json:"registered_at,omitempty"`
+	OSName           string `json:"os_name,omitempty"`
+	OSVersion        string `json:"os_version,omitempty"`
+	OSArch           string `json:"os_arch,omitempty"`
+	Kernel           string `json:"kernel,omitempty"`
 
 	// User fields
 	Email         string `json:"email,omitempty"`

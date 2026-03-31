@@ -170,6 +170,7 @@ var allowedSearchFields = map[string]bool{
 	"disabled":          true,
 	"compliance_status": true,
 	"agent_version":     true,
+	"os_arch":           true,
 	"registered_at":     true,
 	"last_seen_at":      true,
 }
