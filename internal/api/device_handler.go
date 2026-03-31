@@ -1086,12 +1086,30 @@ func (h *DeviceHandler) TriggerAgentUpdate(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "task queue not available")
 	}
 
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
 	var triggered int32
 	for _, deviceID := range req.Msg.DeviceIds {
 		if err := h.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeTriggerUpdate, struct{}{}, asynq.MaxRetry(1)); err != nil {
 			h.logger.Warn("failed to enqueue agent update trigger", "device_id", deviceID, "error", err)
 			continue
 		}
+
+		// Audit log the update trigger.
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   deviceID,
+			EventType:  "AgentUpdateTriggered",
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}); err != nil {
+			h.logger.Warn("failed to append agent update event", "device_id", deviceID, "error", err)
+		}
+
 		triggered++
 	}
 
