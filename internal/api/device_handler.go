@@ -1076,3 +1076,26 @@ func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Re
 		Assignees: assignees,
 	}), nil
 }
+
+// TriggerAgentUpdate pushes auto-update info to the given devices via the gateway.
+func (h *DeviceHandler) TriggerAgentUpdate(ctx context.Context, req *connect.Request[pm.TriggerAgentUpdateRequest]) (*connect.Response[pm.TriggerAgentUpdateResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "task queue not available")
+	}
+
+	var triggered int32
+	for _, deviceID := range req.Msg.DeviceIds {
+		if err := h.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeTriggerUpdate, struct{}{}, asynq.MaxRetry(1)); err != nil {
+			h.logger.Warn("failed to enqueue agent update trigger", "device_id", deviceID, "error", err)
+			continue
+		}
+		triggered++
+	}
+
+	return connect.NewResponse(&pm.TriggerAgentUpdateResponse{
+		TriggeredCount: triggered,
+	}), nil
+}

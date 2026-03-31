@@ -43,6 +43,7 @@ func AllPermissions() []PermissionInfo {
 		{"UnassignDevice", "Devices", "Unassign devices from users or groups"},
 		{"ListDeviceAssignees", "Devices", "List device assignees"},
 		{"SetDeviceSyncInterval", "Devices", "Set device sync interval"},
+		{"TriggerAgentUpdate", "Devices", "Trigger agent update on devices"},
 		{"DeleteDevice", "Devices", "Delete devices"},
 		// Tokens
 		{"CreateToken", "Tokens", "Create registration tokens"},

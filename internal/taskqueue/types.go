@@ -18,6 +18,9 @@ const (
 
 	// TypeLogQueryDispatch dispatches a journalctl log query to a device's agent.
 	TypeLogQueryDispatch = "log:dispatch"
+
+	// TypeTriggerUpdate pushes auto-update info to a connected agent.
+	TypeTriggerUpdate = "agent:trigger_update"
 )
 
 // Task type constants for gateway → control communication (control:inbox queue).
