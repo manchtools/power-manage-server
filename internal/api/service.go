@@ -110,6 +110,8 @@ func (s *ControlService) SetSearchIndex(idx *search.Index) {
 	s.actionSet.SetSearchIndex(idx)
 	s.definition.SetSearchIndex(idx)
 	s.compliancePolicy.SetSearchIndex(idx)
+	s.device.SetSearchIndex(idx)
+	s.user.SetSearchIndex(idx)
 }
 
 var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)

@@ -36,6 +36,10 @@ func scopeSortField(scope string) string {
 	switch scope {
 	case "actions", "action_sets", "definitions":
 		return "created_at"
+	case "devices":
+		return "last_seen_at"
+	case "users":
+		return "created_at"
 	case "executions":
 		return "created_at"
 	case "audit_events":
@@ -73,7 +77,7 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	// Determine which scopes to search.
 	scopes := []string{req.Msg.Scope}
 	if req.Msg.Scope == "" {
-		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies"}
+		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users"}
 	}
 
 	scopeToIndex := map[string]string{
@@ -81,6 +85,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		"action_sets":         "idx:action_sets",
 		"definitions":         "idx:definitions",
 		"compliance_policies": "idx:compliance_policies",
+		"devices":             "idx:devices",
+		"users":               "idx:users",
 		"executions":          "idx:executions",
 		"audit_events":        "idx:audit_events",
 	}
@@ -160,7 +166,12 @@ var allowedSearchFields = map[string]bool{
 	"device_id":     true,
 	"stream_type":   true,
 	"actor_type":    true,
-	"actor_id":      true,
+	"actor_id":          true,
+	"disabled":          true,
+	"compliance_status": true,
+	"agent_version":     true,
+	"registered_at":     true,
+	"last_seen_at":      true,
 }
 
 // buildFTQuery constructs a RediSearch query string from text, date filters, and tag filters.
@@ -262,6 +273,14 @@ func parseFTSearchResult(raw any, scope string) ([]*pm.SearchResult, int32) {
 			case "member_count":
 				if v, err := strconv.Atoi(fieldVal); err == nil {
 					result.MemberCount = int32(v)
+				}
+			case "hostname":
+				if scope == "devices" {
+					result.Name = fieldVal
+				}
+			case "email":
+				if scope == "users" {
+					result.Name = fieldVal
 				}
 			}
 		}

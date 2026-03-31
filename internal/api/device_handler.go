@@ -23,6 +23,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -34,6 +35,7 @@ type DeviceHandler struct {
 	logger    *slog.Logger
 	encryptor *crypto.Encryptor
 	aqClient  *taskqueue.Client
+	searchIdx *search.Index
 }
 
 // NewDeviceHandler creates a new device handler.
@@ -44,6 +46,36 @@ func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logge
 // SetTaskQueueClient sets the Asynq client for dual-write dispatch.
 func (h *DeviceHandler) SetTaskQueueClient(c *taskqueue.Client) {
 	h.aqClient = c
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *DeviceHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
+}
+
+// enqueueDeviceReindex enqueues a search index update for a device.
+func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	labels := search.FlattenLabels(d.Labels)
+	var registeredAt, lastSeenAt int64
+	if d.RegisteredAt != nil {
+		registeredAt = d.RegisteredAt.Unix()
+	}
+	if d.LastSeenAt != nil {
+		lastSeenAt = d.LastSeenAt.Unix()
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDevice, d.ID, &taskqueue.SearchEntityData{
+		Hostname:         d.Hostname,
+		AgentVersion:     d.AgentVersion,
+		Labels:           labels,
+		ComplianceStatus: d.ComplianceStatus,
+		RegisteredAt:     registeredAt,
+		LastSeenAt:       lastSeenAt,
+	}); err != nil {
+		h.logger.Warn("failed to enqueue search reindex", "scope", "device", "error", err)
+	}
 }
 
 // ListDevices returns a paginated list of devices.
@@ -224,6 +256,8 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
+	h.enqueueDeviceReindex(ctx, device)
+
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
 		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
@@ -276,6 +310,8 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
+	h.enqueueDeviceReindex(ctx, device)
+
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
 		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
@@ -310,6 +346,12 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 		"stream_id", req.Msg.Id,
 		"event_type", "DeviceDeleted",
 	)
+
+	if h.searchIdx != nil {
+		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeDevice, req.Msg.Id, nil); err != nil {
+			h.logger.Warn("failed to enqueue search index remove", "scope", "device", "error", err)
+		}
+	}
 
 	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
 }
