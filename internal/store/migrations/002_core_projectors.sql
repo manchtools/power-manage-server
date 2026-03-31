@@ -440,6 +440,11 @@ BEGIN
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
 
+            -- Cascade rename to compliance policy rules that reference this action.
+            UPDATE compliance_policy_rules_projection
+            SET action_name = event.data->>'name'
+            WHERE action_id = event.stream_id;
+
         WHEN 'ActionDescriptionUpdated' THEN
             UPDATE actions_projection
             SET description = event.data->>'description',
