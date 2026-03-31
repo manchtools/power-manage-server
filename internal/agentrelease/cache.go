@@ -85,6 +85,16 @@ func NewCache(ctx context.Context, opts ...Option) *Cache {
 // GetUpdateInfo returns update information for the given architecture.
 // If the agent is already on the latest version (or no release data is
 // available), all return values are empty strings.
+// LatestVersion returns the latest cached agent version, or empty if unknown.
+func (c *Cache) LatestVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.latest == nil {
+		return ""
+	}
+	return c.latest.version
+}
+
 func (c *Cache) GetUpdateInfo(currentVersion, arch string) (version, url, checksum string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

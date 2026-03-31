@@ -447,13 +447,6 @@ func main() {
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
 
-	// Add health check endpoint (returns server version)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
-	})
-
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
@@ -496,6 +489,17 @@ func main() {
 	} else {
 		logger.Info("agent auto-update disabled via CONTROL_DISABLE_AUTO_UPDATE")
 	}
+
+	// Add health check endpoint (returns server version and latest agent version).
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		latestAgent := ""
+		if releaseCache != nil {
+			latestAgent = releaseCache.LatestVersion()
+		}
+		fmt.Fprintf(w, `{"status":"ok","version":%q,"latest_agent_version":%q}`, version, latestAgent)
+	})
 
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
