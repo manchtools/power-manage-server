@@ -331,6 +331,11 @@ func main() {
 		}
 	}
 
+	// Reconcile system roles (Admin/User) with current permission definitions
+	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
+		logger.Error("failed to reconcile system roles", "error", err)
+	}
+
 	// Sync system actions for all users at startup (idempotent)
 	if svc.SystemActions() != nil {
 		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {

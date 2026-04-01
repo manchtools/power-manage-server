@@ -199,24 +199,11 @@ func AllPermissions() []PermissionInfo {
 	}
 }
 
-// AdminPermissions returns all unrestricted permission keys for the Admin role.
+// AdminPermissions returns all permission keys for the Admin role.
 func AdminPermissions() []string {
-	var perms []string
-	seen := make(map[string]bool)
-	for _, p := range AllPermissions() {
-		// For admin, only include the base permission (no :self/:assigned suffixes)
-		// since the base permission grants unrestricted access
-		base := p.Key
-		for i, c := range p.Key {
-			if c == ':' {
-				base = p.Key[:i]
-				break
-			}
-		}
-		if !seen[base] {
-			perms = append(perms, base)
-			seen[base] = true
-		}
+	perms := make([]string, len(AllPermissions()))
+	for i, p := range AllPermissions() {
+		perms[i] = p.Key
 	}
 	return perms
 }
