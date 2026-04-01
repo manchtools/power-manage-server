@@ -366,6 +366,26 @@ OIDC authorization code flow for external identity providers (Google, Okta, Azur
 
 REST API at `/scim/v2/{slug}/` for automated user and group provisioning from external IdPs. Bearer token authentication (per-provider, bcrypt-hashed). Supports Users (CRUD, filter by userName/externalId) and Groups (CRUD with member management).
 
+### User Provisioning / System Actions (`internal/api/system_actions.go`)
+
+Automatic Linux user account management on devices. When provisioning is enabled (globally via server settings or per-user), the server creates managed `ACTION_TYPE_USER` and `ACTION_TYPE_SSH` actions that are assigned to the user's devices.
+
+**How it works:**
+- `SyncUserSystemActions` creates/updates/removes system actions based on provisioning settings
+- System actions are named `system:user-provision:{userID}` and `system:ssh-access:{userID}`
+- The user action creates a Linux account with the configured `linux_username` and `linux_uid`
+- The SSH action configures SSH access (pubkey/password auth, authorized keys)
+
+**When sync runs:**
+- On server startup (once, for all users)
+- After any user mutation (profile update, provisioning toggle, SSH key change, etc.)
+- There is no periodic re-sync — if a manual DB change is made, toggling any user setting will trigger a re-sync
+
+**Requirements for provisioning to work:**
+- User must have a non-empty `linux_username` (assigned during user creation)
+- Users created via SSO/OIDC or SCIM automatically get a `linux_username` and `linux_uid`
+- If `linux_username` is empty, `SyncUserSystemActions` skips the user with a warning
+
 ### Dynamic RBAC (`internal/auth/permissions.go`)
 
 Permission-based authorization replaces the old admin/user role model. Roles are custom collections of permissions. Users can have multiple roles (directly assigned or inherited via user groups). Permissions include scoped variants like `GetUser:self` and `ListDevices:assigned`.
