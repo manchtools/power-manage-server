@@ -14,7 +14,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve SDK ref
         id: sdk_ref
@@ -29,7 +29,7 @@ jobs:
           fi
 
       - name: Checkout SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
           ref: ${{ steps.sdk_ref.outputs.ref }}
@@ -38,7 +38,7 @@ jobs:
       - name: Rewrite SDK replace directive
         run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -58,7 +58,7 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve SDK ref
         id: sdk_ref
@@ -73,7 +73,7 @@ jobs:
           fi
 
       - name: Checkout SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
           ref: ${{ steps.sdk_ref.outputs.ref }}
@@ -82,7 +82,7 @@ jobs:
       - name: Rewrite SDK replace directive
         run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -127,7 +127,7 @@ jobs:
             -o dist/indexer-linux-${{ matrix.arch }} ./cmd/indexer
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: binaries-${{ matrix.arch }}
           path: dist/
@@ -140,10 +140,10 @@ jobs:
       matrix:
         arch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: binaries-${{ matrix.arch }}
           path: dist/
@@ -291,12 +291,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, manifests]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts/
 

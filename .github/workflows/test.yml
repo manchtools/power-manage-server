@@ -24,7 +24,7 @@ jobs:
     name: Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve SDK ref
         id: sdk_ref
@@ -39,7 +39,7 @@ jobs:
           fi
 
       - name: Checkout SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
           ref: ${{ steps.sdk_ref.outputs.ref }}
@@ -48,7 +48,7 @@ jobs:
       - name: Rewrite SDK replace directive
         run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -59,7 +59,7 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Resolve SDK ref
         id: sdk_ref
@@ -74,7 +74,7 @@ jobs:
           fi
 
       - name: Checkout SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
           ref: ${{ steps.sdk_ref.outputs.ref }}
@@ -83,7 +83,7 @@ jobs:
       - name: Rewrite SDK replace directive
         run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
