@@ -34,7 +34,7 @@ func (h *SearchHandler) SetSearchIndex(idx *search.Index) {
 // scopeSortField returns the default sort field for a scope, or empty if none.
 func scopeSortField(scope string) string {
 	switch scope {
-	case "actions", "action_sets", "definitions":
+	case "actions", "action_sets", "definitions", "device_groups", "user_groups":
 		return "created_at"
 	case "devices":
 		return "last_seen_at"
@@ -77,7 +77,7 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	// Determine which scopes to search.
 	scopes := []string{req.Msg.Scope}
 	if req.Msg.Scope == "" {
-		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users"}
+		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users", "device_groups", "user_groups"}
 	}
 
 	scopeToIndex := map[string]string{
@@ -87,6 +87,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		"compliance_policies": "idx:compliance_policies",
 		"devices":             "idx:devices",
 		"users":               "idx:users",
+		"device_groups":       "idx:device_groups",
+		"user_groups":         "idx:user_groups",
 		"executions":          "idx:executions",
 		"audit_events":        "idx:audit_events",
 	}

@@ -236,6 +236,10 @@ func hashKey(scope, id string) string {
 		return prefixDevice + id
 	case ScopeUser:
 		return prefixUser + id
+	case ScopeDeviceGroup:
+		return prefixDeviceGroup + id
+	case ScopeUserGroup:
+		return prefixUserGroup + id
 	case ScopeExecution:
 		return prefixExecution + id
 	case ScopeAuditEvent:
@@ -363,6 +367,17 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"display_name":   data.DisplayName,
 			"linux_username": data.LinuxUsername,
 			"disabled":       data.Disabled,
+		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
+		}
+		return fields
+	case ScopeDeviceGroup, ScopeUserGroup:
+		fields := map[string]any{
+			"name":         data.Name,
+			"description":  data.Description,
+			"is_dynamic":   data.IsDynamic,
+			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)

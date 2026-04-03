@@ -30,6 +30,8 @@ const (
 	prefixCompliancePolicy = "search:compliance_policy:"
 	prefixDevice           = "search:device:"
 	prefixUser             = "search:user:"
+	prefixDeviceGroup      = "search:device_group:"
+	prefixUserGroup        = "search:user_group:"
 
 	// Reverse-lookup sets: child → set of parent IDs.
 	prefixReverseAction    = "reverse:action:"
@@ -50,6 +52,8 @@ const (
 	idxCompliancePolicies = "idx:compliance_policies"
 	idxDevices            = "idx:devices"
 	idxUsers              = "idx:users"
+	idxDeviceGroups       = "idx:device_groups"
+	idxUserGroups         = "idx:user_groups"
 	idxExecutions         = "idx:executions"
 	idxAuditEvents        = "idx:audit_events"
 
@@ -66,6 +70,8 @@ const (
 	ScopeCompliancePolicy = "compliance_policy"
 	ScopeDevice           = "device"
 	ScopeUser             = "user"
+	ScopeDeviceGroup      = "device_group"
+	ScopeUserGroup        = "user_group"
 	ScopeExecution        = "execution"
 	ScopeAuditEvent       = "audit_event"
 )
@@ -100,7 +106,7 @@ func (idx *Index) RDB() *redis.Client {
 // reverse-lookup sets, and forward membership keys.
 func (idx *Index) FlushSearchData(ctx context.Context) error {
 	// Drop FT indexes (valkey-search does not support the DD flag).
-	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies, idxDevices, idxUsers, idxExecutions, idxAuditEvents} {
+	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies, idxDevices, idxUsers, idxDeviceGroups, idxUserGroups, idxExecutions, idxAuditEvents} {
 		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name).Err()
 		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
@@ -211,6 +217,28 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 			},
 		},
 		{
+			name:   idxDeviceGroups,
+			prefix: prefixDeviceGroup,
+			schema: []any{
+				"name", "TEXT",
+				"description", "TEXT",
+				"is_dynamic", "TAG",
+				"member_count", "NUMERIC",
+				"created_at", "NUMERIC", "SORTABLE",
+			},
+		},
+		{
+			name:   idxUserGroups,
+			prefix: prefixUserGroup,
+			schema: []any{
+				"name", "TEXT",
+				"description", "TEXT",
+				"is_dynamic", "TAG",
+				"member_count", "NUMERIC",
+				"created_at", "NUMERIC", "SORTABLE",
+			},
+		},
+		{
 			name:   idxExecutions,
 			prefix: prefixExecution,
 			schema: []any{
@@ -292,7 +320,19 @@ func (idx *Index) Warm(ctx context.Context) error {
 		return fmt.Errorf("warm users: %w", err)
 	}
 
-	// 7. Index recent executions (last 90 days).
+	// 7. Index all device groups.
+	deviceGroupCount, err := idx.warmDeviceGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("warm device groups: %w", err)
+	}
+
+	// 8. Index all user groups.
+	userGroupCount, err := idx.warmUserGroups(ctx)
+	if err != nil {
+		return fmt.Errorf("warm user groups: %w", err)
+	}
+
+	// 9. Index recent executions (last 90 days).
 	execCount, err := idx.warmExecutions(ctx)
 	if err != nil {
 		return fmt.Errorf("warm executions: %w", err)
@@ -311,6 +351,8 @@ func (idx *Index) Warm(ctx context.Context) error {
 		"compliance_policies", policyCount,
 		"devices", deviceCount,
 		"users", userCount,
+		"device_groups", deviceGroupCount,
+		"user_groups", userGroupCount,
 		"executions", execCount,
 		"audit_events", auditCount,
 		"duration", time.Since(start),
@@ -719,6 +761,100 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 
 		total += len(users)
 		if int32(len(users)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+func (idx *Index) warmDeviceGroups(ctx context.Context) (int, error) {
+	const pageSize int32 = 500
+	var offset int32
+	var total int
+
+	for {
+		groups, err := idx.store.Queries().ListDeviceGroups(ctx, db.ListDeviceGroupsParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(groups) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, g := range groups {
+			isDynamic := "false"
+			if g.IsDynamic {
+				isDynamic = "true"
+			}
+			fields := map[string]any{
+				"name":         g.Name,
+				"description":  g.Description,
+				"is_dynamic":   isDynamic,
+				"member_count": strconv.Itoa(int(g.MemberCount)),
+			}
+			if g.CreatedAt != nil {
+				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixDeviceGroup+g.ID, fields)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(groups)
+		if int32(len(groups)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
+	const pageSize int32 = 500
+	var offset int32
+	var total int
+
+	for {
+		groups, err := idx.store.Queries().ListUserGroups(ctx, db.ListUserGroupsParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(groups) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, g := range groups {
+			isDynamic := "false"
+			if g.IsDynamic {
+				isDynamic = "true"
+			}
+			fields := map[string]any{
+				"name":         g.Name,
+				"description":  g.Description,
+				"is_dynamic":   isDynamic,
+				"member_count": strconv.Itoa(int(g.MemberCount)),
+			}
+			if !g.CreatedAt.IsZero() {
+				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixUserGroup+g.ID, fields)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(groups)
+		if int32(len(groups)) < pageSize {
 			break
 		}
 		offset += pageSize
