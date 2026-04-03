@@ -183,6 +183,8 @@ func TestScopeSortField(t *testing.T) {
 		{"definitions", "created_at"},
 		{"devices", "last_seen_at"},
 		{"users", "created_at"},
+		{"device_groups", "created_at"},
+		{"user_groups", "created_at"},
 		{"executions", "created_at"},
 		{"audit_events", "occurred_at"},
 		{"unknown_scope", ""},
