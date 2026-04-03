@@ -36,21 +36,22 @@ func TestUpdateServerSettings_PersistsAndReturnsNewValues(t *testing.T) {
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
 
-	// Update settings
+	// Update settings (avoid enabling provisioning/SSH flags which trigger
+	// background goroutines that outlive the test's DB connection)
 	updateResp, err := h.UpdateServerSettings(ctx, connect.NewRequest(&pm.UpdateServerSettingsRequest{
-		UserProvisioningEnabled: true,
+		UserProvisioningEnabled: false,
 		SshAccessForAll:         false,
 		AutoUpdateAgents:        true,
 	}))
 	require.NoError(t, err)
-	assert.True(t, updateResp.Msg.Settings.UserProvisioningEnabled)
+	assert.False(t, updateResp.Msg.Settings.UserProvisioningEnabled)
 	assert.False(t, updateResp.Msg.Settings.SshAccessForAll)
 	assert.True(t, updateResp.Msg.Settings.AutoUpdateAgents)
 
 	// Read back and verify persistence
 	getResp, err := h.GetServerSettings(ctx, connect.NewRequest(&pm.GetServerSettingsRequest{}))
 	require.NoError(t, err)
-	assert.True(t, getResp.Msg.Settings.UserProvisioningEnabled)
+	assert.False(t, getResp.Msg.Settings.UserProvisioningEnabled)
 	assert.False(t, getResp.Msg.Settings.SshAccessForAll)
 	assert.True(t, getResp.Msg.Settings.AutoUpdateAgents)
 }

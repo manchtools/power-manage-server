@@ -81,8 +81,10 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 				h.logger.Error("failed to propagate SSH access to users", "error", err)
 			}
 		}
-		if err := h.systemActions.SyncAllUsersSystemActions(bgCtx); err != nil {
-			h.logger.Error("failed to sync system actions after settings update", "error", err)
+		if h.systemActions != nil {
+			if err := h.systemActions.SyncAllUsersSystemActions(bgCtx); err != nil {
+				h.logger.Error("failed to sync system actions after settings update", "error", err)
+			}
 		}
 	}()
 
