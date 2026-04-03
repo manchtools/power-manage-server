@@ -1,0 +1,31 @@
+language: en
+reviews:
+  auto_review:
+    enabled: true
+  profile: chill
+  path_instructions:
+    - path: "internal/store/migrations/*.sql"
+      instructions: >
+        This project uses event sourcing with PostgreSQL. Migrations contain
+        PL/pgSQL projection functions triggered on INSERT to the events table.
+        Always wrap CREATE FUNCTION in goose StatementBegin/StatementEnd.
+        Check for correct event type handling and projection consistency.
+    - path: "internal/api/*_handler.go"
+      instructions: >
+        RPC handlers follow Connect-RPC patterns. Every mutation must append
+        an event via store.AppendEvent. Errors must use apiErrorCtx with
+        proper Connect error codes. Never silently ignore errors.
+    - path: "internal/auth/**"
+      instructions: >
+        Security-critical code. Check for permission bypass, scope escalation,
+        and proper validation of :self/:assigned scoped permissions.
+  tools:
+    golangci-lint:
+      enabled: true
+knowledge_base:
+  learnings:
+    scope: auto
+  linked_repositories:
+    - repository: manchtools/power-manage-sdk
+    - repository: manchtools/power-manage-agent
+    - repository: manchtools/power-manage-web

@@ -108,7 +108,7 @@ CREATE INDEX idx_devices_labels ON devices_projection USING GIN (labels);
 
 CREATE TABLE actions_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT,
     action_type INTEGER NOT NULL DEFAULT 0,
     params JSONB NOT NULL DEFAULT '{}',
@@ -154,7 +154,7 @@ CREATE INDEX idx_executions_device_status ON executions_projection (device_id, s
 
 CREATE TABLE action_sets_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     member_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ,
@@ -175,7 +175,7 @@ CREATE TABLE action_set_members_projection (
 
 CREATE TABLE definitions_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     member_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ,
@@ -196,7 +196,7 @@ CREATE TABLE definition_members_projection (
 
 CREATE TABLE device_groups_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     member_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ,
@@ -367,7 +367,7 @@ CREATE INDEX idx_osquery_results_device ON osquery_results(device_id);
 
 CREATE TABLE roles_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     permissions TEXT[] NOT NULL DEFAULT '{}',
     is_system BOOLEAN NOT NULL DEFAULT FALSE,
@@ -573,7 +573,7 @@ CREATE INDEX idx_compliance_device ON compliance_results_projection (device_id);
 
 CREATE TABLE compliance_policies_projection (
     id TEXT PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     rule_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ,

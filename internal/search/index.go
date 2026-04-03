@@ -28,6 +28,8 @@ const (
 	prefixActionSet        = "search:action_set:"
 	prefixDefinition       = "search:definition:"
 	prefixCompliancePolicy = "search:compliance_policy:"
+	prefixDevice           = "search:device:"
+	prefixUser             = "search:user:"
 
 	// Reverse-lookup sets: child → set of parent IDs.
 	prefixReverseAction    = "reverse:action:"
@@ -46,6 +48,8 @@ const (
 	idxActionSets         = "idx:action_sets"
 	idxDefinitions        = "idx:definitions"
 	idxCompliancePolicies = "idx:compliance_policies"
+	idxDevices            = "idx:devices"
+	idxUsers              = "idx:users"
 	idxExecutions         = "idx:executions"
 	idxAuditEvents        = "idx:audit_events"
 
@@ -60,6 +64,8 @@ const (
 	ScopeActionSet        = "action_set"
 	ScopeDefinition       = "definition"
 	ScopeCompliancePolicy = "compliance_policy"
+	ScopeDevice           = "device"
+	ScopeUser             = "user"
 	ScopeExecution        = "execution"
 	ScopeAuditEvent       = "audit_event"
 )
@@ -94,7 +100,7 @@ func (idx *Index) RDB() *redis.Client {
 // reverse-lookup sets, and forward membership keys.
 func (idx *Index) FlushSearchData(ctx context.Context) error {
 	// Drop FT indexes (valkey-search does not support the DD flag).
-	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies, idxExecutions, idxAuditEvents} {
+	for _, name := range []string{idxActions, idxActionSets, idxDefinitions, idxCompliancePolicies, idxDevices, idxUsers, idxExecutions, idxAuditEvents} {
 		err := idx.rdb.Do(ctx, "FT.DROPINDEX", name).Err()
 		if err != nil && !strings.Contains(err.Error(), "Unknown index") && !strings.Contains(err.Error(), "Unknown Index") && !strings.Contains(err.Error(), "not found") {
 			return fmt.Errorf("drop index %s: %w", name, err)
@@ -178,6 +184,33 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 			},
 		},
 		{
+			name:   idxDevices,
+			prefix: prefixDevice,
+			schema: []any{
+				"hostname", "TEXT",
+				"agent_version", "TAG",
+				"labels", "TEXT",
+				"os_name", "TEXT",
+				"os_version", "TEXT",
+				"os_arch", "TAG",
+				"kernel", "TEXT",
+				"compliance_status", "TAG",
+				"registered_at", "NUMERIC", "SORTABLE",
+				"last_seen_at", "NUMERIC", "SORTABLE",
+			},
+		},
+		{
+			name:   idxUsers,
+			prefix: prefixUser,
+			schema: []any{
+				"email", "TEXT",
+				"display_name", "TEXT",
+				"linux_username", "TEXT",
+				"disabled", "TAG",
+				"created_at", "NUMERIC", "SORTABLE",
+			},
+		},
+		{
 			name:   idxExecutions,
 			prefix: prefixExecution,
 			schema: []any{
@@ -247,13 +280,25 @@ func (idx *Index) Warm(ctx context.Context) error {
 		return fmt.Errorf("warm compliance policies: %w", err)
 	}
 
-	// 5. Index recent executions (last 90 days).
+	// 5. Index all devices.
+	deviceCount, err := idx.warmDevices(ctx)
+	if err != nil {
+		return fmt.Errorf("warm devices: %w", err)
+	}
+
+	// 6. Index all users.
+	userCount, err := idx.warmUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("warm users: %w", err)
+	}
+
+	// 7. Index recent executions (last 90 days).
 	execCount, err := idx.warmExecutions(ctx)
 	if err != nil {
 		return fmt.Errorf("warm executions: %w", err)
 	}
 
-	// 6. Index recent audit events (last 90 days).
+	// 8. Index recent audit events (last 90 days).
 	auditCount, err := idx.warmAuditEvents(ctx)
 	if err != nil {
 		return fmt.Errorf("warm audit events: %w", err)
@@ -264,6 +309,8 @@ func (idx *Index) Warm(ctx context.Context) error {
 		"action_sets", setCount,
 		"definitions", defCount,
 		"compliance_policies", policyCount,
+		"devices", deviceCount,
+		"users", userCount,
 		"executions", execCount,
 		"audit_events", auditCount,
 		"duration", time.Since(start),
@@ -523,6 +570,176 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 		offset += pageSize
 	}
 	return total, nil
+}
+
+func (idx *Index) warmDevices(ctx context.Context) (int, error) {
+	const pageSize int32 = 500
+	var offset int32
+	var total int
+
+	for {
+		devices, err := idx.store.Queries().ListDevices(ctx, db.ListDevicesParams{
+			Limit:        pageSize,
+			Offset:       offset,
+			FilterUserID: nil,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(devices) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, d := range devices {
+			labels := FlattenLabels(d.Labels)
+			fields := map[string]any{
+				"hostname":          d.Hostname,
+				"agent_version":     d.AgentVersion,
+				"labels":            labels,
+				"compliance_status": strconv.Itoa(int(d.ComplianceStatus)),
+			}
+			if d.RegisteredAt != nil {
+				fields["registered_at"] = strconv.FormatInt(d.RegisteredAt.Unix(), 10)
+			}
+			if d.LastSeenAt != nil {
+				fields["last_seen_at"] = strconv.FormatInt(d.LastSeenAt.Unix(), 10)
+			}
+
+			// Enrich with inventory data (os_version, system_info, kernel_info).
+			inv, err := idx.store.Queries().GetDeviceInventoryByTables(ctx, db.GetDeviceInventoryByTablesParams{
+				DeviceID: d.ID,
+				Column2:  []string{"os_version", "system_info", "kernel_info"},
+			})
+			if err == nil {
+				for _, t := range inv {
+					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)
+					if osName != "" {
+						fields["os_name"] = osName
+					}
+					if osVer != "" {
+						fields["os_version"] = osVer
+					}
+					if osArch != "" {
+						fields["os_arch"] = osArch
+					}
+					if kernel != "" {
+						fields["kernel"] = kernel
+					}
+				}
+			}
+
+			pipe.HSet(ctx, prefixDevice+d.ID, fields)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(devices)
+		if int32(len(devices)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+// EnrichDeviceInventory populates inventory fields on a SearchEntityData from a single inventory table.
+func EnrichDeviceInventory(data *taskqueue.SearchEntityData, tableName string, rowsJSON []byte) {
+	osName, osVer, osArch, kernel := extractInventoryFields(tableName, rowsJSON)
+	if osName != "" {
+		data.OSName = osName
+	}
+	if osVer != "" {
+		data.OSVersion = osVer
+	}
+	if osArch != "" {
+		data.OSArch = osArch
+	}
+	if kernel != "" {
+		data.Kernel = kernel
+	}
+}
+
+// extractInventoryFields extracts searchable fields from an inventory table's JSON rows.
+func extractInventoryFields(tableName string, rowsJSON []byte) (osName, osVersion, osArch, kernel string) {
+	var rows []map[string]string
+	if json.Unmarshal(rowsJSON, &rows) != nil || len(rows) == 0 {
+		return
+	}
+	row := rows[0]
+	switch tableName {
+	case "os_version":
+		osName = row["name"]
+		osVersion = row["version"]
+		osArch = row["arch"]
+	case "kernel_info":
+		kernel = row["version"]
+	}
+	return
+}
+
+func (idx *Index) warmUsers(ctx context.Context) (int, error) {
+	const pageSize int32 = 500
+	var offset int32
+	var total int
+
+	for {
+		users, err := idx.store.Queries().ListAllUsers(ctx, db.ListAllUsersParams{
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return total, err
+		}
+		if len(users) == 0 {
+			break
+		}
+
+		pipe := idx.rdb.Pipeline()
+		for _, u := range users {
+			disabled := "false"
+			if u.Disabled {
+				disabled = "true"
+			}
+			fields := map[string]any{
+				"email":          u.Email,
+				"display_name":   u.DisplayName,
+				"linux_username": u.LinuxUsername,
+				"disabled":       disabled,
+			}
+			if u.CreatedAt != nil {
+				fields["created_at"] = strconv.FormatInt(u.CreatedAt.Unix(), 10)
+			}
+			pipe.HSet(ctx, prefixUser+u.ID, fields)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("pipeline exec: %w", err)
+		}
+
+		total += len(users)
+		if int32(len(users)) < pageSize {
+			break
+		}
+		offset += pageSize
+	}
+	return total, nil
+}
+
+// FlattenLabels converts a JSONB labels map to a space-separated "key=value" string for TEXT search.
+func FlattenLabels(labelsJSON []byte) string {
+	if len(labelsJSON) == 0 {
+		return ""
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(labelsJSON, &labels); err != nil {
+		return ""
+	}
+	var parts []string
+	for k, v := range labels {
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, " ")
 }
 
 func (idx *Index) warmExecutions(ctx context.Context) (int, error) {

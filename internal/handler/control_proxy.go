@@ -81,6 +81,17 @@ func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, dev
 	return resp.Msg, nil
 }
 
+// GetAutoUpdateInfo returns the latest agent release info for the given architecture.
+func (p *ControlProxy) GetAutoUpdateInfo(ctx context.Context, agentArch string) (*pm.GetAutoUpdateInfoResponse, error) {
+	resp, err := p.client.GetAutoUpdateInfo(ctx, connect.NewRequest(&pm.GetAutoUpdateInfoRequest{
+		AgentArch: agentArch,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // StoreLpsPasswords encrypts and stores LPS password rotation entries via the control server.
 func (p *ControlProxy) StoreLpsPasswords(ctx context.Context, deviceID, actionID string, rotations []*pm.LpsPasswordRotation) error {
 	_, err := p.client.ProxyStoreLpsPasswords(ctx, connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{

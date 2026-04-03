@@ -110,6 +110,8 @@ func (s *ControlService) SetSearchIndex(idx *search.Index) {
 	s.actionSet.SetSearchIndex(idx)
 	s.definition.SetSearchIndex(idx)
 	s.compliancePolicy.SetSearchIndex(idx)
+	s.device.SetSearchIndex(idx)
+	s.user.SetSearchIndex(idx)
 }
 
 var _ pmv1connect.ControlServiceHandler = (*ControlService)(nil)
@@ -762,4 +764,8 @@ func (s *ControlService) UpdateServerSettings(ctx context.Context, req *connect.
 // User Provisioning Per-User
 func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *connect.Request[pm.SetUserProvisioningEnabledRequest]) (*connect.Response[pm.UpdateUserResponse], error) {
 	return s.user.SetUserProvisioningEnabled(ctx, req)
+}
+
+func (s *ControlService) TriggerAgentUpdate(ctx context.Context, req *connect.Request[pm.TriggerAgentUpdateRequest]) (*connect.Response[pm.TriggerAgentUpdateResponse], error) {
+	return s.device.TriggerAgentUpdate(ctx, req)
 }

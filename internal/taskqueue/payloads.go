@@ -178,6 +178,24 @@ type SearchEntityData struct {
 	DesiredState   int32  `json:"desired_state,omitempty"`
 	ActionID       string `json:"action_id,omitempty"`
 
+	// Device fields
+	Hostname         string `json:"hostname,omitempty"`
+	AgentVersion     string `json:"agent_version,omitempty"`
+	Labels           string `json:"labels,omitempty"`
+	ComplianceStatus int32  `json:"compliance_status,omitempty"`
+	LastSeenAt       int64  `json:"last_seen_at,omitempty"`
+	RegisteredAt     int64  `json:"registered_at,omitempty"`
+	OSName           string `json:"os_name,omitempty"`
+	OSVersion        string `json:"os_version,omitempty"`
+	OSArch           string `json:"os_arch,omitempty"`
+	Kernel           string `json:"kernel,omitempty"`
+
+	// User fields
+	Email         string `json:"email,omitempty"`
+	DisplayName   string `json:"display_name,omitempty"`
+	LinuxUsername string `json:"linux_username,omitempty"`
+	Disabled      string `json:"disabled,omitempty"`
+
 	// Audit event fields
 	EventType  string `json:"event_type,omitempty"`
 	StreamType string `json:"stream_type,omitempty"`

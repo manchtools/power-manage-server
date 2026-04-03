@@ -161,7 +161,7 @@ After registration, agents connect via the `Stream` RPC:
 
 | Message | Description |
 |---------|-------------|
-| `Hello` | Initial handshake with device info |
+| `Hello` | Initial handshake with device info (device ID, agent version, hostname, auth token, architecture) |
 | `Heartbeat` | Periodic health/metrics report (uptime, CPU, memory, disk) |
 | `ActionResult` | Result of an executed action |
 | `OSQueryResult` | Result of an OS query |
@@ -174,7 +174,7 @@ After registration, agents connect via the `Stream` RPC:
 
 | Message | Description |
 |---------|-------------|
-| `Welcome` | Response to Hello with server info |
+| `Welcome` | Response to Hello with server version. Auto-update fields (`latest_agent_version`, `update_url`, `update_checksum`) are optional — only populated when auto-update is enabled and a matching release exists for the agent's architecture. |
 | `ActionDispatch` | Action to execute |
 | `OSQuery` | OS query to run |
 | `LogQuery` | Remote journalctl log query (unit, lines, priority, grep filter) |
@@ -255,6 +255,7 @@ Credential-bearing operations are proxied via Connect-RPC (`InternalService`) to
 | `ProxyGetLuksKey` | Retrieve and decrypt a LUKS key |
 | `ProxyStoreLuksKey` | Encrypt and store a new LUKS key |
 | `ProxyStoreLpsPasswords` | Encrypt and store LPS password rotations |
+| `GetAutoUpdateInfo` | Get latest agent release info (version, URL, checksum) for Welcome message |
 
 ## Health Endpoints
 

@@ -61,8 +61,9 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
 | `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys, LPS passwords) |
+| `internal/agentrelease` | GitHub Releases polling cache — fetches latest agent binary version, per-arch download URLs, and SHA256 checksums every 5 minutes |
 | `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
-| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control) |
+| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control, auto-update info) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
 | `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
@@ -337,7 +338,7 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 
 | Method | Description |
 |--------|-------------|
-| `Stream` | Bidirectional streaming. Agent sends Hello, Heartbeat, ActionResult, OutputChunk, LogQueryResult, SecurityAlert. Server sends Welcome, ActionDispatch, LogQuery. |
+| `Stream` | Bidirectional streaming. Agent sends Hello (with `arch`), Heartbeat, ActionResult, OutputChunk, LogQueryResult, SecurityAlert. Server sends Welcome (with auto-update info), ActionDispatch, LogQuery. |
 | `SyncActions` | Agent pulls all assigned actions for offline storage. Returns effective sync interval. |
 
 ## Auth System
@@ -364,6 +365,26 @@ OIDC authorization code flow for external identity providers (Google, Okta, Azur
 ### SCIM v2 Provisioning (`internal/scim/`)
 
 REST API at `/scim/v2/{slug}/` for automated user and group provisioning from external IdPs. Bearer token authentication (per-provider, bcrypt-hashed). Supports Users (CRUD, filter by userName/externalId) and Groups (CRUD with member management).
+
+### User Provisioning / System Actions (`internal/api/system_actions.go`)
+
+Automatic Linux user account management on devices. When provisioning is enabled (globally via server settings or per-user), the server creates managed `ACTION_TYPE_USER` and `ACTION_TYPE_SSH` actions that are assigned to the user's devices.
+
+**How it works:**
+- `SyncUserSystemActions` creates/updates/removes system actions based on provisioning settings
+- System actions are named `system:user-provision:{userID}` and `system:ssh-access:{userID}`
+- The user action creates a Linux account with the configured `linux_username` and `linux_uid`
+- The SSH action configures SSH access (pubkey/password auth, authorized keys)
+
+**When sync runs:**
+- On server startup (once, for all users)
+- After any user mutation (profile update, provisioning toggle, SSH key change, etc.)
+- There is no periodic re-sync — if a manual DB change is made, toggling any user setting will trigger a re-sync
+
+**Requirements for provisioning to work:**
+- User must have a non-empty `linux_username` (assigned during user creation)
+- Users created via SSO/OIDC or SCIM automatically get a `linux_username` and `linux_uid`
+- If `linux_username` is empty, `SyncUserSystemActions` skips the user with a warning
 
 ### Dynamic RBAC (`internal/auth/permissions.go`)
 

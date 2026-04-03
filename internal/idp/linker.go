@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +38,7 @@ type Querier interface {
 	GetUserByEmail(ctx context.Context, email string) (db.UsersProjection, error)
 	GetUserByID(ctx context.Context, id string) (db.UsersProjection, error)
 	GetServerSettings(ctx context.Context) (db.ServerSettingsProjection, error)
+	GetNextLinuxUID(ctx context.Context) (int32, error)
 }
 
 // EventAppender is the interface for appending events.
@@ -181,6 +184,15 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		slog.Debug("SSO linker: auto-creating new user", "email", claims.Email)
 		userID := newULID()
 
+		linuxUID, err := l.queries.GetNextLinuxUID(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("assign linux uid: %w", err)
+		}
+		linuxUsername := deriveLinuxUsernameFromEmail(claims.Email, claims.PreferredUsername)
+		if linuxUsername == "" {
+			linuxUsername = "user_" + userID[:8]
+		}
+
 		// Create user without password
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "user",
@@ -195,6 +207,8 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				"preferred_username": claims.PreferredUsername,
 				"picture":            claims.Picture,
 				"locale":             claims.Locale,
+				"linux_username":     linuxUsername,
+				"linux_uid":          linuxUID,
 			},
 			ActorType: "system",
 			ActorID:   "sso",
@@ -359,4 +373,25 @@ func ParseGroupMapping(data []byte) map[string]string {
 func newULID() string {
 	entropy := ulid.Monotonic(rand.Reader, 0)
 	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+}
+
+var linuxUsernameSanitizeRe = regexp.MustCompile(`[^a-z0-9_.\-]`)
+
+// deriveLinuxUsernameFromEmail derives a Linux username from email/preferred_username.
+func deriveLinuxUsernameFromEmail(email, preferredUsername string) string {
+	var username string
+	switch {
+	case preferredUsername != "":
+		username = preferredUsername
+	case strings.Contains(email, "@"):
+		username = email[:strings.Index(email, "@")]
+	default:
+		username = email
+	}
+	username = strings.ToLower(username)
+	username = linuxUsernameSanitizeRe.ReplaceAllString(username, "_")
+	if len(username) > 32 {
+		username = username[:32]
+	}
+	return username
 }

@@ -203,6 +203,23 @@ func (q *Queries) ListUserIDsWithRole(ctx context.Context, roleID string) ([]str
 	return items, nil
 }
 
+const updateSystemRolePermissions = `-- name: UpdateSystemRolePermissions :execrows
+UPDATE roles_projection SET permissions = $1, updated_at = NOW() WHERE id = $2 AND is_system = TRUE
+`
+
+type UpdateSystemRolePermissionsParams struct {
+	Permissions []string `json:"permissions"`
+	ID          string   `json:"id"`
+}
+
+func (q *Queries) UpdateSystemRolePermissions(ctx context.Context, arg UpdateSystemRolePermissionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateSystemRolePermissions, arg.Permissions, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const userHasRole = `-- name: UserHasRole :one
 SELECT EXISTS(SELECT 1 FROM user_roles_projection WHERE user_id = $1 AND role_id = $2) AS has_role
 `

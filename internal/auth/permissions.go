@@ -26,6 +26,8 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteUser", "Users", "Delete users"},
 		{"UpdateUserSshSettings", "Users", "Update any user's SSH settings"},
 		{"UpdateUserSshSettings:self", "Users", "Update own SSH settings"},
+		{"UpdateUserLinuxUsername", "Users", "Change any user's linux username"},
+		{"UpdateUserLinuxUsername:self", "Users", "Change own linux username"},
 		{"AddUserSshKey", "Users", "Add SSH key to any user"},
 		{"AddUserSshKey:self", "Users", "Add own SSH key"},
 		{"RemoveUserSshKey", "Users", "Remove SSH key from any user"},
@@ -41,6 +43,7 @@ func AllPermissions() []PermissionInfo {
 		{"UnassignDevice", "Devices", "Unassign devices from users or groups"},
 		{"ListDeviceAssignees", "Devices", "List device assignees"},
 		{"SetDeviceSyncInterval", "Devices", "Set device sync interval"},
+		{"TriggerAgentUpdate", "Devices", "Trigger agent update on devices"},
 		{"DeleteDevice", "Devices", "Delete devices"},
 		// Tokens
 		{"CreateToken", "Tokens", "Create registration tokens"},
@@ -196,24 +199,11 @@ func AllPermissions() []PermissionInfo {
 	}
 }
 
-// AdminPermissions returns all unrestricted permission keys for the Admin role.
+// AdminPermissions returns all permission keys for the Admin role.
 func AdminPermissions() []string {
-	var perms []string
-	seen := make(map[string]bool)
-	for _, p := range AllPermissions() {
-		// For admin, only include the base permission (no :self/:assigned suffixes)
-		// since the base permission grants unrestricted access
-		base := p.Key
-		for i, c := range p.Key {
-			if c == ':' {
-				base = p.Key[:i]
-				break
-			}
-		}
-		if !seen[base] {
-			perms = append(perms, base)
-			seen[base] = true
-		}
+	perms := make([]string, len(AllPermissions()))
+	for i, p := range AllPermissions() {
+		perms[i] = p.Key
 	}
 	return perms
 }
@@ -239,6 +229,8 @@ func DefaultUserPermissions() []string {
 		"ListIdentityLinks",
 		"UnlinkIdentity",
 		"GetDeviceCompliance:assigned",
+		"UpdateUserSshSettings:self",
+		"UpdateUserLinuxUsername:self",
 		"AddUserSshKey:self",
 		"RemoveUserSshKey:self",
 	}

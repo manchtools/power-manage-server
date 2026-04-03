@@ -14,8 +14,10 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // UserHandler handles user management RPCs.
@@ -23,6 +25,36 @@ type UserHandler struct {
 	store         *store.Store
 	logger        *slog.Logger
 	systemActions *SystemActionManager
+	searchIdx     *search.Index
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *UserHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
+}
+
+// enqueueUserReindex enqueues a search index update for a user.
+func (h *UserHandler) enqueueUserReindex(ctx context.Context, u db.UsersProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	disabled := "false"
+	if u.Disabled {
+		disabled = "true"
+	}
+	var createdAt int64
+	if u.CreatedAt != nil {
+		createdAt = u.CreatedAt.Unix()
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeUser, u.ID, &taskqueue.SearchEntityData{
+		Email:         u.Email,
+		DisplayName:   u.DisplayName,
+		LinuxUsername: u.LinuxUsername,
+		Disabled:      disabled,
+		CreatedAt:     createdAt,
+	}); err != nil {
+		h.logger.Warn("failed to enqueue search reindex", "scope", "user", "error", err)
+	}
 }
 
 // NewUserHandler creates a new user handler.
@@ -149,6 +181,8 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
+
+	h.enqueueUserReindex(ctx, user)
 
 	// Sync system actions (fire-and-forget)
 	if h.systemActions != nil {
@@ -299,6 +333,8 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
+	h.enqueueUserReindex(ctx, user)
+
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
 	}), nil
@@ -408,6 +444,8 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
+	h.enqueueUserReindex(ctx, user)
+
 	// Sync system actions (disabled flag changes USER action params)
 	if h.systemActions != nil {
 		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
@@ -451,6 +489,12 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user")
+	}
+
+	if h.searchIdx != nil {
+		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeUser, req.Msg.Id, nil); err != nil {
+			h.logger.Warn("failed to enqueue search index remove", "scope", "user", "error", err)
+		}
 	}
 
 	// Clean up system actions
@@ -504,6 +548,8 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
+
+	h.enqueueUserReindex(ctx, user)
 
 	// Sync system actions (display_name change affects USER action comment)
 	if h.systemActions != nil {
@@ -662,6 +708,8 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
+
+	h.enqueueUserReindex(ctx, user)
 
 	if h.systemActions != nil {
 		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {

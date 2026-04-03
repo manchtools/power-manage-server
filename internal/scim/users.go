@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -273,15 +274,28 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("SCIM createUser: creating new user", "email", email, "external_id", externalID)
 	userID := newULID()
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
+	if err != nil {
+		h.logger.Error("failed to assign linux uid via SCIM", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to assign linux uid")
+		return
+	}
+	linuxUsername := deriveLinuxUsername(email, scimUser.UserName)
+	if linuxUsername == "" {
+		linuxUsername = "user_" + userID[:8]
+	}
+
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
 		EventType:  "UserCreated",
 		Data: map[string]any{
-			"email":        email,
-			"display_name": formatExternalName(scimUser.Name),
-			"given_name":   safeNameField(scimUser.Name, "given"),
-			"family_name":  safeNameField(scimUser.Name, "family"),
+			"email":          email,
+			"display_name":   formatExternalName(scimUser.Name),
+			"given_name":     safeNameField(scimUser.Name, "given"),
+			"family_name":    safeNameField(scimUser.Name, "family"),
+			"linux_username": linuxUsername,
+			"linux_uid":      linuxUID,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -1207,4 +1221,24 @@ func baseURLFromRequest(r *http.Request, slug string) string {
 		}
 	}
 	return fmt.Sprintf("%s://%s/scim/v2/%s", scheme, r.Host, slug)
+}
+
+var linuxUsernameSanitizeRe = regexp.MustCompile(`[^a-z0-9_.\-]`)
+
+func deriveLinuxUsername(email, preferredUsername string) string {
+	var username string
+	switch {
+	case preferredUsername != "":
+		username = preferredUsername
+	case strings.Contains(email, "@"):
+		username = email[:strings.Index(email, "@")]
+	default:
+		username = email
+	}
+	username = strings.ToLower(username)
+	username = linuxUsernameSanitizeRe.ReplaceAllString(username, "_")
+	if len(username) > 32 {
+		username = username[:32]
+	}
+	return username
 }

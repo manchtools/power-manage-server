@@ -49,10 +49,14 @@ func TestAllPermissions_ScopeFormat(t *testing.T) {
 	}
 }
 
-func TestAdminPermissions_NoScopes(t *testing.T) {
+func TestAdminPermissions_IncludesAllScopes(t *testing.T) {
+	perms := make(map[string]bool)
 	for _, p := range AdminPermissions() {
-		assert.False(t, strings.Contains(p, ":"),
-			"admin permission should not contain scope suffix: %s", p)
+		perms[p] = true
+	}
+	// Admin should have both base and scoped variants
+	for _, p := range AllPermissions() {
+		assert.True(t, perms[p.Key], "admin should have permission: %s", p.Key)
 	}
 }
 

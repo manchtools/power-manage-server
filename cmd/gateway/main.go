@@ -97,7 +97,7 @@ func main() {
 	manager := connection.NewManager()
 
 	// Create task handler factory for per-device Asynq workers
-	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
+	taskFactory := gateway.NewTaskHandlerFactory(manager, controlProxy, version, logger)
 
 	// Create device worker manager
 	workerMgr := gateway.NewDeviceWorkerManager(
@@ -113,7 +113,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Create agent handler (always mTLS)
-	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, logger)
+	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, logger)
 	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 	mux.Handle(path, handler.MTLSMiddleware(h, logger))
 

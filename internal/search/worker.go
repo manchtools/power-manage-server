@@ -232,6 +232,10 @@ func hashKey(scope, id string) string {
 		return prefixDefinition + id
 	case ScopeCompliancePolicy:
 		return prefixCompliancePolicy + id
+	case ScopeDevice:
+		return prefixDevice + id
+	case ScopeUser:
+		return prefixUser + id
 	case ScopeExecution:
 		return prefixExecution + id
 	case ScopeAuditEvent:
@@ -333,6 +337,35 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		}
 		if data.HasActionNames {
 			fields["action_names"] = data.ActionNames
+		}
+		return fields
+	case ScopeDevice:
+		fields := map[string]any{
+			"hostname":          data.Hostname,
+			"agent_version":     data.AgentVersion,
+			"labels":            data.Labels,
+			"compliance_status": strconv.Itoa(int(data.ComplianceStatus)),
+			"os_name":           data.OSName,
+			"os_version":        data.OSVersion,
+			"os_arch":           data.OSArch,
+			"kernel":            data.Kernel,
+		}
+		if data.RegisteredAt != 0 {
+			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)
+		}
+		if data.LastSeenAt != 0 {
+			fields["last_seen_at"] = strconv.FormatInt(data.LastSeenAt, 10)
+		}
+		return fields
+	case ScopeUser:
+		fields := map[string]any{
+			"email":          data.Email,
+			"display_name":   data.DisplayName,
+			"linux_username": data.LinuxUsername,
+			"disabled":       data.Disabled,
+		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
 		return fields
 	case ScopeExecution:

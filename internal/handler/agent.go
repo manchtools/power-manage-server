@@ -32,12 +32,13 @@ const (
 type AgentHandler struct {
 	pmv1connect.UnimplementedAgentServiceHandler
 
-	manager      *connection.Manager
-	aqClient     *taskqueue.Client
-	controlProxy *ControlProxy
-	workerMgr    *gateway.DeviceWorkerManager
-	logger       *slog.Logger
-	requireTLS   bool
+	manager       *connection.Manager
+	aqClient      *taskqueue.Client
+	controlProxy  *ControlProxy
+	workerMgr     *gateway.DeviceWorkerManager
+	logger        *slog.Logger
+	serverVersion string
+	requireTLS    bool
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -46,15 +47,17 @@ func NewAgentHandler(
 	aqClient *taskqueue.Client,
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
+	serverVersion string,
 	logger *slog.Logger,
 ) *AgentHandler {
 	return &AgentHandler{
-		manager:      manager,
-		aqClient:     aqClient,
-		controlProxy: controlProxy,
-		workerMgr:    workerMgr,
-		logger:       logger,
-		requireTLS:   false,
+		manager:       manager,
+		aqClient:      aqClient,
+		controlProxy:  controlProxy,
+		workerMgr:     workerMgr,
+		serverVersion: serverVersion,
+		logger:        logger,
+		requireTLS:    false,
 	}
 }
 
@@ -64,15 +67,17 @@ func NewAgentHandlerWithTLS(
 	aqClient *taskqueue.Client,
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
+	serverVersion string,
 	logger *slog.Logger,
 ) *AgentHandler {
 	return &AgentHandler{
-		manager:      manager,
-		aqClient:     aqClient,
-		controlProxy: controlProxy,
-		workerMgr:    workerMgr,
-		logger:       logger,
-		requireTLS:   true,
+		manager:       manager,
+		aqClient:      aqClient,
+		controlProxy:  controlProxy,
+		workerMgr:     workerMgr,
+		serverVersion: serverVersion,
+		logger:        logger,
+		requireTLS:    true,
 	}
 }
 
@@ -199,6 +204,36 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		AgentVersion: hello.AgentVersion,
 	}); err != nil {
 		h.logger.Warn("failed to enqueue device hello", "error", err)
+	}
+
+	// Send Welcome message to agent with server version and auto-update info.
+	welcome := &pm.Welcome{
+		ServerVersion: h.serverVersion,
+	}
+
+	// Fetch auto-update info from control server.
+	arch := hello.Arch
+	if arch == "" {
+		arch = "amd64"
+	}
+	updateInfo, err := h.controlProxy.GetAutoUpdateInfo(ctx, arch)
+	if err != nil {
+		h.logger.Warn("failed to get auto-update info", "device_id", deviceID, "error", err)
+	} else if updateInfo.LatestAgentVersion != "" && updateInfo.LatestAgentVersion != hello.AgentVersion {
+		welcome.LatestAgentVersion = updateInfo.LatestAgentVersion
+		welcome.UpdateUrl = updateInfo.UpdateUrl
+		welcome.UpdateChecksum = updateInfo.UpdateChecksum
+		h.logger.Info("agent update available",
+			"device_id", deviceID,
+			"current_version", hello.AgentVersion,
+			"latest_version", updateInfo.LatestAgentVersion,
+		)
+	}
+
+	if err := h.manager.Send(deviceID, &pm.ServerMessage{
+		Payload: &pm.ServerMessage_Welcome{Welcome: welcome},
+	}); err != nil {
+		h.logger.Warn("failed to send Welcome", "device_id", deviceID, "error", err)
 	}
 
 	// Process incoming messages from agent

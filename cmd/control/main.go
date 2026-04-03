@@ -24,6 +24,7 @@ import (
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
+	"github.com/manchtools/power-manage/server/internal/agentrelease"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
@@ -73,6 +74,11 @@ type Config struct {
 	ValkeyAddr     string
 	ValkeyPassword string
 	ValkeyDB       int
+
+	// Agent auto-update
+	DisableAutoUpdate  bool
+	AutoUpdateRepoOwner string
+	AutoUpdateRepoName  string
 }
 
 func main() {
@@ -325,6 +331,11 @@ func main() {
 		}
 	}
 
+	// Reconcile system roles (Admin/User) with current permission definitions
+	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
+		logger.Error("failed to reconcile system roles", "error", err)
+	}
+
 	// Sync system actions for all users at startup (idempotent)
 	if svc.SystemActions() != nil {
 		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
@@ -441,13 +452,6 @@ func main() {
 	scimHandler := scim.NewHandler(st, logger)
 	mux.Handle("/scim/v2/", scimHandler)
 
-	// Add health check endpoint (returns server version)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
-	})
-
 	// Wrap with CORS and security headers middleware
 	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
@@ -476,9 +480,35 @@ func main() {
 		}
 	}
 
+	// Initialize agent release cache for auto-update (polls GitHub every 5 min).
+	var releaseCache *agentrelease.Cache
+	if !cfg.DisableAutoUpdate {
+		var opts []agentrelease.Option
+		if cfg.AutoUpdateRepoOwner != "" && cfg.AutoUpdateRepoName != "" {
+			opts = append(opts, agentrelease.WithRepo(cfg.AutoUpdateRepoOwner, cfg.AutoUpdateRepoName))
+		}
+		releaseCache = agentrelease.NewCache(ctx, opts...)
+		logger.Info("agent release cache started",
+			"repo", cfg.AutoUpdateRepoOwner+"/"+cfg.AutoUpdateRepoName,
+		)
+	} else {
+		logger.Info("agent auto-update disabled via CONTROL_DISABLE_AUTO_UPDATE")
+	}
+
+	// Add health check endpoint (returns server version and latest agent version).
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		latestAgent := ""
+		if releaseCache != nil {
+			latestAgent = releaseCache.LatestVersion()
+		}
+		fmt.Fprintf(w, `{"status":"ok","version":%q,"latest_agent_version":%q}`, version, latestAgent)
+	})
+
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalHandler := api.NewInternalHandler(st, encryptor, releaseCache, logger.With("component", "internal_service"))
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 
 	internalMux := http.NewServeMux()
@@ -681,6 +711,20 @@ func parseFlags() *Config {
 		if db, err := strconv.Atoi(v); err == nil {
 			cfg.ValkeyDB = db
 		}
+	}
+
+	// Agent auto-update configuration
+	cfg.AutoUpdateRepoOwner = "MANCHTOOLS"
+	cfg.AutoUpdateRepoName = "power-manage-agent"
+	if v := os.Getenv("CONTROL_AUTO_UPDATE_REPO"); v != "" {
+		parts := strings.SplitN(v, "/", 2)
+		if len(parts) == 2 {
+			cfg.AutoUpdateRepoOwner = parts[0]
+			cfg.AutoUpdateRepoName = parts[1]
+		}
+	}
+	if v := os.Getenv("CONTROL_DISABLE_AUTO_UPDATE"); v == "true" || v == "1" {
+		cfg.DisableAutoUpdate = true
 	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
