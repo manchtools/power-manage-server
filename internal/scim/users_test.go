@@ -51,8 +51,8 @@ func TestSCIMCreateUser_LinuxUIDUniqueness(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		user := map[string]any{
 			"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
-			"userName":   testutil.NewID()[:8] + "@example.com",
-			"externalId": "ext-uid-" + testutil.NewID()[:8],
+			"userName":   testutil.NewID() + "@example.com",
+			"externalId": "ext-uid-" + testutil.NewID(),
 			"active":     true,
 		}
 
