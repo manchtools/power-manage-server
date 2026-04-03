@@ -240,14 +240,16 @@ func (h *InternalHandler) GetAutoUpdateInfo(ctx context.Context, req *connect.Re
 		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
 	}
 
-	// Check if auto-update is enabled in server settings.
-	settings, err := h.store.Queries().GetServerSettings(ctx)
-	if err != nil {
-		h.logger.Warn("failed to read server settings for auto-update check", "error", err)
-		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
-	}
-	if !settings.AutoUpdateAgents {
-		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
+	// Check if auto-update is enabled in server settings (skip when force=true for manual triggers).
+	if !req.Msg.Force {
+		settings, err := h.store.Queries().GetServerSettings(ctx)
+		if err != nil {
+			h.logger.Warn("failed to read server settings for auto-update check", "error", err)
+			return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
+		}
+		if !settings.AutoUpdateAgents {
+			return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
+		}
 	}
 
 	arch := req.Msg.AgentArch

@@ -216,7 +216,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	if arch == "" {
 		arch = "amd64"
 	}
-	updateInfo, err := h.controlProxy.GetAutoUpdateInfo(ctx, arch)
+	updateInfo, err := h.controlProxy.GetAutoUpdateInfo(ctx, arch, false)
 	if err != nil {
 		h.logger.Warn("failed to get auto-update info", "device_id", deviceID, "error", err)
 	} else if updateInfo.LatestAgentVersion != "" && updateInfo.LatestAgentVersion != hello.AgentVersion {

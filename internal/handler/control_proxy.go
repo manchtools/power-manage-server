@@ -82,9 +82,11 @@ func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, dev
 }
 
 // GetAutoUpdateInfo returns the latest agent release info for the given architecture.
-func (p *ControlProxy) GetAutoUpdateInfo(ctx context.Context, agentArch string) (*pm.GetAutoUpdateInfoResponse, error) {
+// When force is true, the server skips the auto_update_agents settings check.
+func (p *ControlProxy) GetAutoUpdateInfo(ctx context.Context, agentArch string, force bool) (*pm.GetAutoUpdateInfoResponse, error) {
 	resp, err := p.client.GetAutoUpdateInfo(ctx, connect.NewRequest(&pm.GetAutoUpdateInfoRequest{
 		AgentArch: agentArch,
+		Force:     force,
 	}))
 	if err != nil {
 		return nil, err

@@ -19,7 +19,7 @@ import (
 
 // UpdateInfoProvider fetches auto-update info from the control server.
 type UpdateInfoProvider interface {
-	GetAutoUpdateInfo(ctx context.Context, agentArch string) (*pm.GetAutoUpdateInfoResponse, error)
+	GetAutoUpdateInfo(ctx context.Context, agentArch string, force bool) (*pm.GetAutoUpdateInfoResponse, error)
 }
 
 // TaskHandlerFactory creates per-device Asynq ServeMux instances.
@@ -214,7 +214,7 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 
 func (h *deviceTaskHandler) handleTriggerUpdate(ctx context.Context, _ *asynq.Task) error {
 	// Fetch latest update info from control server.
-	updateInfo, err := h.updateProvider.GetAutoUpdateInfo(ctx, "amd64")
+	updateInfo, err := h.updateProvider.GetAutoUpdateInfo(ctx, "amd64", true)
 	if err != nil {
 		return fmt.Errorf("get auto-update info: %w", err)
 	}
