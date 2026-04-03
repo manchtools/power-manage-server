@@ -196,6 +196,9 @@ type SearchEntityData struct {
 	LinuxUsername string `json:"linux_username,omitempty"`
 	Disabled      string `json:"disabled,omitempty"`
 
+	// Device group / User group fields
+	IsDynamic string `json:"is_dynamic,omitempty"`
+
 	// Audit event fields
 	EventType  string `json:"event_type,omitempty"`
 	StreamType string `json:"stream_type,omitempty"`
