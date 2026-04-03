@@ -18,7 +18,7 @@ import (
 const (
 	defaultOwner = "MANCHTOOLS"
 	defaultRepo  = "power-manage-agent"
-	pollInterval = 5 * time.Minute
+	defaultPollInterval = 1 * time.Hour
 
 	// assetPrefix is the common prefix for agent binary assets.
 	assetPrefix = "power-manage-agent-linux-"
@@ -36,11 +36,12 @@ type releaseInfo struct {
 // Cache periodically fetches the latest GitHub release for the agent
 // and caches the version, download URLs, and checksums.
 type Cache struct {
-	mu      sync.RWMutex
-	latest  *releaseInfo
-	owner   string
-	repo    string
-	client  *http.Client
+	mu           sync.RWMutex
+	latest       *releaseInfo
+	owner        string
+	repo         string
+	client       *http.Client
+	pollInterval time.Duration
 }
 
 // Option configures a Cache.
@@ -61,12 +62,25 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+// WithPollInterval overrides the default poll interval.
+func WithPollInterval(d time.Duration) Option {
+	return func(c *Cache) {
+		c.pollInterval = d
+	}
+}
+
+// PollInterval returns the configured poll interval.
+func (c *Cache) PollInterval() time.Duration {
+	return c.pollInterval
+}
+
 // NewCache creates a new release cache and starts background polling.
 // The polling goroutine stops when ctx is canceled.
 func NewCache(ctx context.Context, opts ...Option) *Cache {
 	c := &Cache{
-		owner: defaultOwner,
-		repo:  defaultRepo,
+		owner:        defaultOwner,
+		repo:         defaultRepo,
+		pollInterval: defaultPollInterval,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -121,7 +135,7 @@ func (c *Cache) GetUpdateInfo(currentVersion, arch string) (version, url, checks
 
 // run is the background polling loop.
 func (c *Cache) run(ctx context.Context) {
-	ticker := time.NewTicker(pollInterval)
+	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
 
 	for {

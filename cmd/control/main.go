@@ -76,9 +76,10 @@ type Config struct {
 	ValkeyDB       int
 
 	// Agent auto-update
-	DisableAutoUpdate  bool
-	AutoUpdateRepoOwner string
-	AutoUpdateRepoName  string
+	DisableAutoUpdate      bool
+	AutoUpdateRepoOwner    string
+	AutoUpdateRepoName     string
+	AutoUpdatePollInterval time.Duration
 }
 
 func main() {
@@ -487,9 +488,13 @@ func main() {
 		if cfg.AutoUpdateRepoOwner != "" && cfg.AutoUpdateRepoName != "" {
 			opts = append(opts, agentrelease.WithRepo(cfg.AutoUpdateRepoOwner, cfg.AutoUpdateRepoName))
 		}
+		if cfg.AutoUpdatePollInterval > 0 {
+			opts = append(opts, agentrelease.WithPollInterval(cfg.AutoUpdatePollInterval))
+		}
 		releaseCache = agentrelease.NewCache(ctx, opts...)
 		logger.Info("agent release cache started",
 			"repo", cfg.AutoUpdateRepoOwner+"/"+cfg.AutoUpdateRepoName,
+			"poll_interval", releaseCache.PollInterval(),
 		)
 	} else {
 		logger.Info("agent auto-update disabled via CONTROL_DISABLE_AUTO_UPDATE")
@@ -725,6 +730,11 @@ func parseFlags() *Config {
 	}
 	if v := os.Getenv("CONTROL_DISABLE_AUTO_UPDATE"); v == "true" || v == "1" {
 		cfg.DisableAutoUpdate = true
+	}
+	if v := os.Getenv("CONTROL_AUTO_UPDATE_POLL_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 1*time.Minute {
+			cfg.AutoUpdatePollInterval = d
+		}
 	}
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
