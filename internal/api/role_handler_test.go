@@ -53,7 +53,7 @@ func TestUpdateRole_InvalidPermissionRejected(t *testing.T) {
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
 
-	roleID := testutil.CreateTestRole(t, st, adminID, "Custom Role", []string{"devices:read"})
+	roleID := testutil.CreateTestRole(t, st, adminID, "Custom Role", []string{"GetDevice"})
 
 	_, err := h.UpdateRole(ctx, connect.NewRequest(&pm.UpdateRoleRequest{
 		RoleId:      roleID,
@@ -89,13 +89,14 @@ func TestCreateRole_Success(t *testing.T) {
 	resp, err := h.CreateRole(ctx, connect.NewRequest(&pm.CreateRoleRequest{
 		Name:        "Viewer Role",
 		Description: "Can only view",
-		Permissions: []string{"devices:read"},
+		Permissions: []string{"GetDevice", "ListDevices"},
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Role.Id)
 	assert.Equal(t, "Viewer Role", resp.Msg.Role.Name)
 	assert.Equal(t, "Can only view", resp.Msg.Role.Description)
-	assert.Contains(t, resp.Msg.Role.Permissions, "devices:read")
+	assert.Contains(t, resp.Msg.Role.Permissions, "GetDevice")
+	assert.Contains(t, resp.Msg.Role.Permissions, "ListDevices")
 	assert.False(t, resp.Msg.Role.IsSystem)
 }
 
@@ -147,7 +148,7 @@ func TestDeleteRole_InUseByUserBlocked(t *testing.T) {
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
 
-	roleID := testutil.CreateTestRole(t, st, adminID, "Assigned Role", []string{"devices:read"})
+	roleID := testutil.CreateTestRole(t, st, adminID, "Assigned Role", []string{"GetDevice"})
 
 	// Assign the role to a user
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -170,7 +171,7 @@ func TestUpdateRole_CannotRenameSystemRole(t *testing.T) {
 	_, err := h.UpdateRole(ctx, connect.NewRequest(&pm.UpdateRoleRequest{
 		RoleId:      systemAdminRoleID,
 		Name:        "Renamed Admin",
-		Permissions: []string{"devices:read"},
+		Permissions: []string{"GetDevice"},
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
