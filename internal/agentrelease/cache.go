@@ -63,9 +63,12 @@ func WithHTTPClient(client *http.Client) Option {
 }
 
 // WithPollInterval overrides the default poll interval.
+// Non-positive values are ignored to prevent ticker panics.
 func WithPollInterval(d time.Duration) Option {
 	return func(c *Cache) {
-		c.pollInterval = d
+		if d > 0 {
+			c.pollInterval = d
+		}
 	}
 }
 

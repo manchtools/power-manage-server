@@ -732,7 +732,12 @@ func parseFlags() *Config {
 		cfg.DisableAutoUpdate = true
 	}
 	if v := os.Getenv("CONTROL_AUTO_UPDATE_POLL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 1*time.Minute {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("invalid CONTROL_AUTO_UPDATE_POLL_INTERVAL, using default", "value", v, "error", err)
+		} else if d < 1*time.Minute {
+			slog.Warn("CONTROL_AUTO_UPDATE_POLL_INTERVAL too short (min 1m), using default", "value", v)
+		} else {
 			cfg.AutoUpdatePollInterval = d
 		}
 	}
