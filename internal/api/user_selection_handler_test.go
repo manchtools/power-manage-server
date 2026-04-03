@@ -23,8 +23,8 @@ func TestSetUserSelection_Success(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "test-device")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Test Action", 1)
 
-	// Create an available-mode assignment (mode 2 = available)
-	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, 2)
+	// Create an available-mode assignment (mode 1 = ASSIGNMENT_MODE_AVAILABLE)
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE))
 
 	resp, err := h.SetUserSelection(ctx, connect.NewRequest(&pm.SetUserSelectionRequest{
 		DeviceId:   deviceID,
@@ -48,11 +48,13 @@ func TestSetUserSelection_NoAssignment(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "test-device")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Unassigned Action", 1)
 
+	// No assignment created — selecting should fail
 	_, err := h.SetUserSelection(ctx, connect.NewRequest(&pm.SetUserSelectionRequest{
 		DeviceId:   deviceID,
 		SourceType: "action",
-		SourceId:   "nonexistent",
+		SourceId:   actionID,
 		Selected:   true,
 	}))
 	require.Error(t, err)
@@ -69,8 +71,8 @@ func TestListAvailableActions_Success(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "test-device")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Available Action", 1)
 
-	// Create an available-mode assignment (mode 2 = available)
-	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, 2)
+	// Create an available-mode assignment (mode 1 = ASSIGNMENT_MODE_AVAILABLE)
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE))
 
 	resp, err := h.ListAvailableActions(ctx, connect.NewRequest(&pm.ListAvailableActionsRequest{
 		DeviceId: deviceID,
@@ -83,16 +85,18 @@ func TestListAvailableActions_Success(t *testing.T) {
 	assert.False(t, resp.Msg.Items[0].Selected) // no selection yet
 }
 
-func TestListAvailableActions_DeviceNotFound(t *testing.T) {
+func TestListAvailableActions_EmptyForDeviceWithNoAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewUserSelectionHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
 
-	_, err := h.ListAvailableActions(ctx, connect.NewRequest(&pm.ListAvailableActionsRequest{
-		DeviceId: "nonexistent-device",
+	deviceID := testutil.CreateTestDevice(t, st, "test-device")
+
+	resp, err := h.ListAvailableActions(ctx, connect.NewRequest(&pm.ListAvailableActionsRequest{
+		DeviceId: deviceID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	require.NoError(t, err)
+	assert.Empty(t, resp.Msg.Items)
 }
