@@ -174,7 +174,7 @@ After registration, agents connect via the `Stream` RPC:
 
 | Message | Description |
 |---------|-------------|
-| `Welcome` | Response to Hello with server version and auto-update info (`latest_agent_version`, `update_url`, `update_checksum`) |
+| `Welcome` | Response to Hello with server version. Auto-update fields (`latest_agent_version`, `update_url`, `update_checksum`) are optional — only populated when auto-update is enabled and a matching release exists for the agent's architecture. |
 | `ActionDispatch` | Action to execute |
 | `OSQuery` | OS query to run |
 | `LogQuery` | Remote journalctl log query (unit, lines, priority, grep filter) |

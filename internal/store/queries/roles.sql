@@ -30,5 +30,5 @@ SELECT user_id FROM user_roles_projection WHERE role_id = $1;
 -- name: UserHasRole :one
 SELECT EXISTS(SELECT 1 FROM user_roles_projection WHERE user_id = $1 AND role_id = $2) AS has_role;
 
--- name: UpdateSystemRolePermissions :exec
+-- name: UpdateSystemRolePermissions :execrows
 UPDATE roles_projection SET permissions = $1, updated_at = NOW() WHERE id = $2 AND is_system = TRUE;

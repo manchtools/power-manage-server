@@ -1093,12 +1093,16 @@ func (h *DeviceHandler) TriggerAgentUpdate(ctx context.Context, req *connect.Req
 
 	var triggered int32
 	for _, deviceID := range req.Msg.DeviceIds {
-		if err := h.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeTriggerUpdate, struct{}{}, asynq.MaxRetry(1)); err != nil {
-			h.logger.Warn("failed to enqueue agent update trigger", "device_id", deviceID, "error", err)
-			continue
+		// Verify device exists before triggering.
+		if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				h.logger.Warn("skipping agent update trigger for unknown device", "device_id", deviceID)
+				continue
+			}
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify device")
 		}
 
-		// Audit log the update trigger.
+		// Audit log first (authoritative write).
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "device",
 			StreamID:   deviceID,
@@ -1108,6 +1112,12 @@ func (h *DeviceHandler) TriggerAgentUpdate(ctx context.Context, req *connect.Req
 			ActorID:    userCtx.ID,
 		}); err != nil {
 			h.logger.Warn("failed to append agent update event", "device_id", deviceID, "error", err)
+			continue
+		}
+
+		// Enqueue task to gateway (best-effort after audit).
+		if err := h.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeTriggerUpdate, struct{}{}, asynq.MaxRetry(1)); err != nil {
+			h.logger.Warn("failed to enqueue agent update trigger", "device_id", deviceID, "error", err)
 		}
 
 		triggered++

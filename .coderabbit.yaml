@@ -19,9 +19,9 @@ reviews:
       instructions: >
         Security-critical code. Check for permission bypass, scope escalation,
         and proper validation of :self/:assigned scoped permissions.
-tools:
-  golangci-lint:
-    enabled: true
+  tools:
+    golangci-lint:
+      enabled: true
 knowledge_base:
   learnings:
     scope: auto

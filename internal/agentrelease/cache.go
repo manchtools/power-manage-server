@@ -75,8 +75,12 @@ func NewCache(ctx context.Context, opts ...Option) *Cache {
 		opt(c)
 	}
 
-	// Perform an initial fetch before returning so the cache is warm.
-	c.poll(ctx)
+	// Warm the cache asynchronously to avoid blocking server startup.
+	go func() {
+		warmCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		c.poll(warmCtx)
+	}()
 
 	go c.run(ctx)
 	return c
