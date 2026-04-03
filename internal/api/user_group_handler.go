@@ -14,14 +14,17 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // UserGroupHandler handles user group management RPCs.
 type UserGroupHandler struct {
-	store  *store.Store
-	logger *slog.Logger
+	store     *store.Store
+	logger    *slog.Logger
+	searchIdx *search.Index
 }
 
 // NewUserGroupHandler creates a new user group handler.
@@ -29,6 +32,36 @@ func NewUserGroupHandler(st *store.Store, logger *slog.Logger) *UserGroupHandler
 	return &UserGroupHandler{
 		store:  st,
 		logger: logger,
+	}
+}
+
+// SetSearchIndex sets the search index for enqueuing index updates.
+func (h *UserGroupHandler) SetSearchIndex(idx *search.Index) {
+	h.searchIdx = idx
+}
+
+// enqueueUserGroupReindex enqueues a search index update for a user group.
+func (h *UserGroupHandler) enqueueUserGroupReindex(ctx context.Context, g db.UserGroupsProjection) {
+	if h.searchIdx == nil {
+		return
+	}
+	isDynamic := "false"
+	if g.IsDynamic {
+		isDynamic = "true"
+	}
+	var createdAt int64
+	if !g.CreatedAt.IsZero() {
+		createdAt = g.CreatedAt.Unix()
+	}
+	data := &taskqueue.SearchEntityData{
+		Name:        g.Name,
+		Description: g.Description,
+		IsDynamic:   isDynamic,
+		MemberCount: g.MemberCount,
+		CreatedAt:   createdAt,
+	}
+	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeUserGroup, g.ID, data); err != nil {
+		h.logger.Warn("failed to enqueue search reindex", "scope", "user_group", "error", err)
 	}
 }
 
@@ -89,6 +122,8 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
+
+	h.enqueueUserGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.CreateUserGroupResponse{
 		Group: userGroupToProto(group, nil, false),
@@ -229,6 +264,8 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
 
+	h.enqueueUserGroupReindex(ctx, updated)
+
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.GroupId)
 
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.GroupId)
@@ -283,6 +320,12 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		"stream_id", req.Msg.Id,
 		"event_type", "UserGroupDeleted",
 	)
+
+	if h.searchIdx != nil {
+		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeUserGroup, req.Msg.Id, nil); err != nil {
+			h.logger.Warn("failed to enqueue search remove", "scope", "user_group", "error", err)
+		}
+	}
 
 	return connect.NewResponse(&pm.DeleteUserGroupResponse{}), nil
 }
@@ -370,6 +413,11 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		h.bumpUserSessionVersion(ctx, userID, userCtx.ID)
 	}
 
+	// Re-read group for updated member_count and enqueue reindex
+	if updatedGroup, err := q.GetUserGroupByID(ctx, req.Msg.GroupId); err == nil {
+		h.enqueueUserGroupReindex(ctx, updatedGroup)
+	}
+
 	return connect.NewResponse(&pm.AddUserToGroupResponse{}), nil
 }
 
@@ -433,6 +481,11 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 
 	// Bump user's session version (they may lose permissions from group roles)
 	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
+
+	// Re-read group for updated member_count and enqueue reindex
+	if updatedGroup, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId); err == nil {
+		h.enqueueUserGroupReindex(ctx, updatedGroup)
+	}
 
 	return connect.NewResponse(&pm.RemoveUserFromGroupResponse{}), nil
 }
@@ -653,6 +706,8 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
 
+	h.enqueueUserGroupReindex(ctx, group)
+
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
@@ -733,6 +788,8 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	} else if group.MemberCount < membersBefore {
 		usersRemoved = membersBefore - group.MemberCount
 	}
+
+	h.enqueueUserGroupReindex(ctx, group)
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)

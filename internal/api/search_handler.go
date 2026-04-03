@@ -173,6 +173,8 @@ var allowedSearchFields = map[string]bool{
 	"compliance_status": true,
 	"agent_version":     true,
 	"os_arch":           true,
+	"is_dynamic":        true,
+	"member_count":      true,
 	"registered_at":     true,
 	"last_seen_at":      true,
 }
