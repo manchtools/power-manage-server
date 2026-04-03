@@ -28,4 +28,3 @@ knowledge_base:
   linked_repositories:
     - repository: manchtools/power-manage-sdk
     - repository: manchtools/power-manage-agent
-    - repository: manchtools/power-manage-web
