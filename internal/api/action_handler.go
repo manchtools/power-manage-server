@@ -130,6 +130,10 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 		if p.Wifi != nil {
 			return Validate(ctx, p.Wifi)
 		}
+	case *pm.CreateActionRequest_AgentUpdate:
+		if p.AgentUpdate != nil {
+			return validateAgentUpdateParams(ctx, p.AgentUpdate)
+		}
 	}
 	return nil
 }
@@ -200,6 +204,32 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 	case *pm.UpdateActionParamsRequest_Wifi:
 		if p.Wifi != nil {
 			return Validate(ctx, p.Wifi)
+		}
+	case *pm.UpdateActionParamsRequest_AgentUpdate:
+		if p.AgentUpdate != nil {
+			return validateAgentUpdateParams(ctx, p.AgentUpdate)
+		}
+	}
+	return nil
+}
+
+// validateAgentUpdateParams checks that at least one arch is set and all URLs are HTTPS.
+func validateAgentUpdateParams(ctx context.Context, p *pm.AgentUpdateParams) error {
+	if err := Validate(ctx, p); err != nil {
+		return err
+	}
+	if p.Amd64 == nil && p.Arm64 == nil {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one architecture (amd64 or arm64) must be specified")
+	}
+	for _, arch := range []*pm.AgentUpdateArch{p.Amd64, p.Arm64} {
+		if arch == nil {
+			continue
+		}
+		if !strings.HasPrefix(arch.BinaryUrl, "https://") {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "binary_url must use HTTPS")
+		}
+		if !strings.HasPrefix(arch.ChecksumUrl, "https://") {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "checksum_url must use HTTPS")
 		}
 	}
 	return nil
@@ -1236,6 +1266,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Luks)
 	case *pm.CreateActionRequest_Wifi:
 		data, err = protojson.Marshal(p.Wifi)
+	case *pm.CreateActionRequest_AgentUpdate:
+		data, err = protojson.Marshal(p.AgentUpdate)
 	default:
 		return params, nil
 	}
@@ -1289,6 +1321,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Luks)
 	case *pm.UpdateActionParamsRequest_Wifi:
 		data, err = protojson.Marshal(p.Wifi)
+	case *pm.UpdateActionParamsRequest_AgentUpdate:
+		data, err = protojson.Marshal(p.AgentUpdate)
 	default:
 		return params, nil
 	}
@@ -1506,6 +1540,11 @@ func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, action
 		var p pm.WifiParams
 		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Wifi{Wifi: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		var p pm.AgentUpdateParams
+		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.ManagedAction_AgentUpdate{AgentUpdate: &p}
 		}
 	}
 }

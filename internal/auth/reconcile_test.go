@@ -63,12 +63,3 @@ func TestUpdateUserLinuxUsername_PermissionExists(t *testing.T) {
 	assert.True(t, defaultSet["UpdateUserLinuxUsername:self"], "DefaultUserPermissions() should include UpdateUserLinuxUsername:self")
 }
 
-func TestTriggerAgentUpdate_PermissionExists(t *testing.T) {
-	allPerms := auth.AllPermissions()
-	allKeys := make(map[string]bool, len(allPerms))
-	for _, p := range allPerms {
-		allKeys[p.Key] = true
-	}
-
-	assert.True(t, allKeys["TriggerAgentUpdate"], "AllPermissions() should include TriggerAgentUpdate")
-}

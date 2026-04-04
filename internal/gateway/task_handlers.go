@@ -17,37 +17,26 @@ import (
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
-// UpdateInfoProvider fetches auto-update info from the control server.
-type UpdateInfoProvider interface {
-	GetAutoUpdateInfo(ctx context.Context, agentArch string) (*pm.GetAutoUpdateInfoResponse, error)
-}
-
 // TaskHandlerFactory creates per-device Asynq ServeMux instances.
 type TaskHandlerFactory struct {
-	manager        *connection.Manager
-	updateProvider UpdateInfoProvider
-	serverVersion  string
-	logger         *slog.Logger
+	manager *connection.Manager
+	logger  *slog.Logger
 }
 
 // NewTaskHandlerFactory creates a new factory.
-func NewTaskHandlerFactory(manager *connection.Manager, updateProvider UpdateInfoProvider, serverVersion string, logger *slog.Logger) *TaskHandlerFactory {
+func NewTaskHandlerFactory(manager *connection.Manager, logger *slog.Logger) *TaskHandlerFactory {
 	return &TaskHandlerFactory{
-		manager:        manager,
-		updateProvider: updateProvider,
-		serverVersion:  serverVersion,
-		logger:         logger,
+		manager: manager,
+		logger:  logger,
 	}
 }
 
 // NewMux returns a handler factory function for DeviceWorkerManager.
 func (f *TaskHandlerFactory) NewMux(deviceID string) *asynq.ServeMux {
 	h := &deviceTaskHandler{
-		deviceID:       deviceID,
-		manager:        f.manager,
-		updateProvider: f.updateProvider,
-		serverVersion:  f.serverVersion,
-		logger:         f.logger.With("device_id", deviceID),
+		deviceID: deviceID,
+		manager:  f.manager,
+		logger:   f.logger.With("device_id", deviceID),
 	}
 
 	mux := asynq.NewServeMux()
@@ -56,17 +45,14 @@ func (f *TaskHandlerFactory) NewMux(deviceID string) *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeInventoryRequest, h.handleInventoryRequest)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKey, h.handleRevokeLuksDeviceKey)
 	mux.HandleFunc(taskqueue.TypeLogQueryDispatch, h.handleLogQueryDispatch)
-	mux.HandleFunc(taskqueue.TypeTriggerUpdate, h.handleTriggerUpdate)
 	return mux
 }
 
 // deviceTaskHandler processes tasks from a specific device's queue.
 type deviceTaskHandler struct {
-	deviceID       string
-	manager        *connection.Manager
-	updateProvider UpdateInfoProvider
-	serverVersion  string
-	logger         *slog.Logger
+	deviceID string
+	manager  *connection.Manager
+	logger   *slog.Logger
 }
 
 func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Task) error {
@@ -212,35 +198,6 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 	return nil
 }
 
-func (h *deviceTaskHandler) handleTriggerUpdate(ctx context.Context, _ *asynq.Task) error {
-	// Fetch latest update info from control server.
-	updateInfo, err := h.updateProvider.GetAutoUpdateInfo(ctx, "amd64")
-	if err != nil {
-		return fmt.Errorf("get auto-update info: %w", err)
-	}
-
-	welcome := &pm.Welcome{
-		ServerVersion: h.serverVersion,
-	}
-	if updateInfo.LatestAgentVersion != "" {
-		welcome.LatestAgentVersion = updateInfo.LatestAgentVersion
-		welcome.UpdateUrl = updateInfo.UpdateUrl
-		welcome.UpdateChecksum = updateInfo.UpdateChecksum
-	}
-
-	msg := &pm.ServerMessage{
-		Id:      ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
-		Payload: &pm.ServerMessage_Welcome{Welcome: welcome},
-	}
-
-	if err := h.manager.Send(h.deviceID, msg); err != nil {
-		return fmt.Errorf("send update welcome to agent: %w", err)
-	}
-
-	h.logger.Info("agent update triggered", "latest_version", updateInfo.LatestAgentVersion)
-	return nil
-}
-
 // parseActionParams populates the oneof Params field on an Action from JSON.
 func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
@@ -325,6 +282,11 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 		var p pm.LuksParams
 		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Luks{Luks: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		var p pm.AgentUpdateParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_AgentUpdate{AgentUpdate: &p}
 		}
 	}
 }

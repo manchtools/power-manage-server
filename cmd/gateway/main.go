@@ -97,7 +97,7 @@ func main() {
 	manager := connection.NewManager()
 
 	// Create task handler factory for per-device Asynq workers
-	taskFactory := gateway.NewTaskHandlerFactory(manager, controlProxy, version, logger)
+	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
 
 	// Create device worker manager
 	workerMgr := gateway.NewDeviceWorkerManager(

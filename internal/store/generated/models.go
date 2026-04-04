@@ -393,7 +393,6 @@ type ServerSettingsProjection struct {
 	SshAccessForAll         bool      `json:"ssh_access_for_all"`
 	UpdatedAt               time.Time `json:"updated_at"`
 	ProjectionVersion       int64     `json:"projection_version"`
-	AutoUpdateAgents        bool      `json:"auto_update_agents"`
 }
 
 type TokensProjection struct {

@@ -206,28 +206,9 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		h.logger.Warn("failed to enqueue device hello", "error", err)
 	}
 
-	// Send Welcome message to agent with server version and auto-update info.
+	// Send Welcome message to agent with server version.
 	welcome := &pm.Welcome{
 		ServerVersion: h.serverVersion,
-	}
-
-	// Fetch auto-update info from control server.
-	arch := hello.Arch
-	if arch == "" {
-		arch = "amd64"
-	}
-	updateInfo, err := h.controlProxy.GetAutoUpdateInfo(ctx, arch)
-	if err != nil {
-		h.logger.Warn("failed to get auto-update info", "device_id", deviceID, "error", err)
-	} else if updateInfo.LatestAgentVersion != "" && updateInfo.LatestAgentVersion != hello.AgentVersion {
-		welcome.LatestAgentVersion = updateInfo.LatestAgentVersion
-		welcome.UpdateUrl = updateInfo.UpdateUrl
-		welcome.UpdateChecksum = updateInfo.UpdateChecksum
-		h.logger.Info("agent update available",
-			"device_id", deviceID,
-			"current_version", hello.AgentVersion,
-			"latest_version", updateInfo.LatestAgentVersion,
-		)
 	}
 
 	if err := h.manager.Send(deviceID, &pm.ServerMessage{

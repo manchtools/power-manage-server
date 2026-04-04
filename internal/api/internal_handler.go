@@ -13,7 +13,6 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
-	"github.com/manchtools/power-manage/server/internal/agentrelease"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -25,19 +24,17 @@ import (
 type InternalHandler struct {
 	pmv1connect.UnimplementedInternalServiceHandler
 
-	store        *store.Store
-	encryptor    *crypto.Encryptor
-	releaseCache *agentrelease.Cache
-	logger       *slog.Logger
+	store     *store.Store
+	encryptor *crypto.Encryptor
+	logger    *slog.Logger
 }
 
 // NewInternalHandler creates a new internal service handler.
-func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, rc *agentrelease.Cache, logger *slog.Logger) *InternalHandler {
+func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *InternalHandler {
 	return &InternalHandler{
-		store:        st,
-		encryptor:    enc,
-		releaseCache: rc,
-		logger:       logger,
+		store:     st,
+		encryptor: enc,
+		logger:    logger,
 	}
 }
 
@@ -233,36 +230,6 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil
 }
 
-// GetAutoUpdateInfo returns the latest agent release information for the given architecture.
-// The gateway calls this when sending Welcome to an agent.
-func (h *InternalHandler) GetAutoUpdateInfo(ctx context.Context, req *connect.Request[pm.GetAutoUpdateInfoRequest]) (*connect.Response[pm.GetAutoUpdateInfoResponse], error) {
-	if h.releaseCache == nil {
-		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
-	}
-
-	// Check if auto-update is enabled in server settings.
-	settings, err := h.store.Queries().GetServerSettings(ctx)
-	if err != nil {
-		h.logger.Warn("failed to read server settings for auto-update check", "error", err)
-		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
-	}
-	if !settings.AutoUpdateAgents {
-		return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{}), nil
-	}
-
-	arch := req.Msg.AgentArch
-	if arch == "" {
-		arch = "amd64"
-	}
-
-	version, url, checksum := h.releaseCache.GetUpdateInfo("", arch)
-	return connect.NewResponse(&pm.GetAutoUpdateInfoResponse{
-		LatestAgentVersion: version,
-		UpdateUrl:          url,
-		UpdateChecksum:     checksum,
-	}), nil
-}
-
 // dbResolvedActionToWireAction converts a resolved action row to wire format.
 // Note: This is also defined in handler/agent.go — when the gateway migration
 // is complete, only this version will remain.
@@ -368,6 +335,11 @@ func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
 		var p pm.LuksParams
 		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Luks{Luks: &p}
+		}
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		var p pm.AgentUpdateParams
+		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
+			action.Params = &pm.Action_AgentUpdate{AgentUpdate: &p}
 		}
 	}
 }
