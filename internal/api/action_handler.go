@@ -1729,6 +1729,10 @@ func scheduleFromJSON(data []byte) *pm.ActionSchedule {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil
 	}
+	// Empty object means no schedule configured
+	if raw.Cron == "" && raw.IntervalHours == 0 && !raw.RunOnAssign && !raw.SkipIfUnchanged {
+		return nil
+	}
 	return &pm.ActionSchedule{
 		Cron:            raw.Cron,
 		IntervalHours:   raw.IntervalHours,
