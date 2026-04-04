@@ -106,7 +106,7 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 func TestProxyStoreLuksKey(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, nil, slog.Default())
+	h := api.NewInternalHandler(st, enc, slog.Default())
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-store-host")
 
@@ -160,7 +160,7 @@ func TestProxyGetLuksKey_NotFound(t *testing.T) {
 func TestProxyStoreLpsPasswords(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, nil, slog.Default())
+	h := api.NewInternalHandler(st, enc, slog.Default())
 
 	deviceID := testutil.CreateTestDevice(t, st, "lps-host")
 
