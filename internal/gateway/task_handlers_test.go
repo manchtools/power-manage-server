@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -11,25 +10,6 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
-
-// mockUpdateProvider implements UpdateInfoProvider for testing.
-type mockUpdateProvider struct {
-	version  string
-	url      string
-	checksum string
-	err      error
-}
-
-func (m *mockUpdateProvider) GetAutoUpdateInfo(_ context.Context, _ string) (*pm.GetAutoUpdateInfoResponse, error) {
-	if m.err != nil {
-		return nil, m.err
-	}
-	return &pm.GetAutoUpdateInfoResponse{
-		LatestAgentVersion: m.version,
-		UpdateUrl:          m.url,
-		UpdateChecksum:     m.checksum,
-	}, nil
-}
 
 // TestParseActionParams_Package tests package parameter parsing.
 func TestParseActionParams_Package(t *testing.T) {
@@ -271,16 +251,3 @@ func TestDeviceTaskHandler_BuildsActionMessage(t *testing.T) {
 	assert.Equal(t, "htop", action.GetPackage().Name)
 }
 
-func TestMockUpdateProvider(t *testing.T) {
-	provider := &mockUpdateProvider{
-		version:  "2026.04.1",
-		url:      "https://example.com/agent-linux-amd64",
-		checksum: "abc123",
-	}
-
-	resp, err := provider.GetAutoUpdateInfo(context.Background(), "amd64")
-	require.NoError(t, err)
-	assert.Equal(t, "2026.04.1", resp.LatestAgentVersion)
-	assert.Equal(t, "https://example.com/agent-linux-amd64", resp.UpdateUrl)
-	assert.Equal(t, "abc123", resp.UpdateChecksum)
-}
