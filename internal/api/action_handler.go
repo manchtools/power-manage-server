@@ -126,6 +126,10 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 		if p.Luks != nil {
 			return Validate(ctx, p.Luks)
 		}
+	case *pm.CreateActionRequest_Group:
+		if p.Group != nil {
+			return Validate(ctx, p.Group)
+		}
 	case *pm.CreateActionRequest_Wifi:
 		if p.Wifi != nil {
 			return Validate(ctx, p.Wifi)
@@ -200,6 +204,10 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 	case *pm.UpdateActionParamsRequest_Luks:
 		if p.Luks != nil {
 			return Validate(ctx, p.Luks)
+		}
+	case *pm.UpdateActionParamsRequest_Group:
+		if p.Group != nil {
+			return Validate(ctx, p.Group)
 		}
 	case *pm.UpdateActionParamsRequest_Wifi:
 		if p.Wifi != nil {
@@ -1264,6 +1272,8 @@ func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest)
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.CreateActionRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.CreateActionRequest_Group:
+		data, err = protojson.Marshal(p.Group)
 	case *pm.CreateActionRequest_Wifi:
 		data, err = protojson.Marshal(p.Wifi)
 	case *pm.CreateActionRequest_AgentUpdate:
@@ -1319,6 +1329,8 @@ func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRe
 		data, err = protojson.Marshal(p.Lps)
 	case *pm.UpdateActionParamsRequest_Luks:
 		data, err = protojson.Marshal(p.Luks)
+	case *pm.UpdateActionParamsRequest_Group:
+		data, err = protojson.Marshal(p.Group)
 	case *pm.UpdateActionParamsRequest_Wifi:
 		data, err = protojson.Marshal(p.Wifi)
 	case *pm.UpdateActionParamsRequest_AgentUpdate:
