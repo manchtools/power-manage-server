@@ -74,7 +74,6 @@ type Config struct {
 	ValkeyPassword string
 	ValkeyDB       int
 
-	// Agent auto-update
 }
 
 func main() {
