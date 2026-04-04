@@ -121,7 +121,8 @@ CREATE TABLE actions_projection (
     params_canonical BYTEA,
     desired_state INTEGER NOT NULL DEFAULT 0,
     is_system BOOLEAN NOT NULL DEFAULT FALSE,
-    updated_at TIMESTAMPTZ
+    updated_at TIMESTAMPTZ,
+    schedule JSONB
 );
 
 CREATE TABLE executions_projection (

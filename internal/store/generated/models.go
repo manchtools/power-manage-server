@@ -46,6 +46,7 @@ type ActionsProjection struct {
 	DesiredState      int32      `json:"desired_state"`
 	IsSystem          bool       `json:"is_system"`
 	UpdatedAt         *time.Time `json:"updated_at"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 type AssignmentsProjection struct {

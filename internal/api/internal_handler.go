@@ -247,6 +247,10 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 		parseActionParams(action, a.ActionType, a.Params)
 	}
 
+	if len(a.Schedule) > 0 {
+		action.Schedule = scheduleFromJSON(a.Schedule)
+	}
+
 	return action
 }
 
