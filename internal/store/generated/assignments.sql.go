@@ -104,7 +104,7 @@ const listAssignedActionsForDevice = `-- name: ListAssignedActionsForDevice :man
 WITH assigned_actions AS (
   -- Direct action assignments (no hierarchy, use assignment sort_order only)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -118,7 +118,7 @@ WITH assigned_actions AS (
 
   -- Action assignments via device group
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -133,7 +133,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -148,7 +148,7 @@ WITH assigned_actions AS (
 
   -- Actions via action set assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -164,7 +164,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -180,7 +180,7 @@ WITH assigned_actions AS (
 
   -- Actions via definition assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     COALESCE(dm.sort_order, 0) as definition_sort,
     COALESCE(sm.sort_order, 0) as action_set_sort,
@@ -197,7 +197,7 @@ WITH assigned_actions AS (
 
   -- Actions via compliance policy assignments (direct to device)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -213,7 +213,7 @@ WITH assigned_actions AS (
 
   -- Actions via compliance policy assignments (via device group)
   SELECT
-    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at,
+    a.id, a.name, a.description, a.action_type, a.params, a.timeout_seconds, a.created_at, a.created_by, a.is_deleted, a.projection_version, a.signature, a.params_canonical, a.desired_state, a.is_system, a.updated_at, a.schedule,
     COALESCE(asn.sort_order, 0) as assignment_sort,
     0 as definition_sort,
     0 as action_set_sort,
@@ -229,13 +229,13 @@ WITH assigned_actions AS (
 deduped AS (
   SELECT DISTINCT ON (id)
     id, name, description, action_type, desired_state, params, timeout_seconds,
-    created_at, created_by, is_deleted, projection_version, signature, params_canonical,
+    created_at, created_by, is_deleted, projection_version, signature, params_canonical, schedule,
     assignment_sort, definition_sort, action_set_sort, action_sort
   FROM assigned_actions
   ORDER BY id, assignment_sort, definition_sort, action_set_sort, action_sort
 )
 SELECT id, name, description, action_type, desired_state, params, timeout_seconds,
-       created_at, created_by, is_deleted, projection_version, signature, params_canonical
+       created_at, created_by, is_deleted, projection_version, signature, params_canonical, schedule
 FROM deduped
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
 `
@@ -254,6 +254,7 @@ type ListAssignedActionsForDeviceRow struct {
 	ProjectionVersion int64      `json:"projection_version"`
 	Signature         []byte     `json:"signature"`
 	ParamsCanonical   []byte     `json:"params_canonical"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 // Get all actions assigned to a device (directly or via groups) with proper ordering
@@ -284,6 +285,7 @@ func (q *Queries) ListAssignedActionsForDevice(ctx context.Context, targetID str
 			&i.ProjectionVersion,
 			&i.Signature,
 			&i.ParamsCanonical,
+			&i.Schedule,
 		); err != nil {
 			return nil, err
 		}
@@ -719,7 +721,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -739,7 +741,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -760,7 +762,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -781,7 +783,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -803,7 +805,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -825,7 +827,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -848,7 +850,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     0 AS mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -870,7 +872,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     0 AS mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -888,7 +890,7 @@ WITH all_assignments AS (
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 with_selections AS (
-  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
+  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.schedule, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
     CASE WHEN aa.mode = 1 THEN us.selected ELSE NULL END AS user_selected
   FROM all_assignments aa
   LEFT JOIN user_selections_projection us
@@ -902,7 +904,7 @@ priority_per_action AS (
   GROUP BY id
 ),
 filtered AS (
-  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
+  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.schedule, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
   FROM with_selections ws
   JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
@@ -910,11 +912,11 @@ effective AS (
   SELECT
     id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
-    signature, params_canonical,
+    signature, params_canonical, schedule,
     CASE
       WHEN bool_or(mode = 2) THEN -1                           -- excluded: don't apply this action
       WHEN bool_or(mode = 0) THEN 0                            -- required: apply
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → apply
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected �� apply
       WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1 -- available+rejected → skip
       ELSE -1                                                    -- unselected available → skip
     END AS effective_mode,
@@ -925,11 +927,11 @@ effective AS (
   FROM filtered
   GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
-           signature, params_canonical
+           signature, params_canonical, schedule
 )
 SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
-  projection_version, signature, params_canonical
+  projection_version, signature, params_canonical, schedule
 FROM effective
 WHERE effective_mode >= 0
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
@@ -949,6 +951,7 @@ type ListResolvedActionsForDeviceRow struct {
 	ProjectionVersion int64      `json:"projection_version"`
 	Signature         []byte     `json:"signature"`
 	ParamsCanonical   []byte     `json:"params_canonical"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 // Get all resolved actions for a device with conflict resolution.
@@ -984,6 +987,7 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 			&i.ProjectionVersion,
 			&i.Signature,
 			&i.ParamsCanonical,
+			&i.Schedule,
 		); err != nil {
 			return nil, err
 		}
@@ -1013,7 +1017,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1033,7 +1037,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1053,7 +1057,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1074,7 +1078,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1095,7 +1099,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1117,7 +1121,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -1134,7 +1138,7 @@ all_assignments AS (
     AND asn.is_deleted = FALSE AND a.is_deleted = FALSE
 ),
 with_selections AS (
-  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
+  SELECT aa.id, aa.name, aa.description, aa.action_type, aa.desired_state, aa.params, aa.timeout_seconds, aa.created_at, aa.created_by, aa.is_deleted, aa.projection_version, aa.signature, aa.params_canonical, aa.schedule, aa.mode, aa.asn_source_type, aa.asn_source_id, aa.source_priority, aa.assignment_sort, aa.definition_sort, aa.action_set_sort, aa.action_sort,
     CASE WHEN aa.mode = 1 THEN us.selected ELSE NULL END AS user_selected
   FROM all_assignments aa
   LEFT JOIN user_selections_projection us
@@ -1148,7 +1152,7 @@ priority_per_action AS (
   GROUP BY id
 ),
 filtered AS (
-  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
+  SELECT ws.id, ws.name, ws.description, ws.action_type, ws.desired_state, ws.params, ws.timeout_seconds, ws.created_at, ws.created_by, ws.is_deleted, ws.projection_version, ws.signature, ws.params_canonical, ws.schedule, ws.mode, ws.asn_source_type, ws.asn_source_id, ws.source_priority, ws.assignment_sort, ws.definition_sort, ws.action_set_sort, ws.action_sort, ws.user_selected
   FROM with_selections ws
   JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
@@ -1156,7 +1160,7 @@ effective AS (
   SELECT
     id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
-    signature, params_canonical,
+    signature, params_canonical, schedule,
     CASE
       WHEN bool_or(mode = 2) THEN -1
       WHEN bool_or(mode = 0) THEN 0
@@ -1171,11 +1175,11 @@ effective AS (
   FROM filtered
   GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
-           signature, params_canonical
+           signature, params_canonical, schedule
 )
 SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
-  projection_version, signature, params_canonical
+  projection_version, signature, params_canonical, schedule
 FROM effective
 WHERE effective_mode >= 0
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id
@@ -1195,6 +1199,7 @@ type ListUserLayerResolvedActionsForDeviceRow struct {
 	ProjectionVersion int64      `json:"projection_version"`
 	Signature         []byte     `json:"signature"`
 	ParamsCanonical   []byte     `json:"params_canonical"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 // Get all resolved actions from user/user_group layer for a device.
@@ -1223,6 +1228,7 @@ func (q *Queries) ListUserLayerResolvedActionsForDevice(ctx context.Context, dev
 			&i.ProjectionVersion,
 			&i.Signature,
 			&i.ParamsCanonical,
+			&i.Schedule,
 		); err != nil {
 			return nil, err
 		}

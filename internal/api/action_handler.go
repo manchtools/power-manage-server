@@ -281,20 +281,25 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		timeoutSeconds = 300
 	}
 
+	eventData := map[string]any{
+		"name":            req.Msg.Name,
+		"description":     req.Msg.Description,
+		"action_type":     int32(req.Msg.Type),
+		"desired_state":   int32(req.Msg.DesiredState),
+		"params":          params,
+		"timeout_seconds": timeoutSeconds,
+	}
+	if req.Msg.Schedule != nil {
+		eventData["schedule"] = scheduleToMap(req.Msg.Schedule)
+	}
+
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   id,
 		EventType:  "ActionCreated",
-		Data: map[string]any{
-			"name":            req.Msg.Name,
-			"description":     req.Msg.Description,
-			"action_type":     int32(req.Msg.Type),
-			"desired_state":   int32(req.Msg.DesiredState),
-			"params":          params,
-			"timeout_seconds": timeoutSeconds,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
+		Data:       eventData,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
 	})
 	if err != nil {
 		h.logger.Error("failed to append action event", "error", err, "id", id)
@@ -542,6 +547,9 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 
 	if req.Msg.TimeoutSeconds > 0 {
 		eventData["timeout_seconds"] = req.Msg.TimeoutSeconds
+	}
+	if req.Msg.Schedule != nil {
+		eventData["schedule"] = scheduleToMap(req.Msg.Schedule)
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -1473,6 +1481,10 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 		h.deserializeActionParams(action, pm.ActionType(a.ActionType), a.Params)
 	}
 
+	if len(a.Schedule) > 0 {
+		action.Schedule = scheduleFromJSON(a.Schedule)
+	}
+
 	return action
 }
 
@@ -1685,5 +1697,46 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 	return &pm.CommandOutput{
 		Stdout: stdout.String(),
 		Stderr: stderr.String(),
+	}
+}
+
+// scheduleToMap converts an ActionSchedule proto to a map for event storage.
+func scheduleToMap(s *pm.ActionSchedule) map[string]any {
+	m := map[string]any{}
+	if s.Cron != "" {
+		m["cron"] = s.Cron
+	}
+	if s.IntervalHours > 0 {
+		m["interval_hours"] = s.IntervalHours
+	}
+	if s.RunOnAssign {
+		m["run_on_assign"] = true
+	}
+	if s.SkipIfUnchanged {
+		m["skip_if_unchanged"] = true
+	}
+	return m
+}
+
+// scheduleFromJSON deserializes a schedule JSONB column into an ActionSchedule proto.
+func scheduleFromJSON(data []byte) *pm.ActionSchedule {
+	var raw struct {
+		Cron            string `json:"cron"`
+		IntervalHours   int32  `json:"interval_hours"`
+		RunOnAssign     bool   `json:"run_on_assign"`
+		SkipIfUnchanged bool   `json:"skip_if_unchanged"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	// Empty object means no schedule configured
+	if raw.Cron == "" && raw.IntervalHours == 0 && !raw.RunOnAssign && !raw.SkipIfUnchanged {
+		return nil
+	}
+	return &pm.ActionSchedule{
+		Cron:            raw.Cron,
+		IntervalHours:   raw.IntervalHours,
+		RunOnAssign:     raw.RunOnAssign,
+		SkipIfUnchanged: raw.SkipIfUnchanged,
 	}
 }

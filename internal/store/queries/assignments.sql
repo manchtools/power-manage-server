@@ -199,14 +199,14 @@ WITH assigned_actions AS (
 deduped AS (
   SELECT DISTINCT ON (id)
     id, name, description, action_type, desired_state, params, timeout_seconds,
-    created_at, created_by, is_deleted, projection_version, signature, params_canonical,
+    created_at, created_by, is_deleted, projection_version, signature, params_canonical, schedule,
     assignment_sort, definition_sort, action_set_sort, action_sort
   FROM assigned_actions
   ORDER BY id, assignment_sort, definition_sort, action_set_sort, action_sort
 )
 -- Then return in the correct execution order
 SELECT id, name, description, action_type, desired_state, params, timeout_seconds,
-       created_at, created_by, is_deleted, projection_version, signature, params_canonical
+       created_at, created_by, is_deleted, projection_version, signature, params_canonical, schedule
 FROM deduped
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
@@ -221,7 +221,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -241,7 +241,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -262,7 +262,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -283,7 +283,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -305,7 +305,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -327,7 +327,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -350,7 +350,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     0 AS mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -372,7 +372,7 @@ WITH all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     0 AS mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -416,11 +416,11 @@ effective AS (
   SELECT
     id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
-    signature, params_canonical,
+    signature, params_canonical, schedule,
     CASE
       WHEN bool_or(mode = 2) THEN -1                           -- excluded: don't apply this action
       WHEN bool_or(mode = 0) THEN 0                            -- required: apply
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected → apply
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected �� apply
       WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1 -- available+rejected → skip
       ELSE -1                                                    -- unselected available → skip
     END AS effective_mode,
@@ -431,12 +431,12 @@ effective AS (
   FROM filtered
   GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
-           signature, params_canonical
+           signature, params_canonical, schedule
 )
 -- Return actions that should be applied, using action's stored desired_state
 SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
-  projection_version, signature, params_canonical
+  projection_version, signature, params_canonical, schedule
 FROM effective
 WHERE effective_mode >= 0
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
@@ -556,7 +556,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -576,7 +576,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -596,7 +596,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -617,7 +617,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -638,7 +638,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -660,7 +660,7 @@ all_assignments AS (
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
-    a.signature, a.params_canonical,
+    a.signature, a.params_canonical, a.schedule,
     asn.mode,
     asn.source_type AS asn_source_type,
     asn.source_id AS asn_source_id,
@@ -699,7 +699,7 @@ effective AS (
   SELECT
     id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
-    signature, params_canonical,
+    signature, params_canonical, schedule,
     CASE
       WHEN bool_or(mode = 2) THEN -1
       WHEN bool_or(mode = 0) THEN 0
@@ -714,11 +714,11 @@ effective AS (
   FROM filtered
   GROUP BY id, name, description, action_type, desired_state, params, timeout_seconds,
            created_at, created_by, is_deleted, projection_version,
-           signature, params_canonical
+           signature, params_canonical, schedule
 )
 SELECT id, name, description, action_type, desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
-  projection_version, signature, params_canonical
+  projection_version, signature, params_canonical, schedule
 FROM effective
 WHERE effective_mode >= 0
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;

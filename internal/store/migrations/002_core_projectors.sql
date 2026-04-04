@@ -417,7 +417,7 @@ BEGIN
             INSERT INTO actions_projection (
                 id, name, description, action_type, desired_state,
                 params, timeout_seconds, created_at, updated_at, created_by, projection_version,
-                is_system
+                is_system, schedule
             ) VALUES (
                 event.stream_id,
                 event.data->>'name',
@@ -430,7 +430,8 @@ BEGIN
                 event.occurred_at,
                 event.actor_id,
                 event.sequence_num,
-                COALESCE((event.data->>'is_system')::BOOLEAN, FALSE)
+                COALESCE((event.data->>'is_system')::BOOLEAN, FALSE),
+                event.data->'schedule'
             );
 
         WHEN 'ActionRenamed' THEN
@@ -457,6 +458,7 @@ BEGIN
             SET params = COALESCE(event.data->'params', params),
                 timeout_seconds = COALESCE((event.data->>'timeout_seconds')::INTEGER, timeout_seconds),
                 desired_state = COALESCE((event.data->>'desired_state')::INTEGER, desired_state),
+                schedule = COALESCE(event.data->'schedule', schedule),
                 updated_at = event.occurred_at,
                 projection_version = event.sequence_num
             WHERE id = event.stream_id;
