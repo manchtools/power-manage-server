@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -1384,7 +1385,7 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 	}
 
 	if len(a.Params) > 0 {
-		h.deserializeActionParams(action, pm.ActionType(a.ActionType), a.Params)
+		actionparams.PopulateManagedAction(action, pm.ActionType(a.ActionType), a.Params)
 	}
 
 	if len(a.Schedule) > 0 {
@@ -1394,90 +1395,6 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 	return action
 }
 
-func (h *ActionHandler) deserializeActionParams(action *pm.ManagedAction, actionType pm.ActionType, paramsJSON []byte) {
-	switch actionType {
-	case pm.ActionType_ACTION_TYPE_PACKAGE:
-		var p pm.PackageParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Package{Package: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_APP_IMAGE:
-		var p pm.AppInstallParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_App{App: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SHELL:
-		var p pm.ShellParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Shell{Shell: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var p pm.SystemdParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Systemd{Systemd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_FILE:
-		var p pm.FileParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_File{File: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_UPDATE:
-		var p pm.UpdateParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Update{Update: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_REPOSITORY:
-		var p pm.RepositoryParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Repository{Repository: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_DIRECTORY:
-		var p pm.DirectoryParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Directory{Directory: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_USER:
-		var p pm.UserParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_User{User: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSH:
-		var p pm.SshParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Ssh{Ssh: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSHD:
-		var p pm.SshdParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Sshd{Sshd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SUDO:
-		var p pm.SudoParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Sudo{Sudo: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LPS:
-		var p pm.LpsParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Lps{Lps: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LUKS:
-		var p pm.LuksParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Luks{Luks: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_WIFI:
-		var p pm.WifiParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Wifi{Wifi: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
-		var p pm.AgentUpdateParams
-		if err := protojson.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_AgentUpdate{AgentUpdate: &p}
-		}
-	}
-}
 
 func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionExecution {
 	exec := &pm.ActionExecution{
