@@ -42,18 +42,9 @@ func NewAuditHandler(st *store.Store, logger *slog.Logger) *AuditHandler {
 
 // ListAuditEvents returns a paginated list of audit events.
 func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request[pm.ListAuditEventsRequest]) (*connect.Response[pm.ListAuditEventsResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	events, err := h.store.Queries().ListAuditEvents(ctx, db.ListAuditEventsParams{
@@ -76,10 +67,7 @@ func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count audit events")
 	}
 
-	var nextPageToken string
-	if int32(len(events)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(events)), offset, pageSize, count)
 
 	protoEvents := make([]*pm.AuditEvent, len(events))
 	for i, e := range events {

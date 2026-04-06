@@ -3,12 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -72,9 +70,9 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	passwordHash, err := auth.HashPassword(req.Msg.Password)
@@ -211,10 +209,7 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	protoUser := userToProto(user)
@@ -228,18 +223,9 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 
 // ListUsers returns a paginated list of users.
 func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.ListUsersRequest]) (*connect.Response[pm.ListUsersResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	users, err := h.store.Queries().ListUsers(ctx, db.ListUsersParams{
@@ -255,10 +241,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 	}
 
-	var nextPageToken string
-	if int32(len(users)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(users)), offset, pageSize, count)
 
 	protoUsers := make([]*pm.User, len(users))
 	for i, u := range users {
@@ -304,13 +287,13 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Emit UserEmailChanged event
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  "UserEmailChanged",
@@ -327,10 +310,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	h.enqueueUserReindex(ctx, user)
@@ -350,9 +330,9 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// If user is updating their own password, verify current password
@@ -395,10 +375,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
@@ -412,9 +389,9 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Emit appropriate event
@@ -423,7 +400,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		eventType = "UserDisabled"
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  eventType,
@@ -438,10 +415,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	h.enqueueUserReindex(ctx, user)
@@ -464,18 +438,15 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Load user BEFORE delete to get system action IDs for cleanup
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	// Emit UserDeleted event
@@ -515,13 +486,13 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Emit UserProfileUpdated event
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  "UserProfileUpdated",
@@ -543,10 +514,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 	// Read back from projection
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	h.enqueueUserReindex(ctx, user)
@@ -625,12 +593,12 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  "UserProvisioningSettingsUpdated",
@@ -651,10 +619,7 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
@@ -676,9 +641,9 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Sanitize the username the same way as during creation
@@ -687,7 +652,7 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid linux username")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  "UserLinuxUsernameChanged",
@@ -703,10 +668,7 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	h.enqueueUserReindex(ctx, user)
@@ -732,15 +694,15 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	keyID := ulid.Make().String()
 	now := time.Now()
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  "UserSshKeyAdded",
@@ -783,12 +745,12 @@ func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  "UserSshKeyRemoved",
@@ -821,12 +783,12 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  "UserSshSettingsUpdated",
@@ -844,10 +806,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	if h.systemActions != nil {

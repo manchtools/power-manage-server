@@ -11,8 +11,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -39,9 +37,9 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Validate source exists
@@ -134,7 +132,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	id := ulid.Make().String()
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "assignment",
 		StreamID:   id,
 		EventType:  "AssignmentCreated",
@@ -147,16 +145,9 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create assignment")
+	}, "failed to create assignment"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "assignment",
-		"stream_id", id,
-		"event_type", "AssignmentCreated",
-	)
 
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
 	// may have updated an existing soft-deleted record with a different ID
@@ -181,55 +172,36 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify assignment exists before emitting delete event
-	_, err := h.store.Queries().GetAssignmentByID(ctx, req.Msg.Id)
+	_, err = h.store.Queries().GetAssignmentByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrAssignmentNotFound, connect.CodeNotFound, "assignment not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assignment")
+		return nil, handleGetError(ctx, err, ErrAssignmentNotFound, "assignment not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "assignment",
 		StreamID:   req.Msg.Id,
 		EventType:  "AssignmentDeleted",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete assignment")
+	}, "failed to delete assignment"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "assignment",
-		"stream_id", req.Msg.Id,
-		"event_type", "AssignmentDeleted",
-	)
 
 	return connect.NewResponse(&pm.DeleteAssignmentResponse{}), nil
 }
 
 // ListAssignments returns a paginated list of assignments.
 func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Request[pm.ListAssignmentsRequest]) (*connect.Response[pm.ListAssignmentsResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	assignments, err := h.store.Queries().ListAssignments(ctx, db.ListAssignmentsParams{
@@ -254,10 +226,7 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count assignments")
 	}
 
-	var nextPageToken string
-	if int32(len(assignments)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(assignments)), offset, pageSize, count)
 
 	protoAssignments := make([]*pm.Assignment, len(assignments))
 	for i, a := range assignments {

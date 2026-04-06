@@ -9,8 +9,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -35,13 +33,13 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify device access (non-admins can only access assigned devices)
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
+	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
 		ID:           req.Msg.DeviceId,
 		FilterUserID: userFilterID(ctx, "ListDevices"),
 	})
@@ -68,7 +66,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 
 	id := ulid.Make().String()
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_selection",
 		StreamID:   id,
 		EventType:  "UserSelectionChanged",
@@ -80,16 +78,9 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to set user selection")
+	}, "failed to set user selection"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "user_selection",
-		"stream_id", id,
-		"event_type", "UserSelectionChanged",
-	)
 
 	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
 		DeviceID:   req.Msg.DeviceId,

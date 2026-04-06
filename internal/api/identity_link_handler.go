@@ -2,16 +2,13 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -29,9 +26,9 @@ func NewIdentityLinkHandler(st *store.Store, logger *slog.Logger) *IdentityLinkH
 
 // ListIdentityLinks returns the current user's linked identities.
 func (h *IdentityLinkHandler) ListIdentityLinks(ctx context.Context, req *connect.Request[pm.ListIdentityLinksRequest]) (*connect.Response[pm.ListIdentityLinksResponse], error) {
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	links, err := h.store.Queries().ListIdentityLinksForUser(ctx, userCtx.ID)
@@ -55,18 +52,15 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Get the link to verify ownership
 	link, err := h.store.Queries().GetIdentityLinkByID(ctx, req.Msg.LinkId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrIdentityLinkNotFound, connect.CodeNotFound, "identity link not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get identity link")
+		return nil, handleGetError(ctx, err, ErrIdentityLinkNotFound, "identity link not found")
 	}
 
 	// Non-admin callers can only unlink their own identities.
@@ -92,7 +86,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 	}
 
 	// Emit unlink event
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
 		EventType:  "IdentityUnlinked",
@@ -102,16 +96,9 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to unlink identity")
+	}, "failed to unlink identity"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "identity_provider",
-		"stream_id", link.ID,
-		"event_type", "IdentityUnlinked",
-	)
 
 	return connect.NewResponse(&pm.UnlinkIdentityResponse{}), nil
 }

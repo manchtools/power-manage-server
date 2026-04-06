@@ -225,17 +225,14 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 
 // GetCurrentUser returns the current authenticated user.
 func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[pm.GetCurrentUserRequest]) (*connect.Response[pm.GetCurrentUserResponse], error) {
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	protoUser := userToProto(user)

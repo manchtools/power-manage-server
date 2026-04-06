@@ -87,10 +87,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 
 	provider, err := h.store.Queries().GetIdentityProviderBySlug(ctx, req.Msg.Slug)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrProviderNotFound, connect.CodeNotFound, "provider not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
+		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
 
 	if !provider.Enabled {

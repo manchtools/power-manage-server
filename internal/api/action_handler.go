@@ -16,8 +16,6 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -253,9 +251,9 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	params, err := h.serializeCreateActionParams(req.Msg)
@@ -293,24 +291,16 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		eventData["schedule"] = scheduleToMap(req.Msg.Schedule)
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   id,
 		EventType:  "ActionCreated",
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to append action event", "error", err, "id", id)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create action")
+	}, "failed to create action"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "action",
-		"stream_id", id,
-		"event_type", "ActionCreated",
-	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
@@ -336,10 +326,7 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
 	return connect.NewResponse(&pm.GetActionResponse{
@@ -349,18 +336,9 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 
 // ListActions returns a paginated list of actions.
 func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm.ListActionsRequest]) (*connect.Response[pm.ListActionsResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	typeFilter := int32(req.Msg.TypeFilter)
@@ -383,10 +361,7 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count actions")
 	}
 
-	var nextPageToken string
-	if int32(len(actions)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(actions)), offset, pageSize, count)
 
 	protoActions := make([]*pm.ManagedAction, len(actions))
 	for i, a := range actions {
@@ -406,9 +381,9 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify action exists before appending event
@@ -419,7 +394,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  "ActionRenamed",
@@ -428,16 +403,9 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename action")
+	}, "failed to rename action"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "action",
-		"stream_id", req.Msg.Id,
-		"event_type", "ActionRenamed",
-	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -457,9 +425,9 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify action exists before appending event
@@ -470,7 +438,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  "ActionDescriptionUpdated",
@@ -479,16 +447,9 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
+	}, "failed to update description"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "action",
-		"stream_id", req.Msg.Id,
-		"event_type", "ActionDescriptionUpdated",
-	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -512,17 +473,14 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	existing, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
 	params, err := h.serializeUpdateActionParams(req.Msg)
@@ -552,30 +510,20 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		eventData["schedule"] = scheduleToMap(req.Msg.Schedule)
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  "ActionParamsUpdated",
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update action params")
+	}, "failed to update action params"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "action",
-		"stream_id", req.Msg.Id,
-		"event_type", "ActionParamsUpdated",
-	)
 
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
 	// Re-sign the action after params update
@@ -627,9 +575,9 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Capture cascade IDs from Valkey before deleting.
@@ -638,23 +586,16 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "action", req.Msg.Id)
 	}
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  "ActionDeleted",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete action")
+	}, "failed to delete action"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "action",
-		"stream_id", req.Msg.Id,
-		"event_type", "ActionDeleted",
-	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs); err != nil {
@@ -671,17 +612,14 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
 	var actionType pm.ActionType
@@ -744,23 +682,16 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		eventData["action_id"] = *actionID
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
 		EventType:  "ExecutionCreated",
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
+	}, "failed to create execution"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "execution",
-		"stream_id", id,
-		"event_type", "ExecutionCreated",
-	)
 
 	// Dispatch action to device via Asynq task queue
 	if h.aqClient != nil {
@@ -1036,10 +967,7 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrExecutionNotFound, connect.CodeNotFound, "execution not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
+		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
 
 	protoExec := h.executionToProto(exec)
@@ -1065,18 +993,9 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 
 // ListExecutions returns a paginated list of executions.
 func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request[pm.ListExecutionsRequest]) (*connect.Response[pm.ListExecutionsResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	statusFilter := ""
@@ -1109,10 +1028,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count executions")
 	}
 
-	var nextPageToken string
-	if int32(len(execs)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(execs)), offset, pageSize, count)
 
 	protoExecs := make([]*pm.ActionExecution, len(execs))
 	for i, e := range execs {
@@ -1160,21 +1076,18 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	if !isInstantActionType(req.Msg.InstantAction) {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
 	}
 
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
 	var timeoutSeconds int32
@@ -1195,23 +1108,16 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		"timeout_seconds": timeoutSeconds,
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
 		EventType:  "ExecutionCreated",
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create execution")
+	}, "failed to create execution"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "execution",
-		"stream_id", id,
-		"event_type", "ExecutionCreated",
-	)
 
 	// Dispatch instant action to device via Asynq task queue
 	if h.aqClient != nil {
