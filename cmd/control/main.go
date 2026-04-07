@@ -142,20 +142,11 @@ func main() {
 	})
 
 	// Start periodic cleanup of expired revoked tokens
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
-					logger.Error("failed to cleanup expired token revocations", "error", err)
-				}
-			case <-ctx.Done():
-				return
-			}
+	go runPeriodic(ctx, 1*time.Hour, func() {
+		if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
+			logger.Error("failed to cleanup expired token revocations", "error", err)
 		}
-	}()
+	})
 
 	// Start periodic evaluation of queued dynamic groups.
 	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
@@ -213,22 +204,13 @@ func main() {
 
 		// Periodic full re-evaluation as a safety net (every 24h).
 		// Queues all dynamic groups for evaluation; the worker above drains them.
-		go func() {
-			ticker := time.NewTicker(24 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
-						logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
-					} else {
-						logger.Info("queued full dynamic group re-evaluation")
-					}
-				case <-ctx.Done():
-					return
-				}
+		go runPeriodic(ctx, 24*time.Hour, func() {
+			if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
+				logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
+			} else {
+				logger.Info("queued full dynamic group re-evaluation")
 			}
-		}()
+		})
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
@@ -270,20 +252,11 @@ func main() {
 	}()
 
 	// Start periodic cleanup of stale OSQuery results
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
-					logger.Error("failed to cleanup old osquery results", "error", err)
-				}
-			case <-ctx.Done():
-				return
-			}
+	go runPeriodic(ctx, 5*time.Minute, func() {
+		if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
+			logger.Error("failed to cleanup old osquery results", "error", err)
 		}
-	}()
+	})
 
 	// Initialize secret encryptor
 	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
@@ -821,6 +794,20 @@ func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Hand
 
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// runPeriodic calls fn on every tick until ctx is cancelled.
+func runPeriodic(ctx context.Context, interval time.Duration, fn func()) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			fn()
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
