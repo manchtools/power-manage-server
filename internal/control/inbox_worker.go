@@ -180,10 +180,15 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		needsCreate = false
 	} else if errors.Is(err, pgx.ErrNoRows) {
 		// Not an execution ID — treat as action ID (agent-scheduled action).
-		// Derive a stable execution ID from device+action so retries don't
-		// create duplicate executions.
+		// Derive a stable execution ID from device+action+completedAt so
+		// retries of the same result don't create duplicates, but separate
+		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
-		executionID = stableExecutionID(deviceID, actionID)
+		var completedStr string
+		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
+			completedStr = result.CompletedAt.AsTime().Format(time.RFC3339Nano)
+		}
+		executionID = stableExecutionID(deviceID, actionID, completedStr)
 		needsCreate = true
 	} else {
 		// Transient DB error — let Asynq retry
@@ -524,6 +529,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 
 	logger.Debug("found pending executions", "count", len(executions))
 
+	var enqueueErrs []error
 	for _, exec := range executions {
 		// Parse params from []byte to avoid base64 encoding
 		var params json.RawMessage
@@ -542,6 +548,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 
 		// Enqueue to device queue first — only record the event after the
 		// task is durably queued so we never mark "dispatched" without delivery.
+		// Use a stable TaskID so retries don't create duplicate tasks.
 		if err := w.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 			ExecutionID:     exec.ID,
 			ActionType:      exec.ActionType,
@@ -550,8 +557,13 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			TimeoutSeconds:  exec.TimeoutSeconds,
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
-		}, asynq.MaxRetry(3)); err != nil {
-			logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
+		}, asynq.MaxRetry(3), asynq.TaskID("dispatch:"+exec.ID)); err != nil {
+			if errors.Is(err, asynq.ErrDuplicateTask) {
+				logger.Debug("action already enqueued, skipping", "execution_id", exec.ID)
+			} else {
+				logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
+				enqueueErrs = append(enqueueErrs, err)
+			}
 			continue
 		}
 
@@ -585,6 +597,9 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			"action_type", exec.ActionType,
 		)
 	}
+	if len(enqueueErrs) > 0 {
+		return fmt.Errorf("%d dispatch(es) failed, first: %w", len(enqueueErrs), enqueueErrs[0])
+	}
 	return nil
 }
 
@@ -611,10 +626,11 @@ func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
 	}
 }
 
-// stableExecutionID derives a deterministic execution ID from device and action IDs.
-// This ensures that retries of the same agent-scheduled result don't create
-// duplicate executions. The event store's optimistic locking handles conflicts.
-func stableExecutionID(deviceID, actionID string) string {
-	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID))
+// stableExecutionID derives a deterministic execution ID from device, action,
+// and completed-at timestamp. Including completedAt ensures separate scheduled
+// runs of the same action get unique IDs, while retries of the same result
+// (same completedAt) produce the same ID for deduplication.
+func stableExecutionID(deviceID, actionID, completedAt string) string {
+	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
 	return hex.EncodeToString(h[:16])
 }

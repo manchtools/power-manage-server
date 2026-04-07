@@ -284,7 +284,11 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					RotatedAt string `json:"rotated_at"`
 					Reason    string `json:"reason"`
 				}
-				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil && len(rotations) > 0 {
+				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
+					// Strip malformed rotation data to prevent plaintext leaking to Valkey
+					delete(result.Metadata, "lps.rotations")
+					h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
+				} else if len(rotations) > 0 {
 					protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
 					for i, r := range rotations {
 						protoRotations[i] = &pm.LpsPasswordRotation{
