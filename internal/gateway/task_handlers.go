@@ -2,11 +2,9 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
@@ -83,7 +81,7 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 
 	// Wrap in ServerMessage
 	msg := &pm.ServerMessage{
-		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_Action{
 			Action: &pm.ActionDispatch{
 				Action: action,
@@ -109,7 +107,7 @@ func (h *deviceTaskHandler) handleOSQueryDispatch(_ context.Context, t *asynq.Ta
 	}
 
 	msg := &pm.ServerMessage{
-		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_Query{
 			Query: &pm.OSQuery{
 				QueryId: payload.QueryID,
@@ -131,7 +129,7 @@ func (h *deviceTaskHandler) handleOSQueryDispatch(_ context.Context, t *asynq.Ta
 
 func (h *deviceTaskHandler) handleInventoryRequest(_ context.Context, _ *asynq.Task) error {
 	msg := &pm.ServerMessage{
-		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_RequestInventory{
 			RequestInventory: &pm.RequestInventory{},
 		},
@@ -152,7 +150,7 @@ func (h *deviceTaskHandler) handleRevokeLuksDeviceKey(_ context.Context, t *asyn
 	}
 
 	msg := &pm.ServerMessage{
-		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_RevokeLuksDeviceKey{
 			RevokeLuksDeviceKey: &pm.RevokeLuksDeviceKey{
 				ActionId: payload.ActionID,
@@ -175,7 +173,7 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 	}
 
 	msg := &pm.ServerMessage{
-		Id: ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String(),
+		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_LogQuery{
 			LogQuery: &pm.LogQuery{
 				QueryId:  payload.QueryID,

@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -162,7 +161,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		needsCreate = false
 	} else {
 		actionID = resultID
-		executionID = ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+		executionID = ulid.Make().String()
 		needsCreate = true
 	}
 
@@ -485,7 +484,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		"success", payload.Success,
 	)
 
-	luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	luksStreamID := ulid.Make().String()
 	if payload.Success {
 		return w.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",

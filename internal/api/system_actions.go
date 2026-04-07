@@ -2,13 +2,9 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"time"
-
-	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -262,7 +258,7 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 
 // createSystemAction emits an ActionCreated event with is_system=true.
 func (m *SystemActionManager) createSystemAction(ctx context.Context, name string, actionType, desiredState int32, paramsJSON []byte) (string, error) {
-	id := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	id := newULID()
 
 	var params map[string]any
 	if err := json.Unmarshal(paramsJSON, &params); err != nil {
@@ -293,7 +289,7 @@ func (m *SystemActionManager) createSystemAction(ctx context.Context, name strin
 
 // assignActionToUser emits an AssignmentCreated event.
 func (m *SystemActionManager) assignActionToUser(ctx context.Context, actionID, userID string) error {
-	assignmentID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	assignmentID := newULID()
 
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",
