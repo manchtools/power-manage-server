@@ -219,20 +219,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"changed":      result.Changed,
 			"compliant":    result.Compliant,
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
-		}
-		if result.DetectionOutput != nil {
-			data["detection_output"] = map[string]any{
-				"stdout":    result.DetectionOutput.Stdout,
-				"stderr":    result.DetectionOutput.Stderr,
-				"exit_code": result.DetectionOutput.ExitCode,
-			}
-		}
+		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_FAILED:
 		eventType = "ExecutionFailed"
@@ -243,20 +230,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"changed":      result.Changed,
 			"compliant":    result.Compliant,
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
-		}
-		if result.DetectionOutput != nil {
-			data["detection_output"] = map[string]any{
-				"stdout":    result.DetectionOutput.Stdout,
-				"stderr":    result.DetectionOutput.Stderr,
-				"exit_code": result.DetectionOutput.ExitCode,
-			}
-		}
+		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_RUNNING:
 		eventType = "ExecutionStarted"
@@ -269,12 +243,8 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"duration_ms":  result.DurationMs,
 			"completed_at": completedAt.Format(time.RFC3339Nano),
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
+		if m := commandOutputToMap(result.Output); m != nil {
+			data["output"] = m
 		}
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
@@ -578,5 +548,28 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			"execution_id", exec.ID,
 			"action_type", exec.ActionType,
 		)
+	}
+}
+
+// commandOutputToMap converts a CommandOutput proto to a map for event data.
+// Returns nil if the output is nil.
+func commandOutputToMap(o *pm.CommandOutput) map[string]any {
+	if o == nil {
+		return nil
+	}
+	return map[string]any{
+		"stdout":    o.Stdout,
+		"stderr":    o.Stderr,
+		"exit_code": o.ExitCode,
+	}
+}
+
+// addCommandOutputs adds output and detection_output fields to the event data map.
+func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
+	if m := commandOutputToMap(result.Output); m != nil {
+		data["output"] = m
+	}
+	if m := commandOutputToMap(result.DetectionOutput); m != nil {
+		data["detection_output"] = m
 	}
 }
