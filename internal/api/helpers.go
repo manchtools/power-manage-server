@@ -28,7 +28,7 @@ func handleGetError(ctx context.Context, err error, notFoundCode, notFoundMsg st
 	if errors.Is(err, pgx.ErrNoRows) {
 		return apiErrorCtx(ctx, notFoundCode, connect.CodeNotFound, notFoundMsg)
 	}
-	return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, notFoundMsg)
+	return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get resource")
 }
 
 // appendEvent appends an event and logs it. Returns a Connect error on failure.
@@ -50,8 +50,10 @@ func appendEvent(ctx context.Context, st *store.Store, logger *slog.Logger, evt 
 // Default page size is 50, max is 100.
 func parsePagination(pageSize int32, pageToken string) (size int32, offset int32, err error) {
 	size = pageSize
-	if size <= 0 || size > 100 {
+	if size <= 0 {
 		size = 50
+	} else if size > 100 {
+		size = 100
 	}
 	if pageToken != "" {
 		offset64, parseErr := parsePageToken(pageToken)

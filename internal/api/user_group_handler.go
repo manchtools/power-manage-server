@@ -700,8 +700,9 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	// Bump session versions for all current members (permissions may have changed)
-	userCtx, _ := auth.UserFromContext(ctx)
-	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID)
+	if userCtx, ok := auth.UserFromContext(ctx); ok {
+		h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID)
+	}
 
 	return connect.NewResponse(&pm.EvaluateDynamicUserGroupResponse{
 		Group:        userGroupToProto(group, roles, isScimManaged),
