@@ -83,9 +83,7 @@ func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesPr
 			search.EnrichDeviceInventory(data, t.TableName, t.Rows)
 		}
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDevice, d.ID, data); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "device", "error", err)
-	}
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDevice, d.ID, data)
 }
 
 // ListDevices returns a paginated list of devices.
