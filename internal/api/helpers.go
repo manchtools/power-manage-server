@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -57,7 +58,7 @@ func parsePagination(pageSize int32, pageToken string) (size int32, offset int32
 	}
 	if pageToken != "" {
 		offset64, parseErr := parsePageToken(pageToken)
-		if parseErr != nil || offset64 < 0 || offset64 > int64(^int32(0)>>1) {
+		if parseErr != nil || offset64 < 0 || offset64 > math.MaxInt32 {
 			return 0, 0, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
