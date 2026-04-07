@@ -564,104 +564,42 @@ func parseFlags() *Config {
 	flag.Parse()
 
 	// Environment variable overrides
-	if v := os.Getenv("CONTROL_LISTEN_ADDR"); v != "" {
-		cfg.ListenAddr = v
-	}
-	if v := os.Getenv("CONTROL_DATABASE_URL"); v != "" {
-		cfg.DatabaseURL = v
-	}
-	if v := os.Getenv("CONTROL_JWT_SECRET"); v != "" {
-		cfg.JWTSecret = v
-	}
-	if v := os.Getenv("CONTROL_CA_CERT"); v != "" {
-		cfg.CACertPath = v
-	}
-	if v := os.Getenv("CONTROL_CA_KEY"); v != "" {
-		cfg.CAKeyPath = v
-	}
-	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
-		cfg.CATrustBundlePath = v
-	}
-	if v := os.Getenv("CONTROL_TLS_ENABLED"); v == "true" || v == "1" {
-		cfg.TLSEnabled = true
-	}
-	if v := os.Getenv("CONTROL_TLS_CERT"); v != "" {
-		cfg.TLSCert = v
-	}
-	if v := os.Getenv("CONTROL_TLS_KEY"); v != "" {
-		cfg.TLSKey = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
-		cfg.InternalListenAddr = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_TLS_CERT"); v != "" {
-		cfg.InternalTLSCert = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_TLS_KEY"); v != "" {
-		cfg.InternalTLSKey = v
-	}
-	if v := os.Getenv("CONTROL_ADMIN_EMAIL"); v != "" {
-		cfg.AdminEmail = v
-	}
-	if v := os.Getenv("CONTROL_ADMIN_PASSWORD"); v != "" {
-		cfg.AdminPassword = v
-	}
-	if v := os.Getenv("CONTROL_LOG_LEVEL"); v != "" {
-		cfg.LogLevel = v
-	}
-	if v := os.Getenv("CONTROL_LOG_FORMAT"); v != "" {
-		cfg.LogFormat = v
-	}
-	if v := os.Getenv("CONTROL_GATEWAY_URL"); v != "" {
-		cfg.GatewayURL = v
-	}
-	if v := os.Getenv("CONTROL_CORS_ORIGINS"); v != "" {
-		origins := strings.Split(v, ",")
-		for i := range origins {
-			origins[i] = strings.TrimSpace(origins[i])
-		}
-		cfg.CORSOrigins = origins
-	}
-	if v := os.Getenv("CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.DynamicGroupEvalInterval = d
-		}
-	}
+	envString(&cfg.ListenAddr, "CONTROL_LISTEN_ADDR")
+	envString(&cfg.DatabaseURL, "CONTROL_DATABASE_URL")
+	envString(&cfg.JWTSecret, "CONTROL_JWT_SECRET")
+	envString(&cfg.CACertPath, "CONTROL_CA_CERT")
+	envString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
+	envString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
+	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", "true", "1")
+	envString(&cfg.TLSCert, "CONTROL_TLS_CERT")
+	envString(&cfg.TLSKey, "CONTROL_TLS_KEY")
+	envString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
+	envString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
+	envString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
+	envString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
+	envString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
+	envString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
+	envString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
+	envString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
+	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
+	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
 	if v := os.Getenv("CONTROL_PASSWORD_AUTH_ENABLED"); v == "false" || v == "0" {
 		cfg.PasswordAuthEnabled = false
 	}
-	if v := os.Getenv("CONTROL_SSO_CALLBACK_BASE_URL"); v != "" {
-		cfg.SSOCallbackBaseURL = v
-	} else if len(cfg.CORSOrigins) > 0 {
-		// Derive from first CORS origin
+	envString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
+	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
 	}
-	if v := os.Getenv("CONTROL_SCIM_BASE_URL"); v != "" {
-		cfg.SCIMBaseURL = v
-	}
-	if v := os.Getenv("CONTROL_TRUSTED_PROXIES"); v != "" {
-		proxies := strings.Split(v, ",")
-		for i := range proxies {
-			proxies[i] = strings.TrimSpace(proxies[i])
-		}
-		cfg.TrustedProxies = proxies
-	}
+	envString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
+	envCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
 
 	// Valkey (Asynq task queue) configuration
-	if v := os.Getenv("CONTROL_VALKEY_ADDR"); v != "" {
-		cfg.ValkeyAddr = v
-	}
-	if v := os.Getenv("CONTROL_VALKEY_PASSWORD"); v != "" {
-		cfg.ValkeyPassword = v
-	}
-	if v := os.Getenv("CONTROL_VALKEY_DB"); v != "" {
-		if db, err := strconv.Atoi(v); err == nil {
-			cfg.ValkeyDB = db
-		}
-	}
+	envString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
+	envString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
+	envInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
 	if cfg.DynamicGroupEvalInterval != 0 {
@@ -794,6 +732,53 @@ func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Hand
 
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// envString overrides target with the environment variable value if set.
+func envString(target *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = v
+	}
+}
+
+// envBool sets target to true if the environment variable matches any of the given values.
+func envBool(target *bool, key string, trueValues ...string) {
+	v := os.Getenv(key)
+	for _, tv := range trueValues {
+		if v == tv {
+			*target = true
+			return
+		}
+	}
+}
+
+// envDuration overrides target with the parsed duration if the environment variable is set.
+func envDuration(target *time.Duration, key string) {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			*target = d
+		}
+	}
+}
+
+// envCSV overrides target with a comma-separated environment variable, trimming whitespace.
+func envCSV(target *[]string, key string) {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		*target = parts
+	}
+}
+
+// envInt overrides target with the parsed integer if the environment variable is set.
+func envInt(target *int, key string) {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			*target = n
+		}
 	}
 }
 
