@@ -121,6 +121,14 @@ func TestParseActionParams_InvalidJSON(t *testing.T) {
 	assert.Nil(t, action.Params)
 }
 
+func TestParseActionParams_UnknownType(t *testing.T) {
+	action := &pm.Action{}
+	actionparams.PopulateAction(action, 9999, []byte(`{"name":"test"}`))
+
+	// Should not panic and params should remain nil for unknown types
+	assert.Nil(t, action.Params)
+}
+
 func TestParseActionParams_EmptyParams(t *testing.T) {
 	action := &pm.Action{}
 	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte("{}"))

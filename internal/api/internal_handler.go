@@ -254,4 +254,3 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 	return action
 }
 
-// parseActionParams consolidated into internal/actionparams.PopulateAction.

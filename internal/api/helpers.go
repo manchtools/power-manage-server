@@ -17,7 +17,7 @@ import (
 // Returns the user context or a standardized unauthenticated error.
 func requireAuth(ctx context.Context) (*auth.UserContext, error) {
 	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
+	if !ok || userCtx == nil {
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 	return userCtx, nil
@@ -57,7 +57,7 @@ func parsePagination(pageSize int32, pageToken string) (size int32, offset int32
 	}
 	if pageToken != "" {
 		offset64, parseErr := parsePageToken(pageToken)
-		if parseErr != nil {
+		if parseErr != nil || offset64 < 0 || offset64 > int64(^int32(0)>>1) {
 			return 0, 0, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
