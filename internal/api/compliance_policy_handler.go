@@ -3,19 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -74,14 +70,14 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	id := ulid.Make().String()
 
-	err := h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   id,
 		EventType:  "CompliancePolicyCreated",
@@ -91,16 +87,9 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create compliance policy")
+	}, "failed to create compliance policy"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", id,
-		"event_type", "CompliancePolicyCreated",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
 	if err != nil {
@@ -122,10 +111,7 @@ func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
 	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.Id)
@@ -140,18 +126,9 @@ func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *
 
 // ListCompliancePolicies returns a paginated list of compliance policies.
 func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, req *connect.Request[pm.ListCompliancePoliciesRequest]) (*connect.Response[pm.ListCompliancePoliciesResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	policies, err := h.store.Queries().ListCompliancePolicies(ctx, db.ListCompliancePoliciesParams{
@@ -167,10 +144,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count compliance policies")
 	}
 
-	var nextPageToken string
-	if int32(len(policies)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(policies)), offset, pageSize, count)
 
 	protoPolicies := make([]*pm.CompliancePolicy, len(policies))
 	for i, p := range policies {
@@ -190,21 +164,18 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists before emitting event
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyRenamed",
@@ -213,16 +184,9 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to rename compliance policy")
+	}, "failed to rename compliance policy"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.Id,
-		"event_type", "CompliancePolicyRenamed",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -242,21 +206,18 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists before emitting event
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyDescriptionUpdated",
@@ -265,16 +226,9 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update description")
+	}, "failed to update description"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.Id,
-		"event_type", "CompliancePolicyDescriptionUpdated",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
@@ -294,37 +248,27 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists before emitting delete event
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  "CompliancePolicyDeleted",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete compliance policy")
+	}, "failed to delete compliance policy"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.Id,
-		"event_type", "CompliancePolicyDeleted",
-	)
 
 	if h.searchIdx != nil {
 		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeCompliancePolicy, req.Msg.Id, nil); err != nil {
@@ -341,27 +285,21 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
 	// Verify action exists and is a compliance action
 	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
 	// Check action type is SHELL and is_compliance is true
@@ -379,7 +317,7 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, apiErrorCtx(ctx, ErrActionNotCompliance, connect.CodeInvalidArgument, "action must have is_compliance enabled")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  "CompliancePolicyRuleAdded",
@@ -390,16 +328,9 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add rule")
+	}, "failed to add rule"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.PolicyId,
-		"event_type", "CompliancePolicyRuleAdded",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -424,21 +355,18 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists before emitting event
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  "CompliancePolicyRuleRemoved",
@@ -447,16 +375,9 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove rule")
+	}, "failed to remove rule"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.PolicyId,
-		"event_type", "CompliancePolicyRuleRemoved",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -481,21 +402,18 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		return nil, err
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Verify policy exists before emitting event
-	_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
+		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  "CompliancePolicyRuleUpdated",
@@ -505,16 +423,9 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update rule")
+	}, "failed to update rule"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "compliance_policy",
-		"stream_id", req.Msg.PolicyId,
-		"event_type", "CompliancePolicyRuleUpdated",
-	)
 
 	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -555,10 +466,7 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 	// Get device compliance summary
 	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, req.Msg.DeviceId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance summary")
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
 	// Group evaluations by policy

@@ -13,7 +13,6 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -52,9 +51,9 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, apiErrorCtx(ctx, ErrRoleNameExists, connect.CodeAlreadyExists, "role name already exists")
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	id := ulid.Make().String()
@@ -64,7 +63,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		perms = []string{}
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   id,
 		EventType:  "RoleCreated",
@@ -76,16 +75,9 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create role")
+	}, "failed to create role"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "role",
-		"stream_id", id,
-		"event_type", "RoleCreated",
-	)
 
 	role, err := h.store.Queries().GetRoleByID(ctx, id)
 	if err != nil {
@@ -105,10 +97,7 @@ func (h *RoleHandler) GetRole(ctx context.Context, req *connect.Request[pm.GetRo
 
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
+		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
 	userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.Id)
@@ -124,18 +113,9 @@ func (h *RoleHandler) GetRole(ctx context.Context, req *connect.Request[pm.GetRo
 
 // ListRoles returns a paginated list of roles.
 func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.ListRolesRequest]) (*connect.Response[pm.ListRolesResponse], error) {
-	pageSize := int32(req.Msg.PageSize)
-	if pageSize <= 0 || pageSize > 100 {
-		pageSize = 50
-	}
-
-	offset := int32(0)
-	if req.Msg.PageToken != "" {
-		offset64, err := parsePageToken(req.Msg.PageToken)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
-		}
-		offset = int32(offset64)
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
 	}
 
 	roles, err := h.store.Queries().ListRoles(ctx, db.ListRolesParams{
@@ -151,10 +131,7 @@ func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count roles")
 	}
 
-	var nextPageToken string
-	if int32(len(roles)) == pageSize && int64(offset)+int64(pageSize) < count {
-		nextPageToken = formatPageToken(int64(offset) + int64(pageSize))
-	}
+	nextPageToken := buildNextPageToken(int32(len(roles)), offset, pageSize, count)
 
 	protoRoles := make([]*pm.Role, len(roles))
 	for i, r := range roles {
@@ -176,10 +153,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
+		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
 	// System roles can't have their name changed
@@ -195,9 +169,9 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		}
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	perms := req.Msg.Permissions
@@ -205,7 +179,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		perms = []string{}
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   req.Msg.RoleId,
 		EventType:  "RoleUpdated",
@@ -216,16 +190,9 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update role")
+	}, "failed to update role"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "role",
-		"stream_id", req.Msg.RoleId,
-		"event_type", "RoleUpdated",
-	)
 
 	// Bump session_version for all users with this role to invalidate cached permissions
 	h.bumpSessionVersionForRole(ctx, req.Msg.RoleId, userCtx.ID)
@@ -248,10 +215,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
+		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
 	if role.IsSystem {
@@ -274,28 +238,21 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		return nil, apiErrorCtx(ctx, ErrRoleInUse, connect.CodeFailedPrecondition, fmt.Sprintf("role still assigned to %d user groups", groupCount))
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   req.Msg.Id,
 		EventType:  "RoleDeleted",
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete role")
+	}, "failed to delete role"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "role",
-		"stream_id", req.Msg.Id,
-		"event_type", "RoleDeleted",
-	)
 
 	return connect.NewResponse(&pm.DeleteRoleResponse{}), nil
 }
@@ -315,20 +272,17 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one role_id or role_ids must be set")
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	q := h.store.Queries()
 
 	// Verify user exists
-	_, err := q.GetUserByID(ctx, req.Msg.UserId)
+	_, err = q.GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
+		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
 	for _, roleID := range roleIDs {
@@ -354,7 +308,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		}
 
 		streamID := req.Msg.UserId + ":" + roleID
-		err = h.store.AppendEvent(ctx, store.Event{
+		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_role",
 			StreamID:   streamID,
 			EventType:  "UserRoleAssigned",
@@ -364,16 +318,9 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
-		})
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign role")
+		}, "failed to assign role"); err != nil {
+			return nil, err
 		}
-		h.logger.Debug("event appended",
-			"request_id", middleware.RequestIDFromContext(ctx),
-			"stream_type", "user_role",
-			"stream_id", streamID,
-			"event_type", "UserRoleAssigned",
-		)
 	}
 
 	// Bump user's session version once to invalidate cached permissions
@@ -391,10 +338,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	// Check if the role is the Admin system role
 	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
+		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
 	// Prevent removing the last user from the Admin system role
@@ -408,13 +352,13 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		}
 	}
 
-	userCtx, ok := auth.UserFromContext(ctx)
-	if !ok {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
-	err = h.store.AppendEvent(ctx, store.Event{
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_role",
 		StreamID:   streamID,
 		EventType:  "UserRoleRevoked",
@@ -424,16 +368,9 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
-	})
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke role")
+	}, "failed to revoke role"); err != nil {
+		return nil, err
 	}
-	h.logger.Debug("event appended",
-		"request_id", middleware.RequestIDFromContext(ctx),
-		"stream_type", "user_role",
-		"stream_id", streamID,
-		"event_type", "UserRoleRevoked",
-	)
 
 	// Bump user's session version to invalidate cached permissions
 	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)

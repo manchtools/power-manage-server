@@ -10,9 +10,9 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -78,7 +78,7 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 
 	// Parse params
 	if len(payload.Params) > 0 && string(payload.Params) != "null" && string(payload.Params) != "{}" {
-		parseActionParams(action, payload.ActionType, payload.Params)
+		actionparams.PopulateAction(action, payload.ActionType, payload.Params)
 	}
 
 	// Wrap in ServerMessage
@@ -198,95 +198,3 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 	return nil
 }
 
-// parseActionParams populates the oneof Params field on an Action from JSON.
-func parseActionParams(action *pm.Action, actionType int32, paramsJSON []byte) {
-	unmarshal := protojson.UnmarshalOptions{DiscardUnknown: true}
-
-	switch pm.ActionType(actionType) {
-	case pm.ActionType_ACTION_TYPE_PACKAGE:
-		var p pm.PackageParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Package{Package: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
-		var p pm.AppInstallParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_App{App: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_FLATPAK:
-		var p pm.FlatpakParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Flatpak{Flatpak: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
-		var p pm.ShellParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Shell{Shell: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var p pm.SystemdParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Systemd{Systemd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_FILE:
-		var p pm.FileParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_File{File: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_UPDATE:
-		var p pm.UpdateParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Update{Update: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_REPOSITORY:
-		var p pm.RepositoryParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Repository{Repository: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_DIRECTORY:
-		var p pm.DirectoryParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Directory{Directory: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_USER:
-		var p pm.UserParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_User{User: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_GROUP:
-		var p pm.GroupParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Group{Group: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSH:
-		var p pm.SshParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Ssh{Ssh: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SSHD:
-		var p pm.SshdParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Sshd{Sshd: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_SUDO:
-		var p pm.SudoParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Sudo{Sudo: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LPS:
-		var p pm.LpsParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Lps{Lps: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_LUKS:
-		var p pm.LuksParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Luks{Luks: &p}
-		}
-	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
-		var p pm.AgentUpdateParams
-		if err := unmarshal.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_AgentUpdate{AgentUpdate: &p}
-		}
-	}
-}
