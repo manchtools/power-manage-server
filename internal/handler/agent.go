@@ -299,6 +299,9 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					}
 				}
 			}
+
+			// Strip sensitive data before enqueueing to Valkey
+			delete(result.Metadata, "lps.rotations")
 		}
 
 		// Serialize ActionResult to protojson and enqueue to control:inbox
