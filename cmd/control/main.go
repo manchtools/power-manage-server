@@ -422,7 +422,8 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Wrap with CORS and security headers middleware
-	corsHandler := middleware.CORS(cfg.CORSOrigins, logger)(mux)
+	corsAllowAll := os.Getenv("CONTROL_CORS_ALLOW_ALL") == "true"
+	corsHandler := middleware.CORS(cfg.CORSOrigins, corsAllowAll, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
@@ -570,7 +571,7 @@ func parseFlags() *Config {
 	envString(&cfg.CACertPath, "CONTROL_CA_CERT")
 	envString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
 	envString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
-	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, nil)
+	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, []string{"false", "0"})
 	envString(&cfg.TLSCert, "CONTROL_TLS_CERT")
 	envString(&cfg.TLSKey, "CONTROL_TLS_KEY")
 	envString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
@@ -586,7 +587,7 @@ func parseFlags() *Config {
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
-	envBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", nil, []string{"false", "0"})
+	envBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", []string{"true", "1"}, []string{"false", "0"})
 	envString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
 	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]

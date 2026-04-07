@@ -18,17 +18,18 @@ const (
 )
 
 // CORS returns a middleware that adds CORS headers for cross-origin requests.
-// If allowedOrigins is empty, all origins are allowed (development mode) with a warning.
-// Set CONTROL_CORS_ORIGINS=https://app.example.com,https://other.example.com for production.
-func CORS(allowedOrigins []string, logger *slog.Logger) func(http.Handler) http.Handler {
+// If allowedOrigins is empty and allowAll is false, CORS requests are denied (fail-closed).
+// Set allowAll to true only for local development.
+func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http.Handler) http.Handler {
 	originSet := make(map[string]bool, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		originSet[o] = true
 	}
 
-	allowAll := len(allowedOrigins) == 0
 	if allowAll {
-		logger.Warn("CORS: no origins configured (CONTROL_CORS_ORIGINS), allowing all origins -- set this in production")
+		logger.Warn("CORS: allow-all mode enabled — do not use in production")
+	} else if len(allowedOrigins) == 0 {
+		logger.Warn("CORS: no origins configured (CONTROL_CORS_ORIGINS), all cross-origin requests will be denied")
 	} else {
 		logger.Info("CORS: allowed origins configured", "origins", allowedOrigins)
 	}
@@ -47,6 +48,7 @@ func CORS(allowedOrigins []string, logger *slog.Logger) func(http.Handler) http.
 				if allowAll || originSet[origin] {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
+					w.Header().Add("Vary", "Origin")
 				} else {
 					// Origin not allowed - do not set CORS headers
 					if r.Method == http.MethodOptions {
@@ -64,6 +66,8 @@ func CORS(allowedOrigins []string, logger *slog.Logger) func(http.Handler) http.
 				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 				w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
 				w.Header().Set("Access-Control-Max-Age", corsMaxAge)
+				w.Header().Add("Vary", "Access-Control-Request-Method")
+				w.Header().Add("Vary", "Access-Control-Request-Headers")
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

@@ -294,12 +294,12 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 							Reason:    r.Reason,
 						}
 					}
-					// Use resultID as actionID — for agent-scheduled actions it IS the action ID
+					// Use resultID as actionID — for agent-scheduled actions it IS the action ID.
+					// Return on failure to prevent plaintext passwords reaching Valkey.
 					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
-						h.logger.Error("failed to proxy LPS password rotations", "error", err)
-					} else {
-						delete(result.Metadata, "lps.rotations")
+						return fmt.Errorf("store lps passwords: %w", err)
 					}
+					delete(result.Metadata, "lps.rotations")
 				}
 			}
 		}

@@ -2,6 +2,8 @@ package control
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,6 +93,7 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	// Dispatch pending actions to the device via Asynq
 	if err := w.dispatchPendingActions(ctx, payload.DeviceID, logger); err != nil {
 		logger.Error("failed to dispatch pending actions", "error", err)
+		return err
 	}
 	return nil
 }
@@ -176,9 +179,11 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		}
 		needsCreate = false
 	} else if errors.Is(err, pgx.ErrNoRows) {
-		// Not an execution ID — treat as action ID (agent-scheduled action)
+		// Not an execution ID — treat as action ID (agent-scheduled action).
+		// Derive a stable execution ID from device+action so retries don't
+		// create duplicate executions.
 		actionID = resultID
-		executionID = ulid.Make().String()
+		executionID = stableExecutionID(deviceID, actionID)
 		needsCreate = true
 	} else {
 		// Transient DB error — let Asynq retry
@@ -563,13 +568,16 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			ActorType: "system",
 			ActorID:   "dispatcher",
 		}
+		var appendErr error
 		for attempt := 0; attempt < 3; attempt++ {
-			if err := w.store.AppendEvent(ctx, dispatchEvt); err != nil {
-				logger.Warn("failed to append dispatch event, retrying",
-					"error", err, "execution_id", exec.ID, "attempt", attempt+1)
-				continue
+			if appendErr = w.store.AppendEvent(ctx, dispatchEvt); appendErr == nil {
+				break
 			}
-			break
+			logger.Warn("failed to append dispatch event, retrying",
+				"error", appendErr, "execution_id", exec.ID, "attempt", attempt+1)
+		}
+		if appendErr != nil {
+			return fmt.Errorf("append dispatch event for %s after 3 attempts: %w", exec.ID, appendErr)
 		}
 
 		logger.Info("dispatched pending execution via Asynq",
@@ -601,4 +609,12 @@ func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
 	if m := commandOutputToMap(result.DetectionOutput); m != nil {
 		data["detection_output"] = m
 	}
+}
+
+// stableExecutionID derives a deterministic execution ID from device and action IDs.
+// This ensures that retries of the same agent-scheduled result don't create
+// duplicate executions. The event store's optimistic locking handles conflicts.
+func stableExecutionID(deviceID, actionID string) string {
+	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID))
+	return hex.EncodeToString(h[:16])
 }
