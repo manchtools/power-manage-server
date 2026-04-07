@@ -551,7 +551,9 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		}
 
 		// Record the dispatch event now that the task is in the queue.
-		if err := w.store.AppendEvent(ctx, store.Event{
+		// Retry on transient failures — the task is already enqueued, so
+		// failing to record the event could cause duplicate dispatch on reconnect.
+		dispatchEvt := store.Event{
 			StreamType: "execution",
 			StreamID:   exec.ID,
 			EventType:  "ExecutionDispatched",
@@ -560,8 +562,14 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			},
 			ActorType: "system",
 			ActorID:   "dispatcher",
-		}); err != nil {
-			logger.Error("failed to append dispatch event", "error", err, "execution_id", exec.ID)
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			if err := w.store.AppendEvent(ctx, dispatchEvt); err != nil {
+				logger.Warn("failed to append dispatch event, retrying",
+					"error", err, "execution_id", exec.ID, "attempt", attempt+1)
+				continue
+			}
+			break
 		}
 
 		logger.Info("dispatched pending execution via Asynq",

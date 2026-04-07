@@ -688,8 +688,12 @@ func envString(target *string, key string) {
 }
 
 // envBool sets target based on the environment variable matching true or false values.
+// Logs a warning if the value is set but doesn't match any recognized value.
 func envBool(target *bool, key string, trueValues, falseValues []string) {
 	v := os.Getenv(key)
+	if v == "" {
+		return
+	}
 	for _, tv := range trueValues {
 		if v == tv {
 			*target = true
@@ -702,6 +706,7 @@ func envBool(target *bool, key string, trueValues, falseValues []string) {
 			return
 		}
 	}
+	slog.Warn("unrecognized boolean env var value, keeping default", "key", key, "value", v)
 }
 
 // envDuration overrides target with the parsed duration if the environment variable is set.
