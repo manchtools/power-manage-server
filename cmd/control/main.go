@@ -25,6 +25,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
@@ -407,7 +408,7 @@ func main() {
 				Queues: map[string]int{
 					taskqueue.ControlInboxQueue: 2,
 				},
-				Logger: newAsynqLogger(aqLogger),
+				Logger: asynqutil.NewLogger(aqLogger),
 				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
 					retried, _ := asynq.GetRetryCount(ctx)
 					maxRetry, _ := asynq.GetMaxRetry(ctx)
@@ -822,21 +823,6 @@ func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Hand
 		})
 	}
 }
-
-// asynqLogger adapts slog.Logger to asynq.Logger interface.
-type asynqLogger struct {
-	logger *slog.Logger
-}
-
-func newAsynqLogger(l *slog.Logger) *asynqLogger {
-	return &asynqLogger{logger: l}
-}
-
-func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
-func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
-func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
-func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
-func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
 
 // maskDatabaseURL masks the password in a database URL for logging.
 func maskDatabaseURL(url string) string {

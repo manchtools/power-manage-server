@@ -8,6 +8,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -63,7 +64,7 @@ func (m *DeviceWorkerManager) StartWorker(deviceID string) error {
 		asynq.Config{
 			Concurrency: 1,
 			Queues:      map[string]int{queue: 1},
-			Logger:      newAsynqLogger(devLogger),
+			Logger:      asynqutil.NewLogger(devLogger),
 			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
 				retried, _ := asynq.GetRetryCount(ctx)
 				maxRetry, _ := asynq.GetMaxRetry(ctx)
@@ -117,18 +118,3 @@ func (m *DeviceWorkerManager) StopAll() {
 		m.logger.Debug("device worker stopped", "device_id", deviceID)
 	}
 }
-
-// asynqLogger adapts slog.Logger to the asynq.Logger interface.
-type asynqLogger struct {
-	logger *slog.Logger
-}
-
-func newAsynqLogger(l *slog.Logger) *asynqLogger {
-	return &asynqLogger{logger: l}
-}
-
-func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
-func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
-func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
-func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
-func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
