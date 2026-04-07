@@ -146,7 +146,7 @@ func main() {
 		if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
 			logger.Error("failed to cleanup expired token revocations", "error", err)
 		}
-	})
+	}, false)
 
 	// Start periodic evaluation of queued dynamic groups.
 	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
@@ -210,7 +210,7 @@ func main() {
 			} else {
 				logger.Info("queued full dynamic group re-evaluation")
 			}
-		})
+		}, false)
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
@@ -256,7 +256,7 @@ func main() {
 		if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
 			logger.Error("failed to cleanup old osquery results", "error", err)
 		}
-	})
+	}, false)
 
 	// Initialize secret encryptor
 	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
@@ -570,7 +570,7 @@ func parseFlags() *Config {
 	envString(&cfg.CACertPath, "CONTROL_CA_CERT")
 	envString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
 	envString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
-	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", "true", "1")
+	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, nil)
 	envString(&cfg.TLSCert, "CONTROL_TLS_CERT")
 	envString(&cfg.TLSKey, "CONTROL_TLS_KEY")
 	envString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
@@ -586,9 +586,7 @@ func parseFlags() *Config {
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
-	if v := os.Getenv("CONTROL_PASSWORD_AUTH_ENABLED"); v == "false" || v == "0" {
-		cfg.PasswordAuthEnabled = false
-	}
+	envBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", nil, []string{"false", "0"})
 	envString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
 	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
@@ -689,12 +687,18 @@ func envString(target *string, key string) {
 	}
 }
 
-// envBool sets target to true if the environment variable matches any of the given values.
-func envBool(target *bool, key string, trueValues ...string) {
+// envBool sets target based on the environment variable matching true or false values.
+func envBool(target *bool, key string, trueValues, falseValues []string) {
 	v := os.Getenv(key)
 	for _, tv := range trueValues {
 		if v == tv {
 			*target = true
+			return
+		}
+	}
+	for _, fv := range falseValues {
+		if v == fv {
+			*target = false
 			return
 		}
 	}
@@ -703,34 +707,49 @@ func envBool(target *bool, key string, trueValues ...string) {
 // envDuration overrides target with the parsed duration if the environment variable is set.
 func envDuration(target *time.Duration, key string) {
 	if v := os.Getenv(key); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			*target = d
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("invalid duration for env var, keeping default", "key", key, "value", v, "error", err)
+			return
 		}
+		*target = d
 	}
 }
 
-// envCSV overrides target with a comma-separated environment variable, trimming whitespace.
+// envCSV overrides target with a comma-separated environment variable, trimming whitespace
+// and filtering empty entries.
 func envCSV(target *[]string, key string) {
 	if v := os.Getenv(key); v != "" {
 		parts := strings.Split(v, ",")
-		for i := range parts {
-			parts[i] = strings.TrimSpace(parts[i])
+		var filtered []string
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				filtered = append(filtered, p)
+			}
 		}
-		*target = parts
+		*target = filtered
 	}
 }
 
 // envInt overrides target with the parsed integer if the environment variable is set.
 func envInt(target *int, key string) {
 	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			*target = n
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Warn("invalid integer for env var, keeping default", "key", key, "value", v, "error", err)
+			return
 		}
+		*target = n
 	}
 }
 
 // runPeriodic calls fn on every tick until ctx is cancelled.
-func runPeriodic(ctx context.Context, interval time.Duration, fn func()) {
+// If runImmediately is true, fn is called once before the first tick.
+func runPeriodic(ctx context.Context, interval time.Duration, fn func(), runImmediately bool) {
+	if runImmediately {
+		fn()
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

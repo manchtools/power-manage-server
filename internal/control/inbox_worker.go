@@ -60,8 +60,13 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
 
 	// Skip processing for deleted devices.
-	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		logger.Debug("ignoring hello from deleted or unknown device")
+	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		logger.Error("failed to check device deletion status", "error", err)
+		return err
+	}
+	if deleted {
+		logger.Debug("ignoring hello from deleted device")
 		return nil
 	}
 
@@ -97,8 +102,13 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 	}
 
 	// Skip processing for deleted devices.
-	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		w.logger.Debug("ignoring heartbeat from deleted or unknown device", "device_id", payload.DeviceID)
+	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		w.logger.Error("failed to check device deletion status", "device_id", payload.DeviceID, "error", err)
+		return err
+	}
+	if deleted {
+		w.logger.Debug("ignoring heartbeat from deleted device", "device_id", payload.DeviceID)
 		return nil
 	}
 
@@ -510,21 +520,6 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 	logger.Debug("found pending executions", "count", len(executions))
 
 	for _, exec := range executions {
-		// Emit ExecutionDispatched event
-		if err := w.store.AppendEvent(ctx, store.Event{
-			StreamType: "execution",
-			StreamID:   exec.ID,
-			EventType:  "ExecutionDispatched",
-			Data: map[string]any{
-				"device_id": deviceID,
-			},
-			ActorType: "system",
-			ActorID:   "dispatcher",
-		}); err != nil {
-			logger.Error("failed to append dispatch event", "error", err, "execution_id", exec.ID)
-			continue
-		}
-
 		// Parse params from []byte to avoid base64 encoding
 		var params json.RawMessage
 		if len(exec.Params) > 0 {
@@ -540,7 +535,8 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			}
 		}
 
-		// Enqueue action dispatch to device queue via Asynq
+		// Enqueue to device queue first — only record the event after the
+		// task is durably queued so we never mark "dispatched" without delivery.
 		if err := w.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 			ExecutionID:     exec.ID,
 			ActionType:      exec.ActionType,
@@ -552,6 +548,20 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		}, asynq.MaxRetry(3)); err != nil {
 			logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
 			continue
+		}
+
+		// Record the dispatch event now that the task is in the queue.
+		if err := w.store.AppendEvent(ctx, store.Event{
+			StreamType: "execution",
+			StreamID:   exec.ID,
+			EventType:  "ExecutionDispatched",
+			Data: map[string]any{
+				"device_id": deviceID,
+			},
+			ActorType: "system",
+			ActorID:   "dispatcher",
+		}); err != nil {
+			logger.Error("failed to append dispatch event", "error", err, "execution_id", exec.ID)
 		}
 
 		logger.Info("dispatched pending execution via Asynq",

@@ -274,7 +274,8 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"duration_ms", result.DurationMs,
 		)
 
-		// Extract and proxy LPS password rotations via RPC (credentials never touch Valkey)
+		// Extract and proxy LPS password rotations via RPC (credentials never touch Valkey).
+		// Only strip the metadata key after successful storage so retries can re-process.
 		if result.Metadata != nil {
 			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
 				var rotations []struct {
@@ -296,12 +297,11 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					// Use resultID as actionID — for agent-scheduled actions it IS the action ID
 					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
 						h.logger.Error("failed to proxy LPS password rotations", "error", err)
+					} else {
+						delete(result.Metadata, "lps.rotations")
 					}
 				}
 			}
-
-			// Strip sensitive data before enqueueing to Valkey
-			delete(result.Metadata, "lps.rotations")
 		}
 
 		// Serialize ActionResult to protojson and enqueue to control:inbox
