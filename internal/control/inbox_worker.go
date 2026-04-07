@@ -3,11 +3,13 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -59,7 +61,7 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 
 	// Skip processing for deleted devices.
 	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		logger.Warn("ignoring hello from deleted or unknown device")
+		logger.Debug("ignoring hello from deleted or unknown device")
 		return nil
 	}
 
@@ -82,7 +84,9 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	}
 
 	// Dispatch pending actions to the device via Asynq
-	w.dispatchPendingActions(ctx, payload.DeviceID, logger)
+	if err := w.dispatchPendingActions(ctx, payload.DeviceID, logger); err != nil {
+		logger.Error("failed to dispatch pending actions", "error", err)
+	}
 	return nil
 }
 
@@ -94,7 +98,7 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 
 	// Skip processing for deleted devices.
 	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		w.logger.Warn("ignoring heartbeat from deleted or unknown device", "device_id", payload.DeviceID)
+		w.logger.Debug("ignoring heartbeat from deleted or unknown device", "device_id", payload.DeviceID)
 		return nil
 	}
 
@@ -148,7 +152,9 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	logger := w.logger.With("device_id", deviceID, "result_id", resultID)
 
-	// Determine execution ID and action ID
+	// Determine execution ID and action ID.
+	// resultID may be an execution ID (dispatched by API) or an action ID
+	// (scheduled locally by the agent). We try execution first.
 	var executionID, actionID string
 	var needsCreate bool
 
@@ -159,10 +165,14 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			actionID = *existingExec.ActionID
 		}
 		needsCreate = false
-	} else {
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		// Not an execution ID — treat as action ID (agent-scheduled action)
 		actionID = resultID
 		executionID = ulid.Make().String()
 		needsCreate = true
+	} else {
+		// Transient DB error — let Asynq retry
+		return fmt.Errorf("lookup execution %s: %w", resultID, err)
 	}
 
 	// Calculate timestamps
@@ -179,10 +189,11 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	if needsCreate {
 		action, err := w.store.Queries().GetActionByID(ctx, actionID)
 		if err != nil {
-			logger.Warn("could not look up action", "error", err)
-			action.ActionType = 0
-			action.Params = nil
-			action.TimeoutSeconds = 300
+			if errors.Is(err, pgx.ErrNoRows) {
+				logger.Warn("action not found, cannot create execution", "action_id", actionID)
+				return fmt.Errorf("action %s not found", actionID)
+			}
+			return fmt.Errorf("lookup action %s: %w", actionID, err)
 		}
 
 		createdData := map[string]any{
@@ -488,13 +499,12 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 // dispatchPendingActions finds pending executions for a device and enqueues them
 // to the device's Asynq queue. This mirrors the logic from Handler.dispatchPendingActions
 // but uses Asynq instead of PostgreSQL NOTIFY.
-func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) {
+func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) error {
 	logger.Debug("checking for pending executions")
 
 	executions, err := w.store.Queries().ListPendingExecutionsForDevice(ctx, deviceID)
 	if err != nil {
-		logger.Error("failed to list pending executions", "error", err)
-		return
+		return fmt.Errorf("list pending executions: %w", err)
 	}
 
 	logger.Debug("found pending executions", "count", len(executions))
@@ -549,6 +559,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			"action_type", exec.ActionType,
 		)
 	}
+	return nil
 }
 
 // commandOutputToMap converts a CommandOutput proto to a map for event data.
