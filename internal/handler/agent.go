@@ -274,7 +274,14 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"duration_ms", result.DurationMs,
 		)
 
-		// Extract and proxy LPS password rotations via RPC (credentials never touch Valkey)
+		// Extract and proxy LPS password rotations via encrypted RPC.
+		// Retry semantics: handleAgentMessage is called from the streaming
+		// message loop. Unmarshal failures strip the key immediately (data is
+		// malformed, retry won't help). StoreLpsPasswords failures return an
+		// error — the agent will resend the result via SendActionResult on
+		// reconnect, preserving the metadata for retry. The key is only
+		// deleted after successful storage so plaintext passwords never reach
+		// Valkey.
 		if result.Metadata != nil {
 			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
 				var rotations []struct {
@@ -283,7 +290,11 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					RotatedAt string `json:"rotated_at"`
 					Reason    string `json:"reason"`
 				}
-				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err == nil && len(rotations) > 0 {
+				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
+					// Malformed — strip and log, retry won't help
+					delete(result.Metadata, "lps.rotations")
+					h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
+				} else if len(rotations) > 0 {
 					protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
 					for i, r := range rotations {
 						protoRotations[i] = &pm.LpsPasswordRotation{
@@ -293,10 +304,15 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 							Reason:    r.Reason,
 						}
 					}
-					// Use resultID as actionID — for agent-scheduled actions it IS the action ID
 					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
-						h.logger.Error("failed to proxy LPS password rotations", "error", err)
+						// Return to preserve metadata for retry on reconnect
+						return fmt.Errorf("store lps passwords: %w", err)
 					}
+					// Stored successfully — safe to strip
+					delete(result.Metadata, "lps.rotations")
+				} else {
+					// Empty array — strip unnecessary metadata
+					delete(result.Metadata, "lps.rotations")
 				}
 			}
 		}

@@ -379,9 +379,6 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 
 // enqueueSetReindex enqueues a search index update for an action set.
 func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSetsProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	var createdAt, updatedAt int64
 	if s.CreatedAt != nil {
 		createdAt = s.CreatedAt.Unix()
@@ -389,15 +386,13 @@ func (h *ActionSetHandler) enqueueSetReindex(ctx context.Context, s db.ActionSet
 	if s.UpdatedAt != nil {
 		updatedAt = s.UpdatedAt.Unix()
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, "action_set", s.ID, &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeActionSet, s.ID, &taskqueue.SearchEntityData{
 		Name:        s.Name,
 		Description: s.Description,
 		MemberCount: s.MemberCount,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
-	}); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "action_set", "error", err)
-	}
+	})
 }
 
 func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.ActionSet {

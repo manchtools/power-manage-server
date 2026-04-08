@@ -42,9 +42,6 @@ func (h *CompliancePolicyHandler) SetSearchIndex(idx *search.Index) {
 // When rules is non-nil, action_names is included in the update. When nil, it is skipped
 // (HSET is additive, so existing action_names stays unchanged).
 func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Context, p db.CompliancePoliciesProjection, rules []db.CompliancePolicyRulesProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	data := &taskqueue.SearchEntityData{
 		Name:        p.Name,
 		Description: p.Description,
@@ -59,9 +56,7 @@ func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Con
 		data.ActionNames = strings.Join(actionNames, " ")
 		data.HasActionNames = true
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeCompliancePolicy, p.ID, data); err != nil {
-		h.logger.Warn("failed to enqueue compliance policy reindex", "id", p.ID, "error", err)
-	}
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeCompliancePolicy, p.ID, data)
 }
 
 // CreateCompliancePolicy creates a new compliance policy.

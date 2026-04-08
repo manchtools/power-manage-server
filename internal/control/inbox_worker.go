@@ -2,13 +2,16 @@ package control
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -58,9 +61,18 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
 
-	// Skip processing for deleted devices.
-	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		logger.Warn("ignoring hello from deleted or unknown device")
+	// Skip processing for deleted or unknown devices.
+	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.Debug("ignoring hello from unknown device")
+			return nil
+		}
+		logger.Error("failed to check device deletion status", "error", err)
+		return err
+	}
+	if deleted {
+		logger.Debug("ignoring hello from deleted device")
 		return nil
 	}
 
@@ -83,7 +95,10 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	}
 
 	// Dispatch pending actions to the device via Asynq
-	w.dispatchPendingActions(ctx, payload.DeviceID, logger)
+	if err := w.dispatchPendingActions(ctx, payload.DeviceID, logger); err != nil {
+		logger.Error("failed to dispatch pending actions", "error", err)
+		return err
+	}
 	return nil
 }
 
@@ -93,9 +108,18 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 		return fmt.Errorf("unmarshal device heartbeat: %w", err)
 	}
 
-	// Skip processing for deleted devices.
-	if deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID); err != nil || deleted {
-		w.logger.Warn("ignoring heartbeat from deleted or unknown device", "device_id", payload.DeviceID)
+	// Skip processing for deleted or unknown devices.
+	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.logger.Debug("ignoring heartbeat from unknown device", "device_id", payload.DeviceID)
+			return nil
+		}
+		w.logger.Error("failed to check device deletion status", "device_id", payload.DeviceID, "error", err)
+		return err
+	}
+	if deleted {
+		w.logger.Debug("ignoring heartbeat from deleted device", "device_id", payload.DeviceID)
 		return nil
 	}
 
@@ -149,7 +173,9 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	logger := w.logger.With("device_id", deviceID, "result_id", resultID)
 
-	// Determine execution ID and action ID
+	// Determine execution ID and action ID.
+	// resultID may be an execution ID (dispatched by API) or an action ID
+	// (scheduled locally by the agent). We try execution first.
 	var executionID, actionID string
 	var needsCreate bool
 
@@ -160,10 +186,32 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			actionID = *existingExec.ActionID
 		}
 		needsCreate = false
-	} else {
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		// Not an execution ID — treat as action ID (agent-scheduled action).
+		// Derive a stable execution ID from device+action+completedAt so
+		// retries of the same result don't create duplicates, but separate
+		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
-		executionID = ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
-		needsCreate = true
+		// Use CompletedAt for per-run uniqueness. Fall back to DurationMs+Status
+		// (stable across retries of the same result) when CompletedAt is absent.
+		completedStr := fmt.Sprintf("%d:%s", result.DurationMs, result.Status.String())
+		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
+			completedStr = result.CompletedAt.AsTime().Format(time.RFC3339Nano)
+		}
+		executionID = stableExecutionID(deviceID, actionID, completedStr)
+
+		// Check if this derived execution already exists (retry of a previously processed result)
+		_, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID)
+		if checkErr == nil {
+			needsCreate = false
+		} else if errors.Is(checkErr, pgx.ErrNoRows) {
+			needsCreate = true
+		} else {
+			return fmt.Errorf("check derived execution %s: %w", executionID, checkErr)
+		}
+	} else {
+		// Transient DB error — let Asynq retry
+		return fmt.Errorf("lookup execution %s: %w", resultID, err)
 	}
 
 	// Calculate timestamps
@@ -177,14 +225,20 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 
+	// Cache the action lookup — reused for both execution creation and compliance check.
+	var cachedAction *db.ActionsProjection
+
 	if needsCreate {
 		action, err := w.store.Queries().GetActionByID(ctx, actionID)
 		if err != nil {
-			logger.Warn("could not look up action", "error", err)
-			action.ActionType = 0
-			action.Params = nil
-			action.TimeoutSeconds = 300
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Action was deleted while agent was offline — skip, don't retry.
+				logger.Warn("action not found, skipping execution creation", "action_id", actionID)
+				return nil
+			}
+			return fmt.Errorf("lookup action %s: %w", actionID, err)
 		}
+		cachedAction = &action
 
 		createdData := map[string]any{
 			"device_id":       deviceID,
@@ -220,20 +274,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"changed":      result.Changed,
 			"compliant":    result.Compliant,
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
-		}
-		if result.DetectionOutput != nil {
-			data["detection_output"] = map[string]any{
-				"stdout":    result.DetectionOutput.Stdout,
-				"stderr":    result.DetectionOutput.Stderr,
-				"exit_code": result.DetectionOutput.ExitCode,
-			}
-		}
+		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_FAILED:
 		eventType = "ExecutionFailed"
@@ -244,20 +285,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"changed":      result.Changed,
 			"compliant":    result.Compliant,
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
-		}
-		if result.DetectionOutput != nil {
-			data["detection_output"] = map[string]any{
-				"stdout":    result.DetectionOutput.Stdout,
-				"stderr":    result.DetectionOutput.Stderr,
-				"exit_code": result.DetectionOutput.ExitCode,
-			}
-		}
+		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_RUNNING:
 		eventType = "ExecutionStarted"
@@ -270,12 +298,8 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			"duration_ms":  result.DurationMs,
 			"completed_at": completedAt.Format(time.RFC3339Nano),
 		}
-		if result.Output != nil {
-			data["output"] = map[string]any{
-				"stdout":    result.Output.Stdout,
-				"stderr":    result.Output.Stderr,
-				"exit_code": result.Output.ExitCode,
-			}
+		if m := commandOutputToMap(result.Output); m != nil {
+			data["output"] = m
 		}
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
@@ -302,41 +326,38 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	// Emit compliance event for actions with is_compliance=true
 	if result.DetectionOutput != nil && actionID != "" {
-		actionName := ""
-		isCompliance := false
-		action, err := w.store.Queries().GetActionByID(ctx, actionID)
-		if err != nil {
-			logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
-		} else {
-			actionName = action.Name
-			var params map[string]any
-			if err := json.Unmarshal(action.Params, &params); err != nil {
-				logger.Warn("failed to unmarshal action params for compliance check", "action_id", actionID, "error", err)
+		// Reuse cached action if available, otherwise fetch
+		if cachedAction == nil {
+			if a, err := w.store.Queries().GetActionByID(ctx, actionID); err != nil {
+				logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
 			} else {
-				isCompliance, _ = params["isCompliance"].(bool)
+				cachedAction = &a
 			}
 		}
-		if isCompliance {
-			complianceData := map[string]any{
-				"device_id":   deviceID,
-				"action_id":   actionID,
-				"action_name": actionName,
-				"compliant":   result.Compliant,
-				"detection_output": map[string]any{
-					"stdout":    result.DetectionOutput.Stdout,
-					"stderr":    result.DetectionOutput.Stderr,
-					"exit_code": result.DetectionOutput.ExitCode,
-				},
+		if cachedAction != nil {
+			isCompliance := false
+			var params map[string]any
+			if err := json.Unmarshal(cachedAction.Params, &params); err == nil {
+				isCompliance, _ = params["isCompliance"].(bool)
 			}
-			if err := w.store.AppendEvent(ctx, store.Event{
-				StreamType: "compliance",
-				StreamID:   deviceID + "_" + actionID,
-				EventType:  "ComplianceResultUpdated",
-				Data:       complianceData,
-				ActorType:  "device",
-				ActorID:    deviceID,
-			}); err != nil {
-				logger.Error("failed to append compliance event", "error", err)
+			if isCompliance {
+				complianceData := map[string]any{
+					"device_id":        deviceID,
+					"action_id":        actionID,
+					"action_name":      cachedAction.Name,
+					"compliant":        result.Compliant,
+					"detection_output": commandOutputToMap(result.DetectionOutput),
+				}
+				if err := w.store.AppendEvent(ctx, store.Event{
+					StreamType: "compliance",
+					StreamID:   deviceID + "_" + actionID,
+					EventType:  "ComplianceResultUpdated",
+					Data:       complianceData,
+					ActorType:  "device",
+					ActorID:    deviceID,
+				}); err != nil {
+					logger.Error("failed to append compliance event", "error", err)
+				}
 			}
 		}
 	}
@@ -485,7 +506,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		"success", payload.Success,
 	)
 
-	luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	luksStreamID := ulid.Make().String()
 	if payload.Success {
 		return w.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",
@@ -519,33 +540,18 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 // dispatchPendingActions finds pending executions for a device and enqueues them
 // to the device's Asynq queue. This mirrors the logic from Handler.dispatchPendingActions
 // but uses Asynq instead of PostgreSQL NOTIFY.
-func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) {
+func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) error {
 	logger.Debug("checking for pending executions")
 
 	executions, err := w.store.Queries().ListPendingExecutionsForDevice(ctx, deviceID)
 	if err != nil {
-		logger.Error("failed to list pending executions", "error", err)
-		return
+		return fmt.Errorf("list pending executions: %w", err)
 	}
 
 	logger.Debug("found pending executions", "count", len(executions))
 
+	var enqueueErrs []error
 	for _, exec := range executions {
-		// Emit ExecutionDispatched event
-		if err := w.store.AppendEvent(ctx, store.Event{
-			StreamType: "execution",
-			StreamID:   exec.ID,
-			EventType:  "ExecutionDispatched",
-			Data: map[string]any{
-				"device_id": deviceID,
-			},
-			ActorType: "system",
-			ActorID:   "dispatcher",
-		}); err != nil {
-			logger.Error("failed to append dispatch event", "error", err, "execution_id", exec.ID)
-			continue
-		}
-
 		// Parse params from []byte to avoid base64 encoding
 		var params json.RawMessage
 		if len(exec.Params) > 0 {
@@ -561,7 +567,9 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			}
 		}
 
-		// Enqueue action dispatch to device queue via Asynq
+		// Enqueue to device queue first — only record the event after the
+		// task is durably queued so we never mark "dispatched" without delivery.
+		// Use a stable TaskID so retries don't create duplicate tasks.
 		if err := w.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 			ExecutionID:     exec.ID,
 			ActionType:      exec.ActionType,
@@ -570,9 +578,41 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			TimeoutSeconds:  exec.TimeoutSeconds,
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
-		}, asynq.MaxRetry(3)); err != nil {
-			logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
-			continue
+		}, asynq.MaxRetry(3), asynq.TaskID("dispatch:"+exec.ID)); err != nil {
+			if errors.Is(err, asynq.ErrTaskIDConflict) {
+				// Task already in queue — still need to record the dispatch event
+				// so the execution isn't stuck in "pending" state.
+				logger.Debug("action already enqueued", "execution_id", exec.ID)
+			} else {
+				logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
+				enqueueErrs = append(enqueueErrs, err)
+				continue
+			}
+		}
+
+		// Record the dispatch event now that the task is in the queue.
+		// Retry on transient failures — the task is already enqueued, so
+		// failing to record the event could cause duplicate dispatch on reconnect.
+		dispatchEvt := store.Event{
+			StreamType: "execution",
+			StreamID:   exec.ID,
+			EventType:  "ExecutionDispatched",
+			Data: map[string]any{
+				"device_id": deviceID,
+			},
+			ActorType: "system",
+			ActorID:   "dispatcher",
+		}
+		var appendErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if appendErr = w.store.AppendEvent(ctx, dispatchEvt); appendErr == nil {
+				break
+			}
+			logger.Warn("failed to append dispatch event, retrying",
+				"error", appendErr, "execution_id", exec.ID, "attempt", attempt+1)
+		}
+		if appendErr != nil {
+			return fmt.Errorf("append dispatch event for %s after 3 attempts: %w", exec.ID, appendErr)
 		}
 
 		logger.Info("dispatched pending execution via Asynq",
@@ -580,4 +620,42 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			"action_type", exec.ActionType,
 		)
 	}
+	if len(enqueueErrs) > 0 {
+		return fmt.Errorf("%d dispatch(es) failed, first: %w", len(enqueueErrs), enqueueErrs[0])
+	}
+	return nil
+}
+
+// commandOutputToMap converts a CommandOutput proto to a map for event data.
+// Returns nil if the output is nil.
+func commandOutputToMap(o *pm.CommandOutput) map[string]any {
+	if o == nil {
+		return nil
+	}
+	return map[string]any{
+		"stdout":    o.Stdout,
+		"stderr":    o.Stderr,
+		"exit_code": o.ExitCode,
+	}
+}
+
+// addCommandOutputs adds output and detection_output fields to the event data map.
+func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
+	if m := commandOutputToMap(result.Output); m != nil {
+		data["output"] = m
+	}
+	if m := commandOutputToMap(result.DetectionOutput); m != nil {
+		data["detection_output"] = m
+	}
+}
+
+// stableExecutionID derives a deterministic execution ID from device, action,
+// and completed-at timestamp. Including completedAt ensures separate scheduled
+// runs of the same action get unique IDs, while retries of the same result
+// (same completedAt) produce the same ID for deduplication.
+// Note: returns a 32-char hex string, not a ULID. This is intentional —
+// deterministic IDs cannot be ULIDs (which encode timestamps).
+func stableExecutionID(deviceID, actionID, completedAt string) string {
+	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
+	return hex.EncodeToString(h[:16])
 }

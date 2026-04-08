@@ -11,7 +11,9 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // requireAuth extracts the authenticated user from context.
@@ -72,4 +74,15 @@ func buildNextPageToken(resultCount int32, offset int32, pageSize int32, totalCo
 		return formatPageToken(int64(offset) + int64(pageSize))
 	}
 	return ""
+}
+
+// enqueueSearchReindex enqueues a search reindex if the index is available.
+// Logs a warning on failure but does not return an error (best-effort).
+func enqueueSearchReindex(ctx context.Context, idx *search.Index, logger *slog.Logger, scope, id string, data *taskqueue.SearchEntityData) {
+	if idx == nil {
+		return
+	}
+	if err := idx.EnqueueReindex(ctx, scope, id, data); err != nil {
+		logger.Warn("failed to enqueue search reindex", "scope", scope, "id", id, "error", err)
+	}
 }

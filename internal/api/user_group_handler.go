@@ -42,9 +42,6 @@ func (h *UserGroupHandler) SetSearchIndex(idx *search.Index) {
 
 // enqueueUserGroupReindex enqueues a search index update for a user group.
 func (h *UserGroupHandler) enqueueUserGroupReindex(ctx context.Context, g db.UserGroupsProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	isDynamic := "false"
 	if g.IsDynamic {
 		isDynamic = "true"
@@ -53,16 +50,13 @@ func (h *UserGroupHandler) enqueueUserGroupReindex(ctx context.Context, g db.Use
 	if !g.CreatedAt.IsZero() {
 		createdAt = g.CreatedAt.Unix()
 	}
-	data := &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeUserGroup, g.ID, &taskqueue.SearchEntityData{
 		Name:        g.Name,
 		Description: g.Description,
 		IsDynamic:   isDynamic,
 		MemberCount: g.MemberCount,
 		CreatedAt:   createdAt,
-	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeUserGroup, g.ID, data); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "user_group", "error", err)
-	}
+	})
 }
 
 // CreateUserGroup creates a new user group.

@@ -377,9 +377,6 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 
 // enqueueDefinitionReindex enqueues a search index update for a definition.
 func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.DefinitionsProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	var createdAt, updatedAt int64
 	if d.CreatedAt != nil {
 		createdAt = d.CreatedAt.Unix()
@@ -387,15 +384,13 @@ func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.D
 	if d.UpdatedAt != nil {
 		updatedAt = d.UpdatedAt.Unix()
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, "definition", d.ID, &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDefinition, d.ID, &taskqueue.SearchEntityData{
 		Name:        d.Name,
 		Description: d.Description,
 		MemberCount: d.MemberCount,
 		CreatedAt:   createdAt,
 		UpdatedAt:   updatedAt,
-	}); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "definition", "error", err)
-	}
+	})
 }
 
 func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {

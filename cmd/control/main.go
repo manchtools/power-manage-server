@@ -25,6 +25,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
@@ -68,6 +69,9 @@ type Config struct {
 	InternalListenAddr string
 	InternalTLSCert    string
 	InternalTLSKey     string
+
+	// CORS
+	CORSAllowAll bool // Allow all origins (development only)
 
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
@@ -141,20 +145,11 @@ func main() {
 	})
 
 	// Start periodic cleanup of expired revoked tokens
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
-					logger.Error("failed to cleanup expired token revocations", "error", err)
-				}
-			case <-ctx.Done():
-				return
-			}
+	go runPeriodic(ctx, 1*time.Hour, func() {
+		if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
+			logger.Error("failed to cleanup expired token revocations", "error", err)
 		}
-	}()
+	}, false)
 
 	// Start periodic evaluation of queued dynamic groups.
 	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
@@ -212,22 +207,13 @@ func main() {
 
 		// Periodic full re-evaluation as a safety net (every 24h).
 		// Queues all dynamic groups for evaluation; the worker above drains them.
-		go func() {
-			ticker := time.NewTicker(24 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
-						logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
-					} else {
-						logger.Info("queued full dynamic group re-evaluation")
-					}
-				case <-ctx.Done():
-					return
-				}
+		go runPeriodic(ctx, 24*time.Hour, func() {
+			if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
+				logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
+			} else {
+				logger.Info("queued full dynamic group re-evaluation")
 			}
-		}()
+		}, false)
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
@@ -269,20 +255,11 @@ func main() {
 	}()
 
 	// Start periodic cleanup of stale OSQuery results
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
-					logger.Error("failed to cleanup old osquery results", "error", err)
-				}
-			case <-ctx.Done():
-				return
-			}
+	go runPeriodic(ctx, 5*time.Minute, func() {
+		if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
+			logger.Error("failed to cleanup old osquery results", "error", err)
 		}
-	}()
+	}, false)
 
 	// Initialize secret encryptor
 	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
@@ -407,7 +384,7 @@ func main() {
 				Queues: map[string]int{
 					taskqueue.ControlInboxQueue: 2,
 				},
-				Logger: newAsynqLogger(aqLogger),
+				Logger: asynqutil.NewLogger(aqLogger),
 				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
 					retried, _ := asynq.GetRetryCount(ctx)
 					maxRetry, _ := asynq.GetMaxRetry(ctx)
@@ -448,7 +425,7 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Wrap with CORS and security headers middleware
-	corsHandler := corsMiddleware(cfg.CORSOrigins, logger)(mux)
+	corsHandler := middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
@@ -590,104 +567,41 @@ func parseFlags() *Config {
 	flag.Parse()
 
 	// Environment variable overrides
-	if v := os.Getenv("CONTROL_LISTEN_ADDR"); v != "" {
-		cfg.ListenAddr = v
-	}
-	if v := os.Getenv("CONTROL_DATABASE_URL"); v != "" {
-		cfg.DatabaseURL = v
-	}
-	if v := os.Getenv("CONTROL_JWT_SECRET"); v != "" {
-		cfg.JWTSecret = v
-	}
-	if v := os.Getenv("CONTROL_CA_CERT"); v != "" {
-		cfg.CACertPath = v
-	}
-	if v := os.Getenv("CONTROL_CA_KEY"); v != "" {
-		cfg.CAKeyPath = v
-	}
-	if v := os.Getenv("CONTROL_CA_TRUST_BUNDLE"); v != "" {
-		cfg.CATrustBundlePath = v
-	}
-	if v := os.Getenv("CONTROL_TLS_ENABLED"); v == "true" || v == "1" {
-		cfg.TLSEnabled = true
-	}
-	if v := os.Getenv("CONTROL_TLS_CERT"); v != "" {
-		cfg.TLSCert = v
-	}
-	if v := os.Getenv("CONTROL_TLS_KEY"); v != "" {
-		cfg.TLSKey = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_LISTEN_ADDR"); v != "" {
-		cfg.InternalListenAddr = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_TLS_CERT"); v != "" {
-		cfg.InternalTLSCert = v
-	}
-	if v := os.Getenv("CONTROL_INTERNAL_TLS_KEY"); v != "" {
-		cfg.InternalTLSKey = v
-	}
-	if v := os.Getenv("CONTROL_ADMIN_EMAIL"); v != "" {
-		cfg.AdminEmail = v
-	}
-	if v := os.Getenv("CONTROL_ADMIN_PASSWORD"); v != "" {
-		cfg.AdminPassword = v
-	}
-	if v := os.Getenv("CONTROL_LOG_LEVEL"); v != "" {
-		cfg.LogLevel = v
-	}
-	if v := os.Getenv("CONTROL_LOG_FORMAT"); v != "" {
-		cfg.LogFormat = v
-	}
-	if v := os.Getenv("CONTROL_GATEWAY_URL"); v != "" {
-		cfg.GatewayURL = v
-	}
-	if v := os.Getenv("CONTROL_CORS_ORIGINS"); v != "" {
-		origins := strings.Split(v, ",")
-		for i := range origins {
-			origins[i] = strings.TrimSpace(origins[i])
-		}
-		cfg.CORSOrigins = origins
-	}
-	if v := os.Getenv("CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.DynamicGroupEvalInterval = d
-		}
-	}
+	envString(&cfg.ListenAddr, "CONTROL_LISTEN_ADDR")
+	envString(&cfg.DatabaseURL, "CONTROL_DATABASE_URL")
+	envString(&cfg.JWTSecret, "CONTROL_JWT_SECRET")
+	envString(&cfg.CACertPath, "CONTROL_CA_CERT")
+	envString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
+	envString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
+	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, []string{"false", "0"})
+	envString(&cfg.TLSCert, "CONTROL_TLS_CERT")
+	envString(&cfg.TLSKey, "CONTROL_TLS_KEY")
+	envString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
+	envString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
+	envString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
+	envString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
+	envString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
+	envString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
+	envString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
+	envString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
+	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
+	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
-	if v := os.Getenv("CONTROL_PASSWORD_AUTH_ENABLED"); v == "false" || v == "0" {
-		cfg.PasswordAuthEnabled = false
-	}
-	if v := os.Getenv("CONTROL_SSO_CALLBACK_BASE_URL"); v != "" {
-		cfg.SSOCallbackBaseURL = v
-	} else if len(cfg.CORSOrigins) > 0 {
-		// Derive from first CORS origin
+	envBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", []string{"true", "1"}, []string{"false", "0"})
+	envString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
+	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
 	}
-	if v := os.Getenv("CONTROL_SCIM_BASE_URL"); v != "" {
-		cfg.SCIMBaseURL = v
-	}
-	if v := os.Getenv("CONTROL_TRUSTED_PROXIES"); v != "" {
-		proxies := strings.Split(v, ",")
-		for i := range proxies {
-			proxies[i] = strings.TrimSpace(proxies[i])
-		}
-		cfg.TrustedProxies = proxies
-	}
+	envString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
+	envCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
+	envBool(&cfg.CORSAllowAll, "CONTROL_CORS_ALLOW_ALL", []string{"true", "1"}, []string{"false", "0"})
 
 	// Valkey (Asynq task queue) configuration
-	if v := os.Getenv("CONTROL_VALKEY_ADDR"); v != "" {
-		cfg.ValkeyAddr = v
-	}
-	if v := os.Getenv("CONTROL_VALKEY_PASSWORD"); v != "" {
-		cfg.ValkeyPassword = v
-	}
-	if v := os.Getenv("CONTROL_VALKEY_DB"); v != "" {
-		if db, err := strconv.Atoi(v); err == nil {
-			cfg.ValkeyDB = db
-		}
-	}
+	envString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
+	envString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
+	envInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
 	if cfg.DynamicGroupEvalInterval != 0 {
@@ -770,73 +684,92 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	return nil
 }
 
-// corsMiddleware returns a middleware that adds CORS headers for cross-origin requests.
-// If allowedOrigins is empty, all origins are allowed (development mode) with a warning.
-// Set CONTROL_CORS_ORIGINS=https://app.example.com,https://other.example.com for production.
-func corsMiddleware(allowedOrigins []string, logger *slog.Logger) func(http.Handler) http.Handler {
-	originSet := make(map[string]bool, len(allowedOrigins))
-	for _, o := range allowedOrigins {
-		originSet[o] = true
+// envString overrides target with the environment variable value if set.
+func envString(target *string, key string) {
+	if v := os.Getenv(key); v != "" {
+		*target = v
 	}
+}
 
-	allowAll := len(allowedOrigins) == 0
-	if allowAll {
-		logger.Warn("CORS: no origins configured (CONTROL_CORS_ORIGINS), allowing all origins -- set this in production")
-	} else {
-		logger.Info("CORS: allowed origins configured", "origins", allowedOrigins)
+// envBool sets target based on the environment variable matching true or false values.
+// Logs a warning if the value is set but doesn't match any recognized value.
+func envBool(target *bool, key string, trueValues, falseValues []string) {
+	v := os.Getenv(key)
+	if v == "" {
+		return
 	}
+	for _, tv := range trueValues {
+		if v == tv {
+			*target = true
+			return
+		}
+	}
+	for _, fv := range falseValues {
+		if v == fv {
+			*target = false
+			return
+		}
+	}
+	slog.Warn("unrecognized boolean env var value, keeping default", "key", key, "value", v)
+}
 
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			origin := r.Header.Get("Origin")
+// envDuration overrides target with the parsed duration if the environment variable is set.
+func envDuration(target *time.Duration, key string) {
+	if v := os.Getenv(key); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			slog.Warn("invalid duration for env var, keeping default", "key", key, "value", v, "error", err)
+			return
+		}
+		*target = d
+	}
+}
 
-			if origin != "" {
-				if allowAll || originSet[origin] {
-					w.Header().Set("Access-Control-Allow-Origin", origin)
-					w.Header().Set("Access-Control-Allow-Credentials", "true")
-				} else {
-					// Origin not allowed - do not set CORS headers
-					if r.Method == http.MethodOptions {
-						w.WriteHeader(http.StatusForbidden)
-						return
-					}
-					next.ServeHTTP(w, r)
-					return
-				}
+// envCSV overrides target with a comma-separated environment variable, trimming whitespace
+// and filtering empty entries.
+func envCSV(target *[]string, key string) {
+	if v := os.Getenv(key); v != "" {
+		parts := strings.Split(v, ",")
+		var filtered []string
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				filtered = append(filtered, p)
 			}
-
-			// Handle preflight requests
-			if r.Method == http.MethodOptions {
-				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Cookie")
-				w.Header().Set("Access-Control-Expose-Headers", "Connect-Content-Encoding, Connect-Protocol-Version")
-				w.Header().Set("Access-Control-Max-Age", "86400")
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-
-			// Set headers for actual requests
-			w.Header().Set("Access-Control-Expose-Headers", "Connect-Content-Encoding, Connect-Protocol-Version")
-
-			next.ServeHTTP(w, r)
-		})
+		}
+		*target = filtered
 	}
 }
 
-// asynqLogger adapts slog.Logger to asynq.Logger interface.
-type asynqLogger struct {
-	logger *slog.Logger
+// envInt overrides target with the parsed integer if the environment variable is set.
+func envInt(target *int, key string) {
+	if v := os.Getenv(key); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			slog.Warn("invalid integer for env var, keeping default", "key", key, "value", v, "error", err)
+			return
+		}
+		*target = n
+	}
 }
 
-func newAsynqLogger(l *slog.Logger) *asynqLogger {
-	return &asynqLogger{logger: l}
+// runPeriodic calls fn on every tick until ctx is cancelled.
+// If runImmediately is true, fn is called once before the first tick.
+func runPeriodic(ctx context.Context, interval time.Duration, fn func(), runImmediately bool) {
+	if runImmediately {
+		fn()
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			fn()
+		case <-ctx.Done():
+			return
+		}
+	}
 }
-
-func (l *asynqLogger) Debug(args ...any) { l.logger.Debug(fmt.Sprint(args...)) }
-func (l *asynqLogger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
-func (l *asynqLogger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
-func (l *asynqLogger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
-func (l *asynqLogger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
 
 // maskDatabaseURL masks the password in a database URL for logging.
 func maskDatabaseURL(url string) string {

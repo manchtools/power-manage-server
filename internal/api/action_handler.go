@@ -1329,9 +1329,6 @@ func serializeActionParamsToMap(action *pm.Action) map[string]any {
 
 // enqueueActionReindex enqueues a search index update for an action.
 func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	desc := ""
 	if a.Description != nil {
 		desc = *a.Description
@@ -1350,16 +1347,14 @@ func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsPr
 	if a.UpdatedAt != nil {
 		updatedAt = a.UpdatedAt.Unix()
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, "action", a.ID, &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeAction, a.ID, &taskqueue.SearchEntityData{
 		Name:         a.Name,
 		Description:  desc,
 		Type:         a.ActionType,
 		IsCompliance: isCompliance,
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
-	}); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "action", "error", err)
-	}
+	})
 }
 
 func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {

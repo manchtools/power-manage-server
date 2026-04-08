@@ -33,9 +33,6 @@ func (h *UserHandler) SetSearchIndex(idx *search.Index) {
 
 // enqueueUserReindex enqueues a search index update for a user.
 func (h *UserHandler) enqueueUserReindex(ctx context.Context, u db.UsersProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	disabled := "false"
 	if u.Disabled {
 		disabled = "true"
@@ -44,15 +41,13 @@ func (h *UserHandler) enqueueUserReindex(ctx context.Context, u db.UsersProjecti
 	if u.CreatedAt != nil {
 		createdAt = u.CreatedAt.Unix()
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeUser, u.ID, &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeUser, u.ID, &taskqueue.SearchEntityData{
 		Email:         u.Email,
 		DisplayName:   u.DisplayName,
 		LinuxUsername: u.LinuxUsername,
 		Disabled:      disabled,
 		CreatedAt:     createdAt,
-	}); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "user", "error", err)
-	}
+	})
 }
 
 // NewUserHandler creates a new user handler.

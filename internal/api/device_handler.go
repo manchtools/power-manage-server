@@ -15,7 +15,6 @@ import (
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
-	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -84,9 +83,7 @@ func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesPr
 			search.EnrichDeviceInventory(data, t.TableName, t.Rows)
 		}
 	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDevice, d.ID, data); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "device", "error", err)
-	}
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDevice, d.ID, data)
 }
 
 // ListDevices returns a paginated list of devices.
@@ -897,7 +894,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	if userCtx != nil {
 		actorID = userCtx.ID
 	}
-	luksStreamID := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
+	luksStreamID := newULID()
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,

@@ -39,9 +39,6 @@ func (h *DeviceGroupHandler) SetSearchIndex(idx *search.Index) {
 
 // enqueueDeviceGroupReindex enqueues a search index update for a device group.
 func (h *DeviceGroupHandler) enqueueDeviceGroupReindex(ctx context.Context, g db.DeviceGroupsProjection) {
-	if h.searchIdx == nil {
-		return
-	}
 	isDynamic := "false"
 	if g.IsDynamic {
 		isDynamic = "true"
@@ -50,16 +47,13 @@ func (h *DeviceGroupHandler) enqueueDeviceGroupReindex(ctx context.Context, g db
 	if g.CreatedAt != nil {
 		createdAt = g.CreatedAt.Unix()
 	}
-	data := &taskqueue.SearchEntityData{
+	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDeviceGroup, g.ID, &taskqueue.SearchEntityData{
 		Name:        g.Name,
 		Description: g.Description,
 		IsDynamic:   isDynamic,
 		MemberCount: g.MemberCount,
 		CreatedAt:   createdAt,
-	}
-	if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeDeviceGroup, g.ID, data); err != nil {
-		h.logger.Warn("failed to enqueue search reindex", "scope", "device_group", "error", err)
-	}
+	})
 }
 
 // CreateDeviceGroup creates a new device group.
