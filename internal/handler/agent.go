@@ -291,7 +291,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					Reason    string `json:"reason"`
 				}
 				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
-					// Malformed — strip to prevent plaintext leaking to Valkey
+					// Malformed — strip and log, retry won't help
 					delete(result.Metadata, "lps.rotations")
 					h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
 				} else if len(rotations) > 0 {
@@ -305,11 +305,13 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 						}
 					}
 					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
+						// Return to preserve metadata for retry on reconnect
 						return fmt.Errorf("store lps passwords: %w", err)
 					}
+					// Stored successfully — safe to strip
 					delete(result.Metadata, "lps.rotations")
 				} else {
-					// Empty rotations array — strip unnecessary metadata
+					// Empty array — strip unnecessary metadata
 					delete(result.Metadata, "lps.rotations")
 				}
 			}

@@ -3,7 +3,6 @@ package asynqutil
 import (
 	"fmt"
 	"log/slog"
-	"os"
 )
 
 // Logger adapts slog.Logger to the asynq.Logger interface.
@@ -25,7 +24,8 @@ func (l *Logger) Info(args ...any)  { l.logger.Info(fmt.Sprint(args...)) }
 func (l *Logger) Warn(args ...any)  { l.logger.Warn(fmt.Sprint(args...)) }
 func (l *Logger) Error(args ...any) { l.logger.Error(fmt.Sprint(args...)) }
 
-func (l *Logger) Fatal(args ...any) {
-	l.logger.Error(fmt.Sprint(args...))
-	os.Exit(1)
-}
+// Fatal logs at error level. We intentionally do not call os.Exit here —
+// asynq may call Fatal on configuration errors, and killing the process
+// without cleanup (deferred DB close, graceful shutdown) is worse than
+// logging and letting the caller handle it.
+func (l *Logger) Fatal(args ...any) { l.logger.Error(fmt.Sprint(args...)) }

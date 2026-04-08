@@ -206,15 +206,20 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 
+	// Cache the action lookup — reused for both execution creation and compliance check.
+	var cachedAction *db.ActionsProjection
+
 	if needsCreate {
 		action, err := w.store.Queries().GetActionByID(ctx, actionID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				logger.Warn("action not found, cannot create execution", "action_id", actionID)
-				return fmt.Errorf("action %s not found", actionID)
+				// Action was deleted while agent was offline — skip, don't retry.
+				logger.Warn("action not found, skipping execution creation", "action_id", actionID)
+				return nil
 			}
 			return fmt.Errorf("lookup action %s: %w", actionID, err)
 		}
+		cachedAction = &action
 
 		createdData := map[string]any{
 			"device_id":       deviceID,
@@ -302,41 +307,38 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	// Emit compliance event for actions with is_compliance=true
 	if result.DetectionOutput != nil && actionID != "" {
-		actionName := ""
-		isCompliance := false
-		action, err := w.store.Queries().GetActionByID(ctx, actionID)
-		if err != nil {
-			logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
-		} else {
-			actionName = action.Name
-			var params map[string]any
-			if err := json.Unmarshal(action.Params, &params); err != nil {
-				logger.Warn("failed to unmarshal action params for compliance check", "action_id", actionID, "error", err)
+		// Reuse cached action if available, otherwise fetch
+		if cachedAction == nil {
+			if a, err := w.store.Queries().GetActionByID(ctx, actionID); err != nil {
+				logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
 			} else {
-				isCompliance, _ = params["isCompliance"].(bool)
+				cachedAction = &a
 			}
 		}
-		if isCompliance {
-			complianceData := map[string]any{
-				"device_id":   deviceID,
-				"action_id":   actionID,
-				"action_name": actionName,
-				"compliant":   result.Compliant,
-				"detection_output": map[string]any{
-					"stdout":    result.DetectionOutput.Stdout,
-					"stderr":    result.DetectionOutput.Stderr,
-					"exit_code": result.DetectionOutput.ExitCode,
-				},
+		if cachedAction != nil {
+			isCompliance := false
+			var params map[string]any
+			if err := json.Unmarshal(cachedAction.Params, &params); err == nil {
+				isCompliance, _ = params["isCompliance"].(bool)
 			}
-			if err := w.store.AppendEvent(ctx, store.Event{
-				StreamType: "compliance",
-				StreamID:   deviceID + "_" + actionID,
-				EventType:  "ComplianceResultUpdated",
-				Data:       complianceData,
-				ActorType:  "device",
-				ActorID:    deviceID,
-			}); err != nil {
-				logger.Error("failed to append compliance event", "error", err)
+			if isCompliance {
+				complianceData := map[string]any{
+					"device_id":        deviceID,
+					"action_id":        actionID,
+					"action_name":      cachedAction.Name,
+					"compliant":        result.Compliant,
+					"detection_output": commandOutputToMap(result.DetectionOutput),
+				}
+				if err := w.store.AppendEvent(ctx, store.Event{
+					StreamType: "compliance",
+					StreamID:   deviceID + "_" + actionID,
+					EventType:  "ComplianceResultUpdated",
+					Data:       complianceData,
+					ActorType:  "device",
+					ActorID:    deviceID,
+				}); err != nil {
+					logger.Error("failed to append compliance event", "error", err)
+				}
 			}
 		}
 	}
@@ -632,6 +634,8 @@ func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
 // and completed-at timestamp. Including completedAt ensures separate scheduled
 // runs of the same action get unique IDs, while retries of the same result
 // (same completedAt) produce the same ID for deduplication.
+// Note: returns a 32-char hex string, not a ULID. This is intentional —
+// deterministic IDs cannot be ULIDs (which encode timestamps).
 func stableExecutionID(deviceID, actionID, completedAt string) string {
 	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
 	return hex.EncodeToString(h[:16])

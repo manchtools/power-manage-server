@@ -70,6 +70,9 @@ type Config struct {
 	InternalTLSCert    string
 	InternalTLSKey     string
 
+	// CORS
+	CORSAllowAll bool // Allow all origins (development only)
+
 	// Valkey (Asynq task queue)
 	ValkeyAddr     string
 	ValkeyPassword string
@@ -422,8 +425,7 @@ func main() {
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Wrap with CORS and security headers middleware
-	corsAllowAll := os.Getenv("CONTROL_CORS_ALLOW_ALL") == "true"
-	corsHandler := middleware.CORS(cfg.CORSOrigins, corsAllowAll, logger)(mux)
+	corsHandler := middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
 	server := &http.Server{
@@ -594,6 +596,7 @@ func parseFlags() *Config {
 	}
 	envString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
 	envCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
+	envBool(&cfg.CORSAllowAll, "CONTROL_CORS_ALLOW_ALL", []string{"true", "1"}, []string{"false", "0"})
 
 	// Valkey (Asynq task queue) configuration
 	envString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")

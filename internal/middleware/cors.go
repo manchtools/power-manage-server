@@ -48,7 +48,6 @@ func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http
 				if allowAll || originSet[origin] {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
-					w.Header().Add("Vary", "Origin")
 				} else {
 					// Origin not allowed - do not set CORS headers
 					if r.Method == http.MethodOptions {
@@ -71,6 +70,9 @@ func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+
+			// Always set Vary: Origin so caches key by origin presence
+			w.Header().Add("Vary", "Origin")
 
 			// Set headers for actual requests
 			w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
