@@ -661,7 +661,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		action := source.InlineAction
 		actionType = action.Type
 		desiredState = action.DesiredState
-		params, _ = serializeProtoParams(extractActionParamsMsg(action))
+		params, err = serializeProtoParams(extractActionParamsMsg(action))
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("failed to serialize inline action params: %v", err))
+		}
 		timeoutSeconds = action.TimeoutSeconds
 		if timeoutSeconds <= 0 {
 			timeoutSeconds = 300
@@ -1289,6 +1292,8 @@ func extractActionParamsMsg(action *pm.Action) proto.Message {
 		return p.Lps
 	case *pm.Action_Luks:
 		return p.Luks
+	case *pm.Action_Group:
+		return p.Group
 	case *pm.Action_Wifi:
 		return p.Wifi
 	case *pm.Action_AgentUpdate:
