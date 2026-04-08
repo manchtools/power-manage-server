@@ -240,267 +240,281 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, msg *pm.AgentMessage) error {
 	switch p := msg.Payload.(type) {
 	case *pm.AgentMessage_Heartbeat:
-		payload := taskqueue.DeviceHeartbeatPayload{
-			DeviceID: deviceID,
-		}
-		if p.Heartbeat.Uptime != nil {
-			payload.UptimeSeconds = p.Heartbeat.Uptime.Seconds
-		}
-		if p.Heartbeat.CpuPercent > 0 {
-			payload.CpuPercent = p.Heartbeat.CpuPercent
-		}
-		if p.Heartbeat.MemoryPercent > 0 {
-			payload.MemoryPercent = p.Heartbeat.MemoryPercent
-		}
-		if p.Heartbeat.DiskPercent > 0 {
-			payload.DiskPercent = p.Heartbeat.DiskPercent
-		}
-		return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
-
+		return h.handleHeartbeat(deviceID, p.Heartbeat)
 	case *pm.AgentMessage_ActionResult:
-		result := p.ActionResult
-		if result.ActionId == nil {
-			return fmt.Errorf("action result missing action ID")
-		}
-		resultID := result.ActionId.GetValue()
-		if resultID == "" {
-			return fmt.Errorf("action result has empty action ID")
-		}
-
-		h.logger.Info("received action result",
-			"device_id", deviceID,
-			"result_id", resultID,
-			"status", result.Status.String(),
-			"duration_ms", result.DurationMs,
-		)
-
-		// Extract and proxy LPS password rotations via encrypted RPC.
-		// Retry semantics: handleAgentMessage is called from the streaming
-		// message loop. Unmarshal failures strip the key immediately (data is
-		// malformed, retry won't help). StoreLpsPasswords failures return an
-		// error — the agent will resend the result via SendActionResult on
-		// reconnect, preserving the metadata for retry. The key is only
-		// deleted after successful storage so plaintext passwords never reach
-		// Valkey.
-		if result.Metadata != nil {
-			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
-				var rotations []struct {
-					Username  string `json:"username"`
-					Password  string `json:"password"`
-					RotatedAt string `json:"rotated_at"`
-					Reason    string `json:"reason"`
-				}
-				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
-					// Malformed — strip and log, retry won't help
-					delete(result.Metadata, "lps.rotations")
-					h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
-				} else if len(rotations) > 0 {
-					protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
-					for i, r := range rotations {
-						protoRotations[i] = &pm.LpsPasswordRotation{
-							Username:  r.Username,
-							Password:  r.Password,
-							RotatedAt: r.RotatedAt,
-							Reason:    r.Reason,
-						}
-					}
-					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
-						// Return to preserve metadata for retry on reconnect
-						return fmt.Errorf("store lps passwords: %w", err)
-					}
-					// Stored successfully — safe to strip
-					delete(result.Metadata, "lps.rotations")
-				} else {
-					// Empty array — strip unnecessary metadata
-					delete(result.Metadata, "lps.rotations")
-				}
-			}
-		}
-
-		// Serialize ActionResult to protojson and enqueue to control:inbox
-		resultJSON, err := protojson.Marshal(result)
-		if err != nil {
-			return fmt.Errorf("marshal action result: %w", err)
-		}
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-			DeviceID:         deviceID,
-			ActionResultJSON: resultJSON,
-		})
-
+		return h.handleActionResult(ctx, deviceID, p.ActionResult)
 	case *pm.AgentMessage_OutputChunk:
-		chunk := p.OutputChunk
-		if chunk.ExecutionId == "" {
-			return fmt.Errorf("output chunk missing execution ID")
-		}
-
-		streamType := "stdout"
-		if chunk.Stream == pm.OutputStreamType_OUTPUT_STREAM_TYPE_STDERR {
-			streamType = "stderr"
-		}
-
-		h.logger.Debug("received output chunk",
-			"device_id", deviceID,
-			"execution_id", chunk.ExecutionId,
-			"stream", streamType,
-			"sequence", chunk.Sequence,
-			"size", len(chunk.Data),
-		)
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
-			DeviceID:    deviceID,
-			ExecutionID: chunk.ExecutionId,
-			Stream:      streamType,
-			Data:        string(chunk.Data),
-			Sequence:    int64(chunk.Sequence),
-		})
-
+		return h.handleOutputChunk(deviceID, p.OutputChunk)
 	case *pm.AgentMessage_QueryResult:
-		result := p.QueryResult
-		h.logger.Info("received query result",
-			"device_id", deviceID,
-			"query_id", result.QueryId,
-			"success", result.Success,
-		)
+		return h.handleQueryResult(deviceID, p.QueryResult)
+	case *pm.AgentMessage_Inventory:
+		return h.handleInventory(deviceID, p.Inventory)
+	case *pm.AgentMessage_SecurityAlert:
+		return h.handleSecurityAlert(deviceID, p.SecurityAlert)
+	case *pm.AgentMessage_GetLuksKey:
+		return h.handleGetLuksKey(ctx, deviceID, msg.Id, p.GetLuksKey)
+	case *pm.AgentMessage_StoreLuksKey:
+		return h.handleStoreLuksKey(ctx, deviceID, msg.Id, p.StoreLuksKey)
+	case *pm.AgentMessage_RevokeLuksDeviceKeyResult:
+		return h.handleRevokeLuksResult(deviceID, p.RevokeLuksDeviceKeyResult)
+	case *pm.AgentMessage_LogQueryResult:
+		return h.handleLogQueryResult(deviceID, p.LogQueryResult)
+	default:
+		return fmt.Errorf("unknown message type: %T", msg.Payload)
+	}
+}
 
-		// Convert rows to JSON for storage
+func (h *AgentHandler) handleHeartbeat(deviceID string, hb *pm.Heartbeat) error {
+	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID}
+	if hb.Uptime != nil {
+		payload.UptimeSeconds = hb.Uptime.Seconds
+	}
+	if hb.CpuPercent > 0 {
+		payload.CpuPercent = hb.CpuPercent
+	}
+	if hb.MemoryPercent > 0 {
+		payload.MemoryPercent = hb.MemoryPercent
+	}
+	if hb.DiskPercent > 0 {
+		payload.DiskPercent = hb.DiskPercent
+	}
+	return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
+}
+
+func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, result *pm.ActionResult) error {
+	if result.ActionId == nil {
+		return fmt.Errorf("action result missing action ID")
+	}
+	resultID := result.ActionId.GetValue()
+	if resultID == "" {
+		return fmt.Errorf("action result has empty action ID")
+	}
+
+	h.logger.Info("received action result",
+		"device_id", deviceID,
+		"result_id", resultID,
+		"status", result.Status.String(),
+		"duration_ms", result.DurationMs,
+	)
+
+	if err := h.proxyLpsRotations(ctx, deviceID, resultID, result); err != nil {
+		return err
+	}
+
+	resultJSON, err := protojson.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal action result: %w", err)
+	}
+	return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+		DeviceID:         deviceID,
+		ActionResultJSON: resultJSON,
+	})
+}
+
+// proxyLpsRotations extracts LPS password rotations from metadata, proxies them
+// via encrypted RPC, and strips the key before the result is enqueued to Valkey.
+// Unmarshal failures strip immediately (malformed, retry won't help).
+// StoreLpsPasswords failures return an error — the agent will resend the result
+// on reconnect, preserving the metadata for retry.
+func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID string, result *pm.ActionResult) error {
+	if result.Metadata == nil {
+		return nil
+	}
+	rotationsJSON, ok := result.Metadata["lps.rotations"]
+	if !ok || rotationsJSON == "" {
+		return nil
+	}
+
+	var rotations []struct {
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		RotatedAt string `json:"rotated_at"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
+		delete(result.Metadata, "lps.rotations")
+		h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
+		return nil
+	}
+	if len(rotations) == 0 {
+		delete(result.Metadata, "lps.rotations")
+		return nil
+	}
+
+	protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
+	for i, r := range rotations {
+		protoRotations[i] = &pm.LpsPasswordRotation{
+			Username:  r.Username,
+			Password:  r.Password,
+			RotatedAt: r.RotatedAt,
+			Reason:    r.Reason,
+		}
+	}
+	if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
+		return fmt.Errorf("store lps passwords: %w", err)
+	}
+	delete(result.Metadata, "lps.rotations")
+	return nil
+}
+
+func (h *AgentHandler) handleOutputChunk(deviceID string, chunk *pm.OutputChunk) error {
+	if chunk.ExecutionId == "" {
+		return fmt.Errorf("output chunk missing execution ID")
+	}
+	streamType := "stdout"
+	if chunk.Stream == pm.OutputStreamType_OUTPUT_STREAM_TYPE_STDERR {
+		streamType = "stderr"
+	}
+	h.logger.Debug("received output chunk",
+		"device_id", deviceID,
+		"execution_id", chunk.ExecutionId,
+		"stream", streamType,
+		"sequence", chunk.Sequence,
+		"size", len(chunk.Data),
+	)
+	return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
+		DeviceID:    deviceID,
+		ExecutionID: chunk.ExecutionId,
+		Stream:      streamType,
+		Data:        string(chunk.Data),
+		Sequence:    int64(chunk.Sequence),
+	})
+}
+
+func (h *AgentHandler) handleQueryResult(deviceID string, result *pm.OSQueryResult) error {
+	h.logger.Info("received query result",
+		"device_id", deviceID,
+		"query_id", result.QueryId,
+		"success", result.Success,
+	)
+	var rowsJSON []map[string]string
+	for _, row := range result.Rows {
+		rowsJSON = append(rowsJSON, row.Data)
+	}
+	rowsBytes, err := json.Marshal(rowsJSON)
+	if err != nil {
+		rowsBytes = []byte("[]")
+	}
+	return h.aqClient.EnqueueToControl(taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
+		DeviceID: deviceID,
+		QueryID:  result.QueryId,
+		Success:  result.Success,
+		Error:    result.Error,
+		RowsJSON: rowsBytes,
+	})
+}
+
+func (h *AgentHandler) handleInventory(deviceID string, inventory *pm.DeviceInventory) error {
+	h.logger.Info("received device inventory",
+		"device_id", deviceID,
+		"tables", len(inventory.Tables),
+	)
+	tables := make([]taskqueue.InventoryTable, 0, len(inventory.Tables))
+	for _, table := range inventory.Tables {
 		var rowsJSON []map[string]string
-		for _, row := range result.Rows {
+		for _, row := range table.Rows {
 			rowsJSON = append(rowsJSON, row.Data)
 		}
 		rowsBytes, err := json.Marshal(rowsJSON)
 		if err != nil {
-			rowsBytes = []byte("[]")
+			continue
 		}
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
-			DeviceID: deviceID,
-			QueryID:  result.QueryId,
-			Success:  result.Success,
-			Error:    result.Error,
-			RowsJSON: rowsBytes,
+		tables = append(tables, taskqueue.InventoryTable{
+			TableName: table.TableName,
+			RowsJSON:  rowsBytes,
 		})
-
-	case *pm.AgentMessage_Inventory:
-		inventory := p.Inventory
-		h.logger.Info("received device inventory",
-			"device_id", deviceID,
-			"tables", len(inventory.Tables),
-		)
-
-		tables := make([]taskqueue.InventoryTable, 0, len(inventory.Tables))
-		for _, table := range inventory.Tables {
-			var rowsJSON []map[string]string
-			for _, row := range table.Rows {
-				rowsJSON = append(rowsJSON, row.Data)
-			}
-			rowsBytes, err := json.Marshal(rowsJSON)
-			if err != nil {
-				continue
-			}
-			tables = append(tables, taskqueue.InventoryTable{
-				TableName: table.TableName,
-				RowsJSON:  rowsBytes,
-			})
-		}
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
-			DeviceID: deviceID,
-			Tables:   tables,
-		})
-
-	case *pm.AgentMessage_SecurityAlert:
-		alert := p.SecurityAlert
-		h.logger.Warn("received security alert from device",
-			"device_id", deviceID,
-			"alert_type", alert.Type.String(),
-			"message", alert.Message,
-			"details", alert.Details,
-		)
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
-			DeviceID:  deviceID,
-			AlertType: alert.Type.String(),
-			Message:   alert.Message,
-			Details:   alert.Details,
-		})
-
-	case *pm.AgentMessage_GetLuksKey:
-		resp, err := h.controlProxy.GetLuksKey(ctx, deviceID, p.GetLuksKey.ActionId)
-		if err != nil {
-			return h.manager.Send(deviceID, &pm.ServerMessage{
-				Id: msg.Id,
-				Payload: &pm.ServerMessage_Error{
-					Error: &pm.Error{
-						Code:    connect.CodeNotFound.String(),
-						Message: "no LUKS key found for this action",
-					},
-				},
-			})
-		}
-		return h.manager.Send(deviceID, &pm.ServerMessage{
-			Id: msg.Id,
-			Payload: &pm.ServerMessage_GetLuksKey{
-				GetLuksKey: resp,
-			},
-		})
-
-	case *pm.AgentMessage_StoreLuksKey:
-		req := p.StoreLuksKey
-		resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.Passphrase, req.RotationReason)
-		if err != nil {
-			return h.manager.Send(deviceID, &pm.ServerMessage{
-				Id: msg.Id,
-				Payload: &pm.ServerMessage_Error{
-					Error: &pm.Error{
-						Code:    connect.CodeInternal.String(),
-						Message: fmt.Sprintf("failed to store LUKS key: %v", err),
-					},
-				},
-			})
-		}
-		return h.manager.Send(deviceID, &pm.ServerMessage{
-			Id: msg.Id,
-			Payload: &pm.ServerMessage_StoreLuksKey{
-				StoreLuksKey: resp,
-			},
-		})
-
-	case *pm.AgentMessage_RevokeLuksDeviceKeyResult:
-		result := p.RevokeLuksDeviceKeyResult
-		h.logger.Info("received LUKS device key revocation result",
-			"device_id", deviceID,
-			"action_id", result.ActionId,
-			"success", result.Success,
-			"error", result.Error,
-		)
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-			DeviceID: deviceID,
-			ActionID: result.ActionId,
-			Success:  result.Success,
-			Error:    result.Error,
-		})
-
-	case *pm.AgentMessage_LogQueryResult:
-		result := p.LogQueryResult
-		h.logger.Info("received log query result",
-			"device_id", deviceID,
-			"query_id", result.QueryId,
-			"success", result.Success,
-		)
-
-		return h.aqClient.EnqueueToControl(taskqueue.TypeLogQueryResult, taskqueue.LogQueryResultPayload{
-			DeviceID: deviceID,
-			QueryID:  result.QueryId,
-			Success:  result.Success,
-			Error:    result.Error,
-			Logs:     result.Logs,
-		})
-
-	default:
-		return fmt.Errorf("unknown message type: %T", msg.Payload)
 	}
+	return h.aqClient.EnqueueToControl(taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
+		DeviceID: deviceID,
+		Tables:   tables,
+	})
+}
+
+func (h *AgentHandler) handleSecurityAlert(deviceID string, alert *pm.SecurityAlert) error {
+	h.logger.Warn("received security alert from device",
+		"device_id", deviceID,
+		"alert_type", alert.Type.String(),
+		"message", alert.Message,
+		"details", alert.Details,
+	)
+	return h.aqClient.EnqueueToControl(taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
+		DeviceID:  deviceID,
+		AlertType: alert.Type.String(),
+		Message:   alert.Message,
+		Details:   alert.Details,
+	})
+}
+
+func (h *AgentHandler) handleGetLuksKey(ctx context.Context, deviceID, msgID string, req *pm.GetLuksKeyRequest) error {
+	resp, err := h.controlProxy.GetLuksKey(ctx, deviceID, req.ActionId)
+	if err != nil {
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msgID,
+			Payload: &pm.ServerMessage_Error{
+				Error: &pm.Error{
+					Code:    connect.CodeNotFound.String(),
+					Message: "no LUKS key found for this action",
+				},
+			},
+		})
+	}
+	return h.manager.Send(deviceID, &pm.ServerMessage{
+		Id: msgID,
+		Payload: &pm.ServerMessage_GetLuksKey{
+			GetLuksKey: resp,
+		},
+	})
+}
+
+func (h *AgentHandler) handleStoreLuksKey(ctx context.Context, deviceID, msgID string, req *pm.StoreLuksKeyRequest) error {
+	resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.Passphrase, req.RotationReason)
+	if err != nil {
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msgID,
+			Payload: &pm.ServerMessage_Error{
+				Error: &pm.Error{
+					Code:    connect.CodeInternal.String(),
+					Message: fmt.Sprintf("failed to store LUKS key: %v", err),
+				},
+			},
+		})
+	}
+	return h.manager.Send(deviceID, &pm.ServerMessage{
+		Id: msgID,
+		Payload: &pm.ServerMessage_StoreLuksKey{
+			StoreLuksKey: resp,
+		},
+	})
+}
+
+func (h *AgentHandler) handleRevokeLuksResult(deviceID string, result *pm.RevokeLuksDeviceKeyResult) error {
+	h.logger.Info("received LUKS device key revocation result",
+		"device_id", deviceID,
+		"action_id", result.ActionId,
+		"success", result.Success,
+		"error", result.Error,
+	)
+	return h.aqClient.EnqueueToControl(taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
+		DeviceID: deviceID,
+		ActionID: result.ActionId,
+		Success:  result.Success,
+		Error:    result.Error,
+	})
+}
+
+func (h *AgentHandler) handleLogQueryResult(deviceID string, result *pm.LogQueryResult) error {
+	h.logger.Info("received log query result",
+		"device_id", deviceID,
+		"query_id", result.QueryId,
+		"success", result.Success,
+	)
+	return h.aqClient.EnqueueToControl(taskqueue.TypeLogQueryResult, taskqueue.LogQueryResultPayload{
+		DeviceID: deviceID,
+		QueryID:  result.QueryId,
+		Success:  result.Success,
+		Error:    result.Error,
+		Logs:     result.Logs,
+	})
 }
 
 // ValidateLuksToken validates and consumes a one-time LUKS token via the control server.
