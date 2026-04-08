@@ -61,9 +61,13 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
 
-	// Skip processing for deleted devices.
+	// Skip processing for deleted or unknown devices.
 	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			logger.Debug("ignoring hello from unknown device")
+			return nil
+		}
 		logger.Error("failed to check device deletion status", "error", err)
 		return err
 	}
@@ -104,9 +108,13 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 		return fmt.Errorf("unmarshal device heartbeat: %w", err)
 	}
 
-	// Skip processing for deleted devices.
+	// Skip processing for deleted or unknown devices.
 	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			w.logger.Debug("ignoring heartbeat from unknown device", "device_id", payload.DeviceID)
+			return nil
+		}
 		w.logger.Error("failed to check device deletion status", "device_id", payload.DeviceID, "error", err)
 		return err
 	}
