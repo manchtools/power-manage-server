@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -257,7 +258,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	params, err := h.serializeCreateActionParams(req.Msg)
+	params, err := serializeProtoParams(extractCreateActionParamsMsg(req.Msg))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
@@ -484,7 +485,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
-	params, err := h.serializeUpdateActionParams(req.Msg)
+	params, err := serializeProtoParams(extractUpdateActionParamsMsg(req.Msg))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
@@ -660,7 +661,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		action := source.InlineAction
 		actionType = action.Type
 		desiredState = action.DesiredState
-		params = serializeActionParamsToMap(action)
+		params, _ = serializeProtoParams(extractActionParamsMsg(action))
 		timeoutSeconds = action.TimeoutSeconds
 		if timeoutSeconds <= 0 {
 			timeoutSeconds = 300
@@ -1150,181 +1151,151 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	}), nil
 }
 
-func (h *ActionHandler) serializeCreateActionParams(req *pm.CreateActionRequest) (map[string]any, error) {
-	params := map[string]any{}
+// serializeProtoParams marshals a proto.Message to a map[string]any via protojson.
+// Returns an empty map if msg is nil.
+func serializeProtoParams(msg proto.Message) (map[string]any, error) {
+	if msg == nil {
+		return map[string]any{}, nil
+	}
+	data, err := protojson.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal params: %w", err)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, fmt.Errorf("unmarshal params to map: %w", err)
+	}
+	return params, nil
+}
 
-	var data []byte
-	var err error
-
+// extractCreateActionParamsMsg returns the concrete proto.Message from a CreateActionRequest oneof.
+func extractCreateActionParamsMsg(req *pm.CreateActionRequest) proto.Message {
 	switch p := req.Params.(type) {
 	case *pm.CreateActionRequest_Package:
-		data, err = protojson.Marshal(p.Package)
+		return p.Package
 	case *pm.CreateActionRequest_App:
-		data, err = protojson.Marshal(p.App)
+		return p.App
 	case *pm.CreateActionRequest_Flatpak:
-		data, err = protojson.Marshal(p.Flatpak)
+		return p.Flatpak
 	case *pm.CreateActionRequest_Shell:
-		data, err = protojson.Marshal(p.Shell)
+		return p.Shell
 	case *pm.CreateActionRequest_Systemd:
-		data, err = protojson.Marshal(p.Systemd)
+		return p.Systemd
 	case *pm.CreateActionRequest_File:
-		data, err = protojson.Marshal(p.File)
+		return p.File
 	case *pm.CreateActionRequest_Update:
-		data, err = protojson.Marshal(p.Update)
+		return p.Update
 	case *pm.CreateActionRequest_Repository:
-		data, err = protojson.Marshal(p.Repository)
+		return p.Repository
 	case *pm.CreateActionRequest_Directory:
-		data, err = protojson.Marshal(p.Directory)
+		return p.Directory
 	case *pm.CreateActionRequest_User:
-		data, err = protojson.Marshal(p.User)
+		return p.User
 	case *pm.CreateActionRequest_Ssh:
-		data, err = protojson.Marshal(p.Ssh)
+		return p.Ssh
 	case *pm.CreateActionRequest_Sshd:
-		data, err = protojson.Marshal(p.Sshd)
+		return p.Sshd
 	case *pm.CreateActionRequest_Sudo:
-		data, err = protojson.Marshal(p.Sudo)
+		return p.Sudo
 	case *pm.CreateActionRequest_Lps:
-		data, err = protojson.Marshal(p.Lps)
+		return p.Lps
 	case *pm.CreateActionRequest_Luks:
-		data, err = protojson.Marshal(p.Luks)
+		return p.Luks
 	case *pm.CreateActionRequest_Group:
-		data, err = protojson.Marshal(p.Group)
+		return p.Group
 	case *pm.CreateActionRequest_Wifi:
-		data, err = protojson.Marshal(p.Wifi)
+		return p.Wifi
 	case *pm.CreateActionRequest_AgentUpdate:
-		data, err = protojson.Marshal(p.AgentUpdate)
+		return p.AgentUpdate
 	default:
-		return params, nil
+		return nil
 	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal params: %w", err)
-	}
-	if err := json.Unmarshal(data, &params); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal params to map: %w", err)
-	}
-
-	return params, nil
 }
 
-func (h *ActionHandler) serializeUpdateActionParams(req *pm.UpdateActionParamsRequest) (map[string]any, error) {
-	params := map[string]any{}
-
-	var data []byte
-	var err error
-
+// extractUpdateActionParamsMsg returns the concrete proto.Message from an UpdateActionParamsRequest oneof.
+func extractUpdateActionParamsMsg(req *pm.UpdateActionParamsRequest) proto.Message {
 	switch p := req.Params.(type) {
 	case *pm.UpdateActionParamsRequest_Package:
-		data, err = protojson.Marshal(p.Package)
+		return p.Package
 	case *pm.UpdateActionParamsRequest_App:
-		data, err = protojson.Marshal(p.App)
+		return p.App
 	case *pm.UpdateActionParamsRequest_Flatpak:
-		data, err = protojson.Marshal(p.Flatpak)
+		return p.Flatpak
 	case *pm.UpdateActionParamsRequest_Shell:
-		data, err = protojson.Marshal(p.Shell)
+		return p.Shell
 	case *pm.UpdateActionParamsRequest_Systemd:
-		data, err = protojson.Marshal(p.Systemd)
+		return p.Systemd
 	case *pm.UpdateActionParamsRequest_File:
-		data, err = protojson.Marshal(p.File)
+		return p.File
 	case *pm.UpdateActionParamsRequest_Update:
-		data, err = protojson.Marshal(p.Update)
+		return p.Update
 	case *pm.UpdateActionParamsRequest_Repository:
-		data, err = protojson.Marshal(p.Repository)
+		return p.Repository
 	case *pm.UpdateActionParamsRequest_Directory:
-		data, err = protojson.Marshal(p.Directory)
+		return p.Directory
 	case *pm.UpdateActionParamsRequest_User:
-		data, err = protojson.Marshal(p.User)
+		return p.User
 	case *pm.UpdateActionParamsRequest_Ssh:
-		data, err = protojson.Marshal(p.Ssh)
+		return p.Ssh
 	case *pm.UpdateActionParamsRequest_Sshd:
-		data, err = protojson.Marshal(p.Sshd)
+		return p.Sshd
 	case *pm.UpdateActionParamsRequest_Sudo:
-		data, err = protojson.Marshal(p.Sudo)
+		return p.Sudo
 	case *pm.UpdateActionParamsRequest_Lps:
-		data, err = protojson.Marshal(p.Lps)
+		return p.Lps
 	case *pm.UpdateActionParamsRequest_Luks:
-		data, err = protojson.Marshal(p.Luks)
+		return p.Luks
 	case *pm.UpdateActionParamsRequest_Group:
-		data, err = protojson.Marshal(p.Group)
+		return p.Group
 	case *pm.UpdateActionParamsRequest_Wifi:
-		data, err = protojson.Marshal(p.Wifi)
+		return p.Wifi
 	case *pm.UpdateActionParamsRequest_AgentUpdate:
-		data, err = protojson.Marshal(p.AgentUpdate)
+		return p.AgentUpdate
 	default:
-		return params, nil
+		return nil
 	}
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal params: %w", err)
-	}
-	if err := json.Unmarshal(data, &params); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal params to map: %w", err)
-	}
-
-	return params, nil
 }
 
-func serializeActionParams(action *pm.Action) (string, error) {
-	params := serializeActionParamsToMap(action)
-	data, err := json.Marshal(params)
-	return string(data), err
-}
-
-func serializeActionParamsToMap(action *pm.Action) map[string]any {
-	params := map[string]any{}
-
+// extractActionParamsMsg returns the concrete proto.Message from an Action oneof.
+func extractActionParamsMsg(action *pm.Action) proto.Message {
 	switch p := action.Params.(type) {
 	case *pm.Action_Package:
-		data, _ := protojson.Marshal(p.Package)
-		json.Unmarshal(data, &params)
+		return p.Package
 	case *pm.Action_App:
-		data, _ := protojson.Marshal(p.App)
-		json.Unmarshal(data, &params)
+		return p.App
 	case *pm.Action_Flatpak:
-		data, _ := protojson.Marshal(p.Flatpak)
-		json.Unmarshal(data, &params)
+		return p.Flatpak
 	case *pm.Action_Shell:
-		data, _ := protojson.Marshal(p.Shell)
-		json.Unmarshal(data, &params)
+		return p.Shell
 	case *pm.Action_Systemd:
-		data, _ := protojson.Marshal(p.Systemd)
-		json.Unmarshal(data, &params)
+		return p.Systemd
 	case *pm.Action_File:
-		data, _ := protojson.Marshal(p.File)
-		json.Unmarshal(data, &params)
+		return p.File
 	case *pm.Action_Update:
-		data, _ := protojson.Marshal(p.Update)
-		json.Unmarshal(data, &params)
+		return p.Update
 	case *pm.Action_Repository:
-		data, _ := protojson.Marshal(p.Repository)
-		json.Unmarshal(data, &params)
+		return p.Repository
 	case *pm.Action_Directory:
-		data, _ := protojson.Marshal(p.Directory)
-		json.Unmarshal(data, &params)
+		return p.Directory
 	case *pm.Action_User:
-		data, _ := protojson.Marshal(p.User)
-		json.Unmarshal(data, &params)
+		return p.User
 	case *pm.Action_Ssh:
-		data, _ := protojson.Marshal(p.Ssh)
-		json.Unmarshal(data, &params)
+		return p.Ssh
 	case *pm.Action_Sshd:
-		data, _ := protojson.Marshal(p.Sshd)
-		json.Unmarshal(data, &params)
+		return p.Sshd
 	case *pm.Action_Sudo:
-		data, _ := protojson.Marshal(p.Sudo)
-		json.Unmarshal(data, &params)
+		return p.Sudo
 	case *pm.Action_Lps:
-		data, _ := protojson.Marshal(p.Lps)
-		json.Unmarshal(data, &params)
+		return p.Lps
 	case *pm.Action_Luks:
-		data, _ := protojson.Marshal(p.Luks)
-		json.Unmarshal(data, &params)
+		return p.Luks
 	case *pm.Action_Wifi:
-		data, _ := protojson.Marshal(p.Wifi)
-		json.Unmarshal(data, &params)
+		return p.Wifi
+	case *pm.Action_AgentUpdate:
+		return p.AgentUpdate
+	default:
+		return nil
 	}
-
-	return params
 }
 
 // enqueueActionReindex enqueues a search index update for an action.
