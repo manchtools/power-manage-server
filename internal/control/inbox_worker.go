@@ -184,12 +184,18 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		// retries of the same result don't create duplicates, but separate
 		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
-		var completedStr string
+		completedStr := time.Now().Format(time.RFC3339Nano) // fallback
 		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
 			completedStr = result.CompletedAt.AsTime().Format(time.RFC3339Nano)
 		}
 		executionID = stableExecutionID(deviceID, actionID, completedStr)
-		needsCreate = true
+
+		// Check if this derived execution already exists (retry of a previously processed result)
+		if _, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID); checkErr == nil {
+			needsCreate = false
+		} else {
+			needsCreate = true
+		}
 	} else {
 		// Transient DB error — let Asynq retry
 		return fmt.Errorf("lookup execution %s: %w", resultID, err)
@@ -560,7 +566,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
 		}, asynq.MaxRetry(3), asynq.TaskID("dispatch:"+exec.ID)); err != nil {
-			if errors.Is(err, asynq.ErrDuplicateTask) {
+			if errors.Is(err, asynq.ErrTaskIDConflict) {
 				// Task already in queue — still need to record the dispatch event
 				// so the execution isn't stuck in "pending" state.
 				logger.Debug("action already enqueued", "execution_id", exec.ID)

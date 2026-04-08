@@ -38,12 +38,6 @@ func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 
-			// OPTIONS without Origin is not a CORS preflight — return early.
-			if r.Method == http.MethodOptions && origin == "" {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-
 			if origin != "" {
 				if allowAll || originSet[origin] {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
@@ -61,6 +55,7 @@ func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http
 
 			// Handle preflight requests
 			if r.Method == http.MethodOptions {
+				w.Header().Add("Vary", "Origin")
 				w.Header().Set("Access-Control-Allow-Methods", corsAllowMethods)
 				w.Header().Set("Access-Control-Allow-Headers", corsAllowHeaders)
 				w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
