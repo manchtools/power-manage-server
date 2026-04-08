@@ -274,8 +274,14 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 			"duration_ms", result.DurationMs,
 		)
 
-		// Extract and proxy LPS password rotations via RPC (credentials never touch Valkey).
-		// Only strip the metadata key after successful storage so retries can re-process.
+		// Extract and proxy LPS password rotations via encrypted RPC.
+		// Retry semantics: handleAgentMessage is called from the streaming
+		// message loop. Unmarshal failures strip the key immediately (data is
+		// malformed, retry won't help). StoreLpsPasswords failures return an
+		// error — the agent will resend the result via SendActionResult on
+		// reconnect, preserving the metadata for retry. The key is only
+		// deleted after successful storage so plaintext passwords never reach
+		// Valkey.
 		if result.Metadata != nil {
 			if rotationsJSON, ok := result.Metadata["lps.rotations"]; ok && rotationsJSON != "" {
 				var rotations []struct {
@@ -285,7 +291,7 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 					Reason    string `json:"reason"`
 				}
 				if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
-					// Strip malformed rotation data to prevent plaintext leaking to Valkey
+					// Malformed — strip to prevent plaintext leaking to Valkey
 					delete(result.Metadata, "lps.rotations")
 					h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
 				} else if len(rotations) > 0 {
@@ -298,11 +304,12 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 							Reason:    r.Reason,
 						}
 					}
-					// Use resultID as actionID — for agent-scheduled actions it IS the action ID.
-					// Return on failure to prevent plaintext passwords reaching Valkey.
 					if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
 						return fmt.Errorf("store lps passwords: %w", err)
 					}
+					delete(result.Metadata, "lps.rotations")
+				} else {
+					// Empty rotations array — strip unnecessary metadata
 					delete(result.Metadata, "lps.rotations")
 				}
 			}

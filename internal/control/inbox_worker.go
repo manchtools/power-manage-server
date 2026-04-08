@@ -559,12 +559,14 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			ParamsCanonical: paramsCanonical,
 		}, asynq.MaxRetry(3), asynq.TaskID("dispatch:"+exec.ID)); err != nil {
 			if errors.Is(err, asynq.ErrDuplicateTask) {
-				logger.Debug("action already enqueued, skipping", "execution_id", exec.ID)
+				// Task already in queue — still need to record the dispatch event
+				// so the execution isn't stuck in "pending" state.
+				logger.Debug("action already enqueued", "execution_id", exec.ID)
 			} else {
 				logger.Error("failed to enqueue action dispatch", "error", err, "execution_id", exec.ID)
 				enqueueErrs = append(enqueueErrs, err)
+				continue
 			}
-			continue
 		}
 
 		// Record the dispatch event now that the task is in the queue.
