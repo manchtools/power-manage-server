@@ -184,17 +184,22 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		// retries of the same result don't create duplicates, but separate
 		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
-		completedStr := time.Now().Format(time.RFC3339Nano) // fallback
+		// Use CompletedAt for per-run uniqueness. Fall back to DurationMs+Status
+		// (stable across retries of the same result) when CompletedAt is absent.
+		completedStr := fmt.Sprintf("%d:%s", result.DurationMs, result.Status.String())
 		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
 			completedStr = result.CompletedAt.AsTime().Format(time.RFC3339Nano)
 		}
 		executionID = stableExecutionID(deviceID, actionID, completedStr)
 
 		// Check if this derived execution already exists (retry of a previously processed result)
-		if _, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID); checkErr == nil {
+		_, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID)
+		if checkErr == nil {
 			needsCreate = false
-		} else {
+		} else if errors.Is(checkErr, pgx.ErrNoRows) {
 			needsCreate = true
+		} else {
+			return fmt.Errorf("check derived execution %s: %w", executionID, checkErr)
 		}
 	} else {
 		// Transient DB error — let Asynq retry
