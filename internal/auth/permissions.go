@@ -195,6 +195,11 @@ func AllPermissions() []PermissionInfo {
 		{"UpdateServerSettings", "Server Settings", "Update server settings"},
 		// User Provisioning
 		{"SetUserProvisioningEnabled", "Users", "Toggle user provisioning per user"},
+		// Remote Terminal
+		{"StartTerminal", "Remote Terminal", "Open a remote terminal session on a device"},
+		{"StopTerminal", "Remote Terminal", "Stop a remote terminal session you opened"},
+		{"ListActiveTerminalSessions", "Remote Terminal", "View active terminal sessions across all devices (admin)"},
+		{"TerminateTerminalSession", "Remote Terminal", "Forcibly terminate any terminal session (admin)"},
 	}
 }
 

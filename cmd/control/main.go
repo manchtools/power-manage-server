@@ -34,6 +34,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -53,6 +54,7 @@ type Config struct {
 	AdminPassword                string
 	CORSOrigins                  []string
 	GatewayURL                   string
+	TerminalGatewayURL           string // public WebSocket URL of the gateway terminal endpoint, e.g. wss://gw.example.com/terminal
 	DynamicGroupEvalInterval     time.Duration
 	PasswordAuthEnabled          bool
 	SSOCallbackBaseURL           string
@@ -346,6 +348,26 @@ func main() {
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
+		// Wire the remote terminal session token store IF the operator
+		// has configured a public terminal gateway URL. Tokens live in
+		// Valkey under pm:terminal:session:* with a short TTL; minted
+		// by ControlService.StartTerminal and consumed by the gateway
+		// when the web client opens its WebSocket. The URL is returned
+		// to clients in StartTerminalResponse — GatewayBaseURL strips
+		// any query string defensively so the client controls token
+		// placement. When TerminalGatewayURL is empty, the terminal
+		// handler is left nil and StartTerminal returns CodeUnavailable.
+		if cfg.TerminalGatewayURL != "" {
+			terminalStore := terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
+			svc.SetTerminalHandler(api.NewTerminalHandler(
+				st,
+				terminalStore,
+				api.GatewayBaseURL(cfg.TerminalGatewayURL),
+				logger.With("component", "terminal_handler"),
+			))
+			logger.Info("remote terminal sessions enabled", "gateway_url", cfg.TerminalGatewayURL)
+		}
+
 		// Index audit events on insertion — the hook fires after every AppendEvent
 		// and enqueues the persisted row directly (no DB lookup in the search worker).
 		st.OnEventAppended = func(ctx context.Context, ev store.PersistedEvent) {
@@ -555,6 +577,7 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.AdminEmail, "admin-email", "", "Initial admin user email")
 	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
+	flag.StringVar(&cfg.TerminalGatewayURL, "terminal-gateway-url", "", "Public WebSocket URL of the gateway terminal endpoint (e.g. wss://gw.example.com/terminal). When empty, ControlService.StartTerminal returns CodeUnavailable.")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
 	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
@@ -584,6 +607,7 @@ func parseFlags() *Config {
 	envString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
 	envString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
 	envString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
+	envString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
 	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
 	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
 
