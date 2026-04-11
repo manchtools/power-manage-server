@@ -322,6 +322,13 @@ func main() {
 		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
 	}
 
+	// terminalTokenStore is populated below in the Valkey block when
+	// remote terminal sessions are configured. Hoisted to the outer
+	// scope so the InternalHandler — constructed further down — can
+	// share the same store and validate tokens minted by the
+	// ControlService.StartTerminal handler.
+	var terminalTokenStore *terminal.TokenStore
+
 	// Initialize Asynq task queue (Valkey) if configured
 	if cfg.ValkeyAddr != "" {
 		aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
@@ -357,11 +364,15 @@ func main() {
 		// any query string defensively so the client controls token
 		// placement. When TerminalGatewayURL is empty, the terminal
 		// handler is left nil and StartTerminal returns CodeUnavailable.
+		//
+		// The same TokenStore is also handed to the InternalHandler
+		// further down so InternalService.ProxyValidateTerminalToken
+		// can validate bearer tokens minted by this same instance.
 		if cfg.TerminalGatewayURL != "" {
-			terminalStore := terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
+			terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
 			svc.SetTerminalHandler(api.NewTerminalHandler(
 				st,
-				terminalStore,
+				terminalTokenStore,
 				api.GatewayBaseURL(cfg.TerminalGatewayURL),
 				logger.With("component", "terminal_handler"),
 			))
@@ -484,6 +495,12 @@ func main() {
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
 	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	if terminalTokenStore != nil {
+		// Shared with the ControlService.StartTerminal handler so the
+		// gateway can validate tokens minted on this instance via
+		// ProxyValidateTerminalToken.
+		internalHandler.SetTerminalTokenStore(terminalTokenStore)
+	}
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 
 	internalMux := http.NewServeMux()

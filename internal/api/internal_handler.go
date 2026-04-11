@@ -17,6 +17,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
 // InternalHandler implements the InternalService for gateway → control proxying.
@@ -27,6 +28,14 @@ type InternalHandler struct {
 	store     *store.Store
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
+
+	// terminalTokenStore is set via SetTerminalTokenStore after the
+	// Valkey-backed store is constructed in main.go. nil when terminal
+	// sessions are not configured on this control instance, in which
+	// case ProxyValidateTerminalToken returns Unavailable so the
+	// gateway gets a clean error rather than the InternalService
+	// default 'method not implemented'.
+	terminalTokenStore *terminal.TokenStore
 }
 
 // NewInternalHandler creates a new internal service handler.
@@ -36,6 +45,14 @@ func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Log
 		encryptor: enc,
 		logger:    logger,
 	}
+}
+
+// SetTerminalTokenStore wires the Valkey-backed terminal token store
+// so ProxyValidateTerminalToken can validate the bearer tokens minted
+// by ControlService.StartTerminal. Called from main.go alongside
+// ControlService.SetTerminalHandler so the two paths share one store.
+func (h *InternalHandler) SetTerminalTokenStore(s *terminal.TokenStore) {
+	h.terminalTokenStore = s
 }
 
 // VerifyDevice checks that a device exists and is not deleted.
@@ -228,6 +245,72 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	}
 
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil
+}
+
+// ProxyValidateTerminalToken validates the bearer token a web client
+// presents when opening the gateway's WebSocket terminal endpoint and
+// returns the session metadata the gateway needs to bridge the
+// connection.
+//
+// Validation does NOT consume the entry — the same gateway uses the
+// metadata for the lifetime of the WebSocket. Revocation happens
+// explicitly via ControlService.StopTerminal or
+// TerminateTerminalSession. This contract is documented on the RPC
+// in manchtools/power-manage-sdk#27.
+//
+// Distinguishes 'unknown / expired' (Unauthenticated, with a generic
+// message so a forgery probe cannot tell the difference between an
+// expired token and a never-existed one) from 'mismatched token'
+// (Unauthenticated, but logged separately so the audit pipeline can
+// flag forgery attempts). 'Token store not configured' is Unavailable
+// — that's an operator misconfiguration, not a client bug.
+func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *connect.Request[pm.InternalValidateTerminalTokenRequest]) (*connect.Response[pm.InternalValidateTerminalTokenResponse], error) {
+	if h.terminalTokenStore == nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			errors.New("remote terminal sessions are not configured on this control instance"))
+	}
+
+	sessionID := req.Msg.SessionId
+	bearer := req.Msg.Token
+	if sessionID == "" || bearer == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("session_id and token are required"))
+	}
+
+	session, err := h.terminalTokenStore.Validate(ctx, sessionID, bearer)
+	if err != nil {
+		// Map the two possible store errors to the same gRPC code so a
+		// forgery probe cannot tell expired from mismatched, but log
+		// them differently so operators can spot active attacks.
+		switch {
+		case errors.Is(err, terminal.ErrTokenMismatch):
+			h.logger.Warn("terminal token mismatch (possible forgery attempt)",
+				"session_id", sessionID)
+		case errors.Is(err, terminal.ErrTokenNotFound):
+			h.logger.Debug("terminal token unknown or expired",
+				"session_id", sessionID)
+		default:
+			h.logger.Error("terminal token validation failed",
+				"session_id", sessionID, "error", err)
+			return nil, connect.NewError(connect.CodeInternal,
+				errors.New("failed to validate session token"))
+		}
+		return nil, connect.NewError(connect.CodeUnauthenticated,
+			errors.New("invalid or expired session token"))
+	}
+
+	h.logger.Debug("terminal token validated",
+		"session_id", sessionID,
+		"user_id", session.UserID,
+		"device_id", session.DeviceID,
+	)
+	return connect.NewResponse(&pm.InternalValidateTerminalTokenResponse{
+		UserId:   session.UserID,
+		DeviceId: session.DeviceID,
+		TtyUser:  session.TtyUser,
+		Cols:     session.Cols,
+		Rows:     session.Rows,
+	}), nil
 }
 
 // dbResolvedActionToWireAction converts a resolved action row to wire format.
