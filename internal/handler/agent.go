@@ -259,6 +259,16 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		return h.handleRevokeLuksResult(deviceID, p.RevokeLuksDeviceKeyResult)
 	case *pm.AgentMessage_LogQueryResult:
 		return h.handleLogQueryResult(deviceID, p.LogQueryResult)
+	case *pm.AgentMessage_TerminalOutput, *pm.AgentMessage_TerminalStateChange:
+		// Remote terminal traffic — proto contract is in
+		// manchtools/power-manage-sdk#25, real handler lands as part of
+		// manchtools/power-manage-server#6 / manchtools/power-manage-sdk#16
+		// step 5. Until then we accept the message and drop it instead
+		// of erroring out, so an agent that ships the terminal handler
+		// first does not get disconnected by the gateway.
+		h.logger.Debug("received terminal message before handler is implemented",
+			"device_id", deviceID, "type", fmt.Sprintf("%T", msg.Payload))
+		return nil
 	default:
 		return fmt.Errorf("unknown message type: %T", msg.Payload)
 	}
