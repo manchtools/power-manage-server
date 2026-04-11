@@ -768,3 +768,29 @@ func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *co
 	return s.user.SetUserProvisioningEnabled(ctx, req)
 }
 
+// Remote Terminal (PTY) sessions — stub implementations
+//
+// The proto contract for these RPCs lives in
+// manchtools/power-manage-sdk#25 and addresses
+// manchtools/power-manage-server#6 / manchtools/power-manage-sdk#16.
+// Real implementations (TTY user provisioning, session token minting,
+// gateway URL resolution, admin session management) land in a follow-up
+// PR. Until then these stubs return CodeUnimplemented so the
+// ControlServiceHandler interface stays satisfied after the SDK update.
+
+func (s *ControlService) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+}
+
+func (s *ControlService) StopTerminal(ctx context.Context, req *connect.Request[pm.StopTerminalRequest]) (*connect.Response[pm.StopTerminalResponse], error) {
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+}
+
+func (s *ControlService) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+}
+
+func (s *ControlService) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+}
+
