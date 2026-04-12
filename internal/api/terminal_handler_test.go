@@ -282,6 +282,7 @@ func TestStartTerminal_RegistryRouting(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, userID, "alice")
 	deviceID := testutil.CreateTestDevice(t, st, "host-reg")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	// Simulate the gateway publishing its registration + the device mapping.
 	ctx := context.Background()
@@ -311,6 +312,7 @@ func TestStartTerminal_RegistryDeviceNotConnected(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, userID, "alice")
 	deviceID := testutil.CreateTestDevice(t, st, "host-unreg")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	// No AttachDevice call — device is not connected.
 	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
