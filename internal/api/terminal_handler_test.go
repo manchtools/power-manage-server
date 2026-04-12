@@ -59,6 +59,7 @@ func TestStartTerminal_HappyPath(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, userID, "alice")
 	deviceID := testutil.CreateTestDevice(t, st, "host-1")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	resp, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
 		DeviceId: deviceID,
@@ -91,6 +92,7 @@ func TestStartTerminal_DefaultsWhenColsRowsZero(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, userID, "bob")
 	deviceID := testutil.CreateTestDevice(t, st, "host-2")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	resp, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
 		DeviceId: deviceID,
@@ -111,6 +113,7 @@ func TestStartTerminal_NoLinuxUsername(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	// Intentionally NOT calling setLinuxUsername.
 	deviceID := testutil.CreateTestDevice(t, st, "host-3")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
 		DeviceId: deviceID,
@@ -159,6 +162,7 @@ func TestStopTerminal_OwnerCanStop(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, userID, "alice")
 	deviceID := testutil.CreateTestDevice(t, st, "host-5")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 
 	startResp, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
 		DeviceId: deviceID,
@@ -184,6 +188,7 @@ func TestStopTerminal_OtherUserCannotStop(t *testing.T) {
 	otherID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	setLinuxUsername(t, st, otherID, "bob")
 	deviceID := testutil.CreateTestDevice(t, st, "host-6")
+	testutil.AssignDeviceToUser(t, st, ownerID, deviceID, ownerID)
 
 	startResp, err := h.StartTerminal(authedCtx(ownerID), connect.NewRequest(&pm.StartTerminalRequest{
 		DeviceId: deviceID,

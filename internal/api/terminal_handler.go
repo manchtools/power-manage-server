@@ -243,7 +243,16 @@ func GatewayBaseURL(raw string) string {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return strings.TrimRight(raw, "/")
+		// Even on parse failure, strip query/fragment so tokens
+		// can't leak through the fallback path.
+		s := raw
+		if i := strings.IndexByte(s, '?'); i >= 0 {
+			s = s[:i]
+		}
+		if i := strings.IndexByte(s, '#'); i >= 0 {
+			s = s[:i]
+		}
+		return strings.TrimRight(s, "/")
 	}
 	u.RawQuery = ""
 	u.Fragment = ""
