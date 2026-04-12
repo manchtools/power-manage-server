@@ -112,26 +112,30 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 	// when the user holds the StartTerminal permission (directly or
 	// via a user group role). When the permission is revoked, the
 	// action is cleaned up so the account is removed from devices.
-	ttyNeeded := false
+	//
+	// If the permission query fails, we skip the TTY block entirely
+	// and leave the existing state untouched — a transient DB error
+	// must NOT trigger a cleanup that deletes a working TTY account.
 	permissions, err := m.store.Queries().GetUserPermissionsWithGroups(ctx, userID)
 	if err != nil {
-		m.logger.Error("failed to resolve user permissions for tty action sync",
+		m.logger.Error("failed to resolve user permissions for tty action sync; leaving TTY state unchanged",
 			"user_id", userID, "error", err)
 	} else {
+		ttyNeeded := false
 		for _, p := range permissions {
 			if p == "StartTerminal" {
 				ttyNeeded = true
 				break
 			}
 		}
-	}
-	if ttyNeeded {
-		if err := m.syncTtyUserAction(ctx, user); err != nil {
-			m.logger.Error("failed to sync tty user action", "user_id", userID, "error", err)
-		}
-	} else {
-		if err := m.cleanupTtyAction(ctx, user); err != nil {
-			m.logger.Error("failed to cleanup tty user action", "user_id", userID, "error", err)
+		if ttyNeeded {
+			if err := m.syncTtyUserAction(ctx, user); err != nil {
+				m.logger.Error("failed to sync tty user action", "user_id", userID, "error", err)
+			}
+		} else {
+			if err := m.cleanupTtyAction(ctx, user); err != nil {
+				m.logger.Error("failed to cleanup tty user action", "user_id", userID, "error", err)
+			}
 		}
 	}
 

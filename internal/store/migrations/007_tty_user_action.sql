@@ -184,5 +184,14 @@ $$ LANGUAGE plpgsql;
 
 -- +goose Down
 ALTER TABLE users_projection DROP COLUMN IF EXISTS system_tty_action_id;
--- The down migration does not restore the old function body; running
--- all downs in reverse order (006 → 005 → ... → 002) handles that.
+-- WARNING: This down migration drops the system_tty_action_id column
+-- but does NOT restore the prior project_user_event function body
+-- (which lacks the system_tty_action_id CASE arm). The trigger will
+-- still try to SET system_tty_action_id on UserSystemActionLinked
+-- events, but PostgreSQL silently ignores SET on a dropped column in
+-- an UPDATE, so this is safe for a partial rollback.
+--
+-- For a clean rollback, run all downs in reverse order (007 → 006 →
+-- ... → 002) so migration 002's function body is restored. A partial
+-- rollback of only 007 is operationally safe but leaves the trigger
+-- referencing a non-existent column (harmless).
