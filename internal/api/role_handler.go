@@ -285,6 +285,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
+	assignedAny := false
 	for _, roleID := range roleIDs {
 		// Verify role exists
 		_, err = q.GetRoleByID(ctx, roleID)
@@ -321,11 +322,16 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		}, "failed to assign role"); err != nil {
 			return nil, err
 		}
+		assignedAny = true
 	}
 
-	// Bump user's session version once to invalidate cached permissions
-	if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role assignment")
+	// Only bump the session version if we actually assigned at least
+	// one role. Idempotent no-op retries (all roles already assigned)
+	// should not force an unnecessary re-login.
+	if assignedAny {
+		if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role assignment")
+		}
 	}
 
 	return connect.NewResponse(&pm.AssignRoleToUserResponse{}), nil
