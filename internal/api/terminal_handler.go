@@ -266,6 +266,14 @@ func GatewayBaseURL(raw string) string {
 		}
 		return strings.TrimRight(s, "/")
 	}
+	// Reject non-WebSocket schemes so an http:// or ftp:// misconfig
+	// fails at startup rather than producing a broken URL in responses.
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return ""
+	}
+	if u.Host == "" {
+		return ""
+	}
 	u.User = nil
 	u.RawQuery = ""
 	u.Fragment = ""
