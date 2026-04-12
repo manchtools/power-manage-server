@@ -72,6 +72,8 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/search` | Full-text search indexer using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries |
 | `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
+| `internal/terminal` | Session token store (Valkey-backed) for remote terminal sessions |
+| `internal/gateway/registry` | Multi-gateway device→gateway routing registry (Valkey-backed) |
 | `internal/testutil` | Test helpers — PostgreSQL testcontainers, test entity factories, auth context injection |
 
 ## API Reference
@@ -390,6 +392,15 @@ Automatic Linux user account management on devices. When provisioning is enabled
 
 Permission-based authorization replaces the old admin/user role model. Roles are custom collections of permissions. Users can have multiple roles (directly assigned or inherited via user groups). Permissions include scoped variants like `GetUser:self` and `ListDevices:assigned`.
 
+#### Remote Terminal Permissions
+
+| Permission | Description |
+|------------|-------------|
+| `StartTerminal` | Open a remote terminal session on a device |
+| `StopTerminal` | Stop a remote terminal session you opened |
+| `ListActiveTerminalSessions` | View active terminal sessions (admin) |
+| `TerminateTerminalSession` | Forcibly terminate any terminal session (admin) |
+
 ### OPA Authorization (`internal/auth/opa.go`)
 
 Embedded Rego policies (`internal/auth/policies/authz.rego`) evaluate every RPC call based on the user's effective permissions (union of all assigned roles).
@@ -440,6 +451,21 @@ CGO_ENABLED=0 go build -ldflags="-s -w" -o indexer ./cmd/indexer
 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o control ./cmd/control
 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cmd/gateway
 ```
+
+## Configuration
+
+### Gateway Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `VALKEY_ADDR` | Valkey address, e.g. `localhost:6379` |
+| `VALKEY_PASSWORD` | Valkey password |
+| `GATEWAY_CONTROL_URL` | URL of the Control Server |
+| `GATEWAY_ID` | Stable gateway identifier (empty = generate ULID at startup) |
+| `GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE` | Template for the public terminal WebSocket URL, e.g. `wss://{id}.gateway.example.com/terminal` |
+| `GATEWAY_BOOTSTRAP_HOST` | Wildcard root hostname for agent bootstrap redirect, e.g. `gateway.example.com` |
+| `GATEWAY_WEB_LISTEN_ADDR` | Listen address for the web TLS listener (terminal WebSocket), e.g. `:8443` |
+| `CONTROL_TERMINAL_GATEWAY_URL` | Fallback terminal gateway URL for single-gateway deployments (deprecated in favor of registry) |
 
 ## Running Locally
 
