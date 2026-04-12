@@ -259,10 +259,6 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	// Bump session version for all members (they may lose permissions)
-	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
-		h.logger.Warn("partial session invalidation", "error", err)
-	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
@@ -272,6 +268,11 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		ActorID:    userCtx.ID,
 	}, "failed to delete user group"); err != nil {
 		return nil, err
+	}
+
+	// Bump session version for all members after the deletion is committed (they may lose permissions)
+	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation", "error", err)
 	}
 
 	if h.searchIdx != nil {
@@ -746,24 +747,24 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 }
 
 // bumpSessionVersionForGroupMembers bumps session_version for all
-// members of a user group. Stops on the first failure and returns
-// the error so the caller can surface it. A partial bump (some
-// members invalidated, some not) is acceptable: the successfully-
-// bumped members see a forced re-login, the rest keep their
-// existing JWTs until the next successful attempt. The alternative
-// (rolling back the successful bumps) would require compensating
-// events and is worse than a partial invalidation.
+// members of a user group. Best-effort across all members: records
+// the first failure but continues through the rest so that a single
+// failing member does not prevent the remaining members from being
+// invalidated. A partial bump is better than stopping early.
 func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
 	memberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
 	if err != nil {
 		return err
 	}
+	var firstErr error
 	for _, uid := range memberIDs {
 		if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
-			return err
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // userGroupToProto converts a database user group projection to a protobuf UserGroup.

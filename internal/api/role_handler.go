@@ -359,19 +359,30 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_role",
-		StreamID:   streamID,
-		EventType:  "UserRoleRevoked",
-		Data: map[string]any{
-			"user_id": req.Msg.UserId,
-			"role_id": req.Msg.RoleId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to revoke role"); err != nil {
-		return nil, err
+	// Check if the user currently has the role — skip the event on retry/idempotent call
+	hasRole, err := h.store.Queries().UserHasRole(ctx, db.UserHasRoleParams{
+		UserID: req.Msg.UserId,
+		RoleID: req.Msg.RoleId,
+	})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+	}
+
+	if hasRole {
+		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
+		if err := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_role",
+			StreamID:   streamID,
+			EventType:  "UserRoleRevoked",
+			Data: map[string]any{
+				"user_id": req.Msg.UserId,
+				"role_id": req.Msg.RoleId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to revoke role"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Bump user's session version to invalidate cached permissions
