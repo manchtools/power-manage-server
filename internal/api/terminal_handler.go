@@ -56,6 +56,10 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, gatewa
 // key is "StartTerminal" — same convention as every other handler),
 // so this method only runs for callers that already hold it.
 func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
+	if h.gatewayURL == "" {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"terminal gateway URL is not configured")
+	}
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
@@ -243,9 +247,17 @@ func GatewayBaseURL(raw string) string {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		// Even on parse failure, strip query/fragment so tokens
-		// can't leak through the fallback path.
+		// Even on parse failure, strip userinfo/query/fragment so
+		// credentials and tokens can't leak through the fallback.
 		s := raw
+		if i := strings.IndexByte(s, '@'); i >= 0 {
+			// Strip everything up to and including the '@'. This is
+			// a best-effort heuristic — the parse already failed, so
+			// the URL is malformed anyway.
+			if schemeEnd := strings.Index(s, "://"); schemeEnd >= 0 && i > schemeEnd {
+				s = s[:schemeEnd+3] + s[i+1:]
+			}
+		}
 		if i := strings.IndexByte(s, '?'); i >= 0 {
 			s = s[:i]
 		}
@@ -254,6 +266,7 @@ func GatewayBaseURL(raw string) string {
 		}
 		return strings.TrimRight(s, "/")
 	}
+	u.User = nil
 	u.RawQuery = ""
 	u.Fragment = ""
 	s := u.String()

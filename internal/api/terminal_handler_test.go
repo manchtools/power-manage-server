@@ -247,6 +247,9 @@ func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 		"wss://gw/terminal?token=abc":            "wss://gw/terminal",
 		"wss://gw/terminal?token=abc&extra=1":    "wss://gw/terminal",
 		"wss://gw/terminal#frag":                 "wss://gw/terminal",
+		// Userinfo credentials must be stripped.
+		"wss://admin:secret@gw/terminal":         "wss://gw/terminal",
+		"wss://user@gw/terminal?token=abc":       "wss://gw/terminal",
 	}
 	for in, want := range cases {
 		got := api.GatewayBaseURL(in)
@@ -254,11 +257,11 @@ func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 			t.Errorf("GatewayBaseURL(%q) = %q, want %q", in, got, want)
 		}
 	}
-	// And the resulting base must contain neither '?' nor '#'.
+	// The resulting base must contain neither '?', '#', nor '@'.
 	for in := range cases {
 		out := api.GatewayBaseURL(in)
-		if strings.ContainsAny(out, "?#") {
-			t.Errorf("GatewayBaseURL(%q) leaked query/fragment: %q", in, out)
+		if strings.ContainsAny(out, "?#@") {
+			t.Errorf("GatewayBaseURL(%q) leaked query/fragment/userinfo: %q", in, out)
 		}
 	}
 }
