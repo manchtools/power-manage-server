@@ -42,7 +42,7 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, gatewa
 	return &TerminalHandler{
 		store:      st,
 		tokenStore: tokenStore,
-		gatewayURL: gatewayURL,
+		gatewayURL: GatewayBaseURL(gatewayURL),
 		logger:     logger,
 	}
 }
@@ -78,9 +78,18 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	}
 	ttyUser := sdkterminal.TTYUsername(linuxUsername)
 
-	if _, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
+	// Filter by the authenticated user's ID so users can only open
+	// terminal sessions on devices assigned to them (directly or via
+	// user groups). The SQL query's FilterUserID clause handles the
+	// assignment check — a non-assigned device looks like ErrNoRows,
+	// same as a genuinely missing device.
+	filterUserID := userCtx.ID
+	if _, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{
+		ID:           req.Msg.DeviceId,
+		FilterUserID: &filterUserID,
+	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or not assigned to you")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
@@ -205,11 +214,14 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 	}
 
 	if err := h.tokenStore.Revoke(ctx, req.Msg.SessionId); err != nil {
-		// Event is persisted, so the audit trail is intact. The
-		// revoke failure is logged but doesn't fail the RPC — the
-		// Valkey TTL will clean up the token within seconds anyway.
-		h.logger.Warn("failed to revoke terminal session token (TTL will clean up)",
+		// The stop event is persisted, but the token remains valid
+		// until its Valkey TTL expires (up to 60s). That's a window
+		// where the session could theoretically be reconnected. Fail
+		// the RPC so the client knows the stop didn't fully land and
+		// can retry.
+		h.logger.Error("failed to revoke terminal session token",
 			"session_id", session.SessionID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke terminal session token")
 	}
 
 	h.logger.Info("terminal session stopped",
