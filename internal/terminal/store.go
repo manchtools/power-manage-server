@@ -135,7 +135,12 @@ func WithClock(now func() time.Time) TokenStoreOption {
 }
 
 // NewTokenStore constructs a TokenStore over the given backend.
+// Panics if backend is nil so misconfiguration is caught at startup
+// rather than on the first Mint/Validate call.
 func NewTokenStore(backend SessionBackend, opts ...TokenStoreOption) *TokenStore {
+	if backend == nil {
+		panic("terminal: NewTokenStore requires a non-nil SessionBackend")
+	}
 	s := &TokenStore{
 		backend: backend,
 		ttl:     DefaultTokenTTL,

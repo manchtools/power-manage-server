@@ -44,7 +44,7 @@ type ControlService struct {
 	search           *SearchHandler
 	settings         *SettingsHandler
 	systemActions    *SystemActionManager
-	terminal         *TerminalHandler // nil until SetTerminal is called from main.go after Valkey wiring
+	terminal         *TerminalHandler // nil until SetTerminalHandler is called from main.go after Valkey wiring
 }
 
 // ControlServiceConfig holds configuration for the control service.
