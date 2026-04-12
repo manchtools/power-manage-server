@@ -90,3 +90,19 @@ func (p *ControlProxy) StoreLpsPasswords(ctx context.Context, deviceID, actionID
 	}))
 	return err
 }
+
+// ValidateTerminalToken validates a session token presented by a web
+// client opening the gateway's WebSocket terminal endpoint. Returns
+// the session metadata (device_id, tty_user, cols, rows, user_id)
+// the bridge needs to set up the session. Returns an error (typically
+// connect.CodeUnauthenticated) if the token is invalid or expired.
+func (p *ControlProxy) ValidateTerminalToken(ctx context.Context, sessionID, token string) (*pm.InternalValidateTerminalTokenResponse, error) {
+	resp, err := p.client.ProxyValidateTerminalToken(ctx, connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: sessionID,
+		Token:     token,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}

@@ -127,6 +127,18 @@ type LogQueryResultPayload struct {
 	Logs     string `json:"logs"`
 }
 
+// TerminalAuditChunkPayload carries a stdin chunk from a terminal
+// session so the control server's inbox worker can persist it as an
+// audit event. Only stdin is audited — stdout is high-volume and
+// derivable from input replay.
+type TerminalAuditChunkPayload struct {
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+	UserID    string `json:"user_id"`
+	Data      []byte `json:"data"`
+	Sequence  int64  `json:"sequence"`
+}
+
 // === Search index payloads (search queue) ===
 
 // SearchReindexPayload is the payload for TypeSearchReindex tasks.

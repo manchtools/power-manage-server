@@ -48,6 +48,12 @@ const (
 
 	// TypeLogQueryResult reports the result of a journalctl log query.
 	TypeLogQueryResult = "log:result"
+
+	// TypeTerminalAuditChunk carries a stdin chunk from a terminal
+	// session for audit persistence. Enqueued by the gateway's
+	// WebSocket bridge and consumed by the control's inbox worker.
+	// Only stdin is audited (stdout is high-volume and derivable).
+	TypeTerminalAuditChunk = "terminal:audit_chunk"
 )
 
 // ControlInboxQueue is the Asynq queue name for gateway → control messages.

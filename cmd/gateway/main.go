@@ -188,6 +188,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Terminal session registry — shared between the agent bidi
+	// stream handler (routes TerminalOutput/StateChange to the
+	// matching bridge) and the WebSocket bridge handler (registers/
+	// unregisters sessions and reads output). Also used by the
+	// GatewayService for admin list/terminate.
+	terminalSessions := connection.NewTerminalSessionRegistry()
+
 	logger.Info("gateway started", "version", version)
 
 	// Setup HTTP mux for agent connections (mTLS-protected)
@@ -198,6 +205,7 @@ func main() {
 	if gatewayReg != nil {
 		agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
 	}
+	agentHandler.SetTerminalSessions(terminalSessions)
 	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 
 	// Compose middlewares (innermost first):
@@ -208,6 +216,12 @@ func main() {
 	mtlsHandler := handler.MTLSMiddleware(h, logger)
 	bootstrappedHandler := handler.BootstrapRedirectMiddleware(mtlsHandler, cfg.BootstrapHost, assignedHost, logger)
 	mux.Handle(path, bootstrappedHandler)
+
+	// Mount GatewayService on the mTLS listener (internal-only,
+	// called by the control server for admin list/terminate fan-out).
+	gwSvcHandler := handler.NewGatewayServiceHandler(terminalSessions, manager, logger.With("component", "gateway_service"))
+	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler)
+	mux.Handle(gwSvcPath, gwSvcH)
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))
@@ -276,6 +290,49 @@ func main() {
 		}
 	}()
 
+	// Start web TLS server for terminal WebSocket (standard TLS, no
+	// mTLS — web browsers cannot present client certificates in
+	// WebSocket upgrades). The terminal bridge authenticates via
+	// session tokens validated against the control server.
+	var webServer *http.Server
+	if cfg.WebListenAddr != "" {
+		bridgeHandler := handler.NewTerminalBridgeHandler(
+			manager, terminalSessions, controlProxy, aqClient,
+			logger.With("component", "terminal_bridge"),
+		)
+		webMux := http.NewServeMux()
+		webMux.Handle("/terminal", bridgeHandler)
+		webMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
+
+		// Standard TLS: same cert/key as the mTLS server, but no
+		// client cert requirement. The cert must include the *.gateway
+		// wildcard SAN so both per-gateway hostnames and the bootstrap
+		// hostname resolve to a valid cert.
+		webTLS := &tls.Config{
+			Certificates: []tls.Certificate{controlCert},
+			MinVersion:   tls.VersionTLS13,
+		}
+		webServer = &http.Server{
+			Addr:              cfg.WebListenAddr,
+			Handler:           middleware.RequestID(middleware.SecurityHeaders(webMux)),
+			TLSConfig:         webTLS,
+			ReadTimeout:       0,    // long-lived WebSocket
+			WriteTimeout:      0,    // long-lived WebSocket
+			IdleTimeout:       120 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			logger.Info("web server listening (terminal WebSocket)",
+				"address", cfg.WebListenAddr)
+			if err := webServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				logger.Error("web server error", "error", err)
+			}
+		}()
+	}
+
 	// Wait for shutdown signal
 	<-shutdownCtx.Done()
 	logger.Info("shutting down server")
@@ -286,6 +343,11 @@ func main() {
 
 	if err := opsServer.Shutdown(drainCtx); err != nil {
 		logger.Error("ops server shutdown error", "error", err)
+	}
+	if webServer != nil {
+		if err := webServer.Shutdown(drainCtx); err != nil {
+			logger.Error("web server shutdown error", "error", err)
+		}
 	}
 	if err := server.Shutdown(drainCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
