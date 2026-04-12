@@ -368,8 +368,14 @@ func main() {
 		// The same TokenStore is also handed to the InternalHandler
 		// further down so InternalService.ProxyValidateTerminalToken
 		// can validate bearer tokens minted by this same instance.
+		// Always create the token store when Valkey is available, even
+		// if this node doesn't mint sessions (TerminalGatewayURL empty).
+		// The gateway calls ProxyValidateTerminalToken on whichever
+		// control replica it reaches, so every node that has Valkey
+		// must be able to validate tokens minted by other replicas.
+		terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
+
 		if cfg.TerminalGatewayURL != "" {
-			terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
 			svc.SetTerminalHandler(api.NewTerminalHandler(
 				st,
 				terminalTokenStore,
@@ -377,6 +383,8 @@ func main() {
 				logger.With("component", "terminal_handler"),
 			))
 			logger.Info("remote terminal sessions enabled", "gateway_url", cfg.TerminalGatewayURL)
+		} else {
+			logger.Warn("CONTROL_TERMINAL_GATEWAY_URL is empty: this node can validate terminal tokens but will not mint sessions (StartTerminal returns Unavailable)")
 		}
 
 		// Index audit events on insertion — the hook fires after every AppendEvent

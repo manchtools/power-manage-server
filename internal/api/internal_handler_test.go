@@ -262,15 +262,13 @@ func TestProxyValidateTerminalToken_UnknownSession(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-}
+	unknownMsg := err.Error()
 
-func TestProxyValidateTerminalToken_MismatchedToken(t *testing.T) {
-	// Mismatched and unknown both surface as Unauthenticated so a
-	// forgery probe cannot tell the difference, but the audit log
-	// records them differently. The test confirms the gRPC code
-	// is the same; the log inspection is left to manual review.
-	h, tokenStore := newInternalHandlerWithTokenStore(t)
-
+	// Mismatched and unknown must produce the SAME gRPC code AND the
+	// SAME error message so a forgery probe cannot distinguish them.
+	// The log messages differ (Warn vs Debug) but the wire response
+	// is identical.
+	h2, tokenStore := newInternalHandlerWithTokenStore(t)
 	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
 		UserID:   "user-1",
 		DeviceID: "device-1",
@@ -278,12 +276,16 @@ func TestProxyValidateTerminalToken_MismatchedToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+	_, err = h2.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
 		SessionId: mintRes.SessionID,
 		Token:     "wrong-token",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	mismatchMsg := err.Error()
+
+	assert.Equal(t, unknownMsg, mismatchMsg,
+		"unknown and mismatched errors must have the same message to prevent probe distinguishability")
 }
 
 func TestProxyValidateTerminalToken_RevokedToken(t *testing.T) {
