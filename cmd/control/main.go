@@ -30,6 +30,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
@@ -355,15 +356,23 @@ func main() {
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
-		// Wire the remote terminal session token store IF the operator
-		// has configured a public terminal gateway URL. Tokens live in
+		// Wire the remote terminal session token store. Tokens live in
 		// Valkey under pm:terminal:session:* with a short TTL; minted
 		// by ControlService.StartTerminal and consumed by the gateway
-		// when the web client opens its WebSocket. The URL is returned
-		// to clients in StartTerminalResponse — GatewayBaseURL strips
-		// any query string defensively so the client controls token
-		// placement. When TerminalGatewayURL is empty, the terminal
-		// handler is left nil and StartTerminal returns CodeUnavailable.
+		// when the web client opens its WebSocket.
+		//
+		// In multi-gateway HA, the URL returned to the client must
+		// point at the *specific* gateway hosting the device (any
+		// other gateway has no way to bridge the WebSocket to the
+		// agent). The internal/gateway/registry package looks the
+		// device→gateway mapping up in Valkey: each gateway publishes
+		// pm:device:gateway:<device_id> on agent connect. The
+		// TerminalHandler queries the same registry at mint time.
+		//
+		// CONTROL_TERMINAL_GATEWAY_URL is retained as a fallback for
+		// single-gateway dev deployments where the operator hasn't
+		// run the registry-publishing gateway changes yet. In a real
+		// multi-gateway deployment, leave it unset.
 		//
 		// The same TokenStore is also handed to the InternalHandler
 		// further down so InternalService.ProxyValidateTerminalToken
@@ -374,17 +383,21 @@ func main() {
 		// control replica it reaches, so every node that has Valkey
 		// must be able to validate tokens minted by other replicas.
 		terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
-
+		gatewayReg := registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "gateway_registry"))
+		svc.SetTerminalHandler(api.NewTerminalHandler(
+			st,
+			terminalTokenStore,
+			gatewayReg,
+			api.GatewayBaseURL(cfg.TerminalGatewayURL),
+			logger.With("component", "terminal_handler"),
+		))
 		if cfg.TerminalGatewayURL != "" {
-			svc.SetTerminalHandler(api.NewTerminalHandler(
-				st,
-				terminalTokenStore,
-				api.GatewayBaseURL(cfg.TerminalGatewayURL),
-				logger.With("component", "terminal_handler"),
-			))
-			logger.Info("remote terminal sessions enabled", "gateway_url", cfg.TerminalGatewayURL)
+			logger.Info("remote terminal sessions enabled",
+				"fallback_gateway_url", cfg.TerminalGatewayURL,
+				"registry_enabled", true,
+			)
 		} else {
-			logger.Warn("CONTROL_TERMINAL_GATEWAY_URL is empty: this node can validate terminal tokens but will not mint sessions (StartTerminal returns Unavailable)")
+			logger.Warn("CONTROL_TERMINAL_GATEWAY_URL is empty: this node can validate terminal tokens via registry but will not mint sessions with a static fallback URL")
 		}
 
 		// Index audit events on insertion — the hook fires after every AppendEvent

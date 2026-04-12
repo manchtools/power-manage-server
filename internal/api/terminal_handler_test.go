@@ -14,6 +14,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/testutil"
@@ -42,7 +43,8 @@ func setLinuxUsername(t *testing.T, st *store.Store, userID, linuxUsername strin
 func newTerminalHandler(t *testing.T, st *store.Store) (*api.TerminalHandler, *terminal.TokenStore) {
 	t.Helper()
 	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	h := api.NewTerminalHandler(st, tokenStore, "wss://gateway.example.com/terminal", slog.Default())
+	// nil registry → single-gateway fallback path using the static URL.
+	h := api.NewTerminalHandler(st, tokenStore, nil, "wss://gateway.example.com/terminal", slog.Default())
 	return h, tokenStore
 }
 
@@ -264,4 +266,58 @@ func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 			t.Errorf("GatewayBaseURL(%q) leaked query/fragment/userinfo: %q", in, out)
 		}
 	}
+}
+
+// TestStartTerminal_RegistryRouting verifies that when a registry is
+// configured, StartTerminal resolves the gateway URL dynamically from
+// the device→gateway→URL chain instead of using the static fallback.
+func TestStartTerminal_RegistryRouting(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	backend := registry.NewFakeBackend(nil)
+	reg := registry.New(backend, slog.Default())
+	// Empty fallback so we know the returned URL came from the registry.
+	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setLinuxUsername(t, st, userID, "alice")
+	deviceID := testutil.CreateTestDevice(t, st, "host-reg")
+
+	// Simulate the gateway publishing its registration + the device mapping.
+	ctx := context.Background()
+	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-42", registry.DefaultDeviceTTL))
+	stop, err := reg.RegisterGateway(ctx, "gw-42", "wss://gw-42.gateway.example.com/terminal", registry.DefaultGatewayTTL, registry.DefaultGatewayRefreshInterval)
+	require.NoError(t, err)
+	defer stop()
+
+	resp, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
+		DeviceId: deviceID,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "wss://gw-42.gateway.example.com/terminal", resp.Msg.GatewayUrl)
+	assert.NotEmpty(t, resp.Msg.SessionId)
+	assert.NotEmpty(t, resp.Msg.SessionToken)
+}
+
+// TestStartTerminal_RegistryDeviceNotConnected verifies that when the
+// device has no device→gateway mapping in the registry (not connected
+// to any gateway), StartTerminal returns FailedPrecondition.
+func TestStartTerminal_RegistryDeviceNotConnected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
+	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setLinuxUsername(t, st, userID, "alice")
+	deviceID := testutil.CreateTestDevice(t, st, "host-unreg")
+
+	// No AttachDevice call — device is not connected.
+	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
+		DeviceId: deviceID,
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
 }

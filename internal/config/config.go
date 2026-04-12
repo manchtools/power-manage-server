@@ -19,6 +19,35 @@ type Config struct {
 	// Control server URL for internal RPC proxying
 	ControlURL string
 
+	// Multi-gateway routing settings (used by the registry).
+	//
+	// GatewayID is the stable ID this gateway uses to register
+	// itself in Valkey. Empty means "generate a fresh ULID at
+	// startup" — appropriate for dynamic-config Traefik setups
+	// (file provider with watcher, k8s headless service, etc.).
+	// Set explicitly when running with a static-config Traefik
+	// setup that pre-declares per-gateway routes.
+	GatewayID string
+
+	// PublicTerminalURLTemplate is the template the gateway uses
+	// to compute its public WebSocket URL for terminal sessions.
+	// '{id}' is substituted with GatewayID. Empty disables terminal
+	// session registration on this gateway (the gateway still
+	// accepts agent connections normally).
+	//
+	// Example: "wss://{id}.gateway.example.com/terminal"
+	PublicTerminalURLTemplate string
+
+	// BootstrapHost is the wildcard root hostname agents use for
+	// the initial connection before they have an assigned gateway.
+	// When the gateway sees a request with this Host header, it
+	// returns HTTP 307 with its own per-gateway URL so the client
+	// can reconnect directly. Empty disables the bootstrap
+	// redirect (single-gateway deployments don't need it).
+	//
+	// Example: "gateway.example.com"
+	BootstrapHost string
+
 	// Logging
 	LogLevel string
 }
@@ -26,12 +55,15 @@ type Config struct {
 // FromEnv loads configuration from environment variables.
 func FromEnv() *Config {
 	return &Config{
-		ListenAddr:     getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
-		ValkeyAddr:     getEnv("VALKEY_ADDR", "localhost:6379"),
-		ValkeyPassword: getEnv("VALKEY_PASSWORD", ""),
-		ValkeyDB:       getEnvInt("VALKEY_DB", 0),
-		ControlURL:     getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
-		LogLevel:       getEnv("LOG_LEVEL", "info"),
+		ListenAddr:                getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
+		ValkeyAddr:                getEnv("VALKEY_ADDR", "localhost:6379"),
+		ValkeyPassword:            getEnv("VALKEY_PASSWORD", ""),
+		ValkeyDB:                  getEnvInt("VALKEY_DB", 0),
+		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
+		GatewayID:                 getEnv("GATEWAY_ID", ""),
+		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
+		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
+		LogLevel:                  getEnv("LOG_LEVEL", "info"),
 	}
 }
 
