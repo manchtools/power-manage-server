@@ -11,6 +11,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -190,4 +191,149 @@ func TestProxyStoreLpsPasswords_MissingFields(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// newInternalHandlerWithTokenStore builds an InternalHandler over a
+// fresh in-memory token store. Returned alongside the store so tests
+// can mint and revoke directly without round-tripping through the
+// public StartTerminal handler.
+func newInternalHandlerWithTokenStore(t *testing.T) (*api.InternalHandler, *terminal.TokenStore) {
+	t.Helper()
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	h.SetTerminalTokenStore(tokenStore)
+	return h, tokenStore
+}
+
+func TestProxyValidateTerminalToken_HappyPath(t *testing.T) {
+	h, tokenStore := newInternalHandlerWithTokenStore(t)
+
+	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+		Cols:     120,
+		Rows:     40,
+	})
+	require.NoError(t, err)
+
+	resp, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: mintRes.SessionID,
+		Token:     mintRes.Token,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", resp.Msg.UserId)
+	assert.Equal(t, "device-1", resp.Msg.DeviceId)
+	assert.Equal(t, "pm-tty-alice", resp.Msg.TtyUser)
+	assert.Equal(t, uint32(120), resp.Msg.Cols)
+	assert.Equal(t, uint32(40), resp.Msg.Rows)
+}
+
+func TestProxyValidateTerminalToken_DoesNotConsumeToken(t *testing.T) {
+	// The contract documented above the RPC says validation must NOT
+	// consume the entry — the same gateway uses the metadata for the
+	// lifetime of the WebSocket. Validate twice and assert both
+	// succeed.
+	h, tokenStore := newInternalHandlerWithTokenStore(t)
+
+	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+	})
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+			SessionId: mintRes.SessionID,
+			Token:     mintRes.Token,
+		}))
+		require.NoErrorf(t, err, "validation %d should succeed", i+1)
+	}
+}
+
+func TestProxyValidateTerminalToken_UnknownSession(t *testing.T) {
+	h, _ := newInternalHandlerWithTokenStore(t)
+
+	_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: "no-such-session",
+		Token:     "anything",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	unknownMsg := err.Error()
+
+	// Mismatched and unknown must produce the SAME gRPC code AND the
+	// SAME error message so a forgery probe cannot distinguish them.
+	// The log messages differ (Warn vs Debug) but the wire response
+	// is identical.
+	h2, tokenStore := newInternalHandlerWithTokenStore(t)
+	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+	})
+	require.NoError(t, err)
+
+	_, err = h2.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: mintRes.SessionID,
+		Token:     "wrong-token",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	mismatchMsg := err.Error()
+
+	assert.Equal(t, unknownMsg, mismatchMsg,
+		"unknown and mismatched errors must have the same message to prevent probe distinguishability")
+}
+
+func TestProxyValidateTerminalToken_RevokedToken(t *testing.T) {
+	h, tokenStore := newInternalHandlerWithTokenStore(t)
+
+	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+	})
+	require.NoError(t, err)
+	require.NoError(t, tokenStore.Revoke(context.Background(), mintRes.SessionID))
+
+	_, err = h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: mintRes.SessionID,
+		Token:     mintRes.Token,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+func TestProxyValidateTerminalToken_MissingFields(t *testing.T) {
+	h, _ := newInternalHandlerWithTokenStore(t)
+
+	cases := []*pm.InternalValidateTerminalTokenRequest{
+		{},
+		{SessionId: "01ABC"},
+		{Token: "tok"},
+	}
+	for _, req := range cases {
+		_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(req))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	}
+}
+
+func TestProxyValidateTerminalToken_StoreNotConfigured(t *testing.T) {
+	// When SetTerminalTokenStore was never called (e.g. control
+	// instance running without TerminalGatewayURL), the RPC must
+	// return Unavailable so the gateway can degrade gracefully
+	// instead of returning a confusing 'method not found'.
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+
+	_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: "01ABC",
+		Token:     "tok",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }
