@@ -202,6 +202,10 @@ func TestStopTerminal_OtherUserCannotStop(t *testing.T) {
 	// revoked the token.
 	_, lookupErr := tokenStore.Lookup(context.Background(), startResp.Msg.SessionId)
 	require.NoError(t, lookupErr)
+
+	// TODO: add a test covering the admin TerminateTerminalSession path once
+	// that RPC is implemented (requires gateway-side session inventory and
+	// GatewayService fan-out — tracked in a follow-up PR).
 }
 
 func TestStopTerminal_UnknownSessionIsIdempotent(t *testing.T) {

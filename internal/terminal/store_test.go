@@ -3,6 +3,7 @@ package terminal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,7 +63,7 @@ func TestTokenStore_TokenIsHashedNotPlaintext(t *testing.T) {
 	if string(raw) == "" {
 		t.Fatal("backend payload empty")
 	}
-	if contains(string(raw), res.Token) {
+	if strings.Contains(string(raw), res.Token) {
 		t.Error("plaintext token must not appear in persisted payload")
 	}
 }
@@ -207,17 +208,3 @@ func TestTokenStore_MintGeneratesUniqueIDs(t *testing.T) {
 	}
 }
 
-// contains is a tiny strings.Contains stand-in to avoid pulling the
-// stdlib import just for one test (the test file is already big).
-func contains(s, sub string) bool {
-	return len(sub) <= len(s) && (s == sub || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
-}

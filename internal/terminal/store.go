@@ -14,6 +14,7 @@ package terminal
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -235,7 +236,7 @@ func (s *TokenStore) Validate(ctx context.Context, sessionID, bearerToken string
 	if err != nil {
 		return nil, err
 	}
-	if session.TokenHash != hashToken(bearerToken) {
+	if subtle.ConstantTimeCompare([]byte(session.TokenHash), []byte(hashToken(bearerToken))) != 1 {
 		return nil, ErrTokenMismatch
 	}
 	return session, nil

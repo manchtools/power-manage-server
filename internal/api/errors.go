@@ -78,6 +78,7 @@ const (
 
 	// Remote terminal sessions
 	ErrTerminalLinuxUsernameNotSet = "terminal_linux_username_not_set"
+	ErrTerminalNotConfigured       = "terminal_not_configured"
 )
 
 // Compliance policy error codes.

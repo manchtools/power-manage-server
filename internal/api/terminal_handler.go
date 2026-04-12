@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -61,7 +62,10 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up user")
 	}
 	if user.Disabled || user.IsDeleted {
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "user account is disabled")
@@ -74,7 +78,10 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	ttyUser := sdkterminal.TTYUsername(linuxUsername)
 
 	if _, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
-		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 
 	cols := req.Msg.Cols

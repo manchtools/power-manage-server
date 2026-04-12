@@ -788,7 +788,7 @@ func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *co
 
 func (s *ControlService) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
 	if s.terminal == nil {
-		return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnavailable,
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
 			"remote terminal sessions are not configured on this control instance")
 	}
 	return s.terminal.StartTerminal(ctx, req)
@@ -796,7 +796,7 @@ func (s *ControlService) StartTerminal(ctx context.Context, req *connect.Request
 
 func (s *ControlService) StopTerminal(ctx context.Context, req *connect.Request[pm.StopTerminalRequest]) (*connect.Response[pm.StopTerminalResponse], error) {
 	if s.terminal == nil {
-		return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnavailable,
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
 			"remote terminal sessions are not configured on this control instance")
 	}
 	return s.terminal.StopTerminal(ctx, req)

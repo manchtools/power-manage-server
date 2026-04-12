@@ -237,6 +237,7 @@ func DefaultUserPermissions() []string {
 		"UpdateUserLinuxUsername:self",
 		"AddUserSshKey:self",
 		"RemoveUserSshKey:self",
+		"StopTerminal",
 	}
 }
 
