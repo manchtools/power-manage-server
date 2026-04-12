@@ -121,10 +121,14 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		ActorType: "user",
 		ActorID:   user.ID,
 	}); err != nil {
-		// Audit failures are non-fatal: the session can still proceed,
-		// but the audit gap is logged for operators to investigate.
-		h.logger.Warn("failed to append TerminalSessionStarted event",
+		// Terminal sessions without an audit trail are a security gap:
+		// someone has interactive shell access with no record. Revoke
+		// the freshly-minted token and refuse the session so the
+		// invariant "every session has a start event" holds.
+		h.logger.Error("failed to append TerminalSessionStarted event; revoking session",
 			"session_id", mintRes.SessionID, "error", err)
+		_ = h.tokenStore.Revoke(ctx, mintRes.SessionID)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create audit record for terminal session")
 	}
 
 	h.logger.Info("terminal session started",
@@ -188,8 +192,12 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		ActorType: "user",
 		ActorID:   userCtx.ID,
 	}); err != nil {
-		h.logger.Warn("failed to append TerminalSessionStopped event",
+		// The token is already revoked (above), so the session is
+		// stopped regardless. But we still fail the RPC so the client
+		// knows the audit gap exists and operators see a clear error.
+		h.logger.Error("failed to append TerminalSessionStopped event",
 			"session_id", session.SessionID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create audit record for terminal session stop")
 	}
 
 	h.logger.Info("terminal session stopped",
