@@ -448,7 +448,10 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 
 	// Direct role assignments
 	userIDs, err := h.store.Queries().ListUserIDsWithRole(ctx, roleID)
-	if err == nil {
+	if err != nil {
+		h.logger.Error("failed to list users with role for session invalidation",
+			"role_id", roleID, "error", err)
+	} else {
 		for _, uid := range userIDs {
 			if !seen[uid] {
 				if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
@@ -462,7 +465,10 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 
 	// User group role assignments
 	groupUserIDs, err := h.store.Queries().ListUserIDsWithGroupRole(ctx, roleID)
-	if err == nil {
+	if err != nil {
+		h.logger.Error("failed to list group users with role for session invalidation",
+			"role_id", roleID, "error", err)
+	} else {
 		for _, uid := range groupUserIDs {
 			if !seen[uid] {
 				if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
