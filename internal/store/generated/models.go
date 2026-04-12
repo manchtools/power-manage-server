@@ -502,4 +502,5 @@ type UsersProjection struct {
 	SystemUserActionID      string     `json:"system_user_action_id"`
 	SystemSshActionID       string     `json:"system_ssh_action_id"`
 	UserProvisioningEnabled bool       `json:"user_provisioning_enabled"`
+	SystemTtyActionID       string     `json:"system_tty_action_id"`
 }

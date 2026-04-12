@@ -107,6 +107,34 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 		}
 	}
 
+	// --- System TTY user action (for remote terminal sessions) ---
+	// The pm-tty-* account is created on the user's assigned devices
+	// when the user holds the StartTerminal permission (directly or
+	// via a user group role). When the permission is revoked, the
+	// action is cleaned up so the account is removed from devices.
+	ttyNeeded := false
+	permissions, err := m.store.Queries().GetUserPermissionsWithGroups(ctx, userID)
+	if err != nil {
+		m.logger.Error("failed to resolve user permissions for tty action sync",
+			"user_id", userID, "error", err)
+	} else {
+		for _, p := range permissions {
+			if p == "StartTerminal" {
+				ttyNeeded = true
+				break
+			}
+		}
+	}
+	if ttyNeeded {
+		if err := m.syncTtyUserAction(ctx, user); err != nil {
+			m.logger.Error("failed to sync tty user action", "user_id", userID, "error", err)
+		}
+	} else {
+		if err := m.cleanupTtyAction(ctx, user); err != nil {
+			m.logger.Error("failed to cleanup tty user action", "user_id", userID, "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -127,6 +155,14 @@ func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, use
 		}
 		if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
 			m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
+		}
+	}
+	if user.SystemTtyActionID != "" {
+		if err := m.deleteSystemAction(ctx, user.SystemTtyActionID); err != nil {
+			m.logger.Error("failed to delete system tty action", "action_id", user.SystemTtyActionID, "error", err)
+		}
+		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
+			m.logger.Error("failed to unlink system tty action", "user_id", user.ID, "error", err)
 		}
 	}
 	return nil
@@ -253,6 +289,78 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 		m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
 	}
 	m.logger.Info("cleaned up system ssh access action", "user_id", user.ID)
+	return nil
+}
+
+// syncTtyUserAction ensures a dedicated pm-tty-<linux_username>
+// system User action exists for the given user so that when the
+// action is resolved onto the user's assigned devices the agent
+// creates the TTY account. The action uses nologin as the shell
+// (the agent temporarily activates it during a session), no home
+// directory, and the deterministic UID from the SDK's TTYUID helper.
+func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
+	ttyUsername := "pm-tty-" + user.LinuxUsername
+	ttyUID := int(user.LinuxUid) + 100000 // terminal.DefaultUIDOffset
+
+	params := map[string]any{
+		"username":   ttyUsername,
+		"uid":        ttyUID,
+		"shell":      "/usr/sbin/nologin",
+		"createHome": false,
+		"comment":    "Power Manage terminal user for " + user.LinuxUsername,
+		"system":     true, // AccountsService SystemAccount=true → hidden from login screens
+	}
+	if user.Disabled {
+		params["disabled"] = true
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return fmt.Errorf("marshal tty user params: %w", err)
+	}
+
+	actionName := "system:tty-user:" + user.ID
+
+	if user.SystemTtyActionID == "" {
+		// Create new system action
+		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
+		if err != nil {
+			return fmt.Errorf("create tty user action: %w", err)
+		}
+
+		if err := m.assignActionToUser(ctx, actionID, user.ID); err != nil {
+			return fmt.Errorf("assign tty user action: %w", err)
+		}
+
+		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", actionID); err != nil {
+			return fmt.Errorf("link tty user action: %w", err)
+		}
+
+		m.signActionByID(ctx, actionID)
+		m.logger.Info("created system tty user action",
+			"user_id", user.ID, "action_id", actionID, "tty_user", ttyUsername)
+	} else {
+		// Update existing action if params changed
+		if err := m.updateSystemAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
+			return fmt.Errorf("update tty user action: %w", err)
+		}
+		m.signActionByID(ctx, user.SystemTtyActionID)
+	}
+
+	return nil
+}
+
+func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.UsersProjection) error {
+	if user.SystemTtyActionID == "" {
+		return nil
+	}
+	if err := m.deleteSystemAction(ctx, user.SystemTtyActionID); err != nil {
+		m.logger.Error("failed to delete system tty action", "action_id", user.SystemTtyActionID, "error", err)
+	}
+	if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
+		m.logger.Error("failed to unlink system tty action", "user_id", user.ID, "error", err)
+	}
+	m.logger.Info("cleaned up system tty user action", "user_id", user.ID)
 	return nil
 }
 
