@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -93,7 +94,36 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		rows = sdkterminal.DefaultRows
 	}
 
-	mintRes, err := h.tokenStore.Mint(ctx, terminal.MintParams{
+	// CQRS: the event is the source of truth for terminal session
+	// authorization. Write the event FIRST; if it fails, nothing
+	// happened — no token, no session, no audit gap. The Valkey
+	// token is derived state (like a projection), minted only after
+	// the event is safely persisted.
+	sessionID := ulid.Make().String()
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.DeviceId,
+		EventType:  "TerminalSessionStarted",
+		Data: map[string]any{
+			"session_id": sessionID,
+			"tty_user":   ttyUser,
+			"cols":       cols,
+			"rows":       rows,
+		},
+		ActorType: "user",
+		ActorID:   user.ID,
+	}); err != nil {
+		h.logger.Error("failed to append TerminalSessionStarted event",
+			"session_id", sessionID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to persist terminal session event")
+	}
+
+	// Derived state: mint the short-lived bearer token in Valkey.
+	// If this fails, the event is already persisted (recording the
+	// authorization intent), but the session is unusable. The client
+	// retries and gets a new session with a new event — the orphaned
+	// event is a harmless record of a failed attempt.
+	mintRes, err := h.tokenStore.MintWithID(ctx, sessionID, terminal.MintParams{
 		UserID:   user.ID,
 		DeviceID: req.Msg.DeviceId,
 		TtyUser:  ttyUser,
@@ -102,44 +132,20 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	})
 	if err != nil {
 		h.logger.Error("failed to mint terminal session token",
-			"user_id", user.ID, "device_id", req.Msg.DeviceId, "error", err)
+			"session_id", sessionID, "user_id", user.ID,
+			"device_id", req.Msg.DeviceId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to mint session token")
 	}
 
-	// Audit: TerminalSessionStarted on the device stream so the
-	// existing audit/search infrastructure picks it up automatically.
-	if err := h.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   req.Msg.DeviceId,
-		EventType:  "TerminalSessionStarted",
-		Data: map[string]any{
-			"session_id": mintRes.SessionID,
-			"tty_user":   ttyUser,
-			"cols":       cols,
-			"rows":       rows,
-		},
-		ActorType: "user",
-		ActorID:   user.ID,
-	}); err != nil {
-		// Terminal sessions without an audit trail are a security gap:
-		// someone has interactive shell access with no record. Revoke
-		// the freshly-minted token and refuse the session so the
-		// invariant "every session has a start event" holds.
-		h.logger.Error("failed to append TerminalSessionStarted event; revoking session",
-			"session_id", mintRes.SessionID, "error", err)
-		_ = h.tokenStore.Revoke(ctx, mintRes.SessionID)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create audit record for terminal session")
-	}
-
 	h.logger.Info("terminal session started",
-		"session_id", mintRes.SessionID,
+		"session_id", sessionID,
 		"user_id", user.ID,
 		"device_id", req.Msg.DeviceId,
 		"tty_user", ttyUser,
 	)
 
 	return connect.NewResponse(&pm.StartTerminalResponse{
-		SessionId:    mintRes.SessionID,
+		SessionId:    sessionID,
 		SessionToken: mintRes.Token,
 		GatewayUrl:   h.gatewayURL,
 		ExpiresAt:    timestamppb.New(mintRes.ExpiresAt),
@@ -177,10 +183,11 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 			"only the session owner may stop a terminal session; admins must use TerminateTerminalSession")
 	}
 
-	if err := h.tokenStore.Revoke(ctx, req.Msg.SessionId); err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to revoke session")
-	}
-
+	// CQRS: event first (source of truth), then Valkey revoke
+	// (derived state). If the event fails, the session stays active
+	// — no silent stop without an audit trail. If the revoke fails,
+	// the event is recorded and the Valkey TTL will clean up the
+	// orphaned token anyway.
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   session.DeviceID,
@@ -192,12 +199,17 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		ActorType: "user",
 		ActorID:   userCtx.ID,
 	}); err != nil {
-		// The token is already revoked (above), so the session is
-		// stopped regardless. But we still fail the RPC so the client
-		// knows the audit gap exists and operators see a clear error.
 		h.logger.Error("failed to append TerminalSessionStopped event",
 			"session_id", session.SessionID, "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create audit record for terminal session stop")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to persist terminal session stop event")
+	}
+
+	if err := h.tokenStore.Revoke(ctx, req.Msg.SessionId); err != nil {
+		// Event is persisted, so the audit trail is intact. The
+		// revoke failure is logged but doesn't fail the RPC — the
+		// Valkey TTL will clean up the token within seconds anyway.
+		h.logger.Warn("failed to revoke terminal session token (TTL will clean up)",
+			"session_id", session.SessionID, "error", err)
 	}
 
 	h.logger.Info("terminal session stopped",

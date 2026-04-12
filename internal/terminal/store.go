@@ -172,16 +172,27 @@ type MintResult struct {
 	ExpiresAt time.Time
 }
 
-// Mint creates a new session, stores its hashed token + metadata, and
-// returns the plaintext token to the caller. The plaintext is returned
-// exactly once and is not retrievable from Valkey (only the hash is
-// stored), so a Valkey dump cannot be used to forge connections.
+// Mint creates a new session with an auto-generated session ID,
+// stores its hashed token + metadata, and returns the plaintext
+// token to the caller. Use MintWithID when the caller needs to
+// control the session ID (e.g. to write a CQRS event before
+// minting the derived Valkey state).
 func (s *TokenStore) Mint(ctx context.Context, params MintParams) (*MintResult, error) {
+	return s.MintWithID(ctx, ulid.Make().String(), params)
+}
+
+// MintWithID is like Mint but uses the caller-supplied session ID
+// instead of generating one. This supports the CQRS pattern where
+// the event (source of truth) is written first with a known ID,
+// and the Valkey token (derived state) is minted afterwards.
+func (s *TokenStore) MintWithID(ctx context.Context, sessionID string, params MintParams) (*MintResult, error) {
+	if sessionID == "" {
+		return nil, errors.New("terminal: session_id is required")
+	}
 	if params.UserID == "" || params.DeviceID == "" || params.TtyUser == "" {
 		return nil, errors.New("terminal: mint requires user_id, device_id, and tty_user")
 	}
 
-	sessionID := ulid.Make().String()
 	token, err := generateOpaqueToken(32)
 	if err != nil {
 		return nil, fmt.Errorf("terminal: generate token: %w", err)
