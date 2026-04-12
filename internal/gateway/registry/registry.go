@@ -126,6 +126,9 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, terminalURL s
 	if refreshInterval <= 0 {
 		refreshInterval = DefaultGatewayRefreshInterval
 	}
+	if refreshInterval >= ttl {
+		return nil, fmt.Errorf("registry: refreshInterval (%v) must be less than ttl (%v)", refreshInterval, ttl)
+	}
 
 	// Initial publish so subsequent control lookups can find us
 	// immediately, before the first heartbeat tick.
@@ -193,22 +196,59 @@ func (r *Registry) AttachDevice(ctx context.Context, deviceID, gatewayID string,
 	return nil
 }
 
-// RefreshDevice extends the TTL on pm:device:gateway:<deviceID> by
-// rewriting the same value. Called from the agent heartbeat handler.
-// Refresh is intentionally not atomic with the original Set: a
-// refresh on a key that has already expired will succeed and the
-// next eviction will be one full TTL away. That matches the desired
-// behaviour — a heartbeat means the agent is alive, regardless of
-// whether the registry happened to evict in the gap.
+// RefreshDevice extends the TTL on pm:device:gateway:<deviceID>.
+// Called from the agent heartbeat handler. Only refreshes if the
+// stored value matches gatewayID, so a stale heartbeat from a
+// previous gateway (after the agent reconnected elsewhere) cannot
+// overwrite the fresh mapping. If the stored value doesn't match
+// (or the key has expired), the refresh is silently skipped — the
+// new gateway's AttachDevice has already overwritten it.
 func (r *Registry) RefreshDevice(ctx context.Context, deviceID, gatewayID string, ttl time.Duration) error {
+	if deviceID == "" || gatewayID == "" {
+		return errors.New("registry: deviceID and gatewayID are required")
+	}
+	// Read-then-write is not atomic, but that's acceptable: the worst
+	// case is a brief stale write that the new gateway's next
+	// heartbeat overwrites within seconds. A full CAS would require
+	// extending the Backend interface, which is overkill here.
+	current, err := r.backend.Get(ctx, deviceKey(deviceID))
+	if err != nil {
+		if errors.Is(err, ErrNoGateway) {
+			// Key expired — the device reconnected and the new
+			// gateway's AttachDevice will (re)create it. Nothing to do.
+			return nil
+		}
+		return fmt.Errorf("registry: refresh device: %w", err)
+	}
+	if current != gatewayID {
+		// Another gateway owns this device now. Skip the refresh.
+		r.logger.Debug("skipping stale device refresh",
+			"device_id", deviceID, "our_gateway", gatewayID, "current_gateway", current)
+		return nil
+	}
 	return r.AttachDevice(ctx, deviceID, gatewayID, ttl)
 }
 
 // DetachDevice removes pm:device:gateway:<deviceID>. Called on
-// clean disconnect. Idempotent.
-func (r *Registry) DetachDevice(ctx context.Context, deviceID string) error {
+// clean disconnect. Only deletes if the stored value matches
+// gatewayID, so a stale disconnect from a previous gateway cannot
+// evict a fresh mapping created by the new gateway. Idempotent.
+func (r *Registry) DetachDevice(ctx context.Context, deviceID, gatewayID string) error {
 	if deviceID == "" {
 		return errors.New("registry: deviceID is required")
+	}
+	if gatewayID != "" {
+		current, err := r.backend.Get(ctx, deviceKey(deviceID))
+		if err != nil {
+			// Key already gone or expired — nothing to delete.
+			return nil
+		}
+		if current != gatewayID {
+			// Another gateway owns this device now. Don't delete.
+			r.logger.Debug("skipping stale device detach",
+				"device_id", deviceID, "our_gateway", gatewayID, "current_gateway", current)
+			return nil
+		}
 	}
 	if err := r.backend.Delete(ctx, deviceKey(deviceID)); err != nil {
 		return fmt.Errorf("registry: detach device: %w", err)

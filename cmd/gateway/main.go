@@ -131,9 +131,8 @@ func main() {
 	// know its own public URL, so we just leave the registry off
 	// (single-gateway / no-terminal mode).
 	var (
-		gatewayReg     *registry.Registry
-		stopRegistry   func()
-		assignedHost   string
+		gatewayReg   *registry.Registry
+		assignedHost string
 	)
 	if cfg.PublicTerminalURLTemplate != "" {
 		// Substitute {id} in the URL template. The template is the
@@ -171,7 +170,6 @@ func main() {
 			logger.Error("failed to register gateway in registry", "error", err)
 			os.Exit(1)
 		}
-		stopRegistry = stop
 		defer stop()
 		logger.Info("multi-gateway routing enabled",
 			"gateway_id", gatewayID,
@@ -179,8 +177,6 @@ func main() {
 			"assigned_host", assignedHost,
 		)
 	}
-	_ = stopRegistry // silence unused if the conditional above never fires
-
 	logger.Info("gateway started", "version", version)
 
 	// Setup HTTP mux for agent connections (mTLS-protected)

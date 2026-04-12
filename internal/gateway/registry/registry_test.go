@@ -30,7 +30,7 @@ func TestRegistry_DetachDevice(t *testing.T) {
 	ctx := context.Background()
 
 	_ = r.AttachDevice(ctx, "device-1", "gw-A", DefaultDeviceTTL)
-	if err := r.DetachDevice(ctx, "device-1"); err != nil {
+	if err := r.DetachDevice(ctx, "device-1", "gw-A"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 
@@ -42,8 +42,49 @@ func TestRegistry_DetachDevice(t *testing.T) {
 func TestRegistry_DetachDevice_Idempotent(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
 	ctx := context.Background()
-	if err := r.DetachDevice(ctx, "never-attached"); err != nil {
+	if err := r.DetachDevice(ctx, "never-attached", "gw-A"); err != nil {
 		t.Errorf("detach of unknown device should be idempotent, got %v", err)
+	}
+}
+
+// TestRegistry_ReconnectHandoff verifies that when an agent
+// reconnects to a different gateway (gw-B), stale heartbeats and
+// disconnects from the old gateway (gw-A) do not overwrite the
+// fresh mapping. This is the critical HA correctness test.
+func TestRegistry_ReconnectHandoff(t *testing.T) {
+	r := New(NewFakeBackend(nil), nil)
+	ctx := context.Background()
+
+	// Agent connects to gw-A.
+	_ = r.AttachDevice(ctx, "device-1", "gw-A", DefaultDeviceTTL)
+
+	// Agent reconnects to gw-B (overwrites the mapping).
+	_ = r.AttachDevice(ctx, "device-1", "gw-B", DefaultDeviceTTL)
+
+	// Stale heartbeat from gw-A arrives — must NOT overwrite gw-B.
+	_ = r.RefreshDevice(ctx, "device-1", "gw-A", DefaultDeviceTTL)
+	got, err := r.LookupDeviceGateway(ctx, "device-1")
+	if err != nil {
+		t.Fatalf("lookup after stale refresh: %v", err)
+	}
+	if got != "gw-B" {
+		t.Errorf("after stale refresh: device gateway = %q, want gw-B", got)
+	}
+
+	// Stale disconnect from gw-A arrives — must NOT delete gw-B's entry.
+	_ = r.DetachDevice(ctx, "device-1", "gw-A")
+	got, err = r.LookupDeviceGateway(ctx, "device-1")
+	if err != nil {
+		t.Fatalf("lookup after stale detach: %v", err)
+	}
+	if got != "gw-B" {
+		t.Errorf("after stale detach: device gateway = %q, want gw-B", got)
+	}
+
+	// Clean disconnect from gw-B — SHOULD delete.
+	_ = r.DetachDevice(ctx, "device-1", "gw-B")
+	if _, err := r.LookupDeviceGateway(ctx, "device-1"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("after owner detach: expected ErrNoGateway, got %v", err)
 	}
 }
 
@@ -65,7 +106,7 @@ func TestRegistry_RegisterGateway_PublishesURL(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
 	ctx := context.Background()
 
-	stop, err := r.RegisterGateway(ctx, "gw-A", "wss://gw-A.example.com/terminal", DefaultGatewayTTL, time.Hour)
+	stop, err := r.RegisterGateway(ctx, "gw-A", "wss://gw-A.example.com/terminal", DefaultGatewayTTL, DefaultGatewayRefreshInterval)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -84,7 +125,7 @@ func TestRegistry_RegisterGateway_StopDeletesEntry(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
 	ctx := context.Background()
 
-	stop, err := r.RegisterGateway(ctx, "gw-A", "wss://gw-A.example.com/terminal", DefaultGatewayTTL, time.Hour)
+	stop, err := r.RegisterGateway(ctx, "gw-A", "wss://gw-A.example.com/terminal", DefaultGatewayTTL, DefaultGatewayRefreshInterval)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -97,7 +138,7 @@ func TestRegistry_RegisterGateway_StopDeletesEntry(t *testing.T) {
 
 func TestRegistry_RegisterGateway_StopIsIdempotent(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
-	stop, err := r.RegisterGateway(context.Background(), "gw-A", "wss://x", DefaultGatewayTTL, time.Hour)
+	stop, err := r.RegisterGateway(context.Background(), "gw-A", "wss://x", DefaultGatewayTTL, DefaultGatewayRefreshInterval)
 	if err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -108,10 +149,10 @@ func TestRegistry_RegisterGateway_StopIsIdempotent(t *testing.T) {
 func TestRegistry_RegisterGateway_RequiresFields(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
 	ctx := context.Background()
-	if _, err := r.RegisterGateway(ctx, "", "wss://x", DefaultGatewayTTL, time.Hour); err == nil {
+	if _, err := r.RegisterGateway(ctx, "", "wss://x", DefaultGatewayTTL, DefaultGatewayRefreshInterval); err == nil {
 		t.Error("expected error for empty gatewayID")
 	}
-	if _, err := r.RegisterGateway(ctx, "gw-A", "", DefaultGatewayTTL, time.Hour); err == nil {
+	if _, err := r.RegisterGateway(ctx, "gw-A", "", DefaultGatewayTTL, DefaultGatewayRefreshInterval); err == nil {
 		t.Error("expected error for empty terminalURL")
 	}
 }

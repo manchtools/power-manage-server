@@ -295,7 +295,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 			// reconnect that already happened. Use Background ctx
 			// because the request ctx is being torn down.
 			if h.registry != nil {
-				if err := h.registry.DetachDevice(context.Background(), deviceID); err != nil {
+				if err := h.registry.DetachDevice(context.Background(), deviceID, h.gatewayID); err != nil {
 					h.logger.Warn("failed to remove device→gateway mapping",
 						"device_id", deviceID, "error", err)
 				}
