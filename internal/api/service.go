@@ -44,6 +44,7 @@ type ControlService struct {
 	search           *SearchHandler
 	settings         *SettingsHandler
 	systemActions    *SystemActionManager
+	terminal         *TerminalHandler // nil until SetTerminalHandler is called from main.go after Valkey wiring
 }
 
 // ControlServiceConfig holds configuration for the control service.
@@ -100,6 +101,15 @@ func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 	s.osquery.SetTaskQueueClient(c)
 	s.logs.SetTaskQueueClient(c)
 	s.device.SetTaskQueueClient(c)
+}
+
+// SetTerminalHandler wires the terminal session RPC handler. Called
+// from main.go after the Valkey-backed token store is constructed.
+// Until this is called, the terminal RPCs return Unavailable rather
+// than panicking on a nil pointer — this is the same fail-soft
+// pattern used for the optional task queue and search index.
+func (s *ControlService) SetTerminalHandler(h *TerminalHandler) {
+	s.terminal = h
 }
 
 // SetSearchIndex propagates the search index to all sub-handlers that
@@ -768,29 +778,37 @@ func (s *ControlService) SetUserProvisioningEnabled(ctx context.Context, req *co
 	return s.user.SetUserProvisioningEnabled(ctx, req)
 }
 
-// Remote Terminal (PTY) sessions — stub implementations
+// Remote Terminal (PTY) sessions
 //
-// The proto contract for these RPCs lives in
-// manchtools/power-manage-sdk#25 and addresses
-// manchtools/power-manage-server#6 / manchtools/power-manage-sdk#16.
-// Real implementations (TTY user provisioning, session token minting,
-// gateway URL resolution, admin session management) land in a follow-up
-// PR. Until then these stubs return CodeUnimplemented so the
-// ControlServiceHandler interface stays satisfied after the SDK update.
+// StartTerminal and StopTerminal route to TerminalHandler when it is
+// configured (Valkey-backed token store wired in main.go). The List
+// and Terminate admin RPCs still return Unimplemented; they require
+// the gateway-side session inventory and the GatewayService fan-out
+// path which land in a follow-up PR.
 
 func (s *ControlService) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+	if s.terminal == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
+	}
+	return s.terminal.StartTerminal(ctx, req)
 }
 
 func (s *ControlService) StopTerminal(ctx context.Context, req *connect.Request[pm.StopTerminalRequest]) (*connect.Response[pm.StopTerminalResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+	if s.terminal == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
+	}
+	return s.terminal.StopTerminal(ctx, req)
 }
 
 func (s *ControlService) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented,
+		"admin terminal session listing is not yet implemented (requires gateway fan-out)")
 }
 
 func (s *ControlService) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented, "remote terminal sessions are not yet implemented")
+	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented,
+		"admin terminal session termination is not yet implemented (requires gateway fan-out)")
 }
 

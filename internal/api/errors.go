@@ -75,6 +75,10 @@ const (
 	ErrDeviceNotConnected       = "device_not_connected"
 	ErrCannotUnlinkOtherUser    = "cannot_unlink_other_user"
 	ErrLastAuthMethod            = "last_auth_method"
+
+	// Remote terminal sessions
+	ErrTerminalLinuxUsernameNotSet = "terminal_linux_username_not_set"
+	ErrTerminalNotConfigured       = "terminal_not_configured"
 )
 
 // Compliance policy error codes.
