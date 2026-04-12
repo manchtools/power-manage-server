@@ -260,8 +260,9 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	}
 
 	// Bump session version for all members (they may lose permissions)
-	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID)
-
+	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation", "error", err)
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
@@ -351,8 +352,11 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 			return nil, err
 		}
 
-		// Bump user's session version (they may gain new permissions from group roles)
-		h.bumpUserSessionVersion(ctx, userID, userCtx.ID)
+		// Bump user's session version (they may gain new permissions from group roles).
+		// Best-effort: the member-add event is already persisted.
+		if err := h.bumpUserSessionVersion(ctx, userID, userCtx.ID); err != nil {
+			h.logger.Warn("partial session invalidation after group member add", "user_id", userID, "error", err)
+		}
 	}
 
 	// Re-read group for updated member_count and enqueue reindex
@@ -411,8 +415,11 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
-	// Bump user's session version (they may lose permissions from group roles)
-	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
+	// Bump user's session version (they may lose permissions from group roles).
+	// Best-effort: the member-remove event is already persisted.
+	if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation after group member remove", "user_id", req.Msg.UserId, "error", err)
+	}
 
 	// Re-read group for updated member_count and enqueue reindex
 	if updatedGroup, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId); err == nil {
@@ -489,8 +496,9 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 	}
 
 	// Bump session version for all group members once (they gain new permissions)
-	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID)
-
+	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation", "error", err)
+	}
 	return connect.NewResponse(&pm.AssignRoleToUserGroupResponse{}), nil
 }
 
@@ -533,8 +541,9 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	}
 
 	// Bump session version for all group members (they may lose permissions)
-	h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID)
-
+	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.GroupId, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation", "error", err)
+	}
 	return connect.NewResponse(&pm.RevokeRoleFromUserGroupResponse{}), nil
 }
 
@@ -695,7 +704,9 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 
 	// Bump session versions for all current members (permissions may have changed)
 	if userCtx, ok := auth.UserFromContext(ctx); ok {
-		h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID)
+		if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
+			h.logger.Warn("partial session invalidation", "error", err)
+		}
 	}
 
 	return connect.NewResponse(&pm.EvaluateDynamicUserGroupResponse{
@@ -705,8 +716,14 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	}), nil
 }
 
-// bumpUserSessionVersion increments a user's session_version to invalidate JWT/permission cache.
-func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) {
+// bumpUserSessionVersion increments a user's session_version to
+// invalidate JWT/permission cache. This is a primary CQRS mutation:
+// the projection reads this event to bump session_version and
+// reject existing JWTs. If the event fails to persist, the session
+// is NOT invalidated — the admin thinks they revoked access but
+// existing JWTs keep working. Returns an error so callers can
+// surface the failure.
+func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) error {
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
@@ -715,26 +732,38 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 		ActorType:  "user",
 		ActorID:    actorID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
-	} else {
-		h.logger.Debug("event appended",
-			"request_id", middleware.RequestIDFromContext(ctx),
-			"stream_type", "user",
-			"stream_id", userID,
-			"event_type", "UserSessionInvalidated",
-		)
+		h.logger.Error("failed to invalidate user session",
+			"user_id", userID, "error", err)
+		return err
 	}
+	h.logger.Debug("event appended",
+		"request_id", middleware.RequestIDFromContext(ctx),
+		"stream_type", "user",
+		"stream_id", userID,
+		"event_type", "UserSessionInvalidated",
+	)
+	return nil
 }
 
-// bumpSessionVersionForGroupMembers bumps session_version for all members of a user group.
-func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) {
+// bumpSessionVersionForGroupMembers bumps session_version for all
+// members of a user group. Stops on the first failure and returns
+// the error so the caller can surface it. A partial bump (some
+// members invalidated, some not) is acceptable: the successfully-
+// bumped members see a forced re-login, the rest keep their
+// existing JWTs until the next successful attempt. The alternative
+// (rolling back the successful bumps) would require compensating
+// events and is worse than a partial invalidation.
+func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
 	memberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
 	if err != nil {
-		return
+		return err
 	}
 	for _, uid := range memberIDs {
-		h.bumpUserSessionVersion(ctx, uid, actorID)
+		if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // userGroupToProto converts a database user group projection to a protobuf UserGroup.
