@@ -181,17 +181,31 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		agentErrCh <- h.bridgeAgentToWS(ctx, ws, sess, logger)
 	}()
 
-	// Wait for either side to finish. Cancel the other.
+	// Wait for either side to finish. Cancel the other. Track the
+	// close reason so we can use an appropriate WebSocket close code.
+	var closeCode websocket.StatusCode
+	var closeReason string
+
 	select {
 	case err := <-wsErrCh:
 		if err != nil {
 			logger.Debug("ws→agent bridge ended", "error", err)
+			closeCode = websocket.StatusInternalError
+			closeReason = "client error"
+		} else {
+			closeCode = websocket.StatusNormalClosure
+			closeReason = "client disconnected"
 		}
 		cancel()
 		sendStop("client disconnected")
 	case err := <-agentErrCh:
 		if err != nil {
 			logger.Debug("agent→ws bridge ended", "error", err)
+			closeCode = websocket.StatusInternalError
+			closeReason = err.Error()
+		} else {
+			closeCode = websocket.StatusNormalClosure
+			closeReason = "session ended"
 		}
 		cancel()
 		// Don't send TerminalStop — the agent initiated the close.
@@ -205,8 +219,8 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	case <-time.After(5 * time.Second):
 	}
 
-	ws.Close(websocket.StatusNormalClosure, "session ended")
-	logger.Info("terminal bridge session ended")
+	ws.Close(closeCode, closeReason)
+	logger.Info("terminal bridge session ended", "close_code", closeCode, "reason", closeReason)
 }
 
 // waitForStarted blocks until the agent sends a TerminalStateChange
