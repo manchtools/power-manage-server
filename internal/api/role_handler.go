@@ -285,6 +285,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
+	assignedAny := false
 	for _, roleID := range roleIDs {
 		// Verify role exists
 		_, err = q.GetRoleByID(ctx, roleID)
@@ -321,10 +322,17 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		}, "failed to assign role"); err != nil {
 			return nil, err
 		}
+		assignedAny = true
 	}
 
-	// Bump user's session version once to invalidate cached permissions
-	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
+	// Only bump the session version if we actually assigned at least
+	// one role. Idempotent no-op retries (all roles already assigned)
+	// should not force an unnecessary re-login.
+	if assignedAny {
+		if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role assignment")
+		}
+	}
 
 	return connect.NewResponse(&pm.AssignRoleToUserResponse{}), nil
 }
@@ -357,23 +365,36 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	streamID := req.Msg.UserId + ":" + req.Msg.RoleId
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_role",
-		StreamID:   streamID,
-		EventType:  "UserRoleRevoked",
-		Data: map[string]any{
-			"user_id": req.Msg.UserId,
-			"role_id": req.Msg.RoleId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to revoke role"); err != nil {
-		return nil, err
+	// Check if the user currently has the role — skip the event on retry/idempotent call
+	hasRole, err := h.store.Queries().UserHasRole(ctx, db.UserHasRoleParams{
+		UserID: req.Msg.UserId,
+		RoleID: req.Msg.RoleId,
+	})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+	}
+
+	if hasRole {
+		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
+		if err := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_role",
+			StreamID:   streamID,
+			EventType:  "UserRoleRevoked",
+			Data: map[string]any{
+				"user_id": req.Msg.UserId,
+				"role_id": req.Msg.RoleId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to revoke role"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Bump user's session version to invalidate cached permissions
-	h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID)
+	if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role revocation")
+	}
 
 	return connect.NewResponse(&pm.RevokeRoleFromUserResponse{}), nil
 }
@@ -395,8 +416,12 @@ func (h *RoleHandler) ListPermissions(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
-// bumpUserSessionVersion increments a user's session_version to invalidate JWT/permission cache.
-func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) {
+// bumpUserSessionVersion increments a user's session_version to
+// invalidate JWT/permission cache. This is a primary CQRS mutation:
+// if the event fails to persist, the session is NOT invalidated and
+// existing JWTs keep working. Returns an error so callers can
+// surface the failure.
+func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorID string) error {
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
@@ -405,27 +430,40 @@ func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorI
 		ActorType:  "user",
 		ActorID:    actorID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserSessionInvalidated event", "user_id", userID, "error", err)
-	} else {
-		h.logger.Debug("event appended",
-			"stream_type", "user",
-			"stream_id", userID,
-			"event_type", "UserSessionInvalidated",
-		)
+		h.logger.Error("failed to invalidate user session",
+			"user_id", userID, "error", err)
+		return err
 	}
+	h.logger.Debug("event appended",
+		"stream_type", "user",
+		"stream_id", userID,
+		"event_type", "UserSessionInvalidated",
+	)
+	return nil
 }
 
-// bumpSessionVersionForRole bumps session_version for all users with a given role
-// (directly assigned or via user groups).
+// bumpSessionVersionForRole bumps session_version for all users with
+// a given role (directly assigned or via user groups). Best-effort
+// across all members: logs failures but does not stop on the first
+// one, because a partial invalidation (some members bumped, some
+// not) is better than invalidating nobody. The callers that trigger
+// this (UpdateRole) are already committed — the role change event
+// is persisted. The session bumps are a follow-up consistency step.
 func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, actorID string) {
 	seen := make(map[string]bool)
 
 	// Direct role assignments
 	userIDs, err := h.store.Queries().ListUserIDsWithRole(ctx, roleID)
-	if err == nil {
+	if err != nil {
+		h.logger.Error("failed to list users with role for session invalidation",
+			"role_id", roleID, "error", err)
+	} else {
 		for _, uid := range userIDs {
 			if !seen[uid] {
-				h.bumpUserSessionVersion(ctx, uid, actorID)
+				if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
+					// Logged inside bumpUserSessionVersion. Continue
+					// to the next member — partial > none.
+				}
 				seen[uid] = true
 			}
 		}
@@ -433,10 +471,15 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 
 	// User group role assignments
 	groupUserIDs, err := h.store.Queries().ListUserIDsWithGroupRole(ctx, roleID)
-	if err == nil {
+	if err != nil {
+		h.logger.Error("failed to list group users with role for session invalidation",
+			"role_id", roleID, "error", err)
+	} else {
 		for _, uid := range groupUserIDs {
 			if !seen[uid] {
-				h.bumpUserSessionVersion(ctx, uid, actorID)
+				if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
+					// Same — partial > none.
+				}
 				seen[uid] = true
 			}
 		}

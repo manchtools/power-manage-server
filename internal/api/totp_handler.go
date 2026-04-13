@@ -347,7 +347,12 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		idx := totp.VerifyBackupCode(req.Msg.Code, totpRecord.BackupCodesHash, totpRecord.BackupCodesUsed)
 		if idx >= 0 {
 			codeValid = true
-			// Mark backup code as used
+			// Mark backup code as used. This is a primary CQRS
+			// mutation — the projection reads this event to know
+			// which codes are still valid. If the event fails to
+			// persist, the code is NOT consumed and can be used
+			// again (double-spend). Fail the RPC so the caller
+			// retries rather than silently leaving the code valid.
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "totp",
 				StreamID:   claims.UserID,
@@ -356,15 +361,17 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 				ActorType:  "user",
 				ActorID:    claims.UserID,
 			}); err != nil {
-				h.logger.Warn("failed to append TOTPBackupCodeUsed event", "user_id", claims.UserID, "error", err)
-			} else {
-				h.logger.Debug("event appended",
-					"request_id", middleware.RequestIDFromContext(ctx),
-					"stream_type", "totp",
-					"stream_id", claims.UserID,
-					"event_type", "TOTPBackupCodeUsed",
-				)
+				h.logger.Error("failed to consume backup code",
+					"user_id", claims.UserID, "index", idx, "error", err)
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+					"failed to consume backup code")
 			}
+			h.logger.Debug("event appended",
+				"request_id", middleware.RequestIDFromContext(ctx),
+				"stream_type", "totp",
+				"stream_id", claims.UserID,
+				"event_type", "TOTPBackupCodeUsed",
+			)
 		}
 	}
 
