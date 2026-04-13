@@ -294,11 +294,12 @@ func main() {
 	logger.Info("server stopped")
 }
 
-// hostFromURL extracts the bare hostname (no port, no scheme, no
-// path) from a URL like "wss://gw-01.example.com/terminal" so the
-// bootstrap middleware can use it as the redirect target hostname.
-// Only ws:// and wss:// schemes are accepted. Returns "" on parse
-// failure, unsupported scheme, or missing host component.
+// hostFromURL extracts the host (including port if present) from a
+// URL like "wss://gw-01.example.com:8443/terminal" so the bootstrap
+// redirect middleware constructs a correct Location header that
+// preserves non-default ports. Only ws:// and wss:// schemes are
+// accepted. Returns "" on parse failure, unsupported scheme, or
+// missing host component.
 func hostFromURL(raw string) string {
 	if raw == "" {
 		return ""
@@ -310,5 +311,11 @@ func hostFromURL(raw string) string {
 	if u.Scheme != "ws" && u.Scheme != "wss" {
 		return ""
 	}
-	return u.Hostname()
+	// u.Host includes the port (e.g. "gw-01.example.com:8443").
+	// u.Hostname() strips it, which would break redirects on
+	// non-default ports.
+	if u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
