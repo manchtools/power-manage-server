@@ -265,6 +265,10 @@ func (b *countingBackend) Delete(ctx context.Context, key string) error {
 	return b.inner.Delete(ctx, key)
 }
 
+func (b *countingBackend) ScanPrefix(ctx context.Context, prefix string) (map[string]string, error) {
+	return b.inner.ScanPrefix(ctx, prefix)
+}
+
 func (b *countingBackend) SetCalls() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

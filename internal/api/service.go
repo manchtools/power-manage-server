@@ -803,12 +803,18 @@ func (s *ControlService) StopTerminal(ctx context.Context, req *connect.Request[
 }
 
 func (s *ControlService) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented,
-		"admin terminal session listing is not yet implemented (requires gateway fan-out)")
+	if s.terminal == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
+	}
+	return s.terminal.ListActiveTerminalSessions(ctx, req)
 }
 
 func (s *ControlService) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
-	return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnimplemented,
-		"admin terminal session termination is not yet implemented (requires gateway fan-out)")
+	if s.terminal == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
+	}
+	return s.terminal.TerminateTerminalSession(ctx, req)
 }
 

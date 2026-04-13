@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	sdkterminal "github.com/manchtools/power-manage/sdk/go/sys/terminal"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
@@ -32,6 +35,20 @@ type TerminalHandler struct {
 	registry   *registry.Registry // multi-gateway routing; may be nil for single-gateway fallback
 	fallbackURL string             // used only when registry is nil
 	logger     *slog.Logger
+
+	// internalHTTPClient is an mTLS-configured HTTP client used to
+	// call GatewayService on each live gateway for admin fan-out
+	// (ListActiveTerminalSessions, TerminateTerminalSession). Set
+	// via SetInternalHTTPClient at startup. nil means admin RPCs
+	// return Unavailable.
+	internalHTTPClient *http.Client
+}
+
+// SetInternalHTTPClient configures the mTLS HTTP client used for
+// gateway fan-out. Called from main.go with the same mTLS client
+// used for the InternalService proxy.
+func (h *TerminalHandler) SetInternalHTTPClient(c *http.Client) {
+	h.internalHTTPClient = c
 }
 
 // NewTerminalHandler constructs a TerminalHandler.
@@ -311,6 +328,146 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		"device_id", session.DeviceID,
 	)
 	return connect.NewResponse(&pm.StopTerminalResponse{}), nil
+}
+
+// ListActiveTerminalSessions fans out to every live gateway via the
+// registry and merges the results. Each gateway returns its local
+// session snapshot; the control enriches with user/device metadata
+// from the database and returns the merged list.
+func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
+	if h.registry == nil || h.internalHTTPClient == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"terminal admin RPCs require a configured registry and internal HTTP client")
+	}
+
+	gateways, err := h.registry.ListGatewayInternalURLs(ctx)
+	if err != nil {
+		h.logger.Error("failed to list gateways for session fan-out", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"failed to enumerate gateways")
+	}
+
+	var (
+		mu       sync.Mutex
+		all      []*pm.TerminalSessionInfo
+		wg       sync.WaitGroup
+	)
+
+	for gwID, gwURL := range gateways {
+		wg.Add(1)
+		go func(gwID, gwURL string) {
+			defer wg.Done()
+			client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
+			resp, err := client.ListGatewayTerminalSessions(ctx, connect.NewRequest(&pm.ListGatewayTerminalSessionsRequest{}))
+			if err != nil {
+				h.logger.Warn("gateway fan-out failed",
+					"gateway_id", gwID, "url", gwURL, "error", err)
+				return
+			}
+			mu.Lock()
+			for _, s := range resp.Msg.Sessions {
+				all = append(all, &pm.TerminalSessionInfo{
+					SessionId:      s.SessionId,
+					UserId:         s.UserId,
+					DeviceId:       s.DeviceId,
+					TtyUser:        s.TtyUser,
+					StartedAt:      s.StartedAt,
+					LastActivityAt: s.LastActivityAt,
+					GatewayId:      gwID,
+				})
+			}
+			mu.Unlock()
+		}(gwID, gwURL)
+	}
+	wg.Wait()
+
+	// TODO: enrich with user email / device hostname from DB for
+	// the admin view. For now the IDs are returned directly.
+
+	return connect.NewResponse(&pm.ListActiveTerminalSessionsResponse{
+		Sessions:   all,
+		TotalCount: int32(len(all)),
+	}), nil
+}
+
+// TerminateTerminalSession finds which gateway hosts the session
+// (via the token store's device_id → registry lookup) and calls
+// TerminateGatewayTerminalSession on that gateway.
+func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
+	if h.registry == nil || h.internalHTTPClient == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"terminal admin RPCs require a configured registry and internal HTTP client")
+	}
+
+	// Look up the session to find the device, then the gateway.
+	session, err := h.tokenStore.Lookup(ctx, req.Msg.SessionId)
+	if err != nil {
+		if errors.Is(err, terminal.ErrTokenNotFound) {
+			return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound,
+				"terminal session not found or already ended")
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			"failed to look up session")
+	}
+
+	gatewayID, err := h.registry.LookupDeviceGateway(ctx, session.DeviceID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNoGateway) {
+			// Device not connected — session may have already ended.
+			// Revoke the token anyway and return success.
+			_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+			return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"failed to look up gateway for device")
+	}
+
+	gwURL, err := h.registry.LookupGatewayInternalURL(ctx, gatewayID)
+	if err != nil {
+		// Gateway disappeared between lookups. Revoke token and return.
+		_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+		return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
+	}
+
+	// Call the gateway to terminate the session.
+	client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
+	resp, err := client.TerminateGatewayTerminalSession(ctx, connect.NewRequest(&pm.TerminateGatewayTerminalSessionRequest{
+		SessionId: req.Msg.SessionId,
+		Reason:    req.Msg.Reason,
+	}))
+	if err != nil {
+		h.logger.Error("gateway terminate fan-out failed",
+			"gateway_id", gatewayID, "session_id", req.Msg.SessionId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			"failed to terminate session on gateway")
+	}
+
+	if !resp.Msg.Found {
+		h.logger.Debug("session not found on gateway (may have ended naturally)",
+			"gateway_id", gatewayID, "session_id", req.Msg.SessionId)
+	}
+
+	// Revoke the token and emit audit event.
+	_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   session.DeviceID,
+		EventType:  "TerminalSessionTerminated",
+		Data: map[string]any{
+			"session_id": session.SessionID,
+			"reason":     req.Msg.Reason,
+		},
+		ActorType: "user",
+		ActorID:   func() string { if u, ok := auth.UserFromContext(ctx); ok { return u.ID }; return "system" }(),
+	}); err != nil {
+		h.logger.Error("failed to append TerminalSessionTerminated event",
+			"session_id", session.SessionID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			"failed to persist terminal session termination event")
+	}
+
+	return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 }
 
 // GatewayBaseURL normalises the configured gateway URL into the

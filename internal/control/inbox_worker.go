@@ -50,6 +50,7 @@ func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeSecurityAlert, w.handleSecurityAlert)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKeyResult, w.handleRevokeLuksDeviceKeyResult)
 	mux.HandleFunc(taskqueue.TypeLogQueryResult, w.handleLogQueryResult)
+	mux.HandleFunc(taskqueue.TypeTerminalAuditChunk, w.handleTerminalAuditChunk)
 	return mux
 }
 
@@ -658,4 +659,35 @@ func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
 func stableExecutionID(deviceID, actionID, completedAt string) string {
 	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
 	return hex.EncodeToString(h[:16])
+}
+
+// handleTerminalAuditChunk persists a terminal stdin chunk as an
+// audit event on the device stream. The gateway tees every binary
+// WebSocket frame (stdin) to this handler so the full input sequence
+// is reconstructable from the event store for forensics / replay.
+func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Task) error {
+	var payload taskqueue.TerminalAuditChunkPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("unmarshal terminal audit chunk: %w", err)
+	}
+
+	if payload.SessionID == "" || payload.DeviceID == "" {
+		w.logger.Warn("dropping terminal audit chunk with missing fields",
+			"session_id", payload.SessionID, "device_id", payload.DeviceID)
+		return nil
+	}
+
+	return w.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   payload.DeviceID,
+		EventType:  "TerminalInputChunk",
+		Data: map[string]any{
+			"session_id": payload.SessionID,
+			"user_id":    payload.UserID,
+			"data":       payload.Data,
+			"sequence":   payload.Sequence,
+		},
+		ActorType: "user",
+		ActorID:   payload.UserID,
+	})
 }

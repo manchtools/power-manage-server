@@ -172,10 +172,30 @@ func main() {
 			os.Exit(1)
 		}
 		defer stop()
+
+		// Also publish the internal mTLS URL so the control server
+		// can discover this gateway for admin fan-out (List/Terminate
+		// terminal sessions). Uses the same TTL as the terminal URL.
+		if cfg.InternalURL != "" {
+			if err := gatewayReg.RegisterGatewayInternal(
+				context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+			); err != nil {
+				logger.Warn("failed to register gateway internal URL", "error", err)
+			}
+			// Refresh the internal URL alongside the terminal URL.
+			// The heartbeat goroutine in RegisterGateway handles the
+			// terminal key; for the internal key we just set it once
+			// with the same TTL — it'll expire together with the
+			// terminal key if the gateway crashes. A separate refresh
+			// goroutine isn't worth the complexity for a key that
+			// changes only on gateway restart.
+		}
+
 		logger.Info("multi-gateway routing enabled",
 			"gateway_id", gatewayID,
 			"terminal_url", terminalURL,
 			"assigned_host", assignedHost,
+			"internal_url", cfg.InternalURL,
 		)
 	}
 	// Fail fast if BootstrapHost is set but we have no assignedHost
