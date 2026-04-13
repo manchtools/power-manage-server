@@ -117,9 +117,13 @@ func (r *TerminalSessionRegistry) Get(sessionID string) *TerminalSession {
 // block the receive loop, so a full channel drops the message
 // rather than blocking.
 func (r *TerminalSessionRegistry) RouteAgentMessage(sessionID string, msg *pm.AgentMessage) bool {
+	// Hold RLock through the entire send so Unregister (which takes
+	// the write lock before closing OutputCh) cannot race with us.
+	// Without this, Unregister can close OutputCh between our lookup
+	// and the select, causing a send-on-closed-channel panic.
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	s, ok := r.sessions[sessionID]
-	r.mu.RUnlock()
 	if !ok {
 		return false
 	}

@@ -383,18 +383,34 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		return h.handleLogQueryResult(deviceID, p.LogQueryResult)
 	case *pm.AgentMessage_TerminalOutput:
 		if h.terminalSessions != nil {
-			if !h.terminalSessions.RouteAgentMessage(p.TerminalOutput.SessionId, msg) {
+			sid := p.TerminalOutput.SessionId
+			sess := h.terminalSessions.Get(sid)
+			if sess == nil {
 				h.logger.Debug("terminal output for unknown session",
-					"device_id", deviceID, "session_id", p.TerminalOutput.SessionId)
+					"device_id", deviceID, "session_id", sid)
+			} else if sess.DeviceID != deviceID {
+				// A compromised agent is trying to inject output into
+				// a session belonging to a different device. Drop it.
+				h.logger.Warn("terminal output device mismatch — dropping",
+					"device_id", deviceID, "session_device", sess.DeviceID, "session_id", sid)
+			} else {
+				h.terminalSessions.RouteAgentMessage(sid, msg)
 			}
 		}
 		return nil
 	case *pm.AgentMessage_TerminalStateChange:
 		if h.terminalSessions != nil {
-			if !h.terminalSessions.RouteAgentMessage(p.TerminalStateChange.SessionId, msg) {
+			sid := p.TerminalStateChange.SessionId
+			sess := h.terminalSessions.Get(sid)
+			if sess == nil {
 				h.logger.Debug("terminal state change for unknown session",
-					"device_id", deviceID, "session_id", p.TerminalStateChange.SessionId,
+					"device_id", deviceID, "session_id", sid,
 					"state", p.TerminalStateChange.State.String())
+			} else if sess.DeviceID != deviceID {
+				h.logger.Warn("terminal state change device mismatch — dropping",
+					"device_id", deviceID, "session_device", sess.DeviceID, "session_id", sid)
+			} else {
+				h.terminalSessions.RouteAgentMessage(sid, msg)
 			}
 		}
 		return nil

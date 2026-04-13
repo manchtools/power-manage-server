@@ -329,6 +329,7 @@ func main() {
 				"address", cfg.WebListenAddr)
 			if err := webServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				logger.Error("web server error", "error", err)
+				os.Exit(1)
 			}
 		}()
 	}

@@ -114,41 +114,11 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		"rows", validated.Rows,
 	)
 
-	// Send TerminalStart to the agent.
-	startMsg := &pm.ServerMessage{
-		Id: ulid.Make().String(),
-		Payload: &pm.ServerMessage_TerminalStart{
-			TerminalStart: &pm.TerminalStart{
-				SessionId: sessionID,
-				TtyUser:   validated.TtyUser,
-				Cols:      validated.Cols,
-				Rows:      validated.Rows,
-			},
-		},
-	}
-	if err := h.manager.Send(validated.DeviceId, startMsg); err != nil {
-		logger.Error("failed to send TerminalStart to agent", "error", err)
-		ws.Close(websocket.StatusInternalError, "failed to start terminal on device")
-		return
-	}
-
-	// Wait for the agent to respond with STARTED or ERROR.
-	if err := h.waitForStarted(sess, ws, logger); err != nil {
-		// waitForStarted already closed the WebSocket with an
-		// appropriate status. Just return.
-		return
-	}
-
-	// Enter the bidirectional I/O bridge. Two goroutines: one reads
-	// from the WebSocket and forwards to the agent, the other reads
-	// from the agent (via the session's OutputCh) and forwards to
-	// the WebSocket. When either side ends, the other is cancelled.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	// Track whether we've sent TerminalStop to avoid double-stop.
+	// Set up TerminalStop tracking early — before sending
+	// TerminalStart — so that if the handshake fails or times out,
+	// the deferred cleanup still sends TerminalStop to the agent
+	// and the orphaned PTY is cleaned up.
 	var stopSent atomic.Bool
-
 	sendStop := func(reason string) {
 		if !stopSent.CompareAndSwap(false, true) {
 			return
@@ -168,6 +138,36 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 		}
 	}
 	defer sendStop("websocket closed")
+
+	// Send TerminalStart to the agent. If this fails, the deferred
+	// sendStop above still fires (cleaning up any agent-side state
+	// if the start was partially processed).
+	startMsg := &pm.ServerMessage{
+		Id: ulid.Make().String(),
+		Payload: &pm.ServerMessage_TerminalStart{
+			TerminalStart: &pm.TerminalStart{
+				SessionId: sessionID,
+				TtyUser:   validated.TtyUser,
+				Cols:      validated.Cols,
+				Rows:      validated.Rows,
+			},
+		},
+	}
+	if err := h.manager.Send(validated.DeviceId, startMsg); err != nil {
+		logger.Error("failed to send TerminalStart to agent", "error", err)
+		ws.Close(websocket.StatusInternalError, "failed to start terminal on device")
+		return
+	}
+
+	// Wait for the agent to respond with STARTED or ERROR. If this
+	// fails (timeout, agent error), the deferred sendStop fires.
+	if err := h.waitForStarted(sess, ws, logger); err != nil {
+		return
+	}
+
+	// Enter the bidirectional I/O bridge.
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// WS → agent goroutine.
 	wsErrCh := make(chan error, 1)
