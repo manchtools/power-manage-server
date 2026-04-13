@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -177,6 +178,16 @@ func main() {
 			"assigned_host", assignedHost,
 		)
 	}
+	// Fail fast if BootstrapHost is set but we have no assignedHost
+	// (because PublicTerminalURLTemplate was empty). Without this
+	// guard, BootstrapRedirectMiddleware would panic on an empty
+	// assignedHost further down.
+	if cfg.BootstrapHost != "" && assignedHost == "" {
+		logger.Error("GATEWAY_BOOTSTRAP_HOST is set but GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is empty; cannot derive the per-gateway hostname for bootstrap redirects",
+			"bootstrap_host", cfg.BootstrapHost)
+		os.Exit(1)
+	}
+
 	logger.Info("gateway started", "version", version)
 
 	// Setup HTTP mux for agent connections (mTLS-protected)
@@ -286,38 +297,18 @@ func main() {
 // hostFromURL extracts the bare hostname (no port, no scheme, no
 // path) from a URL like "wss://gw-01.example.com/terminal" so the
 // bootstrap middleware can use it as the redirect target hostname.
-// Returns "" on parse failure or if the URL has no host component.
+// Only ws:// and wss:// schemes are accepted. Returns "" on parse
+// failure, unsupported scheme, or missing host component.
 func hostFromURL(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	// Strip the scheme. We accept http/https/ws/wss. Anything else
-	// is probably a misconfiguration; fall through and let url.Parse
-	// reject it.
-	for _, scheme := range []string{"wss://", "ws://", "https://", "http://"} {
-		if strings.HasPrefix(raw, scheme) {
-			raw = raw[len(scheme):]
-			break
-		}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
 	}
-	// Trim path and query.
-	if i := strings.IndexAny(raw, "/?#"); i >= 0 {
-		raw = raw[:i]
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return ""
 	}
-	// Strip port.
-	if i := strings.LastIndexByte(raw, ':'); i >= 0 {
-		// Be conservative: only treat as a port if everything after
-		// the colon is digits, so IPv6-without-port doesn't break us.
-		isPort := i+1 < len(raw)
-		for j := i + 1; j < len(raw); j++ {
-			if raw[j] < '0' || raw[j] > '9' {
-				isPort = false
-				break
-			}
-		}
-		if isPort {
-			raw = raw[:i]
-		}
-	}
-	return raw
+	return u.Hostname()
 }

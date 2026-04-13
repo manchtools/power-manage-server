@@ -240,8 +240,11 @@ func (r *Registry) DetachDevice(ctx context.Context, deviceID, gatewayID string)
 	if gatewayID != "" {
 		current, err := r.backend.Get(ctx, deviceKey(deviceID))
 		if err != nil {
-			// Key already gone or expired — nothing to delete.
-			return nil
+			if errors.Is(err, ErrNoGateway) {
+				// Key already gone or expired — nothing to delete.
+				return nil
+			}
+			return fmt.Errorf("registry: detach device lookup: %w", err)
 		}
 		if current != gatewayID {
 			// Another gateway owns this device now. Don't delete.

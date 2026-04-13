@@ -218,8 +218,8 @@ func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string
 		}
 		h.logger.Error("device gateway lookup failed",
 			"device_id", deviceID, "error", err)
-		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
-			"device gateway lookup failed")
+		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"device gateway lookup failed (registry unavailable)")
 	}
 
 	terminalURL, err := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
@@ -237,8 +237,8 @@ func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string
 		}
 		h.logger.Error("gateway URL lookup failed",
 			"gateway_id", gatewayID, "error", err)
-		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
-			"gateway URL lookup failed")
+		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"gateway URL lookup failed (registry unavailable)")
 	}
 	return terminalURL, nil
 }
