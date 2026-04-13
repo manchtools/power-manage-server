@@ -48,6 +48,12 @@ type Config struct {
 	// Example: "gateway.example.com"
 	BootstrapHost string
 
+	// Web listener for non-mTLS traffic (terminal WebSocket). Uses
+	// standard TLS (server cert only, no client cert) so web browsers
+	// can connect. Empty disables the web listener — terminal
+	// sessions won't work but agent connections are unaffected.
+	WebListenAddr string
+
 	// Logging
 	LogLevel string
 }
@@ -63,6 +69,7 @@ func FromEnv() *Config {
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
 		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
+		WebListenAddr:             getEnv("GATEWAY_WEB_LISTEN_ADDR", ""),
 		LogLevel:                  getEnv("LOG_LEVEL", "info"),
 	}
 }

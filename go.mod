@@ -96,6 +96,7 @@ require (
 	google.golang.org/grpc v1.78.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/sqlite v1.44.3 // indirect
+	nhooyr.io/websocket v1.8.17 // indirect
 )
 
 replace github.com/manchtools/power-manage/sdk => ../sdk

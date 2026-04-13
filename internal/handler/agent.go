@@ -47,6 +47,14 @@ type AgentHandler struct {
 	// the control server falls back to its static gateway URL.
 	registry  *registry.Registry
 	gatewayID string
+
+	// terminalSessions is the gateway-side registry of active
+	// WebSocket terminal bridge sessions. Set via
+	// SetTerminalSessions at startup. When the bidi stream handler
+	// receives TerminalOutput/TerminalStateChange from an agent,
+	// it routes the message to the matching bridge goroutine via
+	// this registry. nil means no terminal bridge is configured.
+	terminalSessions *connection.TerminalSessionRegistry
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -98,6 +106,13 @@ func NewAgentHandlerWithTLS(
 func (h *AgentHandler) SetGatewayRouting(reg *registry.Registry, gatewayID string) {
 	h.registry = reg
 	h.gatewayID = gatewayID
+}
+
+// SetTerminalSessions wires the terminal session registry so the
+// bidi stream handler can route TerminalOutput/TerminalStateChange
+// messages from agents to the matching WebSocket bridge goroutine.
+func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegistry) {
+	h.terminalSessions = reg
 }
 
 // MTLSMiddleware extracts the device ID from the client certificate and adds it to the context.
@@ -366,15 +381,38 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		return h.handleRevokeLuksResult(deviceID, p.RevokeLuksDeviceKeyResult)
 	case *pm.AgentMessage_LogQueryResult:
 		return h.handleLogQueryResult(deviceID, p.LogQueryResult)
-	case *pm.AgentMessage_TerminalOutput, *pm.AgentMessage_TerminalStateChange:
-		// Remote terminal traffic — proto contract is in
-		// manchtools/power-manage-sdk#25, real handler lands as part of
-		// manchtools/power-manage-server#6 / manchtools/power-manage-sdk#16
-		// step 5. Until then we accept the message and drop it instead
-		// of erroring out, so an agent that ships the terminal handler
-		// first does not get disconnected by the gateway.
-		h.logger.Debug("received terminal message before handler is implemented",
-			"device_id", deviceID, "type", fmt.Sprintf("%T", msg.Payload))
+	case *pm.AgentMessage_TerminalOutput:
+		if h.terminalSessions != nil {
+			sid := p.TerminalOutput.SessionId
+			sess := h.terminalSessions.Get(sid)
+			if sess == nil {
+				h.logger.Debug("terminal output for unknown session",
+					"device_id", deviceID, "session_id", sid)
+			} else if sess.DeviceID != deviceID {
+				// A compromised agent is trying to inject output into
+				// a session belonging to a different device. Drop it.
+				h.logger.Warn("terminal output device mismatch — dropping",
+					"device_id", deviceID, "session_device", sess.DeviceID, "session_id", sid)
+			} else {
+				h.terminalSessions.RouteAgentMessage(sid, msg)
+			}
+		}
+		return nil
+	case *pm.AgentMessage_TerminalStateChange:
+		if h.terminalSessions != nil {
+			sid := p.TerminalStateChange.SessionId
+			sess := h.terminalSessions.Get(sid)
+			if sess == nil {
+				h.logger.Debug("terminal state change for unknown session",
+					"device_id", deviceID, "session_id", sid,
+					"state", p.TerminalStateChange.State.String())
+			} else if sess.DeviceID != deviceID {
+				h.logger.Warn("terminal state change device mismatch — dropping",
+					"device_id", deviceID, "session_device", sess.DeviceID, "session_id", sid)
+			} else {
+				h.terminalSessions.RouteAgentMessage(sid, msg)
+			}
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown message type: %T", msg.Payload)
