@@ -15,6 +15,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	sdkterminal "github.com/manchtools/power-manage/sdk/go/sys/terminal"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/terminal"
@@ -28,22 +29,27 @@ import (
 type TerminalHandler struct {
 	store      *store.Store
 	tokenStore *terminal.TokenStore
-	gatewayURL string
+	registry   *registry.Registry // multi-gateway routing; may be nil for single-gateway fallback
+	fallbackURL string             // used only when registry is nil
 	logger     *slog.Logger
 }
 
-// NewTerminalHandler constructs a TerminalHandler. gatewayURL is the
-// publicly-resolvable WebSocket URL of the gateway endpoint, e.g.
-// "wss://gateway.example.com/terminal". Clients append
-// ?token=<session_token> to it themselves; the handler returns the
-// token-free base URL per the StartTerminalResponse contract in the
-// SDK proto.
-func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, gatewayURL string, logger *slog.Logger) *TerminalHandler {
+// NewTerminalHandler constructs a TerminalHandler.
+//
+// reg is the multi-gateway registry; when non-nil, StartTerminal
+// looks up the gateway hosting each device and returns its specific
+// terminal URL. fallbackURL is the static gateway URL used when
+// reg is nil (single-gateway deployments without a registry).
+//
+// In production at least one of reg or fallbackURL must be supplied,
+// or every StartTerminal call returns Unavailable.
+func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *registry.Registry, fallbackURL string, logger *slog.Logger) *TerminalHandler {
 	return &TerminalHandler{
-		store:      st,
-		tokenStore: tokenStore,
-		gatewayURL: GatewayBaseURL(gatewayURL),
-		logger:     logger,
+		store:       st,
+		tokenStore:  tokenStore,
+		registry:    reg,
+		fallbackURL: GatewayBaseURL(fallbackURL),
+		logger:      logger,
 	}
 }
 
@@ -56,10 +62,6 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, gatewa
 // key is "StartTerminal" — same convention as every other handler),
 // so this method only runs for callers that already hold it.
 func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
-	if h.gatewayURL == "" {
-		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
-			"terminal gateway URL is not configured")
-	}
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
@@ -96,6 +98,24 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or not assigned to you")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
+	}
+
+	// Resolve which gateway is currently hosting this device. In a
+	// multi-gateway deployment we MUST return the URL of the
+	// specific gateway holding the agent's bidi stream — any other
+	// gateway has no way to bridge the WebSocket to the agent. The
+	// device→gateway mapping is published by the gateway side via
+	// internal/gateway/registry as part of the agent connect/heart-
+	// beat lifecycle.
+	//
+	// Single-gateway deployments without a registry fall back to
+	// the static fallbackURL passed at construction time. If both
+	// the registry and the fallback are unset, we have no way to
+	// route — return Unavailable so operators see a clear failure
+	// instead of minting tokens against a URL that doesn't exist.
+	resolvedURL, err := h.resolveGatewayURL(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, err
 	}
 
 	cols := req.Msg.Cols
@@ -160,10 +180,67 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&pm.StartTerminalResponse{
 		SessionId:    sessionID,
 		SessionToken: mintRes.Token,
-		GatewayUrl:   h.gatewayURL,
+		GatewayUrl:   resolvedURL,
 		ExpiresAt:    timestamppb.New(mintRes.ExpiresAt),
 		TtyUser:      ttyUser,
 	}), nil
+}
+
+// resolveGatewayURL returns the public terminal WebSocket URL for
+// the gateway currently hosting the given device. Lookup chain:
+//
+//  1. If the registry is configured, look up
+//     pm:device:gateway:<deviceID> → gatewayID, then
+//     pm:gateway:terminal:<gatewayID> → URL. Returns
+//     FailedPrecondition if the device isn't connected to any
+//     gateway, Unavailable if the gateway has expired between the
+//     two lookups (race during failover).
+//  2. If the registry is not configured, return the static
+//     fallbackURL passed at construction. This is the
+//     single-gateway path.
+//  3. If neither is configured, return Unavailable so operators
+//     see a clear misconfiguration error rather than minting
+//     tokens against an empty URL.
+func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string) (string, error) {
+	if h.registry == nil {
+		if h.fallbackURL == "" {
+			return "", apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnavailable,
+				"remote terminal sessions are not configured on this control instance")
+		}
+		return h.fallbackURL, nil
+	}
+
+	gatewayID, err := h.registry.LookupDeviceGateway(ctx, deviceID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNoGateway) {
+			return "", apiErrorCtx(ctx, ErrDeviceNotConnected, connect.CodeFailedPrecondition,
+				"device is not currently connected to any gateway")
+		}
+		h.logger.Error("device gateway lookup failed",
+			"device_id", deviceID, "error", err)
+		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"device gateway lookup failed (registry unavailable)")
+	}
+
+	terminalURL, err := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
+	if err != nil {
+		if errors.Is(err, registry.ErrNoGateway) {
+			// The gateway died between the device lookup and the
+			// URL lookup. Surface as Unavailable so the client
+			// retries — by then the agent has reconnected
+			// elsewhere and the next StartTerminal call resolves
+			// to a live gateway.
+			h.logger.Warn("gateway hosting device is no longer registered",
+				"device_id", deviceID, "gateway_id", gatewayID)
+			return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+				"gateway hosting this device is no longer registered; retry shortly")
+		}
+		h.logger.Error("gateway URL lookup failed",
+			"gateway_id", gatewayID, "error", err)
+		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"gateway URL lookup failed (registry unavailable)")
+	}
+	return terminalURL, nil
 }
 
 // StopTerminal is the user-initiated graceful stop. The caller must

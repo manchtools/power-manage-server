@@ -16,6 +16,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -39,6 +40,13 @@ type AgentHandler struct {
 	logger        *slog.Logger
 	serverVersion string
 	requireTLS    bool
+
+	// Multi-gateway routing. registry and gatewayID are set via
+	// SetGatewayRouting at startup. nil registry means single-
+	// gateway mode: device→gateway entries are not published and
+	// the control server falls back to its static gateway URL.
+	registry  *registry.Registry
+	gatewayID string
 }
 
 // NewAgentHandler creates a new agent handler.
@@ -81,6 +89,17 @@ func NewAgentHandlerWithTLS(
 	}
 }
 
+// SetGatewayRouting wires the multi-gateway registry into the
+// handler. Called from cmd/gateway/main.go at startup. After this
+// is set, every agent connect / heartbeat / disconnect publishes
+// the device→gateway mapping to Valkey so the control server can
+// route terminal sessions to the correct gateway. nil registry
+// disables routing (single-gateway deployments).
+func (h *AgentHandler) SetGatewayRouting(reg *registry.Registry, gatewayID string) {
+	h.registry = reg
+	h.gatewayID = gatewayID
+}
+
 // MTLSMiddleware extracts the device ID from the client certificate and adds it to the context.
 func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +130,70 @@ func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 func DeviceIDFromContext(ctx context.Context) (string, bool) {
 	deviceID, ok := ctx.Value(DeviceIDContextKey).(string)
 	return deviceID, ok
+}
+
+// BootstrapRedirectMiddleware returns HTTP 307 redirects when an
+// agent connects to the wildcard root hostname (bootstrapHost), so
+// the agent reconnects directly to this gateway's per-instance
+// hostname (assignedHost) for all subsequent connections. The path
+// and query are preserved verbatim, and only requests to
+// bootstrapHost are intercepted — requests already addressed to
+// assignedHost (or any other host) pass through unchanged.
+//
+// In multi-gateway HA, the load balancer routes wildcard-root
+// connections to any gateway. The first gateway that receives the
+// agent issues this redirect to its own hostname; the agent
+// follows it (Connect-RPC's HTTP/2 client follows 307s
+// transparently) and from then on every connection lands on the
+// same gateway, so the connection manager has a stable
+// device→gateway mapping the control server can route terminal
+// sessions through.
+//
+// Both bootstrapHost and assignedHost are bare hostnames (no
+// scheme, no port). Empty bootstrapHost disables the middleware
+// entirely — single-gateway deployments don't need it. Empty
+// assignedHost is a programming error and panics at construction
+// time so we never silently emit redirects to an empty Location.
+func BootstrapRedirectMiddleware(next http.Handler, bootstrapHost, assignedHost string, logger *slog.Logger) http.Handler {
+	if bootstrapHost == "" {
+		// Bootstrap not configured — pass through unchanged.
+		return next
+	}
+	if assignedHost == "" {
+		panic("handler: BootstrapRedirectMiddleware: assignedHost must not be empty when bootstrapHost is set")
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// r.Host is the value of the Host header (or HTTP/2
+		// :authority pseudo-header). Strip any port so we compare
+		// just the hostname — the agent may include the port,
+		// the bootstrap config typically doesn't.
+		reqHost := r.Host
+		if i := indexByte(reqHost, ':'); i >= 0 {
+			reqHost = reqHost[:i]
+		}
+		if reqHost != bootstrapHost {
+			next.ServeHTTP(w, r)
+			return
+		}
+		target := "https://" + assignedHost + r.URL.RequestURI()
+		logger.Debug("bootstrap redirect",
+			"from", reqHost,
+			"to", assignedHost,
+			"path", r.URL.Path,
+		)
+		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	})
+}
+
+// indexByte is a tiny stdlib-free helper so this file doesn't need
+// the strings import for one call.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 // Stream handles the bidirectional stream between agent and server.
@@ -177,6 +260,19 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	// Register the agent connection
 	agent := h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
 
+	// Publish the device→gateway mapping in the multi-gateway
+	// registry so ControlService.StartTerminal can route the user's
+	// WebSocket to this specific gateway. Best-effort: a Valkey
+	// failure here is logged but does not refuse the connection,
+	// because terminal sessions are an optional feature on top of
+	// the existing agent stream.
+	if h.registry != nil {
+		if err := h.registry.AttachDevice(ctx, deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
+			h.logger.Warn("failed to publish device→gateway mapping",
+				"device_id", deviceID, "gateway_id", h.gatewayID, "error", err)
+		}
+	}
+
 	// Start per-device Asynq worker to process action dispatches
 	if err := h.workerMgr.StartWorker(deviceID); err != nil {
 		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
@@ -193,6 +289,17 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		// The agent may have reconnected and replaced us while we waited.
 		if current, ok := h.manager.Get(deviceID); ok && current == agent {
 			h.manager.Unregister(deviceID)
+			// Detach from the registry too. Same race-aware pattern:
+			// only delete if we're still the current connection,
+			// otherwise we'd evict a freshly-attached entry from a
+			// reconnect that already happened. Use Background ctx
+			// because the request ctx is being torn down.
+			if h.registry != nil {
+				if err := h.registry.DetachDevice(context.Background(), deviceID, h.gatewayID); err != nil {
+					h.logger.Warn("failed to remove device→gateway mapping",
+						"device_id", deviceID, "error", err)
+				}
+			}
 		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
@@ -287,6 +394,16 @@ func (h *AgentHandler) handleHeartbeat(deviceID string, hb *pm.Heartbeat) error 
 	}
 	if hb.DiskPercent > 0 {
 		payload.DiskPercent = hb.DiskPercent
+	}
+	// Refresh the device→gateway TTL on every heartbeat. Best-effort:
+	// a Valkey failure here is logged but does not refuse the
+	// heartbeat — the existing UpdateLastSeen path is the source of
+	// truth for connection liveness.
+	if h.registry != nil {
+		if err := h.registry.RefreshDevice(context.Background(), deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
+			h.logger.Warn("failed to refresh device→gateway mapping",
+				"device_id", deviceID, "error", err)
+		}
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
 }

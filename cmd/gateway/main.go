@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
@@ -21,6 +25,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -107,6 +112,82 @@ func main() {
 	)
 	defer workerMgr.StopAll()
 
+	// Resolve this gateway's stable ID. If GATEWAY_ID is set, use it
+	// (static-config Traefik setups where the operator pre-declares
+	// per-gateway routes). Otherwise generate a ULID at startup
+	// (dynamic-config setups where Traefik picks up new routes from
+	// a watcher / file provider / k8s ingress automatically).
+	gatewayID := cfg.GatewayID
+	if gatewayID == "" {
+		gatewayID = ulid.Make().String()
+		logger.Info("generated dynamic gateway ID", "gateway_id", gatewayID)
+	} else {
+		logger.Info("using configured gateway ID", "gateway_id", gatewayID)
+	}
+
+	// Wire the multi-gateway registry. Reuses the same Valkey
+	// instance the Asynq queue uses, no extra connection pool. The
+	// registry is enabled only when the operator has set the
+	// public terminal URL template — without it the gateway can't
+	// know its own public URL, so we just leave the registry off
+	// (single-gateway / no-terminal mode).
+	var (
+		gatewayReg   *registry.Registry
+		assignedHost string
+	)
+	if cfg.PublicTerminalURLTemplate != "" {
+		// Substitute {id} in the URL template. The template is the
+		// public WebSocket URL operators want clients to use; the
+		// gateway never constructs hostnames from the request side.
+		terminalURL := strings.ReplaceAll(cfg.PublicTerminalURLTemplate, "{id}", gatewayID)
+
+		// The bootstrap middleware needs the bare assigned hostname
+		// (no scheme, no path) so it can build a redirect Location.
+		// Derive it from the terminal URL.
+		assignedHost = hostFromURL(terminalURL)
+		if assignedHost == "" {
+			logger.Error("could not extract host from GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
+				"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
+			os.Exit(1)
+		}
+
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     cfg.ValkeyAddr,
+			Password: cfg.ValkeyPassword,
+			DB:       cfg.ValkeyDB,
+			Protocol: 2,
+		})
+		defer rdb.Close()
+
+		gatewayReg = registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "registry"))
+		stop, err := gatewayReg.RegisterGateway(
+			context.Background(),
+			gatewayID,
+			terminalURL,
+			registry.DefaultGatewayTTL,
+			registry.DefaultGatewayRefreshInterval,
+		)
+		if err != nil {
+			logger.Error("failed to register gateway in registry", "error", err)
+			os.Exit(1)
+		}
+		defer stop()
+		logger.Info("multi-gateway routing enabled",
+			"gateway_id", gatewayID,
+			"terminal_url", terminalURL,
+			"assigned_host", assignedHost,
+		)
+	}
+	// Fail fast if BootstrapHost is set but we have no assignedHost
+	// (because PublicTerminalURLTemplate was empty). Without this
+	// guard, BootstrapRedirectMiddleware would panic on an empty
+	// assignedHost further down.
+	if cfg.BootstrapHost != "" && assignedHost == "" {
+		logger.Error("GATEWAY_BOOTSTRAP_HOST is set but GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is empty; cannot derive the per-gateway hostname for bootstrap redirects",
+			"bootstrap_host", cfg.BootstrapHost)
+		os.Exit(1)
+	}
+
 	logger.Info("gateway started", "version", version)
 
 	// Setup HTTP mux for agent connections (mTLS-protected)
@@ -114,8 +195,19 @@ func main() {
 
 	// Create agent handler (always mTLS)
 	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, logger)
+	if gatewayReg != nil {
+		agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
+	}
 	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
-	mux.Handle(path, handler.MTLSMiddleware(h, logger))
+
+	// Compose middlewares (innermost first):
+	//   pmv1connect handler
+	//     ↑ MTLSMiddleware (extracts device ID from client cert)
+	//     ↑ BootstrapRedirectMiddleware (returns 307 to assignedHost
+	//       when the request landed on the wildcard root via LB)
+	mtlsHandler := handler.MTLSMiddleware(h, logger)
+	bootstrappedHandler := handler.BootstrapRedirectMiddleware(mtlsHandler, cfg.BootstrapHost, assignedHost, logger)
+	mux.Handle(path, bootstrappedHandler)
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))
@@ -200,4 +292,30 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+// hostFromURL extracts the host (including port if present) from a
+// URL like "wss://gw-01.example.com:8443/terminal" so the bootstrap
+// redirect middleware constructs a correct Location header that
+// preserves non-default ports. Only ws:// and wss:// schemes are
+// accepted. Returns "" on parse failure, unsupported scheme, or
+// missing host component.
+func hostFromURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return ""
+	}
+	// u.Host includes the port (e.g. "gw-01.example.com:8443").
+	// u.Hostname() strips it, which would break redirects on
+	// non-default ports.
+	if u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
