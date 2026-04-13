@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -357,8 +358,10 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 		wg.Add(1)
 		go func(gwID, gwURL string) {
 			defer wg.Done()
+			childCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
 			client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
-			resp, err := client.ListGatewayTerminalSessions(ctx, connect.NewRequest(&pm.ListGatewayTerminalSessionsRequest{}))
+			resp, err := client.ListGatewayTerminalSessions(childCtx, connect.NewRequest(&pm.ListGatewayTerminalSessionsRequest{}))
 			if err != nil {
 				h.logger.Warn("gateway fan-out failed",
 					"gateway_id", gwID, "url", gwURL, "error", err)
@@ -403,8 +406,8 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	session, err := h.tokenStore.Lookup(ctx, req.Msg.SessionId)
 	if err != nil {
 		if errors.Is(err, terminal.ErrTokenNotFound) {
-			return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound,
-				"terminal session not found or already ended")
+			// Idempotent: session already gone is success.
+			return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
 			"failed to look up session")
@@ -415,7 +418,12 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		if errors.Is(err, registry.ErrNoGateway) {
 			// Device not connected — session may have already ended.
 			// Revoke the token anyway and return success.
-			_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+			if rErr := h.tokenStore.Revoke(ctx, req.Msg.SessionId); rErr != nil {
+				h.logger.Error("failed to revoke terminal session token after no-gateway",
+					"session_id", req.Msg.SessionId, "error", rErr)
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+					"failed to revoke terminal session token")
+			}
 			return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
@@ -425,7 +433,12 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	gwURL, err := h.registry.LookupGatewayInternalURL(ctx, gatewayID)
 	if err != nil {
 		// Gateway disappeared between lookups. Revoke token and return.
-		_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+		if rErr := h.tokenStore.Revoke(ctx, req.Msg.SessionId); rErr != nil {
+			h.logger.Error("failed to revoke terminal session token after gateway disappearance",
+				"session_id", req.Msg.SessionId, "error", rErr)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+				"failed to revoke terminal session token")
+		}
 		return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 	}
 
@@ -448,7 +461,12 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	}
 
 	// Revoke the token and emit audit event.
-	_ = h.tokenStore.Revoke(ctx, req.Msg.SessionId)
+	if err := h.tokenStore.Revoke(ctx, req.Msg.SessionId); err != nil {
+		h.logger.Error("failed to revoke terminal session token after gateway termination",
+			"session_id", req.Msg.SessionId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			"failed to revoke terminal session token")
+	}
 
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",

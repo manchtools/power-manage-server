@@ -398,11 +398,20 @@ func main() {
 		// model as the gateway→control direction.
 		if cfg.InternalTLSCert != "" && cfg.CACertPath != "" {
 			gwCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
-			if err == nil {
+			if err != nil {
+				logger.Warn("terminal admin fan-out disabled: failed to load internal TLS key pair",
+					"cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey, "error", err)
+			} else {
 				caCert, err := os.ReadFile(cfg.CACertPath)
-				if err == nil {
+				if err != nil {
+					logger.Warn("terminal admin fan-out disabled: failed to read CA certificate",
+						"path", cfg.CACertPath, "error", err)
+				} else {
 					caPool := x509.NewCertPool()
-					if caPool.AppendCertsFromPEM(caCert) {
+					if !caPool.AppendCertsFromPEM(caCert) {
+						logger.Warn("terminal admin fan-out disabled: CA certificate file contained no valid PEM certificates",
+							"path", cfg.CACertPath)
+					} else {
 						gwTransport := &http.Transport{
 							TLSClientConfig: &tls.Config{
 								Certificates: []tls.Certificate{gwCert},

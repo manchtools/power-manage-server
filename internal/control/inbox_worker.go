@@ -671,9 +671,9 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		return fmt.Errorf("unmarshal terminal audit chunk: %w", err)
 	}
 
-	if payload.SessionID == "" || payload.DeviceID == "" {
+	if payload.SessionID == "" || payload.DeviceID == "" || payload.UserID == "" {
 		w.logger.Warn("dropping terminal audit chunk with missing fields",
-			"session_id", payload.SessionID, "device_id", payload.DeviceID)
+			"session_id", payload.SessionID, "device_id", payload.DeviceID, "user_id", payload.UserID)
 		return nil
 	}
 

@@ -182,13 +182,28 @@ func main() {
 			); err != nil {
 				logger.Warn("failed to register gateway internal URL", "error", err)
 			}
-			// Refresh the internal URL alongside the terminal URL.
-			// The heartbeat goroutine in RegisterGateway handles the
-			// terminal key; for the internal key we just set it once
-			// with the same TTL — it'll expire together with the
-			// terminal key if the gateway crashes. A separate refresh
-			// goroutine isn't worth the complexity for a key that
-			// changes only on gateway restart.
+			// Refresh the internal URL on the same cadence as the
+			// terminal URL so it does not expire while the gateway is
+			// running. Use a dedicated cancel context so the goroutine
+			// stops cleanly on shutdown (shutdownCtx is declared later).
+			internalRefreshCtx, stopInternalRefresh := context.WithCancel(context.Background())
+			defer stopInternalRefresh()
+			go func() {
+				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if err := gatewayReg.RegisterGatewayInternal(
+							context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+						); err != nil {
+							logger.Warn("failed to refresh gateway internal URL", "error", err)
+						}
+					case <-internalRefreshCtx.Done():
+						return
+					}
+				}
+			}()
 		}
 
 		logger.Info("multi-gateway routing enabled",
