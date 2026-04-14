@@ -172,10 +172,45 @@ func main() {
 			os.Exit(1)
 		}
 		defer stop()
+
+		// Also publish the internal mTLS URL so the control server
+		// can discover this gateway for admin fan-out (List/Terminate
+		// terminal sessions). Uses the same TTL as the terminal URL.
+		if cfg.InternalURL != "" {
+			if err := gatewayReg.RegisterGatewayInternal(
+				context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+			); err != nil {
+				logger.Warn("failed to register gateway internal URL", "error", err)
+			}
+			// Refresh the internal URL on the same cadence as the
+			// terminal URL so it does not expire while the gateway is
+			// running. Use a dedicated cancel context so the goroutine
+			// stops cleanly on shutdown (shutdownCtx is declared later).
+			internalRefreshCtx, stopInternalRefresh := context.WithCancel(context.Background())
+			defer stopInternalRefresh()
+			go func() {
+				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if err := gatewayReg.RegisterGatewayInternal(
+							context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+						); err != nil {
+							logger.Warn("failed to refresh gateway internal URL", "error", err)
+						}
+					case <-internalRefreshCtx.Done():
+						return
+					}
+				}
+			}()
+		}
+
 		logger.Info("multi-gateway routing enabled",
 			"gateway_id", gatewayID,
 			"terminal_url", terminalURL,
 			"assigned_host", assignedHost,
+			"internal_url", cfg.InternalURL,
 		)
 	}
 	// Fail fast if BootstrapHost is set but we have no assignedHost

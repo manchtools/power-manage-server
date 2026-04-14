@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -384,13 +385,47 @@ func main() {
 		// must be able to validate tokens minted by other replicas.
 		terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
 		gatewayReg := registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "gateway_registry"))
-		svc.SetTerminalHandler(api.NewTerminalHandler(
+		termHandler := api.NewTerminalHandler(
 			st,
 			terminalTokenStore,
 			gatewayReg,
 			api.GatewayBaseURL(cfg.TerminalGatewayURL),
 			logger.With("component", "terminal_handler"),
-		))
+		)
+		// Build an mTLS HTTP client for gateway admin fan-out. The
+		// control uses its own cert as the client cert and the CA
+		// cert to verify the gateway's server cert — same trust
+		// model as the gateway→control direction.
+		if cfg.InternalTLSCert != "" && cfg.CACertPath != "" {
+			gwCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+			if err != nil {
+				logger.Warn("terminal admin fan-out disabled: failed to load internal TLS key pair",
+					"cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey, "error", err)
+			} else {
+				caCert, err := os.ReadFile(cfg.CACertPath)
+				if err != nil {
+					logger.Warn("terminal admin fan-out disabled: failed to read CA certificate",
+						"path", cfg.CACertPath, "error", err)
+				} else {
+					caPool := x509.NewCertPool()
+					if !caPool.AppendCertsFromPEM(caCert) {
+						logger.Warn("terminal admin fan-out disabled: CA certificate file contained no valid PEM certificates",
+							"path", cfg.CACertPath)
+					} else {
+						gwTransport := &http.Transport{
+							TLSClientConfig: &tls.Config{
+								Certificates: []tls.Certificate{gwCert},
+								RootCAs:      caPool,
+								MinVersion:   tls.VersionTLS13,
+							},
+						}
+						termHandler.SetInternalHTTPClient(&http.Client{Transport: gwTransport})
+						logger.Info("terminal admin fan-out enabled (mTLS client configured)")
+					}
+				}
+			}
+		}
+		svc.SetTerminalHandler(termHandler)
 		if cfg.TerminalGatewayURL != "" {
 			logger.Info("remote terminal sessions enabled",
 				"fallback_gateway_url", cfg.TerminalGatewayURL,

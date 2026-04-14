@@ -108,6 +108,10 @@ services:
       - CONTROL_SSH_ACCESS_FOR_ALL=${CONTROL_SSH_ACCESS_FOR_ALL:-false}
       - CONTROL_VALKEY_ADDR=valkey:6379
       - CONTROL_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      # Remote terminal fallback URL for single-gateway deployments.
+      # Leave empty when using multi-gateway routing (the control
+      # server resolves the correct gateway from the registry).
+      - CONTROL_TERMINAL_GATEWAY_URL=${CONTROL_TERMINAL_GATEWAY_URL:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
       interval: 10s
@@ -165,6 +169,13 @@ services:
       - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # Remote terminal (multi-gateway routing). Leave empty to disable.
+      # GATEWAY_ID is auto-generated as a ULID if empty.
+      - GATEWAY_ID=${GATEWAY_ID:-}
+      - GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=${GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE:-}
+      - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
+      - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}
+      - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-}
     command:
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"

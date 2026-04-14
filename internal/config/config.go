@@ -54,6 +54,12 @@ type Config struct {
 	// sessions won't work but agent connections are unaffected.
 	WebListenAddr string
 
+	// InternalURL is the mTLS URL the control server uses to call
+	// GatewayService RPCs on this gateway for admin fan-out. Published
+	// to the registry so the control server can discover all gateways.
+	// Example: "https://gw-01.internal:8080"
+	InternalURL string
+
 	// Logging
 	LogLevel string
 }
@@ -70,6 +76,7 @@ func FromEnv() *Config {
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
 		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
 		WebListenAddr:             getEnv("GATEWAY_WEB_LISTEN_ADDR", ""),
+		InternalURL:               getEnv("GATEWAY_INTERNAL_URL", ""),
 		LogLevel:                  getEnv("LOG_LEVEL", "info"),
 	}
 }

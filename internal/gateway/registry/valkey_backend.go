@@ -51,3 +51,29 @@ func (b *ValkeyBackend) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+// ScanPrefix returns all key-value pairs matching the given prefix.
+// Uses SCAN to avoid blocking the Valkey instance on large keyspaces.
+// Expired keys are filtered natively by Valkey's TTL eviction.
+func (b *ValkeyBackend) ScanPrefix(ctx context.Context, prefix string) (map[string]string, error) {
+	result := make(map[string]string)
+	var cursor uint64
+	for {
+		keys, nextCursor, err := b.client.Scan(ctx, cursor, prefix+"*", 100).Result()
+		if err != nil {
+			return nil, fmt.Errorf("registry: valkey scan: %w", err)
+		}
+		for _, key := range keys {
+			val, err := b.client.Get(ctx, key).Result()
+			if err != nil {
+				continue // key expired between SCAN and GET
+			}
+			result[key] = val
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	return result, nil
+}

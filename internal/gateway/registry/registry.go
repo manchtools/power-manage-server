@@ -65,12 +65,14 @@ var (
 // code uses the typed Registry methods rather than building keys
 // directly.
 const (
-	gatewayKeyPrefix = "pm:gateway:terminal:"
-	deviceKeyPrefix  = "pm:device:gateway:"
+	gatewayKeyPrefix         = "pm:gateway:terminal:"
+	gatewayInternalKeyPrefix = "pm:gateway:internal:"
+	deviceKeyPrefix          = "pm:device:gateway:"
 )
 
-func gatewayKey(gatewayID string) string { return gatewayKeyPrefix + gatewayID }
-func deviceKey(deviceID string) string   { return deviceKeyPrefix + deviceID }
+func gatewayKey(gatewayID string) string         { return gatewayKeyPrefix + gatewayID }
+func gatewayInternalKey(gatewayID string) string  { return gatewayInternalKeyPrefix + gatewayID }
+func deviceKey(deviceID string) string            { return deviceKeyPrefix + deviceID }
 
 // Backend is the storage interface the Registry depends on. Two
 // implementations ship with this package: ValkeyBackend (production)
@@ -86,6 +88,10 @@ type Backend interface {
 	Get(ctx context.Context, key string) (string, error)
 	// Delete removes the key. Idempotent: missing keys return nil.
 	Delete(ctx context.Context, key string) error
+	// ScanPrefix returns all key-value pairs matching the given
+	// prefix. Used by the admin fan-out to enumerate live gateways.
+	// Implementations should filter expired entries.
+	ScanPrefix(ctx context.Context, prefix string) (map[string]string, error)
 }
 
 // Registry is the high-level façade used by gateway and control.
@@ -291,4 +297,61 @@ func (r *Registry) LookupGatewayTerminalURL(ctx context.Context, gatewayID strin
 		return "", fmt.Errorf("registry: lookup gateway URL: %w", err)
 	}
 	return val, nil
+}
+
+// LookupGatewayInternalURL returns the internal mTLS RPC URL for
+// the given gatewayID, or ErrNoGateway if the gateway has expired
+// or never registered its internal URL.
+func (r *Registry) LookupGatewayInternalURL(ctx context.Context, gatewayID string) (string, error) {
+	if gatewayID == "" {
+		return "", errors.New("registry: gatewayID is required")
+	}
+	val, err := r.backend.Get(ctx, gatewayInternalKey(gatewayID))
+	if err != nil {
+		if errors.Is(err, ErrNoGateway) {
+			return "", ErrNoGateway
+		}
+		return "", fmt.Errorf("registry: lookup gateway internal URL: %w", err)
+	}
+	return val, nil
+}
+
+// RegisterGatewayInternal publishes this gateway's internal
+// mTLS-protected RPC URL under pm:gateway:internal:<gatewayID>.
+// The control server uses this to fan out admin RPCs
+// (ListGatewayTerminalSessions, TerminateGatewayTerminalSession)
+// to each live gateway.
+func (r *Registry) RegisterGatewayInternal(ctx context.Context, gatewayID, internalURL string, ttl time.Duration) error {
+	if gatewayID == "" || internalURL == "" {
+		return errors.New("registry: gatewayID and internalURL are required")
+	}
+	if ttl <= 0 {
+		ttl = DefaultGatewayTTL
+	}
+	return r.backend.Set(ctx, gatewayInternalKey(gatewayID), internalURL, ttl)
+}
+
+// DeregisterGatewayInternal removes the internal URL entry.
+func (r *Registry) DeregisterGatewayInternal(ctx context.Context, gatewayID string) error {
+	return r.backend.Delete(ctx, gatewayInternalKey(gatewayID))
+}
+
+// ListGatewayInternalURLs returns a map of gatewayID → internalURL
+// for all currently-live gateways. Used by the control server to
+// fan out admin RPCs. Returns an empty map (not an error) if no
+// gateways are registered.
+func (r *Registry) ListGatewayInternalURLs(ctx context.Context) (map[string]string, error) {
+	raw, err := r.backend.ScanPrefix(ctx, gatewayInternalKeyPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("registry: list gateways: %w", err)
+	}
+	result := make(map[string]string, len(raw))
+	for key, url := range raw {
+		// Strip the prefix to get the gateway ID.
+		gwID := key[len(gatewayInternalKeyPrefix):]
+		if gwID != "" {
+			result[gwID] = url
+		}
+	}
+	return result, nil
 }

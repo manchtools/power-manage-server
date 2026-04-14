@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,4 +71,23 @@ func (b *FakeBackend) Delete(ctx context.Context, key string) error {
 	defer b.mu.Unlock()
 	delete(b.values, key)
 	return nil
+}
+
+// ScanPrefix returns all non-expired key-value pairs matching the prefix.
+func (b *FakeBackend) ScanPrefix(ctx context.Context, prefix string) (map[string]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	result := make(map[string]string)
+	now := b.now()
+	for k, entry := range b.values {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if !now.Before(entry.expiresAt) {
+			delete(b.values, k)
+			continue
+		}
+		result[k] = entry.value
+	}
+	return result, nil
 }
