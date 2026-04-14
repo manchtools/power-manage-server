@@ -36,7 +36,7 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 }
 
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, u.system_tty_action_id, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.email = $2 AND u.is_deleted = FALSE
@@ -76,6 +76,7 @@ type FindSCIMUserByEmailRow struct {
 	SystemUserActionID      string     `json:"system_user_action_id"`
 	SystemSshActionID       string     `json:"system_ssh_action_id"`
 	UserProvisioningEnabled bool       `json:"user_provisioning_enabled"`
+	SystemTtyActionID       string     `json:"system_tty_action_id"`
 	ScimExternalID          string     `json:"scim_external_id"`
 }
 
@@ -111,13 +112,14 @@ func (q *Queries) FindSCIMUserByEmail(ctx context.Context, arg FindSCIMUserByEma
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
 		&i.UserProvisioningEnabled,
+		&i.SystemTtyActionID,
 		&i.ScimExternalID,
 	)
 	return i, err
 }
 
 const findSCIMUserByExternalID = `-- name: FindSCIMUserByExternalID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, u.system_tty_action_id, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
@@ -157,6 +159,7 @@ type FindSCIMUserByExternalIDRow struct {
 	SystemUserActionID      string     `json:"system_user_action_id"`
 	SystemSshActionID       string     `json:"system_ssh_action_id"`
 	UserProvisioningEnabled bool       `json:"user_provisioning_enabled"`
+	SystemTtyActionID       string     `json:"system_tty_action_id"`
 	ScimExternalID          string     `json:"scim_external_id"`
 }
 
@@ -192,6 +195,7 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
 		&i.UserProvisioningEnabled,
+		&i.SystemTtyActionID,
 		&i.ScimExternalID,
 	)
 	return i, err
@@ -287,7 +291,7 @@ func (q *Queries) GetSCIMGroupMappingByUserGroup(ctx context.Context, arg GetSCI
 }
 
 const getUserByExternalSCIMID = `-- name: GetUserByExternalSCIMID :one
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled FROM users_projection u
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, u.system_tty_action_id FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND il.external_id = $2 AND u.is_deleted = FALSE
 `
@@ -329,6 +333,7 @@ func (q *Queries) GetUserByExternalSCIMID(ctx context.Context, arg GetUserByExte
 		&i.SystemUserActionID,
 		&i.SystemSshActionID,
 		&i.UserProvisioningEnabled,
+		&i.SystemTtyActionID,
 	)
 	return i, err
 }
@@ -427,7 +432,7 @@ func (q *Queries) ListSCIMGroupMappings(ctx context.Context, providerID string) 
 }
 
 const listSCIMUsers = `-- name: ListSCIMUsers :many
-SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, il.external_id AS scim_external_id
+SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, u.system_tty_action_id, il.external_id AS scim_external_id
 FROM users_projection u
 JOIN identity_links_projection il ON il.user_id = u.id
 WHERE il.provider_id = $1 AND u.is_deleted = FALSE
@@ -470,6 +475,7 @@ type ListSCIMUsersRow struct {
 	SystemUserActionID      string     `json:"system_user_action_id"`
 	SystemSshActionID       string     `json:"system_ssh_action_id"`
 	UserProvisioningEnabled bool       `json:"user_provisioning_enabled"`
+	SystemTtyActionID       string     `json:"system_tty_action_id"`
 	ScimExternalID          string     `json:"scim_external_id"`
 }
 
@@ -511,6 +517,7 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 			&i.SystemUserActionID,
 			&i.SystemSshActionID,
 			&i.UserProvisioningEnabled,
+			&i.SystemTtyActionID,
 			&i.ScimExternalID,
 		); err != nil {
 			return nil, err
