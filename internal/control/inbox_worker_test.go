@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +23,36 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
+// fakeSigner records Sign calls so tests can verify the signer
+// was invoked with the correct arguments (execution ID, not action ID).
+type fakeSigner struct {
+	mu    sync.Mutex
+	calls []fakeSignCall
+}
+
+type fakeSignCall struct {
+	ActionID   string
+	ActionType int32
+	ParamsJSON []byte
+}
+
+func (s *fakeSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, fakeSignCall{
+		ActionID:   actionID,
+		ActionType: actionType,
+		ParamsJSON: append([]byte(nil), paramsJSON...),
+	})
+	return []byte("fake-sig-for-" + actionID), nil
+}
+
+func (s *fakeSigner) getCalls() []fakeSignCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]fakeSignCall(nil), s.calls...)
+}
+
 func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
 	t.Helper()
 	data, err := json.Marshal(payload)
@@ -30,7 +62,7 @@ func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
 
 func TestHandleDeviceHeartbeat(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "heartbeat-host")
@@ -55,7 +87,7 @@ func TestHandleDeviceHeartbeat(t *testing.T) {
 
 func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "deleted-heartbeat-host")
@@ -83,7 +115,7 @@ func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 
 func TestHandleSecurityAlert(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "alert-host")
@@ -117,7 +149,7 @@ func TestHandleSecurityAlert(t *testing.T) {
 
 func TestHandleExecutionResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -176,7 +208,7 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 
 func TestHandleExecutionResult_Failed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -231,7 +263,7 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 
 func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -260,7 +292,7 @@ func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 
 func TestHandleExecutionOutputChunk(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "chunk-host")
@@ -300,7 +332,7 @@ func TestHandleExecutionOutputChunk(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-host")
@@ -318,7 +350,7 @@ func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Failure(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-fail-host")
@@ -339,7 +371,7 @@ func TestHandleDeviceHello(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	// handleDeviceHello calls dispatchPendingActions which needs aqClient.
 	// Passing nil is safe here because there are no pending executions to dispatch.
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-host")
@@ -361,7 +393,7 @@ func TestHandleDeviceHello(t *testing.T) {
 
 func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-deleted-host")
@@ -386,4 +418,76 @@ func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 	// Should succeed silently (skip deleted device)
 	err = mux.ProcessTask(context.Background(), task)
 	require.NoError(t, err)
+}
+
+// TestDispatchPendingActions_ReSignsWithExecutionID verifies that when
+// dispatchPendingActions dispatches a pending execution, it re-signs
+// the action payload with the execution ID (not the original action ID).
+// This is critical because the gateway sets Action.Id = executionID,
+// so the agent verifies the signature against the execution ID.
+func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	mr := miniredis.RunT(t)
+	aqClient := taskqueue.NewClient(mr.Addr(), "", 0)
+	defer aqClient.Close()
+
+	signer := &fakeSigner{}
+	worker := control.NewInboxWorker(st, aqClient, signer, slog.Default())
+	mux := worker.NewMux()
+
+	ctx := context.Background()
+
+	// Setup: create user, device, action, and a pending execution
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "resign-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Resign Test", int(pm.ActionType_ACTION_TYPE_USER))
+
+	// Sign the action with the action ID (as the real system does)
+	err := st.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
+		ID:              actionID,
+		Signature:       []byte("original-sig-for-action"),
+		ParamsCanonical: []byte(`{"username":"test"}`),
+	})
+	require.NoError(t, err)
+
+	// Create a pending execution for this device+action
+	executionID := testutil.NewID()
+	err = st.AppendEvent(ctx, store.Event{
+		StreamType: "execution",
+		StreamID:   executionID,
+		EventType:  "ExecutionCreated",
+		Data: map[string]any{
+			"device_id":       deviceID,
+			"action_id":       actionID,
+			"action_type":     int(pm.ActionType_ACTION_TYPE_USER),
+			"desired_state":   0,
+			"params":          map[string]any{"username": "test"},
+			"timeout_seconds": 300,
+			"executed_at":     time.Now().Format(time.RFC3339Nano),
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	})
+	require.NoError(t, err)
+
+	// Verify execution is pending
+	exec, err := st.Queries().GetExecutionByID(ctx, executionID)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", exec.Status)
+
+	// Trigger device hello — this calls dispatchPendingActions internally
+	task := newTask(t, taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
+		DeviceID:     deviceID,
+		Hostname:     "resign-host",
+		AgentVersion: "1.0.0",
+	})
+	err = mux.ProcessTask(ctx, task)
+	require.NoError(t, err)
+
+	// Verify the signer was called with the EXECUTION ID, not the action ID
+	calls := signer.getCalls()
+	require.Len(t, calls, 1, "signer should be called exactly once for the pending execution")
+	assert.Equal(t, executionID, calls[0].ActionID,
+		"signer must be called with the execution ID (not action ID %s)", actionID)
+	assert.Equal(t, int32(pm.ActionType_ACTION_TYPE_USER), calls[0].ActionType)
 }
