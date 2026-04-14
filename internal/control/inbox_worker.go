@@ -3,7 +3,6 @@ package control
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -654,11 +653,15 @@ func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
 // and completed-at timestamp. Including completedAt ensures separate scheduled
 // runs of the same action get unique IDs, while retries of the same result
 // (same completedAt) produce the same ID for deduplication.
-// Note: returns a 32-char hex string, not a ULID. This is intentional —
-// deterministic IDs cannot be ULIDs (which encode timestamps).
+//
+// Returns a valid ULID constructed from the first 16 bytes of a SHA-256 hash.
+// The timestamp portion is not meaningful, but the result is deterministic and
+// passes ULID validation everywhere IDs are checked.
 func stableExecutionID(deviceID, actionID, completedAt string) string {
 	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
-	return hex.EncodeToString(h[:16])
+	var id ulid.ULID
+	copy(id[:], h[:16])
+	return id.String()
 }
 
 // handleTerminalAuditChunk persists a terminal stdin chunk as an
