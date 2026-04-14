@@ -457,7 +457,7 @@ func main() {
 		}
 
 		// Build Asynq mux with inbox worker only (search worker runs in indexer binary)
-		inboxWorker := control.NewInboxWorker(st, aqClient, logger.With("component", "inbox_worker"))
+		inboxWorker := control.NewInboxWorker(st, aqClient, actionSigner, logger.With("component", "inbox_worker"))
 		mux := inboxWorker.NewMux()
 
 		// Start Asynq server consuming control:inbox queue only

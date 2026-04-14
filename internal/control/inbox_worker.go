@@ -20,19 +20,28 @@ import (
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
+// ActionSigner signs action payloads so agents can verify authenticity.
+// The Sign method returns the signature bytes for the given action ID,
+// type, and canonical params JSON. Nil means signing is disabled.
+type ActionSigner interface {
+	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
+}
+
 // InboxWorker processes tasks from the control:inbox queue.
 // It replaces the PostgreSQL LISTEN-based Handler for gateway → control messages.
 type InboxWorker struct {
 	store    *store.Store
 	aqClient *taskqueue.Client
+	signer   ActionSigner
 	logger   *slog.Logger
 }
 
 // NewInboxWorker creates a new inbox worker.
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, logger *slog.Logger) *InboxWorker {
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ActionSigner, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
 		store:    st,
 		aqClient: aqClient,
+		signer:   signer,
 		logger:   logger,
 	}
 }
@@ -558,12 +567,23 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			params = exec.Params
 		}
 
-		// Look up the action's signature if this execution references one
+		// Re-sign the action with the execution ID. The gateway sets
+		// Action.Id = executionID, so the agent verifies the signature
+		// against the execution ID — not the original action ID the
+		// action was signed with. This mirrors the API dispatch handler.
 		var signature, paramsCanonical []byte
-		if exec.ActionID != nil {
+		if w.signer != nil && exec.ActionID != nil {
 			if action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
-				signature = action.Signature
 				paramsCanonical = action.ParamsCanonical
+				if paramsCanonical == nil {
+					paramsCanonical = exec.Params
+				}
+				if sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical); err == nil {
+					signature = sig
+				} else {
+					logger.Warn("failed to re-sign action for dispatch",
+						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+				}
 			}
 		}
 
