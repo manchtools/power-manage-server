@@ -571,20 +571,32 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		// Action.Id = executionID, so the agent verifies the signature
 		// against the execution ID — not the original action ID the
 		// action was signed with. This mirrors the API dispatch handler.
+		// If signing fails, skip this execution entirely — never enqueue
+		// an unsigned payload that the agent will reject.
 		var signature, paramsCanonical []byte
-		if w.signer != nil && exec.ActionID != nil {
-			if action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
-				paramsCanonical = action.ParamsCanonical
-				if paramsCanonical == nil {
-					paramsCanonical = exec.Params
-				}
-				if sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical); err == nil {
-					signature = sig
-				} else {
-					logger.Warn("failed to re-sign action for dispatch",
-						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
-				}
+		if exec.ActionID != nil {
+			if w.signer == nil {
+				logger.Error("cannot dispatch execution without signer",
+					"execution_id", exec.ID, "action_id", *exec.ActionID)
+				continue
 			}
+			action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
+			if err != nil {
+				logger.Error("failed to look up action for re-signing, skipping dispatch",
+					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+				continue
+			}
+			paramsCanonical = action.ParamsCanonical
+			if paramsCanonical == nil {
+				paramsCanonical = exec.Params
+			}
+			sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical)
+			if err != nil {
+				logger.Error("failed to re-sign action for dispatch, skipping",
+					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+				continue
+			}
+			signature = sig
 		}
 
 		// Enqueue to device queue first — only record the event after the
