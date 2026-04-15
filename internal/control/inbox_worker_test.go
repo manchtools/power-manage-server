@@ -484,10 +484,13 @@ func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
 	err = mux.ProcessTask(ctx, task)
 	require.NoError(t, err)
 
-	// Verify the signer was called with the EXECUTION ID, not the action ID
+	// Verify the signer was called with the EXECUTION ID, not the action ID,
+	// and with the correct canonical params and action type.
 	calls := signer.getCalls()
 	require.Len(t, calls, 1, "signer should be called exactly once for the pending execution")
 	assert.Equal(t, executionID, calls[0].ActionID,
 		"signer must be called with the execution ID (not action ID %s)", actionID)
 	assert.Equal(t, int32(pm.ActionType_ACTION_TYPE_USER), calls[0].ActionType)
+	assert.JSONEq(t, `{"username":"test"}`, string(calls[0].ParamsJSON),
+		"signer must receive the canonical params from the action")
 }

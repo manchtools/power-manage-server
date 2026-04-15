@@ -22,7 +22,12 @@ import (
 
 // ActionSigner signs action payloads so agents can verify authenticity.
 // The Sign method returns the signature bytes for the given action ID,
-// type, and canonical params JSON. Nil means signing is disabled.
+// type, and canonical params JSON.
+//
+// A nil ActionSigner disables signing globally (development only).
+// Note that dispatchPendingActions requires a non-nil signer and will
+// skip dispatch for any execution that references an action when the
+// signer is nil, since the agent rejects unsigned payloads.
 type ActionSigner interface {
 	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
 }
@@ -576,12 +581,14 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		var signature, paramsCanonical []byte
 		if exec.ActionID != nil {
 			if w.signer == nil {
+				enqueueErrs = append(enqueueErrs, fmt.Errorf("missing signer for execution %s (action %s)", exec.ID, *exec.ActionID))
 				logger.Error("cannot dispatch execution without signer",
 					"execution_id", exec.ID, "action_id", *exec.ActionID)
 				continue
 			}
 			action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
 			if err != nil {
+				enqueueErrs = append(enqueueErrs, fmt.Errorf("load action %s for execution %s: %w", *exec.ActionID, exec.ID, err))
 				logger.Error("failed to look up action for re-signing, skipping dispatch",
 					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 				continue
@@ -592,6 +599,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			}
 			sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical)
 			if err != nil {
+				enqueueErrs = append(enqueueErrs, fmt.Errorf("re-sign execution %s (action %s): %w", exec.ID, *exec.ActionID, err))
 				logger.Error("failed to re-sign action for dispatch, skipping",
 					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 				continue
