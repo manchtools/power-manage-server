@@ -564,6 +564,10 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 
 	logger.Debug("found pending executions", "count", len(executions))
 
+	// Cache action lookups — multiple executions may reference the same
+	// action (e.g., system actions assigned to many devices).
+	actionCache := make(map[string][]byte) // actionID → paramsCanonical
+
 	var enqueueErrs []error
 	for _, exec := range executions {
 		// Parse params from []byte to avoid base64 encoding
@@ -576,30 +580,34 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		// Action.Id = executionID, so the agent verifies the signature
 		// against the execution ID — not the original action ID the
 		// action was signed with. This mirrors the API dispatch handler.
-		// If signing fails, skip this execution entirely — never enqueue
-		// an unsigned payload that the agent will reject.
+		//
+		// Signing failures are permanent (missing signer, deleted action,
+		// broken key) — skip silently rather than returning an error that
+		// would cause Asynq to retry the entire hello handler.
 		var signature, paramsCanonical []byte
 		if exec.ActionID != nil {
 			if w.signer == nil {
-				enqueueErrs = append(enqueueErrs, fmt.Errorf("missing signer for execution %s (action %s)", exec.ID, *exec.ActionID))
 				logger.Error("cannot dispatch execution without signer",
 					"execution_id", exec.ID, "action_id", *exec.ActionID)
 				continue
 			}
-			action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
-			if err != nil {
-				enqueueErrs = append(enqueueErrs, fmt.Errorf("load action %s for execution %s: %w", *exec.ActionID, exec.ID, err))
-				logger.Error("failed to look up action for re-signing, skipping dispatch",
-					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
-				continue
+			cached, ok := actionCache[*exec.ActionID]
+			if !ok {
+				action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
+				if err != nil {
+					logger.Error("failed to look up action for re-signing, skipping dispatch",
+						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+					continue
+				}
+				cached = action.ParamsCanonical
+				actionCache[*exec.ActionID] = cached
 			}
-			paramsCanonical = action.ParamsCanonical
+			paramsCanonical = cached
 			if paramsCanonical == nil {
 				paramsCanonical = exec.Params
 			}
 			sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical)
 			if err != nil {
-				enqueueErrs = append(enqueueErrs, fmt.Errorf("re-sign execution %s (action %s): %w", exec.ID, *exec.ActionID, err))
 				logger.Error("failed to re-sign action for dispatch, skipping",
 					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 				continue
