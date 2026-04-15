@@ -135,29 +135,30 @@ func main() {
 		gatewayReg   *registry.Registry
 		assignedHost string
 	)
+
+	// Compute the agent redirect hostname independently of the terminal
+	// URL. This supports multi-gateway agent routing without requiring
+	// the terminal feature to be enabled.
+	if cfg.PublicAgentURLTemplate != "" {
+		agentURL := strings.ReplaceAll(cfg.PublicAgentURLTemplate, "{id}", gatewayID)
+		assignedHost = hostFromURL(agentURL)
+		if assignedHost == "" {
+			logger.Error("could not extract host from GATEWAY_PUBLIC_AGENT_URL_TEMPLATE",
+				"template", cfg.PublicAgentURLTemplate, "resolved", agentURL)
+			os.Exit(1)
+		}
+	}
+
 	if cfg.PublicTerminalURLTemplate != "" {
 		// Substitute {id} in the URL template. The template is the
 		// public WebSocket URL operators want clients to use; the
 		// gateway never constructs hostnames from the request side.
 		terminalURL := strings.ReplaceAll(cfg.PublicTerminalURLTemplate, "{id}", gatewayID)
 
-		// The bootstrap middleware needs the bare assigned hostname
-		// (no scheme, no path) so it can build a redirect Location.
-		// When PublicAgentURLTemplate is set, the agent redirect goes
-		// to a different hostname than the terminal WebSocket (needed
-		// when Traefik uses TCP passthrough for agent mTLS and HTTP
-		// termination for terminal WebSocket — they can't share a
-		// hostname). Otherwise fall back to deriving from the terminal
-		// URL (legacy single-hostname mode).
-		if cfg.PublicAgentURLTemplate != "" {
-			agentURL := strings.ReplaceAll(cfg.PublicAgentURLTemplate, "{id}", gatewayID)
-			assignedHost = hostFromURL(agentURL)
-			if assignedHost == "" {
-				logger.Error("could not extract host from GATEWAY_PUBLIC_AGENT_URL_TEMPLATE",
-					"template", cfg.PublicAgentURLTemplate, "resolved", agentURL)
-				os.Exit(1)
-			}
-		} else {
+		// If no agent URL template was set, fall back to deriving the
+		// agent redirect hostname from the terminal URL (legacy
+		// single-hostname mode).
+		if assignedHost == "" {
 			assignedHost = hostFromURL(terminalURL)
 			if assignedHost == "" {
 				logger.Error("could not extract host from GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
