@@ -135,20 +135,36 @@ func main() {
 		gatewayReg   *registry.Registry
 		assignedHost string
 	)
+
+	// Compute the agent redirect hostname independently of the terminal
+	// URL. This supports multi-gateway agent routing without requiring
+	// the terminal feature to be enabled.
+	if cfg.PublicAgentURLTemplate != "" {
+		agentURL := strings.ReplaceAll(cfg.PublicAgentURLTemplate, "{id}", gatewayID)
+		assignedHost = hostFromURL(agentURL)
+		if assignedHost == "" {
+			logger.Error("could not extract host from GATEWAY_PUBLIC_AGENT_URL_TEMPLATE",
+				"template", cfg.PublicAgentURLTemplate, "resolved", agentURL)
+			os.Exit(1)
+		}
+	}
+
 	if cfg.PublicTerminalURLTemplate != "" {
 		// Substitute {id} in the URL template. The template is the
 		// public WebSocket URL operators want clients to use; the
 		// gateway never constructs hostnames from the request side.
 		terminalURL := strings.ReplaceAll(cfg.PublicTerminalURLTemplate, "{id}", gatewayID)
 
-		// The bootstrap middleware needs the bare assigned hostname
-		// (no scheme, no path) so it can build a redirect Location.
-		// Derive it from the terminal URL.
-		assignedHost = hostFromURL(terminalURL)
+		// If no agent URL template was set, fall back to deriving the
+		// agent redirect hostname from the terminal URL (legacy
+		// single-hostname mode).
 		if assignedHost == "" {
-			logger.Error("could not extract host from GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
-				"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
-			os.Exit(1)
+			assignedHost = hostFromURL(terminalURL)
+			if assignedHost == "" {
+				logger.Error("could not extract host from GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
+					"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
+				os.Exit(1)
+			}
 		}
 
 		rdb := redis.NewClient(&redis.Options{
@@ -209,7 +225,7 @@ func main() {
 		logger.Info("multi-gateway routing enabled",
 			"gateway_id", gatewayID,
 			"terminal_url", terminalURL,
-			"assigned_host", assignedHost,
+			"agent_redirect_host", assignedHost,
 			"internal_url", cfg.InternalURL,
 		)
 	}
@@ -218,7 +234,7 @@ func main() {
 	// guard, BootstrapRedirectMiddleware would panic on an empty
 	// assignedHost further down.
 	if cfg.BootstrapHost != "" && assignedHost == "" {
-		logger.Error("GATEWAY_BOOTSTRAP_HOST is set but GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is empty; cannot derive the per-gateway hostname for bootstrap redirects",
+		logger.Error("GATEWAY_BOOTSTRAP_HOST is set but neither GATEWAY_PUBLIC_AGENT_URL_TEMPLATE nor GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set; cannot derive the per-gateway hostname for bootstrap redirects",
 			"bootstrap_host", cfg.BootstrapHost)
 		os.Exit(1)
 	}
@@ -395,8 +411,8 @@ func main() {
 // hostFromURL extracts the host (including port if present) from a
 // URL like "wss://gw-01.example.com:8443/terminal" so the bootstrap
 // redirect middleware constructs a correct Location header that
-// preserves non-default ports. Only ws:// and wss:// schemes are
-// accepted. Returns "" on parse failure, unsupported scheme, or
+// preserves non-default ports. Accepts http, https, ws, and wss
+// schemes. Returns "" on parse failure, unsupported scheme, or
 // missing host component.
 func hostFromURL(raw string) string {
 	if raw == "" {
@@ -406,7 +422,10 @@ func hostFromURL(raw string) string {
 	if err != nil {
 		return ""
 	}
-	if u.Scheme != "ws" && u.Scheme != "wss" {
+	switch u.Scheme {
+	case "http", "https", "ws", "wss":
+		// OK
+	default:
 		return ""
 	}
 	// u.Host includes the port (e.g. "gw-01.example.com:8443").

@@ -35,8 +35,20 @@ type Config struct {
 	// session registration on this gateway (the gateway still
 	// accepts agent connections normally).
 	//
-	// Example: "wss://{id}.gateway.example.com/terminal"
+	// Example: "wss://{id}.terminal.example.com/terminal"
 	PublicTerminalURLTemplate string
+
+	// PublicAgentURLTemplate is the template the gateway uses for
+	// agent mTLS bootstrap redirects. '{id}' is substituted with
+	// GatewayID. When an agent connects to BootstrapHost, the
+	// gateway redirects to this URL so subsequent reconnects go
+	// directly to this gateway instance. Empty means the redirect
+	// hostname is derived from PublicTerminalURLTemplate (legacy
+	// single-hostname mode — only valid when agent mTLS and
+	// terminal traffic can share a hostname).
+	//
+	// Example: "https://{id}.gw.example.com"
+	PublicAgentURLTemplate string
 
 	// BootstrapHost is the wildcard root hostname agents use for
 	// the initial connection before they have an assigned gateway.
@@ -74,6 +86,7 @@ func FromEnv() *Config {
 		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
+		PublicAgentURLTemplate:    getEnv("GATEWAY_PUBLIC_AGENT_URL_TEMPLATE", ""),
 		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
 		WebListenAddr:             getEnv("GATEWAY_WEB_LISTEN_ADDR", ""),
 		InternalURL:               getEnv("GATEWAY_INTERNAL_URL", ""),
