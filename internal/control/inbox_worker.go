@@ -20,19 +20,33 @@ import (
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
+// ActionSigner signs action payloads so agents can verify authenticity.
+// The Sign method returns the signature bytes for the given action ID,
+// type, and canonical params JSON.
+//
+// A nil ActionSigner disables signing globally (development only).
+// Note that dispatchPendingActions requires a non-nil signer and will
+// skip dispatch for any execution that references an action when the
+// signer is nil, since the agent rejects unsigned payloads.
+type ActionSigner interface {
+	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
+}
+
 // InboxWorker processes tasks from the control:inbox queue.
 // It replaces the PostgreSQL LISTEN-based Handler for gateway → control messages.
 type InboxWorker struct {
 	store    *store.Store
 	aqClient *taskqueue.Client
+	signer   ActionSigner
 	logger   *slog.Logger
 }
 
 // NewInboxWorker creates a new inbox worker.
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, logger *slog.Logger) *InboxWorker {
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ActionSigner, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
 		store:    st,
 		aqClient: aqClient,
+		signer:   signer,
 		logger:   logger,
 	}
 }
@@ -550,6 +564,10 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 
 	logger.Debug("found pending executions", "count", len(executions))
 
+	// Cache action lookups — multiple executions may reference the same
+	// action (e.g., system actions assigned to many devices).
+	actionCache := make(map[string][]byte) // actionID → paramsCanonical
+
 	var enqueueErrs []error
 	for _, exec := range executions {
 		// Parse params from []byte to avoid base64 encoding
@@ -558,13 +576,43 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			params = exec.Params
 		}
 
-		// Look up the action's signature if this execution references one
+		// Re-sign the action with the execution ID. The gateway sets
+		// Action.Id = executionID, so the agent verifies the signature
+		// against the execution ID — not the original action ID the
+		// action was signed with. This mirrors the API dispatch handler.
+		//
+		// Signing failures are permanent (missing signer, deleted action,
+		// broken key) — skip silently rather than returning an error that
+		// would cause Asynq to retry the entire hello handler.
 		var signature, paramsCanonical []byte
 		if exec.ActionID != nil {
-			if action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID); err == nil {
-				signature = action.Signature
-				paramsCanonical = action.ParamsCanonical
+			if w.signer == nil {
+				logger.Error("cannot dispatch execution without signer",
+					"execution_id", exec.ID, "action_id", *exec.ActionID)
+				continue
 			}
+			cached, ok := actionCache[*exec.ActionID]
+			if !ok {
+				action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
+				if err != nil {
+					logger.Error("failed to look up action for re-signing, skipping dispatch",
+						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+					continue
+				}
+				cached = action.ParamsCanonical
+				actionCache[*exec.ActionID] = cached
+			}
+			paramsCanonical = cached
+			if paramsCanonical == nil {
+				paramsCanonical = exec.Params
+			}
+			sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical)
+			if err != nil {
+				logger.Error("failed to re-sign action for dispatch, skipping",
+					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
+				continue
+			}
+			signature = sig
 		}
 
 		// Enqueue to device queue first — only record the event after the
