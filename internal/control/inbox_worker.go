@@ -658,6 +658,14 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			}
 			logger.Warn("failed to append dispatch event, retrying",
 				"error", appendErr, "execution_id", exec.ID, "attempt", attempt+1)
+			// Exponential backoff between attempts (100ms, 200ms) so
+			// we don't hammer the DB in a tight loop on transient
+			// failures. Respect ctx cancellation.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(100*(1<<attempt)) * time.Millisecond):
+			}
 		}
 		if appendErr != nil {
 			return fmt.Errorf("append dispatch event for %s after 3 attempts: %w", exec.ID, appendErr)
