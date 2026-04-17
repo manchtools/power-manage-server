@@ -10,13 +10,12 @@ import (
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/search"
 )
 
 // SearchHandler handles search and search index management RPCs.
 type SearchHandler struct {
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	logger *slog.Logger
 }
 
 // NewSearchHandler creates a new search handler.
@@ -24,11 +23,6 @@ func NewSearchHandler(logger *slog.Logger) *SearchHandler {
 	return &SearchHandler{
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index used by the handler.
-func (h *SearchHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // scopeSortField returns the default sort field for a scope, or empty if none.

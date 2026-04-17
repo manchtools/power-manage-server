@@ -20,19 +20,14 @@ const logQueryResultTimeout = 5 * time.Minute
 
 // LogsHandler handles device log query RPCs.
 type LogsHandler struct {
-	store    *store.Store
-	aqClient *taskqueue.Client
-	logger   *slog.Logger
+	taskQueueHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewLogsHandler creates a new logs handler.
 func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
 	return &LogsHandler{store: st, logger: logger}
-}
-
-// SetTaskQueueClient sets the Asynq client for dispatch.
-func (h *LogsHandler) SetTaskQueueClient(c *taskqueue.Client) {
-	h.aqClient = c
 }
 
 // QueryDeviceLogs dispatches a journalctl log query to a connected device.

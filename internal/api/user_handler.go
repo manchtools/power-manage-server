@@ -20,15 +20,10 @@ import (
 
 // UserHandler handles user management RPCs.
 type UserHandler struct {
+	searchIndexHolder
 	store         *store.Store
 	logger        *slog.Logger
 	systemActions *SystemActionManager
-	searchIdx     *search.Index
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *UserHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // enqueueUserReindex enqueues a search index update for a user.

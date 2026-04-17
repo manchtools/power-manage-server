@@ -22,19 +22,14 @@ const osqueryResultTimeout = 5 * time.Minute
 
 // OSQueryHandler handles OSQuery dispatch, result polling, and device inventory RPCs.
 type OSQueryHandler struct {
-	store    *store.Store
-	aqClient *taskqueue.Client
-	logger   *slog.Logger
+	taskQueueHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewOSQueryHandler creates a new OSQuery handler.
 func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
 	return &OSQueryHandler{store: st, logger: logger}
-}
-
-// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
-func (h *OSQueryHandler) SetTaskQueueClient(c *taskqueue.Client) {
-	h.aqClient = c
 }
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.

@@ -30,26 +30,16 @@ import (
 
 // DeviceHandler handles device management RPCs.
 type DeviceHandler struct {
+	taskQueueHolder
+	searchIndexHolder
 	store     *store.Store
 	logger    *slog.Logger
 	encryptor *crypto.Encryptor
-	aqClient  *taskqueue.Client
-	searchIdx *search.Index
 }
 
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
 	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
-}
-
-// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
-func (h *DeviceHandler) SetTaskQueueClient(c *taskqueue.Client) {
-	h.aqClient = c
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *DeviceHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // enqueueDeviceReindex enqueues a search index update for a device.

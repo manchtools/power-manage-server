@@ -17,9 +17,9 @@ import (
 
 // DefinitionHandler handles definition (collection of action sets) RPCs.
 type DefinitionHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewDefinitionHandler creates a new definition handler.
@@ -28,11 +28,6 @@ func NewDefinitionHandler(st *store.Store, logger *slog.Logger) *DefinitionHandl
 		store:  st,
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *DefinitionHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // CreateDefinition creates a new definition.

@@ -20,9 +20,9 @@ import (
 
 // CompliancePolicyHandler handles compliance policy RPCs.
 type CompliancePolicyHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewCompliancePolicyHandler creates a new compliance policy handler.
@@ -31,11 +31,6 @@ func NewCompliancePolicyHandler(st *store.Store, logger *slog.Logger) *Complianc
 		store:  st,
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *CompliancePolicyHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // enqueueCompliancePolicyReindex enqueues a search index update for a compliance policy.
