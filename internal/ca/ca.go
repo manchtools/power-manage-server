@@ -98,6 +98,17 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 		return nil, fmt.Errorf("invalid CSR signature: %w", err)
 	}
 
+	// Reject CSRs that request Subject Alternative Names. Agent
+	// certificates are client certs identified by the deviceID in the
+	// Subject CN — DNSNames, IPAddresses, EmailAddresses, and URIs have
+	// no legitimate use here and would otherwise be copied into the
+	// issued cert, letting a malicious agent request SANs for internal
+	// hostnames (e.g. control-server.example.com) that downstream
+	// verifiers might then trust.
+	if len(csr.DNSNames) > 0 || len(csr.IPAddresses) > 0 || len(csr.EmailAddresses) > 0 || len(csr.URIs) > 0 {
+		return nil, fmt.Errorf("CSR must not request subject alternative names")
+	}
+
 	// Generate serial number
 	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	if err != nil {
@@ -118,7 +129,6 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              csr.DNSNames,
 	}
 
 	// Add device ID to the Subject's SerialNumber field

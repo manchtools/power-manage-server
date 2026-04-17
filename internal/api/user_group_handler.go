@@ -80,6 +80,9 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
+		}
 		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
@@ -590,6 +593,9 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 
 	// Validate dynamic query if provided
 	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
+		}
 		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
