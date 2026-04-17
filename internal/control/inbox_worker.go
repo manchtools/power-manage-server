@@ -595,6 +595,30 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			if !ok {
 				action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
 				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						// Action was deleted after the execution was created.
+						// Mark the execution failed so it leaves the "pending"
+						// state — otherwise every reconnect retries dispatch
+						// and re-logs the same error forever.
+						logger.Warn("action for pending execution no longer exists; failing execution",
+							"execution_id", exec.ID, "action_id", *exec.ActionID)
+						if appendErr := w.store.AppendEvent(ctx, store.Event{
+							StreamType: "execution",
+							StreamID:   exec.ID,
+							EventType:  "ExecutionFailed",
+							Data: map[string]any{
+								"error":        "action was deleted before the device came online",
+								"duration_ms":  int64(0),
+								"completed_at": time.Now().UTC().Format(time.RFC3339Nano),
+							},
+							ActorType: "system",
+							ActorID:   "dispatcher",
+						}); appendErr != nil {
+							logger.Error("failed to mark orphaned execution as failed",
+								"execution_id", exec.ID, "error", appendErr)
+						}
+						continue
+					}
 					logger.Error("failed to look up action for re-signing, skipping dispatch",
 						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 					continue

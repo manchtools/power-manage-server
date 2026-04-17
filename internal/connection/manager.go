@@ -26,15 +26,17 @@ type Agent struct {
 
 // Send sends a message to the agent.
 func (a *Agent) Send(msg *pm.ServerMessage) error {
-	// Check if the agent connection has been closed
+	// Acquire the send lock FIRST, then check the context. If we checked
+	// the context before locking, Close() could race in between — cancelling
+	// the ctx while our goroutine still holds a stale "not done" read — and
+	// we'd send on a stream the handler has already declared dead.
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 	select {
 	case <-a.ctx.Done():
 		return ErrAgentNotConnected
 	default:
 	}
-
-	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
 	return a.Stream.Send(msg)
 }
 
@@ -56,9 +58,12 @@ func NewManager() *Manager {
 	}
 }
 
-// Register registers a new agent connection.
-func (m *Manager) Register(deviceID, hostname, version string, stream *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]) *Agent {
-	ctx, cancel := context.WithCancel(context.Background())
+// Register registers a new agent connection. The parent ctx should be
+// the handler's request ctx so the agent's lifetime ends when the RPC
+// ends (graceful shutdown, client disconnect). Close() still cancels
+// independently for Unregister-driven teardown.
+func (m *Manager) Register(parentCtx context.Context, deviceID, hostname, version string, stream *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]) *Agent {
+	ctx, cancel := context.WithCancel(parentCtx)
 
 	agent := &Agent{
 		DeviceID:    deviceID,
