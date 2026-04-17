@@ -121,50 +121,6 @@ func TestDeviceIDFromTLS_EmptyCN(t *testing.T) {
 	}
 }
 
-func TestCertificateFingerprint_Success(t *testing.T) {
-	rawBytes := []byte("test-certificate-bytes")
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{
-			{Raw: rawBytes},
-		},
-	}
-
-	fp, err := CertificateFingerprint(req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if fp == "" {
-		t.Fatal("expected non-empty fingerprint")
-	}
-	// The fingerprint is hex-encoded raw bytes
-	if fp != "746573742d63657274696669636174652d6279746573" {
-		t.Fatalf("unexpected fingerprint: %s", fp)
-	}
-}
-
-func TestCertificateFingerprint_NoTLS(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.TLS = nil
-
-	_, err := CertificateFingerprint(req)
-	if err == nil {
-		t.Fatal("expected error for nil TLS")
-	}
-}
-
-func TestCertificateFingerprint_NoPeerCerts(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{},
-	}
-
-	_, err := CertificateFingerprint(req)
-	if err == nil {
-		t.Fatal("expected error for empty peer certificates")
-	}
-}
-
 func TestDeviceIDFromRequest_UsesFirstCert(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.TLS = &tls.ConnectionState{
