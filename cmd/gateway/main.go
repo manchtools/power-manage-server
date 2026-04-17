@@ -337,7 +337,7 @@ func main() {
 		logger.Info("starting gateway server with mTLS", "address", cfg.ListenAddr)
 		if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", "error", err)
-			os.Exit(1)
+			stop()
 		}
 	}()
 
@@ -380,7 +380,7 @@ func main() {
 				"address", cfg.WebListenAddr)
 			if err := webServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 				logger.Error("web server error", "error", err)
-				os.Exit(1)
+				stop()
 			}
 		}()
 	}
