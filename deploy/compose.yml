@@ -18,23 +18,41 @@ services:
     image: docker.io/traefik:v3
     container_name: pm-traefik
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    depends_on:
+      valkey:
+        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./data/traefik:/letsencrypt
     command:
+      # Docker provider stays for the non-gateway services
+      # (control, indexer) that don't scale horizontally.
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=pm-internal"
+      # Redis KV provider — each gateway replica self-registers its
+      # routing config into Valkey at startup (see
+      # server/cmd/gateway/main.go). Lets `docker compose up
+      # --scale gateway=N` work without per-replica labels.
+      - "--providers.redis=true"
+      - "--providers.redis.endpoints=valkey:6379"
+      - "--providers.redis.password=${VALKEY_PASSWORD}"
+      - "--providers.redis.rootkey=traefik"
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
+      # Dedicated entrypoint for agent mTLS passthrough. Agents
+      # connect to ${GATEWAY_DOMAIN}:8443; Traefik TCP-routes by SNI
+      # to whichever gateway replica is in the pm-mtls pool.
+      - "--entrypoints.mtls.address=:8443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
       - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
       - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
     networks:
       - internal
 
@@ -153,8 +171,10 @@ services:
       - internal
 
   gateway:
+    # No container_name: scaling to N replicas needs Compose to auto-name
+    # containers (pm-server-gateway-1, -2, ...). Self-registration into
+    # Traefik's Redis KV means no per-replica Traefik labels are needed.
     image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:-latest}
-    container_name: pm-gateway
     restart: unless-stopped
     depends_on:
       valkey:
@@ -170,12 +190,23 @@ services:
       - GATEWAY_LISTEN_ADDR=:8080
       - LOG_LEVEL=${LOG_LEVEL:-info}
       # Remote terminal (multi-gateway routing). Leave empty to disable.
-      # GATEWAY_ID is auto-generated as a ULID if empty.
+      # GATEWAY_ID is auto-generated as a ULID if empty; when scaling
+      # replicas, leave it empty so each container gets its own ID.
       - GATEWAY_ID=${GATEWAY_ID:-}
       - GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=${GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE:-}
       - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
       - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}
       - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-}
+      # Traefik self-registration via Redis KV. Each replica publishes
+      # its own routing entry; backend host:port values are auto-
+      # derived from the container's hostname + listener ports when
+      # not set explicitly, which is exactly what scaling needs.
+      - GATEWAY_TRAEFIK_SELF_REGISTER=${GATEWAY_TRAEFIK_SELF_REGISTER:-true}
+      - GATEWAY_TRAEFIK_ROOT_KEY=${GATEWAY_TRAEFIK_ROOT_KEY:-traefik}
+      - GATEWAY_TRAEFIK_MTLS_HOST=${GATEWAY_DOMAIN}
+      - GATEWAY_TRAEFIK_MTLS_ENTRYPOINT=mtls
+      - GATEWAY_TRAEFIK_TTY_HOST=${GATEWAY_TTY_DOMAIN:-${GATEWAY_DOMAIN}}
+      - GATEWAY_TRAEFIK_TTY_ENTRYPOINT=websecure
     command:
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"
@@ -185,12 +216,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
-    labels:
-      - "traefik.enable=true"
-      - "traefik.tcp.routers.gateway.rule=HostSNI(`${GATEWAY_DOMAIN}`)"
-      - "traefik.tcp.routers.gateway.entrypoints=websecure"
-      - "traefik.tcp.routers.gateway.tls.passthrough=true"
-      - "traefik.tcp.services.gateway.loadbalancer.server.port=8080"
     networks:
       - internal
 

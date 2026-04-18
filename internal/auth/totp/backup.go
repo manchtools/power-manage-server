@@ -14,7 +14,9 @@ const (
 	BackupCodeCount = 10
 	// BackupCodeLength is the byte length of each backup code (16 hex chars = 64 bits).
 	BackupCodeLength = 8
-	bcryptCost       = 12
+	// bcryptCost matches auth/password.go so a compromised backup-code hash is
+	// no cheaper to grind offline than a compromised password hash.
+	bcryptCost = 14
 )
 
 // GenerateBackupCodes creates a set of random backup codes and their bcrypt hashes.
