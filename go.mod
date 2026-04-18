@@ -4,13 +4,14 @@ go 1.25
 
 require (
 	connectrpc.com/connect v1.18.1
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/go-playground/validator/v10 v10.30.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.8.0
-	github.com/manchtools/power-manage/sdk v0.0.0
+	github.com/manchtools/power-manage/sdk v0.1.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.26.0
@@ -22,13 +23,13 @@ require (
 	golang.org/x/net v0.49.0
 	golang.org/x/oauth2 v0.35.0
 	google.golang.org/protobuf v1.36.11
+	nhooyr.io/websocket v1.8.17
 )
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/alicebob/miniredis/v2 v2.37.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -98,7 +99,12 @@ require (
 	google.golang.org/grpc v1.78.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/sqlite v1.44.3 // indirect
-	nhooyr.io/websocket v1.8.17 // indirect
 )
 
-replace github.com/manchtools/power-manage/sdk => ../sdk
+// The SDK import path differs from the actual GitHub repo URL
+// (monorepo-style import path, polyrepo actual layout). Map it here
+// so every `go build` uses a specific, pinned SDK commit rather than
+// whatever happens to be in a local ../sdk checkout. Developers who
+// want to iterate against a local SDK override this with a per-dev
+// go.work at their workspace root — see server/README.md for setup.
+replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.1.0
