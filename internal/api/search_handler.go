@@ -66,12 +66,17 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		pageSize = 50
 	}
 
-	// Parse page token as offset.
+	// Parse page token as offset. Cap the offset to prevent an
+	// attacker or misbehaving client from walking arbitrarily deep
+	// into results (Atoi alone has no ceiling).
+	const maxSearchOffset = 100_000
 	offset := 0
 	if req.Msg.PageToken != "" {
-		if v, err := strconv.Atoi(req.Msg.PageToken); err == nil {
-			offset = v
+		v, err := strconv.Atoi(req.Msg.PageToken)
+		if err != nil || v < 0 || v > maxSearchOffset {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid page token"))
 		}
+		offset = v
 	}
 
 	// Determine which scopes to search.

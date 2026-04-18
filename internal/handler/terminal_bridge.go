@@ -375,6 +375,13 @@ func (h *TerminalBridgeHandler) bridgeAgentToWS(
 						"error", p.TerminalStateChange.Error)
 					return fmt.Errorf("agent error: %s", p.TerminalStateChange.Error)
 				}
+			default:
+				// Agents are only supposed to route TerminalOutput and
+				// TerminalStateChange into a terminal session's channel.
+				// Anything else is a protocol violation and would
+				// otherwise vanish silently.
+				logger.Warn("unexpected message type in terminal output channel",
+					"type", fmt.Sprintf("%T", p))
 			}
 		}
 	}

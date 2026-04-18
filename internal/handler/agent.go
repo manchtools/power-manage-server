@@ -273,7 +273,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	)
 
 	// Register the agent connection
-	agent := h.manager.Register(deviceID, hello.Hostname, hello.AgentVersion, stream)
+	agent := h.manager.Register(ctx, deviceID, hello.Hostname, hello.AgentVersion, stream)
 
 	// Publish the device→gateway mapping in the multi-gateway
 	// registry so ControlService.StartTerminal can route the user's

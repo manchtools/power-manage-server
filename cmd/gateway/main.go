@@ -125,6 +125,12 @@ func main() {
 		logger.Info("using configured gateway ID", "gateway_id", gatewayID)
 	}
 
+	// Declare the shutdown signal ctx up-front so downstream goroutines
+	// (registry refresh, internal-URL refresh) can derive from it and
+	// exit cleanly on SIGTERM/SIGINT rather than ticking past shutdown.
+	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Wire the multi-gateway registry. Reuses the same Valkey
 	// instance the Asynq queue uses, no extra connection pool. The
 	// registry is enabled only when the operator has set the
@@ -200,9 +206,9 @@ func main() {
 			}
 			// Refresh the internal URL on the same cadence as the
 			// terminal URL so it does not expire while the gateway is
-			// running. Use a dedicated cancel context so the goroutine
-			// stops cleanly on shutdown (shutdownCtx is declared later).
-			internalRefreshCtx, stopInternalRefresh := context.WithCancel(context.Background())
+			// running. Derive from shutdownCtx so the goroutine exits
+			// as soon as a signal arrives.
+			internalRefreshCtx, stopInternalRefresh := context.WithCancel(shutdownCtx)
 			defer stopInternalRefresh()
 			go func() {
 				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
@@ -314,10 +320,6 @@ func main() {
 		logger.Error("failed to configure HTTP/2", "error", err)
 		os.Exit(1)
 	}
-
-	// Graceful shutdown
-	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// Start ops server (health checks, no TLS)
 	opsServer := &http.Server{

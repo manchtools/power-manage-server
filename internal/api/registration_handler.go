@@ -77,6 +77,15 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		logger.Warn("token max uses reached")
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has reached max uses")
 	}
+	// Defence-in-depth for one-time tokens. The `token.Disabled` check above
+	// already rejects consumed one-time tokens once their TokenDisabled event
+	// has projected, and the event-store optimistic lock at AppendEvent
+	// rejects concurrent consumptions. Rejecting on CurrentUses>0 here fails
+	// fast in the projection-lag window, before the (expensive) CSR signing.
+	if token.OneTime && token.CurrentUses > 0 {
+		logger.Warn("one-time token already used")
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has already been used")
+	}
 
 	// Generate device ID
 	deviceID := ulid.Make().String()

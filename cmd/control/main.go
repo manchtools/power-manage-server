@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	urlpkg "net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -272,7 +273,17 @@ func main() {
 		os.Exit(1)
 	}
 	if encryptor == nil {
-		logger.Warn("PM_ENCRYPTION_KEY not set - secrets will be stored unencrypted")
+		// Fail closed: IdP client secrets, LUKS keys, and other
+		// secrets-at-rest rely on this encryptor. Running without a
+		// key would silently degrade security in production. Operators
+		// who truly want unencrypted storage can set
+		// PM_ENCRYPTION_KEY_REQUIRED=false to opt in explicitly.
+		if os.Getenv("PM_ENCRYPTION_KEY_REQUIRED") == "false" {
+			logger.Warn("PM_ENCRYPTION_KEY not set and PM_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
+		} else {
+			logger.Error("PM_ENCRYPTION_KEY is required (set PM_ENCRYPTION_KEY_REQUIRED=false to opt out)")
+			os.Exit(1)
+		}
 	}
 
 	// Initialize action signer (signs actions so agents can verify authenticity)
@@ -533,7 +544,7 @@ func main() {
 		}
 		server.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
+			MinVersion:   tls.VersionTLS13,
 		}
 		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
 			logger.Error("failed to configure HTTP/2 for public server", "error", err)
@@ -869,17 +880,17 @@ func runPeriodic(ctx context.Context, interval time.Duration, fn func(), runImme
 }
 
 // maskDatabaseURL masks the password in a database URL for logging.
-func maskDatabaseURL(url string) string {
-	// Simple masking - replace password portion
-	// postgres://user:password@host:port/db -> postgres://user:***@host:port/db
-	for i := 0; i < len(url); i++ {
-		if url[i] == ':' && i > 10 { // Skip the postgres:// part
-			for j := i + 1; j < len(url); j++ {
-				if url[j] == '@' {
-					return url[:i+1] + "***" + url[j:]
-				}
-			}
-		}
+// Uses net/url parsing so URL-encoded credentials (e.g. passwords that
+// contain ':' or '@') are handled correctly; the hand-rolled scan we
+// had before could mangle those edge cases.
+func maskDatabaseURL(raw string) string {
+	u, err := urlpkg.Parse(raw)
+	if err != nil || u.User == nil {
+		return raw
 	}
-	return url
+	if _, hasPassword := u.User.Password(); !hasPassword {
+		return raw
+	}
+	u.User = urlpkg.UserPassword(u.User.Username(), "***")
+	return u.String()
 }

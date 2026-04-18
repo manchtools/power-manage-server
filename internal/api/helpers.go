@@ -16,6 +16,12 @@ import (
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
+// maxDynamicQueryLength caps the size of user-supplied dynamic-group
+// queries (device groups, user groups). Keeps event-store payload
+// sizes bounded and stops pathological queries from stressing the
+// validator / projector.
+const maxDynamicQueryLength = 10_000
+
 // requireAuth extracts the authenticated user from context.
 // Returns the user context or a standardized unauthenticated error.
 func requireAuth(ctx context.Context) (*auth.UserContext, error) {

@@ -1,6 +1,7 @@
 package connection
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 func TestManager_RegisterGet(t *testing.T) {
 	m := NewManager()
 
-	agent := m.Register("device-1", "host1", "1.0.0", nil)
+	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	assert.Equal(t, "device-1", agent.DeviceID)
 	assert.Equal(t, "host1", agent.Hostname)
 	assert.Equal(t, "1.0.0", agent.Version)
@@ -32,8 +33,8 @@ func TestManager_GetNotFound(t *testing.T) {
 func TestManager_ReplaceExisting(t *testing.T) {
 	m := NewManager()
 
-	agent1 := m.Register("device-1", "host1", "1.0.0", nil)
-	agent2 := m.Register("device-1", "host1", "2.0.0", nil)
+	agent1 := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+	agent2 := m.Register(context.Background(), "device-1", "host1", "2.0.0", nil)
 
 	assert.NotEqual(t, agent1, agent2)
 
@@ -53,7 +54,7 @@ func TestManager_ReplaceExisting(t *testing.T) {
 func TestManager_Unregister(t *testing.T) {
 	m := NewManager()
 
-	agent := m.Register("device-1", "host1", "1.0.0", nil)
+	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	m.Unregister("device-1")
 
 	_, ok := m.Get("device-1")
@@ -78,10 +79,10 @@ func TestManager_Count(t *testing.T) {
 
 	assert.Equal(t, 0, m.Count())
 
-	m.Register("device-1", "host1", "1.0.0", nil)
+	m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	assert.Equal(t, 1, m.Count())
 
-	m.Register("device-2", "host2", "1.0.0", nil)
+	m.Register(context.Background(), "device-2", "host2", "1.0.0", nil)
 	assert.Equal(t, 2, m.Count())
 
 	m.Unregister("device-1")
@@ -91,9 +92,9 @@ func TestManager_Count(t *testing.T) {
 func TestManager_List(t *testing.T) {
 	m := NewManager()
 
-	m.Register("device-1", "host1", "1.0.0", nil)
-	m.Register("device-2", "host2", "1.0.0", nil)
-	m.Register("device-3", "host3", "1.0.0", nil)
+	m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+	m.Register(context.Background(), "device-2", "host2", "1.0.0", nil)
+	m.Register(context.Background(), "device-3", "host3", "1.0.0", nil)
 
 	ids := m.List()
 	assert.Len(t, ids, 3)
@@ -107,7 +108,7 @@ func TestManager_IsConnected(t *testing.T) {
 
 	assert.False(t, m.IsConnected("device-1"))
 
-	m.Register("device-1", "host1", "1.0.0", nil)
+	m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	assert.True(t, m.IsConnected("device-1"))
 
 	m.Unregister("device-1")
@@ -117,7 +118,7 @@ func TestManager_IsConnected(t *testing.T) {
 func TestManager_UpdateLastSeen(t *testing.T) {
 	m := NewManager()
 
-	agent := m.Register("device-1", "host1", "1.0.0", nil)
+	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	initial := agent.LastSeen
 
 	m.UpdateLastSeen("device-1")
@@ -140,7 +141,7 @@ func TestManager_SendNotConnected(t *testing.T) {
 func TestManager_Context(t *testing.T) {
 	m := NewManager()
 
-	m.Register("device-1", "host1", "1.0.0", nil)
+	m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 
 	ctx, ok := m.Context("device-1")
 	require.True(t, ok)
@@ -162,7 +163,7 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			m.Register(id, "host", "1.0.0", nil)
+			m.Register(context.Background(), id, "host", "1.0.0", nil)
 		}(string(rune('a' + i)))
 	}
 
