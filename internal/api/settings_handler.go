@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -67,8 +68,15 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 	// Propagate global flags to individual users when enabled.
 	// This makes the global toggle a "batch enable" — once set per user,
 	// turning off the global flag won't remove provisioning for existing users.
+	//
+	// The work runs in a detached goroutine because the response
+	// returns immediately; we don't want the admin's RPC to block on
+	// a potentially-slow fan-out. bgCtx is bounded by a hard timeout
+	// so a wedged downstream (DB outage, hanging action dispatch) can
+	// never leak the goroutine forever.
 	go func() {
-		bgCtx := context.Background()
+		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
 		if req.Msg.UserProvisioningEnabled {
 			if err := h.enableProvisioningForAllUsers(bgCtx); err != nil {
 				h.logger.Error("failed to propagate provisioning to users", "error", err)
