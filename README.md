@@ -498,6 +498,42 @@ cd internal/store && sqlc generate
 cd ../../sdk && make generate
 ```
 
+## SDK versioning
+
+The server pins a specific SDK tag via `go.mod`'s replace directive:
+
+```
+replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.1.0
+```
+
+The replace maps the monorepo-style import path (`github.com/manchtools/power-manage/sdk`) to the actual polyrepo URL (`github.com/manchtools/power-manage-sdk`). `go build` fetches the exact tagged version from GitHub — SDK `main` can move freely without breaking server builds. When the server is ready to consume a newer SDK:
+
+```bash
+cd server
+go get github.com/manchtools/power-manage-sdk@v0.2.0   # or any tag / commit SHA
+go mod tidy
+```
+
+The SDK is still pre-v1.0.0, so minor bumps (`v0.1.0` → `v0.2.0`) may carry breaking API changes. Expect each bump PR to carry the matching migration in the same commit.
+
+### Working on SDK + server together
+
+For cross-cutting changes, use a `go.work` at the workspace root (the directory that contains both `sdk/` and `server/` checkouts). It overrides any `replace` directive.
+
+```bash
+# At the workspace root (NOT committed — each dev manages their own):
+cat > go.work <<'EOF'
+go 1.25
+
+use (
+    ./sdk
+    ./server
+)
+EOF
+```
+
+Rename it to `go.work.off` or delete it when you want `go build` to use the pinned SDK again.
+
 ## Testing
 
 The server has ~328 tests across 29 files covering auth, connection management, event store projections, all API handlers, SCIM provisioning, and gateway message handling.

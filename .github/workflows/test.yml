@@ -26,32 +26,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Resolve SDK ref
-        id: sdk_ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if git ls-remote --heads https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/heads/${BRANCH}" | grep -q .; then
-            echo "ref=${BRANCH}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout SDK
-        uses: actions/checkout@v5
-        with:
-          repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk_ref.outputs.ref }}
-          path: _sdk
-
-      - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
-
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
+      # go.mod pins a specific SDK commit via pseudo-version + replace
+      # directive, so unit tests build against exactly that SDK state.
+      # Bumping the pin is an explicit commit, not something that
+      # happens silently when SDK main advances.
       - name: Run unit tests
         run: go test -count=1 ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/...
 
@@ -60,28 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: Resolve SDK ref
-        id: sdk_ref
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          if git ls-remote --heads https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/heads/${BRANCH}" | grep -q .; then
-            echo "ref=${BRANCH}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout SDK
-        uses: actions/checkout@v5
-        with:
-          repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk_ref.outputs.ref }}
-          path: _sdk
-
-      - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
 
       - uses: actions/setup-go@v6
         with:
