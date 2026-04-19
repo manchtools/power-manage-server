@@ -822,7 +822,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 	if pm.ActionType(action.ActionType) != pm.ActionType_ACTION_TYPE_ENCRYPTION {
-		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not a LUKS action")
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not an encryption action")
 	}
 
 	// Parse LUKS params to get complexity requirements
