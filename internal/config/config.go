@@ -4,6 +4,17 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
+)
+
+// Heartbeat interval bounds. Agents must heartbeat at least once every
+// 5 minutes so server-side liveness detection stays responsive, and no
+// more often than every 5 seconds so we don't hammer the stream with
+// keepalives that serve no purpose.
+const (
+	MinHeartbeatInterval     = 5 * time.Second
+	MaxHeartbeatInterval     = 5 * time.Minute
+	DefaultHeartbeatInterval = 30 * time.Second
 )
 
 // Config holds the gateway server configuration.
@@ -116,6 +127,11 @@ type Config struct {
 	// router attaches to. Example: "websecure".
 	TraefikTTYEntryPoint string
 
+	// HeartbeatInterval is the default heartbeat cadence sent to every
+	// agent in the Welcome message. Clamped to [MinHeartbeatInterval,
+	// MaxHeartbeatInterval] in FromEnv.
+	HeartbeatInterval time.Duration
+
 	// Logging
 	LogLevel string
 }
@@ -142,8 +158,32 @@ func FromEnv() *Config {
 		TraefikTTYHost:            getEnv("GATEWAY_TRAEFIK_TTY_HOST", ""),
 		TraefikTTYBackend:         getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
 		TraefikTTYEntryPoint:      getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", ""),
+		HeartbeatInterval:         getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
 		LogLevel:                  getEnv("LOG_LEVEL", "info"),
 	}
+}
+
+// getEnvHeartbeatInterval parses GATEWAY_HEARTBEAT_INTERVAL (a Go
+// duration string) and clamps it to [MinHeartbeatInterval,
+// MaxHeartbeatInterval]. An unset, empty, or unparseable value falls
+// back to DefaultHeartbeatInterval so the gateway always comes up with
+// a sensible cadence.
+func getEnvHeartbeatInterval(key string) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return DefaultHeartbeatInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return DefaultHeartbeatInterval
+	}
+	if d < MinHeartbeatInterval {
+		return MinHeartbeatInterval
+	}
+	if d > MaxHeartbeatInterval {
+		return MaxHeartbeatInterval
+	}
+	return d
 }
 
 func getEnv(key, defaultValue string) string {
