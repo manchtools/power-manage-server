@@ -61,13 +61,16 @@ The Gateway Server:
 |----------|---------|-------------|
 | `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address for the agent mTLS listener |
 | `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (empty disables the terminal feature) |
-| `VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
-| `VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
-| `VALKEY_DB` | `0` | Valkey/Redis database number |
+| `GATEWAY_VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
+| `GATEWAY_VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
+| `GATEWAY_VALKEY_DB` | `0` | Valkey/Redis database number |
 | `GATEWAY_CONTROL_URL` | `http://control:8081` | Control Server URL for Connect-RPC proxy |
 | `GATEWAY_ID` | (auto-ULID) | Stable gateway identifier; auto-generated per process when empty (required for replica scaling) |
 | `GATEWAY_INTERNAL_URL` | (empty) | mTLS URL the control server uses for admin fan-out RPCs |
-| `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+| `GATEWAY_HEARTBEAT_INTERVAL` | `30s` | Heartbeat cadence sent to every agent (Go duration, 5s..5m) |
+| `GATEWAY_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+
+> **rc3 migration:** the previously unprefixed `VALKEY_ADDR` / `VALKEY_PASSWORD` / `VALKEY_DB` / `LOG_LEVEL` knobs now live under the `GATEWAY_*` namespace. The old names are no longer read.
 
 #### Traefik self-registration (Redis KV)
 
@@ -83,6 +86,7 @@ When enabled, each gateway replica publishes its own routing entries into Traefi
 | `GATEWAY_TRAEFIK_TTY_HOST` | — | Public `Host` for TTY, e.g. `tty.example.com`. |
 | `GATEWAY_TRAEFIK_TTY_BACKEND` | auto | Internal URL for this replica's TTY listener. Auto-derived from `os.Hostname()` + `GATEWAY_WEB_LISTEN_ADDR` when empty. |
 | `GATEWAY_TRAEFIK_TTY_ENTRYPOINT` | — | Traefik entrypoint the TTY router binds to, e.g. `websecure`. |
+| `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | (empty) | Cert resolver for the per-replica TTY HTTP router, e.g. `letsencrypt`. Must match a `--certificatesresolvers.<name>.*` entry in Traefik's static config. Leave empty only for bring-your-own-cert deployments that ship a default cert matching `GATEWAY_TRAEFIK_TTY_HOST` — otherwise browsers reject the default self-signed cert Traefik serves for Redis-KV routers. |
 
 All Traefik keys share the registry TTL (45 s default) and are refreshed on the same cadence as the gateway terminal-URL entry. Graceful shutdown revokes only per-replica keys; shared router keys expire naturally when the last replica stops. See `server/deploy/compose.yml` for the matching Traefik command flags.
 
@@ -119,8 +123,8 @@ openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
 For local development without TLS:
 
 ```bash
-export VALKEY_ADDR=localhost:6379
-export VALKEY_PASSWORD=your-password
+export GATEWAY_VALKEY_ADDR=localhost:6379
+export GATEWAY_VALKEY_PASSWORD=your-password
 export GATEWAY_CONTROL_URL=http://localhost:8081
 export LOG_LEVEL=debug
 
@@ -132,8 +136,8 @@ This runs in HTTP/2 cleartext (h2c) mode - **not suitable for production**.
 ### Running in Production Mode (mTLS)
 
 ```bash
-export VALKEY_ADDR=valkey:6379
-export VALKEY_PASSWORD=your-password
+export GATEWAY_VALKEY_ADDR=valkey:6379
+export GATEWAY_VALKEY_PASSWORD=your-password
 export GATEWAY_CONTROL_URL=http://control:8081
 
 go run ./server/cmd/gateway \
@@ -380,7 +384,7 @@ When running multiple Gateways behind a load balancer:
 ### Debug Logging
 
 ```bash
-LOG_LEVEL=debug ./gateway -tls -tls-cert=... -tls-key=... -tls-ca=...
+GATEWAY_LOG_LEVEL=debug ./gateway -tls -tls-cert=... -tls-key=... -tls-ca=...
 ```
 
 ### Common Issues
@@ -390,7 +394,7 @@ LOG_LEVEL=debug ./gateway -tls -tls-cert=... -tls-key=... -tls-ca=...
 | "TLS enabled but missing required flags" | Missing -tls-cert, -tls-key, or -tls-ca | Provide all three certificate paths |
 | Agent connection refused | mTLS cert validation failed | Verify agent certificate is signed by the same CA |
 | Actions not dispatched | Asynq worker not started for device | Check device ID matches between certificate and Hello |
-| "failed to connect to valkey" | Valkey not reachable | Check `VALKEY_ADDR` and `VALKEY_PASSWORD` |
+| "failed to connect to valkey" | Valkey not reachable | Check `GATEWAY_VALKEY_ADDR` and `GATEWAY_VALKEY_PASSWORD` |
 | Credential operations failing | Control Server not reachable | Check `GATEWAY_CONTROL_URL` |
 
 ## Development
@@ -415,8 +419,8 @@ go test ./server/internal/connection/...
 podman-compose up -d valkey control
 
 # Run gateway in dev mode
-export VALKEY_ADDR=localhost:6379
-export VALKEY_PASSWORD=your-password
+export GATEWAY_VALKEY_ADDR=localhost:6379
+export GATEWAY_VALKEY_PASSWORD=your-password
 export GATEWAY_CONTROL_URL=http://localhost:8081
 export LOG_LEVEL=debug
 

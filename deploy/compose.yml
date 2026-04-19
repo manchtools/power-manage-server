@@ -117,7 +117,8 @@ services:
       - CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL=${DYNAMIC_GROUP_EVAL_INTERVAL:-1h}
       - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
       - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
-      - PM_ENCRYPTION_KEY=${PM_ENCRYPTION_KEY:-}
+      - CONTROL_ENCRYPTION_KEY=${CONTROL_ENCRYPTION_KEY:-}
+      - CONTROL_ENCRYPTION_KEY_REQUIRED=${CONTROL_ENCRYPTION_KEY_REQUIRED:-}
       - CONTROL_INTERNAL_LISTEN_ADDR=:8082
       - CONTROL_INTERNAL_TLS_CERT=/certs/control.crt
       - CONTROL_INTERNAL_TLS_KEY=/certs/control.key
@@ -184,11 +185,13 @@ services:
     volumes:
       - ./certs:/certs:ro,z
     environment:
-      - VALKEY_ADDR=valkey:6379
-      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GATEWAY_VALKEY_ADDR=valkey:6379
+      - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
-      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}
+      # rc3: configurable agent heartbeat cadence (Go duration, 5s..5m).
+      - GATEWAY_HEARTBEAT_INTERVAL=${GATEWAY_HEARTBEAT_INTERVAL:-30s}
       # Remote terminal (multi-gateway routing). Leave empty to disable.
       # GATEWAY_ID is auto-generated as a ULID if empty; when scaling
       # replicas, leave it empty so each container gets its own ID.
@@ -207,6 +210,12 @@ services:
       - GATEWAY_TRAEFIK_MTLS_ENTRYPOINT=mtls
       - GATEWAY_TRAEFIK_TTY_HOST=${GATEWAY_TTY_DOMAIN:-${GATEWAY_DOMAIN}}
       - GATEWAY_TRAEFIK_TTY_ENTRYPOINT=websecure
+      # rc3: explicitly name the cert resolver for the TTY router. The Redis
+      # KV provider does not inherit the entrypoint-level default cert
+      # resolver the way Docker-labelled routers do, so without this the
+      # TTY router falls back to Traefik's default self-signed cert and
+      # browsers refuse the WebSocket upgrade.
+      - GATEWAY_TRAEFIK_TTY_CERT_RESOLVER=${GATEWAY_TRAEFIK_TTY_CERT_RESOLVER:-letsencrypt}
     command:
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"

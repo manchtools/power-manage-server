@@ -458,14 +458,20 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cm
 
 | Variable | Description |
 |----------|-------------|
-| `VALKEY_ADDR` | Valkey address, e.g. `localhost:6379` |
-| `VALKEY_PASSWORD` | Valkey password |
+| `GATEWAY_VALKEY_ADDR` | Valkey address, e.g. `localhost:6379` |
+| `GATEWAY_VALKEY_PASSWORD` | Valkey password |
+| `GATEWAY_VALKEY_DB` | Valkey DB number (default `0`) |
 | `GATEWAY_CONTROL_URL` | URL of the Control Server |
 | `GATEWAY_ID` | Stable gateway identifier (empty = generate ULID at startup) |
 | `GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE` | Template for the public terminal WebSocket URL, e.g. `wss://{id}.gateway.example.com/terminal` |
 | `GATEWAY_BOOTSTRAP_HOST` | Wildcard root hostname for agent bootstrap redirect, e.g. `gateway.example.com` |
 | `GATEWAY_WEB_LISTEN_ADDR` | Listen address for the web TLS listener (terminal WebSocket), e.g. `:8443` |
+| `GATEWAY_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` (default `info`) |
+| `GATEWAY_HEARTBEAT_INTERVAL` | Heartbeat cadence sent to agents (Go duration, 5s..5m; default `30s`) |
+| `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | Traefik cert resolver name for the per-replica TTY HTTP router (e.g. `letsencrypt`) |
 | `CONTROL_TERMINAL_GATEWAY_URL` | Fallback terminal gateway URL for single-gateway deployments (deprecated in favor of registry) |
+
+> **rc3 migration:** the previously unprefixed `VALKEY_ADDR` / `VALKEY_PASSWORD` / `VALKEY_DB` / `LOG_LEVEL` are now `GATEWAY_*`-prefixed. The old names are no longer read — rename them in your `.env` before upgrading.
 
 ## Running Locally
 
@@ -482,8 +488,8 @@ Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](
   -gateway-url=http://localhost:8080
 
 # Gateway server (no database required, connects to Valkey and Control)
-export VALKEY_ADDR=localhost:6379
-export VALKEY_PASSWORD=your-valkey-password
+export GATEWAY_VALKEY_ADDR=localhost:6379
+export GATEWAY_VALKEY_PASSWORD=your-valkey-password
 export GATEWAY_CONTROL_URL=http://localhost:8081
 ./gateway -tls -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
 ```
