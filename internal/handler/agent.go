@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
@@ -33,13 +35,14 @@ const (
 type AgentHandler struct {
 	pmv1connect.UnimplementedAgentServiceHandler
 
-	manager       *connection.Manager
-	aqClient      *taskqueue.Client
-	controlProxy  *ControlProxy
-	workerMgr     *gateway.DeviceWorkerManager
-	logger        *slog.Logger
-	serverVersion string
-	requireTLS    bool
+	manager           *connection.Manager
+	aqClient          *taskqueue.Client
+	controlProxy      *ControlProxy
+	workerMgr         *gateway.DeviceWorkerManager
+	logger            *slog.Logger
+	serverVersion     string
+	heartbeatInterval time.Duration
+	requireTLS        bool
 
 	// Multi-gateway routing. registry and gatewayID are set via
 	// SetGatewayRouting at startup. nil registry means single-
@@ -64,16 +67,18 @@ func NewAgentHandler(
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
 	serverVersion string,
+	heartbeatInterval time.Duration,
 	logger *slog.Logger,
 ) *AgentHandler {
 	return &AgentHandler{
-		manager:       manager,
-		aqClient:      aqClient,
-		controlProxy:  controlProxy,
-		workerMgr:     workerMgr,
-		serverVersion: serverVersion,
-		logger:        logger,
-		requireTLS:    false,
+		manager:           manager,
+		aqClient:          aqClient,
+		controlProxy:      controlProxy,
+		workerMgr:         workerMgr,
+		serverVersion:     serverVersion,
+		heartbeatInterval: heartbeatInterval,
+		logger:            logger,
+		requireTLS:        false,
 	}
 }
 
@@ -84,16 +89,18 @@ func NewAgentHandlerWithTLS(
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
 	serverVersion string,
+	heartbeatInterval time.Duration,
 	logger *slog.Logger,
 ) *AgentHandler {
 	return &AgentHandler{
-		manager:       manager,
-		aqClient:      aqClient,
-		controlProxy:  controlProxy,
-		workerMgr:     workerMgr,
-		serverVersion: serverVersion,
-		logger:        logger,
-		requireTLS:    true,
+		manager:           manager,
+		aqClient:          aqClient,
+		controlProxy:      controlProxy,
+		workerMgr:         workerMgr,
+		serverVersion:     serverVersion,
+		heartbeatInterval: heartbeatInterval,
+		logger:            logger,
+		requireTLS:        true,
 	}
 }
 
@@ -328,9 +335,15 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		h.logger.Warn("failed to enqueue device hello", "error", err)
 	}
 
-	// Send Welcome message to agent with server version.
+	// Send Welcome message to agent with server version. Populate
+	// HeartbeatInterval only when configured — the agent SDK falls back
+	// to its built-in default if the field is zero / unset, so older
+	// agents that ignore the field keep working unchanged.
 	welcome := &pm.Welcome{
 		ServerVersion: h.serverVersion,
+	}
+	if h.heartbeatInterval > 0 {
+		welcome.HeartbeatInterval = durationpb.New(h.heartbeatInterval)
 	}
 
 	if err := h.manager.Send(deviceID, &pm.ServerMessage{

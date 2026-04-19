@@ -362,7 +362,7 @@ func main() {
 	mux := http.NewServeMux()
 
 	// Create agent handler (always mTLS)
-	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, logger)
+	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, cfg.HeartbeatInterval, logger)
 	if gatewayReg != nil {
 		agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
 	}
