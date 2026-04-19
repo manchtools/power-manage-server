@@ -64,9 +64,9 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 			}
 			return nil
 		}
-	case *pm.CreateActionRequest_Systemd:
-		if p.Systemd != nil {
-			return Validate(ctx, p.Systemd)
+	case *pm.CreateActionRequest_Service:
+		if p.Service != nil {
+			return Validate(ctx, p.Service)
 		}
 	case *pm.CreateActionRequest_File:
 		if p.File != nil {
@@ -104,17 +104,17 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 		if p.Sshd != nil {
 			return Validate(ctx, p.Sshd)
 		}
-	case *pm.CreateActionRequest_Sudo:
-		if p.Sudo != nil {
-			return Validate(ctx, p.Sudo)
+	case *pm.CreateActionRequest_AdminPolicy:
+		if p.AdminPolicy != nil {
+			return Validate(ctx, p.AdminPolicy)
 		}
 	case *pm.CreateActionRequest_Lps:
 		if p.Lps != nil {
 			return Validate(ctx, p.Lps)
 		}
-	case *pm.CreateActionRequest_Luks:
-		if p.Luks != nil {
-			return Validate(ctx, p.Luks)
+	case *pm.CreateActionRequest_Encryption:
+		if p.Encryption != nil {
+			return Validate(ctx, p.Encryption)
 		}
 	case *pm.CreateActionRequest_Group:
 		if p.Group != nil {
@@ -143,9 +143,9 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 		if p.Shell != nil {
 			return Validate(ctx, p.Shell)
 		}
-	case *pm.UpdateActionParamsRequest_Systemd:
-		if p.Systemd != nil {
-			return Validate(ctx, p.Systemd)
+	case *pm.UpdateActionParamsRequest_Service:
+		if p.Service != nil {
+			return Validate(ctx, p.Service)
 		}
 	case *pm.UpdateActionParamsRequest_File:
 		if p.File != nil {
@@ -183,17 +183,17 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 		if p.Sshd != nil {
 			return Validate(ctx, p.Sshd)
 		}
-	case *pm.UpdateActionParamsRequest_Sudo:
-		if p.Sudo != nil {
-			return Validate(ctx, p.Sudo)
+	case *pm.UpdateActionParamsRequest_AdminPolicy:
+		if p.AdminPolicy != nil {
+			return Validate(ctx, p.AdminPolicy)
 		}
 	case *pm.UpdateActionParamsRequest_Lps:
 		if p.Lps != nil {
 			return Validate(ctx, p.Lps)
 		}
-	case *pm.UpdateActionParamsRequest_Luks:
-		if p.Luks != nil {
-			return Validate(ctx, p.Luks)
+	case *pm.UpdateActionParamsRequest_Encryption:
+		if p.Encryption != nil {
+			return Validate(ctx, p.Encryption)
 		}
 	case *pm.UpdateActionParamsRequest_Group:
 		if p.Group != nil {
@@ -1172,8 +1172,8 @@ func extractCreateActionParamsMsg(req *pm.CreateActionRequest) proto.Message {
 		return p.Flatpak
 	case *pm.CreateActionRequest_Shell:
 		return p.Shell
-	case *pm.CreateActionRequest_Systemd:
-		return p.Systemd
+	case *pm.CreateActionRequest_Service:
+		return p.Service
 	case *pm.CreateActionRequest_File:
 		return p.File
 	case *pm.CreateActionRequest_Update:
@@ -1188,12 +1188,12 @@ func extractCreateActionParamsMsg(req *pm.CreateActionRequest) proto.Message {
 		return p.Ssh
 	case *pm.CreateActionRequest_Sshd:
 		return p.Sshd
-	case *pm.CreateActionRequest_Sudo:
-		return p.Sudo
+	case *pm.CreateActionRequest_AdminPolicy:
+		return p.AdminPolicy
 	case *pm.CreateActionRequest_Lps:
 		return p.Lps
-	case *pm.CreateActionRequest_Luks:
-		return p.Luks
+	case *pm.CreateActionRequest_Encryption:
+		return p.Encryption
 	case *pm.CreateActionRequest_Group:
 		return p.Group
 	case *pm.CreateActionRequest_Wifi:
@@ -1216,8 +1216,8 @@ func extractUpdateActionParamsMsg(req *pm.UpdateActionParamsRequest) proto.Messa
 		return p.Flatpak
 	case *pm.UpdateActionParamsRequest_Shell:
 		return p.Shell
-	case *pm.UpdateActionParamsRequest_Systemd:
-		return p.Systemd
+	case *pm.UpdateActionParamsRequest_Service:
+		return p.Service
 	case *pm.UpdateActionParamsRequest_File:
 		return p.File
 	case *pm.UpdateActionParamsRequest_Update:
@@ -1232,12 +1232,12 @@ func extractUpdateActionParamsMsg(req *pm.UpdateActionParamsRequest) proto.Messa
 		return p.Ssh
 	case *pm.UpdateActionParamsRequest_Sshd:
 		return p.Sshd
-	case *pm.UpdateActionParamsRequest_Sudo:
-		return p.Sudo
+	case *pm.UpdateActionParamsRequest_AdminPolicy:
+		return p.AdminPolicy
 	case *pm.UpdateActionParamsRequest_Lps:
 		return p.Lps
-	case *pm.UpdateActionParamsRequest_Luks:
-		return p.Luks
+	case *pm.UpdateActionParamsRequest_Encryption:
+		return p.Encryption
 	case *pm.UpdateActionParamsRequest_Group:
 		return p.Group
 	case *pm.UpdateActionParamsRequest_Wifi:
@@ -1260,8 +1260,8 @@ func extractActionParamsMsg(action *pm.Action) proto.Message {
 		return p.Flatpak
 	case *pm.Action_Shell:
 		return p.Shell
-	case *pm.Action_Systemd:
-		return p.Systemd
+	case *pm.Action_Service:
+		return p.Service
 	case *pm.Action_File:
 		return p.File
 	case *pm.Action_Update:
@@ -1276,12 +1276,12 @@ func extractActionParamsMsg(action *pm.Action) proto.Message {
 		return p.Ssh
 	case *pm.Action_Sshd:
 		return p.Sshd
-	case *pm.Action_Sudo:
-		return p.Sudo
+	case *pm.Action_AdminPolicy:
+		return p.AdminPolicy
 	case *pm.Action_Lps:
 		return p.Lps
-	case *pm.Action_Luks:
-		return p.Luks
+	case *pm.Action_Encryption:
+		return p.Encryption
 	case *pm.Action_Group:
 		return p.Group
 	case *pm.Action_Wifi:
