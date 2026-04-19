@@ -56,7 +56,7 @@ func main() {
 
 	// Validate required config
 	if cfg.ValkeyAddr == "" {
-		logger.Error("VALKEY_ADDR is required")
+		logger.Error("GATEWAY_VALKEY_ADDR is required")
 		os.Exit(1)
 	}
 	if cfg.ControlURL == "" {
@@ -282,13 +282,14 @@ func main() {
 		}
 
 		traefikCfg := registry.TraefikRouteConfig{
-			RootKey:        cfg.TraefikRootKey,
-			MTLSHost:       cfg.TraefikMTLSHost,
-			MTLSBackend:    mtlsBackend,
-			MTLSEntryPoint: cfg.TraefikMTLSEntryPoint,
-			TTYHost:        cfg.TraefikTTYHost,
-			TTYBackend:     ttyBackend,
-			TTYEntryPoint:  cfg.TraefikTTYEntryPoint,
+			RootKey:         cfg.TraefikRootKey,
+			MTLSHost:        cfg.TraefikMTLSHost,
+			MTLSBackend:     mtlsBackend,
+			MTLSEntryPoint:  cfg.TraefikMTLSEntryPoint,
+			TTYHost:         cfg.TraefikTTYHost,
+			TTYBackend:      ttyBackend,
+			TTYEntryPoint:   cfg.TraefikTTYEntryPoint,
+			TTYCertResolver: cfg.TraefikTTYCertResolver,
 		}
 
 		if err := gatewayReg.PublishTraefikRoute(
@@ -337,6 +338,7 @@ func main() {
 			"mtls_backend", cfg.TraefikMTLSBackend,
 			"tty_host", cfg.TraefikTTYHost,
 			"tty_backend", cfg.TraefikTTYBackend,
+			"tty_cert_resolver", cfg.TraefikTTYCertResolver,
 		)
 	}
 	// Fail fast if BootstrapHost is set but we have no assignedHost

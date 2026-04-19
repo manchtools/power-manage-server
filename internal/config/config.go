@@ -127,6 +127,16 @@ type Config struct {
 	// router attaches to. Example: "websecure".
 	TraefikTTYEntryPoint string
 
+	// TraefikTTYCertResolver is the Traefik certificate-resolver name
+	// the TTY HTTP router uses to obtain a TLS cert (typically
+	// "letsencrypt" matching --certificatesresolvers.letsencrypt.* on
+	// Traefik's static config). Empty leaves the router with just
+	// `tls = true`, which makes Traefik serve its default self-signed
+	// cert — browser WebSocket clients refuse that, so unset is only
+	// useful for bring-your-own-cert deployments that ship a
+	// pre-matched default certificate for the TTY host.
+	TraefikTTYCertResolver string
+
 	// HeartbeatInterval is the default heartbeat cadence sent to every
 	// agent in the Welcome message. Clamped to [MinHeartbeatInterval,
 	// MaxHeartbeatInterval] in FromEnv.
@@ -137,12 +147,19 @@ type Config struct {
 }
 
 // FromEnv loads configuration from environment variables.
+//
+// rc3 note: the gateway previously read VALKEY_ADDR / VALKEY_PASSWORD /
+// VALKEY_DB / LOG_LEVEL unprefixed. Those are now GATEWAY_VALKEY_ADDR
+// / GATEWAY_VALKEY_PASSWORD / GATEWAY_VALKEY_DB / GATEWAY_LOG_LEVEL so
+// every gateway knob shares one namespace and nothing silently aliases
+// a global the way the old names could. The old names no longer work;
+// operators upgrading from rc2 must rename their .env entries.
 func FromEnv() *Config {
 	return &Config{
 		ListenAddr:                getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
-		ValkeyAddr:                getEnv("VALKEY_ADDR", "localhost:6379"),
-		ValkeyPassword:            getEnv("VALKEY_PASSWORD", ""),
-		ValkeyDB:                  getEnvInt("VALKEY_DB", 0),
+		ValkeyAddr:                getEnv("GATEWAY_VALKEY_ADDR", "localhost:6379"),
+		ValkeyPassword:            getEnv("GATEWAY_VALKEY_PASSWORD", ""),
+		ValkeyDB:                  getEnvInt("GATEWAY_VALKEY_DB", 0),
 		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
@@ -158,8 +175,9 @@ func FromEnv() *Config {
 		TraefikTTYHost:            getEnv("GATEWAY_TRAEFIK_TTY_HOST", ""),
 		TraefikTTYBackend:         getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
 		TraefikTTYEntryPoint:      getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", ""),
+		TraefikTTYCertResolver:    getEnv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", ""),
 		HeartbeatInterval:         getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
-		LogLevel:                  getEnv("LOG_LEVEL", "info"),
+		LogLevel:                  getEnv("GATEWAY_LOG_LEVEL", "info"),
 	}
 }
 

@@ -65,6 +65,17 @@ type TraefikRouteConfig struct {
 	// TTYEntryPoint is the HTTP entrypoint name, typically
 	// "websecure".
 	TTYEntryPoint string
+	// TTYCertResolver is the Traefik certificate resolver the per-
+	// replica TTY HTTP router should use to obtain its public TLS
+	// cert, e.g. "letsencrypt". Matches a resolver declared in
+	// Traefik's static config (`--certificatesresolvers.<name>.*`).
+	//
+	// Empty leaves the router with just `tls=true`, which makes
+	// Traefik serve its default self-signed certificate — browsers
+	// refuse that for WebSocket upgrades, so unset is only viable
+	// for bring-your-own-cert setups that ship a default cert
+	// pre-matched to TTYHost.
+	TTYCertResolver string
 	// RootKey is the Traefik Redis root-key prefix. Defaults to
 	// DefaultTraefikRootKey.
 	RootKey string
@@ -121,15 +132,29 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 	mtlsServerKey := fmt.Sprintf("%s/tcp/services/pm-mtls/loadbalancer/servers/%s/address", root, gatewayID)
 
 	// Per-replica HTTP router for TTY. Unique to this gateway.
+	//
+	// NB: for a Redis-KV-defined router, `tls` must be a nested map
+	// rather than the flat string "true". Writing both
+	// `<router>/tls` = "true" and `<router>/tls/certResolver` = "..."
+	// is invalid in Traefik's KV schema (the first key blocks the
+	// nested path). We therefore always publish nested TLS keys:
+	// `/tls/passthrough = false` stands in for the "TLS is on" bit,
+	// and `/tls/certResolver` is added when configured. This keeps
+	// browsers from seeing Traefik's default self-signed cert.
 	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
 	ttyRule := fmt.Sprintf("Host(`%s`) && PathPrefix(`/gw/%s`)", c.TTYHost, gatewayID)
 	perReplica := []struct{ key, value string }{
 		{mtlsServerKey, c.MTLSBackend},
 		{fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter), ttyRule},
 		{fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter), c.TTYEntryPoint},
-		{fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter), "true"},
+		{fmt.Sprintf("%s/http/routers/%s/tls/passthrough", root, ttyRouter), "false"},
 		{fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter), ttyRouter},
 		{fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter), c.TTYBackend},
+	}
+	if c.TTYCertResolver != "" {
+		perReplica = append(perReplica, struct{ key, value string }{
+			fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter), c.TTYCertResolver,
+		})
 	}
 
 	out := make([]struct{ key, value string }, 0, len(sharedMTLS)+len(perReplica))
@@ -142,6 +167,11 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 // replica — the ones safe to delete on shutdown without clobbering
 // other replicas' routes. Shared pm-mtls keys are NOT included; they
 // expire naturally via TTL once the last replica stops refreshing them.
+//
+// Always lists /tls/certResolver too, even when unset at publish time:
+// deleting a key that doesn't exist is a no-op, and listing it here
+// means an operator who re-launches without a resolver cleanly leaves
+// no orphaned key behind.
 func (c TraefikRouteConfig) perReplicaKeys(gatewayID string) []string {
 	root := c.rootKey()
 	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
@@ -149,7 +179,8 @@ func (c TraefikRouteConfig) perReplicaKeys(gatewayID string) []string {
 		fmt.Sprintf("%s/tcp/services/pm-mtls/loadbalancer/servers/%s/address", root, gatewayID),
 		fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter),
 		fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter),
-		fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter),
+		fmt.Sprintf("%s/http/routers/%s/tls/passthrough", root, ttyRouter),
+		fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter),
 		fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter),
 		fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter),
 	}

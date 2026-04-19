@@ -30,16 +30,16 @@ func TestPublishTraefikRoute_WritesExpectedKeys(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"traefik/tcp/routers/pm-mtls/rule":                                      "HostSNI(`gateway.example.com`)",
-		"traefik/tcp/routers/pm-mtls/entrypoints/0":                             "mtls",
-		"traefik/tcp/routers/pm-mtls/tls/passthrough":                           "true",
-		"traefik/tcp/routers/pm-mtls/service":                                   "pm-mtls",
-		"traefik/tcp/services/pm-mtls/loadbalancer/servers/gw-1/address":        "gateway-1.internal:8443",
-		"traefik/http/routers/pm-tty-gw-1/rule":                                 "Host(`tty.example.com`) && PathPrefix(`/gw/gw-1`)",
-		"traefik/http/routers/pm-tty-gw-1/entrypoints/0":                        "websecure",
-		"traefik/http/routers/pm-tty-gw-1/tls":                                  "true",
-		"traefik/http/routers/pm-tty-gw-1/service":                              "pm-tty-gw-1",
-		"traefik/http/services/pm-tty-gw-1/loadbalancer/servers/0/url":          "http://gateway-1.internal:8080",
+		"traefik/tcp/routers/pm-mtls/rule":                               "HostSNI(`gateway.example.com`)",
+		"traefik/tcp/routers/pm-mtls/entrypoints/0":                      "mtls",
+		"traefik/tcp/routers/pm-mtls/tls/passthrough":                    "true",
+		"traefik/tcp/routers/pm-mtls/service":                            "pm-mtls",
+		"traefik/tcp/services/pm-mtls/loadbalancer/servers/gw-1/address": "gateway-1.internal:8443",
+		"traefik/http/routers/pm-tty-gw-1/rule":                          "Host(`tty.example.com`) && PathPrefix(`/gw/gw-1`)",
+		"traefik/http/routers/pm-tty-gw-1/entrypoints/0":                 "websecure",
+		"traefik/http/routers/pm-tty-gw-1/tls/passthrough":               "false",
+		"traefik/http/routers/pm-tty-gw-1/service":                       "pm-tty-gw-1",
+		"traefik/http/services/pm-tty-gw-1/loadbalancer/servers/0/url":   "http://gateway-1.internal:8080",
 	}
 
 	for key, expected := range want {
@@ -51,6 +51,67 @@ func TestPublishTraefikRoute_WritesExpectedKeys(t *testing.T) {
 		if got != expected {
 			t.Errorf("key %q: got %q, want %q", key, got, expected)
 		}
+	}
+
+	// Without TTYCertResolver set, the nested certResolver key must NOT
+	// exist. The flat `/tls=true` string must also not exist — it would
+	// block the nested /tls/passthrough path in Traefik's KV schema.
+	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/certResolver"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("tls/certResolver should not be written when TTYCertResolver empty; got err=%v", err)
+	}
+	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("flat tls key must not be written (would block nested tls path); got err=%v", err)
+	}
+}
+
+func TestPublishTraefikRoute_CertResolverWritten(t *testing.T) {
+	backend := NewFakeBackend(nil)
+	r := New(backend, nil)
+	ctx := context.Background()
+
+	cfg := baseTraefikConfig()
+	cfg.TTYCertResolver = "letsencrypt"
+
+	if err := r.PublishTraefikRoute(ctx, "gw-1", cfg, 30*time.Second); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	got, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/certResolver")
+	if err != nil {
+		t.Fatalf("tls/certResolver missing: %v", err)
+	}
+	if got != "letsencrypt" {
+		t.Errorf("tls/certResolver got %q, want %q", got, "letsencrypt")
+	}
+
+	// Confirmation: /tls/passthrough=false is still written even when a
+	// cert resolver is in play. Both keys coexist under the same /tls
+	// prefix — this is the correct KV shape.
+	if got, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/passthrough"); err != nil || got != "false" {
+		t.Errorf("tls/passthrough got %q err=%v, want %q", got, err, "false")
+	}
+}
+
+func TestRevokeTraefikRoute_CleansCertResolver(t *testing.T) {
+	backend := NewFakeBackend(nil)
+	r := New(backend, nil)
+	ctx := context.Background()
+
+	cfg := baseTraefikConfig()
+	cfg.TTYCertResolver = "letsencrypt"
+
+	if err := r.PublishTraefikRoute(ctx, "gw-1", cfg, 30*time.Second); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := r.RevokeTraefikRoute(ctx, "gw-1", cfg); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/certResolver"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("tls/certResolver should be deleted after revoke, got err=%v", err)
+	}
+	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/passthrough"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("tls/passthrough should be deleted after revoke, got err=%v", err)
 	}
 }
 

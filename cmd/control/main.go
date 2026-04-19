@@ -267,7 +267,14 @@ func main() {
 	}, false)
 
 	// Initialize secret encryptor
-	encryptor, err := crypto.NewEncryptor(os.Getenv("PM_ENCRYPTION_KEY"))
+	//
+	// rc3 note: previously read unprefixed PM_ENCRYPTION_KEY /
+	// PM_ENCRYPTION_KEY_REQUIRED. Now namespaced as
+	// CONTROL_ENCRYPTION_KEY / CONTROL_ENCRYPTION_KEY_REQUIRED so all
+	// control-server knobs live under one prefix. Operators upgrading
+	// from rc2 must rename their .env entries — the old names are no
+	// longer read.
+	encryptor, err := crypto.NewEncryptor(os.Getenv("CONTROL_ENCRYPTION_KEY"))
 	if err != nil {
 		logger.Error("failed to initialize encryptor", "error", err)
 		os.Exit(1)
@@ -277,11 +284,11 @@ func main() {
 		// secrets-at-rest rely on this encryptor. Running without a
 		// key would silently degrade security in production. Operators
 		// who truly want unencrypted storage can set
-		// PM_ENCRYPTION_KEY_REQUIRED=false to opt in explicitly.
-		if os.Getenv("PM_ENCRYPTION_KEY_REQUIRED") == "false" {
-			logger.Warn("PM_ENCRYPTION_KEY not set and PM_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
+		// CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt in explicitly.
+		if os.Getenv("CONTROL_ENCRYPTION_KEY_REQUIRED") == "false" {
+			logger.Warn("CONTROL_ENCRYPTION_KEY not set and CONTROL_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
 		} else {
-			logger.Error("PM_ENCRYPTION_KEY is required (set PM_ENCRYPTION_KEY_REQUIRED=false to opt out)")
+			logger.Error("CONTROL_ENCRYPTION_KEY is required (set CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt out)")
 			os.Exit(1)
 		}
 	}
