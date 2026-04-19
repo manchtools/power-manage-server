@@ -35,6 +35,60 @@ func TestCreateAction_Shell(t *testing.T) {
 	assert.Equal(t, pm.ActionType_ACTION_TYPE_SHELL, resp.Msg.Action.Type)
 }
 
+// AdminPolicy custom_config carries the raw sudoers / doas.conf
+// fragment the admin wants rendered on the device. The proto pins a
+// `validate:"required_if=AccessLevel 3"` rule that refuses
+// ADMIN_ACCESS_LEVEL_CUSTOM with an empty custom_config — otherwise
+// the agent would end up rendering an empty policy file, which on
+// sudoers means "no rules" and on doas means the rule set silently
+// disappears. Pin the rejection here so a future refactor of Validate()
+// can't silently drop the guard.
+//
+// Syntax validation of the policy content itself lives on the agent
+// side (visudo -c / doas -C) — the server has no business parsing
+// either grammar, especially since the target distro's version of
+// sudo or doas may accept syntax the server's vendored parser
+// wouldn't. This test deliberately only covers the "empty-config"
+// rejection, which is a pure proto-level constraint.
+func TestCreateAction_AdminPolicy_CustomRequiresConfig(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), nil)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
+		Name: "Admin Policy CUSTOM with no config",
+		Type: pm.ActionType_ACTION_TYPE_ADMIN_POLICY,
+		Params: &pm.CreateActionRequest_AdminPolicy{
+			AdminPolicy: &pm.AdminPolicyParams{
+				AccessLevel:  pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_CUSTOM,
+				Users:        []string{"opsuser"},
+				CustomConfig: "", // intentionally empty — should be rejected
+			},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	// Sanity check the complementary path: CUSTOM + non-empty config
+	// passes validation, so the rule really is firing on empty-string
+	// and not on some unrelated precondition.
+	resp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
+		Name: "Admin Policy CUSTOM with config",
+		Type: pm.ActionType_ACTION_TYPE_ADMIN_POLICY,
+		Params: &pm.CreateActionRequest_AdminPolicy{
+			AdminPolicy: &pm.AdminPolicyParams{
+				AccessLevel:  pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_CUSTOM,
+				Users:        []string{"opsuser"},
+				CustomConfig: "{group} ALL=(ALL) NOPASSWD: /usr/bin/systemctl *",
+			},
+		},
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, pm.ActionType_ACTION_TYPE_ADMIN_POLICY, resp.Msg.Action.Type)
+}
+
 func TestCreateAction_DefaultTimeout(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), nil)

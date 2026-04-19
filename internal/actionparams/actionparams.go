@@ -33,10 +33,10 @@ func PopulateAction(action *pm.Action, actionType int32, paramsJSON []byte) {
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Shell{Shell: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var p pm.SystemdParams
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		var p pm.ServiceParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Systemd{Systemd: &p}
+			action.Params = &pm.Action_Service{Service: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_FILE:
 		var p pm.FileParams
@@ -78,20 +78,20 @@ func PopulateAction(action *pm.Action, actionType int32, paramsJSON []byte) {
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Sshd{Sshd: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_SUDO:
-		var p pm.SudoParams
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		var p pm.AdminPolicyParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Sudo{Sudo: &p}
+			action.Params = &pm.Action_AdminPolicy{AdminPolicy: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_LPS:
 		var p pm.LpsParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.Action_Lps{Lps: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_LUKS:
-		var p pm.LuksParams
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		var p pm.EncryptionParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.Action_Luks{Luks: &p}
+			action.Params = &pm.Action_Encryption{Encryption: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_WIFI:
 		var p pm.WifiParams
@@ -130,10 +130,10 @@ func PopulateManagedAction(action *pm.ManagedAction, actionType pm.ActionType, p
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Shell{Shell: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_SYSTEMD:
-		var p pm.SystemdParams
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		var p pm.ServiceParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Systemd{Systemd: &p}
+			action.Params = &pm.ManagedAction_Service{Service: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_FILE:
 		var p pm.FileParams
@@ -175,20 +175,20 @@ func PopulateManagedAction(action *pm.ManagedAction, actionType pm.ActionType, p
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Sshd{Sshd: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_SUDO:
-		var p pm.SudoParams
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		var p pm.AdminPolicyParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Sudo{Sudo: &p}
+			action.Params = &pm.ManagedAction_AdminPolicy{AdminPolicy: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_LPS:
 		var p pm.LpsParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
 			action.Params = &pm.ManagedAction_Lps{Lps: &p}
 		}
-	case pm.ActionType_ACTION_TYPE_LUKS:
-		var p pm.LuksParams
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		var p pm.EncryptionParams
 		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err == nil {
-			action.Params = &pm.ManagedAction_Luks{Luks: &p}
+			action.Params = &pm.ManagedAction_Encryption{Encryption: &p}
 		}
 	case pm.ActionType_ACTION_TYPE_WIFI:
 		var p pm.WifiParams

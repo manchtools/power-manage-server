@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.8.0
-	github.com/manchtools/power-manage/sdk v0.1.0
+	github.com/manchtools/power-manage/sdk v0.2.0
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.26.0
@@ -107,4 +107,4 @@ require (
 // whatever happens to be in a local ../sdk checkout. Developers who
 // want to iterate against a local SDK override this with a per-dev
 // go.work at their workspace root — see server/README.md for setup.
-replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.1.0
+replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.2.0

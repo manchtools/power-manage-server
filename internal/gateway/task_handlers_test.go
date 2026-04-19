@@ -44,11 +44,11 @@ func TestParseActionParams_ScriptRun(t *testing.T) {
 func TestParseActionParams_Systemd(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"unitName":"nginx.service","enable":true}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SYSTEMD), []byte(params))
+	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SERVICE), []byte(params))
 
-	require.NotNil(t, action.GetSystemd())
-	assert.Equal(t, "nginx.service", action.GetSystemd().UnitName)
-	assert.True(t, action.GetSystemd().Enable)
+	require.NotNil(t, action.GetService())
+	assert.Equal(t, "nginx.service", action.GetService().UnitName)
+	assert.True(t, action.GetService().Enable)
 }
 
 func TestParseActionParams_File(t *testing.T) {

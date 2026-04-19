@@ -13,7 +13,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
-func TestCreateAction_Luks(t *testing.T) {
+func TestCreateAction_Encryption(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), nil)
 
@@ -22,20 +22,20 @@ func TestCreateAction_Luks(t *testing.T) {
 
 	resp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "Encrypt Disk",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "initial-psk-secret",
 				RotationIntervalDays: 30,
 				MinWords:             5,
-				DeviceBoundKeyType:   pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_NONE,
+				DeviceBoundKeyType:   pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_NONE,
 			},
 		},
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Action.Id)
 	assert.Equal(t, "Encrypt Disk", resp.Msg.Action.Name)
-	assert.Equal(t, pm.ActionType_ACTION_TYPE_LUKS, resp.Msg.Action.Type)
+	assert.Equal(t, pm.ActionType_ACTION_TYPE_ENCRYPTION, resp.Msg.Action.Type)
 }
 
 func TestCreateAction_Luks_WithTPM(t *testing.T) {
@@ -47,26 +47,26 @@ func TestCreateAction_Luks_WithTPM(t *testing.T) {
 
 	resp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS with TPM",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "tpm-psk",
 				RotationIntervalDays: 90,
 				MinWords:             7,
-				DeviceBoundKeyType:   pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_TPM,
+				DeviceBoundKeyType:   pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_TPM,
 			},
 		},
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, pm.ActionType_ACTION_TYPE_LUKS, resp.Msg.Action.Type)
+	assert.Equal(t, pm.ActionType_ACTION_TYPE_ENCRYPTION, resp.Msg.Action.Type)
 
 	// Verify params round-trip
-	luks := resp.Msg.Action.GetLuks()
+	luks := resp.Msg.Action.GetEncryption()
 	require.NotNil(t, luks)
 	assert.Equal(t, "tpm-psk", luks.PresharedKey)
 	assert.Equal(t, int32(90), luks.RotationIntervalDays)
 	assert.Equal(t, int32(7), luks.MinWords)
-	assert.Equal(t, pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_TPM, luks.DeviceBoundKeyType)
+	assert.Equal(t, pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_TPM, luks.DeviceBoundKeyType)
 }
 
 func TestCreateAction_Luks_WithUserPassphrase(t *testing.T) {
@@ -78,13 +78,13 @@ func TestCreateAction_Luks_WithUserPassphrase(t *testing.T) {
 
 	resp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS User Passphrase",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:             "user-psk",
 				RotationIntervalDays:     60,
 				MinWords:                 5,
-				DeviceBoundKeyType:       pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_USER_PASSPHRASE,
+				DeviceBoundKeyType:       pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_USER_PASSPHRASE,
 				UserPassphraseMinLength:  20,
 				UserPassphraseComplexity: pm.LpsPasswordComplexity_LPS_PASSWORD_COMPLEXITY_COMPLEX,
 			},
@@ -92,9 +92,9 @@ func TestCreateAction_Luks_WithUserPassphrase(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	luks := resp.Msg.Action.GetLuks()
+	luks := resp.Msg.Action.GetEncryption()
 	require.NotNil(t, luks)
-	assert.Equal(t, pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_USER_PASSPHRASE, luks.DeviceBoundKeyType)
+	assert.Equal(t, pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_USER_PASSPHRASE, luks.DeviceBoundKeyType)
 	assert.Equal(t, int32(20), luks.UserPassphraseMinLength)
 	assert.Equal(t, pm.LpsPasswordComplexity_LPS_PASSWORD_COMPLEXITY_COMPLEX, luks.UserPassphraseComplexity)
 }
@@ -108,9 +108,9 @@ func TestCreateAction_Luks_GetAfterCreate(t *testing.T) {
 
 	createResp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS Get Test",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "get-test-psk",
 				RotationIntervalDays: 14,
 				MinWords:             4,
@@ -124,9 +124,9 @@ func TestCreateAction_Luks_GetAfterCreate(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, createResp.Msg.Action.Id, getResp.Msg.Action.Id)
-	assert.Equal(t, pm.ActionType_ACTION_TYPE_LUKS, getResp.Msg.Action.Type)
+	assert.Equal(t, pm.ActionType_ACTION_TYPE_ENCRYPTION, getResp.Msg.Action.Type)
 
-	luks := getResp.Msg.Action.GetLuks()
+	luks := getResp.Msg.Action.GetEncryption()
 	require.NotNil(t, luks)
 	assert.Equal(t, "get-test-psk", luks.PresharedKey)
 	assert.Equal(t, int32(14), luks.RotationIntervalDays)
@@ -142,13 +142,13 @@ func TestCreateAction_Luks_UpdateParams(t *testing.T) {
 
 	createResp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS Update Test",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "update-psk",
 				RotationIntervalDays: 30,
 				MinWords:             5,
-				DeviceBoundKeyType:   pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_NONE,
+				DeviceBoundKeyType:   pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_NONE,
 			},
 		},
 	}))
@@ -156,22 +156,22 @@ func TestCreateAction_Luks_UpdateParams(t *testing.T) {
 
 	updateResp, err := h.UpdateActionParams(ctx, connect.NewRequest(&pm.UpdateActionParamsRequest{
 		Id: createResp.Msg.Action.Id,
-		Params: &pm.UpdateActionParamsRequest_Luks{
-			Luks: &pm.LuksParams{
+		Params: &pm.UpdateActionParamsRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "update-psk",
 				RotationIntervalDays: 7,
 				MinWords:             8,
-				DeviceBoundKeyType:   pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_TPM,
+				DeviceBoundKeyType:   pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_TPM,
 			},
 		},
 	}))
 	require.NoError(t, err)
 
-	luks := updateResp.Msg.Action.GetLuks()
+	luks := updateResp.Msg.Action.GetEncryption()
 	require.NotNil(t, luks)
 	assert.Equal(t, int32(7), luks.RotationIntervalDays)
 	assert.Equal(t, int32(8), luks.MinWords)
-	assert.Equal(t, pm.LuksDeviceBoundKeyType_LUKS_DEVICE_BOUND_KEY_TYPE_TPM, luks.DeviceBoundKeyType)
+	assert.Equal(t, pm.EncryptionDeviceBoundKeyType_ENCRYPTION_DEVICE_BOUND_KEY_TYPE_TPM, luks.DeviceBoundKeyType)
 }
 
 func TestCreateAction_Luks_DeleteAction(t *testing.T) {
@@ -183,9 +183,9 @@ func TestCreateAction_Luks_DeleteAction(t *testing.T) {
 
 	createResp, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS Delete Test",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "delete-psk",
 				RotationIntervalDays: 30,
 				MinWords:             5,
@@ -215,9 +215,9 @@ func TestCreateAction_Luks_ListIncludesLuks(t *testing.T) {
 
 	_, err := h.CreateAction(ctx, connect.NewRequest(&pm.CreateActionRequest{
 		Name: "LUKS List Test",
-		Type: pm.ActionType_ACTION_TYPE_LUKS,
-		Params: &pm.CreateActionRequest_Luks{
-			Luks: &pm.LuksParams{
+		Type: pm.ActionType_ACTION_TYPE_ENCRYPTION,
+		Params: &pm.CreateActionRequest_Encryption{
+			Encryption: &pm.EncryptionParams{
 				PresharedKey:         "list-psk",
 				RotationIntervalDays: 30,
 				MinWords:             5,
@@ -231,7 +231,7 @@ func TestCreateAction_Luks_ListIncludesLuks(t *testing.T) {
 
 	found := false
 	for _, a := range resp.Msg.Actions {
-		if a.Name == "LUKS List Test" && a.Type == pm.ActionType_ACTION_TYPE_LUKS {
+		if a.Name == "LUKS List Test" && a.Type == pm.ActionType_ACTION_TYPE_ENCRYPTION {
 			found = true
 			break
 		}

@@ -821,12 +821,12 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
-	if pm.ActionType(action.ActionType) != pm.ActionType_ACTION_TYPE_LUKS {
-		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not a LUKS action")
+	if pm.ActionType(action.ActionType) != pm.ActionType_ACTION_TYPE_ENCRYPTION {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not an encryption action")
 	}
 
 	// Parse LUKS params to get complexity requirements
-	var luksParams pm.LuksParams
+	var luksParams pm.EncryptionParams
 	if len(action.Params) > 0 {
 		protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(action.Params, &luksParams)
 	}
