@@ -37,7 +37,7 @@ func TestPublishTraefikRoute_WritesExpectedKeys(t *testing.T) {
 		"traefik/tcp/services/pm-mtls/loadbalancer/servers/gw-1/address": "gateway-1.internal:8443",
 		"traefik/http/routers/pm-tty-gw-1/rule":                          "Host(`tty.example.com`) && PathPrefix(`/gw/gw-1`)",
 		"traefik/http/routers/pm-tty-gw-1/entrypoints/0":                 "websecure",
-		"traefik/http/routers/pm-tty-gw-1/tls/passthrough":               "false",
+		"traefik/http/routers/pm-tty-gw-1/tls":                           "true",
 		"traefik/http/routers/pm-tty-gw-1/service":                       "pm-tty-gw-1",
 		"traefik/http/services/pm-tty-gw-1/loadbalancer/servers/0/url":   "http://gateway-1.internal:8080",
 	}
@@ -53,18 +53,15 @@ func TestPublishTraefikRoute_WritesExpectedKeys(t *testing.T) {
 		}
 	}
 
-	// Without TTYCertResolver set, the nested certResolver key must NOT
-	// exist. The flat `/tls=true` string must also not exist — it would
-	// block the nested /tls/passthrough path in Traefik's KV schema.
+	// Without TTYCertResolver set, the BYO-cert path is active:
+	// only the flat /tls = "true" is written, never any nested
+	// /tls/* keys. Coexistence would break Traefik's KV parse.
 	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/certResolver"); !errors.Is(err, ErrNoGateway) {
-		t.Errorf("tls/certResolver should not be written when TTYCertResolver empty; got err=%v", err)
-	}
-	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls"); !errors.Is(err, ErrNoGateway) {
-		t.Errorf("flat tls key must not be written (would block nested tls path); got err=%v", err)
+		t.Errorf("tls/certResolver must not coexist with flat /tls; got err=%v", err)
 	}
 }
 
-func TestPublishTraefikRoute_CertResolverWritten(t *testing.T) {
+func TestPublishTraefikRoute_CertResolver_NestedOnly(t *testing.T) {
 	backend := NewFakeBackend(nil)
 	r := New(backend, nil)
 	ctx := context.Background()
@@ -84,22 +81,33 @@ func TestPublishTraefikRoute_CertResolverWritten(t *testing.T) {
 		t.Errorf("tls/certResolver got %q, want %q", got, "letsencrypt")
 	}
 
-	// Confirmation: /tls/passthrough=false is still written even when a
-	// cert resolver is in play. Both keys coexist under the same /tls
-	// prefix — this is the correct KV shape.
-	if got, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/passthrough"); err != nil || got != "false" {
-		t.Errorf("tls/passthrough got %q err=%v, want %q", got, err, "false")
+	// Critical invariant: the flat /tls string MUST NOT coexist with
+	// the nested certResolver key, because Traefik's KV walker treats
+	// the flat scalar as a leaf that blocks the nested subtree — the
+	// whole failure mode rc3 exists to fix.
+	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls"); !errors.Is(err, ErrNoGateway) {
+		t.Errorf("flat /tls key must not be written when TTYCertResolver is set; got err=%v", err)
 	}
 }
 
-func TestRevokeTraefikRoute_CleansCertResolver(t *testing.T) {
+func TestRevokeTraefikRoute_CleansBothTLSShapes(t *testing.T) {
 	backend := NewFakeBackend(nil)
 	r := New(backend, nil)
 	ctx := context.Background()
 
+	// Seed both shapes directly — simulates a replica that flipped
+	// between BYO-cert and certResolver across restarts, leaving one
+	// stale key behind.
+	ctxBg := context.Background()
+	if err := backend.Set(ctxBg, "traefik/http/routers/pm-tty-gw-1/tls", "true", 30*time.Second); err != nil {
+		t.Fatalf("seed flat /tls: %v", err)
+	}
+	if err := backend.Set(ctxBg, "traefik/http/routers/pm-tty-gw-1/tls/certResolver", "letsencrypt", 30*time.Second); err != nil {
+		t.Fatalf("seed nested certResolver: %v", err)
+	}
+
 	cfg := baseTraefikConfig()
 	cfg.TTYCertResolver = "letsencrypt"
-
 	if err := r.PublishTraefikRoute(ctx, "gw-1", cfg, 30*time.Second); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -107,11 +115,13 @@ func TestRevokeTraefikRoute_CleansCertResolver(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 
-	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/certResolver"); !errors.Is(err, ErrNoGateway) {
-		t.Errorf("tls/certResolver should be deleted after revoke, got err=%v", err)
-	}
-	if _, err := backend.Get(ctx, "traefik/http/routers/pm-tty-gw-1/tls/passthrough"); !errors.Is(err, ErrNoGateway) {
-		t.Errorf("tls/passthrough should be deleted after revoke, got err=%v", err)
+	for _, key := range []string{
+		"traefik/http/routers/pm-tty-gw-1/tls",
+		"traefik/http/routers/pm-tty-gw-1/tls/certResolver",
+	} {
+		if _, err := backend.Get(ctx, key); !errors.Is(err, ErrNoGateway) {
+			t.Errorf("key %q should be deleted after revoke, got err=%v", key, err)
+		}
 	}
 }
 

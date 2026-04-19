@@ -133,27 +133,43 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 
 	// Per-replica HTTP router for TTY. Unique to this gateway.
 	//
-	// NB: for a Redis-KV-defined router, `tls` must be a nested map
-	// rather than the flat string "true". Writing both
-	// `<router>/tls` = "true" and `<router>/tls/certResolver` = "..."
-	// is invalid in Traefik's KV schema (the first key blocks the
-	// nested path). We therefore always publish nested TLS keys:
-	// `/tls/passthrough = false` stands in for the "TLS is on" bit,
-	// and `/tls/certResolver` is added when configured. This keeps
-	// browsers from seeing Traefik's default self-signed cert.
+	// Traefik's Redis-KV provider has two mutually exclusive ways to
+	// spell "this HTTP router has TLS on":
+	//
+	//   a) flat:   <root>/http/routers/<r>/tls = "true"
+	//   b) nested: <root>/http/routers/<r>/tls/certResolver = "<name>"
+	//              (any key under /tls/ makes Traefik infer TLS on)
+	//
+	// The two shapes cannot coexist — Traefik's KV walker treats the
+	// flat string as a scalar leaf that blocks every nested /tls/*
+	// subkey underneath it, so a config that publishes both is
+	// silently rejected and the router falls back to no-TLS (which
+	// then fails TLS handshake on the websecure entrypoint). We
+	// therefore branch on TTYCertResolver and publish one shape or
+	// the other, never both:
+	//
+	//   * TTYCertResolver set (the normal path): write only the
+	//     nested certResolver key. This is the canonical shape in
+	//     Traefik's own docs for Redis-KV HTTP routers.
+	//   * TTYCertResolver empty (bring-your-own-cert setups): write
+	//     only the flat /tls = "true" so Traefik serves its static-
+	//     config default certificate.
 	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
 	ttyRule := fmt.Sprintf("Host(`%s`) && PathPrefix(`/gw/%s`)", c.TTYHost, gatewayID)
 	perReplica := []struct{ key, value string }{
 		{mtlsServerKey, c.MTLSBackend},
 		{fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter), ttyRule},
 		{fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter), c.TTYEntryPoint},
-		{fmt.Sprintf("%s/http/routers/%s/tls/passthrough", root, ttyRouter), "false"},
 		{fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter), ttyRouter},
 		{fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter), c.TTYBackend},
 	}
 	if c.TTYCertResolver != "" {
 		perReplica = append(perReplica, struct{ key, value string }{
 			fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter), c.TTYCertResolver,
+		})
+	} else {
+		perReplica = append(perReplica, struct{ key, value string }{
+			fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter), "true",
 		})
 	}
 
@@ -168,10 +184,11 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 // other replicas' routes. Shared pm-mtls keys are NOT included; they
 // expire naturally via TTL once the last replica stops refreshing them.
 //
-// Always lists /tls/certResolver too, even when unset at publish time:
-// deleting a key that doesn't exist is a no-op, and listing it here
-// means an operator who re-launches without a resolver cleanly leaves
-// no orphaned key behind.
+// Both TLS shapes (flat `/tls` and nested `/tls/certResolver`) are
+// always listed, regardless of which one PublishTraefikRoute wrote
+// this cycle: deleting a key that doesn't exist is a no-op, and
+// listing both means a replica that flipped between BYO-cert and
+// letsencrypt across restarts cleans up the stale shape on exit.
 func (c TraefikRouteConfig) perReplicaKeys(gatewayID string) []string {
 	root := c.rootKey()
 	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
@@ -179,7 +196,7 @@ func (c TraefikRouteConfig) perReplicaKeys(gatewayID string) []string {
 		fmt.Sprintf("%s/tcp/services/pm-mtls/loadbalancer/servers/%s/address", root, gatewayID),
 		fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter),
 		fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter),
-		fmt.Sprintf("%s/http/routers/%s/tls/passthrough", root, ttyRouter),
+		fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter),
 		fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter),
 		fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter),
 		fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter),
