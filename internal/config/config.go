@@ -72,6 +72,50 @@ type Config struct {
 	// Example: "https://gw-01.internal:8080"
 	InternalURL string
 
+	// Traefik self-registration (via Redis KV provider).
+	//
+	// When TraefikSelfRegister is true, the gateway publishes its own
+	// routing entries into the Traefik KV tree in Valkey, so scaling
+	// the gateway deployment (`docker compose up --scale gateway=N`,
+	// or adding replicas in k8s) works with zero operator touch per
+	// instance. Operators enable this by also pointing Traefik at the
+	// same Valkey instance via `--providers.redis`.
+	//
+	// All Traefik* fields below are required when TraefikSelfRegister
+	// is true; the gateway will refuse to start otherwise.
+	TraefikSelfRegister bool
+
+	// TraefikRootKey matches Traefik's `--providers.redis.rootkey`
+	// value. Defaults to "traefik" when empty.
+	TraefikRootKey string
+
+	// TraefikMTLSHost is the public HostSNI the shared TCP (passthrough)
+	// router matches for agent mTLS. Example: "gateway.example.com".
+	TraefikMTLSHost string
+
+	// TraefikMTLSBackend is this replica's internal agent-mTLS
+	// host:port reachable from Traefik. Example:
+	// "gateway-1.internal:8080".
+	TraefikMTLSBackend string
+
+	// TraefikMTLSEntryPoint is the Traefik static-config entrypoint
+	// the mTLS TCP router attaches to. Example: "mtls".
+	TraefikMTLSEntryPoint string
+
+	// TraefikTTYHost is the public Host header the per-replica HTTP
+	// router matches for TTY WebSocket traffic. Example:
+	// "tty.example.com". Each gateway gets path prefix /gw/<id>.
+	TraefikTTYHost string
+
+	// TraefikTTYBackend is this replica's internal TTY listener URL.
+	// Cleartext is fine — Traefik terminates the public TLS.
+	// Example: "http://gateway-1.internal:8443".
+	TraefikTTYBackend string
+
+	// TraefikTTYEntryPoint is the Traefik entrypoint the TTY HTTP
+	// router attaches to. Example: "websecure".
+	TraefikTTYEntryPoint string
+
 	// Logging
 	LogLevel string
 }
@@ -90,6 +134,14 @@ func FromEnv() *Config {
 		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
 		WebListenAddr:             getEnv("GATEWAY_WEB_LISTEN_ADDR", ""),
 		InternalURL:               getEnv("GATEWAY_INTERNAL_URL", ""),
+		TraefikSelfRegister:       getEnvBool("GATEWAY_TRAEFIK_SELF_REGISTER", false),
+		TraefikRootKey:            getEnv("GATEWAY_TRAEFIK_ROOT_KEY", ""),
+		TraefikMTLSHost:           getEnv("GATEWAY_TRAEFIK_MTLS_HOST", ""),
+		TraefikMTLSBackend:        getEnv("GATEWAY_TRAEFIK_MTLS_BACKEND", ""),
+		TraefikMTLSEntryPoint:     getEnv("GATEWAY_TRAEFIK_MTLS_ENTRYPOINT", ""),
+		TraefikTTYHost:            getEnv("GATEWAY_TRAEFIK_TTY_HOST", ""),
+		TraefikTTYBackend:         getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
+		TraefikTTYEntryPoint:      getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", ""),
 		LogLevel:                  getEnv("LOG_LEVEL", "info"),
 	}
 }
@@ -105,6 +157,15 @@ func getEnvInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if i, err := strconv.Atoi(value); err == nil {
 			return i
+		}
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if b, err := strconv.ParseBool(value); err == nil {
+			return b
 		}
 	}
 	return defaultValue

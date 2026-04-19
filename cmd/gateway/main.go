@@ -235,6 +235,110 @@ func main() {
 			"internal_url", cfg.InternalURL,
 		)
 	}
+
+	// Traefik Redis-KV self-registration. Opt-in; when enabled, every
+	// replica writes its own routing entry into the same Valkey
+	// instance Traefik watches via `--providers.redis`, so scaling the
+	// gateway deployment does not require hand-edited labels or per-
+	// replica public DNS entries. The shared pm-mtls TCP router is
+	// load-balanced across all replicas; each replica owns a unique
+	// /gw/<id> path prefix on the shared tty host for TTY routing.
+	if cfg.TraefikSelfRegister {
+		if gatewayReg == nil {
+			// Need a Valkey-backed registry. When PublicTerminalURLTemplate
+			// was empty we skipped the Valkey connection earlier; set one
+			// up here so Traefik self-reg still works in deployments that
+			// only want the routing layer (no terminal feature).
+			rdb := redis.NewClient(&redis.Options{
+				Addr:     cfg.ValkeyAddr,
+				Password: cfg.ValkeyPassword,
+				DB:       cfg.ValkeyDB,
+				Protocol: 2,
+			})
+			defer rdb.Close()
+			gatewayReg = registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "registry"))
+		}
+
+		// Auto-derive per-replica backend addresses when not set.
+		// In Compose / k8s, os.Hostname() returns the container name
+		// (pm-server-gateway-1, gateway-abc123, …), which resolves to
+		// that specific replica's IP inside the pm-internal network.
+		// The operator only has to set the public Host/EntryPoint
+		// values; replica identity is self-discovered.
+		mtlsBackend := cfg.TraefikMTLSBackend
+		ttyBackend := cfg.TraefikTTYBackend
+		if mtlsBackend == "" || ttyBackend == "" {
+			hostname, err := os.Hostname()
+			if err != nil || hostname == "" {
+				logger.Error("cannot auto-derive Traefik backends: os.Hostname failed", "error", err)
+				os.Exit(1)
+			}
+			if mtlsBackend == "" {
+				mtlsBackend = hostname + portOfListenAddr(cfg.ListenAddr)
+			}
+			if ttyBackend == "" && cfg.WebListenAddr != "" {
+				ttyBackend = "http://" + hostname + portOfListenAddr(cfg.WebListenAddr)
+			}
+		}
+
+		traefikCfg := registry.TraefikRouteConfig{
+			RootKey:        cfg.TraefikRootKey,
+			MTLSHost:       cfg.TraefikMTLSHost,
+			MTLSBackend:    mtlsBackend,
+			MTLSEntryPoint: cfg.TraefikMTLSEntryPoint,
+			TTYHost:        cfg.TraefikTTYHost,
+			TTYBackend:     ttyBackend,
+			TTYEntryPoint:  cfg.TraefikTTYEntryPoint,
+		}
+
+		if err := gatewayReg.PublishTraefikRoute(
+			context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+		); err != nil {
+			logger.Error("failed to publish Traefik routing config", "error", err)
+			os.Exit(1)
+		}
+
+		// Refresh on the same cadence as the gateway terminal URL and
+		// internal URL so all three keys share a lifecycle. Derive from
+		// shutdownCtx so the goroutine exits cleanly on SIGTERM.
+		traefikRefreshCtx, stopTraefikRefresh := context.WithCancel(shutdownCtx)
+		defer stopTraefikRefresh()
+		go func() {
+			ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if err := gatewayReg.PublishTraefikRoute(
+						context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+					); err != nil {
+						logger.Warn("failed to refresh Traefik routing config", "error", err)
+					}
+				case <-traefikRefreshCtx.Done():
+					return
+				}
+			}
+		}()
+
+		// Clean shutdown revokes only per-replica keys so other
+		// replicas' routes stay up. Uses a bounded context so a flaky
+		// Valkey can't stall the shutdown.
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := gatewayReg.RevokeTraefikRoute(cleanupCtx, gatewayID, traefikCfg); err != nil {
+				logger.Warn("failed to revoke Traefik routing config", "error", err)
+			}
+		}()
+
+		logger.Info("traefik self-registration enabled",
+			"gateway_id", gatewayID,
+			"mtls_host", cfg.TraefikMTLSHost,
+			"mtls_backend", cfg.TraefikMTLSBackend,
+			"tty_host", cfg.TraefikTTYHost,
+			"tty_backend", cfg.TraefikTTYBackend,
+		)
+	}
 	// Fail fast if BootstrapHost is set but we have no assignedHost
 	// (because PublicTerminalURLTemplate was empty). Without this
 	// guard, BootstrapRedirectMiddleware would panic on an empty
@@ -408,6 +512,21 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+// portOfListenAddr returns the port portion of a Go net.Listen style
+// address (":8080", "0.0.0.0:8080", "[::]:8080") formatted as
+// ":port" for concatenation with a hostname. Returns "" if the input
+// has no parseable port.
+func portOfListenAddr(addr string) string {
+	if addr == "" {
+		return ""
+	}
+	idx := strings.LastIndex(addr, ":")
+	if idx < 0 {
+		return ""
+	}
+	return addr[idx:]
 }
 
 // hostFromURL extracts the host (including port if present) from a

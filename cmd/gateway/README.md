@@ -59,12 +59,32 @@ The Gateway Server:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address |
+| `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address for the agent mTLS listener |
+| `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (empty disables the terminal feature) |
 | `VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
 | `VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
 | `VALKEY_DB` | `0` | Valkey/Redis database number |
 | `GATEWAY_CONTROL_URL` | `http://control:8081` | Control Server URL for Connect-RPC proxy |
+| `GATEWAY_ID` | (auto-ULID) | Stable gateway identifier; auto-generated per process when empty (required for replica scaling) |
+| `GATEWAY_INTERNAL_URL` | (empty) | mTLS URL the control server uses for admin fan-out RPCs |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+
+#### Traefik self-registration (Redis KV)
+
+When enabled, each gateway replica publishes its own routing entries into Traefik's Redis KV provider. This removes the need for per-replica Traefik labels in compose and lets `docker compose up --scale gateway=N` (or k8s replica sets) add instances with zero operator touch per replica. The shared mTLS TCP router is load-balanced across all replicas; each replica owns a `/gw/<id>` path on the TTY host for session-specific routing.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GATEWAY_TRAEFIK_SELF_REGISTER` | `false` | Enable self-registration. All of the other `GATEWAY_TRAEFIK_*` fields are required when true. |
+| `GATEWAY_TRAEFIK_ROOT_KEY` | `traefik` | Matches Traefik's `--providers.redis.rootkey`. |
+| `GATEWAY_TRAEFIK_MTLS_HOST` | — | Public `HostSNI` for agent mTLS, e.g. `gateway.example.com`. |
+| `GATEWAY_TRAEFIK_MTLS_BACKEND` | auto | Internal `host:port` for this replica's mTLS listener. Auto-derived from `os.Hostname()` + `GATEWAY_LISTEN_ADDR` when empty. |
+| `GATEWAY_TRAEFIK_MTLS_ENTRYPOINT` | — | Traefik entrypoint the TCP router binds to, e.g. `mtls`. |
+| `GATEWAY_TRAEFIK_TTY_HOST` | — | Public `Host` for TTY, e.g. `tty.example.com`. |
+| `GATEWAY_TRAEFIK_TTY_BACKEND` | auto | Internal URL for this replica's TTY listener. Auto-derived from `os.Hostname()` + `GATEWAY_WEB_LISTEN_ADDR` when empty. |
+| `GATEWAY_TRAEFIK_TTY_ENTRYPOINT` | — | Traefik entrypoint the TTY router binds to, e.g. `websecure`. |
+
+All Traefik keys share the registry TTL (45 s default) and are refreshed on the same cadence as the gateway terminal-URL entry. Graceful shutdown revokes only per-replica keys; shared router keys expire naturally when the last replica stops. See `server/deploy/compose.yml` for the matching Traefik command flags.
 
 ## Setup
 
