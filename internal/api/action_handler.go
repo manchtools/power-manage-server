@@ -31,11 +31,11 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	signer    ActionSigner
-	aqClient  *taskqueue.Client // nil during Phase 2 dual-write if Valkey is not configured
-	searchIdx *search.Index
+	taskQueueHolder  // aqClient is nil during Phase 2 dual-write if Valkey is not configured
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
+	signer ActionSigner
 }
 
 // NewActionHandler creates a new action handler.
@@ -45,16 +45,6 @@ func NewActionHandler(st *store.Store, logger *slog.Logger, signer ActionSigner)
 		logger: logger,
 		signer: signer,
 	}
-}
-
-// SetTaskQueueClient sets the Asynq client for dual-write dispatch.
-func (h *ActionHandler) SetTaskQueueClient(c *taskqueue.Client) {
-	h.aqClient = c
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *ActionHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // validateCreateActionParams validates params for CreateActionRequest using struct tags.

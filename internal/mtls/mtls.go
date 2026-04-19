@@ -88,12 +88,3 @@ func DeviceIDFromTLS(state *tls.ConnectionState) (string, error) {
 	return deviceID, nil
 }
 
-// CertificateFingerprint returns the SHA256 fingerprint of a certificate.
-func CertificateFingerprint(r *http.Request) (string, error) {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return "", errors.New("no client certificate")
-	}
-
-	cert := r.TLS.PeerCertificates[0]
-	return fmt.Sprintf("%x", cert.Raw), nil
-}

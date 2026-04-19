@@ -22,9 +22,9 @@ import (
 
 // UserGroupHandler handles user group management RPCs.
 type UserGroupHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewUserGroupHandler creates a new user group handler.
@@ -33,11 +33,6 @@ func NewUserGroupHandler(st *store.Store, logger *slog.Logger) *UserGroupHandler
 		store:  st,
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *UserGroupHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // enqueueUserGroupReindex enqueues a search index update for a user group.

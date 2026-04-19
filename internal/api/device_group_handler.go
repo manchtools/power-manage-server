@@ -19,9 +19,9 @@ import (
 
 // DeviceGroupHandler handles device group RPCs.
 type DeviceGroupHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewDeviceGroupHandler creates a new device group handler.
@@ -30,11 +30,6 @@ func NewDeviceGroupHandler(st *store.Store, logger *slog.Logger) *DeviceGroupHan
 		store:  st,
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *DeviceGroupHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // enqueueDeviceGroupReindex enqueues a search index update for a device group.

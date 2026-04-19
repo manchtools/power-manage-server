@@ -17,9 +17,9 @@ import (
 
 // ActionSetHandler handles action set RPCs.
 type ActionSetHandler struct {
-	store     *store.Store
-	logger    *slog.Logger
-	searchIdx *search.Index
+	searchIndexHolder
+	store  *store.Store
+	logger *slog.Logger
 }
 
 // NewActionSetHandler creates a new action set handler.
@@ -28,11 +28,6 @@ func NewActionSetHandler(st *store.Store, logger *slog.Logger) *ActionSetHandler
 		store:  st,
 		logger: logger,
 	}
-}
-
-// SetSearchIndex sets the search index for enqueuing index updates.
-func (h *ActionSetHandler) SetSearchIndex(idx *search.Index) {
-	h.searchIdx = idx
 }
 
 // CreateActionSet creates a new action set.

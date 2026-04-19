@@ -463,7 +463,7 @@ func main() {
 		}
 
 		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
-		if err := searchIdx.EnsureIndexes(context.Background()); err != nil {
+		if err := searchIdx.EnsureIndexes(ctx); err != nil {
 			logger.Warn("failed to ensure search indexes", "error", err)
 		}
 

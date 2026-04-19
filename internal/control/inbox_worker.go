@@ -676,12 +676,24 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			ActorID:   "dispatcher",
 		}
 		var appendErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		const maxAttempts = 3
+		for attempt := 0; attempt < maxAttempts; attempt++ {
 			if appendErr = w.store.AppendEvent(ctx, dispatchEvt); appendErr == nil {
 				break
 			}
 			logger.Warn("failed to append dispatch event, retrying",
 				"error", appendErr, "execution_id", exec.ID, "attempt", attempt+1)
+			// Exponential backoff between attempts (100ms, 200ms). Skip
+			// the wait on the final failure so callers see the error
+			// immediately. Respect ctx cancellation.
+			if attempt == maxAttempts-1 {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(100*(1<<attempt)) * time.Millisecond):
+			}
 		}
 		if appendErr != nil {
 			return fmt.Errorf("append dispatch event for %s after 3 attempts: %w", exec.ID, appendErr)
