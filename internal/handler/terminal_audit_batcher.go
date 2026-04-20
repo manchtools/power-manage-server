@@ -120,9 +120,36 @@ func (b *terminalAuditBatcher) wake() {
 	}
 }
 
+// flushCapped emits data as one or more chunks, each capped at
+// terminalAuditFlushBytes. A single Write that arrives already larger
+// than the cap (e.g. a paste arriving in one WebSocket frame) is
+// split across multiple events rather than producing one oversized
+// audit payload. Each sub-chunk gets its own monotonic sequence so
+// downstream consumers can reassemble in order.
+//
+// Called outside b.mu — the callback can block arbitrarily (network
+// I/O into the task queue) and must not hold the lock.
+func (b *terminalAuditBatcher) flushCapped(data []byte) {
+	for len(data) > 0 {
+		n := terminalAuditFlushBytes
+		if len(data) < n {
+			n = len(data)
+		}
+		chunk := data[:n]
+		data = data[n:]
+
+		b.mu.Lock()
+		b.seq++
+		seq := b.seq
+		b.mu.Unlock()
+		b.flush(chunk, seq)
+	}
+}
+
 // run is the single flush goroutine. It sleeps on `woken` and emits
-// one flush per wake cycle if the buffer is non-empty. Exits when
-// Close has been called AND the buffer is empty.
+// one or more chunks per wake cycle if the buffer is non-empty (see
+// flushCapped for size-cap splitting). Exits when Close has been
+// called AND the buffer is empty.
 func (b *terminalAuditBatcher) run() {
 	defer close(b.done)
 	for {
@@ -132,13 +159,7 @@ func (b *terminalAuditBatcher) run() {
 		b.buf = nil
 		closed := b.closed
 		b.mu.Unlock()
-		if len(data) > 0 {
-			b.mu.Lock()
-			b.seq++
-			seq := b.seq
-			b.mu.Unlock()
-			b.flush(data, seq)
-		}
+		b.flushCapped(data)
 		if closed {
 			// Drain: if Close raced with an in-flight Write, a
 			// final buffer may have been appended after we read
@@ -147,13 +168,7 @@ func (b *terminalAuditBatcher) run() {
 			tail := b.buf
 			b.buf = nil
 			b.mu.Unlock()
-			if len(tail) > 0 {
-				b.mu.Lock()
-				b.seq++
-				seq := b.seq
-				b.mu.Unlock()
-				b.flush(tail, seq)
-			}
+			b.flushCapped(tail)
 			return
 		}
 	}

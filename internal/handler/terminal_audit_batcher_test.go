@@ -75,6 +75,53 @@ func TestBatcher_SizeCapFlushesImmediately(t *testing.T) {
 	}
 }
 
+func TestBatcher_OversizedWriteSplitsAtCap(t *testing.T) {
+	r := &recordingFlush{}
+	b := newTerminalAuditBatcher(r.flush)
+	defer b.Close()
+
+	// Single Write larger than the cap — representative of a paste
+	// that arrives as one WebSocket frame. Must be split into
+	// cap-sized chunks so no single audit event exceeds the cap.
+	payload := bytes.Repeat([]byte("z"), terminalAuditFlushBytes*3+42)
+	b.Write(payload)
+
+	// Four flushes expected: three full caps + one 42-byte tail.
+	if !waitForChunks(r, 4, terminalAuditFlushDelay+terminalAuditFlushDelay/2) {
+		t.Fatalf("expected 4 chunks (3 full + 1 tail), timed out waiting")
+	}
+	chunks, seqs := r.snapshot()
+	if len(chunks) != 4 {
+		t.Fatalf("expected 4 chunks, got %d", len(chunks))
+	}
+
+	// Every chunk must respect the cap.
+	for i, c := range chunks {
+		if len(c) > terminalAuditFlushBytes {
+			t.Errorf("chunk %d is %d bytes, exceeds cap %d", i, len(c), terminalAuditFlushBytes)
+		}
+	}
+	// First three full, last is the tail remainder.
+	if got, want := len(chunks[3]), 42; got != want {
+		t.Errorf("tail chunk = %d bytes, want %d", got, want)
+	}
+	// Sequences must be strictly monotonic across the split, so
+	// downstream consumers can reassemble in order.
+	for i, seq := range seqs {
+		if seq != int64(i+1) {
+			t.Errorf("seqs[%d] = %d, want %d", i, seq, i+1)
+		}
+	}
+	// Round-trip: concatenated chunks equal the input.
+	var reassembled []byte
+	for _, c := range chunks {
+		reassembled = append(reassembled, c...)
+	}
+	if !bytes.Equal(reassembled, payload) {
+		t.Errorf("reassembled payload does not match input (len got %d, want %d)", len(reassembled), len(payload))
+	}
+}
+
 func TestBatcher_CoalescesKeystrokesIntoOneChunk(t *testing.T) {
 	r := &recordingFlush{}
 	b := newTerminalAuditBatcher(r.flush)

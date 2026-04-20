@@ -289,10 +289,11 @@ type resizeMessage struct {
 // to the agent. Binary frames become TerminalInput; text frames are
 // parsed as JSON control messages (currently only "resize").
 // Also tees stdin to the audit queue via a batcher that coalesces
-// per-keystroke frames into 4 KiB / 200 ms chunks — xterm.js sends
-// one WS frame per keystroke, so a raw one-event-per-frame tee
-// produces one audit event per character, flooding the event store
-// with opaque single-byte blobs.
+// per-keystroke frames into 4 KiB / 1 s chunks — xterm.js sends one
+// WS frame per keystroke, so a raw one-event-per-frame tee produces
+// one audit event per character, flooding the event store with
+// opaque single-byte blobs. See terminal_audit_batcher.go for the
+// exact tuning rationale.
 func (h *TerminalBridgeHandler) bridgeWSToAgent(
 	ctx context.Context,
 	ws *websocket.Conn,
