@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -248,15 +249,31 @@ func (h *TerminalBridgeHandler) waitForStarted(sess *connection.TerminalSession,
 				logger.Info("agent confirmed terminal session started")
 				return nil
 			case pm.TerminalSessionState_TERMINAL_SESSION_STATE_ERROR:
-				// rc6: agent-refused is not an internal error — the
-				// device's policy (tty.enabled=false, missing pm-tty
-				// user, etc.) actively rejected the session. Use
-				// StatusPolicyViolation (1008) so browser clients can
-				// distinguish "configuration/permission" from "bug"
-				// and decide whether to retry.
+				// Agent ERROR covers a mixed bag of failure paths —
+				// explicit policy refusals (tty.enabled=false, locked
+				// pm-tty user) alongside genuinely internal errors
+				// (pty allocation, config write, etc.). Default to
+				// StatusInternalError (1011, retry may help) and only
+				// lift to StatusPolicyViolation (1008, retry pointless)
+				// when the message is a known policy refusal. A false
+				// 1008 would make clients stop retrying a transient
+				// problem, which is the harm to avoid; a false 1011
+				// just means the client retries a policy refusal once
+				// and gets the same answer.
+				//
+				// Prefix matching is a stopgap — the proper fix is a
+				// structured refusal reason on TerminalStateChange.
+				// That requires a coordinated SDK+agent change, so it
+				// lives on the roadmap.
 				errMsg := sc.TerminalStateChange.Error
-				logger.Warn("agent rejected terminal session", "error", errMsg)
-				ws.Close(websocket.StatusPolicyViolation, "agent error: "+errMsg)
+				closeCode := websocket.StatusInternalError
+				logReason := "internal agent error"
+				if isTerminalPolicyRefusal(errMsg) {
+					closeCode = websocket.StatusPolicyViolation
+					logReason = "agent policy refusal"
+				}
+				logger.Warn(logReason, "error", errMsg, "close_code", closeCode)
+				ws.Close(closeCode, "agent error: "+errMsg)
 				return fmt.Errorf("agent error: %s", errMsg)
 			case pm.TerminalSessionState_TERMINAL_SESSION_STATE_EXITED:
 				logger.Warn("agent session exited before STARTED",
@@ -275,6 +292,31 @@ func (h *TerminalBridgeHandler) waitForStarted(sess *connection.TerminalSession,
 			return fmt.Errorf("terminal start timed out")
 		}
 	}
+}
+
+// isTerminalPolicyRefusal returns true iff the agent's error message
+// identifies a policy / configuration refusal that no retry will
+// recover from — so the bridge can close the WebSocket with
+// StatusPolicyViolation (1008) instead of the retryable
+// StatusInternalError (1011).
+//
+// Conservative by design: unknown messages fall back to the
+// retryable code. The strings here are matched against the exact
+// failTerminalStart messages emitted by the agent's terminal
+// handler; see agent/internal/handler/terminal.go.
+func isTerminalPolicyRefusal(errMsg string) bool {
+	switch {
+	case strings.HasPrefix(errMsg, "terminal sessions are disabled on this device"):
+		// agent tty.enabled=false — requires local root at the
+		// device console to flip. Retrying from the browser
+		// achieves nothing.
+		return true
+	case strings.HasPrefix(errMsg, "tty user ") && strings.HasSuffix(errMsg, " is disabled"):
+		// Locked pm-tty-* account. Operator has to unlock the
+		// account on the device before the session will open.
+		return true
+	}
+	return false
 }
 
 // resizeMessage is the JSON control message the web client sends in
