@@ -470,12 +470,7 @@ func main() {
 			manager, terminalSessions, controlProxy, aqClient,
 			logger.With("component", "terminal_bridge"),
 		)
-		webMux := http.NewServeMux()
-		webMux.Handle("/terminal", bridgeHandler)
-		webMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("ok"))
-		})
+		webMux := buildWebMux(gatewayID, bridgeHandler)
 
 		webServer = &http.Server{
 			Addr:              cfg.WebListenAddr,
