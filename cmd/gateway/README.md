@@ -60,7 +60,7 @@ The Gateway Server:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address for the agent mTLS listener |
-| `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (empty disables the terminal feature) |
+| `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (cleartext HTTP — public TLS is terminated at Traefik; empty disables the terminal feature) |
 | `GATEWAY_VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
 | `GATEWAY_VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
 | `GATEWAY_VALKEY_DB` | `0` | Valkey/Redis database number |

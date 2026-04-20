@@ -449,10 +449,21 @@ func main() {
 		}
 	}()
 
-	// Start web TLS server for terminal WebSocket (standard TLS, no
-	// mTLS — web browsers cannot present client certificates in
-	// WebSocket upgrades). The terminal bridge authenticates via
-	// session tokens validated against the control server.
+	// Start cleartext HTTP server for terminal WebSocket traffic.
+	//
+	// Public TLS termination happens at Traefik (Let's Encrypt via the
+	// TTY router's certResolver); Traefik then forwards cleartext HTTP
+	// to this listener over the internal docker/k8s network. Running a
+	// second TLS handshake on the gateway side served no real purpose
+	// (the cert was internally-signed and no browser client ever saw
+	// it directly) and caused rc3 failures when Traefik's backend URL
+	// was http:// — the listener rejected the cleartext bytes with
+	// "Client sent an HTTP request to an HTTPS server". Standard
+	// Traefik-behind-service pattern: terminate TLS at the edge,
+	// cleartext inside the private network.
+	//
+	// The terminal bridge authenticates via session tokens validated
+	// against the control server; no TLS client cert is needed.
 	var webServer *http.Server
 	if cfg.WebListenAddr != "" {
 		bridgeHandler := handler.NewTerminalBridgeHandler(
@@ -466,27 +477,18 @@ func main() {
 			w.Write([]byte("ok"))
 		})
 
-		// Standard TLS: same cert/key as the mTLS server, but no
-		// client cert requirement. The cert must include the *.gateway
-		// wildcard SAN so both per-gateway hostnames and the bootstrap
-		// hostname resolve to a valid cert.
-		webTLS := &tls.Config{
-			Certificates: []tls.Certificate{controlCert},
-			MinVersion:   tls.VersionTLS13,
-		}
 		webServer = &http.Server{
 			Addr:              cfg.WebListenAddr,
 			Handler:           middleware.RequestID(middleware.SecurityHeaders(webMux)),
-			TLSConfig:         webTLS,
-			ReadTimeout:       0,    // long-lived WebSocket
-			WriteTimeout:      0,    // long-lived WebSocket
+			ReadTimeout:       0, // long-lived WebSocket
+			WriteTimeout:      0, // long-lived WebSocket
 			IdleTimeout:       120 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			logger.Info("web server listening (terminal WebSocket)",
+			logger.Info("web server listening (terminal WebSocket, cleartext HTTP behind Traefik)",
 				"address", cfg.WebListenAddr)
-			if err := webServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			if err := webServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				logger.Error("web server error", "error", err)
 				stop()
 			}

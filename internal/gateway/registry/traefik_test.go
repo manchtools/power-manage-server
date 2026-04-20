@@ -144,6 +144,33 @@ func TestPublishTraefikRoute_CustomRootKey(t *testing.T) {
 	}
 }
 
+func TestPublishTraefikRoute_RejectsNonHTTPTTYBackend(t *testing.T) {
+	tests := []struct {
+		name    string
+		backend string
+		wantSub string
+	}{
+		{"https rejected", "https://gateway.internal:8443", `scheme must be "http"`},
+		{"ws rejected", "ws://gateway.internal:8443", `scheme must be "http"`},
+		{"bare host no scheme", "gateway.internal:8443", `scheme must be "http"`},
+		{"missing host", "http://", "has no host"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := New(NewFakeBackend(nil), nil)
+			cfg := baseTraefikConfig()
+			cfg.TTYBackend = tt.backend
+			err := r.PublishTraefikRoute(context.Background(), "gw-1", cfg, 30*time.Second)
+			if err == nil {
+				t.Fatalf("expected validation error for TTYBackend %q", tt.backend)
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error %q should contain %q", err.Error(), tt.wantSub)
+			}
+		})
+	}
+}
+
 func TestPublishTraefikRoute_RejectsEmptyFields(t *testing.T) {
 	r := New(NewFakeBackend(nil), nil)
 	ctx := context.Background()
