@@ -33,7 +33,7 @@ func TestBuildWebMux_RegistersBothTerminalPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 			if rec.Code != tt.wantCode {
@@ -50,7 +50,7 @@ func TestBuildWebMux_EmptyGatewayIDSkipsPrefixedRoute(t *testing.T) {
 	mux := buildWebMux("", stubHandler{})
 
 	// Unprefixed /terminal still works — single-gateway case.
-	req := httptest.NewRequest(http.MethodGet, "/terminal", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/terminal", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -58,7 +58,7 @@ func TestBuildWebMux_EmptyGatewayIDSkipsPrefixedRoute(t *testing.T) {
 	}
 
 	// No prefixed route registered — any /gw/... 404s.
-	req = httptest.NewRequest(http.MethodGet, "/gw/01KOTHERID/terminal", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/gw/01KOTHERID/terminal", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
