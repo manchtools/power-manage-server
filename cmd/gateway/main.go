@@ -198,9 +198,27 @@ func main() {
 		// Also publish the internal mTLS URL so the control server
 		// can discover this gateway for admin fan-out (List/Terminate
 		// terminal sessions). Uses the same TTL as the terminal URL.
-		if cfg.InternalURL != "" {
+		//
+		// rc6 note: auto-derive when GATEWAY_INTERNAL_URL is empty.
+		// The GatewayService RPC is mounted on the same mTLS listener
+		// that accepts agents, so the internal URL is just
+		// `https://<hostname><listen-port>`. Auto-derivation keeps the
+		// common case zero-config — without it, operators who don't
+		// set the env silently lose the admin list/terminate feature
+		// (Terminal Sessions page shows empty).
+		internalURL := cfg.InternalURL
+		if internalURL == "" {
+			hostname, err := os.Hostname()
+			if err != nil || hostname == "" {
+				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL: os.Hostname failed", "error", err)
+				os.Exit(1)
+			}
+			internalURL = "https://" + hostname + portOfListenAddr(cfg.ListenAddr)
+			logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
+		}
+		if internalURL != "" {
 			if err := gatewayReg.RegisterGatewayInternal(
-				context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+				context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
 			); err != nil {
 				logger.Warn("failed to register gateway internal URL", "error", err)
 			}
@@ -217,7 +235,7 @@ func main() {
 					select {
 					case <-ticker.C:
 						if err := gatewayReg.RegisterGatewayInternal(
-							context.Background(), gatewayID, cfg.InternalURL, registry.DefaultGatewayTTL,
+							context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
 						); err != nil {
 							logger.Warn("failed to refresh gateway internal URL", "error", err)
 						}
@@ -232,7 +250,7 @@ func main() {
 			"gateway_id", gatewayID,
 			"terminal_url", terminalURL,
 			"agent_redirect_host", assignedHost,
-			"internal_url", cfg.InternalURL,
+			"internal_url", internalURL,
 		)
 	}
 
@@ -471,6 +489,19 @@ func main() {
 			logger.With("component", "terminal_bridge"),
 		)
 		webMux := buildWebMux(gatewayID, bridgeHandler)
+		// Log the exact paths the mux will answer so operators can
+		// match them against PublicTerminalURLTemplate / Traefik rules
+		// without curl-probing. rc3-rc5 all stumbled on a path mismatch
+		// between the minted URL and the registered handler; this line
+		// makes that mismatch auditable at startup.
+		terminalPaths := []string{"/terminal"}
+		if gatewayID != "" {
+			terminalPaths = append(terminalPaths, fmt.Sprintf("/gw/%s/terminal", gatewayID))
+		}
+		logger.Info("terminal mux routes registered",
+			"paths", terminalPaths,
+			"health_path", "/health",
+		)
 
 		webServer = &http.Server{
 			Addr:              cfg.WebListenAddr,

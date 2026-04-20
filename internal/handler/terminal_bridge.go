@@ -248,9 +248,15 @@ func (h *TerminalBridgeHandler) waitForStarted(sess *connection.TerminalSession,
 				logger.Info("agent confirmed terminal session started")
 				return nil
 			case pm.TerminalSessionState_TERMINAL_SESSION_STATE_ERROR:
+				// rc6: agent-refused is not an internal error — the
+				// device's policy (tty.enabled=false, missing pm-tty
+				// user, etc.) actively rejected the session. Use
+				// StatusPolicyViolation (1008) so browser clients can
+				// distinguish "configuration/permission" from "bug"
+				// and decide whether to retry.
 				errMsg := sc.TerminalStateChange.Error
 				logger.Warn("agent rejected terminal session", "error", errMsg)
-				ws.Close(websocket.StatusInternalError, "agent error: "+errMsg)
+				ws.Close(websocket.StatusPolicyViolation, "agent error: "+errMsg)
 				return fmt.Errorf("agent error: %s", errMsg)
 			case pm.TerminalSessionState_TERMINAL_SESSION_STATE_EXITED:
 				logger.Warn("agent session exited before STARTED",
@@ -259,8 +265,13 @@ func (h *TerminalBridgeHandler) waitForStarted(sess *connection.TerminalSession,
 				return fmt.Errorf("session exited before STARTED")
 			}
 		case <-timer.C:
+			// rc6: timeout is transient — the agent's bidi stream may
+			// be briefly stalled (network hiccup, slow pty spawn).
+			// StatusTryAgainLater (1013) tells clients that a retry
+			// is likely to succeed, distinct from the hard-policy and
+			// internal-bug cases.
 			logger.Warn("timed out waiting for agent STARTED")
-			ws.Close(websocket.StatusInternalError, "terminal start timed out")
+			ws.Close(websocket.StatusTryAgainLater, "terminal start timed out")
 			return fmt.Errorf("terminal start timed out")
 		}
 	}
@@ -277,7 +288,11 @@ type resizeMessage struct {
 // bridgeWSToAgent reads frames from the WebSocket and forwards them
 // to the agent. Binary frames become TerminalInput; text frames are
 // parsed as JSON control messages (currently only "resize").
-// Also tees stdin to the audit queue.
+// Also tees stdin to the audit queue via a batcher that coalesces
+// per-keystroke frames into 4 KiB / 200 ms chunks — xterm.js sends
+// one WS frame per keystroke, so a raw one-event-per-frame tee
+// produces one audit event per character, flooding the event store
+// with opaque single-byte blobs.
 func (h *TerminalBridgeHandler) bridgeWSToAgent(
 	ctx context.Context,
 	ws *websocket.Conn,
@@ -285,7 +300,10 @@ func (h *TerminalBridgeHandler) bridgeWSToAgent(
 	validated *pm.InternalValidateTerminalTokenResponse,
 	logger *slog.Logger,
 ) error {
-	var auditSeq int64
+	audit := newTerminalAuditBatcher(func(data []byte, seq int64) {
+		h.enqueueAuditChunk(sess, validated, data, seq)
+	})
+	defer audit.Close()
 
 	for {
 		msgType, data, err := ws.Read(ctx)
@@ -310,9 +328,10 @@ func (h *TerminalBridgeHandler) bridgeWSToAgent(
 				return fmt.Errorf("send terminal input: %w", err)
 			}
 
-			// Audit tee: enqueue stdin to control:inbox.
-			auditSeq++
-			h.enqueueAuditChunk(sess, validated, data, auditSeq)
+			// Audit tee (batched): the batcher owns sequence and
+			// flush cadence, so the hot WS read path stays a bare
+			// append. See terminal_audit_batcher.go.
+			audit.Write(data)
 
 		case websocket.MessageText:
 			// JSON control message.
