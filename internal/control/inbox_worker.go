@@ -748,10 +748,24 @@ func stableExecutionID(deviceID, actionID, completedAt string) string {
 	return id.String()
 }
 
-// handleTerminalAuditChunk persists a terminal stdin chunk as an
-// audit event on the device stream. The gateway tees every binary
-// WebSocket frame (stdin) to this handler so the full input sequence
-// is reconstructable from the event store for forensics / replay.
+// handleTerminalAuditChunk appends a stdin chunk to the owning
+// session's row in terminal_sessions. The gateway tees batched
+// stdin to this handler (see terminalAuditBatcher in the gateway's
+// handler package); the batcher already coalesces keystrokes into
+// ≤4 KiB chunks before dispatch, so the hot path here is a single
+// indexed UPDATE per batch.
+//
+// rc7 rework note: prior versions emitted one TerminalInputChunk
+// event per chunk onto the device's audit stream. That polluted
+// the event log with one opaque base64 fragment per chunk and
+// left no way to group them for replay. terminal_sessions now
+// owns the stdin bytes; the lifecycle events
+// (TerminalSessionStarted / Stopped / Terminated) stay on the
+// audit stream as the user-visible audit markers.
+//
+// The sqlc query uses INSERT ... ON CONFLICT so a chunk arriving
+// before the lifecycle Started event still creates a valid row;
+// the Started handler's upsert then completes the metadata.
 func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Task) error {
 	var payload taskqueue.TerminalAuditChunkPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
@@ -764,17 +778,10 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		return nil
 	}
 
-	return w.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   payload.DeviceID,
-		EventType:  "TerminalInputChunk",
-		Data: map[string]any{
-			"session_id": payload.SessionID,
-			"user_id":    payload.UserID,
-			"data":       payload.Data,
-			"sequence":   payload.Sequence,
-		},
-		ActorType: "user",
-		ActorID:   payload.UserID,
+	return w.store.Queries().AppendTerminalSessionChunk(ctx, db.AppendTerminalSessionChunkParams{
+		SessionID: payload.SessionID,
+		DeviceID:  payload.DeviceID,
+		UserID:    payload.UserID,
+		Input:     payload.Data,
 	})
 }
