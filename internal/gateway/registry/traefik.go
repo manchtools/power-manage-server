@@ -107,11 +107,11 @@ func (c TraefikRouteConfig) validate() error {
 	}
 	// TTYBackend must be an http:// URL with a non-empty host. The
 	// gateway's TTY listener accepts cleartext HTTP only (public TLS
-	// is terminated at Traefik); publishing an https:// backend would
-	// silently produce a non-functional router — Traefik opens a
-	// cleartext TCP conn to the backend, the backend expects TLS,
-	// handshake fails, every WebSocket upgrade 400s. Fail fast at
-	// config time instead.
+	// is terminated at Traefik); publishing an https:// backend URL
+	// would silently produce a non-functional router — Traefik would
+	// initiate TLS to the backend, but the TTY listener speaks only
+	// cleartext HTTP, so the backend handshake fails and every
+	// WebSocket upgrade 400s. Fail fast at config time instead.
 	u, err := url.Parse(c.TTYBackend)
 	if err != nil {
 		return fmt.Errorf("registry: TTYBackend %q is not a valid URL: %w", c.TTYBackend, err)
