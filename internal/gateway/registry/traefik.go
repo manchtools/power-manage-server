@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -103,6 +104,23 @@ func (c TraefikRouteConfig) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("registry: TraefikRouteConfig missing fields: %s", strings.Join(missing, ", "))
+	}
+	// TTYBackend must be an http:// URL with a non-empty host. The
+	// gateway's TTY listener accepts cleartext HTTP only (public TLS
+	// is terminated at Traefik); publishing an https:// backend would
+	// silently produce a non-functional router — Traefik opens a
+	// cleartext TCP conn to the backend, the backend expects TLS,
+	// handshake fails, every WebSocket upgrade 400s. Fail fast at
+	// config time instead.
+	u, err := url.Parse(c.TTYBackend)
+	if err != nil {
+		return fmt.Errorf("registry: TTYBackend %q is not a valid URL: %w", c.TTYBackend, err)
+	}
+	if u.Scheme != "http" {
+		return fmt.Errorf("registry: TTYBackend scheme must be \"http\" (got %q); the TTY listener is cleartext behind Traefik", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("registry: TTYBackend %q has no host", c.TTYBackend)
 	}
 	return nil
 }
