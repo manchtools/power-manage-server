@@ -169,26 +169,6 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to persist terminal session event")
 	}
 
-	// rc7: upsert the terminal_sessions row so the session is visible
-	// in the history list from this point forward. Best-effort — the
-	// audit event is the authorization record of truth; the row is a
-	// derived view. If the upsert loses (e.g. transient DB hiccup),
-	// the first chunk's INSERT ... ON CONFLICT still creates the row,
-	// it just lands with empty tty_user until a later lifecycle event
-	// or a reconciliation job fills it in.
-	if err := h.store.Queries().UpsertTerminalSessionStart(ctx, generated.UpsertTerminalSessionStartParams{
-		SessionID: sessionID,
-		DeviceID:  req.Msg.DeviceId,
-		UserID:    user.ID,
-		TtyUser:   ttyUser,
-		StartedAt: time.Now(),
-		Cols:      int32(cols),
-		Rows:      int32(rows),
-	}); err != nil {
-		h.logger.Warn("failed to upsert terminal_sessions start row (event persisted; row will recover)",
-			"session_id", sessionID, "error", err)
-	}
-
 	// Derived state: mint the short-lived bearer token in Valkey.
 	// If this fails, the event is already persisted (recording the
 	// authorization intent), but the session is unusable. The client
@@ -206,6 +186,27 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 			"session_id", sessionID, "user_id", user.ID,
 			"device_id", req.Msg.DeviceId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to mint session token")
+	}
+
+	// rc7: upsert the terminal_sessions row so the session is visible
+	// in the history list from this point forward. Runs AFTER the
+	// mint so a mint failure doesn't leave a row for a session the
+	// client never uses. Best-effort — the audit event is the
+	// authorization record of truth; the row is a derived view. If
+	// the upsert loses (transient DB hiccup), the first chunk's
+	// INSERT ... ON CONFLICT still creates the row, it just lands
+	// with empty tty_user until a later lifecycle event fills it in.
+	if err := h.store.Queries().UpsertTerminalSessionStart(ctx, generated.UpsertTerminalSessionStartParams{
+		SessionID: sessionID,
+		DeviceID:  req.Msg.DeviceId,
+		UserID:    user.ID,
+		TtyUser:   ttyUser,
+		StartedAt: time.Now(),
+		Cols:      int32(cols),
+		Rows:      int32(rows),
+	}); err != nil {
+		h.logger.Warn("failed to upsert terminal_sessions start row (event persisted; row will recover)",
+			"session_id", sessionID, "error", err)
 	}
 
 	h.logger.Info("terminal session started",
@@ -332,14 +333,20 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to persist terminal session stop event")
 	}
 
-	// rc7: finalize the terminal_sessions row. Best-effort — see the
-	// upsert rationale in StartTerminal. No exit code at this call
+	// rc7: finalize the terminal_sessions row. Upsert form so a row
+	// materialises even if neither the Start upsert nor any chunk
+	// landed first — the session stays visible in history either way.
+	// Best-effort for the current goroutine: the event is the
+	// authorization record of truth; a DB hiccup here just means the
+	// history row is slightly incomplete. No exit code at this call
 	// site; the session ended on user request, not on shell exit.
 	now := time.Now()
 	if err := h.store.Queries().MarkTerminalSessionStopped(ctx, generated.MarkTerminalSessionStoppedParams{
 		SessionID: session.SessionID,
 		StoppedAt: &now,
 		ExitCode:  nil,
+		DeviceID:  session.DeviceID,
+		UserID:    userCtx.ID,
 	}); err != nil {
 		h.logger.Warn("failed to mark terminal_sessions row stopped (event persisted)",
 			"session_id", session.SessionID, "error", err)
@@ -524,14 +531,21 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 			"failed to persist terminal session termination event")
 	}
 
-	// rc7: finalize the terminal_sessions row with the forced-stop
-	// metadata. Best-effort — see the rationale in StartTerminal.
+	// rc7: finalize the terminal_sessions row. Upsert form so a row
+	// materialises even if neither the Start upsert nor any chunk
+	// landed first — see rationale in StopTerminal.
 	now := time.Now()
 	terminatedBy := actorID
+	// The terminated session may have been opened by a different
+	// user than the admin calling Terminate, so use the session's
+	// recorded UserID (validated via the token store), not actorID.
+	sessionUserID := session.UserID
 	if err := h.store.Queries().MarkTerminalSessionTerminated(ctx, generated.MarkTerminalSessionTerminatedParams{
 		SessionID:    session.SessionID,
 		StoppedAt:    &now,
 		TerminatedBy: &terminatedBy,
+		DeviceID:     session.DeviceID,
+		UserID:       sessionUserID,
 	}); err != nil {
 		h.logger.Warn("failed to mark terminal_sessions row terminated (event persisted)",
 			"session_id", session.SessionID, "error", err)

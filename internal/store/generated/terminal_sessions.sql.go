@@ -13,14 +13,31 @@ import (
 const appendTerminalSessionChunk = `-- name: AppendTerminalSessionChunk :exec
 INSERT INTO terminal_sessions (
     session_id, device_id, user_id, tty_user,
-    started_at, input, chunk_count
+    started_at,
+    input,
+    input_truncated,
+    last_sequence,
+    chunk_count
 ) VALUES (
     $1, $2, $3, '',
-    NOW(), $4, 1
+    NOW(),
+    -- Postgres has no LEFT(bytea, int); use substring for bytea
+    -- clamping. ` + "`" + `FROM 1 FOR n` + "`" + ` is 1-indexed inclusive.
+    substring($4::bytea FROM 1 FOR 8388608),
+    octet_length($4::bytea) > 8388608,
+    $5,
+    1
 )
 ON CONFLICT (session_id) DO UPDATE SET
-    input       = terminal_sessions.input || EXCLUDED.input,
-    chunk_count = terminal_sessions.chunk_count + 1
+    input = terminal_sessions.input
+          || substring(EXCLUDED.input FROM 1 FOR
+                       GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
+    input_truncated = terminal_sessions.input_truncated
+                   OR (octet_length(EXCLUDED.input)
+                       > GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
+    last_sequence = EXCLUDED.last_sequence,
+    chunk_count   = terminal_sessions.chunk_count + 1
+  WHERE EXCLUDED.last_sequence > terminal_sessions.last_sequence
 `
 
 type AppendTerminalSessionChunkParams struct {
@@ -28,20 +45,38 @@ type AppendTerminalSessionChunkParams struct {
 	DeviceID  string `json:"device_id"`
 	UserID    string `json:"user_id"`
 	Input     []byte `json:"input"`
+	Sequence  int64  `json:"sequence"`
 }
 
-// Called from the TerminalAuditChunk inbox handler. Uses
-// INSERT ... ON CONFLICT so a chunk arriving before the lifecycle
-// Start event still produces a row (minimally populated — the
-// Start event's later upsert completes it). device_id and user_id
-// are required columns; the chunk payload carries them, so the
-// placeholder insert is well-formed.
+// Called from the TerminalAuditChunk inbox handler.
+//
+// Two safety guards layered into a single statement:
+//
+//   - Sequence idempotency. The gateway's audit batcher stamps
+//     each chunk with a strictly-monotonic per-session sequence.
+//     We only apply the append when the incoming sequence is
+//     greater than the stored last_sequence, so a duplicate or
+//     reordered retry from Asynq is a no-op rather than a
+//     double-append that would corrupt `input` and inflate
+//     chunk_count.
+//
+//   - 8 MiB cap on `input`. The appended payload is clamped to
+//     the remaining capacity (LEFT(bytes, GREATEST(0, cap -
+//     current))) so a single oversized chunk still produces a
+//     well-formed row and flips input_truncated to mark the loss.
+//     Subsequent chunks clamp to zero bytes until retention or
+//     archive runs.
+//
+// The INSERT branch creates a placeholder when a chunk outruns
+// the lifecycle Started event. device_id and user_id come from
+// the chunk payload, so the placeholder is well-formed.
 func (q *Queries) AppendTerminalSessionChunk(ctx context.Context, arg AppendTerminalSessionChunkParams) error {
 	_, err := q.db.Exec(ctx, appendTerminalSessionChunk,
 		arg.SessionID,
 		arg.DeviceID,
 		arg.UserID,
 		arg.Input,
+		arg.Sequence,
 	)
 	return err
 }
@@ -60,7 +95,7 @@ func (q *Queries) DeleteTerminalSessionsBefore(ctx context.Context, startedAt ti
 }
 
 const getTerminalSession = `-- name: GetTerminalSession :one
-SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, chunk_count, cols, rows FROM terminal_sessions WHERE session_id = $1
+SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, input_truncated, last_sequence, chunk_count, cols, rows FROM terminal_sessions WHERE session_id = $1
 `
 
 // Full row fetch for the session-replay detail view.
@@ -78,6 +113,8 @@ func (q *Queries) GetTerminalSession(ctx context.Context, sessionID string) (Ter
 		&i.ExitCode,
 		&i.TerminatedBy,
 		&i.Input,
+		&i.InputTruncated,
+		&i.LastSequence,
 		&i.ChunkCount,
 		&i.Cols,
 		&i.Rows,
@@ -86,7 +123,7 @@ func (q *Queries) GetTerminalSession(ctx context.Context, sessionID string) (Ter
 }
 
 const listTerminalSessions = `-- name: ListTerminalSessions :many
-SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, chunk_count, cols, rows FROM terminal_sessions
+SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, input_truncated, last_sequence, chunk_count, cols, rows FROM terminal_sessions
 WHERE started_at >= $1 AND started_at < $2
 ORDER BY started_at DESC
 LIMIT $3 OFFSET $4
@@ -129,6 +166,8 @@ func (q *Queries) ListTerminalSessions(ctx context.Context, arg ListTerminalSess
 			&i.ExitCode,
 			&i.TerminatedBy,
 			&i.Input,
+			&i.InputTruncated,
+			&i.LastSequence,
 			&i.ChunkCount,
 			&i.Cols,
 			&i.Rows,
@@ -144,7 +183,7 @@ func (q *Queries) ListTerminalSessions(ctx context.Context, arg ListTerminalSess
 }
 
 const listTerminalSessionsByDevice = `-- name: ListTerminalSessionsByDevice :many
-SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, chunk_count, cols, rows FROM terminal_sessions
+SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, input_truncated, last_sequence, chunk_count, cols, rows FROM terminal_sessions
 WHERE device_id = $1
 ORDER BY started_at DESC
 LIMIT $2 OFFSET $3
@@ -177,6 +216,8 @@ func (q *Queries) ListTerminalSessionsByDevice(ctx context.Context, arg ListTerm
 			&i.ExitCode,
 			&i.TerminatedBy,
 			&i.Input,
+			&i.InputTruncated,
+			&i.LastSequence,
 			&i.ChunkCount,
 			&i.Cols,
 			&i.Rows,
@@ -192,7 +233,7 @@ func (q *Queries) ListTerminalSessionsByDevice(ctx context.Context, arg ListTerm
 }
 
 const listTerminalSessionsByUser = `-- name: ListTerminalSessionsByUser :many
-SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, chunk_count, cols, rows FROM terminal_sessions
+SELECT session_id, device_id, user_id, tty_user, started_at, stopped_at, exit_reason, exit_code, terminated_by, input, input_truncated, last_sequence, chunk_count, cols, rows FROM terminal_sessions
 WHERE user_id = $1
 ORDER BY started_at DESC
 LIMIT $2 OFFSET $3
@@ -225,6 +266,8 @@ func (q *Queries) ListTerminalSessionsByUser(ctx context.Context, arg ListTermin
 			&i.ExitCode,
 			&i.TerminatedBy,
 			&i.Input,
+			&i.InputTruncated,
+			&i.LastSequence,
 			&i.ChunkCount,
 			&i.Cols,
 			&i.Rows,
@@ -240,43 +283,75 @@ func (q *Queries) ListTerminalSessionsByUser(ctx context.Context, arg ListTermin
 }
 
 const markTerminalSessionStopped = `-- name: MarkTerminalSessionStopped :exec
-UPDATE terminal_sessions
-SET stopped_at  = $2,
+INSERT INTO terminal_sessions (
+    session_id, device_id, user_id, tty_user,
+    started_at, stopped_at, exit_reason, exit_code
+) VALUES (
+    $1, $4, $5, '',
+    NOW(), $2, 'stopped', $3
+)
+ON CONFLICT (session_id) DO UPDATE SET
+    stopped_at  = EXCLUDED.stopped_at,
     exit_reason = 'stopped',
-    exit_code   = $3
-WHERE session_id = $1
+    exit_code   = EXCLUDED.exit_code
 `
 
 type MarkTerminalSessionStoppedParams struct {
 	SessionID string     `json:"session_id"`
 	StoppedAt *time.Time `json:"stopped_at"`
 	ExitCode  *int32     `json:"exit_code"`
+	DeviceID  string     `json:"device_id"`
+	UserID    string     `json:"user_id"`
 }
 
 // TerminalSessionStopped — clean end of session from the bridge.
+// Upsert form so a missing row (Start upsert failed AND no chunks
+// arrived) is still created with the stop metadata, rather than
+// silently no-oping and losing the session from history.
 func (q *Queries) MarkTerminalSessionStopped(ctx context.Context, arg MarkTerminalSessionStoppedParams) error {
-	_, err := q.db.Exec(ctx, markTerminalSessionStopped, arg.SessionID, arg.StoppedAt, arg.ExitCode)
+	_, err := q.db.Exec(ctx, markTerminalSessionStopped,
+		arg.SessionID,
+		arg.StoppedAt,
+		arg.ExitCode,
+		arg.DeviceID,
+		arg.UserID,
+	)
 	return err
 }
 
 const markTerminalSessionTerminated = `-- name: MarkTerminalSessionTerminated :exec
-UPDATE terminal_sessions
-SET stopped_at    = $2,
+INSERT INTO terminal_sessions (
+    session_id, device_id, user_id, tty_user,
+    started_at, stopped_at, exit_reason, terminated_by
+) VALUES (
+    $1, $4, $5, '',
+    NOW(), $2, 'terminated', $3
+)
+ON CONFLICT (session_id) DO UPDATE SET
+    stopped_at    = EXCLUDED.stopped_at,
     exit_reason   = 'terminated',
-    terminated_by = $3
-WHERE session_id = $1
+    terminated_by = EXCLUDED.terminated_by
 `
 
 type MarkTerminalSessionTerminatedParams struct {
 	SessionID    string     `json:"session_id"`
 	StoppedAt    *time.Time `json:"stopped_at"`
 	TerminatedBy *string    `json:"terminated_by"`
+	DeviceID     string     `json:"device_id"`
+	UserID       string     `json:"user_id"`
 }
 
 // TerminalSessionTerminated — admin force-kill via
-// ControlService.TerminateTerminalSession.
+// ControlService.TerminateTerminalSession. Upsert form for the
+// same reason as MarkTerminalSessionStopped.
 func (q *Queries) MarkTerminalSessionTerminated(ctx context.Context, arg MarkTerminalSessionTerminatedParams) error {
-	_, err := q.db.Exec(ctx, markTerminalSessionTerminated, arg.SessionID, arg.StoppedAt, arg.TerminatedBy)
+	_, err := q.db.Exec(ctx, markTerminalSessionTerminated,
+		arg.SessionID,
+		arg.StoppedAt,
+		arg.TerminatedBy,
+		arg.DeviceID,
+		arg.UserID,
+	)
 	return err
 }
 
@@ -312,6 +387,17 @@ type UpsertTerminalSessionStartParams struct {
 // the full rationale — in short, this table replaces the per-chunk
 // TerminalInputChunk events on the audit stream. Lifecycle events
 // still exist; only the bulk stdin payload moves here.
+//
+// Invariants enforced across these queries:
+//
+//  1. Idempotent. Any upsert is safe to call on a row that
+//     already exists; it preserves data it did not explicitly set.
+//  2. Bounded. `input` is capped at 8 MiB (octet_length). Appends
+//     past the cap clamp the written bytes and flip input_truncated.
+//  3. Ordered. Chunk appends are guarded by last_sequence so
+//     duplicate or out-of-order retries do not corrupt `input`
+//     or stutter chunk_count.
+//
 // Called from the TerminalSessionStarted inbox handler. The INSERT
 // is idempotent per session_id because a TerminalAuditChunk task
 // can race ahead of the lifecycle event on a busy inbox — the chunk

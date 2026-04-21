@@ -397,19 +397,21 @@ type ServerSettingsProjection struct {
 }
 
 type TerminalSession struct {
-	SessionID    string     `json:"session_id"`
-	DeviceID     string     `json:"device_id"`
-	UserID       string     `json:"user_id"`
-	TtyUser      string     `json:"tty_user"`
-	StartedAt    time.Time  `json:"started_at"`
-	StoppedAt    *time.Time `json:"stopped_at"`
-	ExitReason   *string    `json:"exit_reason"`
-	ExitCode     *int32     `json:"exit_code"`
-	TerminatedBy *string    `json:"terminated_by"`
-	Input        []byte     `json:"input"`
-	ChunkCount   int32      `json:"chunk_count"`
-	Cols         int32      `json:"cols"`
-	Rows         int32      `json:"rows"`
+	SessionID      string     `json:"session_id"`
+	DeviceID       string     `json:"device_id"`
+	UserID         string     `json:"user_id"`
+	TtyUser        string     `json:"tty_user"`
+	StartedAt      time.Time  `json:"started_at"`
+	StoppedAt      *time.Time `json:"stopped_at"`
+	ExitReason     *string    `json:"exit_reason"`
+	ExitCode       *int32     `json:"exit_code"`
+	TerminatedBy   *string    `json:"terminated_by"`
+	Input          []byte     `json:"input"`
+	InputTruncated bool       `json:"input_truncated"`
+	LastSequence   int64      `json:"last_sequence"`
+	ChunkCount     int32      `json:"chunk_count"`
+	Cols           int32      `json:"cols"`
+	Rows           int32      `json:"rows"`
 }
 
 type TokensProjection struct {

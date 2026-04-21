@@ -783,5 +783,13 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		DeviceID:  payload.DeviceID,
 		UserID:    payload.UserID,
 		Input:     payload.Data,
+		// Sequence guards against duplicate / out-of-order retries
+		// from Asynq. The gateway's audit batcher stamps each chunk
+		// with a strictly-monotonic per-session counter; the query
+		// only applies the append when the incoming sequence
+		// strictly exceeds the stored last_sequence, so a
+		// redelivered chunk is a no-op rather than a corrupting
+		// double-append.
+		Sequence: payload.Sequence,
 	})
 }

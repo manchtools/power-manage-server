@@ -2,6 +2,16 @@
 -- the full rationale — in short, this table replaces the per-chunk
 -- TerminalInputChunk events on the audit stream. Lifecycle events
 -- still exist; only the bulk stdin payload moves here.
+--
+-- Invariants enforced across these queries:
+--
+--   1. Idempotent. Any upsert is safe to call on a row that
+--      already exists; it preserves data it did not explicitly set.
+--   2. Bounded. `input` is capped at 8 MiB (octet_length). Appends
+--      past the cap clamp the written bytes and flip input_truncated.
+--   3. Ordered. Chunk appends are guarded by last_sequence so
+--      duplicate or out-of-order retries do not corrupt `input`
+--      or stutter chunk_count.
 
 -- name: UpsertTerminalSessionStart :exec
 -- Called from the TerminalSessionStarted inbox handler. The INSERT
@@ -26,39 +36,88 @@ ON CONFLICT (session_id) DO UPDATE SET
     rows       = EXCLUDED.rows;
 
 -- name: AppendTerminalSessionChunk :exec
--- Called from the TerminalAuditChunk inbox handler. Uses
--- INSERT ... ON CONFLICT so a chunk arriving before the lifecycle
--- Start event still produces a row (minimally populated — the
--- Start event's later upsert completes it). device_id and user_id
--- are required columns; the chunk payload carries them, so the
--- placeholder insert is well-formed.
+-- Called from the TerminalAuditChunk inbox handler.
+--
+-- Two safety guards layered into a single statement:
+--
+--   * Sequence idempotency. The gateway's audit batcher stamps
+--     each chunk with a strictly-monotonic per-session sequence.
+--     We only apply the append when the incoming sequence is
+--     greater than the stored last_sequence, so a duplicate or
+--     reordered retry from Asynq is a no-op rather than a
+--     double-append that would corrupt `input` and inflate
+--     chunk_count.
+--
+--   * 8 MiB cap on `input`. The appended payload is clamped to
+--     the remaining capacity (LEFT(bytes, GREATEST(0, cap -
+--     current))) so a single oversized chunk still produces a
+--     well-formed row and flips input_truncated to mark the loss.
+--     Subsequent chunks clamp to zero bytes until retention or
+--     archive runs.
+--
+-- The INSERT branch creates a placeholder when a chunk outruns
+-- the lifecycle Started event. device_id and user_id come from
+-- the chunk payload, so the placeholder is well-formed.
 INSERT INTO terminal_sessions (
     session_id, device_id, user_id, tty_user,
-    started_at, input, chunk_count
+    started_at,
+    input,
+    input_truncated,
+    last_sequence,
+    chunk_count
 ) VALUES (
-    $1, $2, $3, '',
-    NOW(), $4, 1
+    sqlc.arg(session_id), sqlc.arg(device_id), sqlc.arg(user_id), '',
+    NOW(),
+    -- Postgres has no LEFT(bytea, int); use substring for bytea
+    -- clamping. `FROM 1 FOR n` is 1-indexed inclusive.
+    substring(sqlc.arg(input)::bytea FROM 1 FOR 8388608),
+    octet_length(sqlc.arg(input)::bytea) > 8388608,
+    sqlc.arg(sequence),
+    1
 )
 ON CONFLICT (session_id) DO UPDATE SET
-    input       = terminal_sessions.input || EXCLUDED.input,
-    chunk_count = terminal_sessions.chunk_count + 1;
+    input = terminal_sessions.input
+          || substring(EXCLUDED.input FROM 1 FOR
+                       GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
+    input_truncated = terminal_sessions.input_truncated
+                   OR (octet_length(EXCLUDED.input)
+                       > GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
+    last_sequence = EXCLUDED.last_sequence,
+    chunk_count   = terminal_sessions.chunk_count + 1
+  WHERE EXCLUDED.last_sequence > terminal_sessions.last_sequence;
 
 -- name: MarkTerminalSessionStopped :exec
 -- TerminalSessionStopped — clean end of session from the bridge.
-UPDATE terminal_sessions
-SET stopped_at  = $2,
+-- Upsert form so a missing row (Start upsert failed AND no chunks
+-- arrived) is still created with the stop metadata, rather than
+-- silently no-oping and losing the session from history.
+INSERT INTO terminal_sessions (
+    session_id, device_id, user_id, tty_user,
+    started_at, stopped_at, exit_reason, exit_code
+) VALUES (
+    $1, $4, $5, '',
+    NOW(), $2, 'stopped', $3
+)
+ON CONFLICT (session_id) DO UPDATE SET
+    stopped_at  = EXCLUDED.stopped_at,
     exit_reason = 'stopped',
-    exit_code   = $3
-WHERE session_id = $1;
+    exit_code   = EXCLUDED.exit_code;
 
 -- name: MarkTerminalSessionTerminated :exec
 -- TerminalSessionTerminated — admin force-kill via
--- ControlService.TerminateTerminalSession.
-UPDATE terminal_sessions
-SET stopped_at    = $2,
+-- ControlService.TerminateTerminalSession. Upsert form for the
+-- same reason as MarkTerminalSessionStopped.
+INSERT INTO terminal_sessions (
+    session_id, device_id, user_id, tty_user,
+    started_at, stopped_at, exit_reason, terminated_by
+) VALUES (
+    $1, $4, $5, '',
+    NOW(), $2, 'terminated', $3
+)
+ON CONFLICT (session_id) DO UPDATE SET
+    stopped_at    = EXCLUDED.stopped_at,
     exit_reason   = 'terminated',
-    terminated_by = $3
-WHERE session_id = $1;
+    terminated_by = EXCLUDED.terminated_by;
 
 -- name: GetTerminalSession :one
 -- Full row fetch for the session-replay detail view.

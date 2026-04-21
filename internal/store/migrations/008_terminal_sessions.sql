@@ -18,19 +18,33 @@
 -- Retention is a plain DELETE on this table — no cross-table
 -- orchestration with the event store required.
 CREATE TABLE terminal_sessions (
-    session_id    TEXT PRIMARY KEY,
-    device_id     TEXT NOT NULL,
-    user_id       TEXT NOT NULL,
-    tty_user      TEXT NOT NULL,
-    started_at    TIMESTAMPTZ NOT NULL,
-    stopped_at    TIMESTAMPTZ,
-    exit_reason   TEXT,
-    exit_code     INTEGER,
-    terminated_by TEXT,
-    input         BYTEA NOT NULL DEFAULT '\x'::bytea,
-    chunk_count   INTEGER NOT NULL DEFAULT 0,
-    cols          INTEGER NOT NULL DEFAULT 0,
-    rows          INTEGER NOT NULL DEFAULT 0
+    session_id      TEXT PRIMARY KEY,
+    device_id       TEXT NOT NULL,
+    user_id         TEXT NOT NULL,
+    tty_user        TEXT NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL,
+    stopped_at      TIMESTAMPTZ,
+    exit_reason     TEXT,
+    exit_code       INTEGER,
+    terminated_by   TEXT,
+    input           BYTEA NOT NULL DEFAULT '\x'::bytea,
+    -- input_truncated flips true the first time an append would
+    -- have exceeded the 8 MiB cap. Further appends after truncation
+    -- clamp the written bytes (or drop them entirely once the cap
+    -- is reached). 8 MiB is generous for human shell sessions
+    -- (several hours of interactive work) and bounds pathological
+    -- or malicious flooders.
+    input_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+    -- last_sequence is the highest per-session sequence number
+    -- accepted into `input` so far. The append query guards on
+    -- EXCLUDED.last_sequence > terminal_sessions.last_sequence so
+    -- duplicate or out-of-order Asynq retries don't double-append
+    -- or stutter chunk_count. The gateway's audit batcher emits
+    -- strictly monotonic sequences per session.
+    last_sequence   BIGINT NOT NULL DEFAULT 0,
+    chunk_count     INTEGER NOT NULL DEFAULT 0,
+    cols            INTEGER NOT NULL DEFAULT 0,
+    rows            INTEGER NOT NULL DEFAULT 0
 );
 
 -- Indexes sized for the two UI query shapes:
