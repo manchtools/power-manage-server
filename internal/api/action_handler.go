@@ -863,6 +863,35 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		eventData["action_id"] = *actionID
 	}
 
+	// Sign the dispatch BEFORE writing the ExecutionCreated event.
+	//
+	// Previously the sequence was:  appendEvent → sign → enqueue.
+	// Any failure after the event-write (sign fail, enqueue fail)
+	// left an execution row in the DB that no agent task would ever
+	// deliver — a zombie "pending forever" the operator had to cancel
+	// by hand. Signing doesn't depend on the row existing (it hashes
+	// `id`, `actionType`, `paramsJSON`), so we can fail fast here
+	// before touching the DB.
+	//
+	// Nil signer is a wiring bug (main.go passes the real internal/ca
+	// signer; tests pass NoOpSigner). Fail-closed to avoid silently
+	// enqueueing unsigned tasks the agent would drop on receipt.
+	var paramsJSON []byte
+	if h.aqClient != nil {
+		if h.signer == nil {
+			h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
+		}
+		paramsJSON, _ = json.Marshal(params)
+		sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+		if signErr != nil {
+			h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
+		}
+		signature = sig
+		paramsCanonical = paramsJSON
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
@@ -874,31 +903,11 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	// Dispatch action to device via Asynq task queue
+	// Dispatch action to device via Asynq task queue. The row exists
+	// now; if the enqueue fails we MUST transition it to a terminal
+	// state so the projection reflects reality. Silently returning
+	// success used to leave the row as `pending` indefinitely.
 	if h.aqClient != nil {
-		paramsJSON, _ := json.Marshal(params)
-
-		// Always re-sign with the execution ID — the agent verifies
-		// against the received action ID, which is the execution ID
-		// for dispatched actions. Fail-closed: enqueuing an unsigned
-		// dispatch means the agent drops the task on arrival, so the
-		// execution-record we just wrote turns into an unreachable
-		// "pending forever" state until the user cancels it. Nil
-		// signer is a wiring bug (production wires the real CA;
-		// tests pass NoOpSigner) — refuse the dispatch instead of
-		// silently emitting an unsigned task.
-		if h.signer == nil {
-			h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
-		}
-		sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
-		if signErr != nil {
-			h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
-		}
-		signature = sig
-		paramsCanonical = paramsJSON
-
 		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 			ExecutionID:     id,
 			ActionType:      int32(actionType),
@@ -908,7 +917,28 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			Signature:       signature,
 			ParamsCanonical: paramsCanonical,
 		}, asynq.MaxRetry(5)); err != nil {
-			h.logger.Warn("failed to enqueue action dispatch", "error", err, "execution_id", id)
+			h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
+				"error", err, "execution_id", id)
+			// Append a compensating ExecutionFailed event so the row
+			// moves to a terminal state the operator can act on.
+			// Best-effort: a failure here is logged but we still return
+			// the enqueue error to the caller so they know the dispatch
+			// did not reach the device.
+			if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
+				StreamType: "execution",
+				StreamID:   id,
+				EventType:  "ExecutionFailed",
+				Data: map[string]any{
+					"error":        fmt.Sprintf("dispatch enqueue failed: %v", err),
+					"completed_at": nil, // projector falls back to event.occurred_at
+				},
+				ActorType: "system",
+				ActorID:   "system",
+			}, "failed to append ExecutionFailed compensating event"); failErr != nil {
+				h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
+					"execution_id", id, "error", failErr)
+			}
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue action dispatch")
 		}
 	}
 
