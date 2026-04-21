@@ -91,6 +91,13 @@ ON CONFLICT (session_id) DO UPDATE SET
 -- Upsert form so a missing row (Start upsert failed AND no chunks
 -- arrived) is still created with the stop metadata, rather than
 -- silently no-oping and losing the session from history.
+--
+-- First-finalizer-wins: the ON CONFLICT update only applies when
+-- exit_reason is still NULL, so if admin TerminateTerminalSession
+-- ran first and the bridge's delayed Stop event catches up later,
+-- the Stop does NOT overwrite exit_reason='terminated' or leave a
+-- stale terminated_by next to exit_reason='stopped'. The audit
+-- record reflects what actually ended the session.
 INSERT INTO terminal_sessions (
     session_id, device_id, user_id, tty_user,
     started_at, stopped_at, exit_reason, exit_code
@@ -101,12 +108,16 @@ INSERT INTO terminal_sessions (
 ON CONFLICT (session_id) DO UPDATE SET
     stopped_at  = EXCLUDED.stopped_at,
     exit_reason = 'stopped',
-    exit_code   = EXCLUDED.exit_code;
+    exit_code   = EXCLUDED.exit_code
+  WHERE terminal_sessions.exit_reason IS NULL;
 
 -- name: MarkTerminalSessionTerminated :exec
 -- TerminalSessionTerminated — admin force-kill via
 -- ControlService.TerminateTerminalSession. Upsert form for the
--- same reason as MarkTerminalSessionStopped.
+-- same reason as MarkTerminalSessionStopped, with the same
+-- first-finalizer-wins guard — if the bridge already emitted a
+-- graceful Stop event, a subsequent admin Terminate does not
+-- clobber exit_code or flip exit_reason.
 INSERT INTO terminal_sessions (
     session_id, device_id, user_id, tty_user,
     started_at, stopped_at, exit_reason, terminated_by
@@ -117,7 +128,8 @@ INSERT INTO terminal_sessions (
 ON CONFLICT (session_id) DO UPDATE SET
     stopped_at    = EXCLUDED.stopped_at,
     exit_reason   = 'terminated',
-    terminated_by = EXCLUDED.terminated_by;
+    terminated_by = EXCLUDED.terminated_by
+  WHERE terminal_sessions.exit_reason IS NULL;
 
 -- name: GetTerminalSession :one
 -- Full row fetch for the session-replay detail view.

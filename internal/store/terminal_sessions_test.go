@@ -340,6 +340,98 @@ func TestTerminalSessions_MarkTerminated(t *testing.T) {
 	assert.Nil(t, row.ExitCode, "terminated sessions do not carry an exit code")
 }
 
+func TestTerminalSessions_FirstFinalizerWins_StopThenTerminate(t *testing.T) {
+	// Race: the bridge already emitted a graceful Stop, then an
+	// admin Terminate arrives shortly after. The subsequent
+	// Terminate must be a no-op — exit_reason stays 'stopped',
+	// the recorded exit_code survives, and terminated_by stays
+	// NULL so the audit record reflects the actual session end.
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	q := st.Queries()
+	sid := testutil.NewID()
+
+	require.NoError(t, q.UpsertTerminalSessionStart(ctx, upsertStartParams(sid, "dev-race", "user-race")))
+
+	stoppedAt := time.Now().UTC().Round(time.Microsecond)
+	exitCode := int32(0)
+	require.NoError(t, q.MarkTerminalSessionStopped(ctx, db.MarkTerminalSessionStoppedParams{
+		SessionID: sid,
+		StoppedAt: &stoppedAt,
+		ExitCode:  &exitCode,
+		DeviceID:  "dev-race",
+		UserID:    "user-race",
+	}))
+
+	// Admin Terminate arrives late — guard makes it a no-op.
+	laterAt := stoppedAt.Add(time.Second)
+	terminatedBy := "admin-late"
+	require.NoError(t, q.MarkTerminalSessionTerminated(ctx, db.MarkTerminalSessionTerminatedParams{
+		SessionID:    sid,
+		StoppedAt:    &laterAt,
+		TerminatedBy: &terminatedBy,
+		DeviceID:     "dev-race",
+		UserID:       "user-race",
+	}))
+
+	row, err := q.GetTerminalSession(ctx, sid)
+	require.NoError(t, err)
+	require.NotNil(t, row.ExitReason)
+	assert.Equal(t, "stopped", *row.ExitReason, "first finalizer wins; late Terminate must not flip reason")
+	require.NotNil(t, row.ExitCode)
+	assert.Equal(t, int32(0), *row.ExitCode, "exit_code from the Stop survives")
+	assert.Nil(t, row.TerminatedBy, "no stale terminated_by next to a stopped exit_reason")
+	require.NotNil(t, row.StoppedAt)
+	assert.WithinDuration(t, stoppedAt, *row.StoppedAt, time.Second, "stopped_at not overwritten by the no-op Terminate")
+}
+
+func TestTerminalSessions_FirstFinalizerWins_TerminateThenStop(t *testing.T) {
+	// Opposite race: admin Terminate lands first, then the
+	// bridge's own Stop event catches up. The Stop must be a
+	// no-op — exit_reason stays 'terminated', terminated_by
+	// survives, and exit_code stays NULL (the test at
+	// MarkTerminated already asserts "terminated sessions do
+	// not carry an exit code"; this case enforces the same
+	// invariant under the race).
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	q := st.Queries()
+	sid := testutil.NewID()
+
+	require.NoError(t, q.UpsertTerminalSessionStart(ctx, upsertStartParams(sid, "dev-race2", "user-race2")))
+
+	terminatedAt := time.Now().UTC().Round(time.Microsecond)
+	terminatedBy := "admin-first"
+	require.NoError(t, q.MarkTerminalSessionTerminated(ctx, db.MarkTerminalSessionTerminatedParams{
+		SessionID:    sid,
+		StoppedAt:    &terminatedAt,
+		TerminatedBy: &terminatedBy,
+		DeviceID:     "dev-race2",
+		UserID:       "user-race2",
+	}))
+
+	// Late graceful Stop — guard makes it a no-op.
+	laterAt := terminatedAt.Add(time.Second)
+	exitCode := int32(0)
+	require.NoError(t, q.MarkTerminalSessionStopped(ctx, db.MarkTerminalSessionStoppedParams{
+		SessionID: sid,
+		StoppedAt: &laterAt,
+		ExitCode:  &exitCode,
+		DeviceID:  "dev-race2",
+		UserID:    "user-race2",
+	}))
+
+	row, err := q.GetTerminalSession(ctx, sid)
+	require.NoError(t, err)
+	require.NotNil(t, row.ExitReason)
+	assert.Equal(t, "terminated", *row.ExitReason, "first finalizer wins; late Stop must not flip reason")
+	require.NotNil(t, row.TerminatedBy)
+	assert.Equal(t, "admin-first", *row.TerminatedBy, "terminated_by from the Terminate survives")
+	assert.Nil(t, row.ExitCode, "no stale exit_code next to a terminated exit_reason")
+	require.NotNil(t, row.StoppedAt)
+	assert.WithinDuration(t, terminatedAt, *row.StoppedAt, time.Second, "stopped_at not overwritten by the no-op Stop")
+}
+
 func TestTerminalSessions_MarkTerminatedCreatesRowWhenMissing(t *testing.T) {
 	// Same orphan coverage as MarkStopped — admin Terminate must
 	// materialise history even when nothing else created the row.
