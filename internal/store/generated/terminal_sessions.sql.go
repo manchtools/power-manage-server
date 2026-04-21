@@ -70,6 +70,19 @@ type AppendTerminalSessionChunkParams struct {
 // The INSERT branch creates a placeholder when a chunk outruns
 // the lifecycle Started event. device_id and user_id come from
 // the chunk payload, so the placeholder is well-formed.
+//
+// Concurrency caveat: this query guards against Asynq REDELIVERY
+// of a single task (same sequence twice) but NOT against
+// concurrent workers dequeuing DIFFERENT sequences for the same
+// session in parallel. If the inbox worker runs with
+// concurrency > 1 and two chunks race, whichever UPDATE commits
+// first sets last_sequence; the other's guard fails and its
+// bytes are lost. The gateway's audit batcher emits chunks
+// serially per session at 1 s cadence, so simultaneous-in-flight
+// tasks for one session are unlikely in practice. For strict
+// safety under high-concurrency inbox deployments, either run
+// the TerminalAuditChunk handler with concurrency=1 or move to
+// a per-chunk table keyed by (session_id, sequence).
 func (q *Queries) AppendTerminalSessionChunk(ctx context.Context, arg AppendTerminalSessionChunkParams) error {
 	_, err := q.db.Exec(ctx, appendTerminalSessionChunk,
 		arg.SessionID,
@@ -316,6 +329,15 @@ type MarkTerminalSessionStoppedParams struct {
 // the Stop does NOT overwrite exit_reason='terminated' or leave a
 // stale terminated_by next to exit_reason='stopped'. The audit
 // record reflects what actually ended the session.
+//
+// Orphan-row caveat: when this query creates a fresh row (Start
+// upsert failed AND no chunks arrived), started_at defaults to
+// NOW() — the time this finalizer ran, not the real session
+// start. Such rows appear as zero-duration sessions in the
+// history. The orphan case requires a DB outage exactly between
+// the event append and the Start upsert AND the user typing no
+// keys, which is vanishingly rare; flag in the UI rather than
+// add a nullable started_at.
 func (q *Queries) MarkTerminalSessionStopped(ctx context.Context, arg MarkTerminalSessionStoppedParams) error {
 	_, err := q.db.Exec(ctx, markTerminalSessionStopped,
 		arg.SessionID,
