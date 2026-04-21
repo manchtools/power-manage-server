@@ -149,6 +149,53 @@ func TestDispatchAction_InlineTimeoutOutOfBoundsRejected(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+// TestDispatchAction_PreconditionNoTaskQueue pins the fail-closed
+// behaviour the reviewer flagged: if the server starts without a
+// Valkey / task-queue client (CONTROL_VALKEY_ADDR unset, etc.),
+// DispatchAction must refuse the RPC instead of silently writing
+// an ExecutionCreated event, skipping signing, and returning
+// success. The expected code is FailedPrecondition — a deployment-
+// configuration error, not a retryable transient fault.
+func TestDispatchAction_PreconditionNoTaskQueue(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	// Deliberately do NOT call h.SetTaskQueueClient — the handler
+	// has no enqueuer, which mimics a production deploy with no
+	// Valkey configured.
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "No-queue dispatch", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "no-queue-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId: deviceID,
+		ActionSource: &pm.DispatchActionRequest_ActionId{
+			ActionId: actionID,
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
+// TestDispatchInstantAction_PreconditionNoTaskQueue pins the
+// matching fail-closed behaviour for the instant-action path.
+func TestDispatchInstantAction_PreconditionNoTaskQueue(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "no-queue-instant-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchInstantAction(ctx, connect.NewRequest(&pm.DispatchInstantActionRequest{
+		DeviceId:      deviceID,
+		InstantAction: pm.ActionType_ACTION_TYPE_REBOOT,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
 // TestUpdateActionParams_ShellMissingScriptRejected pins the
 // Update-path parity fix: the original Update handler only ran
 // struct-tag Validate, skipping the "script OR detection_script

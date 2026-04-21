@@ -863,6 +863,23 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		eventData["action_id"] = *actionID
 	}
 
+	// Fail fast when no task queue is configured. Without this
+	// guard the handler used to silently write an ExecutionCreated
+	// event, skip signing, and return success — leaving the row in
+	// `pending` forever because no agent task was ever delivered.
+	// Self-hosted deployments that forget to set CONTROL_VALKEY_ADDR
+	// would have looked like dispatch worked. CodeFailedPrecondition
+	// is the correct shape: it tells the client to fix their
+	// deployment configuration rather than retry the call.
+	//
+	// Positioned here (after Validate + auth + device lookup + inline
+	// validation) so body-level errors still surface with their own
+	// code — a malformed request should see InvalidArgument, not get
+	// shadowed by an infrastructure precondition.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "dispatch unavailable: task queue not configured")
+	}
+
 	// Sign the dispatch BEFORE writing the ExecutionCreated event.
 	//
 	// Previously the sequence was:  appendEvent → sign → enqueue.
@@ -876,21 +893,18 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// Nil signer is a wiring bug (main.go passes the real internal/ca
 	// signer; tests pass NoOpSigner). Fail-closed to avoid silently
 	// enqueueing unsigned tasks the agent would drop on receipt.
-	var paramsJSON []byte
-	if h.aqClient != nil {
-		if h.signer == nil {
-			h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
-		}
-		paramsJSON, _ = json.Marshal(params)
-		sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
-		if signErr != nil {
-			h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
-		}
-		signature = sig
-		paramsCanonical = paramsJSON
+	if h.signer == nil {
+		h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
+	paramsJSON, _ := json.Marshal(params)
+	sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+	if signErr != nil {
+		h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
+	}
+	signature = sig
+	paramsCanonical = paramsJSON
 
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
@@ -907,39 +921,40 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// now; if the enqueue fails we MUST transition it to a terminal
 	// state so the projection reflects reality. Silently returning
 	// success used to leave the row as `pending` indefinitely.
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-			ExecutionID:     id,
-			ActionType:      int32(actionType),
-			DesiredState:    int32(desiredState),
-			Params:          paramsJSON,
-			TimeoutSeconds:  timeoutSeconds,
-			Signature:       signature,
-			ParamsCanonical: paramsCanonical,
-		}, asynq.MaxRetry(5)); err != nil {
-			h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
-				"error", err, "execution_id", id)
-			// Append a compensating ExecutionFailed event so the row
-			// moves to a terminal state the operator can act on.
-			// Best-effort: a failure here is logged but we still return
-			// the enqueue error to the caller so they know the dispatch
-			// did not reach the device.
-			if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
-				StreamType: "execution",
-				StreamID:   id,
-				EventType:  "ExecutionFailed",
-				Data: map[string]any{
-					"error":        fmt.Sprintf("dispatch enqueue failed: %v", err),
-					"completed_at": nil, // projector falls back to event.occurred_at
-				},
-				ActorType: "system",
-				ActorID:   "system",
-			}, "failed to append ExecutionFailed compensating event"); failErr != nil {
-				h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
-					"execution_id", id, "error", failErr)
-			}
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue action dispatch")
+	//
+	// h.aqClient is guaranteed non-nil here — the precondition check
+	// at the top of DispatchAction rejects the call otherwise.
+	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+		ExecutionID:     id,
+		ActionType:      int32(actionType),
+		DesiredState:    int32(desiredState),
+		Params:          paramsJSON,
+		TimeoutSeconds:  timeoutSeconds,
+		Signature:       signature,
+		ParamsCanonical: paramsCanonical,
+	}, asynq.MaxRetry(5)); err != nil {
+		h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
+			"error", err, "execution_id", id)
+		// Append a compensating ExecutionFailed event so the row
+		// moves to a terminal state the operator can act on.
+		// Best-effort: a failure here is logged but we still return
+		// the enqueue error to the caller so they know the dispatch
+		// did not reach the device.
+		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "execution",
+			StreamID:   id,
+			EventType:  "ExecutionFailed",
+			Data: map[string]any{
+				"error":        fmt.Sprintf("dispatch enqueue failed: %v", err),
+				"completed_at": nil, // projector falls back to event.occurred_at
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}, "failed to append ExecutionFailed compensating event"); failErr != nil {
+			h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
+				"execution_id", id, "error", failErr)
 		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue action dispatch")
 	}
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
@@ -1331,6 +1346,13 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		"timeout_seconds": timeoutSeconds,
 	}
 
+	// Fail fast when no task queue is configured — same fail-closed
+	// contract as DispatchAction. Positioned after validation/auth/
+	// device-lookup so body-level errors surface with their own codes.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "instant dispatch unavailable: task queue not configured")
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
@@ -1342,17 +1364,36 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	// Dispatch instant action to device via Asynq task queue
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-			ExecutionID:    id,
-			ActionType:     int32(req.Msg.InstantAction),
-			DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-			Params:         json.RawMessage("{}"),
-			TimeoutSeconds: timeoutSeconds,
-		}, asynq.MaxRetry(3)); err != nil {
-			h.logger.Warn("failed to enqueue instant action dispatch", "error", err, "execution_id", id)
+	// Dispatch instant action. Same contract as DispatchAction: an
+	// enqueue failure after the ExecutionCreated write MUST emit a
+	// compensating ExecutionFailed event so the row moves to a
+	// terminal `failed` state — otherwise the projection sits in
+	// `pending` forever and the operator has no idea why the
+	// reboot/sync never happened.
+	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+		ExecutionID:    id,
+		ActionType:     int32(req.Msg.InstantAction),
+		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		Params:         json.RawMessage("{}"),
+		TimeoutSeconds: timeoutSeconds,
+	}, asynq.MaxRetry(3)); err != nil {
+		h.logger.Error("failed to enqueue instant action dispatch; emitting ExecutionFailed",
+			"error", err, "execution_id", id)
+		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "execution",
+			StreamID:   id,
+			EventType:  "ExecutionFailed",
+			Data: map[string]any{
+				"error":        fmt.Sprintf("instant dispatch enqueue failed: %v", err),
+				"completed_at": nil,
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}, "failed to append ExecutionFailed compensating event"); failErr != nil {
+			h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
+				"execution_id", id, "error", failErr)
 		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue instant action dispatch")
 	}
 
 	exec, err := h.store.Queries().GetExecutionByID(ctx, id)

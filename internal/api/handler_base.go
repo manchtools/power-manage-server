@@ -16,12 +16,24 @@ func (h *searchIndexHolder) SetSearchIndex(idx *search.Index) {
 	h.searchIdx = idx
 }
 
-// taskQueueHolder is a mixin for handlers that enqueue Asynq tasks. Same
-// promotion trick — h.aqClient remains accessible in handler methods.
+// taskQueueHolder is a mixin for handlers that enqueue Asynq tasks.
+// Same promotion trick — h.aqClient remains accessible in handler
+// methods. The field is an interface (taskqueue.Enqueuer) so tests
+// can inject a no-op / recording double without a real Valkey, and
+// production dispatch paths can refuse requests when the enqueuer
+// is nil instead of silently swallowing them.
 type taskQueueHolder struct {
-	aqClient *taskqueue.Client
+	aqClient taskqueue.Enqueuer
 }
 
-func (h *taskQueueHolder) SetTaskQueueClient(c *taskqueue.Client) {
+// SetTaskQueueClient accepts the interface so production (wiring
+// *taskqueue.Client from main.go) and tests (wiring
+// api.NoOpEnqueuer{}) share one setter. A nil argument keeps the
+// holder's current value — callers that want to explicitly clear
+// the enqueuer should reconstruct the handler.
+func (h *taskQueueHolder) SetTaskQueueClient(c taskqueue.Enqueuer) {
+	if c == nil {
+		return
+	}
 	h.aqClient = c
 }

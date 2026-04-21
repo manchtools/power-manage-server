@@ -184,6 +184,7 @@ func TestDeleteAction(t *testing.T) {
 func TestDispatchAction_ByID(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Dispatch Test", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -222,6 +223,7 @@ func TestDispatchAction_DeviceNotFound(t *testing.T) {
 func TestListExecutions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Exec Test", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -247,6 +249,7 @@ func TestListExecutions(t *testing.T) {
 func TestGetExecution(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Get Exec", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -272,6 +275,7 @@ func TestGetExecution(t *testing.T) {
 func TestDispatchInstantAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "instant-host")
