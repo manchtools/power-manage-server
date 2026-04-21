@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -39,6 +40,11 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	}
 
 	msg := req.Msg
+	hasTable := strings.TrimSpace(msg.Table) != ""
+	hasRawSQL := strings.TrimSpace(msg.RawSql) != ""
+	if hasTable == hasRawSQL {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "exactly one of table or raw_sql is required")
+	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{

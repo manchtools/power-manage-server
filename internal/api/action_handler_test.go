@@ -246,6 +246,33 @@ func TestDispatchAction_InlineActionValidatesParams(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+func TestDispatchAction_InlineActionRejectsMismatchedParams(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), nil)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "inline-mismatch-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId: deviceID,
+		ActionSource: &pm.DispatchActionRequest_InlineAction{
+			InlineAction: &pm.Action{
+				Type: pm.ActionType_ACTION_TYPE_USER,
+				Params: &pm.Action_Ssh{
+					Ssh: &pm.SshParams{
+						Users:         []string{"alice"},
+						AllowPubkey:   true,
+						AllowPassword: false,
+					},
+				},
+			},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
 func TestListExecutions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), nil)

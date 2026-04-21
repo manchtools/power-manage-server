@@ -9,6 +9,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // Tests in this file lock down the "system-managed actions must
@@ -22,7 +23,7 @@ import (
 // typed *pm.UserParams / *pm.SshParams / etc. (Go compiler catches
 // field-name typos — you cannot pass a map[string]any to
 // actionparams.MarshalActionParams, it wants a proto.Message), and
-// marshalling goes through the single shared MarshalOptions in
+// marshalling goes through the single shared marshal options in
 // internal/actionparams so every action on the wire looks the same
 // regardless of whether it came from the UI or the control server.
 //
@@ -112,7 +113,7 @@ func TestMarshalActionParamsStrictUnmarshal(t *testing.T) {
 }
 
 // TestMarshalActionParamsEmitsZeroValues pins the EmitUnpopulated
-// behaviour explicitly. If someone changes actionparams.MarshalOptions
+// behaviour explicitly. If someone changes the shared marshal options
 // back to the default (EmitUnpopulated=false), this test fires.
 //
 // Concrete case: a UserParams with CreateHome=false must serialize
@@ -148,5 +149,54 @@ func TestMarshalActionParamsEmitsZeroValues(t *testing.T) {
 func TestMarshalActionParamsRejectsNil(t *testing.T) {
 	if _, err := actionparams.MarshalActionParams(nil); err == nil {
 		t.Error("expected error for nil message, got nil")
+	}
+}
+
+func TestSystemTtyUserActionParamsOutput(t *testing.T) {
+	params, err := serializeProtoParams(systemTtyUserParams(db.UsersProjection{
+		LinuxUsername: "alice",
+		LinuxUid:      1000,
+		Disabled:      false,
+	}))
+	if err != nil {
+		t.Fatalf("serialize tty user params: %v", err)
+	}
+
+	want := map[string]any{
+		"username":          "pm-tty-alice",
+		"uid":               float64(101000),
+		"gid":               float64(0),
+		"homeDir":           "",
+		"shell":             "/usr/sbin/nologin",
+		"sshAuthorizedKeys": []any{},
+		"comment":           "Power Manage terminal user for alice",
+		"systemUser":        false,
+		"createHome":        false,
+		"disabled":          false,
+		"primaryGroup":      "",
+		"hidden":            true,
+	}
+
+	if len(params) != len(want) {
+		t.Fatalf("unexpected tty param key count: got %d want %d: %#v", len(params), len(want), params)
+	}
+	for key, wantValue := range want {
+		gotValue, ok := params[key]
+		if !ok {
+			t.Fatalf("missing tty param %q in %#v", key, params)
+		}
+		if key == "sshAuthorizedKeys" {
+			gotSlice, ok := gotValue.([]any)
+			if !ok || len(gotSlice) != 0 {
+				t.Fatalf("tty param %q = %#v, want empty JSON array", key, gotValue)
+			}
+			continue
+		}
+		if gotValue != wantValue {
+			t.Fatalf("tty param %q = %#v, want %#v", key, gotValue, wantValue)
+		}
+	}
+	if _, ok := params["system"]; ok {
+		t.Fatalf("tty params must not include legacy unknown field %q: %#v", "system", params)
 	}
 }

@@ -236,6 +236,9 @@ func validateInlineAction(ctx context.Context, action *pm.Action) error {
 		}
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params are required")
 	}
+	if !actionParamsMatchType(action.Type, action.Params) {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params do not match action.Type")
+	}
 	if err := Validate(ctx, params); err != nil {
 		return err
 	}
@@ -248,6 +251,67 @@ func validateInlineAction(ctx context.Context, action *pm.Action) error {
 		return validateAgentUpdateParams(ctx, agentUpdate)
 	}
 	return nil
+}
+
+func actionParamsMatchType(actionType pm.ActionType, params any) bool {
+	switch actionType {
+	case pm.ActionType_ACTION_TYPE_PACKAGE:
+		_, ok := params.(*pm.Action_Package)
+		return ok
+	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
+		_, ok := params.(*pm.Action_App)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FLATPAK:
+		_, ok := params.(*pm.Action_Flatpak)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
+		_, ok := params.(*pm.Action_Shell)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		_, ok := params.(*pm.Action_Service)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FILE:
+		_, ok := params.(*pm.Action_File)
+		return ok
+	case pm.ActionType_ACTION_TYPE_UPDATE:
+		_, ok := params.(*pm.Action_Update)
+		return ok
+	case pm.ActionType_ACTION_TYPE_REPOSITORY:
+		_, ok := params.(*pm.Action_Repository)
+		return ok
+	case pm.ActionType_ACTION_TYPE_DIRECTORY:
+		_, ok := params.(*pm.Action_Directory)
+		return ok
+	case pm.ActionType_ACTION_TYPE_USER:
+		_, ok := params.(*pm.Action_User)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSH:
+		_, ok := params.(*pm.Action_Ssh)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		_, ok := params.(*pm.Action_Sshd)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		_, ok := params.(*pm.Action_AdminPolicy)
+		return ok
+	case pm.ActionType_ACTION_TYPE_LPS:
+		_, ok := params.(*pm.Action_Lps)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		_, ok := params.(*pm.Action_Encryption)
+		return ok
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		_, ok := params.(*pm.Action_Group)
+		return ok
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		_, ok := params.(*pm.Action_Wifi)
+		return ok
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		_, ok := params.(*pm.Action_AgentUpdate)
+		return ok
+	default:
+		return false
+	}
 }
 
 // validateAgentUpdateParams checks that at least one arch is set and all URLs are HTTPS.

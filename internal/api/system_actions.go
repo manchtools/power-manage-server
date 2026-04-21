@@ -308,9 +308,6 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 // (the agent temporarily activates it during a session), no home
 // directory, and the deterministic UID from the SDK's TTYUID helper.
 func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
-	ttyUsername := "pm-tty-" + user.LinuxUsername
-	ttyUID := int32(int(user.LinuxUid) + 100000) // terminal.DefaultUIDOffset
-
 	// Typed *pm.UserParams so the Go compiler rejects field-name
 	// typos. The previous map[string]any form accepted "system": true
 	// as a sibling of real fields — protojson silently dropped it on
@@ -330,15 +327,7 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 	//     implies UID < 1000, which conflicts with pm-tty's
 	//     deterministic UID = <base>+100000. Visibility hiding uses
 	//     the Hidden bit instead.
-	params := &pm.UserParams{
-		Username:   ttyUsername,
-		Uid:        ttyUID,
-		Shell:      "/usr/sbin/nologin",
-		CreateHome: false,
-		Comment:    "Power Manage terminal user for " + user.LinuxUsername,
-		Hidden:     true,
-		Disabled:   user.Disabled,
-	}
+	params := systemTtyUserParams(user)
 
 	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
@@ -364,7 +353,7 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 
 		m.signActionByID(ctx, actionID)
 		m.logger.Info("created system tty user action",
-			"user_id", user.ID, "action_id", actionID, "tty_user", ttyUsername)
+			"user_id", user.ID, "action_id", actionID, "tty_user", params.Username)
 	} else {
 		// Update existing action if params changed
 		if err := m.updateSystemAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
@@ -374,6 +363,21 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 	}
 
 	return nil
+}
+
+func systemTtyUserParams(user db.UsersProjection) *pm.UserParams {
+	ttyUsername := "pm-tty-" + user.LinuxUsername
+	ttyUID := int32(int(user.LinuxUid) + 100000) // terminal.DefaultUIDOffset
+
+	return &pm.UserParams{
+		Username:   ttyUsername,
+		Uid:        ttyUID,
+		Shell:      "/usr/sbin/nologin",
+		CreateHome: false,
+		Comment:    "Power Manage terminal user for " + user.LinuxUsername,
+		Hidden:     true,
+		Disabled:   user.Disabled,
+	}
 }
 
 func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.UsersProjection) error {

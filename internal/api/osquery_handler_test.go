@@ -67,6 +67,14 @@ func TestDispatchOSQuery_RequiresTableOrRawSQL(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = h.DispatchOSQuery(ctx, connect.NewRequest(&pm.DispatchOSQueryRequest{
+		DeviceId: deviceID,
+		Table:    "processes",
+		RawSql:   "select * from processes",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestGetOSQueryResult_Pending(t *testing.T) {

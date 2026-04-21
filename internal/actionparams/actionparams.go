@@ -12,7 +12,7 @@ import (
 
 var unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
 
-// MarshalOptions is the single protojson configuration used to
+// marshalOptions is the single protojson configuration used to
 // serialise action params throughout the server — both user-created
 // actions (action_handler.serializeProtoParams) and system-managed
 // actions (api.system_actions). Sharing this configuration is the
@@ -38,13 +38,13 @@ var unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
 //     unmarshals using default protojson options. Both sides use the
 //     same naming; staying on the default avoids a second, silent
 //     inconsistency.
-var MarshalOptions = protojson.MarshalOptions{
+var marshalOptions = protojson.MarshalOptions{
 	EmitUnpopulated: true,
 	UseProtoNames:   false,
 }
 
 // MarshalActionParams serialises an action params proto message to
-// JSON bytes using MarshalOptions above. Returns an error on a nil
+// JSON bytes using marshalOptions above. Returns an error on a nil
 // message so callers don't accidentally emit a bare "null".
 //
 // All code paths that produce action-params JSON — user-created via
@@ -56,7 +56,7 @@ func MarshalActionParams(msg proto.Message) ([]byte, error) {
 	if msg == nil {
 		return nil, fmt.Errorf("actionparams.MarshalActionParams: nil message")
 	}
-	return MarshalOptions.Marshal(msg)
+	return marshalOptions.Marshal(msg)
 }
 
 // PopulateAction deserializes params JSON into a wire-format Action proto.
