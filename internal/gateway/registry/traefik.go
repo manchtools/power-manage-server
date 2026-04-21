@@ -108,12 +108,13 @@ func (c TraefikRouteConfig) validate() error {
 	if c.MTLSEntryPoint == "" {
 		missing = append(missing, "MTLSEntryPoint")
 	}
-	// TTY fields are optional as a group — all set or all empty.
-	// Partial configuration is almost always an operator mistake
-	// (e.g. setting TTYHost in compose but forgetting to set
-	// GATEWAY_WEB_LISTEN_ADDR), so refuse to start and surface
-	// the inconsistency rather than quietly skipping the TTY
-	// router or publishing a broken one.
+	// TTY publishing is gated on TTYBackend. The companion fields
+	// (TTYHost, TTYEntryPoint) may legitimately stay populated from
+	// deployment defaults even when the backend is empty, so they
+	// are only validated once a backend is actually present — with
+	// a backend set, a missing host or entrypoint is an operator
+	// mistake and we refuse to start instead of publishing a broken
+	// HTTP router.
 	if c.ttyEnabled() {
 		if c.TTYHost == "" {
 			missing = append(missing, "TTYHost")
@@ -126,10 +127,8 @@ func (c TraefikRouteConfig) validate() error {
 		return fmt.Errorf("registry: TraefikRouteConfig missing fields: %s", strings.Join(missing, ", "))
 	}
 	if !c.ttyEnabled() {
-		// No TTY route to publish; URL-shape validation below is
-		// irrelevant. Reject any TTY-host / entrypoint set without
-		// a backend (above catches those paths implicitly since
-		// the caller would have had to pass them deliberately).
+		// No TTY route to publish; the URL-shape validation below
+		// has nothing to run against because there is no backend URL.
 		return nil
 	}
 	// TTYBackend must be an http:// URL with a non-empty host. The

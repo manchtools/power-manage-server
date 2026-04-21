@@ -218,9 +218,11 @@ func TestPublishTraefikRoute_TTYDisabled(t *testing.T) {
 		t.Errorf("per-replica mTLS backend should be published: %v", err)
 	}
 
-	// No TTY router keys at all.
+	// No TTY router keys at all — every key the enabled path
+	// publishes must be absent, including the entrypoint list.
 	for _, k := range []string{
 		"traefik/http/routers/pm-tty-gw-mtls-only/rule",
+		"traefik/http/routers/pm-tty-gw-mtls-only/entrypoints/0",
 		"traefik/http/routers/pm-tty-gw-mtls-only/service",
 		"traefik/http/routers/pm-tty-gw-mtls-only/tls",
 		"traefik/http/routers/pm-tty-gw-mtls-only/tls/certResolver",

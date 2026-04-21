@@ -279,11 +279,21 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		// event stream is an append-only audit record where a
 		// duplicate tells the truth ("we saw this twice during a
 		// retry") rather than lying.
-		return nil, connect.NewError(
-			connect.CodeInternal,
-			fmt.Errorf("failed to persist %d of %d LPS rotations for device %s action %s: %w",
-				len(req.Msg.Rotations)-persisted, len(req.Msg.Rotations), req.Msg.DeviceId, req.Msg.ActionId, firstErr),
+		//
+		// Route through apiErrorCtx so the response carries the
+		// same `internal_error` ErrorDetail code the rest of the
+		// handlers emit — the agent's inbox retry loop keys off
+		// that code to decide whether to retry.
+		h.logger.Error("LPS rotation persistence failed, returning error to trigger inbox retry",
+			"device_id", req.Msg.DeviceId,
+			"action_id", req.Msg.ActionId,
+			"persisted", persisted,
+			"total_rotations", len(req.Msg.Rotations),
+			"first_error", firstErr,
 		)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			fmt.Sprintf("failed to persist %d of %d LPS rotations",
+				len(req.Msg.Rotations)-persisted, len(req.Msg.Rotations)))
 	}
 
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil
