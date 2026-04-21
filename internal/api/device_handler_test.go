@@ -1,6 +1,8 @@
 package api_test
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -189,4 +191,27 @@ func TestSetDeviceSyncInterval(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, int32(30), resp.Msg.Device.SyncIntervalMinutes)
+}
+
+// TestRevokeLuksDeviceKey_NotAuthenticated is a regression lock for
+// the rc7 cleanup. Earlier revisions of this handler used a
+// `userCtx, _ := auth.UserFromContext(ctx); actorID := ""; if userCtx
+// != nil { actorID = userCtx.ID }` pattern and silently appended a
+// LuksDeviceKeyRevocationDispatched event with empty actor_id when
+// the auth interceptor wasn't wired. Empty actor_id violates the
+// "every audit event has a valid actor" invariant and makes the
+// record unqueryable by user. The handler now returns
+// CodeUnauthenticated at the boundary; this test pins that.
+func TestRevokeLuksDeviceKey_NotAuthenticated(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceHandler(st, nil, slog.Default())
+
+	_, err := h.RevokeLuksDeviceKey(context.Background(), connect.NewRequest(&pm.RevokeLuksDeviceKeyRequest{
+		DeviceId: "any",
+		ActionId: "any",
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }

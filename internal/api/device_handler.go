@@ -868,6 +868,16 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 
 // RevokeLuksDeviceKey sends a revocation request to the agent via the task queue.
 func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Request[pm.RevokeLuksDeviceKeyRequest]) (*connect.Response[pm.RevokeLuksDeviceKeyResponse], error) {
+	// Explicit auth check: a missing user in ctx is a configuration
+	// bug (interceptor not wired), not a legitimate anonymous call.
+	// Surfacing it as CodeUnauthenticated rather than silently
+	// recording actor_id="" keeps the "every event has a valid
+	// actor" invariant intact.
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
@@ -879,11 +889,6 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	}
 
 	// Record dispatched event so the UI can show "dispatched" status
-	userCtx, _ := auth.UserFromContext(ctx)
-	actorID := ""
-	if userCtx != nil {
-		actorID = userCtx.ID
-	}
 	luksStreamID := newULID()
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
@@ -895,7 +900,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 			"dispatched_at": time.Now().Format(time.RFC3339),
 		},
 		ActorType: "user",
-		ActorID:   actorID,
+		ActorID:   userCtx.ID,
 	}); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation event")
 	}

@@ -241,6 +241,29 @@ func TestStopTerminal_NotAuthenticated(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }
 
+// TestTerminateTerminalSession_NotAuthenticated is a regression lock
+// for the rc7 rework of the silent actor-ID fallback. Earlier revisions
+// of this handler ran a closure that attributed the audit event to
+// the literal string "system" when no user was present in ctx — which
+// hid any future auth-middleware misconfiguration behind a valid-looking
+// audit trail and broke the "every event has a real actor" invariant.
+// The handler now returns CodeUnauthenticated at the boundary; this
+// test asserts a bare context is rejected before any admin fan-out or
+// event-append work runs.
+func TestTerminateTerminalSession_NotAuthenticated(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h, _ := newTerminalHandler(t, st)
+
+	_, err := h.TerminateTerminalSession(context.Background(), connect.NewRequest(&pm.TerminateTerminalSessionRequest{
+		SessionId: "any",
+		Reason:    "test",
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
+}
+
 func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 	cases := map[string]string{
 		"":                                       "",

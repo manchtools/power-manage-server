@@ -437,6 +437,16 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 // (via the token store's device_id → registry lookup) and calls
 // TerminateGatewayTerminalSession on that gateway.
 func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
+	// Explicit auth check at the handler boundary, matching the pattern
+	// used by StartTerminal and StopTerminal above. The auth interceptor
+	// also enforces admin access to this RPC, but a missing auth context
+	// here is a configuration bug — surface it loudly rather than silently
+	// attributing the audit event to "system".
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
 	if h.registry == nil || h.internalHTTPClient == nil {
 		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
 			"terminal admin RPCs require a configured registry and internal HTTP client")
@@ -508,12 +518,7 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 			"failed to revoke terminal session token")
 	}
 
-	actorID := func() string {
-		if u, ok := auth.UserFromContext(ctx); ok {
-			return u.ID
-		}
-		return "system"
-	}()
+	actorID := userCtx.ID
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   session.DeviceID,

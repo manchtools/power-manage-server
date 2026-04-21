@@ -661,6 +661,17 @@ func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *conn
 
 // EvaluateDynamicUserGroup triggers re-evaluation of a dynamic user group.
 func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
+	// Explicit auth check at the handler boundary. Previously the
+	// session-invalidation bump at the end of the handler was
+	// silently skipped when no user context was present, which
+	// would let an admin think they revoked group-derived access
+	// (existing JWTs kept working). Enforce auth up front so the
+	// bump is unconditional and attributed to a real user.
+	userCtx, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+	}
+
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
@@ -704,11 +715,12 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
-	// Bump session versions for all current members (permissions may have changed)
-	if userCtx, ok := auth.UserFromContext(ctx); ok {
-		if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
-			h.logger.Warn("partial session invalidation", "error", err)
-		}
+	// Bump session versions for all current members (permissions
+	// may have changed). Unconditional now that auth is enforced
+	// at the handler entry — any missing context would have
+	// returned CodeUnauthenticated above, so userCtx is valid.
+	if err := h.bumpSessionVersionForGroupMembers(ctx, req.Msg.Id, userCtx.ID); err != nil {
+		h.logger.Warn("partial session invalidation", "error", err)
 	}
 
 	return connect.NewResponse(&pm.EvaluateDynamicUserGroupResponse{
