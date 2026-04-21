@@ -3,7 +3,7 @@
 -- terminal_sessions is the canonical record of one remote terminal
 -- session. It replaces the earlier pattern of streaming per-keystroke
 -- TerminalInputChunk events into the append-only event store, which
--- floodeded the event stream with opaque single-byte fragments and
+-- flooded the event stream with opaque single-byte fragments and
 -- left the Terminal Sessions UI no way to group them for replay.
 --
 -- This is a purpose-built table, NOT a projection of events:
@@ -17,6 +17,14 @@
 --
 -- Retention is a plain DELETE on this table — no cross-table
 -- orchestration with the event store required.
+--
+-- The 8 MiB per-session cap on `input` is enforced in the
+-- AppendTerminalSessionChunk query (see queries/terminal_sessions.sql)
+-- via substring clamping + the input_truncated flag, NOT as a schema
+-- CHECK constraint. A schema-level cap would hard-reject a
+-- well-formed task rather than gracefully flagging the overflow, so
+-- the clamp lives in the query. Reviewers inspecting this file in
+-- isolation: don't expect to find a CHECK(octet_length(input) <= …).
 CREATE TABLE terminal_sessions (
     session_id      TEXT PRIMARY KEY,
     device_id       TEXT NOT NULL,
