@@ -219,6 +219,33 @@ func TestDispatchAction_DeviceNotFound(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+func TestDispatchAction_InlineActionValidatesParams(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), nil)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "inline-validation-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId: deviceID,
+		ActionSource: &pm.DispatchActionRequest_InlineAction{
+			InlineAction: &pm.Action{
+				Type: pm.ActionType_ACTION_TYPE_ADMIN_POLICY,
+				Params: &pm.Action_AdminPolicy{
+					AdminPolicy: &pm.AdminPolicyParams{
+						AccessLevel:  pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_CUSTOM,
+						Users:        []string{"opsuser"},
+						CustomConfig: "", // invalid for CUSTOM, must be rejected before signing
+					},
+				},
+			},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
 func TestListExecutions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewActionHandler(st, slog.Default(), nil)

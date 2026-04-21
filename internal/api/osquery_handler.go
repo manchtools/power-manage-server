@@ -34,6 +34,10 @@ func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
 func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Request[pm.DispatchOSQueryRequest]) (*connect.Response[pm.DispatchOSQueryResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	msg := req.Msg
 
 	// Verify device exists

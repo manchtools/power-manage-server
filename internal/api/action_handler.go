@@ -30,7 +30,7 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	taskQueueHolder  // aqClient is nil during Phase 2 dual-write if Valkey is not configured
+	taskQueueHolder // aqClient is nil during Phase 2 dual-write if Valkey is not configured
 	searchIndexHolder
 	store  *store.Store
 	logger *slog.Logger
@@ -206,6 +206,46 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 		if p.AgentUpdate != nil {
 			return validateAgentUpdateParams(ctx, p.AgentUpdate)
 		}
+	}
+	return nil
+}
+
+// validateInlineAction validates a DispatchAction inline Action before the
+// server signs and enqueues it. Inline actions intentionally do not require
+// Action.id because DispatchAction replaces it with the execution ID.
+func validateInlineAction(ctx context.Context, action *pm.Action) error {
+	if action == nil {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action is required")
+	}
+	if action.Type == pm.ActionType_ACTION_TYPE_UNSPECIFIED {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action type is required")
+	}
+	if action.TimeoutSeconds < 0 || action.TimeoutSeconds > 3600 {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "timeout_seconds must be between 0 and 3600")
+	}
+	if action.Schedule != nil {
+		if err := Validate(ctx, action.Schedule); err != nil {
+			return err
+		}
+	}
+
+	params := extractActionParamsMsg(action)
+	if params == nil {
+		if action.Type == pm.ActionType_ACTION_TYPE_UPDATE {
+			return nil
+		}
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params are required")
+	}
+	if err := Validate(ctx, params); err != nil {
+		return err
+	}
+	if shell, ok := params.(*pm.ShellParams); ok {
+		if shell.Script == "" && shell.DetectionScript == "" {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
+		}
+	}
+	if agentUpdate, ok := params.(*pm.AgentUpdateParams); ok {
+		return validateAgentUpdateParams(ctx, agentUpdate)
 	}
 	return nil
 }
@@ -648,6 +688,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
+		if err := validateInlineAction(ctx, action); err != nil {
+			return nil, err
+		}
 		actionType = action.Type
 		desiredState = action.DesiredState
 		params, err = serializeProtoParams(extractActionParamsMsg(action))
@@ -1359,7 +1402,6 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 
 	return action
 }
-
 
 func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionExecution {
 	exec := &pm.ActionExecution{
