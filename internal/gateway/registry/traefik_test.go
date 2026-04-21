@@ -177,14 +177,78 @@ func TestPublishTraefikRoute_RejectsEmptyFields(t *testing.T) {
 
 	bad := baseTraefikConfig()
 	bad.MTLSHost = ""
-	bad.TTYBackend = ""
+	bad.MTLSBackend = ""
 
 	err := r.PublishTraefikRoute(ctx, "gw-1", bad, 30*time.Second)
 	if err == nil {
-		t.Fatal("expected validation error for empty MTLSHost and TTYBackend")
+		t.Fatal("expected validation error for empty mTLS fields")
 	}
-	if !strings.Contains(err.Error(), "MTLSHost") || !strings.Contains(err.Error(), "TTYBackend") {
-		t.Errorf("error should name all missing fields; got: %v", err)
+	if !strings.Contains(err.Error(), "MTLSHost") || !strings.Contains(err.Error(), "MTLSBackend") {
+		t.Errorf("error should name all missing mTLS fields; got: %v", err)
+	}
+}
+
+// TestPublishTraefikRoute_TTYDisabled exercises the agent-only
+// deployment shape: mTLS is configured, but no TTYBackend because
+// the operator hasn't enabled the remote-terminal feature
+// (GATEWAY_WEB_LISTEN_ADDR unset in the reference compose).
+// PublishTraefikRoute must succeed and write ONLY the mTLS keys —
+// the earlier "all TTY fields required" validation used to
+// crash-loop the gateway in this case.
+func TestPublishTraefikRoute_TTYDisabled(t *testing.T) {
+	backend := NewFakeBackend(nil)
+	r := New(backend, nil)
+	ctx := context.Background()
+
+	cfg := baseTraefikConfig()
+	cfg.TTYBackend = "" // disables TTY router publication
+	// TTYHost and TTYEntryPoint can be set (e.g. compose defaults
+	// them to the same GATEWAY_DOMAIN / "websecure" as mTLS) but
+	// without a backend the whole HTTP router block is skipped.
+
+	if err := r.PublishTraefikRoute(ctx, "gw-mtls-only", cfg, 30*time.Second); err != nil {
+		t.Fatalf("publish with TTY disabled: %v", err)
+	}
+
+	// mTLS keys present.
+	if _, err := backend.Get(ctx, "traefik/tcp/routers/pm-mtls/rule"); err != nil {
+		t.Errorf("shared mTLS rule should be published: %v", err)
+	}
+	if _, err := backend.Get(ctx, "traefik/tcp/services/pm-mtls/loadbalancer/servers/gw-mtls-only/address"); err != nil {
+		t.Errorf("per-replica mTLS backend should be published: %v", err)
+	}
+
+	// No TTY router keys at all.
+	for _, k := range []string{
+		"traefik/http/routers/pm-tty-gw-mtls-only/rule",
+		"traefik/http/routers/pm-tty-gw-mtls-only/service",
+		"traefik/http/routers/pm-tty-gw-mtls-only/tls",
+		"traefik/http/routers/pm-tty-gw-mtls-only/tls/certResolver",
+		"traefik/http/services/pm-tty-gw-mtls-only/loadbalancer/servers/0/url",
+	} {
+		if _, err := backend.Get(ctx, k); !errors.Is(err, ErrNoGateway) {
+			t.Errorf("TTY-disabled config should not publish %q; got err=%v", k, err)
+		}
+	}
+}
+
+// TestPublishTraefikRoute_TTYPartialRejected catches the operator
+// misconfiguration where TTYBackend is set but the companion fields
+// are forgotten. That's almost always a .env mistake; refusing to
+// start is preferable to publishing a half-built HTTP router.
+func TestPublishTraefikRoute_TTYPartialRejected(t *testing.T) {
+	r := New(NewFakeBackend(nil), nil)
+	ctx := context.Background()
+
+	partial := baseTraefikConfig()
+	partial.TTYHost = "" // keep TTYBackend + TTYEntryPoint set
+
+	err := r.PublishTraefikRoute(ctx, "gw-1", partial, 30*time.Second)
+	if err == nil {
+		t.Fatal("expected validation error for partial TTY config")
+	}
+	if !strings.Contains(err.Error(), "TTYHost") {
+		t.Errorf("error should name TTYHost; got: %v", err)
 	}
 }
 
