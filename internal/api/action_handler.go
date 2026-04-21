@@ -145,7 +145,7 @@ func validateShellScriptChoice(ctx context.Context, p *pm.ShellParams) error {
 	return nil
 }
 
-// validateInlineActionPayload validates an inline Action proto on a
+// validateInlineAction validates an inline Action proto on a
 // DispatchAction request. The non-inline DispatchAction path pulls
 // the action by ID from the DB, which has already been validated at
 // Create/Update time; inline actions skip that lookup and would
@@ -156,54 +156,128 @@ func validateShellScriptChoice(ctx context.Context, p *pm.ShellParams) error {
 // the shell "at least one of script or detection_script" rule —
 // so an inline dispatched action cannot do anything a Create-path
 // action cannot.
-func validateInlineActionPayload(ctx context.Context, action *pm.Action) error {
+//
+// Beyond the per-oneof params validation, this function enforces the
+// outer Action invariants that the by-ID dispatch path gets for free
+// from the Create/Update gate:
+//
+//   - Type is non-unspecified.
+//   - TimeoutSeconds is in [0, 3600].
+//   - Schedule, if present, validates.
+//   - Type matches the populated params oneof — a caller cannot say
+//     `Type=USER` while sending an Ssh oneof and have the dispatch
+//     path treat it as a USER action with garbage params.
+func validateInlineAction(ctx context.Context, action *pm.Action) error {
 	if action == nil {
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action is required")
 	}
-	switch p := action.Params.(type) {
-	case *pm.Action_Package:
-		return Validate(ctx, p.Package)
-	case *pm.Action_Shell:
-		if err := Validate(ctx, p.Shell); err != nil {
+	if action.Type == pm.ActionType_ACTION_TYPE_UNSPECIFIED {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action type is required")
+	}
+	if action.TimeoutSeconds < 0 || action.TimeoutSeconds > 3600 {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "timeout_seconds must be between 0 and 3600")
+	}
+	if action.Schedule != nil {
+		if err := Validate(ctx, action.Schedule); err != nil {
 			return err
 		}
-		return validateShellScriptChoice(ctx, p.Shell)
-	case *pm.Action_Service:
-		return Validate(ctx, p.Service)
-	case *pm.Action_File:
-		return Validate(ctx, p.File)
-	case *pm.Action_App:
-		return Validate(ctx, p.App)
-	case *pm.Action_Flatpak:
-		return Validate(ctx, p.Flatpak)
-	case *pm.Action_Update:
-		return Validate(ctx, p.Update)
-	case *pm.Action_Repository:
-		return Validate(ctx, p.Repository)
-	case *pm.Action_Directory:
-		return Validate(ctx, p.Directory)
-	case *pm.Action_User:
-		return Validate(ctx, p.User)
-	case *pm.Action_Ssh:
-		return Validate(ctx, p.Ssh)
-	case *pm.Action_Sshd:
-		return Validate(ctx, p.Sshd)
-	case *pm.Action_AdminPolicy:
-		return Validate(ctx, p.AdminPolicy)
-	case *pm.Action_Lps:
-		return Validate(ctx, p.Lps)
-	case *pm.Action_Encryption:
-		return Validate(ctx, p.Encryption)
-	case *pm.Action_Group:
-		return Validate(ctx, p.Group)
-	case *pm.Action_Wifi:
-		return Validate(ctx, p.Wifi)
-	case *pm.Action_AgentUpdate:
-		if p.AgentUpdate != nil {
-			return validateAgentUpdateParams(ctx, p.AgentUpdate)
+	}
+
+	params := extractActionParamsMsg(action)
+	if params == nil {
+		// ACTION_TYPE_UPDATE has no params payload — that one
+		// matches `nil` legitimately. Every other type must
+		// carry a populated oneof.
+		if action.Type == pm.ActionType_ACTION_TYPE_UPDATE {
+			return nil
 		}
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params are required")
+	}
+	if !actionParamsMatchType(action.Type, action.Params) {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params do not match action.Type")
+	}
+	if err := Validate(ctx, params); err != nil {
+		return err
+	}
+	if shell, ok := params.(*pm.ShellParams); ok {
+		return validateShellScriptChoice(ctx, shell)
+	}
+	if agentUpdate, ok := params.(*pm.AgentUpdateParams); ok {
+		return validateAgentUpdateParams(ctx, agentUpdate)
 	}
 	return nil
+}
+
+// actionParamsMatchType returns true when the populated params oneof
+// matches the declared action.Type. The dispatch path trusts both
+// fields independently — without this guard, a caller could route a
+// Type=USER action through the Action_Ssh oneof and the agent would
+// receive a USER action whose params bytes are an Ssh proto, leading
+// to silent param corruption.
+func actionParamsMatchType(t pm.ActionType, params interface{}) bool {
+	switch t {
+	case pm.ActionType_ACTION_TYPE_PACKAGE:
+		_, ok := params.(*pm.Action_Package)
+		return ok
+	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
+		_, ok := params.(*pm.Action_App)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FLATPAK:
+		_, ok := params.(*pm.Action_Flatpak)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
+		_, ok := params.(*pm.Action_Shell)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		_, ok := params.(*pm.Action_Service)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FILE:
+		_, ok := params.(*pm.Action_File)
+		return ok
+	case pm.ActionType_ACTION_TYPE_UPDATE:
+		// ACTION_TYPE_UPDATE may carry either *pm.Action_Update or
+		// nil params (kicks off whatever the agent's package
+		// manager considers an update). Both shapes are valid.
+		if params == nil {
+			return true
+		}
+		_, ok := params.(*pm.Action_Update)
+		return ok
+	case pm.ActionType_ACTION_TYPE_REPOSITORY:
+		_, ok := params.(*pm.Action_Repository)
+		return ok
+	case pm.ActionType_ACTION_TYPE_DIRECTORY:
+		_, ok := params.(*pm.Action_Directory)
+		return ok
+	case pm.ActionType_ACTION_TYPE_USER:
+		_, ok := params.(*pm.Action_User)
+		return ok
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		_, ok := params.(*pm.Action_Group)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSH:
+		_, ok := params.(*pm.Action_Ssh)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		_, ok := params.(*pm.Action_Sshd)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		_, ok := params.(*pm.Action_AdminPolicy)
+		return ok
+	case pm.ActionType_ACTION_TYPE_LPS:
+		_, ok := params.(*pm.Action_Lps)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		_, ok := params.(*pm.Action_Encryption)
+		return ok
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		_, ok := params.(*pm.Action_Wifi)
+		return ok
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		_, ok := params.(*pm.Action_AgentUpdate)
+		return ok
+	}
+	return false
 }
 
 // validateUpdateActionParams validates params for UpdateActionParamsRequest using struct tags.
@@ -619,18 +693,24 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 }
 
 // signAction computes a signature over the action's canonical
-// payload and persists it in the projection. Fail-closed: if signing
-// or persistence fails, the caller must NOT return success to the
-// user, otherwise the action lives in the DB as unsigned and either
-// (a) the agent rejects it on dispatch, or (b) a later ring that
-// still trusts unsigned actions runs it silently. Either outcome
-// silently diverges the projection from the signed-action contract.
+// payload and persists it in the projection. Fail-closed: every
+// non-success path returns an error, including a nil signer.
+//
+// A nil signer is a wiring mistake, not a soft condition — main.go
+// constructs ActionHandler with the real internal/ca signer; tests
+// that need to skip real cryptography pass NoOpSigner instead, so
+// the "no signer" path NEVER produces unsigned rows in the DB
+// silently. Without this guard, a misconfigured production deploy
+// would happily Create / Update / Dispatch unsigned actions that
+// the agent then drops on receipt, leaving execution rows in
+// "pending forever" with no operator-visible cause.
 //
 // The returned error is already wrapped as a Connect error so
 // handlers can `return nil, err` directly.
 func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjection) error {
 	if h.signer == nil {
-		return nil
+		h.logger.Error("signAction called with nil signer — wiring bug", "action_id", action.ID)
+		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
 
 	paramsJSON := action.Params
@@ -747,12 +827,12 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
-		// Run the same per-oneof validation Create applies, so a
-		// caller cannot bypass Validate by routing their payload
-		// through Dispatch's inline branch. validateInlineActionPayload
+		// Run the same per-oneof validation Create applies, plus
+		// the outer Action invariants (Type non-unspecified, timeout
+		// bounds, schedule, params-match-type). validateInlineAction
 		// also rejects nil — important, otherwise extractActionParamsMsg
 		// below would panic on the typed-nil inner message.
-		if err := validateInlineActionPayload(ctx, action); err != nil {
+		if err := validateInlineAction(ctx, action); err != nil {
 			return nil, err
 		}
 		actionType = action.Type
@@ -803,17 +883,21 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		// for dispatched actions. Fail-closed: enqueuing an unsigned
 		// dispatch means the agent drops the task on arrival, so the
 		// execution-record we just wrote turns into an unreachable
-		// "pending forever" state until the user cancels it. Abort
-		// instead so the caller sees the failure up-front.
-		if h.signer != nil {
-			sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
-			if signErr != nil {
-				h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
-				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
-			}
-			signature = sig
-			paramsCanonical = paramsJSON
+		// "pending forever" state until the user cancels it. Nil
+		// signer is a wiring bug (production wires the real CA;
+		// tests pass NoOpSigner) — refuse the dispatch instead of
+		// silently emitting an unsigned task.
+		if h.signer == nil {
+			h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 		}
+		sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+		if signErr != nil {
+			h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
+		}
+		signature = sig
+		paramsCanonical = paramsJSON
 
 		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 			ExecutionID:     id,

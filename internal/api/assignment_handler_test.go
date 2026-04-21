@@ -15,7 +15,7 @@ import (
 
 func TestCreateAssignment_ActionToDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -39,7 +39,7 @@ func TestCreateAssignment_ActionToDevice(t *testing.T) {
 
 func TestCreateAssignment_SetToGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -60,7 +60,7 @@ func TestCreateAssignment_SetToGroup(t *testing.T) {
 
 func TestCreateAssignment_Idempotent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -87,7 +87,7 @@ func TestCreateAssignment_Idempotent(t *testing.T) {
 
 func TestDeleteAssignment(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -111,7 +111,7 @@ func TestDeleteAssignment(t *testing.T) {
 
 func TestListAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -136,7 +136,7 @@ func TestListAssignments(t *testing.T) {
 
 func TestCreateAssignment_ActionToUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -158,7 +158,7 @@ func TestCreateAssignment_ActionToUser(t *testing.T) {
 
 func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -180,7 +180,7 @@ func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
 
 func TestCreateAssignment_UserNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -199,7 +199,7 @@ func TestCreateAssignment_UserNotFound(t *testing.T) {
 
 func TestGetUserAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -237,7 +237,7 @@ func TestGetUserAssignments(t *testing.T) {
 
 func TestGetDeviceAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	actionHandler := api.NewActionHandler(st, slog.Default(), nil)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
