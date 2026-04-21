@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -440,4 +441,24 @@ func TestDeleteUserGroup_CleansUpMembersAndRoles(t *testing.T) {
 	perms, err = st.Queries().GetUserPermissionsWithGroups(context.Background(), userID)
 	require.NoError(t, err)
 	assert.NotContains(t, perms, "GetDevice")
+}
+
+// TestEvaluateDynamicUserGroup_NotAuthenticated is the regression
+// lock for the rc7 cleanup. The handler's session-invalidation
+// bump used to be gated on `if userCtx, ok := auth.UserFromContext
+// (ctx); ok`, so a missing auth context silently skipped the bump
+// — an admin who re-evaluated the group thought they revoked
+// access but existing JWTs kept working. The handler now requires
+// auth at the boundary so the bump is unconditional.
+func TestEvaluateDynamicUserGroup_NotAuthenticated(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	_, err := h.EvaluateDynamicUserGroup(context.Background(), connect.NewRequest(&pm.EvaluateDynamicUserGroupRequest{
+		Id: "any",
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }

@@ -59,6 +59,18 @@ const (
 // ControlInboxQueue is the Asynq queue name for gateway → control messages.
 const ControlInboxQueue = "control:inbox"
 
+// ControlTerminalAuditQueue is a dedicated Asynq queue for terminal
+// stdin audit chunks. The control server runs a second Asynq worker
+// against this queue with Concurrency=1 so chunks for the same session
+// are applied to the terminal_sessions.input column strictly in order
+// — the AppendTerminalSessionChunk query guards against task
+// redelivery (dup sequences) but NOT against two workers committing
+// different sequences concurrently, which would drop the later
+// committer's bytes. Isolating the task type on a serial queue keeps
+// the inbox's 10-worker pool available for everything else while the
+// audit path stays lossless.
+const ControlTerminalAuditQueue = "control:terminal_audit"
+
 // Task type constants for search index updates (search queue).
 const (
 	// TypeSearchReindex updates a single entity in the search index.

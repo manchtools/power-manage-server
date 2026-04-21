@@ -510,7 +510,49 @@ func main() {
 		}
 		defer aqServer.Shutdown()
 
-		logger.Info("Asynq task queue initialized", "valkey_addr", cfg.ValkeyAddr, "search_enabled", true)
+		// rc7: dedicated Asynq server for terminal audit chunks.
+		// Concurrency=1 so per-session chunks commit to
+		// terminal_sessions.input strictly in sequence order — the
+		// AppendTerminalSessionChunk query's last_sequence guard
+		// prevents duplicate redeliveries but not two workers racing
+		// on different sequences, which would drop the loser's bytes.
+		// See taskqueue.ControlTerminalAuditQueue for the full
+		// rationale.
+		terminalAuditServer := asynq.NewServer(
+			asynq.RedisClientOpt{
+				Addr:     cfg.ValkeyAddr,
+				Password: cfg.ValkeyPassword,
+				DB:       cfg.ValkeyDB,
+			},
+			asynq.Config{
+				Concurrency: 1,
+				Queues: map[string]int{
+					taskqueue.ControlTerminalAuditQueue: 1,
+				},
+				Logger: asynqutil.NewLogger(aqLogger.With("queue", "terminal_audit")),
+				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+					retried, _ := asynq.GetRetryCount(ctx)
+					maxRetry, _ := asynq.GetMaxRetry(ctx)
+					aqLogger.Error("terminal audit task handler failed",
+						"task_type", task.Type(),
+						"error", err,
+						"retry", retried,
+						"max_retry", maxRetry,
+					)
+				}),
+			},
+		)
+		if err := terminalAuditServer.Start(inboxWorker.NewTerminalAuditMux()); err != nil {
+			logger.Error("failed to start terminal audit Asynq server", "error", err)
+			os.Exit(1)
+		}
+		defer terminalAuditServer.Shutdown()
+
+		logger.Info("Asynq task queue initialized",
+			"valkey_addr", cfg.ValkeyAddr,
+			"search_enabled", true,
+			"terminal_audit_queue", taskqueue.ControlTerminalAuditQueue,
+		)
 	}
 
 	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)

@@ -51,7 +51,11 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ActionSi
 	}
 }
 
-// NewMux returns an Asynq ServeMux with handlers for all control inbox task types.
+// NewMux returns an Asynq ServeMux with handlers for the main
+// control inbox queue. The terminal audit chunk handler is split
+// out onto its own mux (NewTerminalAuditMux) so a dedicated Asynq
+// server can process it with Concurrency=1 — see the documentation
+// on taskqueue.ControlTerminalAuditQueue.
 func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskqueue.TypeDeviceHello, w.handleDeviceHello)
@@ -63,6 +67,17 @@ func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeSecurityAlert, w.handleSecurityAlert)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKeyResult, w.handleRevokeLuksDeviceKeyResult)
 	mux.HandleFunc(taskqueue.TypeLogQueryResult, w.handleLogQueryResult)
+	return mux
+}
+
+// NewTerminalAuditMux returns an Asynq ServeMux with ONLY the
+// terminal-audit-chunk handler. Mounted on a second Asynq server
+// with Concurrency=1 so per-session chunks are applied strictly in
+// sequence order. If we served this on the main inbox server's
+// 10-worker pool, two workers could race on the last_sequence
+// guard and the loser's bytes would be silently dropped.
+func (w *InboxWorker) NewTerminalAuditMux() *asynq.ServeMux {
+	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskqueue.TypeTerminalAuditChunk, w.handleTerminalAuditChunk)
 	return mux
 }
@@ -748,10 +763,24 @@ func stableExecutionID(deviceID, actionID, completedAt string) string {
 	return id.String()
 }
 
-// handleTerminalAuditChunk persists a terminal stdin chunk as an
-// audit event on the device stream. The gateway tees every binary
-// WebSocket frame (stdin) to this handler so the full input sequence
-// is reconstructable from the event store for forensics / replay.
+// handleTerminalAuditChunk appends a stdin chunk to the owning
+// session's row in terminal_sessions. The gateway tees batched
+// stdin to this handler (see terminalAuditBatcher in the gateway's
+// handler package); the batcher already coalesces keystrokes into
+// ≤4 KiB chunks before dispatch, so the hot path here is a single
+// indexed UPDATE per batch.
+//
+// rc7 rework note: prior versions emitted one TerminalInputChunk
+// event per chunk onto the device's audit stream. That polluted
+// the event log with one opaque base64 fragment per chunk and
+// left no way to group them for replay. terminal_sessions now
+// owns the stdin bytes; the lifecycle events
+// (TerminalSessionStarted / Stopped / Terminated) stay on the
+// audit stream as the user-visible audit markers.
+//
+// The sqlc query uses INSERT ... ON CONFLICT so a chunk arriving
+// before the lifecycle Started event still creates a valid row;
+// the Started handler's upsert then completes the metadata.
 func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Task) error {
 	var payload taskqueue.TerminalAuditChunkPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
@@ -764,17 +793,18 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		return nil
 	}
 
-	return w.store.AppendEvent(ctx, store.Event{
-		StreamType: "device",
-		StreamID:   payload.DeviceID,
-		EventType:  "TerminalInputChunk",
-		Data: map[string]any{
-			"session_id": payload.SessionID,
-			"user_id":    payload.UserID,
-			"data":       payload.Data,
-			"sequence":   payload.Sequence,
-		},
-		ActorType: "user",
-		ActorID:   payload.UserID,
+	return w.store.Queries().AppendTerminalSessionChunk(ctx, db.AppendTerminalSessionChunkParams{
+		SessionID: payload.SessionID,
+		DeviceID:  payload.DeviceID,
+		UserID:    payload.UserID,
+		Input:     payload.Data,
+		// Sequence guards against duplicate / out-of-order retries
+		// from Asynq. The gateway's audit batcher stamps each chunk
+		// with a strictly-monotonic per-session counter; the query
+		// only applies the append when the incoming sequence
+		// strictly exceeds the stored last_sequence, so a
+		// redelivered chunk is a no-op rather than a corrupting
+		// double-append.
+		Sequence: payload.Sequence,
 	})
 }
