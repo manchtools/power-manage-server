@@ -312,7 +312,18 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 		"shell":      "/usr/sbin/nologin",
 		"createHome": false,
 		"comment":    "Power Manage terminal user for " + user.LinuxUsername,
-		"system":     true, // AccountsService SystemAccount=true → hidden from login screens
+		// AccountsService SystemAccount=true → hidden from login screens
+		// (GDM/SDDM/LightDM). The proto field is UserParams.hidden with
+		// protojson camelCase "hidden"; an earlier revision passed
+		// "system": true which does not map to any proto field and so
+		// was silently dropped by protojson, leaving pm-tty-* accounts
+		// visible on login screens on every device they're assigned to.
+		//
+		// system_user is deliberately NOT set here. It would imply the
+		// useradd --system flag (UID < 1000, no home by default); pm-tty
+		// accounts use UID = <base>+100000 which is not a system UID and
+		// the semantics would be wrong.
+		"hidden": true,
 	}
 	if user.Disabled {
 		params["disabled"] = true
