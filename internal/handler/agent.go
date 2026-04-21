@@ -122,7 +122,11 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 	h.terminalSessions = reg
 }
 
-// MTLSMiddleware extracts the device ID from the client certificate and adds it to the context.
+// MTLSMiddleware extracts the device ID from the client certificate
+// and adds it to the context. It also refuses any peer whose cert
+// does not carry the "agent" peer-class URI SAN — the AgentService
+// listener is for managed devices only, and a leaked gateway or
+// control cert must not be usable here.
 func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
@@ -140,6 +144,32 @@ func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 			)
 			http.Error(w, "client certificate required", http.StatusUnauthorized)
 			return
+		}
+
+		// Enforce peer class. Agent certs issued by the internal CA
+		// carry a spiffe://power-manage/agent URI SAN; gateway /
+		// control certs carry a different class and must be
+		// rejected before reaching AgentService.
+		if r.TLS != nil {
+			class, err := mtls.PeerClassFromTLS(r.TLS)
+			if err != nil {
+				logger.Warn("mTLS peer-class missing",
+					"error", err,
+					"device_id", deviceID,
+					"remote_addr", r.RemoteAddr,
+				)
+				http.Error(w, "peer class required", http.StatusForbidden)
+				return
+			}
+			if class != mtls.PeerClassAgent {
+				logger.Warn("mTLS peer-class mismatch on AgentService",
+					"device_id", deviceID,
+					"remote_addr", r.RemoteAddr,
+					"presented", class,
+				)
+				http.Error(w, "peer class not allowed", http.StatusForbidden)
+				return
+			}
 		}
 
 		// Add device ID to context

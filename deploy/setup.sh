@@ -14,6 +14,14 @@
 
 set -e
 
+# Refuse to create files readable by group/other. Private keys are
+# chmod'd to 600 explicitly after generation, but a wider default
+# umask would still let openssl briefly create the key with 644
+# permissions on disk — a window where a racing reader on a
+# multi-user host could grab it before the chmod fires. umask 077
+# closes that window across every write in this script.
+umask 077
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -123,7 +131,7 @@ generate_ca() {
         -addext "keyUsage=critical,keyCertSign,cRLSign" \
         -addext "subjectKeyIdentifier=hash"
 
-    chmod 644 "$CERTS_DIR/ca.key"
+    chmod 600 "$CERTS_DIR/ca.key"
     chmod 644 "$CERTS_DIR/ca.crt"
 
     log_info "CA generated successfully"
@@ -150,15 +158,19 @@ generate_gateway_cert() {
         -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
         -out "$CERTS_DIR/gateway.csr"
 
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain
+    # matching, plus a spiffe:// URI SAN that identifies this cert as
+    # a "gateway" peer class — the control server's peer-class
+    # middleware requires that class on the InternalService listener
+    # so a leaked agent cert cannot impersonate a gateway).
     openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -extfile <(printf "subjectAltName=DNS:%s\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
+        -extfile <(printf "subjectAltName=DNS:%s,URI:spiffe://power-manage/gateway\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
         -out "$CERTS_DIR/gateway.crt"
 
     rm -f "$CERTS_DIR/gateway.csr"
-    chmod 644 "$CERTS_DIR/gateway.key"
+    chmod 600 "$CERTS_DIR/gateway.key"
     chmod 644 "$CERTS_DIR/gateway.crt"
 
     log_info "Gateway certificate generated (valid 825 days)"
@@ -185,15 +197,19 @@ generate_control_cert() {
         -subj "/CN=control/O=Power Manage" \
         -out "$CERTS_DIR/control.csr"
 
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
+    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain
+    # matching, plus a spiffe:// URI SAN marking this cert as the
+    # "control" peer class — the gateway's GatewayService listener
+    # requires that class so an agent cert cannot pose as the control
+    # plane and issue admin fan-out calls).
     openssl x509 -req -in "$CERTS_DIR/control.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost\nauthorityKeyIdentifier=keyid:always") \
+        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost,URI:spiffe://power-manage/control\nauthorityKeyIdentifier=keyid:always") \
         -out "$CERTS_DIR/control.crt"
 
     rm -f "$CERTS_DIR/control.csr"
-    chmod 644 "$CERTS_DIR/control.key"
+    chmod 600 "$CERTS_DIR/control.key"
     chmod 644 "$CERTS_DIR/control.crt"
 
     log_info "Control certificate generated (valid 825 days)"
@@ -228,7 +244,7 @@ generate_control_public_cert() {
         -out "$CERTS_DIR/control-public.crt"
 
     rm -f "$CERTS_DIR/control-public.csr"
-    chmod 644 "$CERTS_DIR/control-public.key"
+    chmod 600 "$CERTS_DIR/control-public.key"
     chmod 644 "$CERTS_DIR/control-public.crt"
 
     log_info "Control public certificate generated (valid 825 days)"

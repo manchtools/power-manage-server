@@ -59,10 +59,7 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 			if err := Validate(ctx, p.Shell); err != nil {
 				return err
 			}
-			if p.Shell.Script == "" && p.Shell.DetectionScript == "" {
-				return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
-			}
-			return nil
+			return validateShellScriptChoice(ctx, p.Shell)
 		}
 	case *pm.CreateActionRequest_Service:
 		if p.Service != nil {
@@ -132,6 +129,83 @@ func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest
 	return nil
 }
 
+// validateShellScriptChoice enforces the Create-time rule that a
+// shell action must specify at least one of `script` or
+// `detection_script` — otherwise the action is a no-op that signs
+// cleanly and turns into a mystery when operators can't figure out
+// why nothing ran. Applied anywhere a ShellParams is accepted
+// (Create, Update params, inline Dispatch).
+func validateShellScriptChoice(ctx context.Context, p *pm.ShellParams) error {
+	if p == nil {
+		return nil
+	}
+	if p.Script == "" && p.DetectionScript == "" {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
+	}
+	return nil
+}
+
+// validateInlineActionPayload validates an inline Action proto on a
+// DispatchAction request. The non-inline DispatchAction path pulls
+// the action by ID from the DB, which has already been validated at
+// Create/Update time; inline actions skip that lookup and would
+// otherwise reach the agent unvalidated, potentially signing a
+// malformed or oversized payload that the agent silently drops.
+//
+// Every oneof branch mirrors validateCreateActionParams — including
+// the shell "at least one of script or detection_script" rule —
+// so an inline dispatched action cannot do anything a Create-path
+// action cannot.
+func validateInlineActionPayload(ctx context.Context, action *pm.Action) error {
+	if action == nil {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action is required")
+	}
+	switch p := action.Params.(type) {
+	case *pm.Action_Package:
+		return Validate(ctx, p.Package)
+	case *pm.Action_Shell:
+		if err := Validate(ctx, p.Shell); err != nil {
+			return err
+		}
+		return validateShellScriptChoice(ctx, p.Shell)
+	case *pm.Action_Service:
+		return Validate(ctx, p.Service)
+	case *pm.Action_File:
+		return Validate(ctx, p.File)
+	case *pm.Action_App:
+		return Validate(ctx, p.App)
+	case *pm.Action_Flatpak:
+		return Validate(ctx, p.Flatpak)
+	case *pm.Action_Update:
+		return Validate(ctx, p.Update)
+	case *pm.Action_Repository:
+		return Validate(ctx, p.Repository)
+	case *pm.Action_Directory:
+		return Validate(ctx, p.Directory)
+	case *pm.Action_User:
+		return Validate(ctx, p.User)
+	case *pm.Action_Ssh:
+		return Validate(ctx, p.Ssh)
+	case *pm.Action_Sshd:
+		return Validate(ctx, p.Sshd)
+	case *pm.Action_AdminPolicy:
+		return Validate(ctx, p.AdminPolicy)
+	case *pm.Action_Lps:
+		return Validate(ctx, p.Lps)
+	case *pm.Action_Encryption:
+		return Validate(ctx, p.Encryption)
+	case *pm.Action_Group:
+		return Validate(ctx, p.Group)
+	case *pm.Action_Wifi:
+		return Validate(ctx, p.Wifi)
+	case *pm.Action_AgentUpdate:
+		if p.AgentUpdate != nil {
+			return validateAgentUpdateParams(ctx, p.AgentUpdate)
+		}
+	}
+	return nil
+}
+
 // validateUpdateActionParams validates params for UpdateActionParamsRequest using struct tags.
 func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsRequest) error {
 	switch p := req.Params.(type) {
@@ -141,7 +215,10 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 		}
 	case *pm.UpdateActionParamsRequest_Shell:
 		if p.Shell != nil {
-			return Validate(ctx, p.Shell)
+			if err := Validate(ctx, p.Shell); err != nil {
+				return err
+			}
+			return validateShellScriptChoice(ctx, p.Shell)
 		}
 	case *pm.UpdateActionParamsRequest_Service:
 		if p.Service != nil {
@@ -300,8 +377,14 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	// Sign the action so agents can verify authenticity
-	h.signAction(ctx, &action)
+	// Sign the action so agents can verify authenticity. Fail-closed:
+	// an unsigned action in the DB is a contract violation — callers
+	// expect every row to carry a verifiable signature, and the agent
+	// rejects rows without one on dispatch. Returning success here
+	// would quietly produce rows that will never run.
+	if err := h.signAction(ctx, &action); err != nil {
+		return nil, err
+	}
 
 	h.enqueueActionReindex(ctx, action)
 
@@ -518,8 +601,15 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
-	// Re-sign the action after params update
-	h.signAction(ctx, &action)
+	// Re-sign the action after params update. Fail-closed: the
+	// previous signature covers the old params and no longer
+	// matches, so accepting a signing failure here would leave the
+	// DB row with a stale signature that the agent will reject —
+	// silently bricking the updated action until the operator
+	// figures out what happened.
+	if err := h.signAction(ctx, &action); err != nil {
+		return nil, err
+	}
 
 	h.enqueueActionReindex(ctx, action)
 
@@ -528,12 +618,19 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	}), nil
 }
 
-// signAction computes a signature over the action's canonical payload and
-// persists it in the projection. This is a best-effort operation; signing
-// failures are logged but do not fail the parent request.
-func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjection) {
+// signAction computes a signature over the action's canonical
+// payload and persists it in the projection. Fail-closed: if signing
+// or persistence fails, the caller must NOT return success to the
+// user, otherwise the action lives in the DB as unsigned and either
+// (a) the agent rejects it on dispatch, or (b) a later ring that
+// still trusts unsigned actions runs it silently. Either outcome
+// silently diverges the projection from the signed-action contract.
+//
+// The returned error is already wrapped as a Connect error so
+// handlers can `return nil, err` directly.
+func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjection) error {
 	if h.signer == nil {
-		return
+		return nil
 	}
 
 	paramsJSON := action.Params
@@ -544,7 +641,7 @@ func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjec
 	sig, err := h.signer.Sign(action.ID, action.ActionType, paramsJSON)
 	if err != nil {
 		h.logger.Error("failed to sign action", "action_id", action.ID, "error", err)
-		return
+		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign action")
 	}
 
 	if err := h.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
@@ -553,12 +650,13 @@ func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjec
 		ParamsCanonical: paramsJSON,
 	}); err != nil {
 		h.logger.Error("failed to store action signature", "action_id", action.ID, "error", err)
-		return
+		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store action signature")
 	}
 
 	// Update the in-memory struct so the response includes the signature
 	action.Signature = sig
 	action.ParamsCanonical = paramsJSON
+	return nil
 }
 
 // DeleteAction deletes an action.
@@ -649,6 +747,14 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
+		// Run the same per-oneof validation Create applies, so a
+		// caller cannot bypass Validate by routing their payload
+		// through Dispatch's inline branch. validateInlineActionPayload
+		// also rejects nil — important, otherwise extractActionParamsMsg
+		// below would panic on the typed-nil inner message.
+		if err := validateInlineActionPayload(ctx, action); err != nil {
+			return nil, err
+		}
 		actionType = action.Type
 		desiredState = action.DesiredState
 		params, err = serializeProtoParams(extractActionParamsMsg(action))
@@ -692,13 +798,21 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	if h.aqClient != nil {
 		paramsJSON, _ := json.Marshal(params)
 
-		// Always re-sign with the execution ID — the agent verifies against
-		// the received action ID, which is the execution ID for dispatched actions.
+		// Always re-sign with the execution ID — the agent verifies
+		// against the received action ID, which is the execution ID
+		// for dispatched actions. Fail-closed: enqueuing an unsigned
+		// dispatch means the agent drops the task on arrival, so the
+		// execution-record we just wrote turns into an unreachable
+		// "pending forever" state until the user cancels it. Abort
+		// instead so the caller sees the failure up-front.
 		if h.signer != nil {
-			if sig, err := h.signer.Sign(id, int32(actionType), paramsJSON); err == nil {
-				signature = sig
-				paramsCanonical = paramsJSON
+			sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+			if signErr != nil {
+				h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
 			}
+			signature = sig
+			paramsCanonical = paramsJSON
 		}
 
 		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{

@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/connection"
@@ -55,13 +55,61 @@ func NewTerminalBridgeHandler(
 	}
 }
 
+// terminalSubprotocolPrefix is the Sec-WebSocket-Protocol value
+// prefix the gateway accepts in place of a `?token=` query
+// parameter. Clients send `bearer.<token>`; the gateway echoes the
+// same string in its response so the handshake completes. This
+// moves the token off the URL — where reverse-proxy access logs,
+// browser referrer headers, and devtools network panels all tend
+// to capture query strings verbatim — into a header that is far
+// less likely to leak.
+const terminalSubprotocolPrefix = "bearer."
+
+// extractTerminalToken returns the session token from (a) the
+// Sec-WebSocket-Protocol header with the `bearer.<token>` shape,
+// preferred; or (b) the legacy `?token=` query parameter. When the
+// subprotocol form is used, the chosen subprotocol is returned so
+// the Accept call can echo it back — browsers reject a handshake
+// response that does not echo one of the client's offered
+// protocols.
+func extractTerminalToken(r *http.Request) (token, chosenSubprotocol string) {
+	// Sec-WebSocket-Protocol can be comma-separated with multiple
+	// offers. We scan for any entry starting with `bearer.` and
+	// use the first one. The header may also be repeated; Values
+	// flattens both shapes.
+	for _, raw := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, offer := range strings.Split(raw, ",") {
+			offer = strings.TrimSpace(offer)
+			if strings.HasPrefix(offer, terminalSubprotocolPrefix) {
+				t := strings.TrimPrefix(offer, terminalSubprotocolPrefix)
+				if t != "" {
+					return t, offer
+				}
+			}
+		}
+	}
+	// Fallback: legacy `?token=...`. The handler logs a warning when
+	// this path is taken so operators can track clients still using
+	// the old shape.
+	return r.URL.Query().Get("token"), ""
+}
+
 // ServeHTTP handles the /terminal WebSocket endpoint.
 func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session_id")
-	token := r.URL.Query().Get("token")
+	token, chosenSubprotocol := extractTerminalToken(r)
 	if sessionID == "" || token == "" {
-		http.Error(w, "session_id and token query parameters are required", http.StatusBadRequest)
+		http.Error(w, "session_id and token are required (use Sec-WebSocket-Protocol: bearer.<token> or ?token=...)", http.StatusBadRequest)
 		return
+	}
+	if chosenSubprotocol == "" {
+		// Legacy path — token travelled in the URL. Warn so the
+		// operator can trace old clients. Once all clients have
+		// migrated, we can turn this into a hard reject.
+		h.logger.Warn("terminal token received via query parameter; switch client to Sec-WebSocket-Protocol: bearer.<token>",
+			"session_id", sessionID,
+			"remote_addr", r.RemoteAddr,
+		)
 	}
 
 	logger := h.logger.With("session_id", sessionID)
@@ -85,12 +133,21 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 
 	// Upgrade to WebSocket.
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// The gateway sits behind a reverse proxy that may strip the
-		// Origin header. InsecureSkipVerify is safe here because the
-		// session token is the authentication mechanism, not CORS.
+	acceptOpts := &websocket.AcceptOptions{
+		// The gateway sits behind a reverse proxy that may strip
+		// the Origin header. The authentication mechanism is the
+		// session token (validated above), not CORS.
 		InsecureSkipVerify: true,
-	})
+	}
+	if chosenSubprotocol != "" {
+		// Echo the bearer.<token> subprotocol back to the client so
+		// the handshake succeeds. The token value itself is not
+		// sensitive in the response — the client already sent it —
+		// and we MUST echo one of the client's offers or browsers
+		// reject the handshake.
+		acceptOpts.Subprotocols = []string{chosenSubprotocol}
+	}
+	ws, err := websocket.Accept(w, r, acceptOpts)
 	if err != nil {
 		logger.Warn("websocket upgrade failed", "error", err)
 		return

@@ -34,6 +34,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -619,8 +620,13 @@ func main() {
 	}
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 
+	// Peer-class gate: InternalService handles credential-bearing
+	// proxy calls (LUKS keys, LPS passwords). A compromised agent
+	// cert must NOT be usable here — only gateway replicas, which
+	// present certs issued out of band by setup.sh with a spiffe://
+	// peer-class URI, are admitted.
 	internalMux := http.NewServeMux()
-	internalMux.Handle(internalPath, internalH)
+	internalMux.Handle(internalPath, mtls.RequirePeerClass(logger, mtls.PeerClassGateway)(internalH))
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))

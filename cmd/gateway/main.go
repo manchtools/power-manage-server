@@ -399,10 +399,14 @@ func main() {
 	mux.Handle(path, bootstrappedHandler)
 
 	// Mount GatewayService on the mTLS listener (internal-only,
-	// called by the control server for admin list/terminate fan-out).
+	// called by the control server for admin list/terminate fan-
+	// out). Peer-class gate: only the control server's cert (which
+	// setup.sh stamps with spiffe://power-manage/control) is
+	// admitted — an agent cert that happens to chain to the same
+	// internal CA cannot invoke admin fan-out RPCs.
 	gwSvcHandler := handler.NewGatewayServiceHandler(terminalSessions, manager, logger.With("component", "gateway_service"))
 	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler)
-	mux.Handle(gwSvcPath, gwSvcH)
+	mux.Handle(gwSvcPath, mtls.RequirePeerClass(logger, mtls.PeerClassControl)(gwSvcH))
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))

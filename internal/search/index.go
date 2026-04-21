@@ -56,10 +56,6 @@ const (
 	idxUserGroups         = "idx:user_groups"
 	idxExecutions         = "idx:executions"
 	idxAuditEvents        = "idx:audit_events"
-
-	// Warm window for high-volume data.
-	executionWarmDays = 90
-	auditWarmDays     = 90
 )
 
 // Scope constants used in task payloads and RPC requests.
