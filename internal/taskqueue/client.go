@@ -42,14 +42,26 @@ func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any, opts ..
 
 // EnqueueToControl enqueues a task to the control inbox queue.
 // The control server's Asynq server processes these tasks.
+//
+// Terminal audit chunks route to their own serial queue
+// (ControlTerminalAuditQueue) instead of the main inbox so an
+// independent Concurrency=1 worker applies them in order. See
+// ControlTerminalAuditQueue for the rationale — the per-chunk
+// AppendTerminalSessionChunk query is not safe to run under the
+// main inbox's 10-worker pool.
 func (c *Client) EnqueueToControl(taskType string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
+	queue := ControlInboxQueue
+	if taskType == TypeTerminalAuditChunk {
+		queue = ControlTerminalAuditQueue
+	}
+
 	task := asynq.NewTask(taskType, data)
-	_, err = c.client.Enqueue(task, asynq.Queue(ControlInboxQueue))
+	_, err = c.client.Enqueue(task, asynq.Queue(queue))
 	if err != nil {
 		return fmt.Errorf("enqueue to control: %w", err)
 	}

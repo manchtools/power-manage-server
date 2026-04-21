@@ -71,18 +71,17 @@ type AppendTerminalSessionChunkParams struct {
 // the lifecycle Started event. device_id and user_id come from
 // the chunk payload, so the placeholder is well-formed.
 //
-// Concurrency caveat: this query guards against Asynq REDELIVERY
-// of a single task (same sequence twice) but NOT against
-// concurrent workers dequeuing DIFFERENT sequences for the same
-// session in parallel. If the inbox worker runs with
-// concurrency > 1 and two chunks race, whichever UPDATE commits
-// first sets last_sequence; the other's guard fails and its
-// bytes are lost. The gateway's audit batcher emits chunks
-// serially per session at 1 s cadence, so simultaneous-in-flight
-// tasks for one session are unlikely in practice. For strict
-// safety under high-concurrency inbox deployments, either run
-// the TerminalAuditChunk handler with concurrency=1 or move to
-// a per-chunk table keyed by (session_id, sequence).
+// Concurrency note: this query's last_sequence guard defends
+// against Asynq REDELIVERY of a single task (same sequence twice),
+// but a NAIVE deployment with two workers dequeuing different
+// sequences for the same session in parallel could still drop
+// bytes on the loser of the race (whichever commits last fails
+// the guard and no-ops). To close that window, the control server
+// processes TypeTerminalAuditChunk on a dedicated Asynq server
+// with Concurrency=1 (queue ControlTerminalAuditQueue, wired up
+// in cmd/control/main.go). As long as the operator does not flip
+// that concurrency or re-route the task type to the main inbox
+// queue, per-session chunks commit strictly in sequence order.
 func (q *Queries) AppendTerminalSessionChunk(ctx context.Context, arg AppendTerminalSessionChunkParams) error {
 	_, err := q.db.Exec(ctx, appendTerminalSessionChunk,
 		arg.SessionID,

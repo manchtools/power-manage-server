@@ -51,7 +51,11 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ActionSi
 	}
 }
 
-// NewMux returns an Asynq ServeMux with handlers for all control inbox task types.
+// NewMux returns an Asynq ServeMux with handlers for the main
+// control inbox queue. The terminal audit chunk handler is split
+// out onto its own mux (NewTerminalAuditMux) so a dedicated Asynq
+// server can process it with Concurrency=1 — see the documentation
+// on taskqueue.ControlTerminalAuditQueue.
 func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskqueue.TypeDeviceHello, w.handleDeviceHello)
@@ -63,6 +67,17 @@ func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux.HandleFunc(taskqueue.TypeSecurityAlert, w.handleSecurityAlert)
 	mux.HandleFunc(taskqueue.TypeRevokeLuksDeviceKeyResult, w.handleRevokeLuksDeviceKeyResult)
 	mux.HandleFunc(taskqueue.TypeLogQueryResult, w.handleLogQueryResult)
+	return mux
+}
+
+// NewTerminalAuditMux returns an Asynq ServeMux with ONLY the
+// terminal-audit-chunk handler. Mounted on a second Asynq server
+// with Concurrency=1 so per-session chunks are applied strictly in
+// sequence order. If we served this on the main inbox server's
+// 10-worker pool, two workers could race on the last_sequence
+// guard and the loser's bytes would be silently dropped.
+func (w *InboxWorker) NewTerminalAuditMux() *asynq.ServeMux {
+	mux := asynq.NewServeMux()
 	mux.HandleFunc(taskqueue.TypeTerminalAuditChunk, w.handleTerminalAuditChunk)
 	return mux
 }
