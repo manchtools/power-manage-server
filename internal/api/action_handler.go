@@ -12,7 +12,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -1144,13 +1143,18 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	}), nil
 }
 
-// serializeProtoParams marshals a proto.Message to a map[string]any via protojson.
-// Returns an empty map if msg is nil.
+// serializeProtoParams marshals an action params proto to the
+// map[string]any shape that's stored in the event's Data field.
+// Delegates to actionparams.MarshalActionParams so the wire format
+// is identical for user-created and system-managed actions — both
+// use EmitUnpopulated so proto3 scalar zero values cross the wire
+// rather than being silently dropped. See that helper for the full
+// rationale.
 func serializeProtoParams(msg proto.Message) (map[string]any, error) {
 	if msg == nil {
 		return map[string]any{}, nil
 	}
-	data, err := protojson.Marshal(msg)
+	data, err := actionparams.MarshalActionParams(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal params: %w", err)
 	}

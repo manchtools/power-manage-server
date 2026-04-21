@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -178,20 +179,23 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 		comment = user.Email
 	}
 
-	params := map[string]any{
-		"username":   user.LinuxUsername,
-		"uid":        user.LinuxUid,
-		"createHome": true,
-		"comment":    comment,
+	// Typed *pm.UserParams (not map[string]any) so the Go compiler
+	// rejects any field name that doesn't exist on the proto. A past
+	// bug in syncTtyUserAction used the key "system" which protojson
+	// silently dropped on unmarshal — that class of typo cannot
+	// recur here.
+	params := &pm.UserParams{
+		Username:   user.LinuxUsername,
+		Uid:        user.LinuxUid,
+		CreateHome: true,
+		Comment:    comment,
+		Disabled:   user.Disabled,
 	}
 	if len(sshKeys) > 0 {
-		params["sshAuthorizedKeys"] = sshKeys
-	}
-	if user.Disabled {
-		params["disabled"] = true
+		params.SshAuthorizedKeys = sshKeys
 	}
 
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal user params: %w", err)
 	}
@@ -227,13 +231,14 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 }
 
 func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.UsersProjection) error {
-	params := map[string]any{
-		"users":         []string{user.LinuxUsername},
-		"allowPubkey":   user.SshAllowPubkey,
-		"allowPassword": user.SshAllowPassword,
+	// Typed *pm.SshParams — same rationale as syncUserProvisionAction.
+	params := &pm.SshParams{
+		Users:         []string{user.LinuxUsername},
+		AllowPubkey:   user.SshAllowPubkey,
+		AllowPassword: user.SshAllowPassword,
 	}
 
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal ssh params: %w", err)
 	}
@@ -304,32 +309,38 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 // directory, and the deterministic UID from the SDK's TTYUID helper.
 func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
 	ttyUsername := "pm-tty-" + user.LinuxUsername
-	ttyUID := int(user.LinuxUid) + 100000 // terminal.DefaultUIDOffset
+	ttyUID := int32(int(user.LinuxUid) + 100000) // terminal.DefaultUIDOffset
 
-	params := map[string]any{
-		"username":   ttyUsername,
-		"uid":        ttyUID,
-		"shell":      "/usr/sbin/nologin",
-		"createHome": false,
-		"comment":    "Power Manage terminal user for " + user.LinuxUsername,
-		// AccountsService SystemAccount=true → hidden from login screens
-		// (GDM/SDDM/LightDM). The proto field is UserParams.hidden with
-		// protojson camelCase "hidden"; an earlier revision passed
-		// "system": true which does not map to any proto field and so
-		// was silently dropped by protojson, leaving pm-tty-* accounts
-		// visible on login screens on every device they're assigned to.
-		//
-		// system_user is deliberately NOT set here. It would imply the
-		// useradd --system flag (UID < 1000, no home by default); pm-tty
-		// accounts use UID = <base>+100000 which is not a system UID and
-		// the semantics would be wrong.
-		"hidden": true,
-	}
-	if user.Disabled {
-		params["disabled"] = true
+	// Typed *pm.UserParams so the Go compiler rejects field-name
+	// typos. The previous map[string]any form accepted "system": true
+	// as a sibling of real fields — protojson silently dropped it on
+	// unmarshal and pm-tty-* accounts stayed visible on login screens.
+	//
+	// Field choices here:
+	//   - Hidden=true: AccountsService SystemAccount=true so the
+	//     account does NOT appear on graphical login screens
+	//     (GDM/SDDM/LightDM). This is what the previous "system"
+	//     key was trying (and failing) to express.
+	//   - CreateHome=false: pm-tty-* accounts are nologin by design
+	//     and should have no home directory. This used to be
+	//     silently inverted to true by the agent for non-system
+	//     users; agent-side fix is tracked separately but the
+	//     contract on the wire is now unambiguous.
+	//   - SystemUser=false (not set) deliberately: useradd --system
+	//     implies UID < 1000, which conflicts with pm-tty's
+	//     deterministic UID = <base>+100000. Visibility hiding uses
+	//     the Hidden bit instead.
+	params := &pm.UserParams{
+		Username:   ttyUsername,
+		Uid:        ttyUID,
+		Shell:      "/usr/sbin/nologin",
+		CreateHome: false,
+		Comment:    "Power Manage terminal user for " + user.LinuxUsername,
+		Hidden:     true,
+		Disabled:   user.Disabled,
 	}
 
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal tty user params: %w", err)
 	}
