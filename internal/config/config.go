@@ -155,6 +155,24 @@ type Config struct {
 // a global the way the old names could. The old names no longer work;
 // operators upgrading from rc2 must rename their .env entries.
 func FromEnv() *Config {
+	// Traefik self-registration defaults: the previous shape forced
+	// operators to set seven GATEWAY_TRAEFIK_* env vars by hand, and
+	// every real deployment set them to the same values. The defaults
+	// here match the reference compose:
+	//
+	//   * SelfRegister = true   — scaling-ready out of the box
+	//   * RootKey      = traefik — matches Traefik default --providers.redis.rootkey
+	//   * MTLSHost     = GATEWAY_DOMAIN   (not Traefik-prefixed — one name per thing)
+	//   * MTLSEntryPoint    = websecure   (same :443 as control, SNI-separated)
+	//   * TTYHost      = GATEWAY_TTY_DOMAIN (falls back to empty → TTY router disabled)
+	//   * TTYEntryPoint     = websecure
+	//   * TTYCertResolver   = letsencrypt
+	//
+	// Backends (MTLSBackend / TTYBackend) are auto-derived from the
+	// gateway's own routable IP address in cmd/gateway/main.go, so
+	// operators normally never set them either. Explicit values
+	// override the defaults in each case — useful for bring-your-own-
+	// Traefik topologies that differ from the reference stack.
 	return &Config{
 		ListenAddr:                getEnv("GATEWAY_LISTEN_ADDR", ":8080"),
 		ValkeyAddr:                getEnv("GATEWAY_VALKEY_ADDR", "localhost:6379"),
@@ -167,18 +185,32 @@ func FromEnv() *Config {
 		BootstrapHost:             getEnv("GATEWAY_BOOTSTRAP_HOST", ""),
 		WebListenAddr:             getEnv("GATEWAY_WEB_LISTEN_ADDR", ""),
 		InternalURL:               getEnv("GATEWAY_INTERNAL_URL", ""),
-		TraefikSelfRegister:       getEnvBool("GATEWAY_TRAEFIK_SELF_REGISTER", false),
-		TraefikRootKey:            getEnv("GATEWAY_TRAEFIK_ROOT_KEY", ""),
-		TraefikMTLSHost:           getEnv("GATEWAY_TRAEFIK_MTLS_HOST", ""),
-		TraefikMTLSBackend:        getEnv("GATEWAY_TRAEFIK_MTLS_BACKEND", ""),
-		TraefikMTLSEntryPoint:     getEnv("GATEWAY_TRAEFIK_MTLS_ENTRYPOINT", ""),
-		TraefikTTYHost:            getEnv("GATEWAY_TRAEFIK_TTY_HOST", ""),
-		TraefikTTYBackend:         getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
-		TraefikTTYEntryPoint:      getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", ""),
-		TraefikTTYCertResolver:    getEnv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", ""),
-		HeartbeatInterval:         getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
-		LogLevel:                  getEnv("GATEWAY_LOG_LEVEL", "info"),
+		TraefikSelfRegister:       getEnvBool("GATEWAY_TRAEFIK_SELF_REGISTER", true),
+		TraefikRootKey:            getEnv("GATEWAY_TRAEFIK_ROOT_KEY", "traefik"),
+		// MTLSHost reads GATEWAY_DOMAIN directly — same env var the
+		// rest of the stack uses, no separate GATEWAY_TRAEFIK_MTLS_HOST.
+		TraefikMTLSHost:        firstNonEmpty(os.Getenv("GATEWAY_TRAEFIK_MTLS_HOST"), os.Getenv("GATEWAY_DOMAIN")),
+		TraefikMTLSBackend:     getEnv("GATEWAY_TRAEFIK_MTLS_BACKEND", ""),
+		TraefikMTLSEntryPoint:  getEnv("GATEWAY_TRAEFIK_MTLS_ENTRYPOINT", "websecure"),
+		TraefikTTYHost:         firstNonEmpty(os.Getenv("GATEWAY_TRAEFIK_TTY_HOST"), os.Getenv("GATEWAY_TTY_DOMAIN")),
+		TraefikTTYBackend:      getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
+		TraefikTTYEntryPoint:   getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", "websecure"),
+		TraefikTTYCertResolver: getEnv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "letsencrypt"),
+		HeartbeatInterval:      getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
+		LogLevel:               getEnv("GATEWAY_LOG_LEVEL", "info"),
 	}
+}
+
+// firstNonEmpty returns the first argument that isn't the empty
+// string. Used to resolve an env-var name (the legacy one) with a
+// more-preferred name as the primary source.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // getEnvHeartbeatInterval parses GATEWAY_HEARTBEAT_INTERVAL (a Go

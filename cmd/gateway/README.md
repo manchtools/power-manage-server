@@ -77,15 +77,17 @@ When enabled, each gateway replica publishes its own routing entries into Traefi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GATEWAY_TRAEFIK_SELF_REGISTER` | `false` | Enable self-registration. All of the other `GATEWAY_TRAEFIK_*` fields are required when true. |
+| `GATEWAY_TRAEFIK_SELF_REGISTER` | `true` | Enable self-registration. Set to `false` to migrate back to static Traefik labels. |
 | `GATEWAY_TRAEFIK_ROOT_KEY` | `traefik` | Matches Traefik's `--providers.redis.rootkey`. |
-| `GATEWAY_TRAEFIK_MTLS_HOST` | — | Public `HostSNI` for agent mTLS, e.g. `gateway.example.com`. |
-| `GATEWAY_TRAEFIK_MTLS_BACKEND` | auto | Internal `host:port` for this replica's mTLS listener. Auto-derived from `os.Hostname()` + `GATEWAY_LISTEN_ADDR` when empty. |
-| `GATEWAY_TRAEFIK_MTLS_ENTRYPOINT` | — | Traefik entrypoint the TCP passthrough router binds to. In the reference compose this is `websecure` (port 443), shared with control's HTTP routers — Traefik's SNI dispatch separates passthrough traffic (gateway subdomain) from HTTP termination (control subdomain), so no dedicated mTLS port is required. |
-| `GATEWAY_TRAEFIK_TTY_HOST` | — | Public `Host` for TTY, e.g. `tty.example.com`. |
-| `GATEWAY_TRAEFIK_TTY_BACKEND` | auto | Internal URL for this replica's TTY listener. Auto-derived from `os.Hostname()` + `GATEWAY_WEB_LISTEN_ADDR` when empty. |
-| `GATEWAY_TRAEFIK_TTY_ENTRYPOINT` | — | Traefik entrypoint the TTY router binds to, e.g. `websecure`. |
-| `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | (empty) | Cert resolver for the per-replica TTY HTTP router, e.g. `letsencrypt`. Must match a `--certificatesresolvers.<name>.*` entry in Traefik's static config. Leave empty only for bring-your-own-cert deployments that ship a default cert matching `GATEWAY_TRAEFIK_TTY_HOST` — otherwise browsers reject the default self-signed cert Traefik serves for Redis-KV routers. |
+| `GATEWAY_TRAEFIK_MTLS_HOST` | `$GATEWAY_DOMAIN` | Public `HostSNI` for agent mTLS, e.g. `gateway.example.com`. Falls back to `GATEWAY_DOMAIN` — most deployments only set that one env var. |
+| `GATEWAY_TRAEFIK_MTLS_BACKEND` | auto | Internal `host:port` for this replica's mTLS listener. Auto-derived from the replica's routable IPv4 on the shared Docker/k8s network + `GATEWAY_LISTEN_ADDR` when empty. |
+| `GATEWAY_TRAEFIK_MTLS_ENTRYPOINT` | `websecure` | Traefik entrypoint the TCP passthrough router binds to. Shared with control's HTTP routers — Traefik's SNI dispatch separates passthrough traffic (gateway subdomain) from HTTP termination (control subdomain), so no dedicated mTLS port is required. |
+| `GATEWAY_TRAEFIK_TTY_HOST` | `$GATEWAY_TTY_DOMAIN` | Public `Host` for TTY, e.g. `tty.example.com`. Falls back to `GATEWAY_TTY_DOMAIN`. Empty means the TTY router is not registered (single-domain deployments use `GATEWAY_DOMAIN` for both). |
+| `GATEWAY_TRAEFIK_TTY_BACKEND` | auto | Internal URL for this replica's TTY listener. Auto-derived from the replica's routable IPv4 + `GATEWAY_WEB_LISTEN_ADDR` when empty. |
+| `GATEWAY_TRAEFIK_TTY_ENTRYPOINT` | `websecure` | Traefik entrypoint the TTY router binds to. |
+| `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | `letsencrypt` | Cert resolver for the per-replica TTY HTTP router. Must match a `--certificatesresolvers.<name>.*` entry in Traefik's static config. Set empty only for bring-your-own-cert deployments that ship a default cert matching `GATEWAY_TRAEFIK_TTY_HOST` — otherwise browsers reject the default self-signed cert Traefik serves for Redis-KV routers. |
+
+The backend auto-derivation uses the gateway replica's own IPv4 address on the shared container network (via `net.InterfaceAddrs()`), **not** `os.Hostname()` — a container's default hostname is its 12-char ID, which is not registered in Docker's embedded DNS, so publishing it as a Traefik backend leaves Traefik unable to resolve the replica and quietly falls back to the HTTP router (which serves the wrong cert).
 
 All Traefik keys share the registry TTL (45 s default) and are refreshed on the same cadence as the gateway terminal-URL entry. Graceful shutdown revokes only per-replica keys; shared router keys expire naturally when the last replica stops. See `server/deploy/compose.yml` for the matching Traefik command flags.
 

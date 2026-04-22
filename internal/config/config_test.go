@@ -108,16 +108,16 @@ func TestFromEnv_IgnoresOldUnprefixedVars(t *testing.T) {
 }
 
 func TestFromEnv_TraefikTTYCertResolver(t *testing.T) {
-	t.Setenv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "letsencrypt")
+	t.Setenv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "custom-resolver")
 	cfg := FromEnv()
-	if cfg.TraefikTTYCertResolver != "letsencrypt" {
-		t.Errorf("TraefikTTYCertResolver = %q, want %q", cfg.TraefikTTYCertResolver, "letsencrypt")
+	if cfg.TraefikTTYCertResolver != "custom-resolver" {
+		t.Errorf("TraefikTTYCertResolver = %q, want %q", cfg.TraefikTTYCertResolver, "custom-resolver")
 	}
 
 	t.Setenv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "")
 	cfg = FromEnv()
-	if cfg.TraefikTTYCertResolver != "" {
-		t.Errorf("TraefikTTYCertResolver = %q, want empty by default", cfg.TraefikTTYCertResolver)
+	if cfg.TraefikTTYCertResolver != "letsencrypt" {
+		t.Errorf("TraefikTTYCertResolver = %q, want %q (default)", cfg.TraefikTTYCertResolver, "letsencrypt")
 	}
 }
 

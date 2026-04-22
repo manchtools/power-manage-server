@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -213,12 +214,12 @@ func main() {
 		// (Terminal Sessions page shows empty).
 		internalURL := cfg.InternalURL
 		if internalURL == "" {
-			hostname, err := os.Hostname()
-			if err != nil || hostname == "" {
-				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL: os.Hostname failed", "error", err)
+			ip, err := routableIP()
+			if err != nil {
+				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL", "error", err)
 				os.Exit(1)
 			}
-			internalURL = "https://" + hostname + portOfListenAddr(cfg.ListenAddr)
+			internalURL = "https://" + ip + portOfListenAddr(cfg.ListenAddr)
 			logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
 		}
 		if internalURL != "" {
@@ -282,25 +283,26 @@ func main() {
 			gatewayReg = registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "registry"))
 		}
 
-		// Auto-derive per-replica backend addresses when not set.
-		// In Compose / k8s, os.Hostname() returns the container name
-		// (pm-server-gateway-1, gateway-abc123, …), which resolves to
-		// that specific replica's IP inside the pm-internal network.
-		// The operator only has to set the public Host/EntryPoint
-		// values; replica identity is self-discovered.
+		// Auto-derive per-replica backend addresses when not set. We use
+		// the replica's own routable IP on the shared Docker/k8s network
+		// rather than os.Hostname(): the container's default hostname is
+		// its 12-char container ID, which is NOT registered in Docker's
+		// embedded DNS, so Traefik can't resolve it. The IP works on the
+		// pm-internal network Traefik shares with us, and the operator
+		// only has to set the public Host/EntryPoint values.
 		mtlsBackend := cfg.TraefikMTLSBackend
 		ttyBackend := cfg.TraefikTTYBackend
 		if mtlsBackend == "" || ttyBackend == "" {
-			hostname, err := os.Hostname()
-			if err != nil || hostname == "" {
-				logger.Error("cannot auto-derive Traefik backends: os.Hostname failed", "error", err)
+			ip, err := routableIP()
+			if err != nil {
+				logger.Error("cannot auto-derive Traefik backends", "error", err)
 				os.Exit(1)
 			}
 			if mtlsBackend == "" {
-				mtlsBackend = hostname + portOfListenAddr(cfg.ListenAddr)
+				mtlsBackend = ip + portOfListenAddr(cfg.ListenAddr)
 			}
 			if ttyBackend == "" && cfg.WebListenAddr != "" {
-				ttyBackend = "http://" + hostname + portOfListenAddr(cfg.WebListenAddr)
+				ttyBackend = "http://" + ip + portOfListenAddr(cfg.WebListenAddr)
 			}
 		}
 
@@ -551,6 +553,51 @@ func main() {
 	}
 
 	logger.Info("server stopped")
+}
+
+// routableIP returns the first non-loopback IPv4 address bound to an
+// up-and-running network interface. In Docker Compose / k8s deployments
+// this is the replica's address on the user-defined network Traefik
+// shares with us — Traefik can reach it directly.
+//
+// We deliberately do NOT use os.Hostname() here: inside a container the
+// hostname defaults to the 12-char container ID, which is not registered
+// in Docker's embedded DNS. Publishing that as a Traefik backend (or as
+// an internal URL for control-plane RPC) leaves Traefik unable to resolve
+// it, so the service falls back to the HTTP router and serves the wrong
+// cert — which is exactly how agent mTLS started failing in rc7/rc8.
+func routableIP() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+				continue
+			}
+			ip = ip.To4()
+			if ip == nil {
+				continue
+			}
+			return ip.String(), nil
+		}
+	}
+	return "", fmt.Errorf("no non-loopback IPv4 address found on any interface")
 }
 
 // portOfListenAddr returns the port portion of a Go net.Listen style
