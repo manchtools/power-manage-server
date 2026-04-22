@@ -3,11 +3,61 @@
 package actionparams
 
 import (
+	"fmt"
+
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var unmarshalOpts = protojson.UnmarshalOptions{DiscardUnknown: true}
+
+// marshalOptions is the single protojson configuration used to
+// serialise action params throughout the server — both user-created
+// actions (action_handler.serializeProtoParams) and system-managed
+// actions (api.system_actions). Sharing this configuration is the
+// whole point: every path that produces action JSON emits the same
+// bytes for the same proto message, and the contract across the wire
+// is identical regardless of whether a human or the control server
+// authored the action.
+//
+// Two deliberate choices:
+//
+//   - EmitUnpopulated = true. Without this, proto3 scalar zero values
+//     are dropped from the JSON output, which makes it impossible to
+//     distinguish "the caller explicitly wants false" from "the caller
+//     did not mention the field." The pm-tty-* home directory bug
+//     exploited this exact gap: syncTtyUserAction set createHome:
+//     false, which the default marshaller dropped, and the agent's
+//     "default true for normal users" logic then fabricated a home
+//     the server never asked for. Emitting unpopulated keeps explicit
+//     false observable on the wire.
+//
+//   - UseProtoNames = false (default). camelCase JSON names are what
+//     protojson produces and consumes by default, and the agent
+//     unmarshals using default protojson options. Both sides use the
+//     same naming; staying on the default avoids a second, silent
+//     inconsistency.
+var marshalOptions = protojson.MarshalOptions{
+	EmitUnpopulated: true,
+	UseProtoNames:   false,
+}
+
+// MarshalActionParams serialises an action params proto message to
+// JSON bytes using marshalOptions above. Returns an error on a nil
+// message so callers don't accidentally emit a bare "null".
+//
+// All code paths that produce action-params JSON — user-created via
+// CreateAction / UpdateActionParams, and system-managed via
+// SystemActionManager — should go through this helper. Direct use of
+// protojson.Marshal (which defaults to EmitUnpopulated=false) is a
+// bug: proto3 scalar zero values silently drop from the output.
+func MarshalActionParams(msg proto.Message) ([]byte, error) {
+	if msg == nil {
+		return nil, fmt.Errorf("actionparams.MarshalActionParams: nil message")
+	}
+	return marshalOptions.Marshal(msg)
+}
 
 // PopulateAction deserializes params JSON into a wire-format Action proto.
 // Used by the gateway (action dispatch) and internal service (agent sync).

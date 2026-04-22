@@ -212,6 +212,23 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and action_id are required"))
 	}
 
+	// Persistence MUST fail-closed. LPS rotation is irreversible:
+	// the agent has already run chpasswd locally, so the old password
+	// is gone. If the server silently fails to persist the new one,
+	// the user loses the only copy that LPS was meant to retain —
+	// and the gateway's post-RPC cleanup in agent.go clears the
+	// lps.rotations metadata from the execution result the moment
+	// this RPC returns success, so there is no second chance. Return
+	// an error on any append failure so the gateway leaves the
+	// metadata in place and the next retry replays the rotation
+	// persistence without needing a second local rotation.
+	//
+	// Encryption failures are already fail-closed above. Append
+	// failures now join that policy.
+	var (
+		persisted int
+		firstErr  error
+	)
 	for _, r := range req.Msg.Rotations {
 		encPassword, err := h.encryptor.Encrypt(r.Password)
 		if err != nil {
@@ -239,9 +256,44 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 				"device_id", req.Msg.DeviceId,
 				"action_id", req.Msg.ActionId,
 				"username", r.Username,
+				"persisted_before_failure", persisted,
+				"total_rotations", len(req.Msg.Rotations),
 				"error", err,
 			)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		persisted++
+	}
+	if firstErr != nil {
+		// Partial success is indistinguishable from full failure
+		// from the agent's perspective: the gateway will leave the
+		// execution-result metadata alone and the inbox task will
+		// retry. The retry will re-attempt the full rotation list.
+		// Already-persisted rotations will append a second event
+		// with the same (device_id, username, password) payload —
+		// not ideal, but harmless: the projection deduplicates by
+		// (device_id, username) and keeps the most recent, and the
+		// event stream is an append-only audit record where a
+		// duplicate tells the truth ("we saw this twice during a
+		// retry") rather than lying.
+		//
+		// Route through apiErrorCtx so the response carries the
+		// same `internal_error` ErrorDetail code the rest of the
+		// handlers emit — the agent's inbox retry loop keys off
+		// that code to decide whether to retry.
+		h.logger.Error("LPS rotation persistence failed, returning error to trigger inbox retry",
+			"device_id", req.Msg.DeviceId,
+			"action_id", req.Msg.ActionId,
+			"persisted", persisted,
+			"total_rotations", len(req.Msg.Rotations),
+			"first_error", firstErr,
+		)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			fmt.Sprintf("failed to persist %d of %d LPS rotations",
+				len(req.Msg.Rotations)-persisted, len(req.Msg.Rotations)))
 	}
 
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil

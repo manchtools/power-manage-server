@@ -487,13 +487,13 @@ Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](
   -jwt-secret="$(openssl rand -base64 48)" \
   -ca-cert=certs/ca.crt \
   -ca-key=certs/ca.key \
-  -gateway-url=http://localhost:8080
+  -gateway-url=https://localhost:8080
 
 # Gateway server (no database required, connects to Valkey and Control)
 export GATEWAY_VALKEY_ADDR=localhost:6379
 export GATEWAY_VALKEY_PASSWORD=your-valkey-password
-export GATEWAY_CONTROL_URL=http://localhost:8081
-./gateway -tls -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
+export GATEWAY_CONTROL_URL=https://localhost:8082
+./gateway -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
 ```
 
 ## Regenerating Code

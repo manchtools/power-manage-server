@@ -160,7 +160,7 @@ func FromEnv() *Config {
 		ValkeyAddr:                getEnv("GATEWAY_VALKEY_ADDR", "localhost:6379"),
 		ValkeyPassword:            getEnv("GATEWAY_VALKEY_PASSWORD", ""),
 		ValkeyDB:                  getEnvInt("GATEWAY_VALKEY_DB", 0),
-		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "http://control:8081"),
+		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "https://control:8082"),
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
 		PublicAgentURLTemplate:    getEnv("GATEWAY_PUBLIC_AGENT_URL_TEMPLATE", ""),

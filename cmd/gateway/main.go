@@ -63,6 +63,11 @@ func main() {
 		logger.Error("GATEWAY_CONTROL_URL is required")
 		os.Exit(1)
 	}
+	controlURL, err := url.Parse(cfg.ControlURL)
+	if err != nil || controlURL.Scheme != "https" {
+		logger.Error("GATEWAY_CONTROL_URL must use https for the internal mTLS control connection", "control_url", cfg.ControlURL, "error", err)
+		os.Exit(1)
+	}
 
 	// Create Asynq task queue client
 	aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
