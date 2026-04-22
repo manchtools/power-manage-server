@@ -150,26 +150,32 @@ func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 		// carry a spiffe://power-manage/agent URI SAN; gateway /
 		// control certs carry a different class and must be
 		// rejected before reaching AgentService.
-		if r.TLS != nil {
-			class, err := mtls.PeerClassFromTLS(r.TLS)
-			if err != nil {
-				logger.Warn("mTLS peer-class missing",
-					"error", err,
-					"device_id", deviceID,
-					"remote_addr", r.RemoteAddr,
-				)
-				http.Error(w, "peer class required", http.StatusForbidden)
-				return
-			}
-			if class != mtls.PeerClassAgent {
-				logger.Warn("mTLS peer-class mismatch on AgentService",
-					"device_id", deviceID,
-					"remote_addr", r.RemoteAddr,
-					"presented", class,
-				)
-				http.Error(w, "peer class not allowed", http.StatusForbidden)
-				return
-			}
+		//
+		// No r.TLS nil-guard: DeviceIDFromRequest above already
+		// rejects requests with no TLS state (returns "no TLS
+		// connection"), so r.TLS is guaranteed non-nil here. A
+		// defensive `if r.TLS != nil` would let a future reorder
+		// of this middleware silently bypass the peer-class check;
+		// better to rely on the invariant and fail loudly than
+		// fail-open.
+		class, err := mtls.PeerClassFromTLS(r.TLS)
+		if err != nil {
+			logger.Warn("mTLS peer-class missing",
+				"error", err,
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+			)
+			http.Error(w, "peer class required", http.StatusForbidden)
+			return
+		}
+		if class != mtls.PeerClassAgent {
+			logger.Warn("mTLS peer-class mismatch on AgentService",
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+				"presented", class,
+			)
+			http.Error(w, "peer class not allowed", http.StatusForbidden)
+			return
 		}
 
 		// Add device ID to context

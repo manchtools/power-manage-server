@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -42,6 +43,15 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
+	// Fail fast when no task queue is configured. Same fail-closed
+	// contract as DispatchAction / DispatchOSQuery: silently
+	// returning a queryID the caller can poll until the 5-minute
+	// timeout was actively misleading — no agent task was ever
+	// enqueued.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "log query dispatch unavailable: task queue not configured")
+	}
+
 	// Generate query ID
 	queryID := ulid.Make().String()
 
@@ -53,28 +63,39 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create log query result")
 	}
 
-	// Dispatch log query to device via Asynq task queue
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeLogQueryDispatch, taskqueue.LogQueryDispatchPayload{
-			QueryID:  queryID,
-			Lines:    msg.Lines,
-			Unit:     msg.Unit,
-			Since:    msg.Since,
-			Until:    msg.Until,
-			Priority: msg.Priority,
-			Grep:     msg.Grep,
-			Kernel:   msg.Kernel,
-		},
-			asynq.MaxRetry(3),
-			asynq.Deadline(time.Now().Add(2*time.Minute)),
-		); err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch log query")
+	// Dispatch log query to device via Asynq task queue.
+	// Enqueue failure: the pending result row already exists. Mark
+	// it expired so callers polling GetDeviceLogResult see a
+	// terminal failure rather than waiting the full 5-minute
+	// timeout on a task that never shipped.
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeLogQueryDispatch, taskqueue.LogQueryDispatchPayload{
+		QueryID:  queryID,
+		Lines:    msg.Lines,
+		Unit:     msg.Unit,
+		Since:    msg.Since,
+		Until:    msg.Until,
+		Priority: msg.Priority,
+		Grep:     msg.Grep,
+		Kernel:   msg.Kernel,
+	},
+		asynq.MaxRetry(3),
+		asynq.Deadline(time.Now().Add(2*time.Minute)),
+	); err != nil {
+		h.logger.Error("log query enqueue failed; marking result expired",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		if expireErr := h.store.Queries().ExpirePendingLogQueryResult(ctx, generated.ExpirePendingLogQueryResultParams{
+			QueryID: queryID,
+			Error:   fmt.Sprintf("dispatch enqueue failed: %v", err),
+		}); expireErr != nil {
+			h.logger.Error("failed to mark enqueue-failed log query result as expired",
+				"query_id", queryID, "error", expireErr)
 		}
-		h.logger.Info("log query dispatched to device",
-			"query_id", queryID,
-			"device_id", msg.DeviceId,
-		)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch log query")
 	}
+	h.logger.Info("log query dispatched to device",
+		"query_id", queryID,
+		"device_id", msg.DeviceId,
+	)
 
 	return connect.NewResponse(&pm.QueryDeviceLogsResponse{
 		QueryId: queryID,

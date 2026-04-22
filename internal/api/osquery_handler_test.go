@@ -18,6 +18,7 @@ import (
 func TestDispatchOSQuery(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewOSQueryHandler(st, slog.Default())
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -57,6 +58,7 @@ func TestDispatchOSQuery_DeviceNotFound(t *testing.T) {
 func TestGetOSQueryResult_Pending(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewOSQueryHandler(st, slog.Default())
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -81,6 +83,7 @@ func TestGetOSQueryResult_Pending(t *testing.T) {
 func TestGetOSQueryResult_Completed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewOSQueryHandler(st, slog.Default())
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -125,6 +128,7 @@ func TestGetOSQueryResult_Completed(t *testing.T) {
 func TestGetOSQueryResult_CompletedWithError(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewOSQueryHandler(st, slog.Default())
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -272,6 +276,7 @@ func TestGetDeviceInventory_Empty(t *testing.T) {
 func TestRefreshDeviceInventory(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewOSQueryHandler(st, slog.Default())
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

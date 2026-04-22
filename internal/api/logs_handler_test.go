@@ -28,22 +28,29 @@ func TestQueryDeviceLogs_DeviceNotFound(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
-func TestQueryDeviceLogs_ValidDevice_NoTaskQueue(t *testing.T) {
+// TestQueryDeviceLogs_NoTaskQueue_RefusesWithPrecondition pins the
+// fail-closed contract introduced when we tightened the dispatch
+// paths against silent no-ops. Previously a handler with no aqClient
+// would still create a pending query row and return 200 OK — the
+// caller saw a queryID to poll that the agent would never receive.
+// Now the handler refuses the RPC with FailedPrecondition so the
+// operator knows the deployment is misconfigured.
+func TestQueryDeviceLogs_NoTaskQueue_RefusesWithPrecondition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewLogsHandler(st, slog.Default())
-	// No task queue client set — tests that it still creates the query result row
+	// Intentionally do NOT call h.SetTaskQueueClient.
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "test-device")
 
-	resp, err := h.QueryDeviceLogs(ctx, connect.NewRequest(&pm.QueryDeviceLogsRequest{
+	_, err := h.QueryDeviceLogs(ctx, connect.NewRequest(&pm.QueryDeviceLogsRequest{
 		DeviceId: deviceID,
 		Lines:    50,
 	}))
-	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.QueryId)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 func TestGetDeviceLogResult_NotFound(t *testing.T) {
@@ -63,6 +70,10 @@ func TestGetDeviceLogResult_NotFound(t *testing.T) {
 func TestGetDeviceLogResult_PendingResult(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewLogsHandler(st, slog.Default())
+	// Wire a no-op enqueuer so QueryDeviceLogs actually dispatches
+	// and creates the pending row this test reads back. Without it
+	// the new FailedPrecondition gate rejects the dispatch.
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)

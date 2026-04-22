@@ -422,6 +422,22 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		timeoutSeconds = 300
 	}
 
+	// Compute the signature BEFORE writing the ActionCreated event.
+	// If signing fails, no projection row ever appears, and the
+	// caller sees a clean error. Previously the order was
+	// appendEvent → sign, which left an unsigned row in the DB on
+	// any signer failure — lower severity than the dispatch fake-
+	// send issue but still an operator-confusing state.
+	paramsJSON, marshalErr := json.Marshal(params)
+	if marshalErr != nil {
+		h.logger.Error("create: failed to marshal params for signing", "action_id", id, "error", marshalErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal action params")
+	}
+	sig, paramsCanonical, err := h.computeActionSignature(ctx, id, int32(req.Msg.Type), paramsJSON)
+	if err != nil {
+		return nil, err
+	}
+
 	eventData := map[string]any{
 		"name":            req.Msg.Name,
 		"description":     req.Msg.Description,
@@ -448,15 +464,18 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	action, err := h.store.Queries().GetActionByID(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get action after create", "error", err, "id", id)
+		// Projection row may already exist without signature; roll
+		// it back so the operator doesn't see an unsigned row.
+		h.rollbackUnsignedCreate(ctx, userCtx.ID, id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	// Sign the action so agents can verify authenticity. Fail-closed:
-	// an unsigned action in the DB is a contract violation — callers
-	// expect every row to carry a verifiable signature, and the agent
-	// rejects rows without one on dispatch. Returning success here
-	// would quietly produce rows that will never run.
-	if err := h.signAction(ctx, &action); err != nil {
+	// Persist the precomputed signature. Narrow failure window: if
+	// this UPDATE fails after the event+projection succeeded, emit
+	// a compensating ActionDeleted so the unsigned row does not
+	// linger. See rollbackUnsignedCreate for the best-effort notes.
+	if err := h.persistActionSignature(ctx, &action, sig, paramsCanonical); err != nil {
+		h.rollbackUnsignedCreate(ctx, userCtx.ID, id)
 		return nil, err
 	}
 
@@ -647,6 +666,23 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		}
 	}
 
+	// Compute the re-signature BEFORE writing ActionParamsUpdated.
+	// If signing fails the old event is never written, so the
+	// projection still carries the old (valid) signature matching
+	// the old params — a consistent state. Computing after the
+	// event used to leave the row with NEW params but OLD
+	// signature, which the agent rejects on dispatch.
+	paramsJSON, marshalErr := json.Marshal(params)
+	if marshalErr != nil {
+		h.logger.Error("update: failed to marshal params for signing",
+			"action_id", req.Msg.Id, "error", marshalErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal updated action params")
+	}
+	sig, paramsCanonical, err := h.computeActionSignature(ctx, req.Msg.Id, existing.ActionType, paramsJSON)
+	if err != nil {
+		return nil, err
+	}
+
 	eventData := map[string]any{
 		"params":        params,
 		"desired_state": int32(req.Msg.DesiredState),
@@ -675,13 +711,17 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
-	// Re-sign the action after params update. Fail-closed: the
-	// previous signature covers the old params and no longer
-	// matches, so accepting a signing failure here would leave the
-	// DB row with a stale signature that the agent will reject —
-	// silently bricking the updated action until the operator
-	// figures out what happened.
-	if err := h.signAction(ctx, &action); err != nil {
+	// Persist the precomputed signature. Unlike Create, there is no
+	// clean compensating event for Update — emitting "revert to
+	// previous params" would need an ActionParamsReverted event type
+	// the projector doesn't model. On persist failure we log loudly;
+	// the row now has NEW params with the OLD signature, which the
+	// agent will reject on dispatch. The operator recovers by
+	// re-running Update with the same payload once the DB is
+	// healthy.
+	if err := h.persistActionSignature(ctx, &action, sig, paramsCanonical); err != nil {
+		h.logger.Error("update: signature persist failed; row carries NEW params with OLD signature — re-run UpdateActionParams to recover",
+			"action_id", req.Msg.Id)
 		return nil, err
 	}
 
@@ -692,51 +732,68 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	}), nil
 }
 
-// signAction computes a signature over the action's canonical
-// payload and persists it in the projection. Fail-closed: every
-// non-success path returns an error, including a nil signer.
-//
-// A nil signer is a wiring mistake, not a soft condition — main.go
-// constructs ActionHandler with the real internal/ca signer; tests
-// that need to skip real cryptography pass NoOpSigner instead, so
-// the "no signer" path NEVER produces unsigned rows in the DB
-// silently. Without this guard, a misconfigured production deploy
-// would happily Create / Update / Dispatch unsigned actions that
-// the agent then drops on receipt, leaving execution rows in
-// "pending forever" with no operator-visible cause.
-//
-// The returned error is already wrapped as a Connect error so
-// handlers can `return nil, err` directly.
-func (h *ActionHandler) signAction(ctx context.Context, action *db.ActionsProjection) error {
+// computeActionSignature produces a signature over (id, actionType,
+// paramsJSON). Pure compute — no DB access. Fail-closed on nil
+// signer. Split out of the legacy signAction() so Create/Update
+// can compute the signature BEFORE writing the ActionCreated /
+// ActionParamsUpdated event, so a sign failure never produces an
+// unsigned row in the projection.
+func (h *ActionHandler) computeActionSignature(ctx context.Context, id string, actionType int32, paramsJSON []byte) ([]byte, []byte, error) {
 	if h.signer == nil {
-		h.logger.Error("signAction called with nil signer — wiring bug", "action_id", action.ID)
-		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
+		h.logger.Error("computeActionSignature called with nil signer — wiring bug", "action_id", id)
+		return nil, nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
-
-	paramsJSON := action.Params
 	if paramsJSON == nil {
 		paramsJSON = []byte("{}")
 	}
-
-	sig, err := h.signer.Sign(action.ID, action.ActionType, paramsJSON)
+	sig, err := h.signer.Sign(id, actionType, paramsJSON)
 	if err != nil {
-		h.logger.Error("failed to sign action", "action_id", action.ID, "error", err)
-		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign action")
+		h.logger.Error("failed to sign action", "action_id", id, "error", err)
+		return nil, nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign action")
 	}
+	return sig, paramsJSON, nil
+}
 
+// persistActionSignature writes a precomputed signature to the
+// existing projection row. Intended for Create/Update after the
+// event has been written: the row exists, we just backfill the
+// sig + canonical params columns the projector doesn't set.
+//
+// On failure the row stays unsigned — callers SHOULD emit a
+// compensating ActionDeleted so the operator doesn't see a broken
+// unsigned row. See rollbackUnsignedCreate.
+func (h *ActionHandler) persistActionSignature(ctx context.Context, action *db.ActionsProjection, sig, paramsCanonical []byte) error {
 	if err := h.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
 		ID:              action.ID,
 		Signature:       sig,
-		ParamsCanonical: paramsJSON,
+		ParamsCanonical: paramsCanonical,
 	}); err != nil {
 		h.logger.Error("failed to store action signature", "action_id", action.ID, "error", err)
 		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store action signature")
 	}
-
-	// Update the in-memory struct so the response includes the signature
 	action.Signature = sig
-	action.ParamsCanonical = paramsJSON
+	action.ParamsCanonical = paramsCanonical
 	return nil
+}
+
+// rollbackUnsignedCreate emits a compensating ActionDeleted event
+// when persistActionSignature fails after appendEvent(ActionCreated)
+// has already landed. Best-effort: if the compensating append also
+// fails, the row lingers as unsigned — logged loudly so the
+// operator can clean it up manually. Either way the caller's RPC
+// returns the original persist error.
+func (h *ActionHandler) rollbackUnsignedCreate(ctx context.Context, userID, actionID string) {
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "action",
+		StreamID:   actionID,
+		EventType:  "ActionDeleted",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userID,
+	}, "failed to append compensating ActionDeleted after signature persist failure"); err != nil {
+		h.logger.Error("compensating ActionDeleted failed; action row is stuck unsigned and visible in projection",
+			"action_id", actionID, "error", err)
+	}
 }
 
 // DeleteAction deletes an action.
@@ -897,7 +954,18 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
-	paramsJSON, _ := json.Marshal(params)
+	paramsJSON, marshalErr := json.Marshal(params)
+	if marshalErr != nil {
+		// `params` is either a map[string]any from extractActionParamsMsg
+		// (proto → map via protojson) or a raw JSON string — both should
+		// be safe to remarshal, but a json.Marshal error here MUST fail
+		// closed. Silently enqueueing with nil paramsJSON would produce
+		// an unverifiable signature and an empty-params task the agent
+		// rejects on receipt.
+		h.logger.Error("dispatch: failed to marshal params for signing",
+			"execution_id", id, "error", marshalErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal dispatch params")
+	}
 	sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
 	if signErr != nil {
 		h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)

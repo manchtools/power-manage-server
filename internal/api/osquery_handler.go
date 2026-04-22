@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -44,6 +45,15 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
+	// Fail fast when no task queue is configured. Without this
+	// guard the handler used to write a pending osquery_result row
+	// and return a queryID the caller could poll forever — the
+	// agent never got the task. Same fail-closed contract as
+	// DispatchAction.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "osquery dispatch unavailable: task queue not configured")
+	}
+
 	// Generate query ID
 	queryID := ulid.Make().String()
 
@@ -65,25 +75,37 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	// Dispatch osquery to device via Asynq task queue.
 	// Limit retries and set a deadline so queries to offline devices fail quickly
 	// rather than sitting in the queue indefinitely.
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
+	//
+	// Enqueue failure: the pending result row already exists. Mark
+	// it as expired with an explicit error so callers polling
+	// GetOSQueryResult see a terminal failure rather than waiting
+	// the full 5-minute timeout on a task that never shipped.
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
+		QueryID: queryID,
+		Table:   msg.Table,
+		Columns: msg.Columns,
+		Limit:   msg.Limit,
+		RawSQL:  msg.RawSql,
+	},
+		asynq.MaxRetry(3),
+		asynq.Deadline(time.Now().Add(2*time.Minute)),
+	); err != nil {
+		h.logger.Error("osquery enqueue failed; marking result expired",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		if expireErr := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
 			QueryID: queryID,
-			Table:   msg.Table,
-			Columns: msg.Columns,
-			Limit:   msg.Limit,
-			RawSQL:  msg.RawSql,
-		},
-			asynq.MaxRetry(3),
-			asynq.Deadline(time.Now().Add(2*time.Minute)),
-		); err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch osquery")
+			Error:   fmt.Sprintf("dispatch enqueue failed: %v", err),
+		}); expireErr != nil {
+			h.logger.Error("failed to mark enqueue-failed osquery result as expired",
+				"query_id", queryID, "error", expireErr)
 		}
-		h.logger.Info("osquery dispatched to device",
-			"query_id", queryID,
-			"device_id", msg.DeviceId,
-			"table", tableName,
-		)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch osquery")
 	}
+	h.logger.Info("osquery dispatched to device",
+		"query_id", queryID,
+		"device_id", msg.DeviceId,
+		"table", tableName,
+	)
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
 		QueryId: queryID,
@@ -183,18 +205,25 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
-	// Dispatch inventory request to device via Asynq task queue
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
-			asynq.MaxRetry(3),
-			asynq.Deadline(time.Now().Add(2*time.Minute)),
-		); err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
-		}
-		h.logger.Info("inventory refresh dispatched to device",
-			"device_id", msg.DeviceId,
-		)
+	// Fail fast when no task queue is configured. RefreshDeviceInventory
+	// is fire-and-forget (no result row), so a silent-success when
+	// aqClient is nil was less misleading than the DispatchOSQuery
+	// case — but still returned 200 OK for a request that didn't
+	// reach the device. Match the fail-closed contract.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "inventory refresh unavailable: task queue not configured")
 	}
+
+	// Dispatch inventory request to device via Asynq task queue
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
+		asynq.MaxRetry(3),
+		asynq.Deadline(time.Now().Add(2*time.Minute)),
+	); err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
+	}
+	h.logger.Info("inventory refresh dispatched to device",
+		"device_id", msg.DeviceId,
+	)
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil
 }

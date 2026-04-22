@@ -888,6 +888,30 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
+	// Fail fast when no task queue is configured. Without this the
+	// handler used to append LuksDeviceKeyRevocationDispatched and
+	// return success — the UI would show "dispatched" but the agent
+	// would never get the revocation task, leaving the LUKS key
+	// live when the operator thinks they've revoked it. Matches
+	// the fail-closed contract DispatchAction / DispatchOSQuery /
+	// QueryDeviceLogs adopted in this PR.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "LUKS key revocation unavailable: task queue not configured")
+	}
+
+	// Dispatch LUKS device key revocation to device via Asynq task
+	// queue. Enqueue BEFORE recording the dispatched event so the
+	// event stream does not advertise a dispatch that did not leave
+	// the building. If the enqueue fails we return an error and no
+	// event is written — cleaner than the dispatch-action path's
+	// compensating event because this is a small, single-purpose
+	// RPC and the UI polls the event stream for status.
+	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
+		ActionID: req.Msg.ActionId,
+	}, asynq.MaxRetry(5)); err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
+	}
+
 	// Record dispatched event so the UI can show "dispatched" status
 	luksStreamID := newULID()
 	if err := h.store.AppendEvent(ctx, store.Event{
@@ -902,6 +926,12 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		ActorType: "user",
 		ActorID:   userCtx.ID,
 	}); err != nil {
+		// Task is already enqueued; the event append failure means
+		// the UI won't show "dispatched" but the agent will still
+		// receive and process the revocation. Log loudly but return
+		// error so the caller knows the UI state is stale.
+		h.logger.Error("luks revocation enqueued but event append failed; UI state may lag real revocation",
+			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation event")
 	}
 	h.logger.Debug("event appended",
@@ -910,15 +940,6 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		"stream_id", luksStreamID,
 		"event_type", "LuksDeviceKeyRevocationDispatched",
 	)
-
-	// Dispatch LUKS device key revocation to device via Asynq task queue
-	if h.aqClient != nil {
-		if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
-			ActionID: req.Msg.ActionId,
-		}, asynq.MaxRetry(5)); err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
-		}
-	}
 
 	return connect.NewResponse(&pm.RevokeLuksDeviceKeyResponse{}), nil
 }
