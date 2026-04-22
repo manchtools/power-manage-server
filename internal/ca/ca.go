@@ -11,8 +11,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/url"
 	"os"
 	"time"
+
+	"github.com/manchtools/power-manage/server/internal/mtls"
 )
 
 // CA is a certificate authority that issues device certificates.
@@ -118,6 +121,17 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 	now := time.Now()
 	notAfter := now.Add(ca.validity)
 
+	// Stamp the SPIFFE URI SAN that marks this as an "agent" peer
+	// class. The gateway's mTLS middleware requires this class on
+	// its agent-facing listener, and the control server's internal
+	// listener refuses agents — so even if an agent cert leaks, the
+	// attacker cannot use it to reach the internal listener and
+	// read other devices' LUKS keys or LPS passwords.
+	peerURI, err := mtls.PeerClassURI(mtls.PeerClassAgent)
+	if err != nil {
+		return nil, fmt.Errorf("build peer-class URI: %w", err)
+	}
+
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -129,6 +143,7 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
+		URIs:                  []*url.URL{peerURI},
 	}
 
 	// Add device ID to the Subject's SerialNumber field

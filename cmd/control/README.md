@@ -648,7 +648,7 @@ Users can register their own devices without admin involvement:
 #### URI Scheme Format
 
 ```
-power-manage://server:port?token=xxx[&skip-verify=true][&tls=false]
+power-manage://server:port?token=xxx[&skip-verify=true]
 ```
 
 | Parameter | Description |
@@ -656,7 +656,6 @@ power-manage://server:port?token=xxx[&skip-verify=true][&tls=false]
 | `server:port` | Control server address |
 | `token` | Registration token (required) |
 | `skip-verify` | Skip TLS verification (development only) |
-| `tls=false` | Use HTTP instead of HTTPS |
 
 ### Device Assignment
 

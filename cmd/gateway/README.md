@@ -25,7 +25,7 @@ The Gateway Server handles real-time bidirectional communication with Power Mana
               ▼              ▼
     ┌──────────────────────────────┐
     │       Gateway Server        │
-    │  (mTLS/h2c, stateless)      │
+    │  (mTLS, stateless)          │
     │                              │
     │  - Per-device Asynq workers │
     │  - Connect-RPC proxy        │
@@ -50,10 +50,9 @@ The Gateway Server:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-tls` | `false` | Enable mTLS mode |
-| `-tls-cert` | (required if -tls) | Server certificate path |
-| `-tls-key` | (required if -tls) | Server private key path |
-| `-tls-ca` | (required if -tls) | CA certificate for client validation |
+| `-tls-cert` | (required) | Server certificate path |
+| `-tls-key` | (required) | Server private key path |
+| `-tls-ca` | (required) | CA certificate for client validation |
 
 ### Environment Variables
 
@@ -64,7 +63,7 @@ The Gateway Server:
 | `GATEWAY_VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
 | `GATEWAY_VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
 | `GATEWAY_VALKEY_DB` | `0` | Valkey/Redis database number |
-| `GATEWAY_CONTROL_URL` | `http://control:8081` | Control Server URL for Connect-RPC proxy |
+| `GATEWAY_CONTROL_URL` | `https://control:8082` | Control Server InternalService URL for the mTLS Connect-RPC proxy |
 | `GATEWAY_ID` | (auto-ULID) | Stable gateway identifier; auto-generated per process when empty (required for replica scaling) |
 | `GATEWAY_INTERNAL_URL` | (empty) | mTLS URL the control server uses for admin fan-out RPCs |
 | `GATEWAY_HEARTBEAT_INTERVAL` | `30s` | Heartbeat cadence sent to every agent (Go duration, 5s..5m) |
@@ -97,7 +96,7 @@ All Traefik keys share the registry TTL (45 s default) and are refreshed on the 
 1. **Valkey/Redis** — shared with the Control Server for Asynq task queues
 2. **Control Server** — must be running and reachable for InternalService RPC
 
-3. **TLS Certificates** (for production mTLS mode):
+3. **TLS Certificates**:
    - CA certificate (same as Control Server)
    - Server certificate signed by the CA
    - Server private key
@@ -118,30 +117,30 @@ openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
   -extfile <(printf "subjectAltName=DNS:gateway.power-manage.local,DNS:localhost,IP:127.0.0.1")
 ```
 
-### Running in Development Mode (h2c)
+### Running Locally
 
-For local development without TLS:
+Local development uses the same TLS shape as deployed environments:
 
 ```bash
 export GATEWAY_VALKEY_ADDR=localhost:6379
 export GATEWAY_VALKEY_PASSWORD=your-password
-export GATEWAY_CONTROL_URL=http://localhost:8081
+export GATEWAY_CONTROL_URL=https://localhost:8082
 export LOG_LEVEL=debug
 
-go run ./server/cmd/gateway
+go run ./server/cmd/gateway \
+  -tls-cert=/certs/server.crt \
+  -tls-key=/certs/server.key \
+  -tls-ca=/certs/ca.crt
 ```
 
-This runs in HTTP/2 cleartext (h2c) mode - **not suitable for production**.
-
-### Running in Production Mode (mTLS)
+### Running With mTLS
 
 ```bash
 export GATEWAY_VALKEY_ADDR=valkey:6379
 export GATEWAY_VALKEY_PASSWORD=your-password
-export GATEWAY_CONTROL_URL=http://control:8081
+export GATEWAY_CONTROL_URL=https://control:8082
 
 go run ./server/cmd/gateway \
-  -tls \
   -tls-cert=/certs/server.crt \
   -tls-key=/certs/server.key \
   -tls-ca=/certs/ca.crt
@@ -421,8 +420,11 @@ podman-compose up -d valkey control
 # Run gateway in dev mode
 export GATEWAY_VALKEY_ADDR=localhost:6379
 export GATEWAY_VALKEY_PASSWORD=your-password
-export GATEWAY_CONTROL_URL=http://localhost:8081
+export GATEWAY_CONTROL_URL=https://localhost:8082
 export LOG_LEVEL=debug
 
-go run ./server/cmd/gateway
+go run ./server/cmd/gateway \
+  -tls-cert=/certs/gateway.crt \
+  -tls-key=/certs/gateway.key \
+  -tls-ca=/certs/ca.crt
 ```

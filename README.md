@@ -55,7 +55,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | Package | Purpose |
 |---------|---------|
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, compliance, etc.) |
-| `internal/auth` | JWT authentication, OPA authorization, TOTP 2FA, rate limiting, cookie management, self-scope enforcement |
+| `internal/auth` | JWT bearer authentication, OPA authorization, TOTP 2FA, rate limiting, self-scope enforcement |
 | `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
 | `internal/config` | Configuration loading (gateway) |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
@@ -66,7 +66,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 | `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control, auto-update info) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
-| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certificates |
+| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certs, enforces SPIFFE peer-class URI SANs (`agent` / `gateway` / `control`) on each listener |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
 | `internal/search` | Full-text search indexer using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
@@ -84,9 +84,9 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 
 | Method | Description |
 |--------|-------------|
-| `Login` | Authenticate with email/password, returns JWT access + refresh tokens. Sets httpOnly cookies. |
-| `RefreshToken` | Exchange refresh token for new token pair (with rotation). Reads from cookie or request body. |
-| `Logout` | Revoke refresh token and clear cookies. |
+| `Login` | Authenticate with email/password, returns JWT access + refresh tokens in the response body. Clients pass tokens via the `Authorization: Bearer` header on subsequent requests. |
+| `RefreshToken` | Exchange refresh token (from request body) for a new token pair with rotation. |
+| `Logout` | Revoke the presented refresh token. |
 | `GetCurrentUser` | Return the authenticated user's profile from JWT claims. |
 
 ### Users (8 RPCs)
@@ -414,15 +414,17 @@ Sliding-window rate limiter keyed by IP address:
 
 Background goroutine cleans up stale entries every 5 minutes.
 
-### Cookies (`internal/auth/cookie.go`)
+### Bearer-only token transport
 
-JWT tokens stored in httpOnly cookies (`pm_access`, `pm_refresh`) as a fallback to Authorization headers. Automatic secure mode detection via `Origin` header or `X-Forwarded-Proto`. HTTPS uses `SameSite=None; Secure`; HTTP uses `SameSite=Lax`.
+JWTs travel exclusively in the `Authorization: Bearer <token>` header. Clients receive both access and refresh tokens in the `Login` / `RefreshToken` response bodies and store them themselves (typically in `localStorage` for the web client and in the `credentials.enc` store for the agent). The server issues no authentication cookies — there is no `pm_access` / `pm_refresh` cookie to steal via XSS and no `SameSite` negotiation to get wrong.
 
-### mTLS (`internal/ca/`)
+### mTLS (`internal/ca/`, `internal/mtls/`)
 
 Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
 
-Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by a trusted CA (from the trust bundle if configured), checks the fingerprint matches the database record (preventing use of revoked certificates), signs the new CSR, and returns the active CA certificate so agents can update their trust store during CA rotation.
+**Peer-class enforcement.** Every non-CA certificate carries a SPIFFE URI SAN of the form `spiffe://power-manage/<class>`, where `<class>` is one of `agent`, `gateway`, or `control`. The internal CA stamps `agent` on every cert it issues via CSR; `setup.sh` stamps `gateway` / `control` on the out-of-band certs for gateway replicas and the control server's internal listener. Middleware on each mTLS listener accepts only the expected class: the control server's `InternalService` admits `gateway` peers, the gateway's `AgentService` admits `agent` peers, and the gateway's `GatewayService` admits `control` peers. A leaked cert of one class therefore cannot be replayed against a listener intended for another class.
+
+Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by a trusted CA (from the trust bundle if configured), checks the fingerprint matches the database record (preventing use of revoked certificates), signs the new CSR with the `agent` peer-class URI SAN, and returns the active CA certificate so agents can update their trust store during CA rotation.
 
 ### Self-Scope Enforcement (`internal/auth/context.go`)
 
@@ -485,13 +487,13 @@ Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](
   -jwt-secret="$(openssl rand -base64 48)" \
   -ca-cert=certs/ca.crt \
   -ca-key=certs/ca.key \
-  -gateway-url=http://localhost:8080
+  -gateway-url=https://localhost:8080
 
 # Gateway server (no database required, connects to Valkey and Control)
 export GATEWAY_VALKEY_ADDR=localhost:6379
 export GATEWAY_VALKEY_PASSWORD=your-valkey-password
-export GATEWAY_CONTROL_URL=http://localhost:8081
-./gateway -tls -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
+export GATEWAY_CONTROL_URL=https://localhost:8082
+./gateway -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
 ```
 
 ## Regenerating Code
@@ -609,7 +611,6 @@ No database required. Test pure Go logic.
 | `internal/auth/jwt_test.go` | 14 | Token generation, validation (valid/expired/wrong-type/wrong-secret), refresh with rotation, revocation, unique JTIs |
 | `internal/auth/password_test.go` | 6 | bcrypt hashing, verification (correct/wrong/empty), unique salts, dummy hash for timing attack prevention |
 | `internal/auth/ratelimit_test.go` | 5 | Allow within limit, block after limit, independent keys, window expiry, 200-goroutine concurrent access |
-| `internal/auth/cookie_test.go` | 10 | Set/clear cookies (secure/insecure), parse Cookie header, detect HTTPS via Origin and X-Forwarded-Proto |
 | `internal/auth/context_test.go` | 9 | User/device context storage and retrieval, SubjectFromContext precedence |
 | `internal/auth/opa_test.go` | 17 | Admin allows all 18 actions, user self-access vs. other-access, user denied admin actions, device own-resource vs. other |
 | `internal/auth/interceptor_test.go` | 8 | Public procedure list (Login, RefreshToken, Logout, Register), non-public procedures, interceptor creation, streaming passthrough |
@@ -633,7 +634,7 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/api/validator_test.go` | 9 | Struct validation: required fields, email, ULID, min-length, optional fields, snake_case conversion |
-| `internal/api/auth_handler_test.go` | 15 | Login (success, wrong password, nonexistent user, disabled user, cookie setting, TOTP verification), GetCurrentUser, SSO callback |
+| `internal/api/auth_handler_test.go` | 15 | Login (success, wrong password, nonexistent user, disabled user, token pair in response body, TOTP verification), GetCurrentUser, SSO callback |
 | `internal/api/user_handler_test.go` | 11 | CreateUser, GetUser (found, not found), ListUsers pagination, UpdateEmail, UpdatePassword (self, wrong current, privileged), SetUserDisabled, DeleteUser |
 | `internal/api/device_handler_test.go` | 10 | ListDevices (empty, with devices), GetDevice (found, not found), SetDeviceLabel, RemoveDeviceLabel, DeleteDevice, AssignDevice, UnassignDevice, SetDeviceSyncInterval |
 | `internal/api/token_handler_test.go` | 7 | CreateToken (admin, user one-time), GetToken (value hidden), ListTokens, RenameToken, SetTokenDisabled, DeleteToken |

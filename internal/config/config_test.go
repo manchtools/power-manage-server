@@ -29,8 +29,8 @@ func TestFromEnv_Defaults(t *testing.T) {
 	if cfg.ValkeyDB != 0 {
 		t.Errorf("ValkeyDB = %d, want 0", cfg.ValkeyDB)
 	}
-	if cfg.ControlURL != "http://control:8081" {
-		t.Errorf("ControlURL = %q, want %q", cfg.ControlURL, "http://control:8081")
+	if cfg.ControlURL != "https://control:8082" {
+		t.Errorf("ControlURL = %q, want %q", cfg.ControlURL, "https://control:8082")
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "info")
@@ -42,7 +42,7 @@ func TestFromEnv_CustomValues(t *testing.T) {
 	t.Setenv("GATEWAY_VALKEY_ADDR", "valkey:6380")
 	t.Setenv("GATEWAY_VALKEY_PASSWORD", "secret")
 	t.Setenv("GATEWAY_VALKEY_DB", "3")
-	t.Setenv("GATEWAY_CONTROL_URL", "http://localhost:8081")
+	t.Setenv("GATEWAY_CONTROL_URL", "https://localhost:8082")
 	t.Setenv("GATEWAY_LOG_LEVEL", "debug")
 
 	cfg := FromEnv()
@@ -59,8 +59,8 @@ func TestFromEnv_CustomValues(t *testing.T) {
 	if cfg.ValkeyDB != 3 {
 		t.Errorf("ValkeyDB = %d, want 3", cfg.ValkeyDB)
 	}
-	if cfg.ControlURL != "http://localhost:8081" {
-		t.Errorf("ControlURL = %q, want %q", cfg.ControlURL, "http://localhost:8081")
+	if cfg.ControlURL != "https://localhost:8082" {
+		t.Errorf("ControlURL = %q, want %q", cfg.ControlURL, "https://localhost:8082")
 	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, "debug")

@@ -7,10 +7,27 @@ import (
 	"github.com/hibiken/asynq"
 )
 
+// Enqueuer is the subset of Client that handlers need for
+// enqueueing tasks. Making the API-handler fields depend on the
+// interface rather than *Client lets tests inject a no-op or
+// recording double (see api.NoOpEnqueuer, api_test scope) without
+// spinning up a real Valkey — and lets production paths like
+// DispatchAction refuse a request when the enqueuer is nil,
+// instead of silently swallowing dispatches.
+type Enqueuer interface {
+	EnqueueToDevice(deviceID, taskType string, payload any, opts ...asynq.Option) error
+	EnqueueToControl(taskType string, payload any) error
+	EnqueueToSearch(taskType string, payload any) error
+}
+
 // Client wraps asynq.Client for enqueuing tasks to device and control queues.
 type Client struct {
 	client *asynq.Client
 }
+
+// Compile-time check that *Client satisfies Enqueuer. A drift here
+// means production code stopped matching the handler contract.
+var _ Enqueuer = (*Client)(nil)
 
 // NewClient creates a new task queue client connected to Valkey.
 func NewClient(addr, password string, db int) *Client {

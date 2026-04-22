@@ -15,7 +15,7 @@ import (
 
 func TestCreateAction_Shell(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -52,7 +52,7 @@ func TestCreateAction_Shell(t *testing.T) {
 // rejection, which is a pure proto-level constraint.
 func TestCreateAction_AdminPolicy_CustomRequiresConfig(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -91,7 +91,7 @@ func TestCreateAction_AdminPolicy_CustomRequiresConfig(t *testing.T) {
 
 func TestCreateAction_DefaultTimeout(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -109,7 +109,7 @@ func TestCreateAction_DefaultTimeout(t *testing.T) {
 
 func TestGetAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Test Action", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -123,7 +123,7 @@ func TestGetAction(t *testing.T) {
 
 func TestGetAction_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -135,7 +135,7 @@ func TestGetAction_NotFound(t *testing.T) {
 
 func TestListActions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -151,7 +151,7 @@ func TestListActions(t *testing.T) {
 
 func TestRenameAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Old", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -167,7 +167,7 @@ func TestRenameAction(t *testing.T) {
 
 func TestDeleteAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "To Delete", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -183,7 +183,8 @@ func TestDeleteAction(t *testing.T) {
 
 func TestDispatchAction_ByID(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Dispatch Test", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -203,7 +204,7 @@ func TestDispatchAction_ByID(t *testing.T) {
 
 func TestDispatchAction_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Test", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -275,7 +276,8 @@ func TestDispatchAction_InlineActionRejectsMismatchedParams(t *testing.T) {
 
 func TestListExecutions(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Exec Test", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -300,7 +302,8 @@ func TestListExecutions(t *testing.T) {
 
 func TestGetExecution(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Get Exec", int(pm.ActionType_ACTION_TYPE_SHELL))
@@ -325,7 +328,8 @@ func TestGetExecution(t *testing.T) {
 
 func TestDispatchInstantAction(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewActionHandler(st, slog.Default(), nil)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "instant-host")
