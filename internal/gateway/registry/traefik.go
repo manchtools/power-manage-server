@@ -82,7 +82,22 @@ type TraefikRouteConfig struct {
 	RootKey string
 }
 
+// ttyEnabled returns true when this config should publish the TTY
+// HTTP router in addition to the mTLS TCP router. The presence of
+// TTYBackend is the trigger: without a backend to route to, there
+// is nothing sensible to publish. This lets operators who only
+// need the agent mTLS path (no remote terminal feature) leave
+// GATEWAY_WEB_LISTEN_ADDR empty and still start the gateway, while
+// operators who want terminals set the listen address and the
+// rest falls into place via the auto-derivation in main.go.
+func (c TraefikRouteConfig) ttyEnabled() bool {
+	return c.TTYBackend != ""
+}
+
 func (c TraefikRouteConfig) validate() error {
+	// mTLS fields are required unconditionally — that's the core
+	// gateway function. Publishing without mTLS would mean the
+	// replica can't route agent traffic at all.
 	missing := []string{}
 	if c.MTLSHost == "" {
 		missing = append(missing, "MTLSHost")
@@ -93,17 +108,28 @@ func (c TraefikRouteConfig) validate() error {
 	if c.MTLSEntryPoint == "" {
 		missing = append(missing, "MTLSEntryPoint")
 	}
-	if c.TTYHost == "" {
-		missing = append(missing, "TTYHost")
-	}
-	if c.TTYBackend == "" {
-		missing = append(missing, "TTYBackend")
-	}
-	if c.TTYEntryPoint == "" {
-		missing = append(missing, "TTYEntryPoint")
+	// TTY publishing is gated on TTYBackend. The companion fields
+	// (TTYHost, TTYEntryPoint) may legitimately stay populated from
+	// deployment defaults even when the backend is empty, so they
+	// are only validated once a backend is actually present — with
+	// a backend set, a missing host or entrypoint is an operator
+	// mistake and we refuse to start instead of publishing a broken
+	// HTTP router.
+	if c.ttyEnabled() {
+		if c.TTYHost == "" {
+			missing = append(missing, "TTYHost")
+		}
+		if c.TTYEntryPoint == "" {
+			missing = append(missing, "TTYEntryPoint")
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("registry: TraefikRouteConfig missing fields: %s", strings.Join(missing, ", "))
+	}
+	if !c.ttyEnabled() {
+		// No TTY route to publish; the URL-shape validation below
+		// has nothing to run against because there is no backend URL.
+		return nil
 	}
 	// TTYBackend must be an http:// URL with a non-empty host. The
 	// gateway's TTY listener accepts cleartext HTTP only (public TLS
@@ -146,10 +172,19 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 		{root + "/tcp/routers/pm-mtls/service", "pm-mtls"},
 	}
 
-	// Per-replica TCP server entry in the shared service.
+	// Per-replica TCP server entry in the shared service — always
+	// published, this is the core routing data for the replica.
 	mtlsServerKey := fmt.Sprintf("%s/tcp/services/pm-mtls/loadbalancer/servers/%s/address", root, gatewayID)
+	perReplica := []struct{ key, value string }{
+		{mtlsServerKey, c.MTLSBackend},
+	}
 
-	// Per-replica HTTP router for TTY. Unique to this gateway.
+	// Per-replica HTTP router for TTY, only when the operator has
+	// enabled the terminal feature (TTYBackend set). Keeping this
+	// conditional lets an agent-only deployment — one that leaves
+	// GATEWAY_WEB_LISTEN_ADDR empty in the reference compose — start
+	// cleanly without a half-empty HTTP router entry that Traefik
+	// would reject.
 	//
 	// Traefik's Redis-KV provider has two mutually exclusive ways to
 	// spell "this HTTP router has TLS on":
@@ -172,23 +207,24 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 	//   * TTYCertResolver empty (bring-your-own-cert setups): write
 	//     only the flat /tls = "true" so Traefik serves its static-
 	//     config default certificate.
-	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
-	ttyRule := fmt.Sprintf("Host(`%s`) && PathPrefix(`/gw/%s`)", c.TTYHost, gatewayID)
-	perReplica := []struct{ key, value string }{
-		{mtlsServerKey, c.MTLSBackend},
-		{fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter), ttyRule},
-		{fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter), c.TTYEntryPoint},
-		{fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter), ttyRouter},
-		{fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter), c.TTYBackend},
-	}
-	if c.TTYCertResolver != "" {
-		perReplica = append(perReplica, struct{ key, value string }{
-			fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter), c.TTYCertResolver,
-		})
-	} else {
-		perReplica = append(perReplica, struct{ key, value string }{
-			fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter), "true",
-		})
+	if c.ttyEnabled() {
+		ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
+		ttyRule := fmt.Sprintf("Host(`%s`) && PathPrefix(`/gw/%s`)", c.TTYHost, gatewayID)
+		perReplica = append(perReplica,
+			struct{ key, value string }{fmt.Sprintf("%s/http/routers/%s/rule", root, ttyRouter), ttyRule},
+			struct{ key, value string }{fmt.Sprintf("%s/http/routers/%s/entrypoints/0", root, ttyRouter), c.TTYEntryPoint},
+			struct{ key, value string }{fmt.Sprintf("%s/http/routers/%s/service", root, ttyRouter), ttyRouter},
+			struct{ key, value string }{fmt.Sprintf("%s/http/services/%s/loadbalancer/servers/0/url", root, ttyRouter), c.TTYBackend},
+		)
+		if c.TTYCertResolver != "" {
+			perReplica = append(perReplica, struct{ key, value string }{
+				fmt.Sprintf("%s/http/routers/%s/tls/certResolver", root, ttyRouter), c.TTYCertResolver,
+			})
+		} else {
+			perReplica = append(perReplica, struct{ key, value string }{
+				fmt.Sprintf("%s/http/routers/%s/tls", root, ttyRouter), "true",
+			})
+		}
 	}
 
 	out := make([]struct{ key, value string }, 0, len(sharedMTLS)+len(perReplica))
@@ -202,11 +238,16 @@ func (c TraefikRouteConfig) traefikKeys(gatewayID string) []struct{ key, value s
 // other replicas' routes. Shared pm-mtls keys are NOT included; they
 // expire naturally via TTL once the last replica stops refreshing them.
 //
-// Both TLS shapes (flat `/tls` and nested `/tls/certResolver`) are
-// always listed, regardless of which one PublishTraefikRoute wrote
-// this cycle: deleting a key that doesn't exist is a no-op, and
-// listing both means a replica that flipped between BYO-cert and
-// letsencrypt across restarts cleans up the stale shape on exit.
+// The TTY router keys are always included even if TTY was disabled
+// this cycle. A replica may have flipped between "terminal enabled"
+// and "terminal disabled" across restarts; listing the TTY keys
+// unconditionally means the stale ones get cleaned up on the
+// shutdown after the operator disables the feature, and the backend
+// treats deletion of a nonexistent key as a no-op. Both TLS shapes
+// (flat `/tls` and nested `/tls/certResolver`) are also always
+// listed for the same reason — a replica that flipped between
+// BYO-cert and letsencrypt across restarts cleans up the stale
+// shape on exit.
 func (c TraefikRouteConfig) perReplicaKeys(gatewayID string) []string {
 	root := c.rootKey()
 	ttyRouter := fmt.Sprintf("pm-tty-%s", gatewayID)
