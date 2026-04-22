@@ -204,26 +204,19 @@ services:
       - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
       - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}
       - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-}
-      # Traefik self-registration via Redis KV. Each replica publishes
-      # its own routing entry; backend host:port values are auto-
-      # derived from the container's hostname + listener ports when
-      # not set explicitly, which is exactly what scaling needs.
-      - GATEWAY_TRAEFIK_SELF_REGISTER=${GATEWAY_TRAEFIK_SELF_REGISTER:-true}
-      - GATEWAY_TRAEFIK_ROOT_KEY=${GATEWAY_TRAEFIK_ROOT_KEY:-traefik}
-      - GATEWAY_TRAEFIK_MTLS_HOST=${GATEWAY_DOMAIN}
-      # Bind the pm-mtls TCP router to the websecure (:443)
-      # entrypoint, alongside the control-domain HTTP routers.
-      # Traefik's SNI-based dispatch separates the two: gateway
-      # SNI → TCP passthrough, control SNI → HTTP termination.
-      - GATEWAY_TRAEFIK_MTLS_ENTRYPOINT=websecure
-      - GATEWAY_TRAEFIK_TTY_HOST=${GATEWAY_TTY_DOMAIN:-${GATEWAY_DOMAIN}}
-      - GATEWAY_TRAEFIK_TTY_ENTRYPOINT=websecure
-      # rc3: explicitly name the cert resolver for the TTY router. The Redis
-      # KV provider does not inherit the entrypoint-level default cert
-      # resolver the way Docker-labelled routers do, so without this the
-      # TTY router falls back to Traefik's default self-signed cert and
-      # browsers refuse the WebSocket upgrade.
-      - GATEWAY_TRAEFIK_TTY_CERT_RESOLVER=${GATEWAY_TRAEFIK_TTY_CERT_RESOLVER:-letsencrypt}
+      # Traefik self-registration via Redis KV. The gateway publishes
+      # its own routing entry into Valkey at startup; each replica's
+      # backend host:port is auto-derived from the container's IP on
+      # the pm-internal network plus the listener ports below.
+      #
+      # Everything else has a sensible default inside the binary
+      # (SelfRegister=true, RootKey=traefik, entrypoints=websecure,
+      # TTY cert resolver=letsencrypt, MTLS host=GATEWAY_DOMAIN,
+      # TTY host=GATEWAY_TTY_DOMAIN). Only override via
+      # GATEWAY_TRAEFIK_* in .env when your Traefik topology diverges
+      # from the reference stack.
+      - GATEWAY_DOMAIN=${GATEWAY_DOMAIN}
+      - GATEWAY_TTY_DOMAIN=${GATEWAY_TTY_DOMAIN:-}
     command:
       - "-tls-cert=/certs/gateway.crt"
       - "-tls-key=/certs/gateway.key"
