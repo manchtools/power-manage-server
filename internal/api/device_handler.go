@@ -905,13 +905,13 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	//   Phase 3: append Dispatched on enqueue success, or Failed on
 	//            enqueue error.
 	//
-	// This flips the previous enqueue-first shape (which could
-	// revoke the key while the audit stream was silent about the
-	// operator ever asking for it) into an outbox-ish model: the
-	// audit record always exists, regardless of enqueue outcome.
-	// If the phase-3 append fails, the projection lingers at
-	// 'requested' — still a meaningful audit state the operator
-	// can investigate, rather than a silent no-op.
+	// All three events share the SAME stream_id so the event stream
+	// tells a single correlated story per revocation attempt:
+	// Requested → (Dispatched|Failed) → Revoked|Failed. Using fresh
+	// ULIDs per event would split the history and force downstream
+	// readers to correlate via (device_id, action_id) instead — the
+	// projector already does that, but the audit log loses the
+	// "these three rows are one revocation attempt" invariant.
 	luksStreamID := newULID()
 	reqAt := time.Now().Format(time.RFC3339)
 	if err := h.store.AppendEvent(ctx, store.Event{
@@ -942,7 +942,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", enqErr)
 		if failErr := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",
-			StreamID:   newULID(),
+			StreamID:   luksStreamID,
 			EventType:  "LuksDeviceKeyRevocationFailed",
 			Data: map[string]any{
 				"device_id": req.Msg.DeviceId,
@@ -967,7 +967,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	// transitions the row — so the lag is bounded, not permanent.
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
-		StreamID:   newULID(),
+		StreamID:   luksStreamID,
 		EventType:  "LuksDeviceKeyRevocationDispatched",
 		Data: map[string]any{
 			"device_id":     req.Msg.DeviceId,
