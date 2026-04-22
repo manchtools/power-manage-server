@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -34,7 +35,16 @@ func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
 func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Request[pm.DispatchOSQueryRequest]) (*connect.Response[pm.DispatchOSQueryResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	msg := req.Msg
+	hasTable := strings.TrimSpace(msg.Table) != ""
+	hasRawSQL := strings.TrimSpace(msg.RawSql) != ""
+	if hasTable == hasRawSQL {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "exactly one of table or raw_sql is required")
+	}
 
 	// Verify device exists
 	_, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{

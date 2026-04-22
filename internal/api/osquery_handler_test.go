@@ -47,11 +47,34 @@ func TestDispatchOSQuery_DeviceNotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.DispatchOSQuery(ctx, connect.NewRequest(&pm.DispatchOSQueryRequest{
-		DeviceId: "nonexistent",
+		DeviceId: testutil.NewID(),
 		Table:    "processes",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestDispatchOSQuery_RequiresTableOrRawSQL(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewOSQueryHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	deviceID := testutil.CreateTestDevice(t, st, "osquery-validation-host")
+
+	_, err := h.DispatchOSQuery(ctx, connect.NewRequest(&pm.DispatchOSQueryRequest{
+		DeviceId: deviceID,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	_, err = h.DispatchOSQuery(ctx, connect.NewRequest(&pm.DispatchOSQueryRequest{
+		DeviceId: deviceID,
+		Table:    "processes",
+		RawSql:   "select * from processes",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestGetOSQueryResult_Pending(t *testing.T) {

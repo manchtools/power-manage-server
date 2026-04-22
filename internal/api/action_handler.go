@@ -12,7 +12,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -31,7 +30,7 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	taskQueueHolder  // aqClient is nil during Phase 2 dual-write if Valkey is not configured
+	taskQueueHolder // aqClient is nil during Phase 2 dual-write if Valkey is not configured
 	searchIndexHolder
 	store  *store.Store
 	logger *slog.Logger
@@ -209,6 +208,110 @@ func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsR
 		}
 	}
 	return nil
+}
+
+// validateInlineAction validates a DispatchAction inline Action before the
+// server signs and enqueues it. Inline actions intentionally do not require
+// Action.id because DispatchAction replaces it with the execution ID.
+func validateInlineAction(ctx context.Context, action *pm.Action) error {
+	if action == nil {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action is required")
+	}
+	if action.Type == pm.ActionType_ACTION_TYPE_UNSPECIFIED {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action type is required")
+	}
+	if action.TimeoutSeconds < 0 || action.TimeoutSeconds > 3600 {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "timeout_seconds must be between 0 and 3600")
+	}
+	if action.Schedule != nil {
+		if err := Validate(ctx, action.Schedule); err != nil {
+			return err
+		}
+	}
+
+	params := extractActionParamsMsg(action)
+	if params == nil {
+		if action.Type == pm.ActionType_ACTION_TYPE_UPDATE {
+			return nil
+		}
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params are required")
+	}
+	if !actionParamsMatchType(action.Type, action.Params) {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params do not match action.Type")
+	}
+	if err := Validate(ctx, params); err != nil {
+		return err
+	}
+	if shell, ok := params.(*pm.ShellParams); ok {
+		if shell.Script == "" && shell.DetectionScript == "" {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of script or detection_script is required")
+		}
+	}
+	if agentUpdate, ok := params.(*pm.AgentUpdateParams); ok {
+		return validateAgentUpdateParams(ctx, agentUpdate)
+	}
+	return nil
+}
+
+func actionParamsMatchType(actionType pm.ActionType, params any) bool {
+	switch actionType {
+	case pm.ActionType_ACTION_TYPE_PACKAGE:
+		_, ok := params.(*pm.Action_Package)
+		return ok
+	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
+		_, ok := params.(*pm.Action_App)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FLATPAK:
+		_, ok := params.(*pm.Action_Flatpak)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
+		_, ok := params.(*pm.Action_Shell)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		_, ok := params.(*pm.Action_Service)
+		return ok
+	case pm.ActionType_ACTION_TYPE_FILE:
+		_, ok := params.(*pm.Action_File)
+		return ok
+	case pm.ActionType_ACTION_TYPE_UPDATE:
+		_, ok := params.(*pm.Action_Update)
+		return ok
+	case pm.ActionType_ACTION_TYPE_REPOSITORY:
+		_, ok := params.(*pm.Action_Repository)
+		return ok
+	case pm.ActionType_ACTION_TYPE_DIRECTORY:
+		_, ok := params.(*pm.Action_Directory)
+		return ok
+	case pm.ActionType_ACTION_TYPE_USER:
+		_, ok := params.(*pm.Action_User)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSH:
+		_, ok := params.(*pm.Action_Ssh)
+		return ok
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		_, ok := params.(*pm.Action_Sshd)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		_, ok := params.(*pm.Action_AdminPolicy)
+		return ok
+	case pm.ActionType_ACTION_TYPE_LPS:
+		_, ok := params.(*pm.Action_Lps)
+		return ok
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		_, ok := params.(*pm.Action_Encryption)
+		return ok
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		_, ok := params.(*pm.Action_Group)
+		return ok
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		_, ok := params.(*pm.Action_Wifi)
+		return ok
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		_, ok := params.(*pm.Action_AgentUpdate)
+		return ok
+	default:
+		return false
+	}
 }
 
 // validateAgentUpdateParams checks that at least one arch is set and all URLs are HTTPS.
@@ -649,6 +752,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
+		if err := validateInlineAction(ctx, action); err != nil {
+			return nil, err
+		}
 		actionType = action.Type
 		desiredState = action.DesiredState
 		params, err = serializeProtoParams(extractActionParamsMsg(action))
@@ -1144,13 +1250,18 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	}), nil
 }
 
-// serializeProtoParams marshals a proto.Message to a map[string]any via protojson.
-// Returns an empty map if msg is nil.
+// serializeProtoParams marshals an action params proto to the
+// map[string]any shape that's stored in the event's Data field.
+// Delegates to actionparams.MarshalActionParams so the wire format
+// is identical for user-created and system-managed actions — both
+// use EmitUnpopulated so proto3 scalar zero values cross the wire
+// rather than being silently dropped. See that helper for the full
+// rationale.
 func serializeProtoParams(msg proto.Message) (map[string]any, error) {
 	if msg == nil {
 		return map[string]any{}, nil
 	}
-	data, err := protojson.Marshal(msg)
+	data, err := actionparams.MarshalActionParams(msg)
 	if err != nil {
 		return nil, fmt.Errorf("marshal params: %w", err)
 	}
@@ -1355,7 +1466,6 @@ func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction 
 
 	return action
 }
-
 
 func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionExecution {
 	exec := &pm.ActionExecution{

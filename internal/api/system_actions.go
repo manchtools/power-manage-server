@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -178,20 +179,23 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 		comment = user.Email
 	}
 
-	params := map[string]any{
-		"username":   user.LinuxUsername,
-		"uid":        user.LinuxUid,
-		"createHome": true,
-		"comment":    comment,
+	// Typed *pm.UserParams (not map[string]any) so the Go compiler
+	// rejects any field name that doesn't exist on the proto. A past
+	// bug in syncTtyUserAction used the key "system" which protojson
+	// silently dropped on unmarshal — that class of typo cannot
+	// recur here.
+	params := &pm.UserParams{
+		Username:   user.LinuxUsername,
+		Uid:        user.LinuxUid,
+		CreateHome: true,
+		Comment:    comment,
+		Disabled:   user.Disabled,
 	}
 	if len(sshKeys) > 0 {
-		params["sshAuthorizedKeys"] = sshKeys
-	}
-	if user.Disabled {
-		params["disabled"] = true
+		params.SshAuthorizedKeys = sshKeys
 	}
 
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal user params: %w", err)
 	}
@@ -213,27 +217,32 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 			return fmt.Errorf("link user provision action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created user provision action: %w", err)
+		}
 		m.logger.Info("created system user provision action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action if params changed
 		if err := m.updateSystemAction(ctx, user.SystemUserActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update user provision action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemUserActionID)
+		if err := m.signActionByID(ctx, user.SystemUserActionID); err != nil {
+			return fmt.Errorf("re-sign updated user provision action: %w", err)
+		}
 	}
 
 	return nil
 }
 
 func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.UsersProjection) error {
-	params := map[string]any{
-		"users":         []string{user.LinuxUsername},
-		"allowPubkey":   user.SshAllowPubkey,
-		"allowPassword": user.SshAllowPassword,
+	// Typed *pm.SshParams — same rationale as syncUserProvisionAction.
+	params := &pm.SshParams{
+		Users:         []string{user.LinuxUsername},
+		AllowPubkey:   user.SshAllowPubkey,
+		AllowPassword: user.SshAllowPassword,
 	}
 
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal ssh params: %w", err)
 	}
@@ -255,14 +264,18 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 			return fmt.Errorf("link ssh access action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created ssh access action: %w", err)
+		}
 		m.logger.Info("created system ssh access action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action
 		if err := m.updateSystemAction(ctx, user.SystemSshActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update ssh access action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemSshActionID)
+		if err := m.signActionByID(ctx, user.SystemSshActionID); err != nil {
+			return fmt.Errorf("re-sign updated ssh access action: %w", err)
+		}
 	}
 
 	return nil
@@ -303,22 +316,28 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 // (the agent temporarily activates it during a session), no home
 // directory, and the deterministic UID from the SDK's TTYUID helper.
 func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
-	ttyUsername := "pm-tty-" + user.LinuxUsername
-	ttyUID := int(user.LinuxUid) + 100000 // terminal.DefaultUIDOffset
+	// Typed *pm.UserParams so the Go compiler rejects field-name
+	// typos. The previous map[string]any form accepted "system": true
+	// as a sibling of real fields — protojson silently dropped it on
+	// unmarshal and pm-tty-* accounts stayed visible on login screens.
+	//
+	// Field choices here:
+	//   - Hidden=true: AccountsService SystemAccount=true so the
+	//     account does NOT appear on graphical login screens
+	//     (GDM/SDDM/LightDM). This is what the previous "system"
+	//     key was trying (and failing) to express.
+	//   - CreateHome=false: pm-tty-* accounts are nologin by design
+	//     and should have no home directory. This used to be
+	//     silently inverted to true by the agent for non-system
+	//     users; agent-side fix is tracked separately but the
+	//     contract on the wire is now unambiguous.
+	//   - SystemUser=false (not set) deliberately: useradd --system
+	//     implies UID < 1000, which conflicts with pm-tty's
+	//     deterministic UID = <base>+100000. Visibility hiding uses
+	//     the Hidden bit instead.
+	params := systemTtyUserParams(user)
 
-	params := map[string]any{
-		"username":   ttyUsername,
-		"uid":        ttyUID,
-		"shell":      "/usr/sbin/nologin",
-		"createHome": false,
-		"comment":    "Power Manage terminal user for " + user.LinuxUsername,
-		"system":     true, // AccountsService SystemAccount=true → hidden from login screens
-	}
-	if user.Disabled {
-		params["disabled"] = true
-	}
-
-	paramsJSON, err := json.Marshal(params)
+	paramsJSON, err := actionparams.MarshalActionParams(params)
 	if err != nil {
 		return fmt.Errorf("marshal tty user params: %w", err)
 	}
@@ -340,18 +359,37 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 			return fmt.Errorf("link tty user action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created tty user action: %w", err)
+		}
 		m.logger.Info("created system tty user action",
-			"user_id", user.ID, "action_id", actionID, "tty_user", ttyUsername)
+			"user_id", user.ID, "action_id", actionID, "tty_user", params.Username)
 	} else {
 		// Update existing action if params changed
 		if err := m.updateSystemAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update tty user action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemTtyActionID)
+		if err := m.signActionByID(ctx, user.SystemTtyActionID); err != nil {
+			return fmt.Errorf("re-sign updated tty user action: %w", err)
+		}
 	}
 
 	return nil
+}
+
+func systemTtyUserParams(user db.UsersProjection) *pm.UserParams {
+	ttyUsername := "pm-tty-" + user.LinuxUsername
+	ttyUID := int32(int(user.LinuxUid) + 100000) // terminal.DefaultUIDOffset
+
+	return &pm.UserParams{
+		Username:   ttyUsername,
+		Uid:        ttyUID,
+		Shell:      "/usr/sbin/nologin",
+		CreateHome: false,
+		Comment:    "Power Manage terminal user for " + user.LinuxUsername,
+		Hidden:     true,
+		Disabled:   user.Disabled,
+	}
 }
 
 func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.UsersProjection) error {
@@ -469,15 +507,25 @@ func (m *SystemActionManager) linkSystemAction(ctx context.Context, userID, fiel
 }
 
 // signActionByID loads an action from the DB and signs it.
-func (m *SystemActionManager) signActionByID(ctx context.Context, actionID string) {
+//
+// Fail-closed: every outcome other than "signed and stored" returns
+// an error so the caller (syncUserProvisionAction, syncSshAccessAction,
+// syncTtyUserAction) surfaces it as a sync failure. A missing signer
+// is a wiring mistake, not a soft condition — letting an unsigned
+// system-managed action land in the DB means the agent silently
+// drops it on dispatch and the operator has no projection state to
+// debug from. Turning nil-signer into a hard error here forces main.go
+// to construct SystemActionManager with a real signer (or a
+// deterministic NoOpSigner in tests) instead of accidentally
+// producing silent no-ops.
+func (m *SystemActionManager) signActionByID(ctx context.Context, actionID string) error {
 	if m.signer == nil {
-		return
+		return fmt.Errorf("sign system action %s: signer not configured", actionID)
 	}
 
 	action, err := m.store.Queries().GetActionByID(ctx, actionID)
 	if err != nil {
-		m.logger.Error("failed to load action for signing", "action_id", actionID, "error", err)
-		return
+		return fmt.Errorf("load system action %s for signing: %w", actionID, err)
 	}
 
 	paramsJSON := action.Params
@@ -487,8 +535,7 @@ func (m *SystemActionManager) signActionByID(ctx context.Context, actionID strin
 
 	sig, err := m.signer.Sign(action.ID, action.ActionType, paramsJSON)
 	if err != nil {
-		m.logger.Error("failed to sign system action", "action_id", actionID, "error", err)
-		return
+		return fmt.Errorf("sign system action %s: %w", actionID, err)
 	}
 
 	if err := m.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
@@ -496,8 +543,10 @@ func (m *SystemActionManager) signActionByID(ctx context.Context, actionID strin
 		Signature:       sig,
 		ParamsCanonical: paramsJSON,
 	}); err != nil {
-		m.logger.Error("failed to store system action signature", "action_id", actionID, "error", err)
+		return fmt.Errorf("store system action %s signature: %w", actionID, err)
 	}
+
+	return nil
 }
 
 // parseSshPublicKeys extracts the public_key strings from the JSONB array.
