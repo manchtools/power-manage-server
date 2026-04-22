@@ -892,31 +892,82 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	// handler used to append LuksDeviceKeyRevocationDispatched and
 	// return success — the UI would show "dispatched" but the agent
 	// would never get the revocation task, leaving the LUKS key
-	// live when the operator thinks they've revoked it. Matches
-	// the fail-closed contract DispatchAction / DispatchOSQuery /
-	// QueryDeviceLogs adopted in this PR.
+	// live when the operator thinks they've revoked it.
 	if h.aqClient == nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "LUKS key revocation unavailable: task queue not configured")
 	}
 
-	// Dispatch LUKS device key revocation to device via Asynq task
-	// queue. Enqueue BEFORE recording the dispatched event so the
-	// event stream does not advertise a dispatch that did not leave
-	// the building. If the enqueue fails we return an error and no
-	// event is written — cleaner than the dispatch-action path's
-	// compensating event because this is a small, single-purpose
-	// RPC and the UI polls the event stream for status.
-	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
-		ActionID: req.Msg.ActionId,
-	}, asynq.MaxRetry(5)); err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
-	}
-
-	// Record dispatched event so the UI can show "dispatched" status
+	// Three-phase audit model:
+	//
+	//   Phase 1: append LuksDeviceKeyRevocationRequested (durable
+	//            operator-intent record) BEFORE touching the queue.
+	//   Phase 2: enqueue to Asynq.
+	//   Phase 3: append Dispatched on enqueue success, or Failed on
+	//            enqueue error.
+	//
+	// This flips the previous enqueue-first shape (which could
+	// revoke the key while the audit stream was silent about the
+	// operator ever asking for it) into an outbox-ish model: the
+	// audit record always exists, regardless of enqueue outcome.
+	// If the phase-3 append fails, the projection lingers at
+	// 'requested' — still a meaningful audit state the operator
+	// can investigate, rather than a silent no-op.
 	luksStreamID := newULID()
+	reqAt := time.Now().Format(time.RFC3339)
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
+		EventType:  "LuksDeviceKeyRevocationRequested",
+		Data: map[string]any{
+			"device_id":    req.Msg.DeviceId,
+			"action_id":    req.Msg.ActionId,
+			"requested_at": reqAt,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}); err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation request")
+	}
+
+	// Phase 2: enqueue.
+	if enqErr := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
+		ActionID: req.Msg.ActionId,
+	}, asynq.MaxRetry(5)); enqErr != nil {
+		// Phase 3b: append Failed so the projection transitions
+		// requested → failed. Best-effort; if this append also
+		// fails the projection stays at 'requested', which is
+		// still a truthful audit state (the revocation did NOT
+		// happen).
+		h.logger.Error("luks revocation enqueue failed; emitting LuksDeviceKeyRevocationFailed",
+			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", enqErr)
+		if failErr := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "luks_key",
+			StreamID:   newULID(),
+			EventType:  "LuksDeviceKeyRevocationFailed",
+			Data: map[string]any{
+				"device_id": req.Msg.DeviceId,
+				"action_id": req.Msg.ActionId,
+				"error":     fmt.Sprintf("dispatch enqueue failed: %v", enqErr),
+				"failed_at": time.Now().Format(time.RFC3339),
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}); failErr != nil {
+			h.logger.Error("failed to append LuksDeviceKeyRevocationFailed; projection stays at 'requested'",
+				"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", failErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch LUKS revocation")
+	}
+
+	// Phase 3a: append Dispatched. Task is already in the queue; a
+	// failure here leaves the projection at 'requested' while the
+	// agent proceeds with revocation. Log loudly and return error
+	// so the caller knows the UI-visible state will lag. The agent
+	// will still emit LuksDeviceKeyRevoked on success, which fully
+	// transitions the row — so the lag is bounded, not permanent.
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "luks_key",
+		StreamID:   newULID(),
 		EventType:  "LuksDeviceKeyRevocationDispatched",
 		Data: map[string]any{
 			"device_id":     req.Msg.DeviceId,
@@ -926,19 +977,14 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		ActorType: "user",
 		ActorID:   userCtx.ID,
 	}); err != nil {
-		// Task is already enqueued; the event append failure means
-		// the UI won't show "dispatched" but the agent will still
-		// receive and process the revocation. Log loudly but return
-		// error so the caller knows the UI state is stale.
-		h.logger.Error("luks revocation enqueued but event append failed; UI state may lag real revocation",
+		h.logger.Error("luks revocation dispatched but Dispatched event append failed; projection stays at 'requested' until agent emits LuksDeviceKeyRevoked",
 			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation event")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation dispatched event")
 	}
-	h.logger.Debug("event appended",
+	h.logger.Debug("luks revocation full flow appended",
 		"request_id", middleware.RequestIDFromContext(ctx),
 		"stream_type", "luks_key",
 		"stream_id", luksStreamID,
-		"event_type", "LuksDeviceKeyRevocationDispatched",
 	)
 
 	return connect.NewResponse(&pm.RevokeLuksDeviceKeyResponse{}), nil

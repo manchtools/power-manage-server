@@ -213,14 +213,18 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 			return fmt.Errorf("link user provision action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created user provision action: %w", err)
+		}
 		m.logger.Info("created system user provision action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action if params changed
 		if err := m.updateSystemAction(ctx, user.SystemUserActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update user provision action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemUserActionID)
+		if err := m.signActionByID(ctx, user.SystemUserActionID); err != nil {
+			return fmt.Errorf("re-sign updated user provision action: %w", err)
+		}
 	}
 
 	return nil
@@ -255,14 +259,18 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 			return fmt.Errorf("link ssh access action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created ssh access action: %w", err)
+		}
 		m.logger.Info("created system ssh access action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action
 		if err := m.updateSystemAction(ctx, user.SystemSshActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update ssh access action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemSshActionID)
+		if err := m.signActionByID(ctx, user.SystemSshActionID); err != nil {
+			return fmt.Errorf("re-sign updated ssh access action: %w", err)
+		}
 	}
 
 	return nil
@@ -340,7 +348,9 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 			return fmt.Errorf("link tty user action: %w", err)
 		}
 
-		m.signActionByID(ctx, actionID)
+		if err := m.signActionByID(ctx, actionID); err != nil {
+			return fmt.Errorf("sign newly created tty user action: %w", err)
+		}
 		m.logger.Info("created system tty user action",
 			"user_id", user.ID, "action_id", actionID, "tty_user", ttyUsername)
 	} else {
@@ -348,7 +358,9 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 		if err := m.updateSystemAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update tty user action: %w", err)
 		}
-		m.signActionByID(ctx, user.SystemTtyActionID)
+		if err := m.signActionByID(ctx, user.SystemTtyActionID); err != nil {
+			return fmt.Errorf("re-sign updated tty user action: %w", err)
+		}
 	}
 
 	return nil
@@ -469,15 +481,26 @@ func (m *SystemActionManager) linkSystemAction(ctx context.Context, userID, fiel
 }
 
 // signActionByID loads an action from the DB and signs it.
-func (m *SystemActionManager) signActionByID(ctx context.Context, actionID string) {
+//
+// Fail-closed: every outcome other than "signed and stored" returns
+// an error so the caller (syncUserProvisionAction, syncSshAccessAction,
+// syncTtyUserAction) surfaces it as a sync failure. A missing signer
+// is a wiring mistake, not a soft condition — letting an unsigned
+// system-managed action land in the DB means the agent silently
+// drops it on dispatch and the operator has no projection state to
+// debug from. This matches the policy applied to user-Create/Update
+// action signing elsewhere in this package.
+//
+// Ported forward from #69 so #72 can merge independently without
+// relying on #69 landing first.
+func (m *SystemActionManager) signActionByID(ctx context.Context, actionID string) error {
 	if m.signer == nil {
-		return
+		return fmt.Errorf("sign system action %s: signer not configured", actionID)
 	}
 
 	action, err := m.store.Queries().GetActionByID(ctx, actionID)
 	if err != nil {
-		m.logger.Error("failed to load action for signing", "action_id", actionID, "error", err)
-		return
+		return fmt.Errorf("load system action %s for signing: %w", actionID, err)
 	}
 
 	paramsJSON := action.Params
@@ -487,8 +510,7 @@ func (m *SystemActionManager) signActionByID(ctx context.Context, actionID strin
 
 	sig, err := m.signer.Sign(action.ID, action.ActionType, paramsJSON)
 	if err != nil {
-		m.logger.Error("failed to sign system action", "action_id", actionID, "error", err)
-		return
+		return fmt.Errorf("sign system action %s: %w", actionID, err)
 	}
 
 	if err := m.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
@@ -496,8 +518,10 @@ func (m *SystemActionManager) signActionByID(ctx context.Context, actionID strin
 		Signature:       sig,
 		ParamsCanonical: paramsJSON,
 	}); err != nil {
-		m.logger.Error("failed to store system action signature", "action_id", actionID, "error", err)
+		return fmt.Errorf("store system action %s signature: %w", actionID, err)
 	}
+
+	return nil
 }
 
 // parseSshPublicKeys extracts the public_key strings from the JSONB array.
