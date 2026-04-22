@@ -290,7 +290,14 @@ main() {
     generate_control_cert
     generate_control_public_cert
 
-    mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
+    # Data directories need permissions that let the container
+    # users (postgres uid 70, valkey uid 999, traefik uid 0)
+    # write into the bind-mounted volumes. The script-wide
+    # `umask 077` at the top protects the certs/ tree; for data/
+    # we reset to 022 so the directories are 755 and the
+    # containers can initialise them.
+    (umask 022 && mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik")
+    chmod 755 "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
     show_instructions

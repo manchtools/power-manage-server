@@ -81,7 +81,7 @@ When enabled, each gateway replica publishes its own routing entries into Traefi
 | `GATEWAY_TRAEFIK_ROOT_KEY` | `traefik` | Matches Traefik's `--providers.redis.rootkey`. |
 | `GATEWAY_TRAEFIK_MTLS_HOST` | — | Public `HostSNI` for agent mTLS, e.g. `gateway.example.com`. |
 | `GATEWAY_TRAEFIK_MTLS_BACKEND` | auto | Internal `host:port` for this replica's mTLS listener. Auto-derived from `os.Hostname()` + `GATEWAY_LISTEN_ADDR` when empty. |
-| `GATEWAY_TRAEFIK_MTLS_ENTRYPOINT` | — | Traefik entrypoint the TCP router binds to, e.g. `mtls`. |
+| `GATEWAY_TRAEFIK_MTLS_ENTRYPOINT` | — | Traefik entrypoint the TCP passthrough router binds to. In the reference compose this is `websecure` (port 443), shared with control's HTTP routers — Traefik's SNI dispatch separates passthrough traffic (gateway subdomain) from HTTP termination (control subdomain), so no dedicated mTLS port is required. |
 | `GATEWAY_TRAEFIK_TTY_HOST` | — | Public `Host` for TTY, e.g. `tty.example.com`. |
 | `GATEWAY_TRAEFIK_TTY_BACKEND` | auto | Internal URL for this replica's TTY listener. Auto-derived from `os.Hostname()` + `GATEWAY_WEB_LISTEN_ADDR` when empty. |
 | `GATEWAY_TRAEFIK_TTY_ENTRYPOINT` | — | Traefik entrypoint the TTY router binds to, e.g. `websecure`. |

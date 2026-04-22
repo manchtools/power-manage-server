@@ -39,11 +39,16 @@ services:
       - "--providers.redis.password=${VALKEY_PASSWORD}"
       - "--providers.redis.rootkey=traefik"
       - "--entrypoints.web.address=:80"
+      # One :443 entrypoint serves both the LE-terminated HTTP
+      # routers (control) and the gateway's TCP-passthrough mTLS
+      # router. Traefik dispatches by SNI: a TCP router with
+      # HostSNI(${GATEWAY_DOMAIN}) + tls.passthrough=true takes
+      # precedence when the ClientHello SNI matches the gateway
+      # subdomain; otherwise the HTTP router for the control
+      # subdomain wins and terminates TLS normally. No dedicated
+      # mtls entrypoint is needed — that used to be on :8443 but
+      # splitting ports added deploy friction for no real benefit.
       - "--entrypoints.websecure.address=:443"
-      # Dedicated entrypoint for agent mTLS passthrough. Agents
-      # connect to ${GATEWAY_DOMAIN}:8443; Traefik TCP-routes by SNI
-      # to whichever gateway replica is in the pm-mtls pool.
-      - "--entrypoints.mtls.address=:8443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
       - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
@@ -52,7 +57,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "8443:8443"
     networks:
       - internal
 
@@ -207,7 +211,11 @@ services:
       - GATEWAY_TRAEFIK_SELF_REGISTER=${GATEWAY_TRAEFIK_SELF_REGISTER:-true}
       - GATEWAY_TRAEFIK_ROOT_KEY=${GATEWAY_TRAEFIK_ROOT_KEY:-traefik}
       - GATEWAY_TRAEFIK_MTLS_HOST=${GATEWAY_DOMAIN}
-      - GATEWAY_TRAEFIK_MTLS_ENTRYPOINT=mtls
+      # Bind the pm-mtls TCP router to the websecure (:443)
+      # entrypoint, alongside the control-domain HTTP routers.
+      # Traefik's SNI-based dispatch separates the two: gateway
+      # SNI → TCP passthrough, control SNI → HTTP termination.
+      - GATEWAY_TRAEFIK_MTLS_ENTRYPOINT=websecure
       - GATEWAY_TRAEFIK_TTY_HOST=${GATEWAY_TTY_DOMAIN:-${GATEWAY_DOMAIN}}
       - GATEWAY_TRAEFIK_TTY_ENTRYPOINT=websecure
       # rc3: explicitly name the cert resolver for the TTY router. The Redis
