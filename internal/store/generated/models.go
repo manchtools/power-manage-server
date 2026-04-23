@@ -388,6 +388,19 @@ type ScimGroupMappingProjection struct {
 	ProjectionVersion int64     `json:"projection_version"`
 }
 
+type SecurityAlertsProjection struct {
+	EventID        uuid.UUID  `json:"event_id"`
+	DeviceID       string     `json:"device_id"`
+	AlertType      string     `json:"alert_type"`
+	Message        string     `json:"message"`
+	Details        []byte     `json:"details"`
+	RaisedAt       time.Time  `json:"raised_at"`
+	Acknowledged   bool       `json:"acknowledged"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	AcknowledgedBy *string    `json:"acknowledged_by"`
+	CreatedAt      time.Time  `json:"created_at"`
+}
+
 type ServerSettingsProjection struct {
 	ID                      string    `json:"id"`
 	UserProvisioningEnabled bool      `json:"user_provisioning_enabled"`

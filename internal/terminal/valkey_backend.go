@@ -52,3 +52,19 @@ func (b *ValkeyBackend) Delete(ctx context.Context, sessionID string) error {
 	}
 	return nil
 }
+
+// GetAndDelete atomically returns the payload and removes the key in a
+// single Valkey/Redis round-trip using GETDEL (available since Redis
+// 6.2; redis-stack-server ships well past that). This is the primitive
+// that makes terminal tokens single-use — two concurrent validators
+// cannot both observe the payload.
+func (b *ValkeyBackend) GetAndDelete(ctx context.Context, sessionID string) ([]byte, error) {
+	payload, err := b.client.GetDel(ctx, keyPrefix+sessionID).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrTokenNotFound
+		}
+		return nil, fmt.Errorf("terminal: valkey getdel: %w", err)
+	}
+	return payload, nil
+}

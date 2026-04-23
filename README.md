@@ -467,7 +467,7 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cm
 | `GATEWAY_ID` | Stable gateway identifier (empty = generate ULID at startup) |
 | `GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE` | Template for the public terminal WebSocket URL, e.g. `wss://{id}.gateway.example.com/terminal` |
 | `GATEWAY_BOOTSTRAP_HOST` | Wildcard root hostname for agent bootstrap redirect, e.g. `gateway.example.com` |
-| `GATEWAY_WEB_LISTEN_ADDR` | Listen address for the web TLS listener (terminal WebSocket), e.g. `:8443` |
+| `GATEWAY_WEB_LISTEN_ADDR` | Listen address for the terminal-WebSocket HTTP listener (cleartext; Traefik terminates TLS upstream), e.g. `:8443` |
 | `GATEWAY_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` (default `info`) |
 | `GATEWAY_HEARTBEAT_INTERVAL` | Heartbeat cadence sent to agents (Go duration, 5s..5m; default `30s`) |
 | `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | Traefik cert resolver name for the per-replica TTY HTTP router (e.g. `letsencrypt`) |

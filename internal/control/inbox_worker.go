@@ -535,7 +535,56 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		"success", payload.Success,
 	)
 
-	luksStreamID := ulid.Make().String()
+	// Look up the stream ID minted at request time so the Revoked /
+	// Failed event lands on the SAME stream as the Requested /
+	// Dispatched phases. Earlier versions generated a fresh ULID
+	// here, which split every revocation across two streams and
+	// broke the projection's three-phase stitch — fixed in rc10.
+	//
+	// Correctness assumption: at most one outstanding revocation
+	// per (device, action) at a time. Enforced at the API layer:
+	// RevokeLuksDeviceKey checks the projection for an already-
+	// dispatched-and-unterminal request before accepting a new
+	// one, so duplicates via concurrent operator clicks are
+	// rejected upstream. If that invariant ever regresses, the
+	// ORDER BY sequence_num DESC + LIMIT 1 here will pick the
+	// LATEST matching request — which is the expected "the
+	// operator re-requested and here's the result" semantic.
+	// Older abandoned streams would then lack a terminal event;
+	// not a correctness issue for the projection (it keys by
+	// stream_id), but worth flagging for the audit export.
+	//
+	// If the lookup fails (e.g. the Requested event never made it
+	// to disk because the original API call crashed), fall back to
+	// a fresh stream ID so we still record the Failed outcome
+	// durably — an orphan Failed event is better than dropping the
+	// agent-reported failure on the floor.
+	luksStreamID, err := w.store.Queries().GetLuksRevocationStreamID(ctx, db.GetLuksRevocationStreamIDParams{
+		DeviceID: payload.DeviceID,
+		ActionID: payload.ActionID,
+	})
+	switch {
+	case err == nil:
+		// Happy path — stream ID recovered.
+	case errors.Is(err, pgx.ErrNoRows):
+		// Genuinely absent: the Requested event never landed
+		// (original RPC crashed before append). Fall back to a
+		// fresh ULID so we still record the terminal outcome —
+		// an orphan Failed event is better than silently dropping
+		// the agent-reported failure on the floor.
+		w.logger.Warn("LUKS revocation stream ID not found — appending to a fresh stream; projection will show only the terminal event",
+			"device_id", payload.DeviceID,
+			"action_id", payload.ActionID,
+		)
+		luksStreamID = ulid.Make().String()
+	default:
+		// Transient DB / context error. Return so Asynq retries;
+		// previously we masked these as "not found" and forked
+		// the stream, which would compound audit fragmentation
+		// under DB flakes.
+		return fmt.Errorf("look up LUKS revocation stream ID for device %s action %s: %w", payload.DeviceID, payload.ActionID, err)
+	}
+
 	if payload.Success {
 		return w.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",

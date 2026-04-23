@@ -91,9 +91,23 @@ func main() {
 
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
-	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
-	if cfg.GatewayURL == "" {
-		logger.Warn("CONTROL_GATEWAY_URL is not set - agents will not receive a gateway URL during registration")
+	// Redact the gateway URL on the startup line too. If a bad shape
+	// slipped in (e.g. https://u:p@host/ despite the validator, or an
+	// operator paste-mistake), it shouldn't land in every boot log.
+	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
+	// CONTROL_GATEWAY_URL is fatal when invalid: registration hands
+	// it back to the agent verbatim, so any invalid shape — empty
+	// string, bare hostname (parses as a relative path), http://
+	// (agents refuse h2c), userinfo, or non-https scheme — turns
+	// every successful enrollment into an agent that can never
+	// connect. api.ValidateGatewayURL is the shared validator
+	// (also invoked defensively in the registration handler).
+	if err := api.ValidateGatewayURL(cfg.GatewayURL); err != nil {
+		// Redact userinfo before logging — the validator rejects
+		// URLs that contain credentials, but those credentials
+		// shouldn't land in the startup error line regardless.
+		logger.Error("CONTROL_GATEWAY_URL is invalid", "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "error", err)
+		os.Exit(1)
 	}
 
 	// Setup signal handling

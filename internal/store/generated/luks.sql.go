@@ -166,6 +166,36 @@ func (q *Queries) GetLuksKeyHistory(ctx context.Context, deviceID string) ([]Luk
 	return items, nil
 }
 
+const getLuksRevocationStreamID = `-- name: GetLuksRevocationStreamID :one
+SELECT stream_id
+FROM events
+WHERE stream_type = 'luks_key'
+  AND event_type IN ('LuksDeviceKeyRevocationRequested', 'LuksDeviceKeyRevocationDispatched')
+  AND data->>'device_id' = $1::text
+  AND data->>'action_id' = $2::text
+ORDER BY sequence_num DESC
+LIMIT 1
+`
+
+type GetLuksRevocationStreamIDParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+}
+
+// GetLuksRevocationStreamID looks up the luks_key event-stream ID that
+// was minted when api/device_handler.go appended the
+// LuksDeviceKeyRevocationRequested event for this (device, action).
+// The inbox worker uses it to append the final Revoked / Failed event
+// to the SAME stream so the three-phase projection stitches together.
+// Returns the most recent request if somehow there are multiple (there
+// should only ever be one; LIMIT 1 is belt-and-braces).
+func (q *Queries) GetLuksRevocationStreamID(ctx context.Context, arg GetLuksRevocationStreamIDParams) (string, error) {
+	row := q.db.QueryRow(ctx, getLuksRevocationStreamID, arg.DeviceID, arg.ActionID)
+	var stream_id string
+	err := row.Scan(&stream_id)
+	return stream_id, err
+}
+
 const validateAndConsumeLuksToken = `-- name: ValidateAndConsumeLuksToken :one
 UPDATE luks_tokens
 SET used = TRUE

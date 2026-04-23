@@ -121,6 +121,105 @@ func TestFromEnv_TraefikTTYCertResolver(t *testing.T) {
 	}
 }
 
+// TestValidate_TTYMTLSHostCollision captures the config-shape invariant
+// CodeRabbit flagged on the rc10 review: when the terminal WebSocket
+// listener is enabled AND Traefik self-registration is on, the TTY
+// host must not equal the mTLS host. If they match, Traefik's TCP
+// passthrough router for the shared SNI wins over the TTY HTTP router
+// and the WebSocket handshake fails against the mTLS backend.
+func TestValidate_TTYMTLSHostCollision(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name: "collision with terminal enabled (WebListenAddr) → error",
+			cfg: Config{
+				TraefikSelfRegister:   true,
+				WebListenAddr:         ":8443",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "gw.example.com",
+				TraefikMTLSEntryPoint: "websecure",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: true,
+		},
+		{
+			name: "collision with terminal enabled (explicit TTYBackend) → error",
+			cfg: Config{
+				TraefikSelfRegister:   true,
+				TraefikTTYBackend:     "http://10.0.0.5:8443",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "gw.example.com",
+				TraefikMTLSEntryPoint: "websecure",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: true,
+		},
+		{
+			name: "collision but terminal disabled → OK",
+			cfg: Config{
+				TraefikSelfRegister:   true,
+				WebListenAddr:         "", // terminal off
+				TraefikTTYBackend:     "",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "gw.example.com",
+				TraefikMTLSEntryPoint: "websecure",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: false,
+		},
+		{
+			name: "distinct hosts with terminal enabled → OK",
+			cfg: Config{
+				TraefikSelfRegister:   true,
+				WebListenAddr:         ":8443",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "tty.example.com",
+				TraefikMTLSEntryPoint: "websecure",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: false,
+		},
+		{
+			name: "shared host but different entrypoints → OK (routers don't collide)",
+			cfg: Config{
+				TraefikSelfRegister:   true,
+				WebListenAddr:         ":8443",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "gw.example.com",
+				TraefikMTLSEntryPoint: "mtls",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: false,
+		},
+		{
+			name: "collision but self-register off → OK (operator owns routing)",
+			cfg: Config{
+				TraefikSelfRegister:   false,
+				WebListenAddr:         ":8443",
+				TraefikMTLSHost:       "gw.example.com",
+				TraefikTTYHost:        "gw.example.com",
+				TraefikMTLSEntryPoint: "websecure",
+				TraefikTTYEntryPoint:  "websecure",
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for %+v", tc.cfg)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for %+v", err, tc.cfg)
+			}
+		})
+	}
+}
+
 func TestGetEnvInt_ValidValues(t *testing.T) {
 	tests := []struct {
 		name     string

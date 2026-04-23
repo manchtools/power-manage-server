@@ -6,9 +6,14 @@
 #   ALTER ROLE pm_indexer PASSWORD 'your_password';
 set -e
 
+# Hard-fail on unset password: returning 0 caused the indexer container
+# to crash-loop later with an obscure "no password supplied" error at
+# first connect, hours after `setup.sh` had already reported success.
+# Failing the init script keeps the failure at setup time where the
+# operator is still paying attention.
 if [ -z "$INDEXER_POSTGRES_PASSWORD" ]; then
-    echo "WARN: INDEXER_POSTGRES_PASSWORD not set, skipping pm_indexer user creation"
-    exit 0
+    echo "ERROR: INDEXER_POSTGRES_PASSWORD is required — set it in .env before initialising postgres (must be URL-safe; see .env.example)" >&2
+    exit 1
 fi
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL

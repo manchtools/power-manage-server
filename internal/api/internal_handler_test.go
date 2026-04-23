@@ -230,11 +230,19 @@ func TestProxyValidateTerminalToken_HappyPath(t *testing.T) {
 	assert.Equal(t, uint32(40), resp.Msg.Rows)
 }
 
-func TestProxyValidateTerminalToken_DoesNotConsumeToken(t *testing.T) {
-	// The contract documented above the RPC says validation must NOT
-	// consume the entry — the same gateway uses the metadata for the
-	// lifetime of the WebSocket. Validate twice and assert both
-	// succeed.
+func TestProxyValidateTerminalToken_IsSingleUse(t *testing.T) {
+	// rc10 contract: a successful validation atomically consumes the
+	// token so replays within the TTL fail with Unauthenticated. This
+	// blocks the leaked-token replay surface (reverse-proxy access
+	// logs capturing query strings, browser history snooping, etc.)
+	// without affecting normal operation — the real gateway flow in
+	// terminal_bridge.go validates the token exactly once per
+	// WebSocket connection and uses the returned metadata for the
+	// lifetime of the connection.
+	//
+	// Supersedes the pre-rc10 TestProxyValidateTerminalToken_DoesNotConsumeToken
+	// which asserted the opposite and is exactly the contract the
+	// audit flagged as a replay vulnerability.
 	h, tokenStore := newInternalHandlerWithTokenStore(t)
 
 	mintRes, err := tokenStore.Mint(context.Background(), terminal.MintParams{
@@ -244,13 +252,21 @@ func TestProxyValidateTerminalToken_DoesNotConsumeToken(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	for i := 0; i < 3; i++ {
-		_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
-			SessionId: mintRes.SessionID,
-			Token:     mintRes.Token,
-		}))
-		require.NoErrorf(t, err, "validation %d should succeed", i+1)
-	}
+	// First validation succeeds and consumes the token.
+	_, err = h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: mintRes.SessionID,
+		Token:     mintRes.Token,
+	}))
+	require.NoError(t, err, "first validation should succeed")
+
+	// Second validation with the same bearer fails with
+	// Unauthenticated — the token is gone.
+	_, err = h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
+		SessionId: mintRes.SessionID,
+		Token:     mintRes.Token,
+	}))
+	require.Error(t, err, "second validation must fail (single-use contract)")
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
 func TestProxyValidateTerminalToken_UnknownSession(t *testing.T) {

@@ -81,7 +81,10 @@ services:
       - internal
 
   valkey:
-    image: docker.io/redis/redis-stack-server:latest
+    # Pinned to avoid silent upstream upgrades. Bump deliberately when
+    # you've verified the RediSearch module + data format still work
+    # for your deployment.
+    image: docker.io/redis/redis-stack-server:7.4.0-v0
     container_name: pm-valkey
     restart: unless-stopped
     volumes:
@@ -191,6 +194,7 @@ services:
     environment:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
       - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}

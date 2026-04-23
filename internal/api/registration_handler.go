@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/url"
 	"time"
 
 	"connectrpc.com/connect"
@@ -17,6 +19,75 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// ValidateGatewayURL returns nil when raw is a gateway URL an agent
+// can actually connect to over mTLS. A surprising number of shapes
+// pass `url.Parse` without being usable:
+//   - bare hostnames like `gateway.example.com` parse with Scheme="",
+//     Host="", Path="gateway.example.com" — the agent would try to
+//     dial a relative path;
+//   - `http://...` is refused because rc10 agents refuse h2c;
+//   - `wss://...` or other schemes are refused because the agent's
+//     gateway client uses HTTPS transport;
+//   - user-info (`https://user:pass@host/`) is refused because
+//     credentials in the URL are never the right answer and would
+//     leak on every enrollment response;
+//   - fragments are meaningless on the wire and refused to keep the
+//     shape tight.
+//
+// Used both at control server startup (fatal on violation, so a
+// misconfiguration is visible at boot) and defensively in the
+// registration handler before the URL is handed to the agent.
+func ValidateGatewayURL(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("gateway URL is empty")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("gateway URL parse failed: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("gateway URL must use https scheme, got %q", u.Scheme)
+	}
+	// u.Hostname() strips port and brackets so "https://:8443" (port
+	// only, no host) and "https://[::1]:443" (IPv6) both validate
+	// under the same rule. u.Host would accept ":8443" silently.
+	if u.Hostname() == "" {
+		return fmt.Errorf("gateway URL has no host — bare hostnames like %q are not absolute URLs", RedactGatewayURL(raw))
+	}
+	if u.User != nil {
+		return fmt.Errorf("gateway URL must not contain userinfo (credentials in URL leak on every enrollment response)")
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("gateway URL must not contain a fragment")
+	}
+	return nil
+}
+
+// RedactGatewayURL strips userinfo from a URL-shaped string for safe
+// logging / panic messages. Exported so cmd/control/main.go can use
+// the same redaction on the startup-log error path.
+//
+// If the input is unparseable, returns a placeholder rather than the
+// raw value — a malformed url.Parse input that still carries
+// credentials in a substring shouldn't leak just because the parser
+// rejected it (e.g. "https://u:p@host:notaport" fails to parse as
+// a URL but still contains "u:p" in-band).
+func RedactGatewayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable URL>"
+	}
+	if u.User == nil {
+		return raw
+	}
+	// Rebuild without userinfo.
+	u.User = nil
+	return u.String()
+}
+
 // RegistrationHandler handles agent registration requests.
 type RegistrationHandler struct {
 	store      *store.Store
@@ -25,8 +96,19 @@ type RegistrationHandler struct {
 	logger     *slog.Logger
 }
 
-// NewRegistrationHandler creates a new registration handler.
+// NewRegistrationHandler creates a new registration handler. Panics
+// when gatewayURL fails ValidateGatewayURL — caller is expected to
+// have validated at startup, so reaching the handler constructor
+// with a bad value is a programmer error, not a runtime condition.
+// Startup-time validation (cmd/control/main.go) surfaces the same
+// check with a clean operator-facing error message.
 func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string, logger *slog.Logger) *RegistrationHandler {
+	if err := ValidateGatewayURL(gatewayURL); err != nil {
+		// Redact userinfo before panicking — a gateway URL that
+		// contains credentials (which the validator is rejecting)
+		// would otherwise leak them into the crash log.
+		panic(fmt.Sprintf("NewRegistrationHandler: invalid gateway URL %q: %v", RedactGatewayURL(gatewayURL), err))
+	}
 	return &RegistrationHandler{
 		store:      st,
 		ca:         certAuth,
@@ -40,6 +122,19 @@ func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string,
 func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request[pm.RegisterRequest]) (*connect.Response[pm.RegisterResponse], error) {
 	logger := h.logger.With("hostname", req.Msg.Hostname, "agent_version", req.Msg.AgentVersion)
 	logger.Info("processing registration request")
+
+	// Defence in depth: the startup guard in cmd/control/main.go
+	// plus the NewRegistrationHandler constructor both run
+	// ValidateGatewayURL, so reaching this check with an invalid
+	// URL would mean both earlier layers regressed. We re-run the
+	// full validator (not just the emptiness check) so the agent
+	// never receives a URL shape that the URL validators missed —
+	// bare hostnames, http://, userinfo, etc.
+	if err := ValidateGatewayURL(h.gatewayURL); err != nil {
+		logger.Error("registration refused: gatewayURL failed validation",
+			"gateway_url", RedactGatewayURL(h.gatewayURL), "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "server misconfiguration: gateway URL is invalid")
+	}
 
 	// Validate CSR is present
 	if len(req.Msg.Csr) == 0 {

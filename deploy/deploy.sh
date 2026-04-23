@@ -202,7 +202,10 @@ log_info "Transfer complete"
 log_step "Loading images and restarting services on $SSH_HOST..."
 
 # Build the remote commands
-# Read IMAGE_TAG from server's .env so we retag images to match what compose expects
+# Read IMAGE_TAG from the server's .env so we retag images to match
+# what compose expects. Falls back to "latest" when unset — matches
+# compose.yml's ${IMAGE_TAG:-latest} default, which points at the
+# curated latest-stable tag CI promotes after a release is cut.
 REMOTE_CMDS="cd ~/deploy && "
 REMOTE_CMDS+="IMAGE_TAG=\$(grep -oP '(?<=^IMAGE_TAG=).*' .env 2>/dev/null || echo latest) && "
 REMOTE_CMDS+="echo '[INFO] Server IMAGE_TAG='\$IMAGE_TAG && "

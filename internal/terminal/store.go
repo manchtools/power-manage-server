@@ -101,6 +101,16 @@ type SessionBackend interface {
 	// Delete removes the session_id. Idempotent: returns nil whether
 	// or not the key existed.
 	Delete(ctx context.Context, sessionID string) error
+	// GetAndDelete atomically returns the payload and removes the
+	// session_id in one operation. Used by Validate to enforce
+	// single-use tokens: two concurrent connect attempts with the
+	// same bearer can only succeed once — the loser sees
+	// ErrTokenNotFound. Implementations must use a primitive that
+	// cannot race (Valkey GETDEL, an in-process mutex on the fake,
+	// etc.). A naïve Get-then-Delete pair does NOT satisfy this
+	// contract; returning a nil payload and nil error MUST be
+	// translated to ErrTokenNotFound.
+	GetAndDelete(ctx context.Context, sessionID string) ([]byte, error)
 }
 
 // TokenStore is the high-level façade used by the API handlers. It
@@ -242,20 +252,45 @@ func (s *TokenStore) Lookup(ctx context.Context, sessionID string) (*Session, er
 }
 
 // Validate verifies that the supplied bearer token matches the one
-// stored for the given session_id and returns the Session. Used by
-// the gateway-side validation path (will be wired via an internal
-// RPC in a follow-up PR). Distinguishes ErrTokenNotFound (expired or
-// never minted) from ErrTokenMismatch (forgery attempt) so the audit
-// log can record them differently.
+// stored for the given session_id, atomically consumes the token on
+// success, and returns the Session. Single-use: a second call with
+// the same bearer returns ErrTokenNotFound even within the TTL.
+//
+// Distinguishes ErrTokenNotFound (expired, never minted, or already
+// consumed) from ErrTokenMismatch (bearer forgery attempt) so the
+// audit log can record forgeries separately. Used by the
+// gateway-side InternalService.ValidateTerminalToken path.
+//
+// On mismatch the session entry is re-persisted with the same
+// remaining TTL so a forged bearer cannot DoS a legitimate session
+// that has not yet been claimed. (GETDEL has already removed it; if
+// we did not re-set, the real client's subsequent Validate would
+// hit ErrTokenNotFound.)
 func (s *TokenStore) Validate(ctx context.Context, sessionID, bearerToken string) (*Session, error) {
-	session, err := s.Lookup(ctx, sessionID)
+	payload, err := s.backend.GetAndDelete(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	var session Session
+	if err := json.Unmarshal(payload, &session); err != nil {
+		return nil, fmt.Errorf("terminal: decode session %s: %w", sessionID, err)
+	}
 	if subtle.ConstantTimeCompare([]byte(session.TokenHash), []byte(hashToken(bearerToken))) != 1 {
+		// Forgery attempt — restore the real session so the
+		// legitimate client isn't locked out. Compute the remaining
+		// TTL from ExpiresAt; if already expired we just drop it.
+		remaining := session.ExpiresAt.Sub(s.now())
+		if remaining > 0 {
+			if restoreErr := s.backend.Set(ctx, sessionID, payload, remaining); restoreErr != nil {
+				// Log via caller — we don't have a logger here. Returning
+				// mismatch is the priority; the caller surfaces it as
+				// Unauthenticated and the audit pipeline flags it.
+				return nil, ErrTokenMismatch
+			}
+		}
 		return nil, ErrTokenMismatch
 	}
-	return session, nil
+	return &session, nil
 }
 
 // Revoke removes the session entry, making subsequent Validate /

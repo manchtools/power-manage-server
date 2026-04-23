@@ -112,7 +112,7 @@ func createTestTokenWithValue(t *testing.T, st *store.Store, actorID string, one
 func TestRegister_ValidToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	_, tokenValue := createTestTokenWithValue(t, st, adminID, false)
@@ -130,7 +130,7 @@ func TestRegister_ValidToken(t *testing.T) {
 	assert.NotEmpty(t, resp.Msg.DeviceId.Value)
 	assert.NotEmpty(t, resp.Msg.Certificate)
 	assert.NotEmpty(t, resp.Msg.CaCert)
-	assert.Equal(t, "wss://gateway.test:443", resp.Msg.GatewayUrl)
+	assert.Equal(t, "https://gateway.test:8080", resp.Msg.GatewayUrl)
 
 	// Verify device projection exists
 	device, err := st.Queries().GetDeviceByID(context.Background(), db.GetDeviceByIDParams{
@@ -143,7 +143,7 @@ func TestRegister_ValidToken(t *testing.T) {
 func TestRegister_OneTimeTokenDisabledAfterUse(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	_, tokenValue := createTestTokenWithValue(t, st, adminID, true)
@@ -174,7 +174,7 @@ func TestRegister_OneTimeTokenDisabledAfterUse(t *testing.T) {
 func TestRegister_DisabledTokenFails(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	tokenID, tokenValue := createTestTokenWithValue(t, st, adminID, false)
@@ -204,7 +204,7 @@ func TestRegister_DisabledTokenFails(t *testing.T) {
 func TestRegister_InvalidTokenFails(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	csr := generateCSR(t)
 	_, err := h.Register(context.Background(), connect.NewRequest(&pm.RegisterRequest{
@@ -220,7 +220,7 @@ func TestRegister_InvalidTokenFails(t *testing.T) {
 func TestRegister_MissingCSRFails(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	_, tokenValue := createTestTokenWithValue(t, st, adminID, false)
@@ -238,7 +238,7 @@ func TestRegister_MissingCSRFails(t *testing.T) {
 func TestRegister_ReusableTokenAllowsMultipleUses(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	_, tokenValue := createTestTokenWithValue(t, st, adminID, false)
@@ -259,7 +259,7 @@ func TestRegister_ReusableTokenAllowsMultipleUses(t *testing.T) {
 func TestRegister_ExpiredTokenFails(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	testCA := newTestCA(t)
-	h := api.NewRegistrationHandler(st, testCA, "wss://gateway.test:443", slog.Default())
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := context.Background()

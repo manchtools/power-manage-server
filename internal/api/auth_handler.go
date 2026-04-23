@@ -19,17 +19,24 @@ import (
 
 // AuthHandler handles authentication RPCs.
 type AuthHandler struct {
-	store      *store.Store
-	logger     *slog.Logger
-	jwtManager *auth.JWTManager
+	store               *store.Store
+	logger              *slog.Logger
+	jwtManager          *auth.JWTManager
+	passwordAuthEnabled bool
 }
 
-// NewAuthHandler creates a new auth handler.
-func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager) *AuthHandler {
+// NewAuthHandler creates a new auth handler. The passwordAuthEnabled flag
+// is the global `CONTROL_PASSWORD_AUTH_ENABLED` operator switch. When
+// false, Login rejects every password attempt regardless of the per-user
+// HasPassword column — previous revs only gated the SSO UI's auth-method
+// list on this flag, leaving the RPC itself open to direct password
+// attempts against accounts that still had a password hash on disk.
+func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager, passwordAuthEnabled bool) *AuthHandler {
 	return &AuthHandler{
-		store:      st,
-		logger:     logger,
-		jwtManager: jwtManager,
+		store:               st,
+		logger:              logger,
+		jwtManager:          jwtManager,
+		passwordAuthEnabled: passwordAuthEnabled,
 	}
 }
 
@@ -37,6 +44,14 @@ func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRequest]) (*connect.Response[pm.LoginResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Global password-auth switch — enforced BEFORE the user lookup so a
+	// burned bcrypt cycle doesn't leak account existence via timing when
+	// the operator has disabled password login entirely.
+	if !h.passwordAuthEnabled {
+		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is disabled on this server")
 	}
 
 	user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)

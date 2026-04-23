@@ -304,18 +304,29 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 // returns the session metadata the gateway needs to bridge the
 // connection.
 //
-// Validation does NOT consume the entry — the same gateway uses the
-// metadata for the lifetime of the WebSocket. Revocation happens
-// explicitly via ControlService.StopTerminal or
-// TerminateTerminalSession. This contract is documented on the RPC
-// in manchtools/power-manage-sdk#27.
+// rc10 single-use contract: a successful validation CONSUMES the
+// token atomically (Valkey GETDEL), so a second call with the same
+// bearer returns Unauthenticated. This blocks the replay surface
+// where a token leaks via a reverse-proxy access log that captured
+// the query-string — the attacker can no longer mint additional
+// WebSocket connections during the 60 s TTL.
 //
-// Distinguishes 'unknown / expired' (Unauthenticated, with a generic
-// message so a forgery probe cannot tell the difference between an
-// expired token and a never-existed one) from 'mismatched token'
-// (Unauthenticated, but logged separately so the audit pipeline can
-// flag forgery attempts). 'Token store not configured' is Unavailable
-// — that's an operator misconfiguration, not a client bug.
+// Real flow only validates once per WS: the gateway calls this RPC
+// from terminal_bridge.go at connection acceptance, stashes the
+// returned metadata for the WebSocket's lifetime, and never re-
+// validates. So the single-use contract is consistent with normal
+// operation; only attacker replays break.
+//
+// Forgery attempts (valid session_id, wrong bearer) do NOT consume
+// the entry — the terminal store restores the session with its
+// remaining TTL so a legitimate client isn't locked out by a guess.
+//
+// Distinguishes 'unknown / expired / already consumed' (Unauthenticated,
+// with a generic message so a forgery probe cannot tell the
+// difference) from 'mismatched token' (Unauthenticated, but logged
+// separately so the audit pipeline can flag forgery attempts). 'Token
+// store not configured' is Unavailable — operator misconfiguration,
+// not a client bug.
 func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *connect.Request[pm.InternalValidateTerminalTokenRequest]) (*connect.Response[pm.InternalValidateTerminalTokenResponse], error) {
 	if h.terminalTokenStore == nil {
 		return nil, connect.NewError(connect.CodeUnavailable,
