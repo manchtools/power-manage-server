@@ -137,27 +137,61 @@ func main() {
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Wire the multi-gateway registry. Reuses the same Valkey
-	// instance the Asynq queue uses, no extra connection pool. The
-	// registry is enabled only when the operator has set the
-	// public terminal URL template — without it the gateway can't
-	// know its own public URL, so we just leave the registry off
-	// (single-gateway / no-terminal mode).
+	// Wire the multi-gateway registry lazily. The registry is shared by
+	// three independent features:
+	//   - terminal URL lookup for browser sessions,
+	//   - internal gateway fan-out for control -> gateway RPCs,
+	//   - Traefik Redis-KV self-registration.
+	//
+	// Keep those code paths independent. A malformed optional terminal
+	// URL must not prevent agent mTLS routing or internal gateway
+	// discovery from coming up.
 	var (
 		gatewayReg   *registry.Registry
+		registryRDB  *redis.Client
 		assignedHost string
 	)
+	ensureGatewayRegistry := func() *registry.Registry {
+		if gatewayReg != nil {
+			return gatewayReg
+		}
+		registryRDB = redis.NewClient(&redis.Options{
+			Addr:     cfg.ValkeyAddr,
+			Password: cfg.ValkeyPassword,
+			DB:       cfg.ValkeyDB,
+			Protocol: 2,
+		})
+		gatewayReg = registry.New(registry.NewValkeyBackend(registryRDB), logger.With("component", "registry"))
+		return gatewayReg
+	}
+	defer func() {
+		if registryRDB != nil {
+			if err := registryRDB.Close(); err != nil {
+				logger.Warn("failed to close gateway registry Valkey client", "error", err)
+			}
+		}
+	}()
 
 	// Compute the agent redirect hostname independently of the terminal
 	// URL. This supports multi-gateway agent routing without requiring
 	// the terminal feature to be enabled.
+	//
+	// A malformed template (e.g. one that references an unset env var
+	// like ${TTY_DOMAIN} and expands to "https:///…" with an empty host)
+	// is treated as "bootstrap redirects disabled" with a loud warning
+	// rather than a fatal exit. The gateway still serves agent mTLS —
+	// which is what matters for an enrolled device. Crashing on a
+	// misconfigured optional feature used to kill the gateway on every
+	// restart, and because the Traefik Redis KV entry expires 45 s after
+	// each exit, the pm-mtls TCP router fell through to the HTTP router
+	// on the shared :443 and served the Let's Encrypt cert — giving
+	// agents the misleading x509 "unknown authority" error.
 	if cfg.PublicAgentURLTemplate != "" {
 		agentURL := strings.ReplaceAll(cfg.PublicAgentURLTemplate, "{id}", gatewayID)
 		assignedHost = hostFromURL(agentURL)
 		if assignedHost == "" {
-			logger.Error("could not extract host from GATEWAY_PUBLIC_AGENT_URL_TEMPLATE",
+			logger.Warn("GATEWAY_PUBLIC_AGENT_URL_TEMPLATE resolved to a URL with no host — bootstrap redirects disabled; check for unset env vars in the template",
 				"template", cfg.PublicAgentURLTemplate, "resolved", agentURL)
-			os.Exit(1)
 		}
 	}
 
@@ -170,95 +204,39 @@ func main() {
 		// If no agent URL template was set, fall back to deriving the
 		// agent redirect hostname from the terminal URL (legacy
 		// single-hostname mode).
-		if assignedHost == "" {
-			assignedHost = hostFromURL(terminalURL)
+		terminalHost := hostFromURL(terminalURL)
+		if terminalHost == "" {
+			// Malformed template — skip the registry work instead of
+			// os.Exit(1). See the long comment above the agent-template
+			// check for why this has to be non-fatal.
+			logger.Warn("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE resolved to a URL with no host — terminal session registration disabled on this gateway; check for unset env vars in the template",
+				"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
+		} else {
 			if assignedHost == "" {
-				logger.Error("could not extract host from GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
-					"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
-				os.Exit(1)
+				assignedHost = terminalHost
 			}
-		}
 
-		rdb := redis.NewClient(&redis.Options{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
-			Protocol: 2,
-		})
-		defer rdb.Close()
-
-		gatewayReg = registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "registry"))
-		stop, err := gatewayReg.RegisterGateway(
-			context.Background(),
-			gatewayID,
-			terminalURL,
-			registry.DefaultGatewayTTL,
-			registry.DefaultGatewayRefreshInterval,
-		)
-		if err != nil {
-			logger.Error("failed to register gateway in registry", "error", err)
-			os.Exit(1)
-		}
-		defer stop()
-
-		// Also publish the internal mTLS URL so the control server
-		// can discover this gateway for admin fan-out (List/Terminate
-		// terminal sessions). Uses the same TTL as the terminal URL.
-		//
-		// rc6 note: auto-derive when GATEWAY_INTERNAL_URL is empty.
-		// The GatewayService RPC is mounted on the same mTLS listener
-		// that accepts agents, so the internal URL is just
-		// `https://<hostname><listen-port>`. Auto-derivation keeps the
-		// common case zero-config — without it, operators who don't
-		// set the env silently lose the admin list/terminate feature
-		// (Terminal Sessions page shows empty).
-		internalURL := cfg.InternalURL
-		if internalURL == "" {
-			ip, err := routableIP()
+				gatewayReg = ensureGatewayRegistry()
+				stop, err := gatewayReg.RegisterGateway(
+					context.Background(),
+					gatewayID,
+				terminalURL,
+				registry.DefaultGatewayTTL,
+				registry.DefaultGatewayRefreshInterval,
+			)
 			if err != nil {
-				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL", "error", err)
+				logger.Error("failed to register gateway in registry", "error", err)
 				os.Exit(1)
-			}
-			internalURL = "https://" + ip + portOfListenAddr(cfg.ListenAddr)
-			logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
-		}
-		if internalURL != "" {
-			if err := gatewayReg.RegisterGatewayInternal(
-				context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
-			); err != nil {
-				logger.Warn("failed to register gateway internal URL", "error", err)
-			}
-			// Refresh the internal URL on the same cadence as the
-			// terminal URL so it does not expire while the gateway is
-			// running. Derive from shutdownCtx so the goroutine exits
-			// as soon as a signal arrives.
-			internalRefreshCtx, stopInternalRefresh := context.WithCancel(shutdownCtx)
-			defer stopInternalRefresh()
-			go func() {
-				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ticker.C:
-						if err := gatewayReg.RegisterGatewayInternal(
-							context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
-						); err != nil {
-							logger.Warn("failed to refresh gateway internal URL", "error", err)
-						}
-					case <-internalRefreshCtx.Done():
-						return
-					}
 				}
-			}()
-		}
+				defer stop()
 
-		logger.Info("multi-gateway routing enabled",
-			"gateway_id", gatewayID,
-			"terminal_url", terminalURL,
-			"agent_redirect_host", assignedHost,
-			"internal_url", internalURL,
-		)
-	}
+				logger.Info("multi-gateway routing enabled",
+					"gateway_id", gatewayID,
+					"terminal_url", terminalURL,
+					"agent_redirect_host", assignedHost,
+				)
+			}
+		}
 
 	// Traefik Redis-KV self-registration. Opt-in; when enabled, every
 	// replica writes its own routing entry into the same Valkey
@@ -269,18 +247,10 @@ func main() {
 	// /gw/<id> path prefix on the shared tty host for TTY routing.
 	if cfg.TraefikSelfRegister {
 		if gatewayReg == nil {
-			// Need a Valkey-backed registry. When PublicTerminalURLTemplate
-			// was empty we skipped the Valkey connection earlier; set one
-			// up here so Traefik self-reg still works in deployments that
-			// only want the routing layer (no terminal feature).
-			rdb := redis.NewClient(&redis.Options{
-				Addr:     cfg.ValkeyAddr,
-				Password: cfg.ValkeyPassword,
-				DB:       cfg.ValkeyDB,
-				Protocol: 2,
-			})
-			defer rdb.Close()
-			gatewayReg = registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "registry"))
+			// Need a Valkey-backed registry even when terminal URLs are
+			// disabled; Traefik self-registration is the agent mTLS
+			// routing layer.
+			gatewayReg = ensureGatewayRegistry()
 		}
 
 		// Auto-derive per-replica backend addresses when not set. We use
@@ -366,6 +336,50 @@ func main() {
 			"tty_cert_resolver", cfg.TraefikTTYCertResolver,
 		)
 	}
+
+	// Publish the internal mTLS URL so the control server can discover
+	// this gateway for admin fan-out (List/Terminate terminal sessions).
+	// This is intentionally independent of terminal URL registration: a
+	// bad optional public terminal URL should not disable the internal
+	// control-plane route when the registry is otherwise available.
+	if gatewayReg != nil {
+		internalURL := cfg.InternalURL
+		if internalURL == "" {
+			ip, err := routableIP()
+			if err != nil {
+				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL", "error", err)
+				os.Exit(1)
+			}
+			internalURL = "https://" + ip + portOfListenAddr(cfg.ListenAddr)
+			logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
+		}
+		if internalURL != "" {
+			if err := gatewayReg.RegisterGatewayInternal(
+				context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
+			); err != nil {
+				logger.Warn("failed to register gateway internal URL", "error", err)
+			}
+			internalRefreshCtx, stopInternalRefresh := context.WithCancel(shutdownCtx)
+			defer stopInternalRefresh()
+			go func() {
+				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if err := gatewayReg.RegisterGatewayInternal(
+							context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
+						); err != nil {
+							logger.Warn("failed to refresh gateway internal URL", "error", err)
+						}
+					case <-internalRefreshCtx.Done():
+						return
+					}
+				}
+			}()
+		}
+	}
+
 	// Fail fast if BootstrapHost is set but we have no assignedHost
 	// (because PublicTerminalURLTemplate was empty). Without this
 	// guard, BootstrapRedirectMiddleware would panic on an empty

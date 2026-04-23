@@ -19,7 +19,7 @@ import (
 func TestLogin_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "correct-password", "admin")
@@ -40,7 +40,7 @@ func TestLogin_Success(t *testing.T) {
 func TestLogin_WrongPassword(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "correct-password", "user")
@@ -56,7 +56,7 @@ func TestLogin_WrongPassword(t *testing.T) {
 func TestLogin_NonexistentUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
 		Email:    "nonexistent@test.com",
@@ -66,10 +66,34 @@ func TestLogin_NonexistentUser(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
+// TestLogin_GlobalPasswordAuthDisabled regression-tests the bypass
+// discovered in the rc10 audit: the `CONTROL_PASSWORD_AUTH_ENABLED=false`
+// operator switch was only plumbed into the SSO handler's
+// ListAuthMethods response, so a direct POST to /Login with valid
+// credentials still authenticated. Now the switch is enforced in
+// AuthHandler.Login itself before the DB lookup, so even an account
+// with a password hash on disk cannot authenticate when the operator
+// disables password login globally.
+func TestLogin_GlobalPasswordAuthDisabled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, false) // global switch off
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "correct-password", "admin")
+
+	_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "correct-password", // valid credentials
+	}))
+	require.Error(t, err, "login must fail when global password auth is disabled")
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
 func TestLogin_DisabledUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -89,7 +113,7 @@ func TestLogin_DisabledUser(t *testing.T) {
 func TestLogin_NoCookiesSet(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")
@@ -115,7 +139,7 @@ func TestLogin_NoCookiesSet(t *testing.T) {
 func TestRefreshToken_RequiresBodyToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	// RefreshToken with empty body should fail.
 	// Proto validation catches the empty refresh_token field.
@@ -127,7 +151,7 @@ func TestRefreshToken_RequiresBodyToken(t *testing.T) {
 func TestRefreshToken_NoCookieFallback(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")
@@ -153,7 +177,7 @@ func TestRefreshToken_NoCookieFallback(t *testing.T) {
 func TestRefreshToken_BodyToken(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")
@@ -183,7 +207,7 @@ func TestRefreshToken_BodyToken(t *testing.T) {
 func TestLogout_NoCookiesCleared(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")
@@ -209,7 +233,7 @@ func TestLogout_NoCookiesCleared(t *testing.T) {
 func TestGetCurrentUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "pass", "admin")
@@ -226,7 +250,7 @@ func TestLogin_TOTPRequired(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	enc := testutil.NewEncryptor(t)
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -251,7 +275,7 @@ func TestLogin_TOTPRequired(t *testing.T) {
 func TestLogin_TOTPNotRequired(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")
@@ -273,7 +297,7 @@ func TestLogin_TOTPNotRequired(t *testing.T) {
 func TestLogin_PasswordDisabledByProvider(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.CreateTestUser(t, st, email, "password", "user")
@@ -315,7 +339,7 @@ func TestLogin_PasswordDisabledByProvider(t *testing.T) {
 func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	userID := testutil.NewID()
@@ -335,7 +359,7 @@ func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
 func TestLogin_UserHasPassword(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
-	h := api.NewAuthHandler(st, slog.Default(), jwtMgr)
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
 	email := testutil.NewID() + "@test.com"
 	testutil.CreateTestUser(t, st, email, "password", "user")

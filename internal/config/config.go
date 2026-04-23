@@ -71,10 +71,11 @@ type Config struct {
 	// Example: "gateway.example.com"
 	BootstrapHost string
 
-	// Web listener for non-mTLS traffic (terminal WebSocket). Uses
-	// standard TLS (server cert only, no client cert) so web browsers
-	// can connect. Empty disables the web listener — terminal
-	// sessions won't work but agent connections are unaffected.
+	// Web listener for non-mTLS traffic (terminal WebSocket). This
+	// listener serves cleartext HTTP on the private network; public TLS
+	// terminates at Traefik before proxying to it. Empty disables the
+	// web listener — terminal sessions won't work but agent connections
+	// are unaffected.
 	WebListenAddr string
 
 	// InternalURL is the mTLS URL the control server uses to call
@@ -164,7 +165,7 @@ func FromEnv() *Config {
 	//   * RootKey      = traefik — matches Traefik default --providers.redis.rootkey
 	//   * MTLSHost     = GATEWAY_DOMAIN   (not Traefik-prefixed — one name per thing)
 	//   * MTLSEntryPoint    = websecure   (same :443 as control, SNI-separated)
-	//   * TTYHost      = GATEWAY_TTY_DOMAIN (falls back to empty → TTY router disabled)
+	//   * TTYHost      = GATEWAY_TTY_DOMAIN (falls back to empty -> TTY router disabled)
 	//   * TTYEntryPoint     = websecure
 	//   * TTYCertResolver   = letsencrypt
 	//

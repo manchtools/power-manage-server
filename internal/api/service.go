@@ -61,7 +61,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 	settingsHandler := NewSettingsHandler(st, logger, systemActions)
 	return &ControlService{
 		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
-		auth:          NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager),
+		auth:          NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager, cfg.PasswordAuthEnabled),
 		totp:          NewTOTPHandler(st, logger.With("component", "totp_handler"), jwtManager, enc, ""),
 		user:          NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
 		device:        NewDeviceHandler(st, enc, logger.With("component", "device_handler")),
