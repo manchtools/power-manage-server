@@ -89,6 +89,14 @@ func extractSDKCodes(t *testing.T) []string {
 	if env := os.Getenv("PM_SDK_TS_ERRORS"); env != "" {
 		candidates = append(candidates, env)
 	}
+	// go test sets cwd to the package dir (server/internal/api), so
+	// ../../../ resolves to the multi-repo workspace root where
+	// /sdk lives alongside /server.
+	candidates = append(candidates, filepath.Join("..", "..", "..", "sdk", "ts", "errors.ts"))
+	// Fallback: some harnesses run tests from one level higher (e.g.
+	// when the repo is checked out directly without the workspace
+	// wrapper). Keeping the older depth as a second candidate lets
+	// both shapes succeed without env-var wrangling.
 	candidates = append(candidates, filepath.Join("..", "..", "..", "..", "sdk", "ts", "errors.ts"))
 
 	var data []byte
@@ -110,7 +118,11 @@ func extractSDKCodes(t *testing.T) []string {
 		return nil
 	}
 
-	re := regexp.MustCompile(`export\s+const\s+Err\w+\s*=\s*'([a-z][a-z0-9_]*)'`)
+	// Accept single, double, or backtick-quoted string literals plus
+	// an optional `: string` type annotation so a future refactor to
+	// `export const ErrFoo: string = "…"` or a template literal
+	// doesn't silently hide the code from the parity check.
+	re := regexp.MustCompile(`export\s+const\s+Err\w+(?:\s*:\s*string)?\s*=\s*['"`+"`"+`]([a-z][a-z0-9_]*)['"`+"`"+`]`)
 	matches := re.FindAllStringSubmatch(string(data), -1)
 	seen := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
@@ -140,9 +152,3 @@ func diff(a, b []string) []string {
 	return out
 }
 
-// Guard against string-builder typos in the tests above.
-func init() {
-	if strings.Count("Err", "E") != 1 {
-		panic("sanity")
-	}
-}

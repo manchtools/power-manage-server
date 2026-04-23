@@ -65,11 +65,24 @@ BEGIN
             )
             ON CONFLICT (event_id) DO NOTHING;
         WHEN 'SecurityAlertAcknowledged' THEN
+            -- Cast the right-hand side to UUID (not event_id to
+            -- TEXT) so the primary-key index on event_id is used
+            -- and a malformed alert_id surfaces as a projection
+            -- error instead of silently full-scanning and matching
+            -- zero rows.
             UPDATE security_alerts_projection
             SET acknowledged = TRUE,
                 acknowledged_at = event.occurred_at,
                 acknowledged_by = event.data->>'acknowledged_by'
-            WHERE event_id::TEXT = event.data->>'alert_id';
+            WHERE event_id = (event.data->>'alert_id')::uuid;
+            IF NOT FOUND THEN
+                -- Out-of-order replay (ack before the alert row
+                -- exists) or an alert that was purged. Raise so
+                -- the sidecar trigger's EXCEPTION handler logs it
+                -- into projection_errors for operator visibility;
+                -- previously this was a silent no-op.
+                RAISE EXCEPTION 'SecurityAlertAcknowledged references unknown alert_id=%', event.data->>'alert_id';
+            END IF;
         ELSE
             NULL;
     END CASE;

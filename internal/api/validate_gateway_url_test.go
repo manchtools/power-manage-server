@@ -38,6 +38,10 @@ func TestValidateGatewayURL(t *testing.T) {
 		{"userinfo username only", "https://user@gateway.example.com", true, "userinfo"},
 		{"fragment", "https://gateway.example.com#frag", true, "fragment"},
 		{"host only", "https://", true, "host"},
+		// CR called out that u.Host would accept ":8443" silently
+		// (it treats the empty part as a host with a port). Switching
+		// to u.Hostname() plus this regression test closes the gap.
+		{"port without hostname", "https://:8443", true, "host"},
 
 		{"happy path host", "https://gateway.example.com", false, ""},
 		{"happy path with port", "https://gateway.example.com:8443", false, ""},

@@ -100,7 +100,10 @@ func main() {
 	// connect. api.ValidateGatewayURL is the shared validator
 	// (also invoked defensively in the registration handler).
 	if err := api.ValidateGatewayURL(cfg.GatewayURL); err != nil {
-		logger.Error("CONTROL_GATEWAY_URL is invalid", "gateway_url", cfg.GatewayURL, "error", err)
+		// Redact userinfo before logging — the validator rejects
+		// URLs that contain credentials, but those credentials
+		// shouldn't land in the startup error line regardless.
+		logger.Error("CONTROL_GATEWAY_URL is invalid", "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "error", err)
 		os.Exit(1)
 	}
 

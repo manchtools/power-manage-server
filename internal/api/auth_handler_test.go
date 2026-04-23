@@ -88,6 +88,13 @@ func TestLogin_GlobalPasswordAuthDisabled(t *testing.T) {
 	}))
 	require.Error(t, err, "login must fail when global password auth is disabled")
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	// Also assert the user-facing error-surface carries the
+	// "password login is disabled" sentinel (not the generic
+	// "invalid credentials"). A future refactor that collapses this
+	// branch into the invalid-credentials path would look correct
+	// under the code check but fail this substring — which is
+	// exactly the signal we want.
+	assert.Contains(t, err.Error(), "password login is disabled")
 }
 
 func TestLogin_DisabledUser(t *testing.T) {

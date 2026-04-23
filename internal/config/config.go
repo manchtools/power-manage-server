@@ -2,6 +2,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -210,6 +211,38 @@ func FromEnv() *Config {
 		HeartbeatInterval:      getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
 		LogLevel:               getEnv("GATEWAY_LOG_LEVEL", "info"),
 	}
+}
+
+// Validate returns a non-nil error when the loaded config has a
+// combination that the gateway cannot serve coherently. Called once
+// at startup from cmd/gateway/main.go; keeping it on the Config
+// struct (rather than inline in main) so tests can exercise the
+// shape checks without booting a full process.
+func (c *Config) Validate() error {
+	// TTY / MTLS host collision: when the terminal WebSocket
+	// listener is enabled (GATEWAY_WEB_LISTEN_ADDR set) and Traefik
+	// self-registration is on, both the shared mTLS TCP router and
+	// the per-replica TTY HTTP router bind on the same
+	// --entrypoints.websecure address. Traefik's TCP router (with
+	// HostSNI + tls.passthrough) takes precedence for connections
+	// whose SNI matches, so a TTY client sending SNI=TTYHost gets
+	// routed to the mTLS passthrough and the WebSocket handshake
+	// fails against a backend that's expecting a raw TLS client
+	// cert. The only safe split is distinct hostnames.
+	//
+	// Refuse startup with a clear message instead of letting the
+	// operator discover this when a terminal session silently fails.
+	if c.TraefikSelfRegister &&
+		c.WebListenAddr != "" &&
+		c.TraefikTTYHost != "" &&
+		c.TraefikMTLSHost != "" &&
+		c.TraefikTTYHost == c.TraefikMTLSHost {
+		return fmt.Errorf(
+			"GATEWAY_TTY_DOMAIN / TraefikTTYHost cannot equal GATEWAY_DOMAIN / TraefikMTLSHost when terminal is enabled (both %q): Traefik TCP passthrough for mTLS would match the same SNI as the TTY HTTP router and break WebSocket sessions — set GATEWAY_TTY_DOMAIN to a distinct hostname",
+			c.TraefikTTYHost,
+		)
+	}
+	return nil
 }
 
 // firstNonEmpty returns the first argument that isn't the empty

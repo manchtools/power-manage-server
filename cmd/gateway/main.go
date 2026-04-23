@@ -55,6 +55,15 @@ func main() {
 	logger := logging.SetupLogger(cfg.LogLevel, "json", os.Stdout)
 	slog.SetDefault(logger)
 
+	// Config-shape checks that don't fit the simple "required env
+	// var empty" pattern below (TTY/MTLS host collision, etc.).
+	// Failing here keeps them visible at startup rather than at the
+	// first affected request.
+	if err := cfg.Validate(); err != nil {
+		logger.Error("invalid gateway configuration", "error", err)
+		os.Exit(1)
+	}
+
 	// Validate required config
 	if cfg.ValkeyAddr == "" {
 		logger.Error("GATEWAY_VALKEY_ADDR is required")
@@ -251,12 +260,11 @@ func main() {
 	// load-balanced across all replicas; each replica owns a unique
 	// /gw/<id> path prefix on the shared tty host for TTY routing.
 	if cfg.TraefikSelfRegister {
-		if gatewayReg == nil {
-			// Need a Valkey-backed registry even when terminal URLs are
-			// disabled; Traefik self-registration is the agent mTLS
-			// routing layer.
-			gatewayReg = ensureGatewayRegistry()
-		}
+		// Need a Valkey-backed registry even when terminal URLs are
+		// disabled; Traefik self-registration is the agent mTLS
+		// routing layer. ensureGatewayRegistry is idempotent, so an
+		// outer nil check would be noise.
+		gatewayReg = ensureGatewayRegistry()
 
 		// Auto-derive per-replica backend addresses when not set. We use
 		// the replica's own routable IP on the shared Docker/k8s network
@@ -365,10 +373,15 @@ func main() {
 
 	// Publish the internal mTLS URL so the control server can discover
 	// this gateway for admin fan-out (List/Terminate terminal sessions).
-	// This is intentionally independent of terminal URL registration: a
-	// bad optional public terminal URL should not disable the internal
-	// control-plane route when the registry is otherwise available.
-	if gatewayReg != nil {
+	// This is intentionally independent of terminal URL registration:
+	// a bad optional public terminal URL (which may have left
+	// gatewayReg unset) should not disable the internal control-plane
+	// route. ensureGatewayRegistry is idempotent — if the Traefik
+	// block above already created the registry, this is a no-op; if
+	// terminal + Traefik are both off, this is where the registry
+	// gets built so admin fan-out still works.
+	gatewayReg = ensureGatewayRegistry()
+	{
 		internalURL := cfg.InternalURL
 		if internalURL == "" {
 			ip, err := routableIP()

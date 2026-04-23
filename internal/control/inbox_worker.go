@@ -563,13 +563,26 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		DeviceID: payload.DeviceID,
 		ActionID: payload.ActionID,
 	})
-	if err != nil {
-		w.logger.Warn("could not look up LUKS revocation stream ID — appending to a fresh stream; projection will show only the terminal event",
+	switch {
+	case err == nil:
+		// Happy path — stream ID recovered.
+	case errors.Is(err, pgx.ErrNoRows):
+		// Genuinely absent: the Requested event never landed
+		// (original RPC crashed before append). Fall back to a
+		// fresh ULID so we still record the terminal outcome —
+		// an orphan Failed event is better than silently dropping
+		// the agent-reported failure on the floor.
+		w.logger.Warn("LUKS revocation stream ID not found — appending to a fresh stream; projection will show only the terminal event",
 			"device_id", payload.DeviceID,
 			"action_id", payload.ActionID,
-			"error", err,
 		)
 		luksStreamID = ulid.Make().String()
+	default:
+		// Transient DB / context error. Return so Asynq retries;
+		// previously we masked these as "not found" and forked
+		// the stream, which would compound audit fragmentation
+		// under DB flakes.
+		return fmt.Errorf("look up LUKS revocation stream ID for device %s action %s: %w", payload.DeviceID, payload.ActionID, err)
 	}
 
 	if payload.Success {

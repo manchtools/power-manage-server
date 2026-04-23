@@ -121,6 +121,72 @@ func TestFromEnv_TraefikTTYCertResolver(t *testing.T) {
 	}
 }
 
+// TestValidate_TTYMTLSHostCollision captures the config-shape invariant
+// CodeRabbit flagged on the rc10 review: when the terminal WebSocket
+// listener is enabled AND Traefik self-registration is on, the TTY
+// host must not equal the mTLS host. If they match, Traefik's TCP
+// passthrough router for the shared SNI wins over the TTY HTTP router
+// and the WebSocket handshake fails against the mTLS backend.
+func TestValidate_TTYMTLSHostCollision(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{
+			name: "collision with terminal enabled → error",
+			cfg: Config{
+				TraefikSelfRegister: true,
+				WebListenAddr:       ":8443",
+				TraefikMTLSHost:     "gw.example.com",
+				TraefikTTYHost:      "gw.example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "collision but terminal disabled → OK",
+			cfg: Config{
+				TraefikSelfRegister: true,
+				WebListenAddr:       "", // terminal off
+				TraefikMTLSHost:     "gw.example.com",
+				TraefikTTYHost:      "gw.example.com",
+			},
+			wantErr: false,
+		},
+		{
+			name: "distinct hosts with terminal enabled → OK",
+			cfg: Config{
+				TraefikSelfRegister: true,
+				WebListenAddr:       ":8443",
+				TraefikMTLSHost:     "gw.example.com",
+				TraefikTTYHost:      "tty.example.com",
+			},
+			wantErr: false,
+		},
+		{
+			name: "collision but self-register off → OK (operator owns routing)",
+			cfg: Config{
+				TraefikSelfRegister: false,
+				WebListenAddr:       ":8443",
+				TraefikMTLSHost:     "gw.example.com",
+				TraefikTTYHost:      "gw.example.com",
+			},
+			wantErr: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want error for %+v", tc.cfg)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil for %+v", err, tc.cfg)
+			}
+		})
+	}
+}
+
 func TestGetEnvInt_ValidValues(t *testing.T) {
 	tests := []struct {
 		name     string

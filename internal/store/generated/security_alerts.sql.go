@@ -12,13 +12,40 @@ import (
 	"github.com/google/uuid"
 )
 
-const countUnacknowledgedSecurityAlerts = `-- name: CountUnacknowledgedSecurityAlerts :one
-SELECT COUNT(*)::int FROM security_alerts_projection WHERE NOT acknowledged
+const countSecurityAlertsForDevice = `-- name: CountSecurityAlertsForDevice :one
+SELECT COUNT(*)::bigint
+FROM security_alerts_projection
+WHERE device_id = $1
+  AND ($2::bool OR NOT acknowledged)
 `
 
-func (q *Queries) CountUnacknowledgedSecurityAlerts(ctx context.Context) (int32, error) {
+type CountSecurityAlertsForDeviceParams struct {
+	DeviceID            string `json:"device_id"`
+	IncludeAcknowledged bool   `json:"include_acknowledged"`
+}
+
+// Companion count for ListSecurityAlertsForDevice. Needed by
+// buildNextPageToken to compute totalCount and emit a correct
+// next-page token; mirrors the same include_acknowledged filter
+// semantics as the list query so the two stay in lockstep.
+func (q *Queries) CountSecurityAlertsForDevice(ctx context.Context, arg CountSecurityAlertsForDeviceParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSecurityAlertsForDevice, arg.DeviceID, arg.IncludeAcknowledged)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const countUnacknowledgedSecurityAlerts = `-- name: CountUnacknowledgedSecurityAlerts :one
+SELECT COUNT(*)::bigint FROM security_alerts_projection WHERE NOT acknowledged
+`
+
+// COUNT(*) in PostgreSQL is bigint; keep the full precision so
+// buildNextPageToken (which works in int64) doesn't see a silently
+// truncated int32 once device counts climb past 2.1B aggregate
+// alerts across all time. Matches the pagination helper contract.
+func (q *Queries) CountUnacknowledgedSecurityAlerts(ctx context.Context) (int64, error) {
 	row := q.db.QueryRow(ctx, countUnacknowledgedSecurityAlerts)
-	var column_1 int32
+	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
 }
