@@ -103,7 +103,7 @@ export CONTROL_DATABASE_URL="postgres://powermanage:powermanage@localhost:5432/p
 export CONTROL_JWT_SECRET="your-secret-key"
 export CONTROL_CA_CERT="./dev/certs/ca.crt"
 export CONTROL_CA_KEY="./dev/certs/ca.key"
-export CONTROL_GATEWAY_URL="https://gateway.example.com:8080"
+export CONTROL_GATEWAY_URL="https://gateway.example.com"
 export CONTROL_ADMIN_EMAIL="admin@localhost.com"
 export CONTROL_ADMIN_PASSWORD="admin"
 
