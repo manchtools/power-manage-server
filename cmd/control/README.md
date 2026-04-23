@@ -61,8 +61,8 @@ Environment variables override command-line flags:
 | `CONTROL_CA_CERT` | CA certificate path |
 | `CONTROL_CA_KEY` | CA private key path |
 | `CONTROL_GATEWAY_URL` | Gateway URL returned to agents during registration |
-| `CONTROL_ADMIN_EMAIL` | Initial admin user email |
-| `CONTROL_ADMIN_PASSWORD` | Initial admin user password |
+| `CONTROL_ADMIN_EMAIL` | Bootstrap admin email (first-boot only; see [Bootstrap Admin](#bootstrap-admin)) |
+| `CONTROL_ADMIN_PASSWORD` | Bootstrap admin password (first-boot only; see [Bootstrap Admin](#bootstrap-admin)) |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
 | `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
@@ -77,6 +77,17 @@ Environment variables override command-line flags:
 | `CONTROL_DISABLE_AUTO_UPDATE` | Disable agent auto-update entirely (set to `true` or `1`). Overrides the `auto_update_agents` server setting. |
 
 ## Setup
+
+### Bootstrap Admin
+
+`CONTROL_ADMIN_EMAIL` / `CONTROL_ADMIN_PASSWORD` create a single admin account on the very first startup of the control server. This account is a **bootstrap** — its purpose is to let you log in once to create real user accounts, wire up SSO or SCIM, and assign roles. It is not meant for day-to-day admin work.
+
+Specifically, the bootstrap admin is created **without a `linux_uid` or `linux_username`**. Features that derive a per-user Linux identity do not work for this account:
+
+- **Remote terminal sessions** — `StartTerminal` derives the TTY user as `pm-tty-<linux_username>` with UID `linux_uid + 100000`. With the bootstrap admin's defaults (empty username, UID 0), the derived TTY user resolves to `pm-tty-` at UID `100000`, which either collides across deploys or fails to provision on the device.
+- **Any other feature** built on the system-actions pipeline that identifies the caller by OS user (SSH access, provisioning, etc.).
+
+Create real users once you're logged in as the bootstrap admin — via the web UI, via an SSO identity provider's auto-create flow, or via SCIM. All three of those paths allocate a proper `linux_uid` from the `linux_uid_seq` sequence (starting at 10000) and a sanitised `linux_username`. Use those accounts for everything except the initial bootstrap.
 
 ### Prerequisites
 
