@@ -193,7 +193,17 @@ func FromEnv() *Config {
 		TraefikMTLSHost:        firstNonEmpty(os.Getenv("GATEWAY_TRAEFIK_MTLS_HOST"), os.Getenv("GATEWAY_DOMAIN")),
 		TraefikMTLSBackend:     getEnv("GATEWAY_TRAEFIK_MTLS_BACKEND", ""),
 		TraefikMTLSEntryPoint:  getEnv("GATEWAY_TRAEFIK_MTLS_ENTRYPOINT", "websecure"),
-		TraefikTTYHost:         firstNonEmpty(os.Getenv("GATEWAY_TRAEFIK_TTY_HOST"), os.Getenv("GATEWAY_TTY_DOMAIN")),
+		// TTYHost falls back through GATEWAY_TTY_DOMAIN (dedicated
+		// TTY subdomain) to GATEWAY_DOMAIN (single-domain deploys
+		// where terminal WebSocket shares the gateway hostname).
+		// .env.example documents exactly this chain; rc9 only
+		// implemented the first two rungs, which was the hidden
+		// empty-host trap that crashed gateway startup in staging.
+		TraefikTTYHost: firstNonEmpty(
+			os.Getenv("GATEWAY_TRAEFIK_TTY_HOST"),
+			os.Getenv("GATEWAY_TTY_DOMAIN"),
+			os.Getenv("GATEWAY_DOMAIN"),
+		),
 		TraefikTTYBackend:      getEnv("GATEWAY_TRAEFIK_TTY_BACKEND", ""),
 		TraefikTTYEntryPoint:   getEnv("GATEWAY_TRAEFIK_TTY_ENTRYPOINT", "websecure"),
 		TraefikTTYCertResolver: getEnv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "letsencrypt"),

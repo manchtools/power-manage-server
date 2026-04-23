@@ -31,3 +31,21 @@ WHERE token = $1
   AND NOT used
   AND expires_at > NOW()
 RETURNING *;
+
+-- GetLuksRevocationStreamID looks up the luks_key event-stream ID that
+-- was minted when api/device_handler.go appended the
+-- LuksDeviceKeyRevocationRequested event for this (device, action).
+-- The inbox worker uses it to append the final Revoked / Failed event
+-- to the SAME stream so the three-phase projection stitches together.
+-- Returns the most recent request if somehow there are multiple (there
+-- should only ever be one; LIMIT 1 is belt-and-braces).
+--
+-- name: GetLuksRevocationStreamID :one
+SELECT stream_id
+FROM events
+WHERE stream_type = 'luks_key'
+  AND event_type IN ('LuksDeviceKeyRevocationRequested', 'LuksDeviceKeyRevocationDispatched')
+  AND data->>'device_id' = sqlc.arg(device_id)::text
+  AND data->>'action_id' = sqlc.arg(action_id)::text
+ORDER BY sequence_num DESC
+LIMIT 1;

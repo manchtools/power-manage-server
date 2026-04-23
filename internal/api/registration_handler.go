@@ -41,6 +41,19 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	logger := h.logger.With("hostname", req.Msg.Hostname, "agent_version", req.Msg.AgentVersion)
 	logger.Info("processing registration request")
 
+	// Defence in depth: the startup guard in cmd/control/main.go
+	// already fails fast on an empty GATEWAY_URL, but if that guard
+	// ever regresses (or the handler is constructed directly in a
+	// test), refuse the registration rather than hand the agent a
+	// URL it cannot connect to. Silent empty-URL enrollment is the
+	// worst failure mode: the device is created in the DB, the cert
+	// is signed, but the first stream attempt fails with a
+	// URL-parse error far from the config source.
+	if h.gatewayURL == "" {
+		logger.Error("registration refused: gatewayURL is empty — CONTROL_GATEWAY_URL must be set")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "server misconfiguration: gateway URL is not set")
+	}
+
 	// Validate CSR is present
 	if len(req.Msg.Csr) == 0 {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "CSR is required")

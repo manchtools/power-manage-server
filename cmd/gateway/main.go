@@ -201,9 +201,6 @@ func main() {
 		// gateway never constructs hostnames from the request side.
 		terminalURL := strings.ReplaceAll(cfg.PublicTerminalURLTemplate, "{id}", gatewayID)
 
-		// If no agent URL template was set, fall back to deriving the
-		// agent redirect hostname from the terminal URL (legacy
-		// single-hostname mode).
 		terminalHost := hostFromURL(terminalURL)
 		if terminalHost == "" {
 			// Malformed template — skip the registry work instead of
@@ -212,24 +209,31 @@ func main() {
 			logger.Warn("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE resolved to a URL with no host — terminal session registration disabled on this gateway; check for unset env vars in the template",
 				"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
 		} else {
+			// If no agent URL template was set, fall back to deriving the
+			// agent redirect hostname from the terminal URL (legacy
+			// single-hostname mode).
 			if assignedHost == "" {
 				assignedHost = terminalHost
 			}
 
-				gatewayReg = ensureGatewayRegistry()
-				stop, err := gatewayReg.RegisterGateway(
-					context.Background(),
-					gatewayID,
+			gatewayReg = ensureGatewayRegistry()
+			stop, err := gatewayReg.RegisterGateway(
+				context.Background(),
+				gatewayID,
 				terminalURL,
 				registry.DefaultGatewayTTL,
 				registry.DefaultGatewayRefreshInterval,
 			)
 			if err != nil {
-				logger.Error("failed to register gateway in registry", "error", err)
-				os.Exit(1)
-				}
+				// Fail-open: the terminal feature is optional, so a
+				// transient registry failure at startup must not kill
+				// the gateway's agent-mTLS service. Log loudly and
+				// leave terminal sessions disabled for this replica
+				// until the operator restarts.
+				logger.Warn("failed to register gateway in terminal registry — terminal sessions disabled on this replica",
+					"error", err)
+			} else {
 				defer stop()
-
 				logger.Info("multi-gateway routing enabled",
 					"gateway_id", gatewayID,
 					"terminal_url", terminalURL,
@@ -237,6 +241,7 @@ func main() {
 				)
 			}
 		}
+	}
 
 	// Traefik Redis-KV self-registration. Opt-in; when enabled, every
 	// replica writes its own routing entry into the same Valkey
@@ -265,76 +270,97 @@ func main() {
 		if mtlsBackend == "" || ttyBackend == "" {
 			ip, err := routableIP()
 			if err != nil {
-				logger.Error("cannot auto-derive Traefik backends", "error", err)
-				os.Exit(1)
-			}
-			if mtlsBackend == "" {
-				mtlsBackend = ip + portOfListenAddr(cfg.ListenAddr)
-			}
-			if ttyBackend == "" && cfg.WebListenAddr != "" {
-				ttyBackend = "http://" + ip + portOfListenAddr(cfg.WebListenAddr)
-			}
-		}
-
-		traefikCfg := registry.TraefikRouteConfig{
-			RootKey:         cfg.TraefikRootKey,
-			MTLSHost:        cfg.TraefikMTLSHost,
-			MTLSBackend:     mtlsBackend,
-			MTLSEntryPoint:  cfg.TraefikMTLSEntryPoint,
-			TTYHost:         cfg.TraefikTTYHost,
-			TTYBackend:      ttyBackend,
-			TTYEntryPoint:   cfg.TraefikTTYEntryPoint,
-			TTYCertResolver: cfg.TraefikTTYCertResolver,
-		}
-
-		if err := gatewayReg.PublishTraefikRoute(
-			context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
-		); err != nil {
-			logger.Error("failed to publish Traefik routing config", "error", err)
-			os.Exit(1)
-		}
-
-		// Refresh on the same cadence as the gateway terminal URL and
-		// internal URL so all three keys share a lifecycle. Derive from
-		// shutdownCtx so the goroutine exits cleanly on SIGTERM.
-		traefikRefreshCtx, stopTraefikRefresh := context.WithCancel(shutdownCtx)
-		defer stopTraefikRefresh()
-		go func() {
-			ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if err := gatewayReg.PublishTraefikRoute(
-						context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
-					); err != nil {
-						logger.Warn("failed to refresh Traefik routing config", "error", err)
-					}
-				case <-traefikRefreshCtx.Done():
-					return
+				// Fail-open: the operator can still publish a manual
+				// backend via GATEWAY_TRAEFIK_{MTLS,TTY}_BACKEND, so
+				// missing auto-derivation is not fatal. If nothing is
+				// set we skip Traefik publication entirely below and
+				// the gateway keeps serving agent mTLS on whatever
+				// static route already points at it.
+				logger.Warn("cannot auto-derive Traefik backends from network interfaces — set GATEWAY_TRAEFIK_{MTLS,TTY}_BACKEND explicitly if self-registration is needed",
+					"error", err)
+			} else {
+				if mtlsBackend == "" {
+					mtlsBackend = ip + portOfListenAddr(cfg.ListenAddr)
+				}
+				if ttyBackend == "" && cfg.WebListenAddr != "" {
+					ttyBackend = "http://" + ip + portOfListenAddr(cfg.WebListenAddr)
 				}
 			}
-		}()
+		}
 
-		// Clean shutdown revokes only per-replica keys so other
-		// replicas' routes stay up. Uses a bounded context so a flaky
-		// Valkey can't stall the shutdown.
-		defer func() {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := gatewayReg.RevokeTraefikRoute(cleanupCtx, gatewayID, traefikCfg); err != nil {
-				logger.Warn("failed to revoke Traefik routing config", "error", err)
+		// Publish only when we actually have a usable mTLS backend —
+		// an empty backend in the Redis KV entry would poison the
+		// pm-mtls TCP router for every replica.
+		if mtlsBackend == "" {
+			logger.Warn("Traefik self-registration skipped — no MTLS backend available (routable-IP auto-derive failed and GATEWAY_TRAEFIK_MTLS_BACKEND is unset)")
+		} else {
+			traefikCfg := registry.TraefikRouteConfig{
+				RootKey:         cfg.TraefikRootKey,
+				MTLSHost:        cfg.TraefikMTLSHost,
+				MTLSBackend:     mtlsBackend,
+				MTLSEntryPoint:  cfg.TraefikMTLSEntryPoint,
+				TTYHost:         cfg.TraefikTTYHost,
+				TTYBackend:      ttyBackend,
+				TTYEntryPoint:   cfg.TraefikTTYEntryPoint,
+				TTYCertResolver: cfg.TraefikTTYCertResolver,
 			}
-		}()
 
-		logger.Info("traefik self-registration enabled",
-			"gateway_id", gatewayID,
-			"mtls_host", cfg.TraefikMTLSHost,
-			"mtls_backend", cfg.TraefikMTLSBackend,
-			"tty_host", cfg.TraefikTTYHost,
-			"tty_backend", cfg.TraefikTTYBackend,
-			"tty_cert_resolver", cfg.TraefikTTYCertResolver,
-		)
+			if err := gatewayReg.PublishTraefikRoute(
+				context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+			); err != nil {
+				// Fail-open: the refresh goroutine below retries on
+				// the normal cadence, so a transient publish failure
+				// at startup recovers within one refresh interval.
+				// Killing the gateway used to be worse — the Redis
+				// KV entry expired during the restart backoff and
+				// Traefik fell through to the HTTP router (wrong
+				// cert). Log loudly and keep serving agent mTLS.
+				logger.Warn("failed to publish initial Traefik routing config — refresh goroutine will retry",
+					"error", err)
+			}
+
+			// Refresh on the same cadence as the gateway terminal URL
+			// so both keys share a lifecycle. Derive from shutdownCtx
+			// so the goroutine exits cleanly on SIGTERM.
+			traefikRefreshCtx, stopTraefikRefresh := context.WithCancel(shutdownCtx)
+			defer stopTraefikRefresh()
+			go func() {
+				ticker := time.NewTicker(registry.DefaultGatewayRefreshInterval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						if err := gatewayReg.PublishTraefikRoute(
+							context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+						); err != nil {
+							logger.Warn("failed to refresh Traefik routing config", "error", err)
+						}
+					case <-traefikRefreshCtx.Done():
+						return
+					}
+				}
+			}()
+
+			// Clean shutdown revokes only per-replica keys so other
+			// replicas' routes stay up. Uses a bounded context so a
+			// flaky Valkey can't stall the shutdown.
+			defer func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := gatewayReg.RevokeTraefikRoute(cleanupCtx, gatewayID, traefikCfg); err != nil {
+					logger.Warn("failed to revoke Traefik routing config", "error", err)
+				}
+			}()
+
+			logger.Info("traefik self-registration enabled",
+				"gateway_id", gatewayID,
+				"mtls_host", cfg.TraefikMTLSHost,
+				"mtls_backend", mtlsBackend,
+				"tty_host", cfg.TraefikTTYHost,
+				"tty_backend", ttyBackend,
+				"tty_cert_resolver", cfg.TraefikTTYCertResolver,
+			)
+		}
 	}
 
 	// Publish the internal mTLS URL so the control server can discover
@@ -347,11 +373,18 @@ func main() {
 		if internalURL == "" {
 			ip, err := routableIP()
 			if err != nil {
-				logger.Error("cannot auto-derive GATEWAY_INTERNAL_URL", "error", err)
-				os.Exit(1)
+				// Fail-open: the internal URL feeds the admin
+				// fan-out path (List/Terminate terminal sessions).
+				// It is strictly optional for agent mTLS service.
+				// Crashing the gateway here would take the agent
+				// routing layer down with it, which is exactly the
+				// rc8 failure mode we're fixing. Log and move on.
+				logger.Warn("cannot auto-derive GATEWAY_INTERNAL_URL — admin fan-out disabled for this replica; set GATEWAY_INTERNAL_URL explicitly to re-enable",
+					"error", err)
+			} else {
+				internalURL = "https://" + ip + portOfListenAddr(cfg.ListenAddr)
+				logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
 			}
-			internalURL = "https://" + ip + portOfListenAddr(cfg.ListenAddr)
-			logger.Info("auto-derived GATEWAY_INTERNAL_URL", "internal_url", internalURL)
 		}
 		if internalURL != "" {
 			if err := gatewayReg.RegisterGatewayInternal(
@@ -380,14 +413,17 @@ func main() {
 		}
 	}
 
-	// Fail fast if BootstrapHost is set but we have no assignedHost
-	// (because PublicTerminalURLTemplate was empty). Without this
-	// guard, BootstrapRedirectMiddleware would panic on an empty
-	// assignedHost further down.
-	if cfg.BootstrapHost != "" && assignedHost == "" {
-		logger.Error("GATEWAY_BOOTSTRAP_HOST is set but neither GATEWAY_PUBLIC_AGENT_URL_TEMPLATE nor GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set; cannot derive the per-gateway hostname for bootstrap redirects",
-			"bootstrap_host", cfg.BootstrapHost)
-		os.Exit(1)
+	// If BootstrapHost is set but no assignedHost is available
+	// (because both agent + terminal URL templates were empty or
+	// malformed), disable the bootstrap-redirect middleware instead
+	// of crashing. Agent mTLS still works — operators just lose the
+	// convenience redirect that points newly-enrolled agents at a
+	// stable per-gateway hostname.
+	bootstrapHost := cfg.BootstrapHost
+	if bootstrapHost != "" && assignedHost == "" {
+		logger.Warn("GATEWAY_BOOTSTRAP_HOST is set but no assigned host could be derived from GATEWAY_PUBLIC_AGENT_URL_TEMPLATE / GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE — bootstrap redirects disabled",
+			"bootstrap_host", bootstrapHost)
+		bootstrapHost = "" // disable middleware below
 	}
 
 	// Terminal session registry — shared between the agent bidi
@@ -416,7 +452,7 @@ func main() {
 	//     ↑ BootstrapRedirectMiddleware (returns 307 to assignedHost
 	//       when the request landed on the wildcard root via LB)
 	mtlsHandler := handler.MTLSMiddleware(h, logger)
-	bootstrappedHandler := handler.BootstrapRedirectMiddleware(mtlsHandler, cfg.BootstrapHost, assignedHost, logger)
+	bootstrappedHandler := handler.BootstrapRedirectMiddleware(mtlsHandler, bootstrapHost, assignedHost, logger)
 	mux.Handle(path, bootstrappedHandler)
 
 	// Mount GatewayService on the mTLS listener (internal-only,

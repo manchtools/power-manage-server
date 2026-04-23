@@ -70,3 +70,22 @@ func (b *FakeBackend) Delete(ctx context.Context, sessionID string) error {
 	delete(b.values, sessionID)
 	return nil
 }
+
+// GetAndDelete mirrors the Valkey GETDEL primitive: returns the payload
+// and removes the entry in a single atomic step under the mutex, so
+// two concurrent callers cannot both observe it. Essential for the
+// single-use token semantics Validate relies on.
+func (b *FakeBackend) GetAndDelete(ctx context.Context, sessionID string) ([]byte, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.values[sessionID]
+	if !ok {
+		return nil, ErrTokenNotFound
+	}
+	if !b.now().Before(entry.expiresAt) {
+		delete(b.values, sessionID)
+		return nil, ErrTokenNotFound
+	}
+	delete(b.values, sessionID)
+	return append([]byte(nil), entry.payload...), nil
+}

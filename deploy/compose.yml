@@ -81,7 +81,10 @@ services:
       - internal
 
   valkey:
-    image: docker.io/redis/redis-stack-server:latest
+    # Pinned to avoid silent upstream upgrades. Bump deliberately when
+    # you've verified the RediSearch module + data format still work
+    # for your deployment.
+    image: docker.io/redis/redis-stack-server:7.4.0-v0
     container_name: pm-valkey
     restart: unless-stopped
     volumes:
@@ -96,7 +99,7 @@ services:
       - internal
 
   control:
-    image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:-latest}
+    image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:?IMAGE_TAG must be set in .env (pin to a specific release tag like v2026.05 — defaulting to \"latest\" caused silent upgrades on every docker compose pull)}
     container_name: pm-control
     restart: unless-stopped
     depends_on:
@@ -152,7 +155,7 @@ services:
       - internal
 
   indexer:
-    image: ghcr.io/manchtools/power-manage-indexer:${IMAGE_TAG:-latest}
+    image: ghcr.io/manchtools/power-manage-indexer:${IMAGE_TAG:?IMAGE_TAG must be set in .env (pin to a specific release tag like v2026.05 — defaulting to \"latest\" caused silent upgrades on every docker compose pull)}
     container_name: pm-indexer
     restart: unless-stopped
     depends_on:
@@ -179,7 +182,7 @@ services:
     # No container_name: scaling to N replicas needs Compose to auto-name
     # containers (pm-server-gateway-1, -2, ...). Self-registration into
     # Traefik's Redis KV means no per-replica Traefik labels are needed.
-    image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:-latest}
+    image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:?IMAGE_TAG must be set in .env (pin to a specific release tag like v2026.05 — defaulting to \"latest\" caused silent upgrades on every docker compose pull)}
     restart: unless-stopped
     depends_on:
       valkey:
@@ -191,6 +194,7 @@ services:
     environment:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
       - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}

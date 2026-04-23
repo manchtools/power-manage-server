@@ -117,6 +117,69 @@ func TestTokenStore_Validate_UnknownSession(t *testing.T) {
 	}
 }
 
+// TestTokenStore_Validate_IsSingleUse covers the rc10 hardening: a
+// bearer token can only be successfully validated once. A second
+// Validate call with the same (session_id, bearer) must return
+// ErrTokenNotFound even within the TTL. This blocks the replay
+// surface where a token leaks (e.g. via a reverse-proxy access log
+// that captures query params) and an attacker mints additional
+// WebSocket connections during the 60 s window.
+func TestTokenStore_Validate_IsSingleUse(t *testing.T) {
+	store := NewTokenStore(NewFakeBackend(nil))
+	ctx := context.Background()
+
+	res, err := store.Mint(ctx, MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+	})
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	if _, err := store.Validate(ctx, res.SessionID, res.Token); err != nil {
+		t.Fatalf("first validate should succeed, got %v", err)
+	}
+
+	_, err = store.Validate(ctx, res.SessionID, res.Token)
+	if !errors.Is(err, ErrTokenNotFound) {
+		t.Errorf("second validate must return ErrTokenNotFound (single-use), got %v", err)
+	}
+}
+
+// TestTokenStore_Validate_MismatchPreservesSession covers the
+// companion invariant: a forgery attempt consumes-and-restores the
+// entry so the legitimate client can still validate once later.
+// Without this behavior, any attacker guess of a session_id would
+// lock out the real web client for the remaining TTL.
+func TestTokenStore_Validate_MismatchPreservesSession(t *testing.T) {
+	store := NewTokenStore(NewFakeBackend(nil))
+	ctx := context.Background()
+
+	res, err := store.Mint(ctx, MintParams{
+		UserID:   "user-1",
+		DeviceID: "device-1",
+		TtyUser:  "pm-tty-alice",
+	})
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	if _, err := store.Validate(ctx, res.SessionID, "wrong-token"); !errors.Is(err, ErrTokenMismatch) {
+		t.Fatalf("forgery should return ErrTokenMismatch, got %v", err)
+	}
+
+	// Legitimate client still gets through on the next attempt.
+	if _, err := store.Validate(ctx, res.SessionID, res.Token); err != nil {
+		t.Errorf("legitimate validate after forgery should succeed, got %v", err)
+	}
+
+	// ... and the token is consumed after that one success.
+	if _, err := store.Validate(ctx, res.SessionID, res.Token); !errors.Is(err, ErrTokenNotFound) {
+		t.Errorf("re-validation after legitimate use should be ErrTokenNotFound, got %v", err)
+	}
+}
+
 func TestTokenStore_Revoke_IsIdempotent(t *testing.T) {
 	store := NewTokenStore(NewFakeBackend(nil))
 	ctx := context.Background()

@@ -535,7 +535,29 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		"success", payload.Success,
 	)
 
-	luksStreamID := ulid.Make().String()
+	// Look up the stream ID minted at request time so the Revoked /
+	// Failed event lands on the SAME stream as the Requested /
+	// Dispatched phases. Earlier versions generated a fresh ULID
+	// here, which split every revocation across two streams and
+	// broke the projection's three-phase stitch — fixed in rc10.
+	// If the lookup fails (e.g. the Requested event never made it
+	// to disk because the original API call crashed), fall back to
+	// a fresh stream ID so we still record the Failed outcome
+	// durably — an orphan Failed event is better than dropping the
+	// agent-reported failure on the floor.
+	luksStreamID, err := w.store.Queries().GetLuksRevocationStreamID(ctx, db.GetLuksRevocationStreamIDParams{
+		DeviceID: payload.DeviceID,
+		ActionID: payload.ActionID,
+	})
+	if err != nil {
+		w.logger.Warn("could not look up LUKS revocation stream ID — appending to a fresh stream; projection will show only the terminal event",
+			"device_id", payload.DeviceID,
+			"action_id", payload.ActionID,
+			"error", err,
+		)
+		luksStreamID = ulid.Make().String()
+	}
+
 	if payload.Success {
 		return w.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",
