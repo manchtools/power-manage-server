@@ -202,15 +202,12 @@ log_info "Transfer complete"
 log_step "Loading images and restarting services on $SSH_HOST..."
 
 # Build the remote commands
-# Read IMAGE_TAG from the server's .env and retag images to match what
-# compose.yml expects. Fail hard when IMAGE_TAG is missing rather than
-# falling back to :latest — compose.yml requires IMAGE_TAG explicitly
-# (${IMAGE_TAG:?...}), so a silent "latest" fallback here would retag
-# images compose will refuse to use anyway, just with a less clear
-# error downstream.
+# Read IMAGE_TAG from the server's .env so we retag images to match
+# what compose expects. Falls back to "latest" when unset — matches
+# compose.yml's ${IMAGE_TAG:-latest} default, which points at the
+# curated latest-stable tag CI promotes after a release is cut.
 REMOTE_CMDS="cd ~/deploy && "
-REMOTE_CMDS+="IMAGE_TAG=\$(grep -oP '(?<=^IMAGE_TAG=).*' .env 2>/dev/null) && "
-REMOTE_CMDS+="if [ -z \"\$IMAGE_TAG\" ]; then echo '[ERROR] IMAGE_TAG missing from ~/deploy/.env on '\"\$(hostname)\"' — pin to a specific release tag (see .env.example)' >&2; exit 1; fi && "
+REMOTE_CMDS+="IMAGE_TAG=\$(grep -oP '(?<=^IMAGE_TAG=).*' .env 2>/dev/null || echo latest) && "
 REMOTE_CMDS+="echo '[INFO] Server IMAGE_TAG='\$IMAGE_TAG && "
 for svc in "${SERVICES[@]}"; do
     REMOTE_CMDS+="echo '[INFO] Loading pm-$svc...' && "
