@@ -239,13 +239,23 @@ func main() {
 			}
 
 			gatewayReg = ensureGatewayRegistry()
+			// Match the 5s bound used on the other Redis-touching
+			// calls in this file (PublishTraefikRoute,
+			// RegisterGatewayInternal). Without it, a slow or hung
+			// Valkey at startup stalls gateway boot past the point
+			// where SIGTERM should be respected. The refresh
+			// goroutine stop() returned from RegisterGateway carries
+			// its own shutdown wiring, so the bound only affects the
+			// one-shot register at line 242.
+			registerCtx, cancelRegister := context.WithTimeout(shutdownCtx, 5*time.Second)
 			stop, err := gatewayReg.RegisterGateway(
-				context.Background(),
+				registerCtx,
 				gatewayID,
 				terminalURL,
 				registry.DefaultGatewayTTL,
 				registry.DefaultGatewayRefreshInterval,
 			)
+			cancelRegister()
 			if err != nil {
 				// Fail-open: the terminal feature is optional, so a
 				// transient registry failure at startup must not kill
@@ -484,11 +494,11 @@ func main() {
 	// Setup HTTP mux for agent connections (mTLS-protected)
 	mux := http.NewServeMux()
 
-	// Create agent handler (always mTLS)
+	// Create agent handler (always mTLS). gatewayReg is always non-nil
+	// by this point — ensureGatewayRegistry() is called unconditionally
+	// in the internal-URL block above — so no guard on SetGatewayRouting.
 	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, cfg.HeartbeatInterval, logger)
-	if gatewayReg != nil {
-		agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
-	}
+	agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
 	agentHandler.SetTerminalSessions(terminalSessions)
 	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
 
