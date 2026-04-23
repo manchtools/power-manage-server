@@ -195,7 +195,17 @@ func main() {
 	// each exit, the pm-mtls TCP router fell through to the HTTP router
 	// on the shared :443 and served the Let's Encrypt cert — giving
 	// agents the misleading x509 "unknown authority" error.
-	if cfg.PublicAgentURLTemplate != "" {
+	// Track whether the agent URL template was *configured* separately
+	// from whether it *resolved*. Without this split, a malformed
+	// template (e.g. "https://${UNSET_VAR}" → "https://") leaves
+	// assignedHost empty and the terminal-template block below would
+	// silently paper over the misconfiguration by substituting the TTY
+	// host — re-enabling bootstrap redirects to the wrong hostname.
+	// Operators who explicitly set GATEWAY_PUBLIC_AGENT_URL_TEMPLATE
+	// want the feature off when the template is broken, not fallen-
+	// back to a different URL.
+	agentURLTemplateConfigured := cfg.PublicAgentURLTemplate != ""
+	if agentURLTemplateConfigured {
 		agentURL := strings.ReplaceAll(cfg.PublicAgentURLTemplate, "{id}", gatewayID)
 		assignedHost = hostFromURL(agentURL)
 		if assignedHost == "" {
@@ -218,10 +228,13 @@ func main() {
 			logger.Warn("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE resolved to a URL with no host — terminal session registration disabled on this gateway; check for unset env vars in the template",
 				"template", cfg.PublicTerminalURLTemplate, "resolved", terminalURL)
 		} else {
-			// If no agent URL template was set, fall back to deriving the
-			// agent redirect hostname from the terminal URL (legacy
-			// single-hostname mode).
-			if assignedHost == "" {
+			// Legacy single-hostname fallback: only substitute the
+			// terminal host when NO agent template was configured.
+			// If the operator set the agent template and it
+			// resolved to a broken URL, respect their intent to
+			// disable bootstrap redirects rather than silently
+			// masking the misconfiguration with the TTY host.
+			if assignedHost == "" && !agentURLTemplateConfigured {
 				assignedHost = terminalHost
 			}
 
@@ -313,9 +326,16 @@ func main() {
 				TTYCertResolver: cfg.TraefikTTYCertResolver,
 			}
 
-			if err := gatewayReg.PublishTraefikRoute(
-				context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
-			); err != nil {
+			// Bound the publish with shutdownCtx + a 5s timeout so a
+			// slow Redis can't stall startup, and the same bound is
+			// used on refresh so shutdown is prompt even during a
+			// hung publish.
+			publishCtx, cancelPublish := context.WithTimeout(shutdownCtx, 5*time.Second)
+			err := gatewayReg.PublishTraefikRoute(
+				publishCtx, gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+			)
+			cancelPublish()
+			if err != nil {
 				// Fail-open: the refresh goroutine below retries on
 				// the normal cadence, so a transient publish failure
 				// at startup recovers within one refresh interval.
@@ -338,9 +358,12 @@ func main() {
 				for {
 					select {
 					case <-ticker.C:
-						if err := gatewayReg.PublishTraefikRoute(
-							context.Background(), gatewayID, traefikCfg, registry.DefaultGatewayTTL,
-						); err != nil {
+						refreshCtx, cancelRefresh := context.WithTimeout(traefikRefreshCtx, 5*time.Second)
+						err := gatewayReg.PublishTraefikRoute(
+							refreshCtx, gatewayID, traefikCfg, registry.DefaultGatewayTTL,
+						)
+						cancelRefresh()
+						if err != nil {
 							logger.Warn("failed to refresh Traefik routing config", "error", err)
 						}
 					case <-traefikRefreshCtx.Done():
@@ -400,9 +423,16 @@ func main() {
 			}
 		}
 		if internalURL != "" {
-			if err := gatewayReg.RegisterGatewayInternal(
-				context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
-			); err != nil {
+			// Bound both the initial register and the periodic
+			// refresh with shutdownCtx + 5s so a slow Redis can't
+			// delay shutdown or pile up goroutines waiting on the
+			// registry during degraded Valkey health.
+			registerCtx, cancelRegister := context.WithTimeout(shutdownCtx, 5*time.Second)
+			err := gatewayReg.RegisterGatewayInternal(
+				registerCtx, gatewayID, internalURL, registry.DefaultGatewayTTL,
+			)
+			cancelRegister()
+			if err != nil {
 				logger.Warn("failed to register gateway internal URL", "error", err)
 			}
 			internalRefreshCtx, stopInternalRefresh := context.WithCancel(shutdownCtx)
@@ -413,9 +443,12 @@ func main() {
 				for {
 					select {
 					case <-ticker.C:
-						if err := gatewayReg.RegisterGatewayInternal(
-							context.Background(), gatewayID, internalURL, registry.DefaultGatewayTTL,
-						); err != nil {
+						refreshCtx, cancelRefresh := context.WithTimeout(internalRefreshCtx, 5*time.Second)
+						err := gatewayReg.RegisterGatewayInternal(
+							refreshCtx, gatewayID, internalURL, registry.DefaultGatewayTTL,
+						)
+						cancelRefresh()
+						if err != nil {
 							logger.Warn("failed to refresh gateway internal URL", "error", err)
 						}
 					case <-internalRefreshCtx.Done():
