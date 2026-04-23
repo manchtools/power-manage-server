@@ -698,10 +698,17 @@ func hostFromURL(raw string) string {
 	default:
 		return ""
 	}
-	// u.Host includes the port (e.g. "gw-01.example.com:8443").
-	// u.Hostname() strips it, which would break redirects on
-	// non-default ports.
-	if u.Host == "" {
+	// u.Host includes the port (e.g. "gw-01.example.com:8443"), which
+	// is what the caller needs for bootstrap redirects and registry
+	// registration. u.Hostname() strips the port, so we return u.Host.
+	//
+	// But both checks matter: a template like "https://${UNSET}:8443"
+	// collapses to "https://:8443" when the env var is missing.
+	// u.Host = ":8443" is non-empty (would pass the first check)
+	// while u.Hostname() = "" (no hostname). Require both — same
+	// invariant api.ValidateGatewayURL enforces for the control
+	// server's outbound URL.
+	if u.Host == "" || u.Hostname() == "" {
 		return ""
 	}
 	return u.Host

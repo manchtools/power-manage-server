@@ -91,7 +91,10 @@ func main() {
 
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
-	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
+	// Redact the gateway URL on the startup line too. If a bad shape
+	// slipped in (e.g. https://u:p@host/ despite the validator, or an
+	// operator paste-mistake), it shouldn't land in every boot log.
+	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	// CONTROL_GATEWAY_URL is fatal when invalid: registration hands
 	// it back to the agent verbatim, so any invalid shape — empty
 	// string, bare hostname (parses as a relative path), http://

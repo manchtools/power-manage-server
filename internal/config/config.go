@@ -166,7 +166,8 @@ func FromEnv() *Config {
 	//   * RootKey      = traefik — matches Traefik default --providers.redis.rootkey
 	//   * MTLSHost     = GATEWAY_DOMAIN   (not Traefik-prefixed — one name per thing)
 	//   * MTLSEntryPoint    = websecure   (same :443 as control, SNI-separated)
-	//   * TTYHost      = GATEWAY_TTY_DOMAIN (falls back to empty -> TTY router disabled)
+	//   * TTYHost      = GATEWAY_TTY_DOMAIN, then GATEWAY_DOMAIN
+	//                    (Validate rejects unsafe shared-host terminal+self-register configs)
 	//   * TTYEntryPoint     = websecure
 	//   * TTYCertResolver   = letsencrypt
 	//
@@ -227,27 +228,36 @@ func FromEnv() *Config {
 // struct (rather than inline in main) so tests can exercise the
 // shape checks without booting a full process.
 func (c *Config) Validate() error {
-	// TTY / MTLS host collision: when the terminal WebSocket
-	// listener is enabled (GATEWAY_WEB_LISTEN_ADDR set) and Traefik
-	// self-registration is on, both the shared mTLS TCP router and
-	// the per-replica TTY HTTP router bind on the same
-	// --entrypoints.websecure address. Traefik's TCP router (with
-	// HostSNI + tls.passthrough) takes precedence for connections
-	// whose SNI matches, so a TTY client sending SNI=TTYHost gets
-	// routed to the mTLS passthrough and the WebSocket handshake
-	// fails against a backend that's expecting a raw TLS client
-	// cert. The only safe split is distinct hostnames.
+	// TTY / MTLS host collision: when Traefik self-registration is
+	// on AND the terminal feature is in play AND the mTLS + TTY
+	// routers bind the same entrypoint, the shared hostname means
+	// Traefik's TCP-passthrough router for mTLS wins the SNI match
+	// and the TTY HTTP router never gets the request. The TLS
+	// handshake lands on an agent-mTLS backend that isn't speaking
+	// HTTP, so the WebSocket upgrade fails silently.
+	//
+	// Split the preconditions explicitly so the check handles both
+	// the auto-derived backend case (operator only set
+	// GATEWAY_WEB_LISTEN_ADDR) and the explicit backend case
+	// (operator set GATEWAY_TRAEFIK_TTY_BACKEND directly). Also
+	// narrow to "same entrypoint" — different entrypoints mean the
+	// routers don't actually collide even on a shared host, so
+	// flagging that shape would be a false positive for
+	// bring-your-own-Traefik topologies.
 	//
 	// Refuse startup with a clear message instead of letting the
 	// operator discover this when a terminal session silently fails.
+	terminalEnabled := c.WebListenAddr != "" || c.TraefikTTYBackend != ""
+	entrypointsCollide := c.TraefikTTYEntryPoint != "" && c.TraefikTTYEntryPoint == c.TraefikMTLSEntryPoint
 	if c.TraefikSelfRegister &&
-		c.WebListenAddr != "" &&
+		terminalEnabled &&
+		entrypointsCollide &&
 		c.TraefikTTYHost != "" &&
 		c.TraefikMTLSHost != "" &&
 		c.TraefikTTYHost == c.TraefikMTLSHost {
 		return fmt.Errorf(
-			"GATEWAY_TTY_DOMAIN / TraefikTTYHost cannot equal GATEWAY_DOMAIN / TraefikMTLSHost when terminal is enabled (both %q): Traefik TCP passthrough for mTLS would match the same SNI as the TTY HTTP router and break WebSocket sessions — set GATEWAY_TTY_DOMAIN to a distinct hostname",
-			c.TraefikTTYHost,
+			"GATEWAY_TTY_DOMAIN / TraefikTTYHost cannot equal GATEWAY_DOMAIN / TraefikMTLSHost when the terminal router and mTLS router share an entrypoint (both %q on entrypoint %q): Traefik TCP passthrough for mTLS matches the same SNI as the TTY HTTP router and breaks WebSocket sessions — set a distinct GATEWAY_TTY_DOMAIN or split the entrypoints",
+			c.TraefikTTYHost, c.TraefikTTYEntryPoint,
 		)
 	}
 	return nil
