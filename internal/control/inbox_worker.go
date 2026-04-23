@@ -540,6 +540,20 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	// Dispatched phases. Earlier versions generated a fresh ULID
 	// here, which split every revocation across two streams and
 	// broke the projection's three-phase stitch — fixed in rc10.
+	//
+	// Correctness assumption: at most one outstanding revocation
+	// per (device, action) at a time. Enforced at the API layer:
+	// RevokeLuksDeviceKey checks the projection for an already-
+	// dispatched-and-unterminal request before accepting a new
+	// one, so duplicates via concurrent operator clicks are
+	// rejected upstream. If that invariant ever regresses, the
+	// ORDER BY sequence_num DESC + LIMIT 1 here will pick the
+	// LATEST matching request — which is the expected "the
+	// operator re-requested and here's the result" semantic.
+	// Older abandoned streams would then lack a terminal event;
+	// not a correctness issue for the projection (it keys by
+	// stream_id), but worth flagging for the audit export.
+	//
 	// If the lookup fails (e.g. the Requested event never made it
 	// to disk because the original API call crashed), fall back to
 	// a fresh stream ID so we still record the Failed outcome

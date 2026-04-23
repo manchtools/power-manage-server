@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	urlpkg "net/url"
 	"os"
 	"os/signal"
@@ -93,19 +92,15 @@ func main() {
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
 	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", cfg.GatewayURL, "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
-	// CONTROL_GATEWAY_URL is fatal when empty: registration hands it
-	// back to the agent verbatim, so a missing value turns every
-	// successful enrollment into an agent that can never connect —
-	// and the failure mode only shows up later, at first-stream time,
-	// with a cryptic URL-parse error far from the config source.
-	// Fail fast here so the operator notices the misconfiguration at
-	// startup instead of after devices are already enrolled.
-	if cfg.GatewayURL == "" {
-		logger.Error("CONTROL_GATEWAY_URL is required — enrollment cannot hand agents an empty gateway URL")
-		os.Exit(1)
-	}
-	if _, err := url.Parse(cfg.GatewayURL); err != nil {
-		logger.Error("CONTROL_GATEWAY_URL is not a valid URL", "gateway_url", cfg.GatewayURL, "error", err)
+	// CONTROL_GATEWAY_URL is fatal when invalid: registration hands
+	// it back to the agent verbatim, so any invalid shape — empty
+	// string, bare hostname (parses as a relative path), http://
+	// (agents refuse h2c), userinfo, or non-https scheme — turns
+	// every successful enrollment into an agent that can never
+	// connect. api.ValidateGatewayURL is the shared validator
+	// (also invoked defensively in the registration handler).
+	if err := api.ValidateGatewayURL(cfg.GatewayURL); err != nil {
+		logger.Error("CONTROL_GATEWAY_URL is invalid", "gateway_url", cfg.GatewayURL, "error", err)
 		os.Exit(1)
 	}
 

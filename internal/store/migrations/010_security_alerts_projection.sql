@@ -24,8 +24,15 @@
 
 -- +goose Up
 
+-- The primary key is the originating event_id rather than a fresh
+-- UUID. This is the event-sourcing idempotency pattern: if the
+-- projection is ever replayed (backfill, rebuild, trigger re-fire),
+-- the same SecurityAlert event produces the same row, so ON CONFLICT
+-- DO NOTHING prevents duplicates without needing deduplication
+-- logic in the acknowledge path. SecurityAlertAcknowledged carries
+-- the alert_id explicitly in its payload and UPDATEs by that key.
 CREATE TABLE security_alerts_projection (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID PRIMARY KEY REFERENCES events(id),
     device_id TEXT NOT NULL,
     alert_type TEXT NOT NULL,
     message TEXT NOT NULL,
@@ -47,20 +54,22 @@ BEGIN
     CASE event.event_type
         WHEN 'SecurityAlert' THEN
             INSERT INTO security_alerts_projection (
-                device_id, alert_type, message, details, raised_at
+                event_id, device_id, alert_type, message, details, raised_at
             ) VALUES (
+                event.id,
                 event.stream_id,
                 event.data->>'alert_type',
                 event.data->>'message',
                 event.data->'details',
                 event.occurred_at
-            );
+            )
+            ON CONFLICT (event_id) DO NOTHING;
         WHEN 'SecurityAlertAcknowledged' THEN
             UPDATE security_alerts_projection
             SET acknowledged = TRUE,
                 acknowledged_at = event.occurred_at,
                 acknowledged_by = event.data->>'acknowledged_by'
-            WHERE id::TEXT = event.data->>'alert_id';
+            WHERE event_id::TEXT = event.data->>'alert_id';
         ELSE
             NULL;
     END CASE;

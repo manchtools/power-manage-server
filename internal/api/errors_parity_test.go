@@ -69,17 +69,47 @@ func extractServerCodes(t *testing.T) []string {
 
 // extractSDKCodes walks sdk/ts/errors.ts and returns every
 // snake_case string literal assigned to an exported Err* const.
-// The path is relative to server/internal/api — the sdk repo sits
-// alongside the server repo in the workspace.
+//
+// Resolution order:
+//  1. PM_SDK_TS_ERRORS env var (absolute or relative path) — CI sets
+//     this when it checks the SDK out beside the server repo, so
+//     standalone server CI can still exercise the parity guard.
+//  2. ../../../../sdk/ts/errors.ts — the local dev-workspace layout
+//     /home/<user>/.../power-manage/{server,sdk}.
+//
+// If neither resolves AND PM_SDK_PARITY_REQUIRED=1 is set, the test
+// fails loudly — this is the mode CI should use when it expects the
+// SDK to be available. Without the env var the test skips with a
+// clear log line so a local `go test ./...` in a standalone server
+// checkout still passes.
 func extractSDKCodes(t *testing.T) []string {
 	t.Helper()
-	// server/internal/api → ../../../sdk/ts/errors.ts
-	path := filepath.Join("..", "..", "..", "..", "sdk", "ts", "errors.ts")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Skipf("skipping parity check: cannot read %s (%v) — run this test from the multi-repo workspace root", path, err)
+
+	var candidates []string
+	if env := os.Getenv("PM_SDK_TS_ERRORS"); env != "" {
+		candidates = append(candidates, env)
+	}
+	candidates = append(candidates, filepath.Join("..", "..", "..", "..", "sdk", "ts", "errors.ts"))
+
+	var data []byte
+	var tried []string
+	for _, path := range candidates {
+		tried = append(tried, path)
+		b, err := os.ReadFile(path)
+		if err == nil {
+			data = b
+			break
+		}
+	}
+	if data == nil {
+		msg := "cannot read sdk/ts/errors.ts from any candidate path: " + strings.Join(tried, ", ")
+		if os.Getenv("PM_SDK_PARITY_REQUIRED") == "1" {
+			t.Fatalf("PM_SDK_PARITY_REQUIRED=1 but %s — CI should check out the sdk repo beside server or set PM_SDK_TS_ERRORS", msg)
+		}
+		t.Skipf("%s — set PM_SDK_TS_ERRORS or PM_SDK_PARITY_REQUIRED=1 (with the file available) to exercise the parity guard", msg)
 		return nil
 	}
+
 	re := regexp.MustCompile(`export\s+const\s+Err\w+\s*=\s*'([a-z][a-z0-9_]*)'`)
 	matches := re.FindAllStringSubmatch(string(data), -1)
 	seen := make(map[string]struct{}, len(matches))
