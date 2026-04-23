@@ -195,11 +195,19 @@ func FromEnv() *Config {
 		TraefikMTLSBackend:     getEnv("GATEWAY_TRAEFIK_MTLS_BACKEND", ""),
 		TraefikMTLSEntryPoint:  getEnv("GATEWAY_TRAEFIK_MTLS_ENTRYPOINT", "websecure"),
 		// TTYHost falls back through GATEWAY_TTY_DOMAIN (dedicated
-		// TTY subdomain) to GATEWAY_DOMAIN (single-domain deploys
-		// where terminal WebSocket shares the gateway hostname).
-		// .env.example documents exactly this chain; rc9 only
-		// implemented the first two rungs, which was the hidden
-		// empty-host trap that crashed gateway startup in staging.
+		// TTY subdomain) to GATEWAY_DOMAIN. Without this chain rc9
+		// hit the hidden empty-host trap that crashed gateway
+		// startup in staging.
+		//
+		// Note on the GATEWAY_DOMAIN rung: it only works when the
+		// terminal WebSocket listener is disabled
+		// (GATEWAY_WEB_LISTEN_ADDR empty) or when Traefik self-
+		// registration is off. With terminal + self-register both
+		// enabled, a shared TTY/MTLS hostname is refused by
+		// Validate() below — Traefik's TCP passthrough would
+		// match the shared SNI and shadow the TTY HTTP router,
+		// silently breaking WebSocket sessions. Single-domain
+		// terminal deployments need a separate GATEWAY_TTY_DOMAIN.
 		TraefikTTYHost: firstNonEmpty(
 			os.Getenv("GATEWAY_TRAEFIK_TTY_HOST"),
 			os.Getenv("GATEWAY_TTY_DOMAIN"),
