@@ -393,8 +393,15 @@ func main() {
 				}
 			}()
 
+			// Surface whether the initial publish succeeded. After a
+			// Valkey wobble the refresh loop will self-heal within
+			// one DefaultGatewayRefreshInterval, but an operator
+			// reading the log right after startup should be able to
+			// tell "registered now" from "will retry in N seconds"
+			// without having to cross-reference the Warn line above.
 			logger.Info("traefik self-registration enabled",
 				"gateway_id", gatewayID,
+				"initial_publish_ok", err == nil,
 				"mtls_host", cfg.TraefikMTLSHost,
 				"mtls_backend", mtlsBackend,
 				"tty_host", cfg.TraefikTTYHost,
