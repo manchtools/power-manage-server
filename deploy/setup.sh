@@ -309,6 +309,22 @@ is_placeholder() {
     return 1
 }
 
+# parent_domain returns the part of $1 after the first dot, or empty
+# when $1 has no dot at all. Used to derive sibling-subdomain defaults
+# without falling into the `${var#*.}` footgun where a no-match returns
+# the WHOLE string — that would make `tty.${CONTROL_DOMAIN#*.}` for a
+# single-label `localhost` resolve to `tty.localhost`, which is
+# self-referential and not a useful prompt default. Round-4 review
+# follow-up.
+parent_domain() {
+    local d="$1"
+    if [[ "$d" == *.* ]]; then
+        echo "${d#*.}"
+    else
+        echo ""
+    fi
+}
+
 # write_env_var atomically updates a single key=value line in .env.
 # Adds the key if missing; preserves surrounding comments/order.
 #
@@ -440,7 +456,15 @@ guided_setup() {
     if prompt_yes_no "Enable remote terminal (TTY) sessions?"; then
         # Validate distinct host inline so the rc10 collision check
         # never fires.
-        local default_tty="tty.${CONTROL_DOMAIN#*.}"
+        local default_tty=""
+        local control_parent
+        control_parent="$(parent_domain "$CONTROL_DOMAIN")"
+        if [[ -n "$control_parent" ]]; then
+            default_tty="tty.$control_parent"
+        fi
+        # Single-label CONTROL_DOMAIN (e.g. `localhost`) leaves the
+        # default empty so the operator types something meaningful
+        # rather than accepting `tty.localhost`.
         prompt_string "TTY domain (must differ from GATEWAY_DOMAIN)" "$default_tty" "${GATEWAY_TTY_DOMAIN:-}"
         if [[ "$REPLY_VALUE" == "$GATEWAY_DOMAIN" ]]; then
             log_error "GATEWAY_TTY_DOMAIN must differ from GATEWAY_DOMAIN; aborting"
@@ -522,7 +546,18 @@ guided_setup() {
     write_env_var CONTROL_ENCRYPTION_KEY "$REPLY_VALUE"
 
     # --- Admin account ---
-    prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "admin@${CONTROL_DOMAIN#*.}" "${ADMIN_EMAIL:-}"
+    # admin@<parent-domain> if CONTROL_DOMAIN has a dot; admin@<full>
+    # for single-label cases (admin@localhost is a valid local-delivery
+    # address for those deployments).
+    local admin_parent
+    admin_parent="$(parent_domain "$CONTROL_DOMAIN")"
+    local default_email
+    if [[ -n "$admin_parent" ]]; then
+        default_email="admin@$admin_parent"
+    else
+        default_email="admin@$CONTROL_DOMAIN"
+    fi
+    prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "$default_email" "${ADMIN_EMAIL:-}"
     write_env_var ADMIN_EMAIL "$REPLY_VALUE"
 
     prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -base64 24" "${ADMIN_PASSWORD:-}"

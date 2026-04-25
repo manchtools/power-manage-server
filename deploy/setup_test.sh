@@ -78,6 +78,14 @@ run_case() {
             chmod --reference="$envfile" "$tf" 2>/dev/null || chmod 600 "$tf"
             mv "$tf" "$envfile"
         }
+        parent_domain() {
+            local d="$1"
+            if [[ "$d" == *.* ]]; then
+                echo "${d#*.}"
+            else
+                echo ""
+            fi
+        }
 
         if "$@"; then
             echo "PASS: $name"
@@ -167,6 +175,27 @@ EOF
     [[ "$mode" == "600" ]]
 }
 
+case_parent_domain_with_dot() {
+    : > "$SCRIPT_DIR/.env"
+    local got
+    got="$(parent_domain control.example.com)"
+    [[ "$got" == "example.com" ]]
+}
+
+case_parent_domain_single_label() {
+    : > "$SCRIPT_DIR/.env"
+    local got
+    got="$(parent_domain localhost)"
+    [[ -z "$got" ]]
+}
+
+case_parent_domain_deep_subdomain() {
+    : > "$SCRIPT_DIR/.env"
+    local got
+    got="$(parent_domain a.b.c.example.com)"
+    [[ "$got" == "b.c.example.com" ]]
+}
+
 case_disable_terminals_clears_all_three_vars() {
     # Simulates the rerun footgun the review caught: existing .env
     # has all three terminal vars set; operator answers No; the
@@ -198,6 +227,9 @@ run_case "write_env_var: preserves mode 0600"       case_write_env_var_preserves
 run_case "clear_env_var: removes existing key"      case_clear_env_var_removes_existing_key
 run_case "clear_env_var: noop on missing key"       case_clear_env_var_noop_on_missing_key
 run_case "clear_env_var: preserves mode 0600"       case_clear_env_var_preserves_mode_0600
+run_case "parent_domain: dotted hostname"           case_parent_domain_with_dot
+run_case "parent_domain: single label returns empty" case_parent_domain_single_label
+run_case "parent_domain: deep subdomain"            case_parent_domain_deep_subdomain
 run_case "disable terminals clears all three vars"  case_disable_terminals_clears_all_three_vars
 
 # Meta: make sure the FAIL counting + final non-zero exit path actually
