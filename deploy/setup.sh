@@ -311,18 +311,26 @@ is_placeholder() {
 
 # write_env_var atomically updates a single key=value line in .env.
 # Adds the key if missing; preserves surrounding comments/order.
+#
+# Atomicity: the temp file is created in the same directory as .env so
+# `mv` resolves to a same-filesystem rename(2), which is atomic on
+# POSIX. Default mktemp uses $TMPDIR (often a separate mount), in
+# which case mv falls back to copy-then-unlink — non-atomic and also
+# overwrites .env's mode/owner with the temp file's. Mode is copied
+# explicitly with chmod --reference so re-runs don't downgrade .env
+# off 0600.
 write_env_var() {
     local key="$1" value="$2" envfile="$SCRIPT_DIR/.env"
     if grep -qE "^${key}=" "$envfile"; then
-        # Use a non-/ delimiter for sed because values frequently contain /
         local tmp
-        tmp="$(mktemp)"
+        tmp="$(mktemp "${envfile}.XXXXXX")"
         awk -v k="$key" -v v="$value" '
             BEGIN { found = 0 }
             $0 ~ "^"k"=" { print k"="v; found = 1; next }
             { print }
             END { if (!found) print k"="v }
         ' "$envfile" > "$tmp"
+        chmod --reference="$envfile" "$tmp" 2>/dev/null || chmod 600 "$tmp"
         mv "$tmp" "$envfile"
     else
         printf '%s=%s\n' "$key" "$value" >> "$envfile"
@@ -333,18 +341,19 @@ write_env_var() {
 # the guided setup when the operator answers No to a feature on a
 # rerun where existing values would otherwise leave the feature
 # silently enabled (caught in #80 review). No-op when the key is
-# absent.
+# absent. Same-filesystem mktemp + mode preservation as write_env_var.
 clear_env_var() {
     local key="$1" envfile="$SCRIPT_DIR/.env"
     if ! grep -qE "^${key}=" "$envfile"; then
         return 0
     fi
     local tmp
-    tmp="$(mktemp)"
+    tmp="$(mktemp "${envfile}.XXXXXX")"
     awk -v k="$key" '
         $0 ~ "^"k"=" { next }
         { print }
     ' "$envfile" > "$tmp"
+    chmod --reference="$envfile" "$tmp" 2>/dev/null || chmod 600 "$tmp"
     mv "$tmp" "$envfile"
 }
 

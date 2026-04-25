@@ -85,6 +85,17 @@ func (m *SystemActionManager) StartReconciliation(ctx context.Context, interval,
 		m.logger.Info("system-action reconciliation disabled (interval <= 0)")
 		return
 	}
+	// A non-positive sweepTimeout would feed an already-cancelled
+	// context into SyncAllUsersSystemActions on every tick — the
+	// reconciler would log an error every interval and never make
+	// progress. parseFlags also clamps env input, but defend in depth
+	// here so a buggy programmatic caller can't silently break the
+	// safety net. Round-3 review of rc11 #77.
+	if sweepTimeout <= 0 {
+		m.logger.Warn("system-action reconciliation sweep timeout <= 0; falling back to interval as ceiling",
+			"sweep_timeout", sweepTimeout, "interval", interval)
+		sweepTimeout = interval
+	}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()

@@ -100,7 +100,10 @@ download_deploy_tree() {
 
     local tmpdir
     tmpdir="$(mktemp -d)"
-    trap "rm -rf '$tmpdir'" EXIT
+    # Single-quote so $tmpdir is expanded at trap-fire time, not now —
+    # SC2064. Works either way today (the var isn't reassigned), but
+    # the deferred-expansion form is the documented intent.
+    trap 'rm -rf "$tmpdir"' EXIT
 
     local tarball="$tmpdir/source.tar.gz"
 
@@ -141,6 +144,16 @@ download_deploy_tree() {
         --strip-components=2 \
         --wildcards \
         '*/deploy/*'
+
+    # tar exits 0 even when the wildcard matches nothing — e.g. a
+    # future tag that renames deploy/ or a private fork with a
+    # different layout. Fail loudly here instead of letting the
+    # operator chase a confusing "setup.sh: command not found" later.
+    if [[ ! -f "$INSTALL_DIR/setup.sh" ]] || [[ ! -f "$INSTALL_DIR/.env.example" ]]; then
+        log_error "Extracted tarball but expected files (setup.sh / .env.example) are missing under $INSTALL_DIR."
+        log_error "  The tarball at $RELEASE_TAG may not contain a deploy/ subtree in the expected layout."
+        exit 1
+    fi
 
     if [[ -f "$tmpdir/.env.preserved" ]]; then
         cp "$tmpdir/.env.preserved" "$INSTALL_DIR/.env"

@@ -841,6 +841,19 @@ func parseFlags() *Config {
 		}
 	}
 
+	// Clamp system-action reconcile flags. Mirrors the DynamicGroup
+	// pattern above. A 0 sweep timeout would make
+	// context.WithTimeout return an already-cancelled context every
+	// tick, silently breaking the durability safety net; a negative
+	// interval would panic time.NewTicker. Round-3 review of rc11
+	// #77 caught the timeout footgun specifically.
+	if cfg.SystemActionReconcileInterval < 0 {
+		cfg.SystemActionReconcileInterval = 0 // treat as disabled, matching StartReconciliation
+	}
+	if cfg.SystemActionReconcileTimeout <= 0 {
+		cfg.SystemActionReconcileTimeout = 5 * time.Minute
+	}
+
 	if cfg.JWTSecret == "" {
 		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
 		os.Exit(1)

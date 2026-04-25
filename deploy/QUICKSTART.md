@@ -20,15 +20,17 @@ The installer:
 The installer defaults to `latest-rc` (the curated pre-release tag). For a stable release or a specific RC:
 
 ```bash
-RELEASE_TAG=v2026.05 curl -fsSL .../install.sh | sudo bash
+curl -fsSL .../install.sh | sudo RELEASE_TAG=v2026.05 bash
 ```
+
+> **Note:** the env var goes between `sudo` and `bash`, **not** before `curl`. By default `sudo` resets the environment (`env_reset`), so `RELEASE_TAG=… curl … | sudo bash` would only set the variable for the local `curl` process and the installer running under `sudo` would never see it. Putting it after `sudo` passes it through.
 
 ## Non-interactive install
 
 CI / Ansible / preconfigured `.env` setups can skip the guided prompts:
 
 ```bash
-NO_PROMPT=1 curl -fsSL .../install.sh | sudo bash
+curl -fsSL .../install.sh | sudo NO_PROMPT=1 bash
 ```
 
 The installer expects `.env` (or `.env.example` to copy from) at `INSTALL_DIR` and runs `setup.sh --no-prompt` — strict env validation only, no prompts.
@@ -36,7 +38,7 @@ The installer expects `.env` (or `.env.example` to copy from) at `INSTALL_DIR` a
 ## Custom install directory
 
 ```bash
-INSTALL_DIR=/srv/pm curl -fsSL .../install.sh | sudo bash
+curl -fsSL .../install.sh | sudo INSTALL_DIR=/srv/pm bash
 ```
 
 ## Re-running the installer
@@ -49,9 +51,9 @@ INSTALL_DIR=/srv/pm curl -fsSL .../install.sh | sudo bash
 Use this for upgrades:
 
 ```bash
-RELEASE_TAG=v2026.06 sudo bash /opt/power-manage/install.sh   # if previously installed
+sudo RELEASE_TAG=v2026.06 bash /opt/power-manage/install.sh   # if previously installed
 # or fetch a fresh installer
-RELEASE_TAG=v2026.06 curl -fsSL .../install.sh | sudo bash
+curl -fsSL .../install.sh | sudo RELEASE_TAG=v2026.06 bash
 ```
 
 ## Manual install (if you'd rather not run a curl-pipe-bash)

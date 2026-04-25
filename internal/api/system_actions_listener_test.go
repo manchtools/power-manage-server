@@ -179,12 +179,33 @@ func TestAffectedFromEvent(t *testing.T) {
 			wantUsers: nil,
 		},
 		{
-			name: "UserRoleAssigned with missing user_id in data → SyncOpNone (defensive)",
+			name: "UserRoleAssigned with missing user_id in data → falls back to StreamID prefix",
 			event: store.PersistedEvent{
 				StreamType: "user_role",
 				StreamID:   "user-x:role-y",
 				EventType:  "UserRoleAssigned",
 				Data:       mustMarshalJSON(t, map[string]any{"role_id": "role-y"}),
+			},
+			wantOp:    SyncOpSyncUser,
+			wantUsers: []string{"user-x"},
+		},
+		{
+			name: "UserRoleRevoked with no data + no colon in StreamID → SyncOpNone",
+			event: store.PersistedEvent{
+				StreamType: "user_role",
+				StreamID:   "garbage-no-colon",
+				EventType:  "UserRoleRevoked",
+			},
+			wantOp:    SyncOpNone,
+			wantUsers: nil,
+		},
+		{
+			name: "UserGroupMemberAdded with missing user_id in data → SyncOpNone (no StreamID fallback for group case)",
+			event: store.PersistedEvent{
+				StreamType: "user_group",
+				StreamID:   "group-1",
+				EventType:  "UserGroupMemberAdded",
+				Data:       mustMarshalJSON(t, map[string]any{"group_id": "group-1"}),
 			},
 			wantOp:    SyncOpNone,
 			wantUsers: nil,

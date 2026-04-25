@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,6 +37,18 @@ type Event struct {
 // AppendEvent. Listeners are invoked synchronously in registration
 // order; a slow listener will stall subsequent listeners on the same
 // event. None are allowed to mutate the event row.
+//
+// Context lifetime: the ctx passed in is the caller's request context
+// and will be cancelled as soon as AppendEvent returns. Listeners that
+// kick off async work must derive a fresh context (typically via
+// context.WithoutCancel + context.WithTimeout) and not rely on the
+// passed ctx for downstream DB calls.
+//
+// Panic isolation: panics from a listener are recovered by
+// fireListeners and logged to stderr — the AppendEvent caller sees a
+// successful commit even if a listener crashes. This matches the
+// "post-commit notification" contract: the event is durable; listener
+// failures are observability, not correctness.
 type EventListener func(ctx context.Context, ev PersistedEvent)
 
 // Store wraps the database connection and provides access to queries.
@@ -72,12 +85,30 @@ func (s *Store) RegisterEventListener(fn EventListener) {
 // fireListeners invokes both the legacy OnEventAppended callback (if
 // set) and every RegisterEventListener entry. Centralised so the two
 // AppendEvent variants stay in sync.
+//
+// Each listener is wrapped in defer/recover so a panic in one cannot
+// fail AppendEvent — the event is already committed, and listeners
+// are notifications, not part of the write path. Round-3 review of
+// rc11 #77 caught this: a panicking listener used to bubble up
+// through AppendEvent and fail the RPC even though the event was
+// durable, breaking the "event committed → RPC succeeds" contract.
+// We log panics to stderr because the Store has no slog handle; the
+// listener owner is responsible for richer logging inside its own
+// body if needed.
 func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
+	safe := func(name string, fn func()) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "store: %s listener panicked on %s/%s: %v\n", name, row.StreamType, row.EventType, r)
+			}
+		}()
+		fn()
+	}
 	if s.OnEventAppended != nil {
-		s.OnEventAppended(ctx, row)
+		safe("OnEventAppended", func() { s.OnEventAppended(ctx, row) })
 	}
 	for _, l := range s.listeners {
-		l(ctx, row)
+		safe("RegisterEventListener", func() { l(ctx, row) })
 	}
 }
 

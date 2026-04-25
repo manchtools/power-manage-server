@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -55,13 +57,20 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 
 	case "UserRoleAssigned", "UserRoleRevoked":
 		// stream_type=user_role, stream_id=user_id:role_id; user_id
-		// also lives in event.data["user_id"] for clarity. Read the
-		// data payload to avoid parsing the colon-joined StreamID.
-		uid := userIDFromEventData(e)
-		if uid == "" {
-			return SyncOpNone, nil
+		// also lives in event.data["user_id"] for clarity. Prefer the
+		// data payload (cleaner contract); fall back to splitting the
+		// StreamID so a future emitter that drops the data field
+		// degrades to "still works" instead of "silent SyncOpNone for
+		// up to one reconcile interval." The role case is the only
+		// place this fallback is meaningful — group membership uses
+		// the group ID as StreamID, so user_id is data-only.
+		if uid := userIDFromEventData(e); uid != "" {
+			return SyncOpSyncUser, []string{uid}
 		}
-		return SyncOpSyncUser, []string{uid}
+		if uid, _, ok := strings.Cut(e.StreamID, ":"); ok && uid != "" {
+			return SyncOpSyncUser, []string{uid}
+		}
+		return SyncOpNone, nil
 
 	case "UserGroupMemberAdded", "UserGroupMemberRemoved":
 		// stream_type=user_group, event.data carries user_id of the
@@ -122,6 +131,15 @@ func userIDFromEventData(e store.PersistedEvent) string {
 // it explicitly to SystemActionListener.
 const defaultListenerSyncTimeout = 5 * time.Minute
 
+// listenerMaxConcurrentDispatches caps the number of in-flight sync
+// goroutines spawned by the listener. Prevents a SCIM bulk role
+// assignment that emits thousands of UserRoleAssigned events from
+// saturating the pgx pool / signer. When the cap is hit the event is
+// dropped (logged) — the periodic reconciler will catch up within one
+// interval, so back-pressure is preferred over unbounded fan-out.
+// Round-3 review of rc11 #77.
+const listenerMaxConcurrentDispatches = 16
+
 // SystemActionListener is the registerable EventListener that turns
 // AppendEvent post-commit hooks into system-action sync calls. Wire it
 // into the store at service boot in cmd/control/main.go:
@@ -136,29 +154,68 @@ const defaultListenerSyncTimeout = 5 * time.Minute
 // post-commit path is never blocked on system-action work. Synchronous
 // invocation would have made fan-out events (RoleUpdated, RoleDeleted,
 // UserGroupRoleAssigned/Revoked, UserGroupDeleted, ServerSettingUpdated)
-// turn small admin RPCs into O(all-users) request-path work — review
-// finding from #77's first cut.
+// turn small admin RPCs into O(all-users) request-path work.
 //
-// The goroutine context is bounded by syncTimeout (defaulting to
-// defaultListenerSyncTimeout when 0). Without the bound, a wedged DB
-// or signer would leak a goroutine per event indefinitely, and a
-// burst of role/group changes could pile up — review finding from
-// #77's second cut. The goroutine deliberately uses a fresh
-// Background-rooted context (not the AppendEvent ctx) because the
-// RPC that triggered the event may have already returned by the time
-// the sync runs; the timeout is the only stop signal.
+// Concurrency control:
+//   - syncTimeout bounds each goroutine (defaulting to
+//     defaultListenerSyncTimeout when 0). Without the bound a wedged
+//     DB / signer would leak goroutines indefinitely.
+//   - A bounded semaphore (listenerMaxConcurrentDispatches) caps
+//     in-flight syncs so a burst of per-user events can't exhaust
+//     the pgx pool. Over-cap events are dropped + logged; the
+//     reconciler will catch them.
+//   - SyncOpSyncAll uses an atomic.Bool to coalesce: if a fan-out
+//     sweep is already running, subsequent fan-out events return
+//     immediately rather than stacking N concurrent O(all-users)
+//     sweeps that step on each other. Same pattern the reconciler
+//     uses for its tick path.
+//
+// Each goroutine uses context.WithoutCancel(parent) under
+// context.WithTimeout: the AppendEvent ctx is detached (the RPC may
+// have already returned by sync time), but request-scoped values
+// like request_id are preserved so error logs correlate back to the
+// triggering RPC.
 func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slog.Logger, syncTimeout time.Duration) store.EventListener {
 	if syncTimeout <= 0 {
 		syncTimeout = defaultListenerSyncTimeout
 	}
-	return func(_ context.Context, e store.PersistedEvent) {
+
+	sem := make(chan struct{}, listenerMaxConcurrentDispatches)
+	var syncAllInFlight atomic.Bool
+
+	return func(parent context.Context, e store.PersistedEvent) {
 		op, userIDs := AffectedFromEvent(e)
 		if op == SyncOpNone {
 			return
 		}
 
+		// Coalesce fan-out events. If a sweep is already running it
+		// will pick up state changes emitted before its commit; if
+		// not, we own the flag and must clear it on goroutine exit.
+		if op == SyncOpSyncAll && !syncAllInFlight.CompareAndSwap(false, true) {
+			logger.Debug("system-action listener: coalescing fan-out event into in-flight sweep",
+				"event_type", e.EventType, "event_id", e.ID)
+			return
+		}
+
+		select {
+		case sem <- struct{}{}:
+		default:
+			logger.Warn("system-action listener: dispatch backpressure, dropping event (reconciler will catch up)",
+				"event_type", e.EventType, "event_id", e.ID, "max_concurrent", listenerMaxConcurrentDispatches)
+			if op == SyncOpSyncAll {
+				syncAllInFlight.Store(false)
+			}
+			return
+		}
+
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+			defer func() { <-sem }()
+			if op == SyncOpSyncAll {
+				defer syncAllInFlight.Store(false)
+			}
+
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), syncTimeout)
 			defer cancel()
 
 			switch op {
@@ -179,10 +236,6 @@ func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slo
 					"event_type", e.EventType, "event_id", e.ID)
 
 			case SyncOpSyncAll:
-				// Fan-out events fire SyncAllUsersSystemActions. On
-				// large fleets this can take seconds; doing it on
-				// the AppendEvent path would have made small admin
-				// RPCs O(all-users) — review finding addressed.
 				if err := mgr.SyncAllUsersSystemActions(ctx); err != nil {
 					logger.Error("system-action listener: sync all users failed",
 						"event_type", e.EventType, "event_id", e.ID, "error", err)

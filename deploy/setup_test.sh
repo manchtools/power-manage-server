@@ -14,7 +14,6 @@
 
 set -euo pipefail
 
-SCRIPT_DIR_REAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -28,7 +27,14 @@ run_case() {
     # Minimal harness: the helpers we test only depend on SCRIPT_DIR
     # and the .env path. Sourcing setup.sh in full would run main();
     # extract just the helper functions instead.
-    (
+    #
+    # The subshell goes directly inside `if ... then`. Earlier cut used
+    #   ( ... ); if [[ $? -eq 0 ]]; then
+    # which dead-ends under `set -e`: a non-zero subshell exit kills
+    # the parent before $? is read, so the first failing case would
+    # bail out of the whole suite and FAIL_COUNT / the summary line
+    # were unreachable. Caught by the rc11 round-3 review.
+    if (
         SCRIPT_DIR="$tmp"
         # log_* are used inside the helpers — define no-op shims.
         log_info() { :; }
@@ -75,8 +81,7 @@ run_case() {
             echo "FAIL: $name"
             exit 1
         fi
-    )
-    if [[ $? -eq 0 ]]; then
+    ); then
         PASS_COUNT=$((PASS_COUNT + 1))
     else
         FAIL_COUNT=$((FAIL_COUNT + 1))
@@ -166,6 +171,24 @@ run_case "clear_env_var: removes existing key"      case_clear_env_var_removes_e
 run_case "clear_env_var: noop on missing key"       case_clear_env_var_noop_on_missing_key
 run_case "disable terminals clears all three vars"  case_disable_terminals_clears_all_three_vars
 
+# Meta: make sure the FAIL counting + final non-zero exit path actually
+# work. The previous cut had set-e + ( ... ) + $? which silently killed
+# the suite on the first failing case; a green run of all-PASSes was
+# not enough to prove the harness behaves as documented when something
+# fails. Run a deliberately failing case last and special-case the
+# tally so the script still exits 0 when only this synthetic failure
+# is present.
+case_meta_failure() {
+    return 1
+}
+run_case "(meta) intentional failure: harness counts FAIL"  case_meta_failure
+
 echo ""
-echo "Total: $((PASS_COUNT + FAIL_COUNT))   Passed: $PASS_COUNT   Failed: $FAIL_COUNT"
-[[ $FAIL_COUNT -eq 0 ]]
+if [[ $FAIL_COUNT -eq 1 ]]; then
+    # Only the synthetic case failed → harness is healthy.
+    REAL_FAILS=0
+else
+    REAL_FAILS=$((FAIL_COUNT - 1))
+fi
+echo "Total: $((PASS_COUNT + FAIL_COUNT))   Passed: $PASS_COUNT   Failed: $FAIL_COUNT (synthetic: 1, real: $REAL_FAILS)"
+[[ $REAL_FAILS -eq 0 ]]
