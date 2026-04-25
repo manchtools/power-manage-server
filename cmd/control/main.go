@@ -84,6 +84,13 @@ type Config struct {
 	ValkeyPassword string
 	ValkeyDB       int
 
+	// rc11 #77: derived-projection reconciler for system actions.
+	// Interval is the period between full SyncAllUsersSystemActions
+	// sweeps (safety net for the post-commit listener); 0 disables
+	// the periodic goroutine entirely. Timeout is the per-sweep
+	// context deadline so a hung query can't pile up missed ticks.
+	SystemActionReconcileInterval time.Duration
+	SystemActionReconcileTimeout  time.Duration
 }
 
 func main() {
@@ -345,11 +352,46 @@ func main() {
 		logger.Error("failed to reconcile system roles", "error", err)
 	}
 
-	// Sync system actions for all users at startup (idempotent)
+	// rc11 #77: derived-projection wiring for system actions.
+	//
+	// 1) One-shot startup sweep — guarantees idempotent convergence
+	//    on every boot, deploy, or upgrade. Logged at Info because it
+	//    runs once.
+	// 2) Post-commit event listener — fires SyncUserSystemActions
+	//    (or SyncAllUsersSystemActions for fan-out events) on every
+	//    permission-shaping event, so handler tests don't need to
+	//    know about system actions.
+	// 3) Periodic reconciler — durability safety net for the listener,
+	//    catches any event whose effect on system actions the
+	//    listener doesn't yet know about. Default 1m.
 	if svc.SystemActions() != nil {
+		// (1) Startup sweep — keeps the existing Info line so
+		// operators see the one-shot convergence in boot logs.
 		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
 			logger.Error("failed to sync system actions at startup", "error", err)
+		} else {
+			logger.Info("system actions synced for all users (startup)")
 		}
+
+		// (2) Listener — registered post-commit on the store. Logged
+		// errors are swallowed; the periodic reconciler is the
+		// durability safety net. Reuse the same per-sweep timeout
+		// as the reconciler so a wedged DB / signer can't leak a
+		// goroutine indefinitely (#77 review round 2).
+		st.RegisterEventListener(api.SystemActionListener(
+			svc.SystemActions(),
+			logger.With("component", "system_action_listener"),
+			cfg.SystemActionReconcileTimeout,
+		))
+
+		// (3) Periodic reconciler — interval and per-sweep timeout
+		// from config (defaults set in parseFlags).
+		svc.SystemActions().StartReconciliation(ctx,
+			cfg.SystemActionReconcileInterval,
+			cfg.SystemActionReconcileTimeout)
+		logger.Info("system-action reconciliation started",
+			"interval", cfg.SystemActionReconcileInterval,
+			"sweep_timeout", cfg.SystemActionReconcileTimeout)
 	}
 	// Configure trusted proxies for X-Forwarded-For header validation
 	if len(cfg.TrustedProxies) > 0 {
@@ -470,19 +512,42 @@ func main() {
 
 		// Index audit events on insertion — the hook fires after every AppendEvent
 		// and enqueues the persisted row directly (no DB lookup in the search worker).
-		st.OnEventAppended = func(ctx context.Context, ev store.PersistedEvent) {
+		// Registered via RegisterEventListener so it shares the listener-slice
+		// mutex + panic-recovery wrapper with every other consumer.
+		//
+		// The EnqueueReindex call itself is dispatched in a goroutine so a slow
+		// or unreachable Valkey cannot stall AppendEvent — fireListeners
+		// dispatches synchronously, so a blocking listener body would extend
+		// every state-changing RPC's tail latency by the Valkey RTT. The work
+		// is best-effort (already only logs Warn on failure), so detaching is
+		// safe; the goroutine has its own recover so a panic inside the
+		// taskqueue client can't crash the server. Round-5 review fix.
+		st.RegisterEventListener(func(ctx context.Context, ev store.PersistedEvent) {
 			id := ulid.ULID(ev.ID).String()
-			if err := searchIdx.EnqueueReindex(ctx, search.ScopeAuditEvent, id, &taskqueue.SearchEntityData{
+			data := &taskqueue.SearchEntityData{
 				EventType:  ev.EventType,
 				StreamType: ev.StreamType,
 				ActorType:  ev.ActorType,
 				ActorID:    ev.ActorID,
 				StreamID:   ev.StreamID,
 				OccurredAt: ev.OccurredAt.Unix(),
-			}); err != nil {
-				logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
 			}
-		}
+			// Detach from the AppendEvent ctx — the RPC may already have
+			// returned by the time the enqueue runs; cancellation would
+			// drop best-effort work that the search worker can otherwise
+			// still pick up. Background ctx is correct here because the
+			// taskqueue client has its own per-call timeouts.
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("audit-index listener: panicked", "id", id, "panic", r)
+					}
+				}()
+				if err := searchIdx.EnqueueReindex(context.Background(), search.ScopeAuditEvent, id, data); err != nil {
+					logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
+				}
+			}()
+		})
 
 		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
 		if err := searchIdx.EnsureIndexes(ctx); err != nil {
@@ -584,8 +649,10 @@ func main() {
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
 	mux.Handle(path, handler)
 
-	// Mount SCIM v2 handler
-	scimHandler := scim.NewHandler(st, logger)
+	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
+	// delete path can clean up pm-tty-* / USER actions when the
+	// last identity link is removed (rc11 #77).
+	scimHandler := scim.NewHandler(st, logger, svc.SystemActions())
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Wrap with CORS and security headers middleware
@@ -732,6 +799,11 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.StringVar(&cfg.TerminalGatewayURL, "terminal-gateway-url", "", "Public WebSocket URL of the gateway terminal endpoint (e.g. wss://gw.example.com/terminal). When empty, ControlService.StartTerminal returns CodeUnavailable.")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
+	// rc11 #77 — system-action reconciliation defaults: 1m interval keeps drift bounded for an
+	// operator-visible UX path (role grant → terminal works), 5m sweep timeout is plenty for
+	// even a 10k-user fleet because the sync is read-heavy and short-circuits on no-op users.
+	flag.DurationVar(&cfg.SystemActionReconcileInterval, "system-action-reconcile-interval", time.Minute, "Period between full SyncAllUsersSystemActions sweeps; 0 disables periodic reconciliation")
+	flag.DurationVar(&cfg.SystemActionReconcileTimeout, "system-action-reconcile-timeout", 5*time.Minute, "Per-sweep context deadline for the periodic reconciler")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
 	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
 	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
@@ -763,6 +835,8 @@ func parseFlags() *Config {
 	envString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
 	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
 	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
+	envDuration(&cfg.SystemActionReconcileInterval, "CONTROL_SYSTEM_ACTION_RECONCILE_INTERVAL")
+	envDuration(&cfg.SystemActionReconcileTimeout, "CONTROL_SYSTEM_ACTION_RECONCILE_TIMEOUT")
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
@@ -787,6 +861,27 @@ func parseFlags() *Config {
 		} else if cfg.DynamicGroupEvalInterval > 8*time.Hour {
 			cfg.DynamicGroupEvalInterval = 8 * time.Hour
 		}
+	}
+
+	// Clamp system-action reconcile flags. Mirrors the DynamicGroup
+	// pattern above. A 0 sweep timeout would make
+	// context.WithTimeout return an already-cancelled context every
+	// tick, silently breaking the durability safety net; a negative
+	// interval would panic time.NewTicker. Round-3 review of rc11
+	// #77 caught the timeout footgun specifically; round-5 review
+	// added the floor/ceiling on the interval so a misconfigured
+	// 1ms tick can't flood the DB with sweep attempts.
+	if cfg.SystemActionReconcileInterval < 0 {
+		cfg.SystemActionReconcileInterval = 0 // treat as disabled, matching StartReconciliation
+	} else if cfg.SystemActionReconcileInterval > 0 {
+		if cfg.SystemActionReconcileInterval < 10*time.Second {
+			cfg.SystemActionReconcileInterval = 10 * time.Second
+		} else if cfg.SystemActionReconcileInterval > 8*time.Hour {
+			cfg.SystemActionReconcileInterval = 8 * time.Hour
+		}
+	}
+	if cfg.SystemActionReconcileTimeout <= 0 {
+		cfg.SystemActionReconcileTimeout = 5 * time.Minute
 	}
 
 	if cfg.JWTSecret == "" {

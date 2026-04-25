@@ -56,10 +56,15 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Config-shape checks that don't fit the simple "required env
-	// var empty" pattern below (TTY/MTLS host collision, etc.).
-	// Failing here keeps them visible at startup rather than at the
-	// first affected request.
-	if err := cfg.Validate(); err != nil {
+	// var empty" pattern below (TTY/MTLS host collision, partial
+	// terminal config, etc.). Failing here keeps fatal issues
+	// visible at startup; warnings surface partial misconfigurations
+	// that would otherwise produce silent runtime failures.
+	warnings, err := cfg.Validate()
+	for _, w := range warnings {
+		logger.Warn("gateway configuration warning", "warning", w)
+	}
+	if err != nil {
 		logger.Error("invalid gateway configuration", "error", err)
 		os.Exit(1)
 	}

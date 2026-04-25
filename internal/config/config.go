@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -146,6 +147,14 @@ type Config struct {
 
 	// Logging
 	LogLevel string
+
+	// TTYDomainExplicitlySet captures whether GATEWAY_TTY_DOMAIN was
+	// set in the environment, separate from the always-falls-back-
+	// to-GATEWAY_DOMAIN behavior of TraefikTTYHost. Used by Validate
+	// to surface partial terminal-config combinations as warnings
+	// (#78). False does not mean the TTY domain is unused — the
+	// Traefik routing fallback still produces a usable host.
+	TTYDomainExplicitlySet bool
 }
 
 // FromEnv loads configuration from environment variables.
@@ -219,31 +228,37 @@ func FromEnv() *Config {
 		TraefikTTYCertResolver: getEnv("GATEWAY_TRAEFIK_TTY_CERT_RESOLVER", "letsencrypt"),
 		HeartbeatInterval:      getEnvHeartbeatInterval("GATEWAY_HEARTBEAT_INTERVAL"),
 		LogLevel:               getEnv("GATEWAY_LOG_LEVEL", "info"),
+		// Explicit-set tracking for partial-terminal-config warning
+		// in Validate; see field doc above.
+		TTYDomainExplicitlySet: os.Getenv("GATEWAY_TTY_DOMAIN") != "",
 	}
 }
 
-// Validate returns a non-nil error when the loaded config has a
-// combination that the gateway cannot serve coherently. Called once
-// at startup from cmd/gateway/main.go; keeping it on the Config
-// struct (rather than inline in main) so tests can exercise the
-// shape checks without booting a full process.
-func (c *Config) Validate() error {
-	// TTY / MTLS host collision: when Traefik self-registration is
-	// on AND the terminal feature is in play AND the mTLS + TTY
+// Validate returns warnings the operator should see at startup and a
+// non-nil error when the loaded config has a combination that the
+// gateway cannot serve coherently. Called once at startup from
+// cmd/gateway/main.go; keeping it on the Config struct (rather than
+// inline in main) so tests can exercise the shape checks without
+// booting a full process.
+//
+// Warnings are non-fatal — the gateway still starts. They surface
+// partial misconfigurations that would otherwise produce silent
+// runtime failures (typical example: an operator who set
+// GATEWAY_WEB_LISTEN_ADDR but forgot GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE,
+// so the terminal listener exists locally but the registry never
+// learns about it and StartTerminal RPC fails opaquely later).
+//
+// Errors are fatal — the gateway must not start. Reserved for
+// combinations that produce dispatch-shadowing or silent breakage
+// of the primary mTLS path.
+func (c *Config) Validate() (warnings []string, err error) {
+	// TTY / MTLS host collision (fatal): when Traefik self-registration
+	// is on AND the terminal feature is in play AND the mTLS + TTY
 	// routers bind the same entrypoint, the shared hostname means
 	// Traefik's TCP-passthrough router for mTLS wins the SNI match
 	// and the TTY HTTP router never gets the request. The TLS
 	// handshake lands on an agent-mTLS backend that isn't speaking
 	// HTTP, so the WebSocket upgrade fails silently.
-	//
-	// Split the preconditions explicitly so the check handles both
-	// the auto-derived backend case (operator only set
-	// GATEWAY_WEB_LISTEN_ADDR) and the explicit backend case
-	// (operator set GATEWAY_TRAEFIK_TTY_BACKEND directly). Also
-	// narrow to "same entrypoint" — different entrypoints mean the
-	// routers don't actually collide even on a shared host, so
-	// flagging that shape would be a false positive for
-	// bring-your-own-Traefik topologies.
 	//
 	// Refuse startup with a clear message instead of letting the
 	// operator discover this when a terminal session silently fails.
@@ -255,12 +270,49 @@ func (c *Config) Validate() error {
 		c.TraefikTTYHost != "" &&
 		c.TraefikMTLSHost != "" &&
 		c.TraefikTTYHost == c.TraefikMTLSHost {
-		return fmt.Errorf(
+		return warnings, fmt.Errorf(
 			"GATEWAY_TTY_DOMAIN / TraefikTTYHost cannot equal GATEWAY_DOMAIN / TraefikMTLSHost when the terminal router and mTLS router share an entrypoint (both %q on entrypoint %q): Traefik TCP passthrough for mTLS matches the same SNI as the TTY HTTP router and breaks WebSocket sessions — set a distinct GATEWAY_TTY_DOMAIN or split the entrypoints",
 			c.TraefikTTYHost, c.TraefikTTYEntryPoint,
 		)
 	}
-	return nil
+
+	// Partial terminal configuration (warning, #78): the terminal
+	// feature is gated on three independent env vars working in
+	// concert — GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE (controls
+	// whether the gateway publishes its terminal URL to the
+	// registry), GATEWAY_WEB_LISTEN_ADDR (the local TTY HTTP
+	// listener), and GATEWAY_TTY_DOMAIN (the public hostname Traefik
+	// routes to the listener). Setting any one of them signals
+	// operator intent to enable terminal sessions. Setting some but
+	// not all produces a working-looking gateway that silently fails
+	// at StartTerminal time — exactly the rc10 staging failure mode
+	// this issue addresses.
+	//
+	// All-unset is the deliberate "terminal feature off" path and
+	// stays silent. All-set is the working path. Anything in between
+	// gets a warning naming the missing piece(s) so the operator
+	// doesn't need to spelunk Valkey / control logs to diagnose.
+	intent := c.WebListenAddr != "" || c.PublicTerminalURLTemplate != "" || c.TTYDomainExplicitlySet
+	if intent {
+		var missing []string
+		if c.PublicTerminalURLTemplate == "" {
+			missing = append(missing, "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE")
+		}
+		if c.WebListenAddr == "" {
+			missing = append(missing, "GATEWAY_WEB_LISTEN_ADDR")
+		}
+		if !c.TTYDomainExplicitlySet {
+			missing = append(missing, "GATEWAY_TTY_DOMAIN")
+		}
+		if len(missing) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"terminal sessions appear partially configured: missing %s — set all three to enable terminals end-to-end, or unset the others to disable the feature",
+				strings.Join(missing, ", "),
+			))
+		}
+	}
+
+	return warnings, nil
 }
 
 // firstNonEmpty returns the first argument that isn't the empty

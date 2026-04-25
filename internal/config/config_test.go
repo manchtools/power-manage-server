@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -209,12 +210,124 @@ func TestValidate_TTYMTLSHostCollision(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.cfg.Validate()
+			_, err := tc.cfg.Validate()
 			if tc.wantErr && err == nil {
 				t.Fatalf("Validate() = nil, want error for %+v", tc.cfg)
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("Validate() = %v, want nil for %+v", err, tc.cfg)
+			}
+		})
+	}
+}
+
+// TestValidate_PartialTerminalConfig covers the rc11 #78 hardening:
+// when an operator sets some but not all of the three terminal env
+// vars (GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE, GATEWAY_WEB_LISTEN_ADDR,
+// GATEWAY_TTY_DOMAIN), Validate emits a warning naming the missing
+// piece(s). All-unset is the deliberate "feature off" path and stays
+// silent. All-set is the working path. Anything in between gets a
+// warning so the operator can diagnose without reading control logs
+// when StartTerminal later fails opaquely.
+func TestValidate_PartialTerminalConfig(t *testing.T) {
+	cases := []struct {
+		name        string
+		cfg         Config
+		wantWarn    bool
+		wantMissing []string // substring(s) the warning must contain when wantWarn is true
+	}{
+		{
+			name:     "all three unset → silent (feature off)",
+			cfg:      Config{},
+			wantWarn: false,
+		},
+		{
+			name: "all three set → silent (working config)",
+			cfg: Config{
+				PublicTerminalURLTemplate: "wss://tty.example.com/gw/{id}/terminal",
+				WebListenAddr:             ":8443",
+				TTYDomainExplicitlySet:    true,
+			},
+			wantWarn: false,
+		},
+		{
+			name: "WebListenAddr only → warn missing TEMPLATE + DOMAIN",
+			cfg: Config{
+				WebListenAddr: ":8443",
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", "GATEWAY_TTY_DOMAIN"},
+		},
+		{
+			name: "TEMPLATE only → warn missing WebListenAddr + DOMAIN",
+			cfg: Config{
+				PublicTerminalURLTemplate: "wss://tty.example.com/gw/{id}/terminal",
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_WEB_LISTEN_ADDR", "GATEWAY_TTY_DOMAIN"},
+		},
+		{
+			name: "DOMAIN only → warn missing TEMPLATE + WebListenAddr",
+			cfg: Config{
+				TTYDomainExplicitlySet: true,
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", "GATEWAY_WEB_LISTEN_ADDR"},
+		},
+		{
+			name: "TEMPLATE + WebListenAddr → warn missing DOMAIN",
+			cfg: Config{
+				PublicTerminalURLTemplate: "wss://tty.example.com/gw/{id}/terminal",
+				WebListenAddr:             ":8443",
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_TTY_DOMAIN"},
+		},
+		{
+			name: "TEMPLATE + DOMAIN → warn missing WebListenAddr",
+			cfg: Config{
+				PublicTerminalURLTemplate: "wss://tty.example.com/gw/{id}/terminal",
+				TTYDomainExplicitlySet:    true,
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_WEB_LISTEN_ADDR"},
+		},
+		{
+			name: "WebListenAddr + DOMAIN → warn missing TEMPLATE",
+			cfg: Config{
+				WebListenAddr:          ":8443",
+				TTYDomainExplicitlySet: true,
+			},
+			wantWarn:    true,
+			wantMissing: []string{"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings, err := tc.cfg.Validate()
+			if err != nil {
+				t.Fatalf("Validate() returned err = %v, want nil (partial config is warning-only)", err)
+			}
+			if tc.wantWarn {
+				if len(warnings) == 0 {
+					t.Fatalf("Validate() warnings = empty, want a partial-terminal-config warning for %+v", tc.cfg)
+				}
+				for _, want := range tc.wantMissing {
+					found := false
+					for _, w := range warnings {
+						if strings.Contains(w, want) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						t.Errorf("Validate() warnings = %v, want one to contain %q", warnings, want)
+					}
+				}
+			} else {
+				if len(warnings) > 0 {
+					t.Errorf("Validate() warnings = %v, want empty for %+v", warnings, tc.cfg)
+				}
 			}
 		})
 	}

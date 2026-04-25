@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
+	"time"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
@@ -51,10 +53,73 @@ func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) err
 	if errCount > 0 {
 		m.logger.Warn("some users failed system action sync", "failed", errCount, "total", len(users))
 	} else {
-		m.logger.Info("system actions synced for all users", "count", len(users))
+		// Demoted from Info to Debug in rc11 (#77): the periodic
+		// reconciler runs this on a tight cadence (default 1m), so
+		// success-on-every-tick at Info would flood operator logs.
+		// Startup callers in cmd/control/main.go log their own Info
+		// line so the one-shot startup sweep stays visible.
+		m.logger.Debug("system actions synced for all users", "count", len(users))
 	}
 
 	return nil
+}
+
+// StartReconciliation launches a background goroutine that periodically
+// runs SyncAllUsersSystemActions as the durability safety net for the
+// event-driven listener (see system_actions_listener.go). Closes drift
+// gaps if the listener fires post-commit but the process dies before
+// the sync runs, plus any future event type added to the schema
+// without being added to the AffectedFromEvent classifier.
+//
+// Guards:
+//   - atomic flag prevents a slow sweep from stacking another one
+//     behind it under DB pressure / large fleets;
+//   - per-sweep timeout cancels a stuck invocation rather than piling
+//     up missed ticks;
+//   - SyncAllUsersSystemActions is already best-effort per user, so
+//     one bad user cannot abort the sweep.
+//
+// rc11 #77.
+func (m *SystemActionManager) StartReconciliation(ctx context.Context, interval, sweepTimeout time.Duration) {
+	if interval <= 0 {
+		m.logger.Info("system-action reconciliation disabled (interval <= 0)")
+		return
+	}
+	// A non-positive sweepTimeout would feed an already-cancelled
+	// context into SyncAllUsersSystemActions on every tick — the
+	// reconciler would log an error every interval and never make
+	// progress. parseFlags also clamps env input, but defend in depth
+	// here so a buggy programmatic caller can't silently break the
+	// safety net. Round-3 review of rc11 #77.
+	if sweepTimeout <= 0 {
+		m.logger.Warn("system-action reconciliation sweep timeout <= 0; falling back to interval as ceiling",
+			"sweep_timeout", sweepTimeout, "interval", interval)
+		sweepTimeout = interval
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		var running atomic.Bool
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !running.CompareAndSwap(false, true) {
+					m.logger.Warn("skipping system-action reconciliation tick — previous sweep still running")
+					continue
+				}
+				sweepCtx, cancel := context.WithTimeout(ctx, sweepTimeout)
+				if err := m.SyncAllUsersSystemActions(sweepCtx); err != nil {
+					m.logger.Error("periodic system-action reconciliation failed", "error", err)
+				}
+				cancel()
+				running.Store(false)
+			}
+		}
+	}()
 }
 
 // SyncUserSystemActions ensures a user's system actions are up to date.

@@ -264,15 +264,93 @@ func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string
 	terminalURL, err := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
 	if err != nil {
 		if errors.Is(err, registry.ErrNoGateway) {
-			// The gateway died between the device lookup and the
-			// URL lookup. Surface as Unavailable so the client
-			// retries — by then the agent has reconnected
-			// elsewhere and the next StartTerminal call resolves
-			// to a live gateway.
-			h.logger.Warn("gateway hosting device is no longer registered",
-				"device_id", deviceID, "gateway_id", gatewayID)
+			// Two distinct causes surface as ErrNoGateway here:
+			//
+			//   1. Transient — the gateway died between the device
+			//      lookup and the URL lookup. Retry recovers once
+			//      the agent reconnects elsewhere.
+			//   2. Persistent — the gateway is up and the device is
+			//      connected to it, but the gateway never published
+			//      its terminal URL because
+			//      GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is unset.
+			//      The rc10 staging failure mode.
+			//
+			// Probe the internal-URL key for the same gatewayID to
+			// distinguish: if internal is present and terminal is
+			// not, the gateway is alive and the missing terminal URL
+			// is persistent operator-facing misconfig
+			// (ErrGatewayNotRegistered with the "set the env var"
+			// message). If neither is present the gateway is gone —
+			// surface that as ErrDeviceNotConnected so the web
+			// suggests retry rather than reporting a config error
+			// for a transient race.
+			_, internalErr := h.registry.LookupGatewayInternalURL(ctx, gatewayID)
+			if internalErr == nil {
+				// The terminal-URL and internal-URL keys are
+				// refreshed by independent goroutines on the
+				// gateway side (registry.RegisterGateway and
+				// cmd/gateway/main.go's RegisterGatewayInternal
+				// loop). Same TTL, same refresh interval, but the
+				// tickers drift — so the terminal-URL key can
+				// expire ~tens of ms before the internal-URL key
+				// just from natural skew. Without dampening that
+				// race surfaces as ErrGatewayNotRegistered (the
+				// persistent-misconfig branch) and pages operators
+				// for what's actually transient. Retry the
+				// terminal-URL lookup briefly before classifying
+				// as persistent — round-6 review fix on rc11 #79.
+				const (
+					driftRetries = 3
+					driftBackoff = 30 * time.Millisecond
+				)
+				for i := 0; i < driftRetries; i++ {
+					select {
+					case <-ctx.Done():
+						return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+							"context cancelled during gateway terminal URL retry")
+					case <-time.After(driftBackoff):
+					}
+					recoveredURL, retryErr := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
+					if retryErr == nil {
+						h.logger.Debug("gateway terminal URL recovered after retry (refresh-goroutine drift bridged)",
+							"device_id", deviceID, "gateway_id", gatewayID, "attempt", i+1)
+						return recoveredURL, nil
+					}
+					if !errors.Is(retryErr, registry.ErrNoGateway) {
+						// A different registry error during retry
+						// (e.g. backend unreachable) — fall through
+						// to the persistent classification below
+						// rather than retrying further on a
+						// non-recoverable failure mode.
+						h.logger.Warn("gateway terminal URL retry failed with non-ErrNoGateway error",
+							"device_id", deviceID, "gateway_id", gatewayID, "error", retryErr)
+						break
+					}
+				}
+
+				// Case 2 — gateway alive, terminal URL still missing
+				// after the drift-tolerant retry window. Persistent
+				// misconfiguration.
+				h.logger.Warn("gateway hosting device has no terminal URL registered (alive, terminal-URL not published)",
+					"device_id", deviceID, "gateway_id", gatewayID)
+				return "", apiErrorCtx(ctx, ErrGatewayNotRegistered, connect.CodeUnavailable,
+					"gateway hosting this device has not published its terminal URL — ensure GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set on the gateway")
+			}
+			if errors.Is(internalErr, registry.ErrNoGateway) {
+				// Case 1 — gateway gone. Transient; UI should
+				// suggest retry rather than imply config error.
+				h.logger.Info("gateway hosting device disappeared between lookups (transient)",
+					"device_id", deviceID, "gateway_id", gatewayID)
+				return "", apiErrorCtx(ctx, ErrDeviceNotConnected, connect.CodeUnavailable,
+					"device's gateway is no longer connected; retry shortly")
+			}
+			// Internal-URL probe failed for a different reason
+			// (registry unreachable, etc.). Fall through to the
+			// generic registry-unavailable path below.
+			h.logger.Error("registry probe failed when distinguishing persistent vs transient gateway loss",
+				"device_id", deviceID, "gateway_id", gatewayID, "internal_probe_error", internalErr)
 			return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-				"gateway hosting this device is no longer registered; retry shortly")
+				"registry lookup failed; retry shortly")
 		}
 		h.logger.Error("gateway URL lookup failed",
 			"gateway_id", gatewayID, "error", err)

@@ -172,12 +172,10 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 
 	h.enqueueUserReindex(ctx, user)
 
-	// Sync system actions (fire-and-forget)
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, id); err != nil {
-			h.logger.Error("failed to sync system actions after user creation", "user_id", id, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener
+	// registered on the store (see api.SystemActionListener) — handler-
+	// side calls were removed in rc11 #77 to keep the derived-model
+	// invariant: handlers mutate source state only.
 
 	protoUser := userToProto(user)
 	h.populateUserRoles(ctx, protoUser)
@@ -410,12 +408,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 
 	h.enqueueUserReindex(ctx, user)
 
-	// Sync system actions (disabled flag changes USER action params)
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
-			h.logger.Error("failed to sync system actions after disable/enable", "user_id", req.Msg.Id, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
@@ -509,12 +502,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 
 	h.enqueueUserReindex(ctx, user)
 
-	// Sync system actions (display_name change affects USER action comment)
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.Id); err != nil {
-			h.logger.Error("failed to sync system actions after profile update", "user_id", req.Msg.Id, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
@@ -602,10 +590,7 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update user provisioning settings")
 	}
 
-	// Sync system actions
-	if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
-		h.logger.Error("failed to sync system actions after provisioning toggle", "user_id", req.Msg.UserId, "error", err)
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
 	if err != nil {
@@ -663,11 +648,7 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 
 	h.enqueueUserReindex(ctx, user)
 
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
-			h.logger.Error("failed to sync system actions after username change", "user_id", req.Msg.UserId, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
@@ -709,11 +690,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to add SSH key")
 	}
 
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
-			h.logger.Error("failed to sync system actions after SSH key added", "user_id", req.Msg.UserId, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.AddUserSshKeyResponse{
 		Key: &pm.SshPublicKey{
@@ -754,11 +731,7 @@ func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to remove SSH key")
 	}
 
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
-			h.logger.Error("failed to sync system actions after SSH key removed", "user_id", req.Msg.UserId, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.RemoveUserSshKeyResponse{}), nil
 }
@@ -799,11 +772,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
-	if h.systemActions != nil {
-		if err := h.systemActions.SyncUserSystemActions(ctx, req.Msg.UserId); err != nil {
-			h.logger.Error("failed to sync system actions after SSH settings update", "user_id", req.Msg.UserId, "error", err)
-		}
-	}
+	// System-action sync runs from the post-commit listener (rc11 #77).
 
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),

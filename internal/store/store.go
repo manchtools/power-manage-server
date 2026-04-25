@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,14 +34,107 @@ type Event struct {
 	ActorID    string
 }
 
+// EventListener is a post-commit hook fired after a successful
+// AppendEvent. Listeners are invoked synchronously in registration
+// order; a slow listener will stall subsequent listeners on the same
+// event. None are allowed to mutate the event row.
+//
+// Context lifetime: the ctx passed in is the caller's request context
+// and will be cancelled as soon as AppendEvent returns. Listeners that
+// kick off async work must derive a fresh context (typically via
+// context.WithoutCancel + context.WithTimeout) and not rely on the
+// passed ctx for downstream DB calls.
+//
+// Panic isolation: panics from a listener are recovered by
+// fireListeners and logged to stderr — the AppendEvent caller sees a
+// successful commit even if a listener crashes. This matches the
+// "post-commit notification" contract: the event is durable; listener
+// failures are observability, not correctness.
+type EventListener func(ctx context.Context, ev PersistedEvent)
+
 // Store wraps the database connection and provides access to queries.
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
 
-	// OnEventAppended is called after every successful AppendEvent with the persisted row.
-	// Used to trigger search indexing without modifying each call site.
+	// listenersMu guards listeners + OnEventAppended. Documented
+	// usage is "register at boot, then start serving", but Go's race
+	// detector won't catch a future caller that registers after
+	// AppendEvent is in flight (concurrent slice append + range read
+	// is a data race). RWMutex is cheap on the hot read path
+	// (fireListeners holds RLock) and lets boot code register without
+	// extra ceremony.
+	listenersMu sync.RWMutex
+
+	// listeners are invoked after every successful AppendEvent /
+	// AppendEventWithVersion. Used by search indexing and (rc11) by
+	// the system-action derived-projection reconciler. Direct field
+	// access deliberately replaced with RegisterEventListener so we
+	// can append additional consumers without callers stomping on
+	// each other.
+	listeners []EventListener
+
+	// OnEventAppended is preserved for backwards compatibility with
+	// the search-indexing wiring at cmd/control/main.go. Setting it
+	// is equivalent to RegisterEventListener; do not read from it
+	// outside this file. Guarded by listenersMu — callers that
+	// reassign at runtime should go through RegisterEventListener
+	// instead. (rc11 review round 4: search-indexer wiring migrated.)
 	OnEventAppended func(ctx context.Context, ev PersistedEvent)
+}
+
+// RegisterEventListener appends a post-commit hook. Multiple
+// listeners may be registered; they fire in registration order.
+// Safe to call concurrently with AppendEvent — the RWMutex serialises
+// against fireListeners' read iteration.
+func (s *Store) RegisterEventListener(fn EventListener) {
+	if fn == nil {
+		return
+	}
+	s.listenersMu.Lock()
+	s.listeners = append(s.listeners, fn)
+	s.listenersMu.Unlock()
+}
+
+// fireListeners invokes both the legacy OnEventAppended callback (if
+// set) and every RegisterEventListener entry. Centralised so the two
+// AppendEvent variants stay in sync.
+//
+// Each listener is wrapped in defer/recover so a panic in one cannot
+// fail AppendEvent — the event is already committed, and listeners
+// are notifications, not part of the write path. Round-3 review of
+// rc11 #77 caught this: a panicking listener used to bubble up
+// through AppendEvent and fail the RPC even though the event was
+// durable, breaking the "event committed → RPC succeeds" contract.
+// We log panics to stderr because the Store has no slog handle; the
+// listener owner is responsible for richer logging inside its own
+// body if needed.
+func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
+	safe := func(name string, fn func()) {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "store: %s listener panicked on %s/%s: %v\n", name, row.StreamType, row.EventType, r)
+			}
+		}()
+		fn()
+	}
+	// Snapshot under RLock so the dispatch loop runs without holding
+	// the mutex (listeners may take milliseconds; we don't want to
+	// block concurrent RegisterEventListener calls or other readers
+	// for that long). Slice header copy is safe because
+	// RegisterEventListener appends — never mutates an existing
+	// element.
+	s.listenersMu.RLock()
+	onEvent := s.OnEventAppended
+	listeners := s.listeners
+	s.listenersMu.RUnlock()
+
+	if onEvent != nil {
+		safe("OnEventAppended", func() { onEvent(ctx, row) })
+	}
+	for _, l := range listeners {
+		safe("RegisterEventListener", func() { l(ctx, row) })
+	}
 }
 
 // New creates a new Store and runs migrations.
@@ -188,9 +283,7 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			}
 			return fmt.Errorf("append event: %w", err)
 		}
-		if s.OnEventAppended != nil {
-			s.OnEventAppended(ctx, row)
-		}
+		s.fireListeners(ctx, row)
 		return nil
 	}
 	return fmt.Errorf("append event: exhausted retries")
@@ -228,9 +321,7 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 		}
 		return fmt.Errorf("append event: %w", err)
 	}
-	if s.OnEventAppended != nil {
-		s.OnEventAppended(ctx, row)
-	}
+	s.fireListeners(ctx, row)
 
 	return nil
 }

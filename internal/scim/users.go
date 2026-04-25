@@ -846,6 +846,14 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	// linkCount reflects state after the IdentityUnlinked event projection.
 	// If 0 remaining links, safe to delete the user.
 	if linkCount == 0 {
+		// Load the user projection BEFORE emitting UserDeleted so
+		// CleanupDeletedUserActions can read the system_*_action_id
+		// columns that the deletion projector will clear. rc11 #77 —
+		// SCIM was previously bypassing this cleanup entirely,
+		// leaving orphan pm-tty-* and USER provision actions on
+		// every device the deleted user was assigned to.
+		user, loadErr := h.store.Queries().GetUserByID(ctx, userID)
+
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
@@ -858,6 +866,21 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("failed to delete user via SCIM", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to delete user")
 			return
+		}
+
+		// Best-effort cleanup. If the projection load above failed
+		// we have nothing to feed the cleaner; log and let the
+		// periodic reconciler eventually GC orphan actions via the
+		// is_deleted projection column. systemActions can be nil in
+		// tests.
+		if h.systemActions != nil && loadErr == nil {
+			if err := h.systemActions.CleanupDeletedUserActions(ctx, user); err != nil {
+				h.logger.Error("failed to cleanup system actions for SCIM-deleted user",
+					"user_id", userID, "error", err)
+			}
+		} else if loadErr != nil {
+			h.logger.Warn("could not load user projection for SCIM delete cleanup; orphan actions may remain",
+				"user_id", userID, "error", loadErr)
 		}
 	}
 
