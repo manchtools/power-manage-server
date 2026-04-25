@@ -264,15 +264,29 @@ func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string
 	terminalURL, err := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
 	if err != nil {
 		if errors.Is(err, registry.ErrNoGateway) {
-			// The gateway died between the device lookup and the
-			// URL lookup. Surface as Unavailable so the client
-			// retries — by then the agent has reconnected
-			// elsewhere and the next StartTerminal call resolves
-			// to a live gateway.
-			h.logger.Warn("gateway hosting device is no longer registered",
+			// Two distinct causes both surface as ErrNoGateway here:
+			//
+			//   1. The gateway died between the device lookup and
+			//      the URL lookup — transient, retry recovers once
+			//      the agent reconnects elsewhere.
+			//   2. The gateway is up and the device is connected to
+			//      it, but the gateway never published its terminal
+			//      URL because GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE
+			//      is unset. Persistent until the operator fixes
+			//      the env. This is the rc10 staging failure mode.
+			//
+			// We can't cheaply distinguish (1) from (2) here without
+			// a second registry hit (e.g. checking the internal-URL
+			// key — if that's present and the terminal-URL is not,
+			// it's case 2). For now we use the new
+			// ErrGatewayNotRegistered code so the web client can
+			// surface an operator-actionable message; the message
+			// covers both causes ("retry; if it persists, check
+			// GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE on the gateway").
+			h.logger.Warn("gateway hosting device has no terminal URL registered",
 				"device_id", deviceID, "gateway_id", gatewayID)
-			return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-				"gateway hosting this device is no longer registered; retry shortly")
+			return "", apiErrorCtx(ctx, ErrGatewayNotRegistered, connect.CodeUnavailable,
+				"gateway hosting this device has not published its terminal URL — retry shortly; if the error persists, ensure GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set on the gateway")
 		}
 		h.logger.Error("gateway URL lookup failed",
 			"gateway_id", gatewayID, "error", err)

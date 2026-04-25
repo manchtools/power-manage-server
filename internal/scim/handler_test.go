@@ -33,7 +33,7 @@ func setupSCIM(t *testing.T) *scimTestEnv {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	handler := scim.NewHandler(st, logger)
+	handler := scim.NewHandler(st, logger, nil) // nil systemActions: tests don't exercise the cleanup path
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	slug := "scim-test-" + testutil.NewID()[:8]

@@ -32,14 +32,53 @@ type Event struct {
 	ActorID    string
 }
 
+// EventListener is a post-commit hook fired after a successful
+// AppendEvent. Listeners are invoked synchronously in registration
+// order; a slow listener will stall subsequent listeners on the same
+// event. None are allowed to mutate the event row.
+type EventListener func(ctx context.Context, ev PersistedEvent)
+
 // Store wraps the database connection and provides access to queries.
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
 
-	// OnEventAppended is called after every successful AppendEvent with the persisted row.
-	// Used to trigger search indexing without modifying each call site.
+	// listeners are invoked after every successful AppendEvent /
+	// AppendEventWithVersion. Used by search indexing and (rc11) by
+	// the system-action derived-projection reconciler. Direct field
+	// access deliberately replaced with RegisterEventListener so we
+	// can append additional consumers without callers stomping on
+	// each other.
+	listeners []EventListener
+
+	// OnEventAppended is preserved for backwards compatibility with
+	// the search-indexing wiring at cmd/control/main.go. Setting it
+	// is equivalent to RegisterEventListener; do not read from it
+	// outside this file.
 	OnEventAppended func(ctx context.Context, ev PersistedEvent)
+}
+
+// RegisterEventListener appends a post-commit hook. Multiple
+// listeners may be registered; they fire in registration order.
+// Use this from service-boot wiring; it is not safe for concurrent
+// registration once AppendEvent has been called.
+func (s *Store) RegisterEventListener(fn EventListener) {
+	if fn == nil {
+		return
+	}
+	s.listeners = append(s.listeners, fn)
+}
+
+// fireListeners invokes both the legacy OnEventAppended callback (if
+// set) and every RegisterEventListener entry. Centralised so the two
+// AppendEvent variants stay in sync.
+func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
+	if s.OnEventAppended != nil {
+		s.OnEventAppended(ctx, row)
+	}
+	for _, l := range s.listeners {
+		l(ctx, row)
+	}
 }
 
 // New creates a new Store and runs migrations.
@@ -188,9 +227,7 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			}
 			return fmt.Errorf("append event: %w", err)
 		}
-		if s.OnEventAppended != nil {
-			s.OnEventAppended(ctx, row)
-		}
+		s.fireListeners(ctx, row)
 		return nil
 	}
 	return fmt.Errorf("append event: exhausted retries")
@@ -228,9 +265,7 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 		}
 		return fmt.Errorf("append event: %w", err)
 	}
-	if s.OnEventAppended != nil {
-		s.OnEventAppended(ctx, row)
-	}
+	s.fireListeners(ctx, row)
 
 	return nil
 }

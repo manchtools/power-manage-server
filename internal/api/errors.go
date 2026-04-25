@@ -79,6 +79,16 @@ const (
 	// Remote terminal sessions
 	ErrTerminalLinuxUsernameNotSet = "terminal_linux_username_not_set"
 	ErrTerminalNotConfigured       = "terminal_not_configured"
+
+	// ErrGatewayNotRegistered is returned by StartTerminal when the
+	// device's gateway is connected but has not published its terminal
+	// URL to the registry — typically because the operator did not set
+	// GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE on that gateway. Distinct
+	// from ErrDeviceNotConnected (no gateway at all) and from a generic
+	// internal error so the web client can show a useful "fix the
+	// config" message instead of "An unexpected error occurred". See
+	// rc11 #79.
+	ErrGatewayNotRegistered = "gateway_not_registered"
 )
 
 // Compliance policy error codes.

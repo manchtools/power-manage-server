@@ -84,6 +84,13 @@ type Config struct {
 	ValkeyPassword string
 	ValkeyDB       int
 
+	// rc11 #77: derived-projection reconciler for system actions.
+	// Interval is the period between full SyncAllUsersSystemActions
+	// sweeps (safety net for the post-commit listener); 0 disables
+	// the periodic goroutine entirely. Timeout is the per-sweep
+	// context deadline so a hung query can't pile up missed ticks.
+	SystemActionReconcileInterval time.Duration
+	SystemActionReconcileTimeout  time.Duration
 }
 
 func main() {
@@ -345,11 +352,40 @@ func main() {
 		logger.Error("failed to reconcile system roles", "error", err)
 	}
 
-	// Sync system actions for all users at startup (idempotent)
+	// rc11 #77: derived-projection wiring for system actions.
+	//
+	// 1) One-shot startup sweep — guarantees idempotent convergence
+	//    on every boot, deploy, or upgrade. Logged at Info because it
+	//    runs once.
+	// 2) Post-commit event listener — fires SyncUserSystemActions
+	//    (or SyncAllUsersSystemActions for fan-out events) on every
+	//    permission-shaping event, so handler tests don't need to
+	//    know about system actions.
+	// 3) Periodic reconciler — durability safety net for the listener,
+	//    catches any event whose effect on system actions the
+	//    listener doesn't yet know about. Default 1m.
 	if svc.SystemActions() != nil {
+		// (1) Startup sweep — keeps the existing Info line so
+		// operators see the one-shot convergence in boot logs.
 		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
 			logger.Error("failed to sync system actions at startup", "error", err)
+		} else {
+			logger.Info("system actions synced for all users (startup)")
 		}
+
+		// (2) Listener — registered post-commit on the store. Logged
+		// errors are swallowed; the periodic reconciler is the
+		// durability safety net.
+		st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), st, logger.With("component", "system_action_listener")))
+
+		// (3) Periodic reconciler — interval and per-sweep timeout
+		// from config (defaults set in parseFlags).
+		svc.SystemActions().StartReconciliation(ctx,
+			cfg.SystemActionReconcileInterval,
+			cfg.SystemActionReconcileTimeout)
+		logger.Info("system-action reconciliation started",
+			"interval", cfg.SystemActionReconcileInterval,
+			"sweep_timeout", cfg.SystemActionReconcileTimeout)
 	}
 	// Configure trusted proxies for X-Forwarded-For header validation
 	if len(cfg.TrustedProxies) > 0 {
@@ -584,8 +620,10 @@ func main() {
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
 	mux.Handle(path, handler)
 
-	// Mount SCIM v2 handler
-	scimHandler := scim.NewHandler(st, logger)
+	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
+	// delete path can clean up pm-tty-* / USER actions when the
+	// last identity link is removed (rc11 #77).
+	scimHandler := scim.NewHandler(st, logger, svc.SystemActions())
 	mux.Handle("/scim/v2/", scimHandler)
 
 	// Wrap with CORS and security headers middleware
@@ -732,6 +770,11 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
 	flag.StringVar(&cfg.TerminalGatewayURL, "terminal-gateway-url", "", "Public WebSocket URL of the gateway terminal endpoint (e.g. wss://gw.example.com/terminal). When empty, ControlService.StartTerminal returns CodeUnavailable.")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
+	// rc11 #77 — system-action reconciliation defaults: 1m interval keeps drift bounded for an
+	// operator-visible UX path (role grant → terminal works), 5m sweep timeout is plenty for
+	// even a 10k-user fleet because the sync is read-heavy and short-circuits on no-op users.
+	flag.DurationVar(&cfg.SystemActionReconcileInterval, "system-action-reconcile-interval", time.Minute, "Period between full SyncAllUsersSystemActions sweeps; 0 disables periodic reconciliation")
+	flag.DurationVar(&cfg.SystemActionReconcileTimeout, "system-action-reconcile-timeout", 5*time.Minute, "Per-sweep context deadline for the periodic reconciler")
 	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
 	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
 	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
@@ -763,6 +806,8 @@ func parseFlags() *Config {
 	envString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
 	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
 	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
+	envDuration(&cfg.SystemActionReconcileInterval, "CONTROL_SYSTEM_ACTION_RECONCILE_INTERVAL")
+	envDuration(&cfg.SystemActionReconcileTimeout, "CONTROL_SYSTEM_ACTION_RECONCILE_TIMEOUT")
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled

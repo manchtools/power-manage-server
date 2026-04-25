@@ -280,9 +280,248 @@ show_instructions() {
     echo ""
 }
 
+###############################################################################
+# Guided env setup (rc11 #80)
+#
+# Interactive prompt loop that fills in missing .env values for
+# operators who'd rather click than read .env.example. Skipped when:
+#   * --no-prompt is passed
+#   * stdin is not a TTY (CI, piped input)
+#   * .env already has every required value (idempotent re-run)
+#
+# Each prompt:
+#   * Skips if the variable already has a non-placeholder value
+#   * Offers to auto-generate strong defaults for secrets
+#   * Validates URL-safety / hex / hostname constraints inline so the
+#     operator can fix typos before they cause obscure runtime errors
+#   * Auto-composes URL-template strings (GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE)
+#     from the chosen TTY domain — operator never types {id} by hand
+###############################################################################
+
+# is_placeholder returns 0 (truthy) if the value is empty, the
+# CHANGE_ME sentinel, or one of the example.com defaults from
+# .env.example. Used to decide whether a prompt should fire.
+is_placeholder() {
+    local v="$1"
+    [[ -z "$v" ]] && return 0
+    [[ "$v" == CHANGE_ME* ]] && return 0
+    [[ "$v" == *"example.com"* ]] && return 0
+    return 1
+}
+
+# write_env_var atomically updates a single key=value line in .env.
+# Adds the key if missing; preserves surrounding comments/order.
+write_env_var() {
+    local key="$1" value="$2" envfile="$SCRIPT_DIR/.env"
+    if grep -qE "^${key}=" "$envfile"; then
+        # Use a non-/ delimiter for sed because values frequently contain /
+        local tmp
+        tmp="$(mktemp)"
+        awk -v k="$key" -v v="$value" '
+            BEGIN { found = 0 }
+            $0 ~ "^"k"=" { print k"="v; found = 1; next }
+            { print }
+            END { if (!found) print k"="v }
+        ' "$envfile" > "$tmp"
+        mv "$tmp" "$envfile"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$envfile"
+    fi
+}
+
+# prompt_secret asks for a secret value, offers to generate one with
+# the supplied openssl command. Stores the chosen value in $REPLY_VALUE.
+prompt_secret() {
+    local prompt="$1" gen_cmd="$2" current="$3"
+    REPLY_VALUE=""
+    if ! is_placeholder "$current"; then
+        log_info "  $prompt — already set, keeping current value"
+        REPLY_VALUE="$current"
+        return 0
+    fi
+    echo ""
+    read -r -p "  $prompt — generate strong value? [Y/n] " ans
+    if [[ -z "$ans" || "$ans" =~ ^[Yy] ]]; then
+        REPLY_VALUE="$(eval "$gen_cmd")"
+        echo "    ✓ Generated."
+    else
+        read -r -p "    Enter value: " REPLY_VALUE
+    fi
+}
+
+# prompt_string asks for a free-form value, with optional default.
+# Stores the chosen value in $REPLY_VALUE.
+prompt_string() {
+    local prompt="$1" default="$2" current="$3"
+    REPLY_VALUE=""
+    if ! is_placeholder "$current"; then
+        log_info "  $prompt — already set ($current), keeping"
+        REPLY_VALUE="$current"
+        return 0
+    fi
+    echo ""
+    if [[ -n "$default" ]]; then
+        read -r -p "  $prompt [$default]: " REPLY_VALUE
+        [[ -z "$REPLY_VALUE" ]] && REPLY_VALUE="$default"
+    else
+        read -r -p "  $prompt: " REPLY_VALUE
+    fi
+}
+
+# prompt_yes_no asks a Y/n question, defaults to Yes.
+prompt_yes_no() {
+    local prompt="$1" default_yes="${2:-yes}"
+    local hint="[Y/n]"
+    [[ "$default_yes" != "yes" ]] && hint="[y/N]"
+    echo ""
+    read -r -p "  $prompt $hint " ans
+    if [[ -z "$ans" ]]; then
+        [[ "$default_yes" == "yes" ]] && return 0 || return 1
+    fi
+    [[ "$ans" =~ ^[Yy] ]]
+}
+
+# guided_setup runs the interactive prompt loop. Invoked from main()
+# only when stdin is a TTY and --no-prompt was not passed.
+guided_setup() {
+    log_info "Guided setup — prompting for missing values."
+    echo "  Press Ctrl-C at any time to abort. Existing .env values are kept."
+    echo ""
+
+    # Source current values so prompts can detect "already set".
+    set -a
+    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
+    set +a
+
+    # --- Domains ---
+    prompt_string "Control server public domain (CONTROL_DOMAIN)" "" "${CONTROL_DOMAIN:-}"
+    write_env_var CONTROL_DOMAIN "$REPLY_VALUE"
+    CONTROL_DOMAIN="$REPLY_VALUE"
+
+    prompt_string "Gateway domain — agent mTLS endpoint (GATEWAY_DOMAIN)" "" "${GATEWAY_DOMAIN:-}"
+    write_env_var GATEWAY_DOMAIN "$REPLY_VALUE"
+    GATEWAY_DOMAIN="$REPLY_VALUE"
+
+    # Terminal sessions are optional but recommended; offer the full set.
+    if prompt_yes_no "Enable remote terminal (TTY) sessions?"; then
+        # Validate distinct host inline so the rc10 collision check
+        # never fires.
+        local default_tty="tty.${CONTROL_DOMAIN#*.}"
+        prompt_string "TTY domain (must differ from GATEWAY_DOMAIN)" "$default_tty" "${GATEWAY_TTY_DOMAIN:-}"
+        if [[ "$REPLY_VALUE" == "$GATEWAY_DOMAIN" ]]; then
+            log_error "GATEWAY_TTY_DOMAIN must differ from GATEWAY_DOMAIN; aborting"
+            log_error "  Traefik TCP-passthrough for mTLS would shadow the TTY HTTP router on a shared SNI."
+            exit 1
+        fi
+        write_env_var GATEWAY_TTY_DOMAIN "$REPLY_VALUE"
+        local tty_dom="$REPLY_VALUE"
+
+        # Auto-compose the URL template. Operator never types {id}.
+        write_env_var GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE "wss://${tty_dom}/gw/{id}/terminal"
+        echo "    ✓ GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE composed automatically."
+
+        # The TTY HTTP listener inside the container — Traefik
+        # terminates public TLS and forwards cleartext.
+        write_env_var GATEWAY_WEB_LISTEN_ADDR ":8443"
+        echo "    ✓ GATEWAY_WEB_LISTEN_ADDR set to :8443."
+    else
+        log_info "  Terminal sessions disabled — skipping GATEWAY_TTY_DOMAIN, GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE, GATEWAY_WEB_LISTEN_ADDR."
+    fi
+
+    prompt_string "Email for Let's Encrypt notifications (ACME_EMAIL)" "" "${ACME_EMAIL:-}"
+    write_env_var ACME_EMAIL "$REPLY_VALUE"
+
+    # --- Image tag ---
+    prompt_string "Image tag — :latest, :latest-rc, or pin to vYYYY.MM (IMAGE_TAG)" "latest" "${IMAGE_TAG:-}"
+    write_env_var IMAGE_TAG "$REPLY_VALUE"
+
+    # --- Secrets ---
+    echo ""
+    log_info "Generating / collecting secrets…"
+
+    prompt_secret "PostgreSQL password (POSTGRES_PASSWORD)" "openssl rand -base64 32" "${POSTGRES_PASSWORD:-}"
+    write_env_var POSTGRES_PASSWORD "$REPLY_VALUE"
+
+    # Indexer password MUST be URL-safe — used in a libpq DSN by the
+    # indexer. Hex output is the safest generator for this constraint.
+    prompt_secret "Indexer DB password (INDEXER_POSTGRES_PASSWORD, must be URL-safe)" "openssl rand -hex 32" "${INDEXER_POSTGRES_PASSWORD:-}"
+    if [[ "$REPLY_VALUE" =~ [^A-Za-z0-9_.-] ]]; then
+        log_error "INDEXER_POSTGRES_PASSWORD contains URL-unsafe characters: ${BASH_REMATCH[0]}"
+        log_error "  Use 'openssl rand -hex 32' or pick alphanumeric only. Aborting."
+        exit 1
+    fi
+    write_env_var INDEXER_POSTGRES_PASSWORD "$REPLY_VALUE"
+
+    prompt_secret "Valkey password (VALKEY_PASSWORD)" "openssl rand -base64 32" "${VALKEY_PASSWORD:-}"
+    write_env_var VALKEY_PASSWORD "$REPLY_VALUE"
+
+    prompt_secret "JWT secret (JWT_SECRET, min 32 chars)" "openssl rand -base64 48" "${JWT_SECRET:-}"
+    if [[ ${#REPLY_VALUE} -lt 32 ]]; then
+        log_error "JWT_SECRET must be at least 32 characters; got ${#REPLY_VALUE}. Aborting."
+        exit 1
+    fi
+    write_env_var JWT_SECRET "$REPLY_VALUE"
+
+    # Encryption key must be exactly 64 hex chars (32 bytes).
+    prompt_secret "Encryption key for IdP/LUKS secrets (CONTROL_ENCRYPTION_KEY, 64 hex chars)" "openssl rand -hex 32" "${CONTROL_ENCRYPTION_KEY:-}"
+    if [[ ! "$REPLY_VALUE" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters; got ${#REPLY_VALUE} chars. Aborting."
+        exit 1
+    fi
+    write_env_var CONTROL_ENCRYPTION_KEY "$REPLY_VALUE"
+
+    # --- Admin account ---
+    prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "admin@${CONTROL_DOMAIN#*.}" "${ADMIN_EMAIL:-}"
+    write_env_var ADMIN_EMAIL "$REPLY_VALUE"
+
+    prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -base64 24" "${ADMIN_PASSWORD:-}"
+    write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
+    local admin_pass="$REPLY_VALUE"
+
+    echo ""
+    log_info "Guided setup complete. .env updated."
+    if ! is_placeholder "$admin_pass"; then
+        log_warn "Bootstrap admin password — write this down NOW; it's not shown again:"
+        echo ""
+        echo "    Email:    $ADMIN_EMAIL"
+        echo "    Password: $admin_pass"
+        echo ""
+        log_warn "The bootstrap admin is for first-login only — see deploy/.env.example for details."
+    fi
+    echo ""
+}
+
+# parse_flags reads our own --no-prompt before falling through to the
+# rest of setup.sh. Kept simple — no other flags supported.
+NO_PROMPT=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-prompt) NO_PROMPT=1 ;;
+        -h|--help)
+            cat <<EOF
+Usage: ./setup.sh [--no-prompt]
+
+  --no-prompt   Skip the interactive guided env setup; run cert
+                generation against the existing .env only. Equivalent
+                to running with stdin redirected from /dev/null.
+EOF
+            exit 0
+            ;;
+    esac
+done
+
 main() {
     log_info "Power Manage Server Setup"
     echo ""
+
+    # Guided mode runs only on a TTY when --no-prompt wasn't passed.
+    # Falling back to non-prompt automatically when stdin is piped or
+    # redirected preserves CI / install.sh behavior.
+    if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
+        guided_setup
+    else
+        log_info "Non-interactive mode — skipping guided setup. Validating .env directly."
+    fi
 
     check_env
     generate_ca
