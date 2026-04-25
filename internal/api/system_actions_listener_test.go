@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -217,8 +218,103 @@ func TestAffectedFromEvent(t *testing.T) {
 			if gotOp != tc.wantOp {
 				t.Errorf("op = %v, want %v", gotOp, tc.wantOp)
 			}
-			if !equalStringSlices(gotUsers, tc.wantUsers) {
+			if !slices.Equal(gotUsers, tc.wantUsers) {
 				t.Errorf("users = %v, want %v", gotUsers, tc.wantUsers)
+			}
+		})
+	}
+}
+
+// TestAffectedFromEvent_PerLiteral locks every event-type literal
+// handled by AffectedFromEvent's switch to a specific SyncOp outcome.
+// The structured cases above cover all four SyncOp branches, but
+// several literals share a case and would silently flip to SyncOpNone
+// if a future refactor accidentally drops one from the case list.
+// Iterating the literals individually catches that regression.
+func TestAffectedFromEvent_PerLiteral(t *testing.T) {
+	// Per-user events keyed by stream_id (stream_type=user). Bare
+	// PersistedEvent with the literal as EventType + a fixed user id
+	// is enough — the classifier reads no other field for these.
+	syncUserStreamLiterals := []string{
+		"UserCreated",
+		"UserDisabled",
+		"UserEnabled",
+		"UserLinuxUsernameChanged",
+		"UserProvisioningSettingsUpdated",
+		"UserSshSettingsUpdated",
+		"UserProfileUpdated",
+		"UserSshKeyAdded",
+		"UserSshKeyRemoved",
+		"UserEmailChanged",
+	}
+	for _, et := range syncUserStreamLiterals {
+		t.Run("user_stream/"+et, func(t *testing.T) {
+			op, users := AffectedFromEvent(store.PersistedEvent{
+				StreamType: "user",
+				StreamID:   "user-x",
+				EventType:  et,
+			})
+			if op != SyncOpSyncUser {
+				t.Errorf("op = %v, want SyncOpSyncUser", op)
+			}
+			if !slices.Equal(users, []string{"user-x"}) {
+				t.Errorf("users = %v, want [user-x]", users)
+			}
+		})
+	}
+
+	// Per-user events keyed by event.data.user_id (with StreamID
+	// fallback for the role pair).
+	dataPayload := mustMarshalJSON(t, map[string]any{"user_id": "user-y"})
+	syncUserDataLiterals := []struct {
+		EventType  string
+		StreamType string
+		StreamID   string
+	}{
+		{"UserRoleAssigned", "user_role", "user-y:role-z"},
+		{"UserRoleRevoked", "user_role", "user-y:role-z"},
+		{"UserGroupMemberAdded", "user_group", "group-1"},
+		{"UserGroupMemberRemoved", "user_group", "group-1"},
+	}
+	for _, c := range syncUserDataLiterals {
+		t.Run("user_data/"+c.EventType, func(t *testing.T) {
+			op, users := AffectedFromEvent(store.PersistedEvent{
+				StreamType: c.StreamType,
+				StreamID:   c.StreamID,
+				EventType:  c.EventType,
+				Data:       dataPayload,
+			})
+			if op != SyncOpSyncUser {
+				t.Errorf("op = %v, want SyncOpSyncUser", op)
+			}
+			if !slices.Equal(users, []string{"user-y"}) {
+				t.Errorf("users = %v, want [user-y]", users)
+			}
+		})
+	}
+
+	// Fan-out events.
+	syncAllLiterals := []string{
+		"RoleUpdated",
+		"RoleDeleted",
+		"UserGroupRoleAssigned",
+		"UserGroupRoleRevoked",
+		"UserGroupDeleted",
+		"UserGroupQueryUpdated",
+		"ServerSettingUpdated",
+	}
+	for _, et := range syncAllLiterals {
+		t.Run("sync_all/"+et, func(t *testing.T) {
+			op, users := AffectedFromEvent(store.PersistedEvent{
+				StreamType: "_unused_",
+				StreamID:   "_unused_",
+				EventType:  et,
+			})
+			if op != SyncOpSyncAll {
+				t.Errorf("op = %v, want SyncOpSyncAll", op)
+			}
+			if users != nil {
+				t.Errorf("users = %v, want nil", users)
 			}
 		})
 	}
@@ -233,14 +329,3 @@ func mustMarshalJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-func equalStringSlices(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}

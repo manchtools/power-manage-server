@@ -359,6 +359,9 @@ clear_env_var() {
 
 # prompt_secret asks for a secret value, offers to generate one with
 # the supplied openssl command. Stores the chosen value in $REPLY_VALUE.
+# The manual-entry branch uses `read -s` so the typed secret is never
+# echoed back to the terminal — the auto-generate path never traverses
+# stdin so it's already silent.
 prompt_secret() {
     local prompt="$1" gen_cmd="$2" current="$3"
     REPLY_VALUE=""
@@ -373,7 +376,10 @@ prompt_secret() {
         REPLY_VALUE="$(eval "$gen_cmd")"
         echo "    ✓ Generated."
     else
-        read -r -p "    Enter value: " REPLY_VALUE
+        read -r -s -p "    Enter value: " REPLY_VALUE
+        # `read -s` suppresses the trailing newline; print one so the
+        # subsequent log lines start on a fresh row.
+        echo
     fi
 }
 
@@ -551,6 +557,15 @@ Usage: ./setup.sh [--no-prompt]
                 to running with stdin redirected from /dev/null.
 EOF
             exit 0
+            ;;
+        *)
+            # Reject typos like --noprompt explicitly. Silent
+            # acceptance was a footgun: `./setup.sh --noprompt` on a
+            # fresh .env would run guided mode (CHANGE_ME values)
+            # and confuse the operator about why prompts appeared.
+            log_error "Unknown argument: $arg"
+            log_error "  See: $0 --help"
+            exit 2
             ;;
     esac
 done

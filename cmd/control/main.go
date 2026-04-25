@@ -380,7 +380,6 @@ func main() {
 		// goroutine indefinitely (#77 review round 2).
 		st.RegisterEventListener(api.SystemActionListener(
 			svc.SystemActions(),
-			st,
 			logger.With("component", "system_action_listener"),
 			cfg.SystemActionReconcileTimeout,
 		))
@@ -513,7 +512,13 @@ func main() {
 
 		// Index audit events on insertion — the hook fires after every AppendEvent
 		// and enqueues the persisted row directly (no DB lookup in the search worker).
-		st.OnEventAppended = func(ctx context.Context, ev store.PersistedEvent) {
+		// Registered via RegisterEventListener (was st.OnEventAppended) so it's
+		// guarded by the same mutex as every other listener and the registration
+		// order is explicit: appears AFTER the system-action listener at line 381,
+		// so events that fire between the two are still picked up by the
+		// AppendEvent path because both registrations complete before the RPC
+		// servers start serving below.
+		st.RegisterEventListener(func(ctx context.Context, ev store.PersistedEvent) {
 			id := ulid.ULID(ev.ID).String()
 			if err := searchIdx.EnqueueReindex(ctx, search.ScopeAuditEvent, id, &taskqueue.SearchEntityData{
 				EventType:  ev.EventType,
@@ -525,7 +530,7 @@ func main() {
 			}); err != nil {
 				logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
 			}
-		}
+		})
 
 		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
 		if err := searchIdx.EnsureIndexes(ctx); err != nil {

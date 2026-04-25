@@ -187,6 +187,18 @@ run_setup() {
 
     if [[ "$NO_PROMPT" == "1" ]]; then
         ./setup.sh --no-prompt
+    elif [[ -r /dev/tty ]]; then
+        # When this installer was piped (the documented
+        # `curl … | sudo bash` flow), our stdin is the pipe and
+        # setup.sh's `-t 0` check would auto-fall-back to
+        # non-interactive mode — which then fails immediately on the
+        # CHANGE_ME placeholders in a fresh .env. Reattach to the
+        # controlling terminal so the prompt loop actually runs.
+        # If /dev/tty is unreadable (true non-interactive context like
+        # CI without NO_PROMPT=1), the existing -t 0 fallback in
+        # setup.sh still produces a clean "validate .env directly"
+        # path with the right error.
+        ./setup.sh </dev/tty
     else
         ./setup.sh
     fi
@@ -216,9 +228,16 @@ print_summary() {
     cd "$INSTALL_DIR"
 
     # Re-source .env so we can echo the final URLs back to the operator.
+    # `set -u` is on (set -euo pipefail at the top); .env values that
+    # accidentally reference an undefined var (typo'd $FOO) would abort
+    # the script here, swallowing the install-success message. Relax
+    # nounset just for the source call.
+    set +u
     set -a
+    # shellcheck disable=SC1091
     source ./.env
     set +a
+    set -u
 
     echo ""
     log_info "✓ Power Manage Server is up."

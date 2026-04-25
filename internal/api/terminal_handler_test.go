@@ -20,6 +20,21 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
+// errorCode pulls the structured error code (pm.ErrorDetail.Code)
+// off a connect.Error. The SDK + web client both switch on this
+// field, so it's the canonical contract test for the rc11 #79
+// terminal error split — message substring assertions are a secondary
+// hint check that's free to evolve with copy edits.
+func errorCode(t *testing.T, e *connect.Error) string {
+	t.Helper()
+	require.NotEmpty(t, e.Details(), "connect error has no structured details — apiErrorCtx wiring broken?")
+	val, err := e.Details()[0].Value()
+	require.NoError(t, err, "decode ErrorDetail proto")
+	detail, ok := val.(*pm.ErrorDetail)
+	require.True(t, ok, "first detail is not pm.ErrorDetail (got %T)", val)
+	return detail.Code
+}
+
 // setLinuxUsername appends the UserLinuxUsernameChanged event so the
 // projection picks up the linux_username for tests that need
 // StartTerminal to resolve a TTY user.
@@ -384,8 +399,13 @@ func TestStartTerminal_GatewayNotRegistered_PersistentMisconfig(t *testing.T) {
 	require.True(t, errors.As(err, &connectErr))
 	// Unavailable gRPC code (transient-style retry semantics for the
 	// connection layer), with the persistent error code so the web
-	// client can show the operator-actionable message.
+	// client can show the operator-actionable message. Asserting the
+	// structured Code is the primary contract — the SDK + web client
+	// switch on it via ErrorDetail.findDetails. Message substring is
+	// kept as a secondary check on the operator hint.
 	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
+	assert.Equal(t, api.ErrGatewayNotRegistered, errorCode(t, connectErr),
+		"persistent-misconfig path must surface ErrGatewayNotRegistered, not the transient code")
 	assert.Contains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
 		"persistent-misconfig path must name the missing env var so the operator can fix it")
 }
@@ -425,6 +445,8 @@ func TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss(t *testing.T) {
 	var connectErr *connect.Error
 	require.True(t, errors.As(err, &connectErr))
 	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
+	assert.Equal(t, api.ErrDeviceNotConnected, errorCode(t, connectErr),
+		"transient gateway-loss path must surface ErrDeviceNotConnected, not the persistent code")
 	// The transient path uses a retry-shortly message, NOT the
 	// "set the env var" hint. Asserting the negative substring
 	// guards against the previous cut where both paths returned

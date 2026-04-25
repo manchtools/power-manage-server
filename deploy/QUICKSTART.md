@@ -3,7 +3,7 @@
 One-line install on a fresh Linux host with Docker + the compose plugin already installed:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MANCHTOOLS/power-manage-server/main/deploy/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/manchtools/power-manage-server/main/deploy/install.sh | sudo bash
 ```
 
 The installer:
@@ -59,7 +59,7 @@ curl -fsSL .../install.sh | sudo RELEASE_TAG=v2026.06 bash
 ## Manual install (if you'd rather not run a curl-pipe-bash)
 
 ```bash
-git clone https://github.com/MANCHTOOLS/power-manage-server.git
+git clone https://github.com/manchtools/power-manage-server.git
 cd power-manage-server/deploy
 cp .env.example .env
 ./setup.sh                      # guided env + cert generation

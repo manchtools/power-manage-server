@@ -144,7 +144,7 @@ const listenerMaxConcurrentDispatches = 16
 // AppendEvent post-commit hooks into system-action sync calls. Wire it
 // into the store at service boot in cmd/control/main.go:
 //
-//	st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), st, logger, cfg.SystemActionReconcileTimeout))
+//	st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), logger, cfg.SystemActionReconcileTimeout))
 //
 // Errors from the underlying sync calls are logged and swallowed —
 // listeners are post-commit, fire-and-forget; failures are caught by
@@ -175,7 +175,7 @@ const listenerMaxConcurrentDispatches = 16
 // have already returned by sync time), but request-scoped values
 // like request_id are preserved so error logs correlate back to the
 // triggering RPC.
-func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slog.Logger, syncTimeout time.Duration) store.EventListener {
+func SystemActionListener(mgr *SystemActionManager, logger *slog.Logger, syncTimeout time.Duration) store.EventListener {
 	if syncTimeout <= 0 {
 		syncTimeout = defaultListenerSyncTimeout
 	}

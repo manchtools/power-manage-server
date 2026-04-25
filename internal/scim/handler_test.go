@@ -2,10 +2,12 @@ package scim_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,8 +16,40 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+// fakeSystemActionsCleaner records each CleanupDeletedUserActions
+// call so tests can assert the rc11 #77 SCIM-side cleanup is wired
+// up correctly. The interface lives on scim.SystemActionsCleaner;
+// the SCIM handler only calls the cleaner when the *last* identity
+// link is removed and the user projection load succeeded — so a
+// regression that drops either guard is observable through the
+// recorded call list.
+type fakeSystemActionsCleaner struct {
+	mu    sync.Mutex
+	calls []db.UsersProjection
+}
+
+func (f *fakeSystemActionsCleaner) CleanupDeletedUserActions(_ context.Context, u db.UsersProjection) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, u)
+	return nil
+}
+
+func (f *fakeSystemActionsCleaner) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *fakeSystemActionsCleaner) lastCall() db.UsersProjection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[len(f.calls)-1]
+}
 
 // scimTestEnv holds shared state for SCIM integration tests.
 type scimTestEnv struct {
@@ -26,14 +60,28 @@ type scimTestEnv struct {
 	providerID string
 	slug       string
 	token      string
+	cleaner    *fakeSystemActionsCleaner // nil when setupSCIM was used (cleanup path not wired)
 }
 
 func setupSCIM(t *testing.T) *scimTestEnv {
 	t.Helper()
+	return setupSCIMWithCleaner(t, nil)
+}
+
+// setupSCIMWithCleaner injects a SystemActionsCleaner into the SCIM
+// handler so tests can observe rc11 #77's SCIM-delete cleanup path.
+// Pass nil for the same behaviour as setupSCIM (no cleaner wired).
+func setupSCIMWithCleaner(t *testing.T, cleaner *fakeSystemActionsCleaner) *scimTestEnv {
+	t.Helper()
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	handler := scim.NewHandler(st, logger, nil) // nil systemActions: tests don't exercise the cleanup path
+
+	var sysCleaner scim.SystemActionsCleaner
+	if cleaner != nil {
+		sysCleaner = cleaner
+	}
+	handler := scim.NewHandler(st, logger, sysCleaner)
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	slug := "scim-test-" + testutil.NewID()[:8]
@@ -48,6 +96,7 @@ func setupSCIM(t *testing.T) *scimTestEnv {
 		providerID: providerID,
 		slug:       slug,
 		token:      token,
+		cleaner:    cleaner,
 	}
 }
 
@@ -318,6 +367,43 @@ func TestDeleteUser_Success(t *testing.T) {
 	// DELETE
 	w := env.request("DELETE", "/Users/"+userID)
 	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+// TestDeleteUser_LastLink_TriggersSystemActionsCleanup is the
+// regression test for rc11 #77's SCIM-side cleanup wiring. Before
+// that fix, SCIM deleted users without ever calling
+// CleanupDeletedUserActions, leaking pm-tty-* and USER provision
+// actions on every device the user was assigned to. Asserting via a
+// fake cleaner pins the contract that:
+//
+//  1. CleanupDeletedUserActions IS called when the last identity
+//     link is removed (the user is being fully deleted).
+//  2. It receives the projection loaded BEFORE the UserDeleted event
+//     was emitted (so the system_*_action_id fields are still
+//     populated for the cleaner to read).
+func TestDeleteUser_LastLink_TriggersSystemActionsCleanup(t *testing.T) {
+	cleaner := &fakeSystemActionsCleaner{}
+	env := setupSCIMWithCleaner(t, cleaner)
+
+	user := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   "cleanup-target@example.com",
+		"externalId": "ext-cleanup-target",
+	}
+	createResp := env.request("POST", "/Users", user)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(createResp.Body.Bytes(), &created))
+	userID := created["id"].(string)
+
+	w := env.request("DELETE", "/Users/"+userID)
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	require.Equal(t, 1, cleaner.callCount(),
+		"CleanupDeletedUserActions should fire exactly once on last-link DELETE; rc11 #77 regression if 0")
+	assert.Equal(t, userID, cleaner.lastCall().ID,
+		"cleaner must receive the deleted user's projection so it can read system_*_action_id columns")
 }
 
 // --- Group Tests ---
