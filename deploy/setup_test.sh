@@ -215,20 +215,24 @@ run_case "disable terminals clears all three vars"  case_disable_terminals_clear
 # work. The previous cut had set-e + ( ... ) + $? which silently killed
 # the suite on the first failing case; a green run of all-PASSes was
 # not enough to prove the harness behaves as documented when something
-# fails. Run a deliberately failing case last and special-case the
-# tally so the script still exits 0 when only this synthetic failure
-# is present.
+# fails. Run a deliberately failing case last and explicitly track
+# whether IT contributed the failure — earlier "if FAIL_COUNT == 1" cut
+# would have masked a regression where a real test fails AND a future
+# refactor accidentally makes the synthetic case pass (return 1 →
+# return 0): both conditions yield FAIL_COUNT == 1 but real_fails != 0.
+# Round-6 review fix.
 case_meta_failure() {
     return 1
 }
+META_FAIL_BEFORE=$FAIL_COUNT
 run_case "(meta) intentional failure: harness counts FAIL"  case_meta_failure
+META_FAILED=$((FAIL_COUNT - META_FAIL_BEFORE))
 
 echo ""
-if [[ $FAIL_COUNT -eq 1 ]]; then
-    # Only the synthetic case failed → harness is healthy.
-    REAL_FAILS=0
-else
-    REAL_FAILS=$((FAIL_COUNT - 1))
+if [[ $META_FAILED -ne 1 ]]; then
+    echo "ERROR: synthetic meta-failure case did not fail as expected — harness is broken (META_FAILED=$META_FAILED, expected 1)"
+    exit 2
 fi
+REAL_FAILS=$((FAIL_COUNT - 1))
 echo "Total: $((PASS_COUNT + FAIL_COUNT))   Passed: $PASS_COUNT   Failed: $FAIL_COUNT (synthetic: 1, real: $REAL_FAILS)"
 [[ $REAL_FAILS -eq 0 ]]
