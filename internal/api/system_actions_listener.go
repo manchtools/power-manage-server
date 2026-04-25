@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -114,11 +115,18 @@ func userIDFromEventData(e store.PersistedEvent) string {
 	return ""
 }
 
+// defaultListenerSyncTimeout is the fallback per-dispatch context
+// deadline when a caller passes 0. Matches the periodic reconciler's
+// default sweep timeout (5m) so a wedged DB / signer can't leak a
+// goroutine on either path. Callers that want a different bound pass
+// it explicitly to SystemActionListener.
+const defaultListenerSyncTimeout = 5 * time.Minute
+
 // SystemActionListener is the registerable EventListener that turns
 // AppendEvent post-commit hooks into system-action sync calls. Wire it
 // into the store at service boot in cmd/control/main.go:
 //
-//	st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), st, logger))
+//	st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), st, logger, cfg.SystemActionReconcileTimeout))
 //
 // Errors from the underlying sync calls are logged and swallowed —
 // listeners are post-commit, fire-and-forget; failures are caught by
@@ -129,24 +137,30 @@ func userIDFromEventData(e store.PersistedEvent) string {
 // invocation would have made fan-out events (RoleUpdated, RoleDeleted,
 // UserGroupRoleAssigned/Revoked, UserGroupDeleted, ServerSettingUpdated)
 // turn small admin RPCs into O(all-users) request-path work — review
-// finding from #77's first cut. The goroutine context is detached from
-// the AppendEvent ctx (which may be cancelled the moment the RPC
-// returns) and uses Background so the sync survives the request.
-func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slog.Logger) store.EventListener {
+// finding from #77's first cut.
+//
+// The goroutine context is bounded by syncTimeout (defaulting to
+// defaultListenerSyncTimeout when 0). Without the bound, a wedged DB
+// or signer would leak a goroutine per event indefinitely, and a
+// burst of role/group changes could pile up — review finding from
+// #77's second cut. The goroutine deliberately uses a fresh
+// Background-rooted context (not the AppendEvent ctx) because the
+// RPC that triggered the event may have already returned by the time
+// the sync runs; the timeout is the only stop signal.
+func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slog.Logger, syncTimeout time.Duration) store.EventListener {
+	if syncTimeout <= 0 {
+		syncTimeout = defaultListenerSyncTimeout
+	}
 	return func(_ context.Context, e store.PersistedEvent) {
 		op, userIDs := AffectedFromEvent(e)
 		if op == SyncOpNone {
 			return
 		}
 
-		// Detached goroutine. context.Background() rather than the
-		// AppendEvent ctx because the RPC that triggered the event
-		// may have already returned (cancelling its ctx) by the time
-		// the sync runs — we want the work to complete regardless.
-		// Failures are caught by the periodic reconciler if the
-		// goroutine itself dies before logging.
 		go func() {
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), syncTimeout)
+			defer cancel()
+
 			switch op {
 			case SyncOpSyncUser:
 				for _, uid := range userIDs {

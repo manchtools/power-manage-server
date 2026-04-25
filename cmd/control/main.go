@@ -375,8 +375,15 @@ func main() {
 
 		// (2) Listener — registered post-commit on the store. Logged
 		// errors are swallowed; the periodic reconciler is the
-		// durability safety net.
-		st.RegisterEventListener(api.SystemActionListener(svc.SystemActions(), st, logger.With("component", "system_action_listener")))
+		// durability safety net. Reuse the same per-sweep timeout
+		// as the reconciler so a wedged DB / signer can't leak a
+		// goroutine indefinitely (#77 review round 2).
+		st.RegisterEventListener(api.SystemActionListener(
+			svc.SystemActions(),
+			st,
+			logger.With("component", "system_action_listener"),
+			cfg.SystemActionReconcileTimeout,
+		))
 
 		// (3) Periodic reconciler — interval and per-sweep timeout
 		// from config (defaults set in parseFlags).

@@ -346,3 +346,91 @@ func TestStartTerminal_RegistryDeviceNotConnected(t *testing.T) {
 	require.True(t, errors.As(err, &connectErr))
 	assert.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
 }
+
+// TestStartTerminal_GatewayNotRegistered_PersistentMisconfig covers
+// the rc11 #79 split: when the device→gateway mapping exists AND the
+// gateway has registered its internal URL but NOT a terminal URL,
+// resolveGatewayURL distinguishes this persistent operator-facing
+// misconfig (operator forgot GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE)
+// from a transient gateway-gone race. Persistent → ErrGatewayNotRegistered
+// with the actionable "set the env" message.
+func TestStartTerminal_GatewayNotRegistered_PersistentMisconfig(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
+	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setLinuxUsername(t, st, userID, "alice")
+	deviceID := testutil.CreateTestDevice(t, st, "host-misconfig")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
+
+	// Simulate the rc10 staging failure mode: agent is connected
+	// (device→gateway mapping exists), gateway has published its
+	// internal URL (alive, control can fan out admin RPCs), but the
+	// terminal URL is missing because the operator never set
+	// GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE on the gateway.
+	ctx := context.Background()
+	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-misconfig", registry.DefaultDeviceTTL))
+	require.NoError(t, reg.RegisterGatewayInternal(ctx, "gw-misconfig",
+		"https://gw-misconfig.internal:8080", registry.DefaultGatewayTTL))
+	// Note: NO RegisterGateway call — terminal URL never published.
+
+	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
+		DeviceId: deviceID,
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	// Unavailable gRPC code (transient-style retry semantics for the
+	// connection layer), with the persistent error code so the web
+	// client can show the operator-actionable message.
+	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
+	assert.Contains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
+		"persistent-misconfig path must name the missing env var so the operator can fix it")
+}
+
+// TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss covers
+// the other half of the rc11 #79 split: when the device→gateway
+// mapping briefly exists but BOTH the gateway's internal URL and
+// terminal URL are missing (gateway disappeared between the device
+// lookup and the URL lookup), resolveGatewayURL surfaces this as
+// ErrDeviceNotConnected with retry semantics — not as a config
+// error. The previous cut conflated this with the persistent
+// misconfig case and produced the wrong UI message.
+func TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
+	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setLinuxUsername(t, st, userID, "alice")
+	deviceID := testutil.CreateTestDevice(t, st, "host-transient")
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
+
+	// Simulate the transient race: device→gateway mapping exists,
+	// but the gateway has no published URLs at all (it died, or
+	// hasn't refreshed yet). The internal-URL probe also returns
+	// ErrNoGateway → the resolver classifies this as transient.
+	ctx := context.Background()
+	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-gone", registry.DefaultDeviceTTL))
+	// Note: NEITHER RegisterGateway nor RegisterGatewayInternal —
+	// gateway is fully gone from the registry's URL keys.
+
+	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
+		DeviceId: deviceID,
+	}))
+	require.Error(t, err)
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
+	// The transient path uses a retry-shortly message, NOT the
+	// "set the env var" hint. Asserting the negative substring
+	// guards against the previous cut where both paths returned
+	// the same operator-facing message.
+	assert.NotContains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
+		"transient gateway-loss path must not surface a config-error message")
+	assert.Contains(t, connectErr.Error(), "retry",
+		"transient path message should hint at retry")
+}
