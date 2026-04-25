@@ -48,6 +48,13 @@ func (f *fakeSystemActionsCleaner) callCount() int {
 func (f *fakeSystemActionsCleaner) lastCall() db.UsersProjection {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.calls) == 0 {
+		// Caller forgot to assert callCount > 0 first. Return the
+		// zero value so the resulting test failure has a readable
+		// "want X, got <empty UsersProjection>" diff instead of a
+		// panic stack trace.
+		return db.UsersProjection{}
+	}
 	return f.calls[len(f.calls)-1]
 }
 

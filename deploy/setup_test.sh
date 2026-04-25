@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# setup.sh helper smoke tests. Sources setup.sh's helpers in a
-# subshell with a fake SCRIPT_DIR + .env so the helpers can be
-# exercised without invoking the cert-generation main flow.
+# setup.sh helper smoke tests. Sources setup.sh in a subshell with a
+# fake SCRIPT_DIR + .env so the real helpers run — no inlined copies
+# that drift from the source of truth. Round-5 review changed this
+# from "inline + hope they stay in sync" to "source-guarded + exercise
+# the real bodies."
 #
 # Run:
 #   ./deploy/setup_test.sh
@@ -14,6 +16,8 @@
 
 set -euo pipefail
 
+SETUP_TEST_SH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 PASS_COUNT=0
 FAIL_COUNT=0
 
@@ -24,10 +28,6 @@ run_case() {
     tmp="$(mktemp -d)"
     trap "rm -rf '$tmp'" RETURN
 
-    # Minimal harness: the helpers we test only depend on SCRIPT_DIR
-    # and the .env path. Sourcing setup.sh in full would run main();
-    # extract just the helper functions instead.
-    #
     # The subshell goes directly inside `if ... then`. Earlier cut used
     #   ( ... ); if [[ $? -eq 0 ]]; then
     # which dead-ends under `set -e`: a non-zero subshell exit kills
@@ -35,57 +35,20 @@ run_case() {
     # bail out of the whole suite and FAIL_COUNT / the summary line
     # were unreachable. Caught by the rc11 round-3 review.
     if (
+        # Order matters: source FIRST (which sets setup.sh's own
+        # SCRIPT_DIR to its real install dir), THEN override
+        # SCRIPT_DIR to point at the per-case tmpdir. Reversing
+        # this order means the test would happily write into
+        # deploy/.env — that pre-source override was the original
+        # bug; the suite still went green because the helpers worked
+        # against the wrong file. Round-5 review fix exposed it.
+        # shellcheck disable=SC1091
+        source "$SETUP_TEST_SH_DIR/setup.sh"
         SCRIPT_DIR="$tmp"
-        # log_* are used inside the helpers — define no-op shims.
+        # log_* are no-op shims so tests don't pollute stdout.
         log_info() { :; }
         log_warn() { :; }
         log_error() { :; }
-
-        # Inline the helper definitions we need to test. Must stay in
-        # sync with setup.sh — including the same-fs mktemp +
-        # chmod-reference dance that preserves .env's mode across
-        # rewrites. An earlier inline diverged on the chmod and the
-        # round-3 review caught it: a regression that drops the chmod
-        # in setup.sh would have passed this harness silently.
-        write_env_var() {
-            local key="$1" value="$2" envfile="$SCRIPT_DIR/.env"
-            if grep -qE "^${key}=" "$envfile"; then
-                local tf
-                tf="$(mktemp "${envfile}.XXXXXX")"
-                awk -v k="$key" -v v="$value" '
-                    BEGIN { found = 0 }
-                    $0 ~ "^"k"=" { print k"="v; found = 1; next }
-                    { print }
-                    END { if (!found) print k"="v }
-                ' "$envfile" > "$tf"
-                chmod --reference="$envfile" "$tf" 2>/dev/null || chmod 600 "$tf"
-                mv "$tf" "$envfile"
-            else
-                printf '%s=%s\n' "$key" "$value" >> "$envfile"
-            fi
-        }
-        clear_env_var() {
-            local key="$1" envfile="$SCRIPT_DIR/.env"
-            if ! grep -qE "^${key}=" "$envfile"; then
-                return 0
-            fi
-            local tf
-            tf="$(mktemp "${envfile}.XXXXXX")"
-            awk -v k="$key" '
-                $0 ~ "^"k"=" { next }
-                { print }
-            ' "$envfile" > "$tf"
-            chmod --reference="$envfile" "$tf" 2>/dev/null || chmod 600 "$tf"
-            mv "$tf" "$envfile"
-        }
-        parent_domain() {
-            local d="$1"
-            if [[ "$d" == *.* ]]; then
-                echo "${d#*.}"
-            else
-                echo ""
-            fi
-        }
 
         if "$@"; then
             echo "PASS: $name"
@@ -175,6 +138,21 @@ EOF
     [[ "$mode" == "600" ]]
 }
 
+case_isolation_writes_in_tmpdir() {
+    # Guard against the regression where SCRIPT_DIR was overridden
+    # before sourcing setup.sh — the source then reassigned it to
+    # deploy/ and write_env_var ended up touching the real .env. The
+    # helpers passed all assertions, just in the wrong place. This
+    # case asserts the SCRIPT_DIR seen by the helpers is the per-
+    # case tmpdir, so any future re-ordering of the source/override
+    # pair fails loudly.
+    : > "$SCRIPT_DIR/.env"
+    write_env_var ISOLATION_PROBE yes
+    [[ "$SCRIPT_DIR" == "$(dirname "$SCRIPT_DIR")"/* ]] || return 1
+    [[ -f "$SCRIPT_DIR/.env" ]] || return 1
+    grep -qE '^ISOLATION_PROBE=yes$' "$SCRIPT_DIR/.env"
+}
+
 case_parent_domain_with_dot() {
     : > "$SCRIPT_DIR/.env"
     local got
@@ -227,6 +205,7 @@ run_case "write_env_var: preserves mode 0600"       case_write_env_var_preserves
 run_case "clear_env_var: removes existing key"      case_clear_env_var_removes_existing_key
 run_case "clear_env_var: noop on missing key"       case_clear_env_var_noop_on_missing_key
 run_case "clear_env_var: preserves mode 0600"       case_clear_env_var_preserves_mode_0600
+run_case "isolation: helpers write into tmpdir"     case_isolation_writes_in_tmpdir
 run_case "parent_domain: dotted hostname"           case_parent_domain_with_dot
 run_case "parent_domain: single label returns empty" case_parent_domain_single_label
 run_case "parent_domain: deep subdomain"            case_parent_domain_deep_subdomain

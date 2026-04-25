@@ -73,13 +73,24 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 		return SyncOpNone, nil
 
 	case "UserGroupMemberAdded", "UserGroupMemberRemoved":
-		// stream_type=user_group, event.data carries user_id of the
-		// added/removed member.
-		uid := userIDFromEventData(e)
-		if uid == "" {
-			return SyncOpNone, nil
+		// stream_type=user_group; event.data carries user_id of the
+		// added/removed member. StreamID format is mixed across
+		// emitters: SCIM (internal/scim/groups.go), the API user-
+		// group handler, and testutil all emit composite
+		// "groupID:userID" while internal/idp/linker.go uses just
+		// the group id. We prefer the data payload for clarity but
+		// fall back to splitting the StreamID for the composite-
+		// format emitters so a future regression that drops
+		// data.user_id while keeping the composite StreamID still
+		// produces a valid sync.
+		if uid := userIDFromEventData(e); uid != "" {
+			return SyncOpSyncUser, []string{uid}
 		}
-		return SyncOpSyncUser, []string{uid}
+		// Composite "groupID:userID" → take the suffix.
+		if _, uid, ok := strings.Cut(e.StreamID, ":"); ok && uid != "" {
+			return SyncOpSyncUser, []string{uid}
+		}
+		return SyncOpNone, nil
 
 	// UserDeleted is deliberately NOT handled here.
 	// CleanupDeletedUserActions needs the user projection loaded
@@ -214,6 +225,20 @@ func SystemActionListener(mgr *SystemActionManager, logger *slog.Logger, syncTim
 			if op == SyncOpSyncAll {
 				defer syncAllInFlight.Store(false)
 			}
+			// fireListeners' recover only protects the listener
+			// function itself, which returned the moment we spawned
+			// this goroutine. A panic from mgr.Sync* (nil deref,
+			// downstream library bug, etc.) without this recover
+			// would crash the whole control server. Round-5 review
+			// fix — listener API documents "post-commit
+			// notification" semantics, panics here must not take
+			// the process down.
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("system-action listener: dispatch goroutine panicked",
+						"event_type", e.EventType, "event_id", e.ID, "panic", r)
+				}
+			}()
 
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), syncTimeout)
 			defer cancel()

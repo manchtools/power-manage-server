@@ -374,13 +374,21 @@ clear_env_var() {
 }
 
 # prompt_secret asks for a secret value, offers to generate one with
-# the supplied openssl command. Stores the chosen value in $REPLY_VALUE.
+# the supplied openssl command. Stores the chosen value in $REPLY_VALUE
+# and a "did the operator just choose a value?" flag in $REPLY_GENERATED
+# (1 = newly generated/entered this run, 0 = kept existing). Callers
+# use the flag to decide whether to print the value back as a one-time
+# capture banner — re-printing on every rerun would leak the stored
+# password to terminal scrollback every time setup.sh is re-run.
+# Round-5 review fix.
+#
 # The manual-entry branch uses `read -s` so the typed secret is never
 # echoed back to the terminal — the auto-generate path never traverses
 # stdin so it's already silent.
 prompt_secret() {
     local prompt="$1" gen_cmd="$2" current="$3"
     REPLY_VALUE=""
+    REPLY_GENERATED=0
     if ! is_placeholder "$current"; then
         log_info "  $prompt — already set, keeping current value"
         REPLY_VALUE="$current"
@@ -390,9 +398,11 @@ prompt_secret() {
     read -r -p "  $prompt — generate strong value? [Y/n] " ans
     if [[ -z "$ans" || "$ans" =~ ^[Yy] ]]; then
         REPLY_VALUE="$(eval "$gen_cmd")"
+        REPLY_GENERATED=1
         echo "    ✓ Generated."
     else
         read -r -s -p "    Enter value: " REPLY_VALUE
+        REPLY_GENERATED=1
         # `read -s` suppresses the trailing newline; print one so the
         # subsequent log lines start on a fresh row.
         echo
@@ -559,14 +569,24 @@ guided_setup() {
     fi
     prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "$default_email" "${ADMIN_EMAIL:-}"
     write_env_var ADMIN_EMAIL "$REPLY_VALUE"
+    # Mirror the prompt result back into the shell var. The summary
+    # block below would otherwise echo the stale value sourced before
+    # the prompt loop ran (empty on a fresh install).
+    ADMIN_EMAIL="$REPLY_VALUE"
 
     prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -base64 24" "${ADMIN_PASSWORD:-}"
     write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
     local admin_pass="$REPLY_VALUE"
+    local admin_pass_generated="$REPLY_GENERATED"
 
     echo ""
     log_info "Guided setup complete. .env updated."
-    if ! is_placeholder "$admin_pass"; then
+    # Only print the password back when it was newly chosen this run.
+    # Reusing is_placeholder here was wrong: a real password is not a
+    # placeholder, so on every rerun the banner would re-leak the
+    # stored password into the terminal scrollback / install logs.
+    # Round-5 review fix.
+    if [[ "$admin_pass_generated" -eq 1 ]]; then
         log_warn "Bootstrap admin password — write this down NOW; it's not shown again:"
         echo ""
         echo "    Email:    $ADMIN_EMAIL"
@@ -578,32 +598,38 @@ guided_setup() {
 }
 
 # parse_flags reads our own --no-prompt before falling through to the
-# rest of setup.sh. Kept simple — no other flags supported.
+# rest of setup.sh. Kept simple — no other flags supported. Wrapped
+# in a function so sourcing setup.sh from setup_test.sh doesn't pick
+# up the harness's argv (round-5 review: source-guard pattern lets
+# the test harness exercise the real helper bodies instead of inlined
+# copies that drift).
 NO_PROMPT=0
-for arg in "$@"; do
-    case "$arg" in
-        --no-prompt) NO_PROMPT=1 ;;
-        -h|--help)
-            cat <<EOF
+parse_flags() {
+    for arg in "$@"; do
+        case "$arg" in
+            --no-prompt) NO_PROMPT=1 ;;
+            -h|--help)
+                cat <<EOF
 Usage: ./setup.sh [--no-prompt]
 
   --no-prompt   Skip the interactive guided env setup; run cert
                 generation against the existing .env only. Equivalent
                 to running with stdin redirected from /dev/null.
 EOF
-            exit 0
-            ;;
-        *)
-            # Reject typos like --noprompt explicitly. Silent
-            # acceptance was a footgun: `./setup.sh --noprompt` on a
-            # fresh .env would run guided mode (CHANGE_ME values)
-            # and confuse the operator about why prompts appeared.
-            log_error "Unknown argument: $arg"
-            log_error "  See: $0 --help"
-            exit 2
-            ;;
-    esac
-done
+                exit 0
+                ;;
+            *)
+                # Reject typos like --noprompt explicitly. Silent
+                # acceptance was a footgun: `./setup.sh --noprompt` on a
+                # fresh .env would run guided mode (CHANGE_ME values)
+                # and confuse the operator about why prompts appeared.
+                log_error "Unknown argument: $arg"
+                log_error "  See: $0 --help"
+                exit 2
+                ;;
+        esac
+    done
+}
 
 main() {
     log_info "Power Manage Server Setup"
@@ -637,4 +663,10 @@ main() {
     show_instructions
 }
 
-main "$@"
+# Run main only when executed directly. When this file is `source`d
+# (e.g. by setup_test.sh) we want the helpers loaded but no main run
+# and no argv parsed.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    parse_flags "$@"
+    main "$@"
+fi

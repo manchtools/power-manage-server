@@ -201,7 +201,7 @@ func TestAffectedFromEvent(t *testing.T) {
 			wantUsers: nil,
 		},
 		{
-			name: "UserGroupMemberAdded with missing user_id in data → SyncOpNone (no StreamID fallback for group case)",
+			name: "UserGroupMemberAdded with missing user_id, single-label StreamID → SyncOpNone (no fallback target)",
 			event: store.PersistedEvent{
 				StreamType: "user_group",
 				StreamID:   "group-1",
@@ -210,6 +210,41 @@ func TestAffectedFromEvent(t *testing.T) {
 			},
 			wantOp:    SyncOpNone,
 			wantUsers: nil,
+		},
+		{
+			name: "UserGroupMemberAdded with missing user_id, composite StreamID → falls back to suffix",
+			event: store.PersistedEvent{
+				StreamType: "user_group",
+				StreamID:   "group-1:user-y",
+				EventType:  "UserGroupMemberAdded",
+				Data:       mustMarshalJSON(t, map[string]any{"group_id": "group-1"}),
+			},
+			wantOp:    SyncOpSyncUser,
+			wantUsers: []string{"user-y"},
+		},
+		{
+			name: "UserGroupMemberRemoved with missing user_id, composite StreamID → falls back to suffix",
+			event: store.PersistedEvent{
+				StreamType: "user_group",
+				StreamID:   "group-2:user-z",
+				EventType:  "UserGroupMemberRemoved",
+				Data:       mustMarshalJSON(t, map[string]any{"group_id": "group-2"}),
+			},
+			wantOp:    SyncOpSyncUser,
+			wantUsers: []string{"user-z"},
+		},
+		{
+			name: "UserRoleAssigned with malformed JSON in Data → falls back to StreamID prefix",
+			event: store.PersistedEvent{
+				StreamType: "user_role",
+				StreamID:   "user-y:role-z",
+				EventType:  "UserRoleAssigned",
+				// Exercises the json.Unmarshal error path in
+				// userIDFromEventData — round-5 review nit.
+				Data: []byte("{invalid"),
+			},
+			wantOp:    SyncOpSyncUser,
+			wantUsers: []string{"user-y"},
 		},
 	}
 	for _, tc := range cases {

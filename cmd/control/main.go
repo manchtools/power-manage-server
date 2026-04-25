@@ -512,24 +512,41 @@ func main() {
 
 		// Index audit events on insertion — the hook fires after every AppendEvent
 		// and enqueues the persisted row directly (no DB lookup in the search worker).
-		// Registered via RegisterEventListener (was st.OnEventAppended) so it's
-		// guarded by the same mutex as every other listener and the registration
-		// order is explicit: appears AFTER the system-action listener at line 381,
-		// so events that fire between the two are still picked up by the
-		// AppendEvent path because both registrations complete before the RPC
-		// servers start serving below.
+		// Registered via RegisterEventListener so it shares the listener-slice
+		// mutex + panic-recovery wrapper with every other consumer.
+		//
+		// The EnqueueReindex call itself is dispatched in a goroutine so a slow
+		// or unreachable Valkey cannot stall AppendEvent — fireListeners
+		// dispatches synchronously, so a blocking listener body would extend
+		// every state-changing RPC's tail latency by the Valkey RTT. The work
+		// is best-effort (already only logs Warn on failure), so detaching is
+		// safe; the goroutine has its own recover so a panic inside the
+		// taskqueue client can't crash the server. Round-5 review fix.
 		st.RegisterEventListener(func(ctx context.Context, ev store.PersistedEvent) {
 			id := ulid.ULID(ev.ID).String()
-			if err := searchIdx.EnqueueReindex(ctx, search.ScopeAuditEvent, id, &taskqueue.SearchEntityData{
+			data := &taskqueue.SearchEntityData{
 				EventType:  ev.EventType,
 				StreamType: ev.StreamType,
 				ActorType:  ev.ActorType,
 				ActorID:    ev.ActorID,
 				StreamID:   ev.StreamID,
 				OccurredAt: ev.OccurredAt.Unix(),
-			}); err != nil {
-				logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
 			}
+			// Detach from the AppendEvent ctx — the RPC may already have
+			// returned by the time the enqueue runs; cancellation would
+			// drop best-effort work that the search worker can otherwise
+			// still pick up. Background ctx is correct here because the
+			// taskqueue client has its own per-call timeouts.
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("audit-index listener: panicked", "id", id, "panic", r)
+					}
+				}()
+				if err := searchIdx.EnqueueReindex(context.Background(), search.ScopeAuditEvent, id, data); err != nil {
+					logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
+				}
+			}()
 		})
 
 		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
@@ -851,9 +868,17 @@ func parseFlags() *Config {
 	// context.WithTimeout return an already-cancelled context every
 	// tick, silently breaking the durability safety net; a negative
 	// interval would panic time.NewTicker. Round-3 review of rc11
-	// #77 caught the timeout footgun specifically.
+	// #77 caught the timeout footgun specifically; round-5 review
+	// added the floor/ceiling on the interval so a misconfigured
+	// 1ms tick can't flood the DB with sweep attempts.
 	if cfg.SystemActionReconcileInterval < 0 {
 		cfg.SystemActionReconcileInterval = 0 // treat as disabled, matching StartReconciliation
+	} else if cfg.SystemActionReconcileInterval > 0 {
+		if cfg.SystemActionReconcileInterval < 10*time.Second {
+			cfg.SystemActionReconcileInterval = 10 * time.Second
+		} else if cfg.SystemActionReconcileInterval > 8*time.Hour {
+			cfg.SystemActionReconcileInterval = 8 * time.Hour
+		}
 	}
 	if cfg.SystemActionReconcileTimeout <= 0 {
 		cfg.SystemActionReconcileTimeout = 5 * time.Minute

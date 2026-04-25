@@ -447,12 +447,12 @@ func TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss(t *testing.T) {
 	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
 	assert.Equal(t, api.ErrDeviceNotConnected, errorCode(t, connectErr),
 		"transient gateway-loss path must surface ErrDeviceNotConnected, not the persistent code")
-	// The transient path uses a retry-shortly message, NOT the
-	// "set the env var" hint. Asserting the negative substring
-	// guards against the previous cut where both paths returned
-	// the same operator-facing message.
+	// The transient path must NOT surface the "set the env var" hint.
+	// The negative assertion is the high-signal contract test —
+	// CodeUnavailable + ErrDeviceNotConnected together already encode
+	// "transient, retryable" for callers, so we don't pin the exact
+	// wording of the operator-facing message (it's free to evolve via
+	// copy edits without breaking the SDK contract).
 	assert.NotContains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
 		"transient gateway-loss path must not surface a config-error message")
-	assert.Contains(t, connectErr.Error(), "retry",
-		"transient path message should hint at retry")
 }
