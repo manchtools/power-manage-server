@@ -329,6 +329,25 @@ write_env_var() {
     fi
 }
 
+# clear_env_var removes a key=value line from .env entirely. Used by
+# the guided setup when the operator answers No to a feature on a
+# rerun where existing values would otherwise leave the feature
+# silently enabled (caught in #80 review). No-op when the key is
+# absent.
+clear_env_var() {
+    local key="$1" envfile="$SCRIPT_DIR/.env"
+    if ! grep -qE "^${key}=" "$envfile"; then
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp)"
+    awk -v k="$key" '
+        $0 ~ "^"k"=" { next }
+        { print }
+    ' "$envfile" > "$tmp"
+    mv "$tmp" "$envfile"
+}
+
 # prompt_secret asks for a secret value, offers to generate one with
 # the supplied openssl command. Stores the chosen value in $REPLY_VALUE.
 prompt_secret() {
@@ -425,7 +444,24 @@ guided_setup() {
         write_env_var GATEWAY_WEB_LISTEN_ADDR ":8443"
         echo "    ✓ GATEWAY_WEB_LISTEN_ADDR set to :8443."
     else
-        log_info "  Terminal sessions disabled — skipping GATEWAY_TTY_DOMAIN, GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE, GATEWAY_WEB_LISTEN_ADDR."
+        # Operator chose No. If an existing .env already has any of
+        # these set (e.g. a rerun where terminals were previously
+        # enabled), simply skipping leaves the feature on — the
+        # gateway would still publish its terminal URL on next boot.
+        # Clear all three explicitly so the No answer matches the
+        # observable state. Caught in #80 review.
+        local was_enabled=0
+        for k in GATEWAY_TTY_DOMAIN GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE GATEWAY_WEB_LISTEN_ADDR; do
+            if grep -qE "^${k}=" "$SCRIPT_DIR/.env" 2>/dev/null; then
+                was_enabled=1
+                clear_env_var "$k"
+            fi
+        done
+        if [[ "$was_enabled" -eq 1 ]]; then
+            log_info "  Terminal sessions disabled — cleared GATEWAY_TTY_DOMAIN, GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE, and GATEWAY_WEB_LISTEN_ADDR from .env."
+        else
+            log_info "  Terminal sessions disabled — none of the terminal env vars were set, nothing to clear."
+        fi
     fi
 
     prompt_string "Email for Let's Encrypt notifications (ACME_EMAIL)" "" "${ACME_EMAIL:-}"

@@ -123,34 +123,57 @@ func userIDFromEventData(e store.PersistedEvent) string {
 // Errors from the underlying sync calls are logged and swallowed —
 // listeners are post-commit, fire-and-forget; failures are caught by
 // the periodic reconciler within one interval.
+//
+// The listener spawns a goroutine for every dispatch so AppendEvent's
+// post-commit path is never blocked on system-action work. Synchronous
+// invocation would have made fan-out events (RoleUpdated, RoleDeleted,
+// UserGroupRoleAssigned/Revoked, UserGroupDeleted, ServerSettingUpdated)
+// turn small admin RPCs into O(all-users) request-path work — review
+// finding from #77's first cut. The goroutine context is detached from
+// the AppendEvent ctx (which may be cancelled the moment the RPC
+// returns) and uses Background so the sync survives the request.
 func SystemActionListener(mgr *SystemActionManager, st *store.Store, logger *slog.Logger) store.EventListener {
-	return func(ctx context.Context, e store.PersistedEvent) {
+	return func(_ context.Context, e store.PersistedEvent) {
 		op, userIDs := AffectedFromEvent(e)
-		switch op {
-		case SyncOpNone:
+		if op == SyncOpNone {
 			return
+		}
 
-		case SyncOpSyncUser:
-			for _, uid := range userIDs {
-				if err := mgr.SyncUserSystemActions(ctx, uid); err != nil {
-					logger.Error("system-action listener: sync user failed",
-						"user_id", uid, "event_type", e.EventType, "event_id", e.ID, "error", err)
+		// Detached goroutine. context.Background() rather than the
+		// AppendEvent ctx because the RPC that triggered the event
+		// may have already returned (cancelling its ctx) by the time
+		// the sync runs — we want the work to complete regardless.
+		// Failures are caught by the periodic reconciler if the
+		// goroutine itself dies before logging.
+		go func() {
+			ctx := context.Background()
+			switch op {
+			case SyncOpSyncUser:
+				for _, uid := range userIDs {
+					if err := mgr.SyncUserSystemActions(ctx, uid); err != nil {
+						logger.Error("system-action listener: sync user failed",
+							"user_id", uid, "event_type", e.EventType, "event_id", e.ID, "error", err)
+					}
+				}
+
+			case SyncOpCleanupUser:
+				// AffectedFromEvent never returns this op currently —
+				// see the comment on the UserDeleted case in the
+				// classifier. Kept as a tagged enum for future events
+				// that don't have the load-before-emit ordering issue.
+				logger.Warn("system-action listener: SyncOpCleanupUser invoked but not implemented; handler-side cleanup is canonical",
+					"event_type", e.EventType, "event_id", e.ID)
+
+			case SyncOpSyncAll:
+				// Fan-out events fire SyncAllUsersSystemActions. On
+				// large fleets this can take seconds; doing it on
+				// the AppendEvent path would have made small admin
+				// RPCs O(all-users) — review finding addressed.
+				if err := mgr.SyncAllUsersSystemActions(ctx); err != nil {
+					logger.Error("system-action listener: sync all users failed",
+						"event_type", e.EventType, "event_id", e.ID, "error", err)
 				}
 			}
-
-		case SyncOpCleanupUser:
-			// AffectedFromEvent never returns this op currently —
-			// see the comment on the UserDeleted case in the
-			// classifier. Kept as a tagged enum for future events
-			// that don't have the load-before-emit ordering issue.
-			logger.Warn("system-action listener: SyncOpCleanupUser invoked but not implemented; handler-side cleanup is canonical",
-				"event_type", e.EventType, "event_id", e.ID)
-
-		case SyncOpSyncAll:
-			if err := mgr.SyncAllUsersSystemActions(ctx); err != nil {
-				logger.Error("system-action listener: sync all users failed",
-					"event_type", e.EventType, "event_id", e.ID, "error", err)
-			}
-		}
+		}()
 	}
 }
