@@ -45,6 +45,16 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 
 	// 3. Permission-derived TTY actions — independent of device assignment.
 	//
+	// Scale note: this query returns one row per (user with
+	// StartTerminal × linked TTY action), and every device receives
+	// every row, so the per-device payload grows linearly with the
+	// terminal-capable operator population. That's the documented
+	// contract — every such user needs their pm-tty-<username>
+	// account on every device — but worth keeping in mind once the
+	// StartTerminal cohort gets large enough that ProxySyncActions
+	// starts feeling the extra rows. Mitigation rides on the bulk
+	// hoist below.
+	//
 	// TODO(bulk-resolve): the query takes no deviceID and returns the
 	// same global set on every call, so a future bulk caller that
 	// resolves many devices in one pass should hoist this fetch out
@@ -90,26 +100,17 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 
 	// 5. Merge user-layer actions: drop device-excluded and dedupe
 	//    against the device layer.
+	//
+	// The direct struct conversion is sound because the sqlc-generated
+	// row types share the same field layout (currently 14 fields). It
+	// also makes the previous Schedule-drop bug structurally impossible
+	// to repeat — if the layouts ever diverge, the conversion fails to
+	// compile and forces the merge to be re-evaluated explicitly.
 	for _, ua := range userActions {
 		if excludedSet[ua.ID] || deviceActionSet[ua.ID] {
 			continue
 		}
-		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow{
-			ID:                ua.ID,
-			Name:              ua.Name,
-			Description:       ua.Description,
-			ActionType:        ua.ActionType,
-			DesiredState:      ua.DesiredState,
-			Params:            ua.Params,
-			TimeoutSeconds:    ua.TimeoutSeconds,
-			CreatedAt:         ua.CreatedAt,
-			CreatedBy:         ua.CreatedBy,
-			IsDeleted:         ua.IsDeleted,
-			ProjectionVersion: ua.ProjectionVersion,
-			Signature:         ua.Signature,
-			ParamsCanonical:   ua.ParamsCanonical,
-			Schedule:          ua.Schedule,
-		})
+		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow(ua))
 		deviceActionSet[ua.ID] = true
 	}
 
@@ -119,22 +120,7 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 		if deviceActionSet[ta.ID] {
 			continue
 		}
-		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow{
-			ID:                ta.ID,
-			Name:              ta.Name,
-			Description:       ta.Description,
-			ActionType:        ta.ActionType,
-			DesiredState:      ta.DesiredState,
-			Params:            ta.Params,
-			TimeoutSeconds:    ta.TimeoutSeconds,
-			CreatedAt:         ta.CreatedAt,
-			CreatedBy:         ta.CreatedBy,
-			IsDeleted:         ta.IsDeleted,
-			ProjectionVersion: ta.ProjectionVersion,
-			Signature:         ta.Signature,
-			ParamsCanonical:   ta.ParamsCanonical,
-			Schedule:          ta.Schedule,
-		})
+		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow(ta))
 		deviceActionSet[ta.ID] = true
 	}
 
