@@ -330,9 +330,22 @@ func TestResolveActions_TTYPermissionSource_BypassesDeviceExcluded(t *testing.T)
 }
 
 // A user with StartTerminal granted twice — direct role plus the same
-// permission inherited via a group — must produce exactly one row. The
-// DISTINCT ON in the query collapses the duplicate join paths.
-func TestResolveActions_TTYPermissionSource_DedupesAcrossRoles(t *testing.T) {
+// permission inherited via a group — must produce exactly one TTY
+// action row in the resolved set.
+//
+// What this test actually exercises: the JOIN keys on
+// users_projection.system_tty_action_id, and each user has at most
+// one such ID, so the SQL never produces duplicate candidate rows
+// for one user regardless of how many permission paths grant the
+// permission (the role check is an EXISTS filter, not a row
+// multiplier). The user-visible "one row per action" property is
+// therefore upheld by the SQL shape on its own; the resolver's
+// deviceActionSet dedupe and the SQL's DISTINCT ON (a.id) are both
+// defensive belt-and-braces against future query/schema changes
+// that could expose row multiplication, and this test guards the
+// observable end-state rather than the exact mechanism that
+// guarantees it.
+func TestResolveActions_TTYPermissionSource_DedupesOverlappingRoleGrants(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	operatorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
