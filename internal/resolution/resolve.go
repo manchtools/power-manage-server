@@ -2,6 +2,7 @@ package resolution
 
 import (
 	"context"
+	"log/slog"
 
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -44,16 +45,28 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 
 	// 3. Permission-derived TTY actions — independent of device assignment.
 	//
-	// Operational note: the query takes no deviceID and returns the
+	// TODO(bulk-resolve): the query takes no deviceID and returns the
 	// same global set on every call, so a future bulk caller that
 	// resolves many devices in one pass should hoist this fetch out
 	// of the per-device loop and pass the slice down (e.g. add a
-	// ResolveActionsForDevices helper). The single live caller today
-	// is the per-agent ProxySyncActions handler, where each call is
-	// already a one-off — no in-process cache needed at current scale.
+	// ResolveActionsForDevices helper used by ProxySyncActions). The
+	// single live caller today is the per-agent ProxySyncActions
+	// handler, where each call is already a one-off — no in-process
+	// cache needed at current scale.
+	//
+	// Failure mode: this layer is purely additive — it only appends
+	// rows, never removes them. A transient DB hiccup on this single
+	// query path should not be allowed to abort the whole resolve and
+	// break ProxySyncActions for every device, including devices with
+	// no TTY-related state. Log and continue with an empty TTY slice;
+	// the next agent sync after the DB recovers reconciles things,
+	// and pm-tty accounts that already exist on devices stay put in
+	// the meantime.
 	ttyActions, err := q.ListSystemTtyActionsForPermissionHolders(ctx)
 	if err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "permission-derived TTY action source failed; continuing without it",
+			"device_id", deviceID, "error", err)
+		ttyActions = nil
 	}
 
 	// 4. Device-layer excluded action IDs are needed only to filter the
@@ -95,6 +108,7 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 			ProjectionVersion: ua.ProjectionVersion,
 			Signature:         ua.Signature,
 			ParamsCanonical:   ua.ParamsCanonical,
+			Schedule:          ua.Schedule,
 		})
 		deviceActionSet[ua.ID] = true
 	}
@@ -119,6 +133,7 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 			ProjectionVersion: ta.ProjectionVersion,
 			Signature:         ta.Signature,
 			ParamsCanonical:   ta.ParamsCanonical,
+			Schedule:          ta.Schedule,
 		})
 		deviceActionSet[ta.ID] = true
 	}

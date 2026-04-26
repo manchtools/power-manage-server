@@ -2,6 +2,7 @@ package resolution_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -350,4 +352,43 @@ func TestResolveActions_TTYPermissionSource_DedupesAcrossRoles(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, actions, 1, "duplicate permission grants must collapse to one TTY action")
 	assert.Equal(t, ttyActionID, actions[0].ID)
+}
+
+// ttyFailingQuerier wraps a real Querier and forces the TTY query to
+// fail, leaving every other call delegated. Used to verify the
+// graceful-degradation contract on the permission-derived TTY layer.
+type ttyFailingQuerier struct {
+	resolution.Querier
+	err error
+}
+
+func (q ttyFailingQuerier) ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]db.ListSystemTtyActionsForPermissionHoldersRow, error) {
+	return nil, q.err
+}
+
+// TestResolveActions_TTYPermissionSource_DegradesGracefully locks in
+// the contract that a transient failure on the (purely additive)
+// permission-derived TTY layer must NOT abort the whole resolve.
+// ProxySyncActions stays available for every device — including
+// those with no TTY-related state — and the next sync after recovery
+// reconciles. Without this guarantee, a single DB hiccup on the new
+// query path would silently break agent syncs fleet-wide.
+func TestResolveActions_TTYPermissionSource_DegradesGracefully(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	// Plain device-layer assignment so we can prove the rest of the
+	// resolve pipeline still produces output.
+	actionID := testutil.CreateTestAction(t, st, adminID, "Survives TTY Failure", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "tty-failure-host")
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, 0)
+
+	q := ttyFailingQuerier{
+		Querier: st.Queries(),
+		err:     errors.New("simulated DB hiccup"),
+	}
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), q, deviceID)
+	require.NoError(t, err, "TTY layer failure must not abort the resolve")
+	require.Len(t, actions, 1)
+	assert.Equal(t, actionID, actions[0].ID)
 }
