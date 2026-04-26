@@ -15,10 +15,24 @@ import (
 )
 
 // SystemActionManager creates and maintains system-managed actions
-// (user provisioning and SSH access) for PM users. These actions are
-// stored in actions_projection and assigned to users via
-// assignments_projection, so the resolution engine picks them up
-// automatically for devices with assigned users.
+// (user provisioning, SSH access, TTY user) for PM users. The actions
+// are stored in actions_projection. Delivery to devices splits into
+// two paths:
+//
+//   - User-account and SSH-access actions are routed through
+//     assignments_projection, so the resolution engine picks them
+//     up automatically for devices with assigned users.
+//   - The TTY user action is the exception: it is linked to the
+//     owning user via users_projection.system_tty_action_id but is
+//     NOT routed through assignments_projection. Delivery is
+//     permission-derived in resolution.ResolveActionsForDevice —
+//     every device receives the TTY action of every user holding
+//     StartTerminal, regardless of assignment. See
+//     syncTtyUserAction below.
+//
+// Future system actions added here should follow the user-account /
+// SSH pattern and ride assignments unless they share TTY's "must
+// land on every device for permission holders" property.
 type SystemActionManager struct {
 	store  *store.Store
 	signer ActionSigner
@@ -375,11 +389,16 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 }
 
 // syncTtyUserAction ensures a dedicated pm-tty-<linux_username>
-// system User action exists for the given user so that when the
-// action is resolved onto the user's assigned devices the agent
-// creates the TTY account. The action uses nologin as the shell
-// (the agent temporarily activates it during a session), no home
-// directory, and the deterministic UID from the SDK's TTYUID helper.
+// system User action exists for the given user. Delivery is NOT
+// driven by an assignment — the action is linked to the user via
+// users_projection.system_tty_action_id and surfaced to devices by
+// resolution.ResolveActionsForDevice's permission-derived layer
+// (every device gets the TTY action of every user holding
+// StartTerminal). See the package-level comment on
+// SystemActionManager for the split rationale.
+// The action uses nologin as the shell (the agent temporarily
+// activates it during a session), no home directory, and the
+// deterministic UID from the SDK's TTYUID helper.
 func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
 	// Typed *pm.UserParams so the Go compiler rejects field-name
 	// typos. The previous map[string]any form accepted "system": true
@@ -410,14 +429,17 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 	actionName := "system:tty-user:" + user.ID
 
 	if user.SystemTtyActionID == "" {
-		// Create new system action
+		// Create new system action. We deliberately do NOT emit an
+		// AssignmentCreated event for the TTY action — delivery is
+		// driven by the permission-derived path in resolution.go,
+		// which materializes the pm-tty-<username> account on every
+		// device whenever the user holds the StartTerminal permission.
+		// Coupling delivery to a per-user assignment was the original
+		// bug: admins manage the fleet without being assigned to any
+		// individual device, so their TTY accounts never landed.
 		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create tty user action: %w", err)
-		}
-
-		if err := m.assignActionToUser(ctx, actionID, user.ID); err != nil {
-			return fmt.Errorf("assign tty user action: %w", err)
 		}
 
 		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", actionID); err != nil {

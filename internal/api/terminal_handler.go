@@ -102,18 +102,21 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	}
 	ttyUser := sdkterminal.TTYUsername(linuxUsername)
 
-	// Filter by the authenticated user's ID so users can only open
-	// terminal sessions on devices assigned to them (directly or via
-	// user groups). The SQL query's FilterUserID clause handles the
-	// assignment check — a non-assigned device looks like ErrNoRows,
-	// same as a genuinely missing device.
-	filterUserID := userCtx.ID
+	// Filter by the authenticated user's ID when the caller only has
+	// scoped (:assigned) access — they can only open sessions on
+	// devices assigned to them. Users with the unrestricted
+	// StartTerminal permission see all devices, matching the
+	// userFilterID(...) pattern used by every other handler that
+	// reads from the device projection. Pre-fix this was hardcoded
+	// to userCtx.ID, which masked admin access to bulk-enrolled
+	// (unassigned) devices.
+	filterUserID := userFilterID(ctx, "StartTerminal")
 	if _, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{
 		ID:           req.Msg.DeviceId,
-		FilterUserID: &filterUserID,
+		FilterUserID: filterUserID,
 	}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or not assigned to you")
+			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
 	}

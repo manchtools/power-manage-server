@@ -733,3 +733,49 @@ WHERE is_deleted = FALSE AND (
   ))
 )
 ORDER BY created_at DESC;
+
+-- Permission-derived TTY user actions.
+--
+-- Every user that holds the StartTerminal permission (directly or via
+-- a user-group role) and has a linked system_tty_action_id should
+-- have their pm-tty-<username> account materialized on every device,
+-- regardless of any assignment. The action-resolution layer queries
+-- this and merges the rows into the per-device action list, so a
+-- bulk-enrolled (unassigned) device still gets the TTY accounts it
+-- needs for terminal sessions to succeed.
+--
+-- DISTINCT ON (a.id) collapses the row when a user receives the
+-- StartTerminal permission via multiple roles or via direct + group
+-- grants — the resolver only wants each TTY action once.
+--
+-- Filtering rules: skip soft-deleted users, actions, roles, and
+-- groups so stale projection rows can't leak through and surface a
+-- TTY account that should have been cleaned up.
+-- name: ListSystemTtyActionsForPermissionHolders :many
+SELECT DISTINCT ON (a.id)
+       a.id, a.name, a.description, a.action_type, a.desired_state,
+       a.params, a.timeout_seconds, a.created_at, a.created_by,
+       a.is_deleted, a.projection_version,
+       a.signature, a.params_canonical, a.schedule
+FROM users_projection u
+JOIN actions_projection a
+  ON a.id = u.system_tty_action_id AND a.is_deleted = FALSE
+WHERE u.is_deleted = FALSE
+  AND u.system_tty_action_id <> ''
+  AND EXISTS (
+    SELECT 1 FROM roles_projection r
+    WHERE r.is_deleted = FALSE
+      AND 'StartTerminal' = ANY(r.permissions)
+      AND (
+        r.id IN (
+          SELECT ur.role_id FROM user_roles_projection ur
+          WHERE ur.user_id = u.id
+        )
+        OR r.id IN (
+          SELECT ugr.role_id FROM user_group_roles_projection ugr
+          JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+          JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+          WHERE ugm.user_id = u.id
+        )
+      )
+  );
