@@ -2,7 +2,6 @@ package resolution
 
 import (
 	"context"
-	"log/slog"
 
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -64,19 +63,20 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 	// handler, where each call is already a one-off — no in-process
 	// cache needed at current scale.
 	//
-	// Failure mode: this layer is purely additive — it only appends
-	// rows, never removes them. A transient DB hiccup on this single
-	// query path should not be allowed to abort the whole resolve and
-	// break ProxySyncActions for every device, including devices with
-	// no TTY-related state. Log and continue with an empty TTY slice;
-	// the next agent sync after the DB recovers reconciles things,
-	// and pm-tty accounts that already exist on devices stay put in
-	// the meantime.
+	// Failure mode: a previous revision of this code "gracefully
+	// degraded" the TTY query by logging and continuing with an
+	// empty slice. That was actively destructive: agent SyncActions
+	// (agent/internal/scheduler/scheduler.go) treats the server's
+	// returned action list as authoritative, and USER actions hit
+	// shouldRevertOnUnassign — so any TTY action missing from a
+	// successful sync response triggers DESIRED_STATE_ABSENT on the
+	// device, deleting the pm-tty-<username> account. Returning the
+	// error here makes ProxySyncActions fail fast; the agent retries
+	// on its sync interval and nothing on disk changes in the
+	// meantime.
 	ttyActions, err := q.ListSystemTtyActionsForPermissionHolders(ctx)
 	if err != nil {
-		slog.WarnContext(ctx, "permission-derived TTY action source failed; continuing without it",
-			"device_id", deviceID, "error", err)
-		ttyActions = nil
+		return nil, err
 	}
 
 	// 4. Device-layer excluded action IDs are needed only to filter the

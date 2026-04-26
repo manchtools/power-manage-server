@@ -356,7 +356,12 @@ func TestResolveActions_TTYPermissionSource_DedupesAcrossRoles(t *testing.T) {
 
 // ttyFailingQuerier wraps a real Querier and forces the TTY query to
 // fail, leaving every other call delegated. Used to verify the
-// graceful-degradation contract on the permission-derived TTY layer.
+// fail-fast contract: a TTY query error must propagate up, NOT
+// degrade to an empty slice. The agent's SyncActions treats the
+// server's action list as authoritative and reverts USER actions
+// that disappear from a successful sync response — so silently
+// dropping the TTY rows would tear down every pm-tty-<username>
+// account across the fleet on the next sync.
 type ttyFailingQuerier struct {
 	resolution.Querier
 	err error
@@ -366,29 +371,26 @@ func (q ttyFailingQuerier) ListSystemTtyActionsForPermissionHolders(ctx context.
 	return nil, q.err
 }
 
-// TestResolveActions_TTYPermissionSource_DegradesGracefully locks in
-// the contract that a transient failure on the (purely additive)
-// permission-derived TTY layer must NOT abort the whole resolve.
-// ProxySyncActions stays available for every device — including
-// those with no TTY-related state — and the next sync after recovery
-// reconciles. Without this guarantee, a single DB hiccup on the new
-// query path would silently break agent syncs fleet-wide.
-func TestResolveActions_TTYPermissionSource_DegradesGracefully(t *testing.T) {
+// TestResolveActions_TTYPermissionSource_FailsFastOnTtyError locks in
+// the rc13 safety contract: when ListSystemTtyActionsForPermissionHolders
+// fails, ResolveActionsForDevice MUST surface the error rather than
+// quietly continuing without TTY rows. ProxySyncActions then fails
+// the sync, the agent retries on its interval, and nothing on disk
+// changes in the meantime. The previous "graceful degradation" path
+// was actively destructive — see the failure-mode note in resolve.go.
+func TestResolveActions_TTYPermissionSource_FailsFastOnTtyError(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 
-	// Plain device-layer assignment so we can prove the rest of the
-	// resolve pipeline still produces output.
 	actionID := testutil.CreateTestAction(t, st, adminID, "Survives TTY Failure", int(pm.ActionType_ACTION_TYPE_SHELL))
 	deviceID := testutil.CreateTestDevice(t, st, "tty-failure-host")
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, 0)
 
+	sentinel := errors.New("simulated DB hiccup")
 	q := ttyFailingQuerier{
 		Querier: st.Queries(),
-		err:     errors.New("simulated DB hiccup"),
+		err:     sentinel,
 	}
-	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), q, deviceID)
-	require.NoError(t, err, "TTY layer failure must not abort the resolve")
-	require.Len(t, actions, 1)
-	assert.Equal(t, actionID, actions[0].ID)
+	_, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), q, deviceID)
+	require.ErrorIs(t, err, sentinel, "TTY layer failure must propagate up, not degrade silently")
 }
