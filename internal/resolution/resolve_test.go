@@ -289,6 +289,40 @@ func TestResolveActions_TTYPermissionSource_NoPermissionExcluded(t *testing.T) {
 	assert.Empty(t, actions, "user without StartTerminal must not have TTY action shipped")
 }
 
+// TestResolveActions_TTYPermissionSource_BypassesDeviceExcluded locks
+// in the rc13 contract: the permission-derived TTY layer is exempt
+// from device-layer EXCLUDED. An operator who attaches an EXCLUDED
+// assignment for a TTY action to a device must NOT be able to lock
+// terminal access out — terminal access is the system's escape
+// hatch, and cleanup of TTY accounts is driven by the user-deletion
+// path, never by an operator's per-device exclusion. The contrast
+// with TestResolveActions_DeviceExcludedBlocksUserRequired (which
+// honors EXCLUDED for assignment-derived rows) is the point of this
+// test: same exclusion event, different outcome by layer.
+func TestResolveActions_TTYPermissionSource_BypassesDeviceExcluded(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	operatorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	roleID := testutil.CreateTestRole(t, st, adminID, "tty-bypass", []string{"StartTerminal"})
+	testutil.AssignRoleToTestUser(t, st, adminID, operatorID, roleID)
+
+	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
+	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+
+	deviceID := testutil.CreateTestDevice(t, st, "exclusion-attempt-host")
+
+	// Operator-style attempt to lock the TTY action out via a
+	// device-layer EXCLUDED assignment (mode=2). The permission-
+	// derived layer must ignore it.
+	testutil.CreateTestAssignment(t, st, adminID, "action", ttyActionID, "device", deviceID, 2)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "device-layer EXCLUDED must NOT block permission-derived TTY actions")
+	assert.Equal(t, ttyActionID, actions[0].ID)
+}
+
 // A user with StartTerminal granted twice — direct role plus the same
 // permission inherited via a group — must produce exactly one row. The
 // DISTINCT ON in the query collapses the duplicate join paths.

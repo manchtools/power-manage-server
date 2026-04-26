@@ -43,6 +43,14 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 	}
 
 	// 3. Permission-derived TTY actions — independent of device assignment.
+	//
+	// Operational note: the query takes no deviceID and returns the
+	// same global set on every call, so a future bulk caller that
+	// resolves many devices in one pass should hoist this fetch out
+	// of the per-device loop and pass the slice down (e.g. add a
+	// ResolveActionsForDevices helper). The single live caller today
+	// is the per-agent ProxySyncActions handler, where each call is
+	// already a one-off — no in-process cache needed at current scale.
 	ttyActions, err := q.ListSystemTtyActionsForPermissionHolders(ctx)
 	if err != nil {
 		return nil, err
