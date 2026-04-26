@@ -65,14 +65,27 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	if auth.HasPermission(ctx, "CreateToken") {
-		// Unrestricted: can set any token configuration
+		// Unrestricted: can set any token configuration, including
+		// choosing who owns the resulting token. owner_id is honored
+		// literally — empty means ownerless (devices enrolled via the
+		// token are not auto-assigned to anyone, useful for bulk /
+		// imaging workflows). When non-empty, it must reference an
+		// existing user.
 		eventData["one_time"] = req.Msg.OneTime
 		eventData["max_uses"] = req.Msg.MaxUses
 		if req.Msg.ExpiresAt != nil && req.Msg.ExpiresAt.IsValid() {
 			eventData["expires_at"] = req.Msg.ExpiresAt.AsTime().Format(time.RFC3339)
 		}
+		if req.Msg.OwnerId != "" {
+			if _, err := h.store.Queries().GetUserByID(ctx, req.Msg.OwnerId); err != nil {
+				return nil, handleGetError(ctx, err, ErrUserNotFound, "owner user not found")
+			}
+			eventData["owner_id"] = req.Msg.OwnerId
+		}
 	} else {
-		// Self-scoped: one-time use, 7-day validity, owned by creator
+		// Self-scoped: one-time use, 7-day validity, owned by creator.
+		// Any owner_id supplied by the caller is ignored — the :self
+		// scope is for users minting tokens for their own devices.
 		eventData["one_time"] = true
 		eventData["max_uses"] = int32(1)
 		eventData["expires_at"] = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)

@@ -27,6 +27,55 @@ func TestCreateToken_Admin(t *testing.T) {
 	assert.NotEmpty(t, resp.Msg.Token.Id)
 	assert.Equal(t, "Test Token", resp.Msg.Token.Name)
 	assert.NotEmpty(t, resp.Msg.Token.Value) // Value only returned on creation
+	// Admin omitted owner_id → ownerless token. Devices enrolled via
+	// this token won't be auto-assigned to the admin who created it.
+	assert.Empty(t, resp.Msg.Token.OwnerId)
+}
+
+func TestCreateToken_Admin_OwnerSelf(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewTokenHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.CreateToken(ctx, connect.NewRequest(&pm.CreateTokenRequest{
+		Name:    "Self-owned",
+		OwnerId: adminID,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, adminID, resp.Msg.Token.OwnerId)
+}
+
+func TestCreateToken_Admin_OwnerOtherUser(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewTokenHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	otherID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.CreateToken(ctx, connect.NewRequest(&pm.CreateTokenRequest{
+		Name:    "Owned by other",
+		OwnerId: otherID,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, otherID, resp.Msg.Token.OwnerId)
+}
+
+func TestCreateToken_Admin_OwnerNotFound(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewTokenHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.CreateToken(ctx, connect.NewRequest(&pm.CreateTokenRequest{
+		Name:    "Bad Owner",
+		OwnerId: "01ARZ3NDEKTSV4RRFFQ69G5FAV", // valid ULID, no such user
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
 func TestCreateToken_User(t *testing.T) {
@@ -34,13 +83,19 @@ func TestCreateToken_User(t *testing.T) {
 	h := api.NewTokenHandler(st, slog.Default())
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	otherID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
 	ctx := testutil.UserContext(userID)
 
+	// :self scope ignores any owner_id the caller passes — the token
+	// is always owned by the creator. Pass another user's ID to prove
+	// the server-side override holds.
 	resp, err := h.CreateToken(ctx, connect.NewRequest(&pm.CreateTokenRequest{
-		Name: "User Token",
+		Name:    "User Token",
+		OwnerId: otherID,
 	}))
 	require.NoError(t, err)
 	assert.True(t, resp.Msg.Token.OneTime) // Non-admin tokens are always one-time
+	assert.Equal(t, userID, resp.Msg.Token.OwnerId)
 }
 
 func TestGetToken(t *testing.T) {
