@@ -203,7 +203,11 @@ func TestCreateAssignment_UserTargetViaHandler(t *testing.T) {
 // linkSystemTtyAction stamps users_projection.system_tty_action_id by
 // emitting the projector-recognised UserSystemActionLinked event. The
 // resolver's permission-derived TTY query joins on this column.
-func linkSystemTtyAction(t *testing.T, st *store.Store, actorID, userID, actionID string) {
+//
+// Mirrors production actor identity (ActorType "system", ActorID
+// "system") used by SystemActionManager.linkSystemAction so the tests
+// exercise the same audit/projection code path that ships.
+func linkSystemTtyAction(t *testing.T, st *store.Store, userID, actionID string) {
 	t.Helper()
 	err := st.AppendEvent(context.Background(), store.Event{
 		StreamType: "user",
@@ -213,8 +217,8 @@ func linkSystemTtyAction(t *testing.T, st *store.Store, actorID, userID, actionI
 			"field":     "system_tty_action_id",
 			"action_id": actionID,
 		},
-		ActorType: "user",
-		ActorID:   actorID,
+		ActorType: "system",
+		ActorID:   "system",
 	})
 	if err != nil {
 		t.Fatalf("link tty action: %v", err)
@@ -238,7 +242,7 @@ func TestResolveActions_TTYPermissionSource_DirectRole(t *testing.T) {
 
 	// Operator's TTY action; no assignment to anything.
 	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
-	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+	linkSystemTtyAction(t, st, operatorID, ttyActionID)
 
 	// Brand-new, totally unassigned device — the bulk-enrollment shape.
 	deviceID := testutil.CreateTestDevice(t, st, "bulk-enrolled")
@@ -261,7 +265,7 @@ func TestResolveActions_TTYPermissionSource_ViaUserGroup(t *testing.T) {
 	testutil.AssignRoleToTestGroup(t, st, adminID, groupID, roleID)
 
 	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
-	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+	linkSystemTtyAction(t, st, operatorID, ttyActionID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "bulk-enrolled-2")
 
@@ -282,7 +286,7 @@ func TestResolveActions_TTYPermissionSource_NoPermissionExcluded(t *testing.T) {
 	noPermID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
 
 	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+noPermID, int(pm.ActionType_ACTION_TYPE_USER))
-	linkSystemTtyAction(t, st, adminID, noPermID, ttyActionID)
+	linkSystemTtyAction(t, st, noPermID, ttyActionID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "no-perm-device")
 
@@ -310,7 +314,7 @@ func TestResolveActions_TTYPermissionSource_BypassesDeviceExcluded(t *testing.T)
 	testutil.AssignRoleToTestUser(t, st, adminID, operatorID, roleID)
 
 	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
-	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+	linkSystemTtyAction(t, st, operatorID, ttyActionID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "exclusion-attempt-host")
 
@@ -344,7 +348,7 @@ func TestResolveActions_TTYPermissionSource_DedupesAcrossRoles(t *testing.T) {
 	testutil.AssignRoleToTestGroup(t, st, adminID, groupID, groupRoleID)
 
 	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
-	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+	linkSystemTtyAction(t, st, operatorID, ttyActionID)
 
 	deviceID := testutil.CreateTestDevice(t, st, "dedupe-host")
 
