@@ -11,15 +11,24 @@ type Querier interface {
 	ListResolvedActionsForDevice(ctx context.Context, targetID string) ([]db.ListResolvedActionsForDeviceRow, error)
 	ListDeviceLayerExcludedActionIDs(ctx context.Context, targetID string) ([]string, error)
 	ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]db.ListUserLayerResolvedActionsForDeviceRow, error)
+	ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]db.ListSystemTtyActionsForPermissionHoldersRow, error)
 }
 
-// ResolveActionsForDevice queries both device-layer and user-layer assignments,
-// merges them with cross-layer exclusion rules, and returns the final action list.
+// ResolveActionsForDevice queries device-layer assignments, user-layer
+// assignments, and the permission-derived TTY action source, merges them
+// with cross-layer exclusion rules, and returns the final action list.
 //
 // Cross-layer exclusion rules:
-//   - Device EXCLUDED → blocks action entirely (not returned from either layer)
+//   - Device EXCLUDED → blocks the action for assignment-derived layers
 //   - User EXCLUDED → only removes from user layer, device layer unaffected
 //   - Same action in both layers → device layer wins (no duplicates)
+//
+// The permission-derived TTY layer (every user with StartTerminal needs
+// their pm-tty-<username> account on every device) deliberately bypasses
+// device-layer EXCLUDED — terminal access is the system's escape hatch
+// and must never be turned off by an operator-side exclusion. User
+// deletion drives cleanup through a different path (the system action
+// itself is removed, agents drop the account on the next sync).
 func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([]db.ListResolvedActionsForDeviceRow, error) {
 	// 1. Get device-layer resolved actions (existing query, unchanged)
 	deviceActions, err := q.ListResolvedActionsForDevice(ctx, deviceID)
@@ -33,21 +42,24 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 		return nil, err
 	}
 
-	// If no user-layer actions, return device layer only (fast path)
-	if len(userActions) == 0 {
-		return deviceActions, nil
-	}
-
-	// 3. Get device-layer excluded action IDs
-	excludedIDs, err := q.ListDeviceLayerExcludedActionIDs(ctx, deviceID)
+	// 3. Permission-derived TTY actions — independent of device assignment.
+	ttyActions, err := q.ListSystemTtyActionsForPermissionHolders(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build lookup sets
-	excludedSet := make(map[string]bool, len(excludedIDs))
-	for _, id := range excludedIDs {
-		excludedSet[id] = true
+	// 4. Device-layer excluded action IDs are needed only to filter the
+	//    user-layer; the TTY layer is exclusion-exempt by design.
+	var excludedSet map[string]bool
+	if len(userActions) > 0 {
+		excludedIDs, err := q.ListDeviceLayerExcludedActionIDs(ctx, deviceID)
+		if err != nil {
+			return nil, err
+		}
+		excludedSet = make(map[string]bool, len(excludedIDs))
+		for _, id := range excludedIDs {
+			excludedSet[id] = true
+		}
 	}
 
 	deviceActionSet := make(map[string]bool, len(deviceActions))
@@ -55,7 +67,8 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 		deviceActionSet[a.ID] = true
 	}
 
-	// 4. Merge: add user-layer actions that aren't device-excluded or duplicates
+	// 5. Merge user-layer actions: drop device-excluded and dedupe
+	//    against the device layer.
 	for _, ua := range userActions {
 		if excludedSet[ua.ID] || deviceActionSet[ua.ID] {
 			continue
@@ -76,6 +89,30 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 			ParamsCanonical:   ua.ParamsCanonical,
 		})
 		deviceActionSet[ua.ID] = true
+	}
+
+	// 6. Merge permission-derived TTY actions: dedupe against everything
+	//    already in the result, but never honor device-layer exclusion.
+	for _, ta := range ttyActions {
+		if deviceActionSet[ta.ID] {
+			continue
+		}
+		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow{
+			ID:                ta.ID,
+			Name:              ta.Name,
+			Description:       ta.Description,
+			ActionType:        ta.ActionType,
+			DesiredState:      ta.DesiredState,
+			Params:            ta.Params,
+			TimeoutSeconds:    ta.TimeoutSeconds,
+			CreatedAt:         ta.CreatedAt,
+			CreatedBy:         ta.CreatedBy,
+			IsDeleted:         ta.IsDeleted,
+			ProjectionVersion: ta.ProjectionVersion,
+			Signature:         ta.Signature,
+			ParamsCanonical:   ta.ParamsCanonical,
+		})
+		deviceActionSet[ta.ID] = true
 	}
 
 	return deviceActions, nil

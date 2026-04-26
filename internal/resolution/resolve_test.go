@@ -1,6 +1,7 @@
 package resolution_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/resolution"
+	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -194,4 +196,124 @@ func TestCreateAssignment_UserTargetViaHandler(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, resp.Msg.Assignments, 1)
 	assert.Equal(t, "user", resp.Msg.Assignments[0].TargetType)
+}
+
+// linkSystemTtyAction stamps users_projection.system_tty_action_id by
+// emitting the projector-recognised UserSystemActionLinked event. The
+// resolver's permission-derived TTY query joins on this column.
+func linkSystemTtyAction(t *testing.T, st *store.Store, actorID, userID, actionID string) {
+	t.Helper()
+	err := st.AppendEvent(context.Background(), store.Event{
+		StreamType: "user",
+		StreamID:   userID,
+		EventType:  "UserSystemActionLinked",
+		Data: map[string]any{
+			"field":     "system_tty_action_id",
+			"action_id": actionID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("link tty action: %v", err)
+	}
+}
+
+// TestResolveActions_TTYPermissionSource is the rc13 contract:
+// when a user holds StartTerminal (directly or via group) and has
+// system_tty_action_id linked, the resolver returns that TTY action
+// for any device — including a freshly enrolled, unassigned device.
+// Pre-fix this hung off ordinary user assignment, so bulk-enrolled
+// devices never received the pm-tty-<username> account.
+func TestResolveActions_TTYPermissionSource_DirectRole(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	// Operator user with StartTerminal via a directly-granted role.
+	operatorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	roleID := testutil.CreateTestRole(t, st, adminID, "tty-operator", []string{"StartTerminal"})
+	testutil.AssignRoleToTestUser(t, st, adminID, operatorID, roleID)
+
+	// Operator's TTY action; no assignment to anything.
+	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
+	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+
+	// Brand-new, totally unassigned device — the bulk-enrollment shape.
+	deviceID := testutil.CreateTestDevice(t, st, "bulk-enrolled")
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "TTY action must reach unassigned devices for permission holders")
+	assert.Equal(t, ttyActionID, actions[0].ID)
+}
+
+func TestResolveActions_TTYPermissionSource_ViaUserGroup(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	operatorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+
+	// Permission flows: user → group → role → permission.
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "tty-team")
+	roleID := testutil.CreateTestRole(t, st, adminID, "tty-via-group", []string{"StartTerminal"})
+	testutil.AddUserToTestGroup(t, st, adminID, groupID, operatorID)
+	testutil.AssignRoleToTestGroup(t, st, adminID, groupID, roleID)
+
+	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
+	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+
+	deviceID := testutil.CreateTestDevice(t, st, "bulk-enrolled-2")
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, ttyActionID, actions[0].ID)
+}
+
+// Linked-but-unprivileged users must NOT have their TTY action shipped
+// to devices — the system-action linkage alone is not authority. This
+// is the cleanup-safety property that the user-deletion path relies on:
+// revoking StartTerminal must drop the TTY account from the device's
+// resolved action set on the next sync.
+func TestResolveActions_TTYPermissionSource_NoPermissionExcluded(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	noPermID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+
+	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+noPermID, int(pm.ActionType_ACTION_TYPE_USER))
+	linkSystemTtyAction(t, st, adminID, noPermID, ttyActionID)
+
+	deviceID := testutil.CreateTestDevice(t, st, "no-perm-device")
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	assert.Empty(t, actions, "user without StartTerminal must not have TTY action shipped")
+}
+
+// A user with StartTerminal granted twice — direct role plus the same
+// permission inherited via a group — must produce exactly one row. The
+// DISTINCT ON in the query collapses the duplicate join paths.
+func TestResolveActions_TTYPermissionSource_DedupesAcrossRoles(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	operatorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+
+	// Direct role grant
+	directRoleID := testutil.CreateTestRole(t, st, adminID, "tty-direct", []string{"StartTerminal"})
+	testutil.AssignRoleToTestUser(t, st, adminID, operatorID, directRoleID)
+
+	// Plus the same permission via a group role
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "tty-dedupe-team")
+	groupRoleID := testutil.CreateTestRole(t, st, adminID, "tty-via-group", []string{"StartTerminal"})
+	testutil.AddUserToTestGroup(t, st, adminID, groupID, operatorID)
+	testutil.AssignRoleToTestGroup(t, st, adminID, groupID, groupRoleID)
+
+	ttyActionID := testutil.CreateTestAction(t, st, adminID, "system:tty-user:"+operatorID, int(pm.ActionType_ACTION_TYPE_USER))
+	linkSystemTtyAction(t, st, adminID, operatorID, ttyActionID)
+
+	deviceID := testutil.CreateTestDevice(t, st, "dedupe-host")
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1, "duplicate permission grants must collapse to one TTY action")
+	assert.Equal(t, ttyActionID, actions[0].ID)
 }

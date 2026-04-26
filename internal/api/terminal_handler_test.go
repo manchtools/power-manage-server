@@ -157,6 +157,32 @@ func TestStartTerminal_DeviceNotFound(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connectErr.Code())
 }
 
+// TestStartTerminal_AdminUnassigned covers the bulk-enrollment case
+// surfaced by manchtools/power-manage-server#85: a device that no
+// user is assigned to (no direct assignment, no group membership)
+// must still be reachable by an admin who holds the unrestricted
+// StartTerminal permission. The previous hardcoded
+// `filterUserID := userCtx.ID` collapsed admin and :assigned users
+// into the same scope and surfaced as "device not found" for any
+// device the admin hadn't explicitly assigned to themselves.
+func TestStartTerminal_AdminUnassigned(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h, _ := newTerminalHandler(t, st)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setLinuxUsername(t, st, adminID, "alice")
+	deviceID := testutil.CreateTestDevice(t, st, "unassigned-host")
+	// Deliberately no AssignDeviceToUser call — the device is
+	// ownerless / unassigned, the bulk-enrollment scenario.
+
+	resp, err := h.StartTerminal(testutil.AdminContext(adminID), connect.NewRequest(&pm.StartTerminalRequest{
+		DeviceId: deviceID,
+	}))
+	require.NoError(t, err)
+	assert.NotEmpty(t, resp.Msg.SessionId)
+	assert.Equal(t, "pm-tty-alice", resp.Msg.TtyUser)
+}
+
 func TestStartTerminal_NotAuthenticated(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h, _ := newTerminalHandler(t, st)

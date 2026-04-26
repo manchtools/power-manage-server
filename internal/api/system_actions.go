@@ -410,14 +410,17 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 	actionName := "system:tty-user:" + user.ID
 
 	if user.SystemTtyActionID == "" {
-		// Create new system action
+		// Create new system action. We deliberately do NOT emit an
+		// AssignmentCreated event for the TTY action — delivery is
+		// driven by the permission-derived path in resolution.go,
+		// which materializes the pm-tty-<username> account on every
+		// device whenever the user holds the StartTerminal permission.
+		// Coupling delivery to a per-user assignment was the original
+		// bug: admins manage the fleet without being assigned to any
+		// individual device, so their TTY accounts never landed.
 		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create tty user action: %w", err)
-		}
-
-		if err := m.assignActionToUser(ctx, actionID, user.ID); err != nil {
-			return fmt.Errorf("assign tty user action: %w", err)
 		}
 
 		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", actionID); err != nil {
