@@ -27,4 +27,7 @@ knowledge_base:
     scope: auto
   linked_repositories:
     - repository: manchtools/power-manage-sdk
-    - repository: manchtools/power-manage-agent
+      instructions: >
+        Primary upstream dependency for server wire contracts. Use this
+        repository to validate proto compatibility, enum semantics, and shared
+        SDK API expectations when reviewing server changes.
