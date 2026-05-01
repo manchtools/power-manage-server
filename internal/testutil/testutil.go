@@ -136,6 +136,12 @@ func CreateTestDevice(t *testing.T, st *store.Store, hostname string) string {
 // CreateTestAction creates an action via events and returns the action ID.
 func CreateTestAction(t *testing.T, st *store.Store, actorID, name string, actionType int) string {
 	t.Helper()
+	return CreateTestActionWithDesiredState(t, st, actorID, name, actionType, 0)
+}
+
+// CreateTestActionWithDesiredState creates an action via events with an explicit desired_state.
+func CreateTestActionWithDesiredState(t *testing.T, st *store.Store, actorID, name string, actionType, desiredState int) string {
+	t.Helper()
 	ctx := context.Background()
 	id := NewID()
 
@@ -146,6 +152,7 @@ func CreateTestAction(t *testing.T, st *store.Store, actorID, name string, actio
 		Data: map[string]any{
 			"name":            name,
 			"action_type":     actionType,
+			"desired_state":   desiredState,
 			"params":          map[string]any{},
 			"timeout_seconds": 300,
 		},
@@ -448,6 +455,26 @@ func AssignDeviceToUser(t *testing.T, st *store.Store, actorID, deviceID, userID
 	}
 }
 
+// AddDeviceToTestGroup adds a device to a device group via events.
+func AddDeviceToTestGroup(t *testing.T, st *store.Store, actorID, groupID, deviceID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "device_group",
+		StreamID:   groupID,
+		EventType:  "DeviceGroupMemberAdded",
+		Data: map[string]any{
+			"device_id": deviceID,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("add device to test group: %v", err)
+	}
+}
+
 // CreateTestAssignment creates an assignment via events and returns its ID.
 func CreateTestAssignment(t *testing.T, st *store.Store, actorID, sourceType, sourceID, targetType, targetID string, mode int) string {
 	t.Helper()
@@ -473,6 +500,48 @@ func CreateTestAssignment(t *testing.T, st *store.Store, actorID, sourceType, so
 	}
 
 	return id
+}
+
+// AddActionToTestSet adds an action to an action set via events.
+func AddActionToTestSet(t *testing.T, st *store.Store, actorID, setID, actionID string, sortOrder int) {
+	t.Helper()
+	ctx := context.Background()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set",
+		StreamID:   setID,
+		EventType:  "ActionSetMemberAdded",
+		Data: map[string]any{
+			"action_id":  actionID,
+			"sort_order": sortOrder,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("add action to test set: %v", err)
+	}
+}
+
+// AddActionSetToTestDefinition adds an action set to a definition via events.
+func AddActionSetToTestDefinition(t *testing.T, st *store.Store, actorID, definitionID, actionSetID string, sortOrder int) {
+	t.Helper()
+	ctx := context.Background()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "definition",
+		StreamID:   definitionID,
+		EventType:  "DefinitionMemberAdded",
+		Data: map[string]any{
+			"action_set_id": actionSetID,
+			"sort_order":    sortOrder,
+		},
+		ActorType: "user",
+		ActorID:   actorID,
+	})
+	if err != nil {
+		t.Fatalf("add action set to test definition: %v", err)
+	}
 }
 
 // NewEncryptor creates an Encryptor with a test key.
@@ -555,12 +624,12 @@ func CreateTestIdentityProvider(t *testing.T, st *store.Store, enc *crypto.Encry
 			"name":                    name,
 			"slug":                    slug,
 			"provider_type":           "oidc",
-			"client_id":              "test-client-id",
+			"client_id":               "test-client-id",
 			"client_secret_encrypted": encSecret,
-			"issuer_url":             "https://idp.example.com",
-			"scopes":                 []string{"openid", "profile", "email"},
-			"auto_create_users":      false,
-			"auto_link_by_email":     false,
+			"issuer_url":              "https://idp.example.com",
+			"scopes":                  []string{"openid", "profile", "email"},
+			"auto_create_users":       false,
+			"auto_link_by_email":      false,
 		},
 		ActorType: "user",
 		ActorID:   actorID,
