@@ -345,6 +345,10 @@ func (s *ControlService) UpdateActionSetDescription(ctx context.Context, req *co
 	return s.actionSet.UpdateActionSetDescription(ctx, req)
 }
 
+func (s *ControlService) UpdateActionSetSchedule(ctx context.Context, req *connect.Request[pm.UpdateActionSetScheduleRequest]) (*connect.Response[pm.UpdateActionSetResponse], error) {
+	return s.actionSet.UpdateActionSetSchedule(ctx, req)
+}
+
 func (s *ControlService) DeleteActionSet(ctx context.Context, req *connect.Request[pm.DeleteActionSetRequest]) (*connect.Response[pm.DeleteActionSetResponse], error) {
 	return s.actionSet.DeleteActionSet(ctx, req)
 }
@@ -380,6 +384,10 @@ func (s *ControlService) RenameDefinition(ctx context.Context, req *connect.Requ
 
 func (s *ControlService) UpdateDefinitionDescription(ctx context.Context, req *connect.Request[pm.UpdateDefinitionDescriptionRequest]) (*connect.Response[pm.UpdateDefinitionResponse], error) {
 	return s.definition.UpdateDefinitionDescription(ctx, req)
+}
+
+func (s *ControlService) UpdateDefinitionSchedule(ctx context.Context, req *connect.Request[pm.UpdateDefinitionScheduleRequest]) (*connect.Response[pm.UpdateDefinitionResponse], error) {
+	return s.definition.UpdateDefinitionSchedule(ctx, req)
 }
 
 func (s *ControlService) DeleteDefinition(ctx context.Context, req *connect.Request[pm.DeleteDefinitionRequest]) (*connect.Response[pm.DeleteDefinitionResponse], error) {

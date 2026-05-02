@@ -21,7 +21,8 @@ func TestCreateDefinition(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateDefinition(ctx, connect.NewRequest(&pm.CreateDefinitionRequest{
-		Name: "Full Deploy",
+		Name:     "Full Deploy",
+		Schedule: &pm.ActionSchedule{IntervalHours: 8},
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Definition.Id)

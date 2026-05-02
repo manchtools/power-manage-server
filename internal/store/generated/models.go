@@ -28,6 +28,7 @@ type ActionSetsProjection struct {
 	IsDeleted         bool       `json:"is_deleted"`
 	ProjectionVersion int64      `json:"projection_version"`
 	UpdatedAt         *time.Time `json:"updated_at"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 type ActionsProjection struct {
@@ -132,6 +133,7 @@ type DefinitionsProjection struct {
 	IsDeleted         bool       `json:"is_deleted"`
 	ProjectionVersion int64      `json:"projection_version"`
 	UpdatedAt         *time.Time `json:"updated_at"`
+	Schedule          []byte     `json:"schedule"`
 }
 
 type DeviceAssignedGroupsProjection struct {

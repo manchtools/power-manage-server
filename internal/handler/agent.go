@@ -773,7 +773,10 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))
 	}
 
-	h.logger.Info("returning synced actions", "device_id", deviceID, "count", len(resp.Actions), "sync_interval_minutes", resp.SyncIntervalMinutes)
+	h.logger.Info("returning synced actions", "device_id", deviceID,
+		"standalone_count", len(resp.StandaloneActions),
+		"group_count", len(resp.GroupedActions),
+		"sync_interval_minutes", resp.SyncIntervalMinutes)
 
 	return connect.NewResponse(resp), nil
 }

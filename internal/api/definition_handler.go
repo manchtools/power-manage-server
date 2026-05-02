@@ -50,6 +50,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
+			"schedule":    scheduleToMap(req.Msg.Schedule),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -155,6 +156,45 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		ActorType: "user",
 		ActorID:   userCtx.ID,
 	}, "failed to rename definition"); err != nil {
+		return nil, err
+	}
+
+	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
+	}
+
+	h.enqueueDefinitionReindex(ctx, def)
+
+	return connect.NewResponse(&pm.UpdateDefinitionResponse{
+		Definition: h.definitionToProto(def),
+	}), nil
+}
+
+// UpdateDefinitionSchedule updates a definition's schedule. The
+// definition's schedule triggers every action in every member set when
+// it fires; sets and their member actions never run on their own when
+// assigned via this definition.
+func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *connect.Request[pm.UpdateDefinitionScheduleRequest]) (*connect.Response[pm.UpdateDefinitionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "definition",
+		StreamID:   req.Msg.Id,
+		EventType:  "DefinitionScheduleUpdated",
+		Data: map[string]any{
+			"schedule": scheduleToMap(req.Msg.Schedule),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}, "failed to update schedule"); err != nil {
 		return nil, err
 	}
 
@@ -395,6 +435,7 @@ func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.De
 		Description: d.Description,
 		MemberCount: d.MemberCount,
 		CreatedBy:   d.CreatedBy,
+		Schedule:    scheduleFromJSON(d.Schedule),
 	}
 
 	if d.CreatedAt != nil {

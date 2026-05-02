@@ -21,7 +21,8 @@ func TestCreateActionSet(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateActionSet(ctx, connect.NewRequest(&pm.CreateActionSetRequest{
-		Name: "Web Server Setup",
+		Name:     "Web Server Setup",
+		Schedule: &pm.ActionSchedule{IntervalHours: 8},
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Set.Id)

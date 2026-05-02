@@ -82,7 +82,7 @@ func TestProxySyncActions_NoAssignments(t *testing.T) {
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.Actions)
+	assert.Empty(t, resp.Msg.StandaloneActions)
 }
 
 func TestProxySyncActions_WithAssignment(t *testing.T) {
@@ -100,8 +100,8 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
-	assert.Len(t, resp.Msg.Actions, 1)
-	assert.Equal(t, actionID, resp.Msg.Actions[0].Id.Value)
+	assert.Len(t, resp.Msg.StandaloneActions, 1)
+	assert.Equal(t, actionID, resp.Msg.StandaloneActions[0].Id.Value)
 }
 
 func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
@@ -118,9 +118,9 @@ func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.Actions, 1)
-	assert.Equal(t, actionID, resp.Msg.Actions[0].Id.Value)
-	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, resp.Msg.Actions[0].DesiredState)
+	require.Len(t, resp.Msg.StandaloneActions, 1)
+	assert.Equal(t, actionID, resp.Msg.StandaloneActions[0].Id.Value)
+	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, resp.Msg.StandaloneActions[0].DesiredState)
 }
 
 func TestProxyStoreLuksKey(t *testing.T) {

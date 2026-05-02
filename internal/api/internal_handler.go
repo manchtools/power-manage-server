@@ -109,8 +109,12 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 
 	h.logger.Debug("proxy sync actions completed", "device_id", deviceID, "count", len(actions), "sync_interval_minutes", syncInterval)
 
+	// TODO(#45): split actions into standalone_actions vs grouped_actions
+	// once the resolution rewrite is done. For now every resolved action
+	// rides on standalone_actions so the wire shape is correct.
 	return connect.NewResponse(&pm.SyncActionsResponse{
-		Actions:             actions,
+		StandaloneActions:   actions,
+		GroupedActions:      nil,
 		SyncIntervalMinutes: syncInterval,
 	}), nil
 }
