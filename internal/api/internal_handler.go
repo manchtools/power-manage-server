@@ -87,6 +87,20 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 
 	h.logger.Debug("proxy sync actions", "device_id", deviceID)
 
+	// Device-layer tree (groups + standalone), built with the new
+	// container-wins precedence introduced for #45.
+	tree, err := resolution.ResolveDeviceTree(ctx, h.store.Queries(), deviceID)
+	if err != nil {
+		h.logger.Error("failed to resolve device tree", "device_id", deviceID, "error", err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve actions"))
+	}
+
+	// User-layer assignments and the permission-derived TTY actions
+	// continue to flow through the existing flat resolver and ride on
+	// standalone_actions. The flat resolver also still serves the
+	// device-layer; we filter its result down to "actions absorbed by
+	// the new tree" to avoid duplicate emission, and use the tree's
+	// container modes (UNINSTALL → ABSENT) where they apply.
 	dbActions, err := resolution.ResolveActionsForDevice(ctx, h.store.Queries(), deviceID)
 	if err != nil {
 		h.logger.Error("failed to resolve actions", "device_id", deviceID, "error", err)
@@ -99,24 +113,108 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		syncInterval = 0
 	}
 
-	actions := make([]*pm.Action, 0, len(dbActions))
+	// Action ids covered by the device-layer tree (groups + standalone).
+	covered := make(map[string]bool, len(tree.Actions))
+	for id := range tree.Actions {
+		covered[id] = true
+	}
+
+	standalone := make([]*pm.Action, 0, len(tree.StandaloneActions)+len(dbActions))
+
+	// Standalone from the new tree first — these take precedence over
+	// the flat resolver's view (the flat resolver still uses the old
+	// action-wins collapse, which the new tree overrides).
+	for _, sa := range tree.StandaloneActions {
+		raw, ok := tree.Actions[sa.ActionID]
+		if !ok {
+			continue
+		}
+		wire := dbActionToWireAction(raw)
+		if wire == nil {
+			continue
+		}
+		if sa.Mode == resolution.ModeUninstall {
+			wire.DesiredState = pm.DesiredState_DESIRED_STATE_ABSENT
+		}
+		standalone = append(standalone, wire)
+	}
+
+	// Flat resolver's leftovers — anything not in the tree (user-layer,
+	// TTY actions, and any device-layer leftover the new tree didn't
+	// surface). These keep the flat resolver's per-action desired_state.
 	for _, dbAction := range dbActions {
+		if covered[dbAction.ID] {
+			continue
+		}
 		action := dbResolvedActionToWireAction(dbAction)
 		if action != nil {
-			actions = append(actions, action)
+			standalone = append(standalone, action)
 		}
 	}
 
-	h.logger.Debug("proxy sync actions completed", "device_id", deviceID, "count", len(actions), "sync_interval_minutes", syncInterval)
+	// Group emission: walk the tree's group list, hydrate proto Actions,
+	// and apply UNINSTALL → ABSENT for groups whose container is in
+	// uninstall mode.
+	groups := make([]*pm.ActionGroup, 0, len(tree.Groups))
+	for _, g := range tree.Groups {
+		groupActions := make([]*pm.Action, 0, len(g.ActionIDs))
+		for _, id := range g.ActionIDs {
+			raw, ok := tree.Actions[id]
+			if !ok {
+				continue
+			}
+			wire := dbActionToWireAction(raw)
+			if wire == nil {
+				continue
+			}
+			if g.Mode == resolution.ModeUninstall {
+				wire.DesiredState = pm.DesiredState_DESIRED_STATE_ABSENT
+			}
+			groupActions = append(groupActions, wire)
+		}
+		if len(groupActions) == 0 {
+			continue
+		}
+		groups = append(groups, &pm.ActionGroup{
+			SourceLabel: g.SourceLabel,
+			Schedule:    scheduleFromJSON(g.Schedule),
+			Actions:     groupActions,
+		})
+	}
 
-	// TODO(#45): split actions into standalone_actions vs grouped_actions
-	// once the resolution rewrite is done. For now every resolved action
-	// rides on standalone_actions so the wire shape is correct.
+	h.logger.Debug("proxy sync actions completed",
+		"device_id", deviceID,
+		"standalone_count", len(standalone),
+		"group_count", len(groups),
+		"sync_interval_minutes", syncInterval)
+
 	return connect.NewResponse(&pm.SyncActionsResponse{
-		StandaloneActions:   actions,
-		GroupedActions:      nil,
+		StandaloneActions:   standalone,
+		GroupedActions:      groups,
 		SyncIntervalMinutes: syncInterval,
 	}), nil
+}
+
+// dbActionToWireAction converts a raw actions_projection row to wire
+// format. Mirrors dbResolvedActionToWireAction but operates on the
+// projection row directly so the tree resolver doesn't have to detour
+// through the per-action mode-collapse query for every member action.
+func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
+	action := &pm.Action{
+		Id:              &pm.ActionId{Value: a.ID},
+		Type:            pm.ActionType(a.ActionType),
+		DesiredState:    pm.DesiredState(a.DesiredState),
+		TimeoutSeconds:  a.TimeoutSeconds,
+		Signature:       a.Signature,
+		ParamsCanonical: a.ParamsCanonical,
+	}
+	if len(a.Params) > 0 {
+		actionparams.PopulateAction(action, a.ActionType, a.Params)
+	}
+	if len(a.Schedule) > 0 {
+		action.Schedule = scheduleFromJSON(a.Schedule)
+	}
+	return action
 }
 
 // ProxyValidateLuksToken validates and consumes a one-time LUKS token.

@@ -75,6 +75,25 @@ func TestRenameDefinition(t *testing.T) {
 	assert.Equal(t, "New", resp.Msg.Definition.Name)
 }
 
+func TestUpdateDefinitionSchedule(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDefinitionHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	defID := testutil.CreateTestDefinition(t, st, adminID, "Sched Def")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.UpdateDefinitionSchedule(ctx, connect.NewRequest(&pm.UpdateDefinitionScheduleRequest{
+		Id: defID,
+		Schedule: &pm.ActionSchedule{
+			IntervalHours: 12,
+		},
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Definition.Schedule)
+	assert.EqualValues(t, 12, resp.Msg.Definition.Schedule.IntervalHours)
+}
+
 func TestDeleteDefinition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewDefinitionHandler(st, slog.Default())

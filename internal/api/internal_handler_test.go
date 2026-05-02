@@ -123,6 +123,60 @@ func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, resp.Msg.StandaloneActions[0].DesiredState)
 }
 
+// Verify that an action set assigned to the device emits one ActionGroup
+// rather than appearing on standalone_actions (#45 grouped sync wire).
+func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "sync-set-host")
+	a1 := testutil.CreateTestAction(t, st, adminID, "Set Member 1", int(pm.ActionType_ACTION_TYPE_SHELL))
+	a2 := testutil.CreateTestAction(t, st, adminID, "Set Member 2", int(pm.ActionType_ACTION_TYPE_SHELL))
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Sync Set")
+
+	testutil.AddActionToTestSet(t, st, adminID, setID, a1, 0)
+	testutil.AddActionToTestSet(t, st, adminID, setID, a2, 1)
+	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
+
+	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId: deviceID,
+	}))
+	require.NoError(t, err)
+	assert.Empty(t, resp.Msg.StandaloneActions, "set members ride on grouped_actions, not standalone_actions")
+	require.Len(t, resp.Msg.GroupedActions, 1)
+	g := resp.Msg.GroupedActions[0]
+	assert.Equal(t, "action_set:"+setID, g.SourceLabel)
+	require.NotNil(t, g.Schedule, "group must carry the set's schedule")
+	require.Len(t, g.Actions, 2)
+	assert.Equal(t, a1, g.Actions[0].Id.Value, "members emitted in declared sort_order")
+	assert.Equal(t, a2, g.Actions[1].Id.Value)
+}
+
+// UNINSTALL on the set's assignment forces every member's desired_state
+// to ABSENT regardless of how the action itself was configured.
+func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "sync-set-uninstall-host")
+	a1 := testutil.CreateTestAction(t, st, adminID, "Doomed", int(pm.ActionType_ACTION_TYPE_SHELL))
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Doomed Set")
+	testutil.AddActionToTestSet(t, st, adminID, setID, a1, 0)
+	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID, uninstallAssignmentMode)
+
+	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId: deviceID,
+	}))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.GroupedActions, 1)
+	g := resp.Msg.GroupedActions[0]
+	require.Len(t, g.Actions, 1)
+	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, g.Actions[0].DesiredState,
+		"UNINSTALL on the container overrides per-action desired_state")
+}
+
 func TestProxyStoreLuksKey(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
