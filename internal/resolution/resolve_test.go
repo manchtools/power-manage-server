@@ -18,7 +18,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
-const uninstallAssignmentMode = 3
+const uninstallAssignmentMode = int(pm.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL)
 
 func TestResolveActions_DeviceLayerOnly(t *testing.T) {
 	st := testutil.SetupPostgres(t)

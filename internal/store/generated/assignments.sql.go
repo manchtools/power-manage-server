@@ -614,6 +614,11 @@ HAVING bool_or(mode = 2)
 
 // Get action IDs that are EXCLUDED at the device/device_group layer.
 // Used by the resolution merge to block these actions from the user layer.
+// Only EXCLUDED (mode = 2) blocks the action from the user layer.
+// UNINSTALL (mode = 3) is deliberately NOT included here: an UNINSTALL assignment
+// must still resolve at the device layer (with desired_state forced to ABSENT)
+// so the action runs and removes managed state. Treating UNINSTALL as exclusion
+// would suppress the removal entirely.
 func (q *Queries) ListDeviceLayerExcludedActionIDs(ctx context.Context, targetID string) ([]string, error) {
 	rows, err := q.db.Query(ctx, listDeviceLayerExcludedActionIDs, targetID)
 	if err != nil {
@@ -846,7 +851,10 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via compliance policy assignments (direct to device, source_priority = 4)
+  -- Actions via compliance policy assignments (direct to device, source_priority = 4).
+  -- Compliance policies do not support assignment modes; mode is always REQUIRED (0).
+  -- UNINSTALL (3) is intentionally not applicable here — compliance rules express
+  -- "this state must hold", which has no removal semantics.
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
@@ -868,7 +876,8 @@ WITH all_assignments AS (
 
   UNION ALL
 
-  -- Actions via compliance policy assignments (via device group, source_priority = 4)
+  -- Actions via compliance policy assignments (via device group, source_priority = 4).
+  -- See note above: compliance policies have no UNINSTALL semantics; mode is always 0.
   SELECT
     a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.timeout_seconds,
     a.created_at, a.created_by, a.is_deleted, a.projection_version,
