@@ -104,6 +104,25 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 	assert.Equal(t, actionID, resp.Msg.Actions[0].Id.Value)
 }
 
+func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "sync-uninstall-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Sync Uninstall Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, uninstallAssignmentMode)
+
+	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId: deviceID,
+	}))
+	require.NoError(t, err)
+	require.Len(t, resp.Msg.Actions, 1)
+	assert.Equal(t, actionID, resp.Msg.Actions[0].Id.Value)
+	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, resp.Msg.Actions[0].DesiredState)
+}
+
 func TestProxyStoreLuksKey(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)

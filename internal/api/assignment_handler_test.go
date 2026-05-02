@@ -13,6 +13,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
+const uninstallAssignmentMode = 3
+
 func TestCreateAssignment_ActionToDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
@@ -56,6 +58,27 @@ func TestCreateAssignment_SetToGroup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "action_set", resp.Msg.Assignment.SourceType)
 	assert.Equal(t, "device_group", resp.Msg.Assignment.TargetType)
+}
+
+func TestCreateAssignment_UninstallMode(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	actionHandler := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h := api.NewAssignmentHandler(st, slog.Default(), actionHandler)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Uninstall Assign Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "assign-uninstall-host")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
+		SourceType: "action",
+		SourceId:   actionID,
+		TargetType: "device",
+		TargetId:   deviceID,
+		Mode:       pm.AssignmentMode(uninstallAssignmentMode),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, pm.AssignmentMode(uninstallAssignmentMode), resp.Msg.Assignment.Mode)
 }
 
 func TestCreateAssignment_Idempotent(t *testing.T) {

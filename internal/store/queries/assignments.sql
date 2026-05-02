@@ -212,10 +212,11 @@ ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
 -- Get all resolved actions for a device with conflict resolution.
 -- This is used by the agent sync to determine what actions to apply.
--- Conflict resolution: excluded (2) > required (0) > available+selected > available+rejected > unselected (skip)
+-- Conflict resolution: excluded (2) > uninstall (3) > required (0) >
+-- available+selected > available+rejected > unselected (skip)
 -- name: ListResolvedActionsForDevice :many
 -- Resolution priority: action > action_set > definition
--- Within each level: excluded > required > available
+-- Within each level: excluded > uninstall > required > available
 WITH all_assignments AS (
   -- Direct action assignments (source_priority = 1, highest)
   SELECT
@@ -411,19 +412,21 @@ filtered AS (
   FROM with_selections ws
   JOIN priority_per_action ppa ON ws.id = ppa.id AND ws.source_priority = ppa.min_priority
 ),
--- Resolve conflicts per action at the winning priority level: excluded > required > available
+-- Resolve conflicts per action at the winning priority level:
+-- excluded > uninstall > required > available
 effective AS (
   SELECT
     id, name, description, action_type, desired_state, params, timeout_seconds,
     created_at, created_by, is_deleted, projection_version,
     signature, params_canonical, schedule,
     CASE
-      WHEN bool_or(mode = 2) THEN -1                           -- excluded: don't apply this action
-      WHEN bool_or(mode = 0) THEN 0                            -- required: apply
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0   -- available+selected �� apply
-      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1 -- available+rejected → skip
-      ELSE -1                                                    -- unselected available → skip
-    END AS effective_mode,
+      WHEN bool_or(mode = 2) THEN FALSE
+      WHEN bool_or(mode = 3) THEN TRUE
+      WHEN bool_or(mode = 0) THEN TRUE
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN TRUE
+      ELSE FALSE
+    END AS should_apply,
+    bool_or(mode = 3) AS force_absent,
     MIN(assignment_sort) AS assignment_sort,
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
@@ -433,12 +436,13 @@ effective AS (
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical, schedule
 )
--- Return actions that should be applied, using action's stored desired_state
-SELECT id, name, description, action_type, desired_state,
+-- Return actions that should be applied, forcing ABSENT for UNINSTALL.
+SELECT id, name, description, action_type,
+  (CASE WHEN force_absent THEN 1 ELSE desired_state END)::INTEGER AS desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
   projection_version, signature, params_canonical, schedule
 FROM effective
-WHERE effective_mode >= 0
+WHERE should_apply
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
 -- Get action IDs that are EXCLUDED at the device/device_group layer.
@@ -701,12 +705,13 @@ effective AS (
     created_at, created_by, is_deleted, projection_version,
     signature, params_canonical, schedule,
     CASE
-      WHEN bool_or(mode = 2) THEN -1
-      WHEN bool_or(mode = 0) THEN 0
-      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN 0
-      WHEN bool_or(mode = 1 AND user_selected = FALSE) THEN -1
-      ELSE -1
-    END AS effective_mode,
+      WHEN bool_or(mode = 2) THEN FALSE
+      WHEN bool_or(mode = 3) THEN TRUE
+      WHEN bool_or(mode = 0) THEN TRUE
+      WHEN bool_or(mode = 1 AND user_selected = TRUE) THEN TRUE
+      ELSE FALSE
+    END AS should_apply,
+    bool_or(mode = 3) AS force_absent,
     MIN(assignment_sort) AS assignment_sort,
     MIN(definition_sort) AS definition_sort,
     MIN(action_set_sort) AS action_set_sort,
@@ -716,11 +721,12 @@ effective AS (
            created_at, created_by, is_deleted, projection_version,
            signature, params_canonical, schedule
 )
-SELECT id, name, description, action_type, desired_state,
+SELECT id, name, description, action_type,
+  (CASE WHEN force_absent THEN 1 ELSE desired_state END)::INTEGER AS desired_state,
   params, timeout_seconds, created_at, created_by, is_deleted,
   projection_version, signature, params_canonical, schedule
 FROM effective
-WHERE effective_mode >= 0
+WHERE should_apply
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
 -- Get all assignments targeting a user directly or via their user groups.

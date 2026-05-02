@@ -18,6 +18,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
+const uninstallAssignmentMode = 3
+
 func TestResolveActions_DeviceLayerOnly(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -170,6 +172,133 @@ func TestResolveActions_MergeDeviceAndUserActions(t *testing.T) {
 	}
 	assert.True(t, ids[actionDev])
 	assert.True(t, ids[actionUser])
+}
+
+func TestResolveActions_DeviceUninstallForcesAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Uninstall Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-uninstall")
+
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, actionID, actions[0].ID)
+	assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_ABSENT), actions[0].DesiredState)
+}
+
+func TestResolveActions_UserUninstallForcesAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ownerID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	actionID := testutil.CreateTestAction(t, st, adminID, "User Uninstall Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-user-uninstall")
+
+	testutil.AssignDeviceToUser(t, st, adminID, deviceID, ownerID)
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "user", ownerID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, actionID, actions[0].ID)
+	assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_ABSENT), actions[0].DesiredState)
+}
+
+func TestResolveActions_ActionSetUninstallForcesAllMembersAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-set-uninstall")
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Uninstall Set")
+	presentActionID := testutil.CreateTestActionWithDesiredState(t, st, adminID, "Present Member", int(pm.ActionType_ACTION_TYPE_SHELL), int(pm.DesiredState_DESIRED_STATE_PRESENT))
+	absentActionID := testutil.CreateTestActionWithDesiredState(t, st, adminID, "Absent Member", int(pm.ActionType_ACTION_TYPE_SHELL), int(pm.DesiredState_DESIRED_STATE_ABSENT))
+
+	testutil.AddActionToTestSet(t, st, adminID, setID, presentActionID, 0)
+	testutil.AddActionToTestSet(t, st, adminID, setID, absentActionID, 1)
+	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	for _, action := range actions {
+		assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_ABSENT), action.DesiredState)
+	}
+}
+
+func TestResolveActions_DefinitionUninstallForcesAllMembersAbsent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-definition-uninstall")
+	definitionID := testutil.CreateTestDefinition(t, st, adminID, "Uninstall Definition")
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Definition Set")
+	presentActionID := testutil.CreateTestActionWithDesiredState(t, st, adminID, "Definition Present Member", int(pm.ActionType_ACTION_TYPE_SHELL), int(pm.DesiredState_DESIRED_STATE_PRESENT))
+	absentActionID := testutil.CreateTestActionWithDesiredState(t, st, adminID, "Definition Absent Member", int(pm.ActionType_ACTION_TYPE_SHELL), int(pm.DesiredState_DESIRED_STATE_ABSENT))
+
+	testutil.AddActionToTestSet(t, st, adminID, setID, presentActionID, 0)
+	testutil.AddActionToTestSet(t, st, adminID, setID, absentActionID, 1)
+	testutil.AddActionSetToTestDefinition(t, st, adminID, definitionID, setID, 0)
+	testutil.CreateTestAssignment(t, st, adminID, "definition", definitionID, "device", deviceID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 2)
+	for _, action := range actions {
+		assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_ABSENT), action.DesiredState)
+	}
+}
+
+func TestResolveActions_ExcludedBeatsUninstallAtSamePriority(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Excluded Beats Uninstall", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-excluded-beats-uninstall")
+	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Uninstall Conflict Group")
+	testutil.AddDeviceToTestGroup(t, st, adminID, groupID, deviceID)
+
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, uninstallAssignmentMode)
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device_group", groupID, int(pm.AssignmentMode_ASSIGNMENT_MODE_EXCLUDED))
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	assert.Len(t, actions, 0)
+}
+
+func TestResolveActions_UninstallBeatsRequiredAtSamePriority(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Uninstall Beats Required", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-uninstall-beats-required")
+	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Required Conflict Group")
+	testutil.AddDeviceToTestGroup(t, st, adminID, groupID, deviceID)
+
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device_group", groupID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_ABSENT), actions[0].DesiredState)
+}
+
+func TestResolveActions_HigherPriorityRequiredBeatsLowerPriorityUninstall(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestActionWithDesiredState(t, st, adminID, "Priority Winner", int(pm.ActionType_ACTION_TYPE_SHELL), int(pm.DesiredState_DESIRED_STATE_PRESENT))
+	deviceID := testutil.CreateTestDevice(t, st, "resolve-priority-wins")
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Lower Priority Set")
+	definitionID := testutil.CreateTestDefinition(t, st, adminID, "Lower Priority Definition")
+
+	testutil.AddActionToTestSet(t, st, adminID, setID, actionID, 0)
+	testutil.AddActionSetToTestDefinition(t, st, adminID, definitionID, setID, 0)
+	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
+	testutil.CreateTestAssignment(t, st, adminID, "definition", definitionID, "device", deviceID, uninstallAssignmentMode)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, actions, 1)
+	assert.Equal(t, actionID, actions[0].ID)
+	assert.Equal(t, int32(pm.DesiredState_DESIRED_STATE_PRESENT), actions[0].DesiredState)
 }
 
 // Test that user assignment works via the handler (CreateAssignment + GetUserAssignments)
