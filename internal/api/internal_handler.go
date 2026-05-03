@@ -92,7 +92,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	tree, err := resolution.ResolveDeviceTree(ctx, h.store.Queries(), deviceID)
 	if err != nil {
 		h.logger.Error("failed to resolve device tree", "device_id", deviceID, "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve actions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve actions")
 	}
 
 	// User-layer assignments and the permission-derived TTY actions

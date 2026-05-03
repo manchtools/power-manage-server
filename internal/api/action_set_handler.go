@@ -43,17 +43,26 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 
 	id := ulid.Make().String()
 
+	data := map[string]any{
+		"name":        req.Msg.Name,
+		"description": req.Msg.Description,
+	}
+	// Schedule is required at the proto layer, but we still build the
+	// payload defensively: only include it when both non-nil and
+	// non-empty so a zero-value request can't bypass the projection's
+	// default-schedule fallback by emitting an empty `{}` blob.
+	if req.Msg.Schedule != nil {
+		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+			data["schedule"] = schedule
+		}
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   id,
 		EventType:  "ActionSetCreated",
-		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
-			"schedule":    scheduleToMap(req.Msg.Schedule),
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
+		Data:       data,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
 	}, "failed to create action set"); err != nil {
 		return nil, err
 	}
@@ -186,15 +195,19 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 		return nil, err
 	}
 
+	data := map[string]any{}
+	if req.Msg.Schedule != nil {
+		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+			data["schedule"] = schedule
+		}
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
 		EventType:  "ActionSetScheduleUpdated",
-		Data: map[string]any{
-			"schedule": scheduleToMap(req.Msg.Schedule),
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
+		Data:       data,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
 	}, "failed to update schedule"); err != nil {
 		return nil, err
 	}

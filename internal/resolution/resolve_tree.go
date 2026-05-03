@@ -2,6 +2,8 @@ package resolution
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -196,9 +198,14 @@ func ResolveDeviceTree(ctx context.Context, q TreeQuerier, deviceID string) (Dev
 		}
 		a, err := q.GetActionByID(ctx, id)
 		if err != nil {
-			// Action gone (deleted between reach query and lookup) is
-			// non-fatal — drop silently from this resolution.
-			return nil
+			// An action can disappear between the reach query and the
+			// lookup (e.g. concurrent deletion); that's non-fatal — drop
+			// silently from this resolution. Any other DB error must
+			// surface so we don't silently emit an incomplete tree.
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
 		}
 		tree.Actions[id] = a
 		return nil
