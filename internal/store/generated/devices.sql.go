@@ -129,12 +129,12 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 
 const getDeviceSyncInterval = `-- name: GetDeviceSyncInterval :one
 WITH device_override AS (
-    SELECT NULLIF(sync_interval_minutes, 0) AS interval
+    SELECT CASE WHEN sync_interval_minutes > 0 THEN sync_interval_minutes END AS interval
     FROM devices_projection
     WHERE id = $1::TEXT AND is_deleted = FALSE
 ),
 group_min AS (
-    SELECT MIN(NULLIF(dg.sync_interval_minutes, 0)) AS interval
+    SELECT MIN(CASE WHEN dg.sync_interval_minutes > 0 THEN dg.sync_interval_minutes END) AS interval
     FROM device_groups_projection dg
     JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
     WHERE dgm.device_id = $1::TEXT
