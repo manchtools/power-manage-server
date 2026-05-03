@@ -85,7 +85,39 @@ ORDER BY last_seen_at DESC
 LIMIT $3 OFFSET $4;
 
 -- name: GetDeviceSyncInterval :one
-SELECT get_device_sync_interval($1::TEXT) AS sync_interval_minutes;
+-- Effective sync interval for a device, in minutes.
+--
+-- Resolution order matches the previous PL/pgSQL implementation
+-- (#95):
+--   1. Device-level override (devices_projection.sync_interval_minutes
+--      > 0) takes precedence.
+--   2. Otherwise, the smallest non-zero sync_interval_minutes across
+--      every device-group the device belongs to. The MIN selects the
+--      tightest group cadence — operators expect "join two groups,
+--      get the more frequent sync".
+--   3. If neither sets a value, returns 0 so callers fall back to
+--      their default cadence.
+--
+-- COALESCE chain instead of CASE because both sides can be NULL when
+-- a device has no override and is in no group with a sync setting,
+-- and the original PL/pgSQL function returned 0 in that case.
+WITH device_override AS (
+    SELECT NULLIF(sync_interval_minutes, 0) AS interval
+    FROM devices_projection
+    WHERE id = $1::TEXT AND is_deleted = FALSE
+),
+group_min AS (
+    SELECT MIN(NULLIF(dg.sync_interval_minutes, 0)) AS interval
+    FROM device_groups_projection dg
+    JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
+    WHERE dgm.device_id = $1::TEXT
+      AND dg.is_deleted = FALSE
+)
+SELECT COALESCE(
+    (SELECT interval FROM device_override),
+    (SELECT interval FROM group_min),
+    0
+)::INTEGER AS sync_interval_minutes;
 
 -- name: ListDeviceAssignedUsers :many
 SELECT dau.user_id, u.email AS user_email, dau.assigned_at
