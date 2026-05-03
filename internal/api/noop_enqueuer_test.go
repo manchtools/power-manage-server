@@ -27,6 +27,10 @@ type NoOpEnqueuer struct {
 	// by a mutex: tests do not run dispatch concurrently in the
 	// same handler under current fixtures.
 	DeviceCalls []NoOpEnqueuerCall
+	// DeleteCalls records each DeleteScheduledDeviceTask invocation.
+	// Tests for CancelExecution assert against this slice to verify
+	// the cancel path attempted the Asynq prune.
+	DeleteCalls []NoOpEnqueuerDelete
 }
 
 // NoOpEnqueuerCall captures the arguments of one EnqueueToDevice.
@@ -34,14 +38,22 @@ type NoOpEnqueuerCall struct {
 	DeviceID string
 	TaskType string
 	Payload  any
+	Opts     []asynq.Option
+}
+
+// NoOpEnqueuerDelete captures one DeleteScheduledDeviceTask invocation.
+type NoOpEnqueuerDelete struct {
+	DeviceID string
+	TaskID   string
 }
 
 // EnqueueToDevice records and succeeds.
-func (n *NoOpEnqueuer) EnqueueToDevice(deviceID, taskType string, payload any, _ ...asynq.Option) error {
+func (n *NoOpEnqueuer) EnqueueToDevice(deviceID, taskType string, payload any, opts ...asynq.Option) error {
 	n.DeviceCalls = append(n.DeviceCalls, NoOpEnqueuerCall{
 		DeviceID: deviceID,
 		TaskType: taskType,
 		Payload:  payload,
+		Opts:     opts,
 	})
 	return nil
 }
@@ -51,3 +63,13 @@ func (*NoOpEnqueuer) EnqueueToControl(_ string, _ any) error { return nil }
 
 // EnqueueToSearch is a no-op.
 func (*NoOpEnqueuer) EnqueueToSearch(_ string, _ any) error { return nil }
+
+// DeleteScheduledDeviceTask records the call and succeeds, mirroring
+// production's idempotent best-effort contract.
+func (n *NoOpEnqueuer) DeleteScheduledDeviceTask(deviceID, taskID string) error {
+	n.DeleteCalls = append(n.DeleteCalls, NoOpEnqueuerDelete{
+		DeviceID: deviceID,
+		TaskID:   taskID,
+	})
+	return nil
+}

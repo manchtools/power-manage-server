@@ -3,10 +3,12 @@ package api_test
 import (
 	"log/slog"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
@@ -324,6 +326,88 @@ func TestGetExecution(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, dispatchResp.Msg.Execution.Id, resp.Msg.Execution.Id)
 	assert.Equal(t, deviceID, resp.Msg.Execution.DeviceId)
+}
+
+// TestDispatchAction_DeferredEmitsScheduled verifies that a future
+// run_at switches the dispatch path to ExecutionScheduled and
+// asynq.ProcessIn — execution surfaces with status=SCHEDULED and a
+// scheduled_for timestamp populated from the request.
+func TestDispatchAction_DeferredEmitsScheduled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	queue := &api.NoOpEnqueuer{}
+	h.SetTaskQueueClient(queue)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Deferred", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "deferred-host")
+	ctx := testutil.AdminContext(adminID)
+
+	runAt := time.Now().Add(2 * time.Hour).UTC()
+	resp, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId:     deviceID,
+		ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: actionID},
+		RunAt:        timestamppb.New(runAt),
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, pm.ExecutionStatus_EXECUTION_STATUS_SCHEDULED, resp.Msg.Execution.Status)
+	require.NotNil(t, resp.Msg.Execution.ScheduledFor)
+	assert.WithinDuration(t, runAt, resp.Msg.Execution.ScheduledFor.AsTime(), time.Second)
+	require.Len(t, queue.DeviceCalls, 1)
+}
+
+// TestDispatchAction_DeferredPastRunAtRejected confirms validation
+// rejects a run_at in the past with InvalidArgument.
+func TestDispatchAction_DeferredPastRunAtRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetTaskQueueClient(&api.NoOpEnqueuer{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Past", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "past-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId:     deviceID,
+		ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: actionID},
+		RunAt:        timestamppb.New(time.Now().Add(-1 * time.Hour).UTC()),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// TestCancelExecution_CancelsScheduled verifies that cancelling a
+// SCHEDULED execution moves the projection to CANCELLED and prunes
+// the deferred Asynq task.
+func TestCancelExecution_CancelsScheduled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	queue := &api.NoOpEnqueuer{}
+	h.SetTaskQueueClient(queue)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Cancel Me", int(pm.ActionType_ACTION_TYPE_SHELL))
+	deviceID := testutil.CreateTestDevice(t, st, "cancel-host")
+	ctx := testutil.AdminContext(adminID)
+
+	dispatch, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId:     deviceID,
+		ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: actionID},
+		RunAt:        timestamppb.New(time.Now().Add(2 * time.Hour).UTC()),
+	}))
+	require.NoError(t, err)
+	require.Equal(t, pm.ExecutionStatus_EXECUTION_STATUS_SCHEDULED, dispatch.Msg.Execution.Status)
+
+	cancelResp, err := h.CancelExecution(ctx, connect.NewRequest(&pm.CancelExecutionRequest{
+		ExecutionId: dispatch.Msg.Execution.Id,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, pm.ExecutionStatus_EXECUTION_STATUS_CANCELLED, cancelResp.Msg.Execution.Status)
+
+	require.Len(t, queue.DeleteCalls, 1)
+	assert.Equal(t, deviceID, queue.DeleteCalls[0].DeviceID)
+	assert.Equal(t, dispatch.Msg.Execution.Id, queue.DeleteCalls[0].TaskID)
 }
 
 func TestDispatchInstantAction(t *testing.T) {

@@ -509,6 +509,10 @@ func (s *ControlService) DispatchInstantAction(ctx context.Context, req *connect
 	return s.action.DispatchInstantAction(ctx, req)
 }
 
+func (s *ControlService) CancelExecution(ctx context.Context, req *connect.Request[pm.CancelExecutionRequest]) (*connect.Response[pm.CancelExecutionResponse], error) {
+	return s.action.CancelExecution(ctx, req)
+}
+
 func (s *ControlService) GetExecution(ctx context.Context, req *connect.Request[pm.GetExecutionRequest]) (*connect.Response[pm.GetExecutionResponse], error) {
 	return s.action.GetExecution(ctx, req)
 }

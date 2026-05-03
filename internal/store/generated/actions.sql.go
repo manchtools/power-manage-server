@@ -166,7 +166,7 @@ func (q *Queries) GetActionNamesByIDs(ctx context.Context, dollar_1 []string) ([
 
 const getExecutionByID = `-- name: GetExecutionByID :one
 
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output, scheduled_for FROM executions_projection
 WHERE id = $1
 `
 
@@ -196,6 +196,7 @@ func (q *Queries) GetExecutionByID(ctx context.Context, id string) (ExecutionsPr
 		&i.Changed,
 		&i.Compliant,
 		&i.DetectionOutput,
+		&i.ScheduledFor,
 	)
 	return i, err
 }
@@ -261,7 +262,7 @@ func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]Act
 }
 
 const listExecutions = `-- name: ListExecutions :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output, scheduled_for FROM executions_projection
 WHERE ($1::TEXT = '' OR device_id = $1)
   AND ($2::TEXT = '' OR status = $2)
   AND ($3::INTEGER = 0 OR action_type = $3)
@@ -321,6 +322,7 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 			&i.Changed,
 			&i.Compliant,
 			&i.DetectionOutput,
+			&i.ScheduledFor,
 		); err != nil {
 			return nil, err
 		}
@@ -333,7 +335,7 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 }
 
 const listExecutionsForWarm = `-- name: ListExecutionsForWarm :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output, scheduled_for FROM executions_projection
 WHERE created_at >= NOW() - INTERVAL '90 days'
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -375,6 +377,7 @@ func (q *Queries) ListExecutionsForWarm(ctx context.Context, arg ListExecutionsF
 			&i.Changed,
 			&i.Compliant,
 			&i.DetectionOutput,
+			&i.ScheduledFor,
 		); err != nil {
 			return nil, err
 		}
@@ -387,7 +390,7 @@ func (q *Queries) ListExecutionsForWarm(ctx context.Context, arg ListExecutionsF
 }
 
 const listPendingExecutionsForDevice = `-- name: ListPendingExecutionsForDevice :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output, scheduled_for FROM executions_projection
 WHERE device_id = $1 AND status IN ('pending', 'dispatched')
 ORDER BY created_at ASC
 `
@@ -425,6 +428,7 @@ func (q *Queries) ListPendingExecutionsForDevice(ctx context.Context, deviceID s
 			&i.Changed,
 			&i.Compliant,
 			&i.DetectionOutput,
+			&i.ScheduledFor,
 		); err != nil {
 			return nil, err
 		}
@@ -437,7 +441,7 @@ func (q *Queries) ListPendingExecutionsForDevice(ctx context.Context, deviceID s
 }
 
 const listRecentExecutionsForDevice = `-- name: ListRecentExecutionsForDevice :many
-SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output FROM executions_projection
+SELECT id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, created_at, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, projection_version, changed, compliant, detection_output, scheduled_for FROM executions_projection
 WHERE device_id = $1
 ORDER BY created_at DESC
 LIMIT $2
@@ -479,6 +483,7 @@ func (q *Queries) ListRecentExecutionsForDevice(ctx context.Context, arg ListRec
 			&i.Changed,
 			&i.Compliant,
 			&i.DetectionOutput,
+			&i.ScheduledFor,
 		); err != nil {
 			return nil, err
 		}

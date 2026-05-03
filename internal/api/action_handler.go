@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
@@ -908,6 +909,19 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	id := ulid.Make().String()
 
+	// Compute the deferred-dispatch delay. RunAt is optional; when set
+	// it must be strictly in the future at scheduling time per the
+	// proto contract (a past timestamp would race the deferred-vs-
+	// immediate decision below).
+	var dispatchDelay time.Duration
+	if req.Msg.RunAt != nil {
+		dispatchAt := req.Msg.RunAt.AsTime()
+		dispatchDelay = time.Until(dispatchAt)
+		if dispatchDelay <= 0 {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "run_at must be in the future")
+		}
+	}
+
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
 		"action_type":     int32(actionType),
@@ -917,6 +931,16 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}
 	if actionID != nil {
 		eventData["action_id"] = *actionID
+	}
+	if dispatchDelay > 0 {
+		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	// respect_maintenance_window is reserved for #58; persist it so the
+	// dispatch path picks the right behaviour once the window
+	// enforcement layer ships, even on event replay of records written
+	// before #58 lands.
+	if req.Msg.RespectMaintenanceWindow {
+		eventData["respect_maintenance_window"] = true
 	}
 
 	// Fail fast when no task queue is configured. Without this
@@ -973,10 +997,18 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	signature = sig
 	paramsCanonical = paramsJSON
 
+	// Choose ExecutionScheduled vs ExecutionCreated based on whether
+	// the caller asked for a deferred dispatch. The two events are
+	// projected to status='scheduled' / status='pending' respectively
+	// and the row only diverges from there on the dispatch's outcome.
+	initialEventType := "ExecutionCreated"
+	if dispatchDelay > 0 {
+		initialEventType = "ExecutionScheduled"
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
-		EventType:  "ExecutionCreated",
+		EventType:  initialEventType,
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -989,8 +1021,17 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// state so the projection reflects reality. Silently returning
 	// success used to leave the row as `pending` indefinitely.
 	//
+	// For deferred dispatches the asynq.TaskID is set to the execution
+	// id so CancelExecution can prune the scheduled task by that id.
+	// asynq.ProcessIn schedules the worker to pick the task up after
+	// dispatchDelay rather than immediately.
+	//
 	// h.aqClient is guaranteed non-nil here — the precondition check
 	// at the top of DispatchAction rejects the call otherwise.
+	enqueueOpts := []asynq.Option{asynq.MaxRetry(5)}
+	if dispatchDelay > 0 {
+		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
+	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 		ExecutionID:     id,
 		ActionType:      int32(actionType),
@@ -999,7 +1040,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		TimeoutSeconds:  timeoutSeconds,
 		Signature:       signature,
 		ParamsCanonical: paramsCanonical,
-	}, asynq.MaxRetry(5)); err != nil {
+	}, enqueueOpts...); err != nil {
 		h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
 			"error", err, "execution_id", id)
 		// Append a compensating ExecutionFailed event so the row
@@ -1405,12 +1446,28 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 
 	id := ulid.Make().String()
 
+	// Same deferred-dispatch handling as DispatchAction: optional
+	// future RunAt switches the path from immediate to scheduled.
+	var dispatchDelay time.Duration
+	if req.Msg.RunAt != nil {
+		dispatchDelay = time.Until(req.Msg.RunAt.AsTime())
+		if dispatchDelay <= 0 {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "run_at must be in the future")
+		}
+	}
+
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
 		"action_type":     int32(req.Msg.InstantAction),
 		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
 		"params":          map[string]any{},
 		"timeout_seconds": timeoutSeconds,
+	}
+	if dispatchDelay > 0 {
+		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	if req.Msg.RespectMaintenanceWindow {
+		eventData["respect_maintenance_window"] = true
 	}
 
 	// Fail fast when no task queue is configured — same fail-closed
@@ -1420,10 +1477,14 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "instant dispatch unavailable: task queue not configured")
 	}
 
+	initialEventType := "ExecutionCreated"
+	if dispatchDelay > 0 {
+		initialEventType = "ExecutionScheduled"
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   id,
-		EventType:  "ExecutionCreated",
+		EventType:  initialEventType,
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -1437,13 +1498,17 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	// terminal `failed` state — otherwise the projection sits in
 	// `pending` forever and the operator has no idea why the
 	// reboot/sync never happened.
+	enqueueOpts := []asynq.Option{asynq.MaxRetry(3)}
+	if dispatchDelay > 0 {
+		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
+	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 		ExecutionID:    id,
 		ActionType:     int32(req.Msg.InstantAction),
 		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
 		Params:         json.RawMessage("{}"),
 		TimeoutSeconds: timeoutSeconds,
-	}, asynq.MaxRetry(3)); err != nil {
+	}, enqueueOpts...); err != nil {
 		h.logger.Error("failed to enqueue instant action dispatch; emitting ExecutionFailed",
 			"error", err, "execution_id", id)
 		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
@@ -1476,6 +1541,76 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	)
 
 	return connect.NewResponse(&pm.DispatchInstantActionResponse{
+		Execution: h.executionToProto(exec),
+	}), nil
+}
+
+// CancelExecution prunes a scheduled or pending dispatch before it
+// fires. Idempotent: an execution that already left the SCHEDULED /
+// PENDING window is returned as-is (the projection's WHEN-clause on
+// ExecutionCancelled also guards against overwriting a real outcome
+// after the dispatch has run). See manchtools/power-manage-server#57.
+func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Request[pm.CancelExecutionRequest]) (*connect.Response[pm.CancelExecutionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
+	}
+
+	// Cancel only acts on rows that haven't dispatched yet. Past that
+	// point the execution either is running on the agent or has
+	// already reached a terminal state — both of which the cancel
+	// must NOT overwrite. Return the row as-is so the caller can
+	// observe the actual status and decide what to do.
+	if exec.Status != "scheduled" && exec.Status != "pending" {
+		return connect.NewResponse(&pm.CancelExecutionResponse{
+			Execution: h.executionToProto(exec),
+		}), nil
+	}
+
+	// Best-effort prune of the deferred Asynq task. A miss is fine —
+	// the projection's WHEN-clause guards the cancel event against
+	// double-application, so an in-flight dispatch that beat the
+	// inspector here will still surface its real outcome.
+	if h.aqClient != nil {
+		if delErr := h.aqClient.DeleteScheduledDeviceTask(exec.DeviceID, exec.ID); delErr != nil {
+			h.logger.Warn("CancelExecution: asynq prune failed; emitting ExecutionCancelled anyway",
+				"execution_id", exec.ID, "device_id", exec.DeviceID, "error", delErr)
+		}
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "execution",
+		StreamID:   exec.ID,
+		EventType:  "ExecutionCancelled",
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	}, "failed to cancel execution"); err != nil {
+		return nil, err
+	}
+
+	exec, err = h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		h.logger.Error("CancelExecution: failed to refetch execution after cancel", "execution_id", req.Msg.ExecutionId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read execution after cancel")
+	}
+
+	h.logger.Info("execution cancelled",
+		"execution_id", exec.ID,
+		"device_id", exec.DeviceID,
+		"actor_id", userCtx.ID,
+	)
+
+	return connect.NewResponse(&pm.CancelExecutionResponse{
 		Execution: h.executionToProto(exec),
 	}), nil
 }
@@ -1740,6 +1875,10 @@ func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionEx
 		exec.CompletedAt = timestamppb.New(*e.CompletedAt)
 	}
 
+	if e.ScheduledFor != nil {
+		exec.ScheduledFor = timestamppb.New(*e.ScheduledFor)
+	}
+
 	exec.Compliant = e.Compliant
 	if len(e.DetectionOutput) > 0 {
 		var detOutput pm.CommandOutput
@@ -1763,6 +1902,10 @@ func statusToString(s pm.ExecutionStatus) string {
 		return "failed"
 	case pm.ExecutionStatus_EXECUTION_STATUS_TIMEOUT:
 		return "timeout"
+	case pm.ExecutionStatus_EXECUTION_STATUS_SCHEDULED:
+		return "scheduled"
+	case pm.ExecutionStatus_EXECUTION_STATUS_CANCELLED:
+		return "cancelled"
 	default:
 		return ""
 	}
@@ -1782,6 +1925,10 @@ func stringToStatus(s string) pm.ExecutionStatus {
 		return pm.ExecutionStatus_EXECUTION_STATUS_FAILED
 	case "timeout":
 		return pm.ExecutionStatus_EXECUTION_STATUS_TIMEOUT
+	case "scheduled":
+		return pm.ExecutionStatus_EXECUTION_STATUS_SCHEDULED
+	case "cancelled":
+		return pm.ExecutionStatus_EXECUTION_STATUS_CANCELLED
 	default:
 		return pm.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED
 	}

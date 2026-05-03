@@ -247,6 +247,7 @@ type ExecutionsProjection struct {
 	Changed           bool       `json:"changed"`
 	Compliant         bool       `json:"compliant"`
 	DetectionOutput   []byte     `json:"detection_output"`
+	ScheduledFor      *time.Time `json:"scheduled_for"`
 }
 
 type IdentityLinksProjection struct {
