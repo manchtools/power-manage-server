@@ -112,6 +112,50 @@ func TestUpdateUserGroup(t *testing.T) {
 	assert.Equal(t, "Updated description", resp.Msg.Group.Description)
 }
 
+func TestSetUserGroupMaintenanceWindow(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Window UG")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.SetUserGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetUserGroupMaintenanceWindowRequest{
+		Id: groupID,
+		MaintenanceWindow: &pm.MaintenanceWindow{Schedule: []*pm.MaintenanceWindowEntry{
+			{Days: []string{"mon", "tue"}, Allow: "09:00-17:00"},
+		}},
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Group.MaintenanceWindow)
+	assert.Len(t, resp.Msg.Group.MaintenanceWindow.Schedule, 1)
+	assert.Equal(t, "09:00-17:00", resp.Msg.Group.MaintenanceWindow.Schedule[0].Allow)
+
+	clearResp, err := h.SetUserGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetUserGroupMaintenanceWindowRequest{
+		Id: groupID,
+	}))
+	require.NoError(t, err)
+	assert.Nil(t, clearResp.Msg.Group.MaintenanceWindow)
+}
+
+func TestSetUserGroupMaintenanceWindow_InvalidEntryRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Bad Window UG")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.SetUserGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetUserGroupMaintenanceWindowRequest{
+		Id: groupID,
+		MaintenanceWindow: &pm.MaintenanceWindow{Schedule: []*pm.MaintenanceWindowEntry{
+			{Days: []string{"mon"}, Allow: "09:00-09:00"},
+		}},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
 func TestDeleteUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewUserGroupHandler(st, slog.Default())
