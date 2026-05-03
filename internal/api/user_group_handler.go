@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
@@ -229,6 +230,54 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.GroupId)
 
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.GroupId)
+
+	return connect.NewResponse(&pm.UpdateUserGroupResponse{
+		Group: userGroupToProto(updated, roles, isScimManaged),
+	}), nil
+}
+
+// SetUserGroupMaintenanceWindow replaces the user group's
+// maintenance window. The agent unions every reaching group's window
+// (device groups + user groups assigned to the device) and gates
+// non-instant action dispatch by the result. Empty window clears the
+// group's contribution. See manchtools/power-manage-server#58.
+func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetUserGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateUserGroupResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := maintenance.Validate(req.Msg.MaintenanceWindow); err != nil {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
+	}
+
+	if _, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id); err != nil {
+		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "user_group",
+		StreamID:   req.Msg.Id,
+		EventType:  "UserGroupMaintenanceWindowSet",
+		Data: map[string]any{
+			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}, "failed to set maintenance window"); err != nil {
+		return nil, err
+	}
+
+	updated, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
+	}
+	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.UpdateUserGroupResponse{
 		Group: userGroupToProto(updated, roles, isScimManaged),
@@ -783,12 +832,13 @@ func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context
 // userGroupToProto converts a database user group projection to a protobuf UserGroup.
 func userGroupToProto(g db.UserGroupsProjection, roles []db.RolesProjection, isScimManaged bool) *pm.UserGroup {
 	group := &pm.UserGroup{
-		Id:            g.ID,
-		Name:          g.Name,
-		Description:   g.Description,
-		MemberCount:   g.MemberCount,
-		IsDynamic:     g.IsDynamic,
-		IsScimManaged: isScimManaged,
+		Id:                g.ID,
+		Name:              g.Name,
+		Description:       g.Description,
+		MemberCount:       g.MemberCount,
+		IsDynamic:         g.IsDynamic,
+		IsScimManaged:     isScimManaged,
+		MaintenanceWindow: maintenanceWindowFromJSON(g.MaintenanceWindow),
 	}
 
 	if g.DynamicQuery != nil {

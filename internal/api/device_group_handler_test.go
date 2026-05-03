@@ -161,6 +161,62 @@ func TestSetDeviceGroupSyncInterval(t *testing.T) {
 	assert.Equal(t, int32(60), resp.Msg.Group.SyncIntervalMinutes)
 }
 
+func TestSetDeviceGroupMaintenanceWindow(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Window Group")
+	ctx := testutil.AdminContext(adminID)
+
+	// Set a window with two entries; the response carries the
+	// projected schedule as proto so we can assert round-trip
+	// fidelity end-to-end (handler → event → projector → query).
+	resp, err := h.SetDeviceGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetDeviceGroupMaintenanceWindowRequest{
+		Id: groupID,
+		MaintenanceWindow: &pm.MaintenanceWindow{Schedule: []*pm.MaintenanceWindowEntry{
+			{Days: []string{"mon", "tue", "wed", "thu", "fri"}, Allow: "22:00-06:00"},
+			{Days: []string{"sat", "sun"}, Allow: "00:00-23:59"},
+		}},
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Group.MaintenanceWindow)
+	require.Len(t, resp.Msg.Group.MaintenanceWindow.Schedule, 2)
+	assert.Equal(t, []string{"mon", "tue", "wed", "thu", "fri"}, resp.Msg.Group.MaintenanceWindow.Schedule[0].Days)
+	assert.Equal(t, "22:00-06:00", resp.Msg.Group.MaintenanceWindow.Schedule[0].Allow)
+	assert.Equal(t, []string{"sat", "sun"}, resp.Msg.Group.MaintenanceWindow.Schedule[1].Days)
+	assert.Equal(t, "00:00-23:59", resp.Msg.Group.MaintenanceWindow.Schedule[1].Allow)
+
+	// Clear the window — passing nil drops the schedule and the
+	// projection's COALESCE should restore the empty default.
+	clearResp, err := h.SetDeviceGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetDeviceGroupMaintenanceWindowRequest{
+		Id:                groupID,
+		MaintenanceWindow: nil,
+	}))
+	require.NoError(t, err)
+	assert.Nil(t, clearResp.Msg.Group.MaintenanceWindow,
+		"cleared window must surface as nil (no constraint)")
+}
+
+func TestSetDeviceGroupMaintenanceWindow_InvalidEntryRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Window Group Bad")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.SetDeviceGroupMaintenanceWindow(ctx, connect.NewRequest(&pm.SetDeviceGroupMaintenanceWindowRequest{
+		Id: groupID,
+		MaintenanceWindow: &pm.MaintenanceWindow{Schedule: []*pm.MaintenanceWindowEntry{
+			{Days: []string{"funday"}, Allow: "09:00-17:00"},
+		}},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"validator should reject non-canonical weekday tokens at the boundary")
+}
+
 func TestValidateDynamicQuery(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewDeviceGroupHandler(st, slog.Default())

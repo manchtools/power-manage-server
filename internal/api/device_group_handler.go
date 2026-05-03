@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -594,6 +595,52 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 	}), nil
 }
 
+// SetDeviceGroupMaintenanceWindow replaces the device group's
+// maintenance window. The agent ORs each reaching group's window
+// into a device-side union and gates non-instant action dispatch by
+// the result; passing an empty MaintenanceWindow clears the group's
+// contribution. See manchtools/power-manage-server#58.
+func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetDeviceGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := maintenance.Validate(req.Msg.MaintenanceWindow); err != nil {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
+	}
+
+	if _, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id); err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "device_group",
+		StreamID:   req.Msg.Id,
+		EventType:  "DeviceGroupMaintenanceWindowSet",
+		Data: map[string]any{
+			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}, "failed to set maintenance window"); err != nil {
+		return nil, err
+	}
+
+	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
+		Group: h.deviceGroupToProto(group),
+	}), nil
+}
+
 func (h *DeviceGroupHandler) deviceGroupToProto(g db.DeviceGroupsProjection) *pm.DeviceGroup {
 	group := &pm.DeviceGroup{
 		Id:                  g.ID,
@@ -603,6 +650,7 @@ func (h *DeviceGroupHandler) deviceGroupToProto(g db.DeviceGroupsProjection) *pm
 		CreatedBy:           g.CreatedBy,
 		IsDynamic:           g.IsDynamic,
 		SyncIntervalMinutes: g.SyncIntervalMinutes,
+		MaintenanceWindow:   maintenanceWindowFromJSON(g.MaintenanceWindow),
 	}
 
 	if g.DynamicQuery != nil {
