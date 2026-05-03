@@ -1,0 +1,124 @@
+-- Reach queries for the agent sync tree.
+--
+-- Implements the layered precedence introduced for the grouped-execution
+-- sync (manchtools/power-manage-agent#45):
+--
+--   definition (highest)  >  action_set  >  action (lowest)
+--
+-- For each layer, we collapse the assignment modes on the rows that
+-- actually reach the device (directly or via device-group membership)
+-- using EXCLUDED > UNINSTALL > REQUIRED > AVAILABLE — same priority
+-- as the existing per-action resolver, just applied at the container
+-- level.
+--
+-- A set is excluded from the standalone-set layer if it is a member
+-- of any reached definition (the definition absorbs it). An action is
+-- excluded from the standalone-action layer if it is a member of any
+-- reached set, definition-bound or standalone (the set absorbs it).
+-- The Go-side resolver enforces the absorb rules over the UNION of
+-- these queries.
+
+-- name: ListReachedDefinitionsForDevice :many
+SELECT
+  d.id,
+  d.name,
+  d.schedule,
+  (CASE
+    WHEN bool_or(asn.mode = 2) THEN 2
+    WHEN bool_or(asn.mode = 3) THEN 3
+    WHEN bool_or(asn.mode = 0) THEN 0
+    ELSE 1
+  END)::INTEGER AS effective_mode
+FROM definitions_projection d
+JOIN (
+  -- Directly assigned to this device
+  SELECT a.source_id, a.mode
+    FROM assignments_projection a
+   WHERE a.source_type = 'definition'
+     AND a.target_type = 'device'
+     AND a.target_id   = $1
+     AND a.is_deleted  = FALSE
+
+  UNION ALL
+
+  -- Assigned to a device group this device belongs to
+  SELECT a.source_id, a.mode
+    FROM assignments_projection a
+    JOIN device_group_members_projection m
+      ON m.group_id   = a.target_id
+     AND m.device_id  = $1
+   WHERE a.source_type = 'definition'
+     AND a.target_type = 'device_group'
+     AND a.is_deleted  = FALSE
+) asn ON asn.source_id = d.id
+WHERE d.is_deleted = FALSE
+GROUP BY d.id, d.name, d.schedule
+ORDER BY d.name, d.id;
+
+-- name: ListReachedActionSetsForDevice :many
+SELECT
+  s.id,
+  s.name,
+  s.schedule,
+  (CASE
+    WHEN bool_or(asn.mode = 2) THEN 2
+    WHEN bool_or(asn.mode = 3) THEN 3
+    WHEN bool_or(asn.mode = 0) THEN 0
+    ELSE 1
+  END)::INTEGER AS effective_mode
+FROM action_sets_projection s
+JOIN (
+  SELECT a.source_id, a.mode
+    FROM assignments_projection a
+   WHERE a.source_type = 'action_set'
+     AND a.target_type = 'device'
+     AND a.target_id   = $1
+     AND a.is_deleted  = FALSE
+
+  UNION ALL
+
+  SELECT a.source_id, a.mode
+    FROM assignments_projection a
+    JOIN device_group_members_projection m
+      ON m.group_id   = a.target_id
+     AND m.device_id  = $1
+   WHERE a.source_type = 'action_set'
+     AND a.target_type = 'device_group'
+     AND a.is_deleted  = FALSE
+) asn ON asn.source_id = s.id
+WHERE s.is_deleted = FALSE
+GROUP BY s.id, s.name, s.schedule
+ORDER BY s.name, s.id;
+
+-- name: ListReachedActionAssignmentsForDevice :many
+SELECT
+  a.id,
+  (CASE
+    WHEN bool_or(asn.mode = 2) THEN 2
+    WHEN bool_or(asn.mode = 3) THEN 3
+    WHEN bool_or(asn.mode = 0) THEN 0
+    ELSE 1
+  END)::INTEGER AS effective_mode
+FROM actions_projection a
+JOIN (
+  SELECT asn.source_id, asn.mode
+    FROM assignments_projection asn
+   WHERE asn.source_type = 'action'
+     AND asn.target_type = 'device'
+     AND asn.target_id   = $1
+     AND asn.is_deleted  = FALSE
+
+  UNION ALL
+
+  SELECT asn.source_id, asn.mode
+    FROM assignments_projection asn
+    JOIN device_group_members_projection m
+      ON m.group_id   = asn.target_id
+     AND m.device_id  = $1
+   WHERE asn.source_type = 'action'
+     AND asn.target_type = 'device_group'
+     AND asn.is_deleted  = FALSE
+) asn ON asn.source_id = a.id
+WHERE a.is_deleted = FALSE
+GROUP BY a.id
+ORDER BY a.id;

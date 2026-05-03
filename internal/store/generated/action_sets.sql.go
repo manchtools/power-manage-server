@@ -27,7 +27,7 @@ func (q *Queries) CountActionSets(ctx context.Context, unassignedOnly bool) (int
 
 const getActionSetByID = `-- name: GetActionSetByID :one
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at, schedule FROM action_sets_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -45,12 +45,13 @@ func (q *Queries) GetActionSetByID(ctx context.Context, id string) (ActionSetsPr
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.UpdatedAt,
+		&i.Schedule,
 	)
 	return i, err
 }
 
 const getActionSetByName = `-- name: GetActionSetByName :one
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at, schedule FROM action_sets_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -67,6 +68,7 @@ func (q *Queries) GetActionSetByName(ctx context.Context, name string) (ActionSe
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.UpdatedAt,
+		&i.Schedule,
 	)
 	return i, err
 }
@@ -144,7 +146,7 @@ func (q *Queries) ListActionSetMembers(ctx context.Context, setID string) ([]Lis
 }
 
 const listActionSets = `-- name: ListActionSets :many
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at FROM action_sets_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at, schedule FROM action_sets_projection
 WHERE is_deleted = FALSE
   AND ($3::BOOLEAN = FALSE OR NOT EXISTS (
     SELECT 1 FROM definition_members_projection dm WHERE dm.action_set_id = id
@@ -178,6 +180,7 @@ func (q *Queries) ListActionSets(ctx context.Context, arg ListActionSetsParams) 
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.UpdatedAt,
+			&i.Schedule,
 		); err != nil {
 			return nil, err
 		}

@@ -21,7 +21,8 @@ func TestCreateActionSet(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateActionSet(ctx, connect.NewRequest(&pm.CreateActionSetRequest{
-		Name: "Web Server Setup",
+		Name:     "Web Server Setup",
+		Schedule: &pm.ActionSchedule{IntervalHours: 8},
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Set.Id)
@@ -72,6 +73,27 @@ func TestRenameActionSet(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "New Name", resp.Msg.Set.Name)
+}
+
+func TestUpdateActionSetSchedule(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionSetHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Sched Set")
+	ctx := testutil.AdminContext(adminID)
+
+	resp, err := h.UpdateActionSetSchedule(ctx, connect.NewRequest(&pm.UpdateActionSetScheduleRequest{
+		Id: setID,
+		Schedule: &pm.ActionSchedule{
+			Cron:        "0 3 * * *",
+			RunOnAssign: true,
+		},
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Set.Schedule)
+	assert.Equal(t, "0 3 * * *", resp.Msg.Set.Schedule.Cron)
+	assert.True(t, resp.Msg.Set.Schedule.RunOnAssign)
 }
 
 func TestDeleteActionSet(t *testing.T) {
