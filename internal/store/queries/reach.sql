@@ -90,6 +90,35 @@ WHERE s.is_deleted = FALSE
 GROUP BY s.id, s.name, s.schedule
 ORDER BY s.name, s.id;
 
+-- name: ListMaintenanceWindowsForDevice :many
+-- All non-empty maintenance windows reaching the device. The agent
+-- ORs entries within and across these (most-permissive union); the
+-- server just returns the raw set so the resolution layer can compute
+-- the union without committing to a single SQL aggregate.
+--
+-- We include device groups the device is a member of (direct or via
+-- dynamic-membership rebuilds) and user groups directly assigned to
+-- the device. An empty schedule (the default) contributes nothing —
+-- the union of "constraint + no-constraint" stays "constraint",
+-- matching the per-group "empty = always allowed" semantics.
+SELECT g.maintenance_window
+FROM device_groups_projection g
+JOIN device_group_members_projection m ON m.group_id = g.id
+WHERE m.device_id = $1
+  AND g.is_deleted = FALSE
+  AND g.maintenance_window <> '{}'::JSONB
+  AND g.maintenance_window IS NOT NULL
+
+UNION ALL
+
+SELECT ug.maintenance_window
+FROM user_groups_projection ug
+JOIN device_assigned_groups_projection dag ON dag.group_id = ug.id
+WHERE dag.device_id = $1
+  AND ug.is_deleted = FALSE
+  AND ug.maintenance_window <> '{}'::JSONB
+  AND ug.maintenance_window IS NOT NULL;
+
 -- name: ListReachedActionAssignmentsForDevice :many
 SELECT
   a.id,

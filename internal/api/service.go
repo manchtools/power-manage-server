@@ -459,6 +459,10 @@ func (s *ControlService) SetDeviceGroupSyncInterval(ctx context.Context, req *co
 	return s.deviceGroup.SetDeviceGroupSyncInterval(ctx, req)
 }
 
+func (s *ControlService) SetDeviceGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetDeviceGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
+	return s.deviceGroup.SetDeviceGroupMaintenanceWindow(ctx, req)
+}
+
 // Assignments
 func (s *ControlService) CreateAssignment(ctx context.Context, req *connect.Request[pm.CreateAssignmentRequest]) (*connect.Response[pm.CreateAssignmentResponse], error) {
 	return s.assignment.CreateAssignment(ctx, req)
@@ -663,6 +667,10 @@ func (s *ControlService) ValidateUserGroupQuery(ctx context.Context, req *connec
 
 func (s *ControlService) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pm.EvaluateDynamicUserGroupRequest]) (*connect.Response[pm.EvaluateDynamicUserGroupResponse], error) {
 	return s.userGroup.EvaluateDynamicUserGroup(ctx, req)
+}
+
+func (s *ControlService) SetUserGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetUserGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateUserGroupResponse], error) {
+	return s.userGroup.SetUserGroupMaintenanceWindow(ctx, req)
 }
 
 // Identity Providers

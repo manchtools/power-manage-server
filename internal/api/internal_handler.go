@@ -182,17 +182,37 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		})
 	}
 
+	// Resolved maintenance window across every group reaching the
+	// device. resolveMaintenanceWindowUnion returns nil when there is
+	// no constraint — the proto field stays unset so the agent skips
+	// the gate entirely. See manchtools/power-manage-server#58.
+	windowRows, err := h.store.Queries().ListMaintenanceWindowsForDevice(ctx, deviceID)
+	if err != nil {
+		h.logger.Warn("failed to load maintenance windows for sync; falling back to no constraint",
+			"device_id", deviceID, "error", err)
+	}
+	resolvedWindow := resolveMaintenanceWindowUnion(windowRows)
+
 	h.logger.Debug("proxy sync actions completed",
 		"device_id", deviceID,
 		"standalone_count", len(standalone),
 		"group_count", len(groups),
-		"sync_interval_minutes", syncInterval)
+		"sync_interval_minutes", syncInterval,
+		"window_entries", windowEntryCount(resolvedWindow))
 
 	return connect.NewResponse(&pm.SyncActionsResponse{
 		StandaloneActions:   standalone,
 		GroupedActions:      groups,
 		SyncIntervalMinutes: syncInterval,
+		MaintenanceWindow:   resolvedWindow,
 	}), nil
+}
+
+func windowEntryCount(w *pm.MaintenanceWindow) int {
+	if w == nil {
+		return 0
+	}
+	return len(w.GetSchedule())
 }
 
 // dbActionToWireAction converts a raw actions_projection row to wire
