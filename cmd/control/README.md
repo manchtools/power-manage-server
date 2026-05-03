@@ -588,16 +588,24 @@ SELECT get_stream_at('device', 'DEVICE_ID', '2024-01-15 12:00:00+00');
 
 ### Rebuilding Projections
 
-If projections need to be rebuilt:
+If projections need to be rebuilt from the event store, call
+`store.Store.RebuildAll(ctx, targets...)` from a Go program (typically
+a one-off admin binary). With no `targets` it rebuilds every
+registered projection in dependency order; passing names rebuilds
+only those.
 
-```sql
--- Rebuild all projections
-SELECT rebuild_all_projections();
-
--- Or rebuild individual projections
-SELECT rebuild_users_projection();
-SELECT rebuild_devices_projection();
+```go
+res, err := st.RebuildAll(ctx)                          // every projection
+res, err := st.RebuildAll(ctx, "users", "device_groups") // selected only
 ```
+
+Valid target names are listed in `internal/store/rebuild.go` as
+`AllRebuildTargets`. The whole rebuild runs in one transaction so a
+projector failure rolls back rather than leaving truncated tables
+half-replayed.
+
+The old `SELECT rebuild_*_projection()` PL/pgSQL family was deleted
+in migration 015 (server #94); the Go entry point is its replacement.
 
 ## Health Check
 
