@@ -181,8 +181,11 @@ func TestSetDeviceGroupMaintenanceWindow(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	require.NotNil(t, resp.Msg.Group.MaintenanceWindow)
-	assert.Len(t, resp.Msg.Group.MaintenanceWindow.Schedule, 2)
+	require.Len(t, resp.Msg.Group.MaintenanceWindow.Schedule, 2)
+	assert.Equal(t, []string{"mon", "tue", "wed", "thu", "fri"}, resp.Msg.Group.MaintenanceWindow.Schedule[0].Days)
 	assert.Equal(t, "22:00-06:00", resp.Msg.Group.MaintenanceWindow.Schedule[0].Allow)
+	assert.Equal(t, []string{"sat", "sun"}, resp.Msg.Group.MaintenanceWindow.Schedule[1].Days)
+	assert.Equal(t, "00:00-23:59", resp.Msg.Group.MaintenanceWindow.Schedule[1].Allow)
 
 	// Clear the window — passing nil drops the schedule and the
 	// projection's COALESCE should restore the empty default.
