@@ -282,20 +282,18 @@ func runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error
 	if err != nil {
 		return 0, fmt.Errorf("load event ids for %s: %w", t.Function, err)
 	}
+	defer rows.Close()
 	ids := make([]string, 0, 256)
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
 			return 0, fmt.Errorf("scan event id for %s: %w", t.Function, err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return 0, fmt.Errorf("iterate event ids for %s: %w", t.Function, err)
 	}
-	rows.Close()
 
 	// `events.*` passes the row as a composite type, matching the
 	// signature `project_<X>_event(event events) RETURNS void` that
