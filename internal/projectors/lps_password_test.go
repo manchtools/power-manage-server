@@ -77,18 +77,49 @@ func TestLpsPasswordRotatedFromEvent_Pure(t *testing.T) {
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
 	})
 
-	t.Run("missing device_id is a validation error", func(t *testing.T) {
-		_, err := projectors.LpsPasswordRotatedFromEvent(store.PersistedEvent{
-			StreamType: "lps_password",
-			EventType:  "LpsPasswordRotated",
-			Data: jsonOrFail(t, map[string]any{
-				"username":   "alice",
-				"rotated_at": rotatedAt.Format(time.RFC3339),
-			}),
-		})
-		require.Error(t, err)
-		assert.False(t, errors.Is(err, projectors.ErrIgnoredEvent),
-			"validation failure must NOT be silently swallowed by the listener wrapper")
+	t.Run("required fields are validated individually", func(t *testing.T) {
+		// Each row drops ONE required field from the otherwise-valid
+		// payload below and asserts the listener rejects the event.
+		// CR caught this on PR #119: a payload that decodes to "" /
+		// zero values would otherwise silently produce a bad row.
+		base := map[string]any{
+			"device_id":  "dev-1",
+			"action_id":  "act-1",
+			"username":   "alice",
+			"password":   "ENC:s",
+			"rotated_at": rotatedAt.Format(time.RFC3339),
+		}
+		cases := []struct {
+			drop string
+			want string
+		}{
+			{"device_id", "device_id"},
+			{"action_id", "action_id"},
+			{"username", "username"},
+			{"password", "password"},
+			{"rotated_at", "rotated_at"},
+		}
+		for _, tc := range cases {
+			t.Run("missing "+tc.drop, func(t *testing.T) {
+				payload := map[string]any{}
+				for k, v := range base {
+					if k == tc.drop {
+						continue
+					}
+					payload[k] = v
+				}
+				_, err := projectors.LpsPasswordRotatedFromEvent(store.PersistedEvent{
+					StreamType: "lps_password",
+					EventType:  "LpsPasswordRotated",
+					Data:       jsonOrFail(t, payload),
+				})
+				require.Error(t, err)
+				assert.False(t, errors.Is(err, projectors.ErrIgnoredEvent),
+					"validation failure must NOT be silently swallowed by the listener wrapper")
+				assert.Contains(t, err.Error(), tc.want,
+					"error message should name the missing field")
+			})
+		}
 	})
 
 	t.Run("malformed payload bytes is a validation error", func(t *testing.T) {

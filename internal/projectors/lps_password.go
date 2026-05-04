@@ -46,8 +46,24 @@ func LpsPasswordRotatedFromEvent(e store.PersistedEvent) (LpsPasswordRotatedPayl
 	if err := json.Unmarshal(e.Data, &p); err != nil {
 		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: invalid LpsPasswordRotated payload: %w", err)
 	}
-	if p.DeviceID == "" || p.Username == "" {
-		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires device_id + username")
+	// Every field below was implicitly required by the deleted
+	// PL/pgSQL projector — `(event.data->>'rotated_at')::TIMESTAMPTZ`
+	// would have raised on a missing value, and the inserted row is
+	// useless without the device/action/username/password tuple.
+	// Validating up front keeps the failure surface in the listener's
+	// log rather than producing silently-bad projection rows that
+	// outlast the event log.
+	switch {
+	case p.DeviceID == "":
+		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires device_id")
+	case p.ActionID == "":
+		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires action_id")
+	case p.Username == "":
+		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires username")
+	case p.Password == "":
+		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires password")
+	case p.RotatedAt.IsZero():
+		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: LpsPasswordRotated requires rotated_at")
 	}
 	if p.RotationReason == "" {
 		// Match the PL/pgSQL `COALESCE(... 'scheduled')` default so
