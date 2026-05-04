@@ -9,10 +9,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // DefinitionHandler handles definition (collection of action sets) RPCs.
@@ -71,7 +69,6 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
-	h.enqueueDefinitionReindex(ctx, def)
 
 	return connect.NewResponse(&pm.CreateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -172,7 +169,6 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-	h.enqueueDefinitionReindex(ctx, def)
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -215,7 +211,6 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-	h.enqueueDefinitionReindex(ctx, def)
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -251,7 +246,6 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-	h.enqueueDefinitionReindex(ctx, def)
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -269,11 +263,6 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	var cascadeIDs []string
-	if h.searchIdx != nil {
-		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "definition", req.Msg.Id)
-	}
-
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
@@ -285,11 +274,10 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	if h.searchIdx != nil {
-		if err := h.searchIdx.EnqueueRemove(ctx, "definition", req.Msg.Id, cascadeIDs); err != nil {
-			h.logger.Warn("failed to enqueue search index remove", "scope", "definition", "error", err)
-		}
-	}
+	// Search index removal + cascade-rebuild of parent action_sets
+	// is handled by api.SearchListener (Phase 2c of #81): the
+	// listener calls GetReverseMembers + EnqueueRemove on
+	// DefinitionDeleted.
 
 	return connect.NewResponse(&pm.DeleteDefinitionResponse{}), nil
 }
@@ -422,23 +410,6 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 	}), nil
 }
 
-// enqueueDefinitionReindex enqueues a search index update for a definition.
-func (h *DefinitionHandler) enqueueDefinitionReindex(ctx context.Context, d db.DefinitionsProjection) {
-	var createdAt, updatedAt int64
-	if d.CreatedAt != nil {
-		createdAt = d.CreatedAt.Unix()
-	}
-	if d.UpdatedAt != nil {
-		updatedAt = d.UpdatedAt.Unix()
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDefinition, d.ID, &taskqueue.SearchEntityData{
-		Name:        d.Name,
-		Description: d.Description,
-		MemberCount: d.MemberCount,
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-	})
-}
 
 func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {
 	def := &pm.Definition{
