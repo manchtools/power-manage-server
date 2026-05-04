@@ -15,7 +15,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // DeviceGroupHandler handles device group RPCs.
@@ -33,24 +32,6 @@ func NewDeviceGroupHandler(st *store.Store, logger *slog.Logger) *DeviceGroupHan
 	}
 }
 
-// enqueueDeviceGroupReindex enqueues a search index update for a device group.
-func (h *DeviceGroupHandler) enqueueDeviceGroupReindex(ctx context.Context, g db.DeviceGroupsProjection) {
-	isDynamic := "false"
-	if g.IsDynamic {
-		isDynamic = "true"
-	}
-	var createdAt int64
-	if g.CreatedAt != nil {
-		createdAt = g.CreatedAt.Unix()
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDeviceGroup, g.ID, &taskqueue.SearchEntityData{
-		Name:        g.Name,
-		Description: g.Description,
-		IsDynamic:   isDynamic,
-		MemberCount: g.MemberCount,
-		CreatedAt:   createdAt,
-	})
-}
 
 // CreateDeviceGroup creates a new device group.
 func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect.Request[pm.CreateDeviceGroupRequest]) (*connect.Response[pm.CreateDeviceGroupResponse], error) {
@@ -100,7 +81,6 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.CreateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -228,7 +208,6 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -264,7 +243,6 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -364,7 +342,6 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.AddDeviceToGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -411,7 +388,6 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.RemoveDeviceFromGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -462,7 +438,6 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupQueryResponse{
 		Group: h.deviceGroupToProto(group),
@@ -539,7 +514,6 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 		devicesRemoved = membersBefore - group.MemberCount
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.EvaluateDynamicGroupResponse{
 		Group:          h.deviceGroupToProto(group),
@@ -588,7 +562,6 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
-	h.enqueueDeviceGroupReindex(ctx, group)
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),

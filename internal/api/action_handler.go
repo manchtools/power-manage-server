@@ -844,8 +844,11 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
-	if err != nil {
+	// Existence check — the row itself is now only consumed by the
+	// post-commit search listener (Phase 2 of #81), which reloads it
+	// fresh. We keep the load here to fail fast with NotFound before
+	// touching anything heavier downstream.
+	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
@@ -854,7 +857,6 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	var params any // Use any to store either parsed JSON object or raw JSON
 	var timeoutSeconds int32
 	var actionID *string
-	var actionName string
 	var signature []byte
 	var paramsCanonical []byte
 
@@ -878,7 +880,6 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
-		actionName = action.Name
 		signature = action.Signature
 		paramsCanonical = action.ParamsCanonical
 
@@ -1072,34 +1073,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}
 
 	// Enqueue execution for search indexing using already-fetched data.
-	if h.searchIdx != nil {
-		var execCreatedAt int64
-		if exec.CreatedAt != nil {
-			execCreatedAt = exec.CreatedAt.Unix()
-		}
-		var execDurationMs int64
-		if exec.DurationMs != nil {
-			execDurationMs = *exec.DurationMs
-		}
-		execActionID := ""
-		if exec.ActionID != nil {
-			execActionID = *exec.ActionID
-		}
-		if err := h.searchIdx.EnqueueReindex(ctx, search.ScopeExecution, exec.ID, &taskqueue.SearchEntityData{
-			ActionName:     actionName,
-			DeviceHostname: device.Hostname,
-			Status:         exec.Status,
-			Type:           exec.ActionType,
-			DeviceID:       exec.DeviceID,
-			CreatedAt:      execCreatedAt,
-			DurationMs:     execDurationMs,
-			Changed:        exec.Changed,
-			DesiredState:   exec.DesiredState,
-			ActionID:       execActionID,
-		}); err != nil {
-			h.logger.Warn("failed to enqueue execution search reindex", "error", err)
-		}
-	}
+	// Execution search reindex is handled by api.SearchListener
+	// (Phase 2 of #81): the listener fires on every Execution* event
+	// type and reloads the projection through loadSearchEntityData.
 
 	h.logger.Info("action dispatched",
 		"execution_id", id,
