@@ -18,6 +18,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -72,6 +73,15 @@ func SetupPostgres(t *testing.T) *store.Store {
 		t.Fatalf("create store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+
+	// Wire the same Go-side projector listeners that production
+	// boot wires in cmd/control/main.go. Without this, handlers
+	// emit events but the projection writes never fire (the
+	// PL/pgSQL projectors that the migrations have replaced with
+	// no-op stubs no longer do anything either), so any test that
+	// reads back projection state after AppendEvent silently sees
+	// stale data.
+	projectors.WireAll(st, nil)
 
 	return st
 }

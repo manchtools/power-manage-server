@@ -365,38 +365,17 @@ func main() {
 	// 3) Periodic reconciler — durability safety net for the listener,
 	//    catches any event whose effect on system actions the
 	//    listener doesn't yet know about. Default 1m.
-	// Phase 1 of the PL/pgSQL → Go projector migration (#96): the
-	// security_alert projector now lives in Go via a post-commit
-	// listener. The (now-deleted) PL/pgSQL function
-	// project_security_alert_event + its sidecar trigger ran inside
-	// the AppendEvent transaction. The Go listener fires post-commit,
-	// but no consumer of security_alerts_projection relies on
-	// read-your-writes after an alert append, so the async write is
-	// safe. ON CONFLICT (event_id) DO NOTHING in the insert keeps it
-	// idempotent against post-crash re-fires.
+	// Wire every Go-side projector listener in one place. The
+	// projectors package owns the list so test fixtures (testutil)
+	// and production boot stay in lockstep — adding a new ported
+	// projector in #98–#106 only touches projectors.WireAll.
 	//
-	// Registered OUTSIDE the SystemActions guard below — the
-	// projector listener has no SystemActions dependency, and a
-	// deployment with SystemActions disabled must still update the
-	// security_alerts_projection (the PL/pgSQL trigger this replaces
-	// always fired regardless of subsystem availability).
-	st.RegisterEventListener(projectors.SecurityAlertListener(
-		st,
-		logger.With("component", "security_alert_projector"),
-	))
-
-	// #97 — totp projector ported to Go. Same async-vs-sync analysis
-	// as #96: TotpEnabled is read on the auth/login path, never
-	// immediately after AppendEvent on the same request, so
-	// post-commit timing is fine. UpsertTotpProjection +
-	// VerifyTotpProjection + DeleteTotpProjection + the
-	// MarkTotpBackupCodeUsed / RegenerateTotpBackupCodes pair are
-	// idempotent against re-fire — every UPDATE matches by user_id +
-	// projection_version, the upsert uses ON CONFLICT.
-	st.RegisterEventListener(projectors.TotpListener(
-		st,
-		logger.With("component", "totp_projector"),
-	))
+	// Listeners fire synchronously inside Store.AppendEvent (after
+	// the event commit, before AppendEvent returns), so handlers
+	// see read-your-writes the same as they did under the deleted
+	// PL/pgSQL triggers. See WireAll's docstring for the
+	// atomicity caveat.
+	projectors.WireAll(st, logger)
 
 	if svc.SystemActions() != nil {
 		// (1) Startup sweep — keeps the existing Info line so
