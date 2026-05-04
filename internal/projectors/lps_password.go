@@ -3,6 +3,7 @@ package projectors
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -25,6 +26,24 @@ type LpsPasswordRotatedPayload struct {
 	Password       string    `json:"password"`
 	RotatedAt      time.Time `json:"rotated_at"`
 	RotationReason string    `json:"rotation_reason"`
+}
+
+// LogValue implements slog.LogValuer so the encrypted Password is
+// never written verbatim by structured logs. The listener body
+// already logs only individual non-secret fields, but a future
+// `logger.Warn("…", "payload", payload)` or `fmt.Sprintf("%+v", p)`
+// routed through slog would otherwise leak the credential. Mask at
+// the type level so the safety holds regardless of caller
+// discipline.
+func (p LpsPasswordRotatedPayload) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("device_id", p.DeviceID),
+		slog.String("action_id", p.ActionID),
+		slog.String("username", p.Username),
+		slog.String("password", "[REDACTED]"),
+		slog.Time("rotated_at", p.RotatedAt),
+		slog.String("rotation_reason", p.RotationReason),
+	)
 }
 
 // LpsPasswordRotatedFromEvent decodes the event payload into the

@@ -260,9 +260,10 @@ func TestLpsPasswordListener_IgnoresWrongStreamType(t *testing.T) {
 		ActorID:   deviceID,
 	}))
 
-	// Long enough for the listener to have fired if it were going to.
-	time.Sleep(150 * time.Millisecond)
-
+	// fireListeners is synchronous (see project memory
+	// `feedback_post_commit_listener_is_sync.md`): if the listener
+	// were going to write, the row would already be there by the
+	// time AppendEvent returns. No sleep needed.
 	current, err := st.Queries().GetCurrentLpsPasswords(ctx, deviceID)
 	require.NoError(t, err)
 	assert.Empty(t, current, "wrong-stream-type event must NOT create an lps_passwords_projection row")
