@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -231,5 +232,11 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 		return data, nil
 	}
 
-	return nil, nil
+	// Unknown scope. Returning an explicit error rather than (nil, nil)
+	// catches classifier/loader drift at the listener boundary — if a
+	// future PR adds a scope to AffectedSearchOps without updating
+	// loadSearchEntityData, the listener logs a warning instead of
+	// silently enqueueing an empty SearchEntityData payload that would
+	// blank out the indexed entity.
+	return nil, fmt.Errorf("loadSearchEntityData: unknown scope %q", scope)
 }

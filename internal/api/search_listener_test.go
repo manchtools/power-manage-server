@@ -38,6 +38,16 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
 		},
 		{
+			"UserProfileUpdated reindexes user (display name lives in the profile payload)",
+			store.PersistedEvent{EventType: "UserProfileUpdated", StreamID: "USR1", StreamType: "user"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
+		},
+		{
+			"UserLinuxUsernameChanged reindexes user",
+			store.PersistedEvent{EventType: "UserLinuxUsernameChanged", StreamID: "USR1", StreamType: "user"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
+		},
+		{
 			"UserDeleted removes user from index",
 			store.PersistedEvent{EventType: "UserDeleted", StreamID: "USR1", StreamType: "user"},
 			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeUser, ID: "USR1"}},
@@ -75,6 +85,11 @@ func TestAffectedSearchOps(t *testing.T) {
 		{
 			"DeviceLabelRemoved reindexes device",
 			store.PersistedEvent{EventType: "DeviceLabelRemoved", StreamID: "DEV1", StreamType: "device"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDevice, ID: "DEV1"}},
+		},
+		{
+			"DeviceSyncIntervalSet reindexes device",
+			store.PersistedEvent{EventType: "DeviceSyncIntervalSet", StreamID: "DEV1", StreamType: "device"},
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDevice, ID: "DEV1"}},
 		},
 		{
