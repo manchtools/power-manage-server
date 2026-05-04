@@ -34,6 +34,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
@@ -364,6 +365,26 @@ func main() {
 	// 3) Periodic reconciler — durability safety net for the listener,
 	//    catches any event whose effect on system actions the
 	//    listener doesn't yet know about. Default 1m.
+	// Phase 1 of the PL/pgSQL → Go projector migration (#96): the
+	// security_alert projector now lives in Go via a post-commit
+	// listener. The (now-deleted) PL/pgSQL function
+	// project_security_alert_event + its sidecar trigger ran inside
+	// the AppendEvent transaction. The Go listener fires post-commit,
+	// but no consumer of security_alerts_projection relies on
+	// read-your-writes after an alert append, so the async write is
+	// safe. ON CONFLICT (event_id) DO NOTHING in the insert keeps it
+	// idempotent against post-crash re-fires.
+	//
+	// Registered OUTSIDE the SystemActions guard below — the
+	// projector listener has no SystemActions dependency, and a
+	// deployment with SystemActions disabled must still update the
+	// security_alerts_projection (the PL/pgSQL trigger this replaces
+	// always fired regardless of subsystem availability).
+	st.RegisterEventListener(projectors.SecurityAlertListener(
+		st,
+		logger.With("component", "security_alert_projector"),
+	))
+
 	if svc.SystemActions() != nil {
 		// (1) Startup sweep — keeps the existing Info line so
 		// operators see the one-shot convergence in boot logs.
