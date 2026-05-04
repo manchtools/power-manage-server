@@ -1,0 +1,160 @@
+package projectors
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/manchtools/power-manage/server/internal/store"
+)
+
+// LuksKeyRotatedPayload covers every field the luks_key projector
+// reads from the LuksKeyRotated event. Same shape as
+// LpsPasswordRotatedPayload but with `device_path` in the partition
+// key — LUKS rotates per (device, action, device_path) where LPS
+// rotates per (device, username).
+type LuksKeyRotatedPayload struct {
+	DeviceID       string    `json:"device_id"`
+	ActionID       string    `json:"action_id"`
+	DevicePath     string    `json:"device_path"`
+	Passphrase     string    `json:"passphrase"`
+	RotatedAt      time.Time `json:"rotated_at"`
+	RotationReason string    `json:"rotation_reason"`
+}
+
+// LuksRevocationPayload is the union shape for the three revocation
+// event types (Dispatched, Revoked, Failed). They all UPDATE the
+// current row's revocation_status / revocation_at; only Failed sets
+// revocation_error. Status is the value the projector writes to the
+// row (`dispatched`, `success`, `failed`) — note that the event-type
+// suffix and the column value differ for the success case (event is
+// `LuksDeviceKeyRevoked`, status is `success`).
+type LuksRevocationPayload struct {
+	DeviceID string
+	ActionID string
+	Status   string
+	Error    *string
+	At       time.Time
+}
+
+// LuksKeyRotatedFromEvent decodes LuksKeyRotated. Returns
+// ErrIgnoredEvent for any other (stream, event_type) so the listener
+// wrapper can silently no-op.
+func LuksKeyRotatedFromEvent(e store.PersistedEvent) (LuksKeyRotatedPayload, error) {
+	if e.StreamType != "luks_key" || e.EventType != "LuksKeyRotated" {
+		return LuksKeyRotatedPayload{}, ErrIgnoredEvent
+	}
+	if len(e.Data) == 0 {
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: empty LuksKeyRotated payload")
+	}
+	var p LuksKeyRotatedPayload
+	if err := json.Unmarshal(e.Data, &p); err != nil {
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: invalid LuksKeyRotated payload: %w", err)
+	}
+	switch {
+	case p.DeviceID == "":
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: LuksKeyRotated requires device_id")
+	case p.ActionID == "":
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: LuksKeyRotated requires action_id")
+	case p.DevicePath == "":
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: LuksKeyRotated requires device_path")
+	case p.Passphrase == "":
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: LuksKeyRotated requires passphrase")
+	case p.RotatedAt.IsZero():
+		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: LuksKeyRotated requires rotated_at")
+	}
+	if p.RotationReason == "" {
+		// Match the PL/pgSQL `COALESCE(... 'scheduled')` default.
+		p.RotationReason = "scheduled"
+	}
+	return p, nil
+}
+
+// LuksRevocationDispatchedFromEvent decodes
+// LuksDeviceKeyRevocationDispatched into the union revocation
+// payload. Status is hardcoded "dispatched" so the listener doesn't
+// need a per-event mapping table.
+func LuksRevocationDispatchedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
+	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevocationDispatched" {
+		return LuksRevocationPayload{}, ErrIgnoredEvent
+	}
+	return decodeLuksRevocation(e, "dispatched", "dispatched_at", false)
+}
+
+// LuksRevokedFromEvent decodes LuksDeviceKeyRevoked. Status is
+// "success" — note the event type vs column-value mismatch is
+// intentional and matches the PL/pgSQL projector verbatim.
+func LuksRevokedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
+	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevoked" {
+		return LuksRevocationPayload{}, ErrIgnoredEvent
+	}
+	return decodeLuksRevocation(e, "success", "revoked_at", false)
+}
+
+// LuksRevocationFailedFromEvent decodes LuksDeviceKeyRevocationFailed
+// — only this variant requires an error string in the payload.
+func LuksRevocationFailedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
+	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevocationFailed" {
+		return LuksRevocationPayload{}, ErrIgnoredEvent
+	}
+	return decodeLuksRevocation(e, "failed", "failed_at", true)
+}
+
+// decodeLuksRevocation centralises the shared (device_id, action_id,
+// <its_at>, ?error) parsing for the three revocation variants.
+// `atKey` is the JSON key holding the timestamp (different per
+// variant — dispatched_at / revoked_at / failed_at). `requireError`
+// is true only for the Failed variant; the other two ignore any
+// error field that happens to be in the payload.
+func decodeLuksRevocation(e store.PersistedEvent, status, atKey string, requireError bool) (LuksRevocationPayload, error) {
+	if len(e.Data) == 0 {
+		return LuksRevocationPayload{}, fmt.Errorf("projector: empty %s payload", e.EventType)
+	}
+	// Decode dynamically because the timestamp key name varies per
+	// variant. A typed struct per variant would be three near-identical
+	// structs for one extra string conversion — not worth it.
+	var raw map[string]any
+	if err := json.Unmarshal(e.Data, &raw); err != nil {
+		return LuksRevocationPayload{}, fmt.Errorf("projector: invalid %s payload: %w", e.EventType, err)
+	}
+
+	deviceID, _ := raw["device_id"].(string)
+	actionID, _ := raw["action_id"].(string)
+	atRaw, _ := raw[atKey].(string)
+	errStr, _ := raw["error"].(string)
+
+	switch {
+	case deviceID == "":
+		return LuksRevocationPayload{}, fmt.Errorf("projector: %s requires device_id", e.EventType)
+	case actionID == "":
+		return LuksRevocationPayload{}, fmt.Errorf("projector: %s requires action_id", e.EventType)
+	case atRaw == "":
+		return LuksRevocationPayload{}, fmt.Errorf("projector: %s requires %s", e.EventType, atKey)
+	case requireError && errStr == "":
+		return LuksRevocationPayload{}, fmt.Errorf("projector: %s requires error", e.EventType)
+	}
+
+	at, err := time.Parse(time.RFC3339, atRaw)
+	if err != nil {
+		// Try RFC3339 with nanos as a fallback — agent code uses
+		// time.Now().Format(time.RFC3339) but a future emitter may
+		// switch to time.RFC3339Nano. Both are valid TIMESTAMPTZ
+		// inputs in the deleted PL/pgSQL projector.
+		at, err = time.Parse(time.RFC3339Nano, atRaw)
+		if err != nil {
+			return LuksRevocationPayload{}, fmt.Errorf("projector: %s has invalid %s %q: %w", e.EventType, atKey, atRaw, err)
+		}
+	}
+
+	out := LuksRevocationPayload{
+		DeviceID: deviceID,
+		ActionID: actionID,
+		Status:   status,
+		At:       at,
+	}
+	if requireError {
+		s := errStr
+		out.Error = &s
+	}
+	return out, nil
+}
