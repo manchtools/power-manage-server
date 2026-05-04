@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const deleteLpsPasswordsByAction = `-- name: DeleteLpsPasswordsByAction :exec
@@ -89,4 +90,87 @@ func (q *Queries) GetLpsPasswordHistory(ctx context.Context, deviceID string) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertLpsPassword = `-- name: InsertLpsPassword :exec
+INSERT INTO lps_passwords_projection
+    (device_id, action_id, username, password, rotated_at, rotation_reason)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertLpsPasswordParams struct {
+	DeviceID       string    `json:"device_id"`
+	ActionID       string    `json:"action_id"`
+	Username       string    `json:"username"`
+	Password       string    `json:"password"`
+	RotatedAt      time.Time `json:"rotated_at"`
+	RotationReason string    `json:"rotation_reason"`
+}
+
+// Step 2 of LpsPasswordRotated projection. Always inserts a new row
+// — the PL/pgSQL projector did the same, and step 3's trim keeps
+// only the latest 3 by rotated_at so duplicates from a replay are
+// pruned automatically.
+func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordParams) error {
+	_, err := q.db.Exec(ctx, insertLpsPassword,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.Username,
+		arg.Password,
+		arg.RotatedAt,
+		arg.RotationReason,
+	)
+	return err
+}
+
+const markLpsPasswordsNotCurrent = `-- name: MarkLpsPasswordsNotCurrent :exec
+UPDATE lps_passwords_projection
+SET is_current = FALSE
+WHERE device_id = $1
+  AND username = $2
+`
+
+type MarkLpsPasswordsNotCurrentParams struct {
+	DeviceID string `json:"device_id"`
+	Username string `json:"username"`
+}
+
+// Step 1 of LpsPasswordRotated projection. Flip every prior row for
+// (device_id, username) so the new password (inserted by step 2) is
+// the only is_current=TRUE row. Idempotent: replaying the same event
+// after the new row already landed leaves the projection unchanged
+// because the new row matches WHERE and gets flipped to FALSE — but
+// the listener wraps both writes in a tx, so a replay of the full
+// listener body keeps the (mark-old-false, insert-new-true) pair
+// consistent.
+func (q *Queries) MarkLpsPasswordsNotCurrent(ctx context.Context, arg MarkLpsPasswordsNotCurrentParams) error {
+	_, err := q.db.Exec(ctx, markLpsPasswordsNotCurrent, arg.DeviceID, arg.Username)
+	return err
+}
+
+const trimLpsPasswordsToLast3 = `-- name: TrimLpsPasswordsToLast3 :exec
+DELETE FROM lps_passwords_projection AS p
+WHERE p.device_id = $1
+  AND p.username = $2
+  AND p.id NOT IN (
+      SELECT id FROM lps_passwords_projection
+      WHERE device_id = $1
+        AND username = $2
+      ORDER BY rotated_at DESC
+      LIMIT 3
+  )
+`
+
+type TrimLpsPasswordsToLast3Params struct {
+	DeviceID string `json:"device_id"`
+	Username string `json:"username"`
+}
+
+// Step 3 of LpsPasswordRotated projection. Keep only the latest 3
+// passwords per (device_id, username) — the operational requirement
+// is "the user has the previous password if the rotation was
+// mid-flight"; deeper history bloats the encrypted-password store.
+func (q *Queries) TrimLpsPasswordsToLast3(ctx context.Context, arg TrimLpsPasswordsToLast3Params) error {
+	_, err := q.db.Exec(ctx, trimLpsPasswordsToLast3, arg.DeviceID, arg.Username)
+	return err
 }
