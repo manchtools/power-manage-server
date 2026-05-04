@@ -385,6 +385,19 @@ func main() {
 		logger.With("component", "security_alert_projector"),
 	))
 
+	// #97 — totp projector ported to Go. Same async-vs-sync analysis
+	// as #96: TotpEnabled is read on the auth/login path, never
+	// immediately after AppendEvent on the same request, so
+	// post-commit timing is fine. UpsertTotpProjection +
+	// VerifyTotpProjection + DeleteTotpProjection + the
+	// MarkTotpBackupCodeUsed / RegenerateTotpBackupCodes pair are
+	// idempotent against re-fire — every UPDATE matches by user_id +
+	// projection_version, the upsert uses ON CONFLICT.
+	st.RegisterEventListener(projectors.TotpListener(
+		st,
+		logger.With("component", "totp_projector"),
+	))
+
 	if svc.SystemActions() != nil {
 		// (1) Startup sweep — keeps the existing Info line so
 		// operators see the one-shot convergence in boot logs.

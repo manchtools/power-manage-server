@@ -7,7 +7,17 @@ package generated
 
 import (
 	"context"
+	"time"
 )
+
+const deleteTotpProjection = `-- name: DeleteTotpProjection :exec
+DELETE FROM totp_projection WHERE user_id = $1
+`
+
+func (q *Queries) DeleteTotpProjection(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, deleteTotpProjection, userID)
+	return err
+}
 
 const getTOTPByUserID = `-- name: GetTOTPByUserID :one
 SELECT user_id, secret_encrypted, verified, enabled, backup_codes_hash, backup_codes_used, created_at, updated_at, projection_version FROM totp_projection WHERE user_id = $1
@@ -57,4 +67,156 @@ func (q *Queries) IsTOTPEnabled(ctx context.Context, id string) (bool, error) {
 	var totp_enabled bool
 	err := row.Scan(&totp_enabled)
 	return totp_enabled, err
+}
+
+const markTotpBackupCodeUsed = `-- name: MarkTotpBackupCodeUsed :exec
+UPDATE totp_projection
+SET backup_codes_used[$2::int] = TRUE,
+    updated_at = $3,
+    projection_version = $4
+WHERE user_id = $1
+`
+
+type MarkTotpBackupCodeUsedParams struct {
+	UserID            string    `json:"user_id"`
+	Column2           int32     `json:"column_2"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// TOTPBackupCodeUsed updates a 1-indexed slot in backup_codes_used.
+// The PL/pgSQL projector used `[(idx)::int + 1]` — we add the +1 in
+// Go before passing the parameter so the SQL stays clean.
+func (q *Queries) MarkTotpBackupCodeUsed(ctx context.Context, arg MarkTotpBackupCodeUsedParams) error {
+	_, err := q.db.Exec(ctx, markTotpBackupCodeUsed,
+		arg.UserID,
+		arg.Column2,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const regenerateTotpBackupCodes = `-- name: RegenerateTotpBackupCodes :exec
+UPDATE totp_projection
+SET backup_codes_hash = $2,
+    backup_codes_used = array_fill(FALSE::boolean, ARRAY[array_length($2::text[], 1)]),
+    updated_at = $3,
+    projection_version = $4
+WHERE user_id = $1
+`
+
+type RegenerateTotpBackupCodesParams struct {
+	UserID            string    `json:"user_id"`
+	BackupCodesHash   []string  `json:"backup_codes_hash"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+func (q *Queries) RegenerateTotpBackupCodes(ctx context.Context, arg RegenerateTotpBackupCodesParams) error {
+	_, err := q.db.Exec(ctx, regenerateTotpBackupCodes,
+		arg.UserID,
+		arg.BackupCodesHash,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const setUserTotpEnabled = `-- name: SetUserTotpEnabled :exec
+UPDATE users_projection
+SET totp_enabled = $2,
+    updated_at = $3,
+    projection_version = $4
+WHERE id = $1
+`
+
+type SetUserTotpEnabledParams struct {
+	ID                string     `json:"id"`
+	TotpEnabled       bool       `json:"totp_enabled"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// Cross-stream effect: TOTP events also flip
+// users_projection.totp_enabled. Was an inline UPDATE inside the
+// deleted PL/pgSQL projector. Sqlc'd here so the Go listener can
+// call it explicitly.
+func (q *Queries) SetUserTotpEnabled(ctx context.Context, arg SetUserTotpEnabledParams) error {
+	_, err := q.db.Exec(ctx, setUserTotpEnabled,
+		arg.ID,
+		arg.TotpEnabled,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const upsertTotpProjection = `-- name: UpsertTotpProjection :exec
+INSERT INTO totp_projection (
+    user_id, secret_encrypted, verified, enabled,
+    backup_codes_hash, backup_codes_used,
+    created_at, updated_at, projection_version
+) VALUES (
+    $1, $2, FALSE, FALSE,
+    $3,
+    array_fill(FALSE::boolean, ARRAY[array_length($3::text[], 1)]),
+    $4, $4, $5
+)
+ON CONFLICT (user_id) DO UPDATE SET
+    secret_encrypted = EXCLUDED.secret_encrypted,
+    verified = FALSE,
+    enabled = FALSE,
+    backup_codes_hash = EXCLUDED.backup_codes_hash,
+    backup_codes_used = EXCLUDED.backup_codes_used,
+    updated_at = EXCLUDED.updated_at,
+    projection_version = EXCLUDED.projection_version
+`
+
+type UpsertTotpProjectionParams struct {
+	UserID            string    `json:"user_id"`
+	SecretEncrypted   string    `json:"secret_encrypted"`
+	BackupCodesHash   []string  `json:"backup_codes_hash"`
+	CreatedAt         time.Time `json:"created_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// Write-side queries for the Go totp projector (#97). Replace the
+// per-event branches of the deleted PL/pgSQL project_totp_event
+// function. Each query mirrors one branch's effect; the listener
+// chooses which to call based on the event_type.
+//
+// TOTPSetupInitiated upserts the row — re-initiation by the same
+// user before verifying replaces secret + backup codes and resets
+// verified/enabled to FALSE. backup_codes_used is sized to match
+// backup_codes_hash by emitting an array of FALSE of equal length.
+func (q *Queries) UpsertTotpProjection(ctx context.Context, arg UpsertTotpProjectionParams) error {
+	_, err := q.db.Exec(ctx, upsertTotpProjection,
+		arg.UserID,
+		arg.SecretEncrypted,
+		arg.BackupCodesHash,
+		arg.CreatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const verifyTotpProjection = `-- name: VerifyTotpProjection :exec
+UPDATE totp_projection
+SET verified = TRUE,
+    enabled = TRUE,
+    updated_at = $2,
+    projection_version = $3
+WHERE user_id = $1
+`
+
+type VerifyTotpProjectionParams struct {
+	UserID            string    `json:"user_id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+func (q *Queries) VerifyTotpProjection(ctx context.Context, arg VerifyTotpProjectionParams) error {
+	_, err := q.db.Exec(ctx, verifyTotpProjection, arg.UserID, arg.UpdatedAt, arg.ProjectionVersion)
+	return err
 }
