@@ -251,13 +251,99 @@ func TestAffectedSearchOps(t *testing.T) {
 			nil,
 		},
 
+		// ActionSet scope (added in Phase 2c). Every classified
+		// event has a row — the "every event gets an explicit case"
+		// contract documented at the top of the table.
+		{
+			"ActionSetCreated reindexes set",
+			store.PersistedEvent{EventType: "ActionSetCreated", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetRenamed reindexes set",
+			store.PersistedEvent{EventType: "ActionSetRenamed", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetDescriptionUpdated reindexes set",
+			store.PersistedEvent{EventType: "ActionSetDescriptionUpdated", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetScheduleUpdated reindexes set",
+			store.PersistedEvent{EventType: "ActionSetScheduleUpdated", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetMemberAdded reindexes set (member_count changed)",
+			store.PersistedEvent{EventType: "ActionSetMemberAdded", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetMemberRemoved reindexes set",
+			store.PersistedEvent{EventType: "ActionSetMemberRemoved", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetMemberReordered reindexes set (member-list ordering visible in search)",
+			store.PersistedEvent{EventType: "ActionSetMemberReordered", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+		{
+			"ActionSetDeleted removes set (cascade IDs resolved at dispatch time)",
+			store.PersistedEvent{EventType: "ActionSetDeleted", StreamID: "AS1", StreamType: "action_set"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeActionSet, ID: "AS1"}},
+		},
+
+		// Definition scope (added in Phase 2c — same shape as ActionSet).
+		{
+			"DefinitionCreated reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionCreated", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionRenamed reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionRenamed", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionDescriptionUpdated reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionDescriptionUpdated", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionScheduleUpdated reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionScheduleUpdated", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionMemberAdded reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionMemberAdded", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionMemberRemoved reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionMemberRemoved", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionMemberReordered reindexes definition",
+			store.PersistedEvent{EventType: "DefinitionMemberReordered", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+		{
+			"DefinitionDeleted removes definition",
+			store.PersistedEvent{EventType: "DefinitionDeleted", StreamID: "DEF1", StreamType: "definition"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeDefinition, ID: "DEF1"}},
+		},
+
 		// Out-of-scope: event types from handlers not yet ported
 		// classify as nil today. When subsequent Phase 2 PRs add a
 		// scope they MUST move from nil to a populated slice in the
 		// same PR that removes the handler-side enqueue.
 		{
-			"ActionSetCreated is Phase-2 scope (returns nil today)",
-			store.PersistedEvent{EventType: "ActionSetCreated", StreamID: "AS1", StreamType: "action_set"},
+			"ActionCreated is Phase-2d scope (returns nil today)",
+			store.PersistedEvent{EventType: "ActionCreated", StreamID: "ACT1", StreamType: "action"},
 			nil,
 		},
 

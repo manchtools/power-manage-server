@@ -175,6 +175,47 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 		"ExecutionCancelled",
 		"ExecutionTimedOut":
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeExecution, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// ActionSet scope
+	// ---------------------------------------------------------
+	// Name, description, schedule, and member_count live on the
+	// search row. Member-add / member-remove / member-reorder all
+	// touch member_count or the displayed member list, so they
+	// reindex too.
+	//
+	// The action↔set membership EDGE (handler's
+	// EnqueueMemberAdded/Removed calls) is intentionally NOT covered
+	// here yet — those still fire from the handler. Phase 2c.2 (a
+	// follow-up PR) extends SearchAffected with member-edge variants
+	// and removes those calls. Splitting keeps this PR's diff small
+	// and CR-reviewable.
+	case "ActionSetCreated",
+		"ActionSetRenamed",
+		"ActionSetDescriptionUpdated",
+		"ActionSetScheduleUpdated",
+		"ActionSetMemberAdded",
+		"ActionSetMemberRemoved",
+		"ActionSetMemberReordered":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeActionSet, ID: e.StreamID}}
+
+	case "ActionSetDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeActionSet, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// Definition scope (same shape as ActionSet)
+	// ---------------------------------------------------------
+	case "DefinitionCreated",
+		"DefinitionRenamed",
+		"DefinitionDescriptionUpdated",
+		"DefinitionScheduleUpdated",
+		"DefinitionMemberAdded",
+		"DefinitionMemberRemoved",
+		"DefinitionMemberReordered":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDefinition, ID: e.StreamID}}
+
+	case "DefinitionDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDefinition, ID: e.StreamID}}
 	}
 
 	return nil
@@ -228,7 +269,17 @@ func SearchListener(st *store.Store, idx *search.Index, logger *slog.Logger) sto
 						"scope", op.Scope, "id", op.ID, "event_type", e.EventType, "error", err)
 				}
 			case SearchOpRemove:
-				if err := idx.EnqueueRemove(ctx, op.Scope, op.ID, nil); err != nil {
+				// For scopes with reverse-member relationships
+				// (action_set, definition), pull cascade IDs from
+				// the search index BEFORE enqueueing the remove —
+				// those parent rows need to rebuild their
+				// denormalised member lists once the child is gone.
+				// The reverse-member entries persist in Redis until
+				// the indexer worker actually processes the
+				// EnqueueRemove task, so the lookup still finds them
+				// when the listener fires.
+				cascadeIDs := cascadeIDsForRemove(ctx, idx, op.Scope, op.ID)
+				if err := idx.EnqueueRemove(ctx, op.Scope, op.ID, cascadeIDs); err != nil {
 					logger.Warn("search listener: failed to enqueue remove",
 						"scope", op.Scope, "id", op.ID, "event_type", e.EventType, "error", err)
 				}
@@ -330,6 +381,46 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 			CreatedAt:   createdAt,
 		}, nil
 
+	case search.ScopeActionSet:
+		s, err := q.GetActionSetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		var createdAt, updatedAt int64
+		if s.CreatedAt != nil {
+			createdAt = s.CreatedAt.Unix()
+		}
+		if s.UpdatedAt != nil {
+			updatedAt = s.UpdatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:        s.Name,
+			Description: s.Description,
+			MemberCount: s.MemberCount,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+		}, nil
+
+	case search.ScopeDefinition:
+		d, err := q.GetDefinitionByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		var createdAt, updatedAt int64
+		if d.CreatedAt != nil {
+			createdAt = d.CreatedAt.Unix()
+		}
+		if d.UpdatedAt != nil {
+			updatedAt = d.UpdatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:        d.Name,
+			Description: d.Description,
+			MemberCount: d.MemberCount,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+		}, nil
+
 	case search.ScopeUserGroup:
 		g, err := q.GetUserGroupByID(ctx, id)
 		if err != nil {
@@ -400,4 +491,26 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 	// silently enqueueing an empty SearchEntityData payload that would
 	// blank out the indexed entity.
 	return nil, fmt.Errorf("loadSearchEntityData: unknown scope %q", scope)
+}
+
+// cascadeIDsForRemove looks up the parent IDs that need their
+// denormalised member-list rebuilt after a child entity is removed
+// from the search index. Only ActionSet and Definition support
+// reverse-member tracking today (other scopes return nil for "no
+// cascade needed"). Mirrors the GetReverseMembers + EnqueueRemove
+// dance the action_set / definition handlers used to do inline
+// before #81 Phase 2c moved the responsibility to the listener.
+//
+// Race window: if multiple removes for the same parent fire rapidly,
+// the indexer worker may have already processed one and cleared the
+// reverse-member set in Redis, so subsequent listener invocations
+// will see an empty cascade list. The periodic indexer reconciler
+// catches the resulting drift within ~1h. Single-remove flows have
+// no race.
+func cascadeIDsForRemove(ctx context.Context, idx *search.Index, scope, id string) []string {
+	switch scope {
+	case search.ScopeActionSet, search.ScopeDefinition:
+		return idx.GetReverseMembers(ctx, scope, id)
+	}
+	return nil
 }
