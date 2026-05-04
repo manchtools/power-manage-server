@@ -233,6 +233,24 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case "ActionDeleted":
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeAction, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// CompliancePolicy scope
+	// ---------------------------------------------------------
+	// Name + description live on the search row; the rule list
+	// contributes denormalised action names ("ActionNames" field) so
+	// a search hit ranks/highlights by the policy's referenced
+	// actions. Rule mutations therefore reindex the policy too.
+	case "CompliancePolicyCreated",
+		"CompliancePolicyRenamed",
+		"CompliancePolicyDescriptionUpdated",
+		"CompliancePolicyRuleAdded",
+		"CompliancePolicyRuleRemoved",
+		"CompliancePolicyRuleUpdated":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
+
+	case "CompliancePolicyDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
 	}
 
 	return nil
@@ -270,7 +288,7 @@ func SearchListener(st *store.Store, idx *search.Index, logger *slog.Logger) sto
 		for _, op := range ops {
 			switch op.Op {
 			case SearchOpReindex:
-				data, err := loadSearchEntityData(ctx, st, op.Scope, op.ID)
+				data, err := loadSearchEntityData(ctx, st, logger, op.Scope, op.ID)
 				if err != nil {
 					if errors.Is(err, pgx.ErrNoRows) {
 						logger.Debug("search listener: entity gone before reindex (likely deleted in same tx batch); skipping",
@@ -318,7 +336,7 @@ func SearchListener(st *store.Store, idx *search.Index, logger *slog.Logger) sto
 // key but the LATEST payload wins. So listener payload divergence
 // would be silent until Phase 2 removes the handler-side path. The
 // Phase 1 tests assert end-to-end equivalence to catch this.
-func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string) (*taskqueue.SearchEntityData, error) {
+func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Logger, scope, id string) (*taskqueue.SearchEntityData, error) {
 	q := st.Queries()
 	switch scope {
 
@@ -417,6 +435,40 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
 		}, nil
+
+	case search.ScopeCompliancePolicy:
+		p, err := q.GetCompliancePolicyByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		data := &taskqueue.SearchEntityData{
+			Name:        p.Name,
+			Description: p.Description,
+		}
+		// Rule list is denormalised into ActionNames so a search
+		// hit can match against the action names referenced by the
+		// policy's rules. Best-effort: a rule-list query failure
+		// is logged but doesn't fail the reindex — we'd rather
+		// publish a payload missing ActionNames than skip the
+		// reindex entirely. HasActionNames stays false so the
+		// indexer worker leaves any prior denormalised value alone
+		// (HSET-additive semantics) instead of clobbering it with
+		// an empty string we never confirmed was correct.
+		rules, rErr := q.ListCompliancePolicyRules(ctx, id)
+		if rErr != nil {
+			logger.Warn("search listener: failed to load compliance policy rules; reindex without action_names",
+				"policy_id", id, "error", rErr)
+		} else {
+			var actionNames []string
+			for _, r := range rules {
+				if r.ActionName != "" {
+					actionNames = append(actionNames, r.ActionName)
+				}
+			}
+			data.ActionNames = strings.Join(actionNames, " ")
+			data.HasActionNames = true
+		}
+		return data, nil
 
 	case search.ScopeAction:
 		a, err := q.GetActionByID(ctx, id)
