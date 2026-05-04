@@ -175,4 +175,35 @@ func TestSecurityAlertListener_EndToEnd(t *testing.T) {
 	assert.Equal(t, "checksum mismatch", got.Message)
 	assert.JSONEq(t, `{"path":"/etc/shadow"}`, string(got.Details))
 	assert.False(t, got.Acknowledged, "newly-raised alert should not be acknowledged")
+
+	// Now exercise the SecurityAlertAcknowledged path end-to-end.
+	// Uses the alert's event_id as the alert_id payload — same
+	// shape the (deleted) PL/pgSQL projector matched on. CR catch
+	// on PR #117: this branch including the rows == 0 detection
+	// was previously not integration-tested.
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "SecurityAlertAcknowledged",
+		Data: map[string]any{
+			"alert_id":        got.EventID.String(),
+			"acknowledged_by": "ops@example.com",
+		},
+		ActorType: "user",
+		ActorID:   "ops@example.com",
+	}))
+
+	for i := 0; i < 50; i++ {
+		alerts, err := st.Queries().ListSecurityAlertsForDevice(ctx, listParams)
+		require.NoError(t, err)
+		require.Len(t, alerts, 1)
+		if alerts[0].Acknowledged {
+			require.NotNil(t, alerts[0].AcknowledgedAt)
+			require.NotNil(t, alerts[0].AcknowledgedBy)
+			assert.Equal(t, "ops@example.com", *alerts[0].AcknowledgedBy)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("listener did not apply SecurityAlertAcknowledged within polling window")
 }
