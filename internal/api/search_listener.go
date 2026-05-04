@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -124,6 +125,39 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// fields directly — they live on different relationship tables.
 	// The DeviceGroupMemberAdded/Removed cases above already cover
 	// the membership-count refresh.
+
+	// ---------------------------------------------------------
+	// UserGroup scope
+	// ---------------------------------------------------------
+	// Group-stream events (Created, Updated, QueryUpdated,
+	// MaintenanceWindowSet) carry the group ID directly in StreamID
+	// — these reindex against e.StreamID.
+	case "UserGroupCreated",
+		"UserGroupUpdated",
+		"UserGroupQueryUpdated",
+		"UserGroupMaintenanceWindowSet":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+
+	case "UserGroupDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+
+	// Member / role events use a COMPOSITE StreamID:
+	//   - Members: "<group_id>:<user_id>"
+	//   - Roles:   "<group_id>:role:<role_id>"
+	// We need the group_id prefix to load the user_groups_projection
+	// row. Same defensive prefix-split pattern as the system-action
+	// listener (#77) — the user_id / role_id suffixes are irrelevant
+	// to the search payload (member_count + role list are already
+	// denormalised on the projection row by the projector).
+	case "UserGroupMemberAdded",
+		"UserGroupMemberRemoved",
+		"UserGroupRoleAssigned",
+		"UserGroupRoleRevoked":
+		groupID, _, _ := strings.Cut(e.StreamID, ":")
+		if groupID == "" {
+			return nil
+		}
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: groupID}}
 
 	// ---------------------------------------------------------
 	// Execution scope
@@ -286,6 +320,27 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 		}
 		var createdAt int64
 		if g.CreatedAt != nil {
+			createdAt = g.CreatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:        g.Name,
+			Description: g.Description,
+			IsDynamic:   isDynamic,
+			MemberCount: g.MemberCount,
+			CreatedAt:   createdAt,
+		}, nil
+
+	case search.ScopeUserGroup:
+		g, err := q.GetUserGroupByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		isDynamic := "false"
+		if g.IsDynamic {
+			isDynamic = "true"
+		}
+		var createdAt int64
+		if !g.CreatedAt.IsZero() {
 			createdAt = g.CreatedAt.Unix()
 		}
 		return &taskqueue.SearchEntityData{
