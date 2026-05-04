@@ -146,6 +146,30 @@ func TestAffectedSearchOps(t *testing.T) {
 
 		// Execution scope — every lifecycle event reindexes
 		// because status / duration / action linkage all change.
+		// Cover Created + Dispatched + Started + Completed in addition
+		// to the four already listed; ExecutionCreated is the
+		// most-common path (immediate dispatch) and a regression there
+		// would silently break the search index for all new dispatches.
+		{
+			"ExecutionCreated reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionCreated", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionDispatched reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionDispatched", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionStarted reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionStarted", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionCompleted reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionCompleted", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
 		{
 			"ExecutionScheduled reindexes execution",
 			store.PersistedEvent{EventType: "ExecutionScheduled", StreamID: "EXEC1", StreamType: "execution"},
