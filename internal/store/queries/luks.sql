@@ -19,14 +19,18 @@ LIMIT 20;
 DELETE FROM luks_keys_projection WHERE action_id = $1;
 
 -- name: MarkLuksKeysNotCurrent :exec
--- Step 1 of LuksKeyRotated projection. Flip every prior row for the
+-- Step 1 of LuksKeyRotated projection. Flip the current row for the
 -- (device_id, action_id, device_path) triple so the new key
--- (inserted by step 2) is the only is_current=TRUE row.
+-- (inserted by step 2) is the only is_current=TRUE row. The
+-- `is_current = TRUE` predicate keeps the result identical (rows
+-- already FALSE stay FALSE) but skips a write per historical row,
+-- reducing write amplification on the hot path.
 UPDATE luks_keys_projection
 SET is_current = FALSE
 WHERE device_id = $1
   AND action_id = $2
-  AND device_path = $3;
+  AND device_path = $3
+  AND is_current = TRUE;
 
 -- name: InsertLuksKey :exec
 -- Step 2 of LuksKeyRotated projection. Always inserts a new row;

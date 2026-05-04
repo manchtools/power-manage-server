@@ -232,6 +232,7 @@ SET is_current = FALSE
 WHERE device_id = $1
   AND action_id = $2
   AND device_path = $3
+  AND is_current = TRUE
 `
 
 type MarkLuksKeysNotCurrentParams struct {
@@ -240,9 +241,12 @@ type MarkLuksKeysNotCurrentParams struct {
 	DevicePath string `json:"device_path"`
 }
 
-// Step 1 of LuksKeyRotated projection. Flip every prior row for the
+// Step 1 of LuksKeyRotated projection. Flip the current row for the
 // (device_id, action_id, device_path) triple so the new key
-// (inserted by step 2) is the only is_current=TRUE row.
+// (inserted by step 2) is the only is_current=TRUE row. The
+// `is_current = TRUE` predicate keeps the result identical (rows
+// already FALSE stay FALSE) but skips a write per historical row,
+// reducing write amplification on the hot path.
 func (q *Queries) MarkLuksKeysNotCurrent(ctx context.Context, arg MarkLuksKeysNotCurrentParams) error {
 	_, err := q.db.Exec(ctx, markLuksKeysNotCurrent, arg.DeviceID, arg.ActionID, arg.DevicePath)
 	return err
