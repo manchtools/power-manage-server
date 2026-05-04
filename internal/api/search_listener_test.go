@@ -191,6 +191,38 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
 		},
 
+		// UserGroup scope (added in Phase 2b).
+		{
+			"UserGroupCreated reindexes user group",
+			store.PersistedEvent{EventType: "UserGroupCreated", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupUpdated reindexes user group",
+			store.PersistedEvent{EventType: "UserGroupUpdated", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupMemberAdded reindexes user group (member_count changed)",
+			store.PersistedEvent{EventType: "UserGroupMemberAdded", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupRoleAssigned reindexes user group (roles list changed)",
+			store.PersistedEvent{EventType: "UserGroupRoleAssigned", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupMaintenanceWindowSet reindexes user group",
+			store.PersistedEvent{EventType: "UserGroupMaintenanceWindowSet", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupDeleted removes user group",
+			store.PersistedEvent{EventType: "UserGroupDeleted", StreamID: "UGRP1", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+
 		// Out-of-scope: event types from handlers not yet ported
 		// classify as nil today. When subsequent Phase 2 PRs add a
 		// scope they MUST move from nil to a populated slice in the

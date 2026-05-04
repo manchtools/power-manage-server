@@ -126,6 +126,27 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// the membership-count refresh.
 
 	// ---------------------------------------------------------
+	// UserGroup scope
+	// ---------------------------------------------------------
+	// Name, description, dynamic_query, maintenance window, and
+	// member_count are denormalised in the search row. Member-add /
+	// member-remove + role-assign / role-revoke also touch the
+	// projection's updated_at and (transitively, via the role list)
+	// the searchable surface, so they reindex too.
+	case "UserGroupCreated",
+		"UserGroupUpdated",
+		"UserGroupQueryUpdated",
+		"UserGroupMaintenanceWindowSet",
+		"UserGroupMemberAdded",
+		"UserGroupMemberRemoved",
+		"UserGroupRoleAssigned",
+		"UserGroupRoleRevoked":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+
+	case "UserGroupDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
 	// Execution scope
 	// ---------------------------------------------------------
 	// Status, duration, action linkage, and the changed/compliant
@@ -286,6 +307,27 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 		}
 		var createdAt int64
 		if g.CreatedAt != nil {
+			createdAt = g.CreatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:        g.Name,
+			Description: g.Description,
+			IsDynamic:   isDynamic,
+			MemberCount: g.MemberCount,
+			CreatedAt:   createdAt,
+		}, nil
+
+	case search.ScopeUserGroup:
+		g, err := q.GetUserGroupByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		isDynamic := "false"
+		if g.IsDynamic {
+			isDynamic = "true"
+		}
+		var createdAt int64
+		if !g.CreatedAt.IsZero() {
 			createdAt = g.CreatedAt.Unix()
 		}
 		return &taskqueue.SearchEntityData{
