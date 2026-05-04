@@ -233,6 +233,24 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case "ActionDeleted":
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeAction, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// CompliancePolicy scope
+	// ---------------------------------------------------------
+	// Name + description live on the search row; the rule list
+	// contributes denormalised action names ("ActionNames" field) so
+	// a search hit ranks/highlights by the policy's referenced
+	// actions. Rule mutations therefore reindex the policy too.
+	case "CompliancePolicyCreated",
+		"CompliancePolicyRenamed",
+		"CompliancePolicyDescriptionUpdated",
+		"CompliancePolicyRuleAdded",
+		"CompliancePolicyRuleRemoved",
+		"CompliancePolicyRuleUpdated":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
+
+	case "CompliancePolicyDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
 	}
 
 	return nil
@@ -417,6 +435,33 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
 		}, nil
+
+	case search.ScopeCompliancePolicy:
+		p, err := q.GetCompliancePolicyByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		data := &taskqueue.SearchEntityData{
+			Name:        p.Name,
+			Description: p.Description,
+		}
+		// Rule list is denormalised into ActionNames so a search
+		// hit can match against the action names referenced by the
+		// policy's rules. Best-effort: a rule-list query failure
+		// leaves ActionNames empty, which mirrors the handler's
+		// previous behaviour (caller passed nil rules in some
+		// paths).
+		if rules, rErr := q.ListCompliancePolicyRules(ctx, id); rErr == nil {
+			var actionNames []string
+			for _, r := range rules {
+				if r.ActionName != "" {
+					actionNames = append(actionNames, r.ActionName)
+				}
+			}
+			data.ActionNames = strings.Join(actionNames, " ")
+			data.HasActionNames = true
+		}
+		return data, nil
 
 	case search.ScopeAction:
 		a, err := q.GetActionByID(ctx, id)

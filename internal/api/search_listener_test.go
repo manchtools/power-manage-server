@@ -365,14 +365,42 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeAction, ID: "ACT1"}},
 		},
 
-		// Out-of-scope: event types from handlers not yet ported
-		// classify as nil today. When subsequent Phase 2 PRs add a
-		// scope they MUST move from nil to a populated slice in the
-		// same PR that removes the handler-side enqueue.
+		// CompliancePolicy scope (added in Phase 2e). Every classified
+		// event has an explicit row.
 		{
-			"CompliancePolicyCreated is Phase-2e scope (returns nil today)",
+			"CompliancePolicyCreated reindexes policy",
 			store.PersistedEvent{EventType: "CompliancePolicyCreated", StreamID: "CP1", StreamType: "compliance_policy"},
-			nil,
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyRenamed reindexes policy",
+			store.PersistedEvent{EventType: "CompliancePolicyRenamed", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyDescriptionUpdated reindexes policy",
+			store.PersistedEvent{EventType: "CompliancePolicyDescriptionUpdated", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyRuleAdded reindexes policy (rules contribute denormalised action_names)",
+			store.PersistedEvent{EventType: "CompliancePolicyRuleAdded", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyRuleRemoved reindexes policy",
+			store.PersistedEvent{EventType: "CompliancePolicyRuleRemoved", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyRuleUpdated reindexes policy",
+			store.PersistedEvent{EventType: "CompliancePolicyRuleUpdated", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
+		},
+		{
+			"CompliancePolicyDeleted removes policy",
+			store.PersistedEvent{EventType: "CompliancePolicyDeleted", StreamID: "CP1", StreamType: "compliance_policy"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
 		},
 
 		// Unknown event type

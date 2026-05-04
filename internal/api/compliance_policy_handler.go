@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -12,10 +11,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // CompliancePolicyHandler handles compliance policy RPCs.
@@ -31,27 +28,6 @@ func NewCompliancePolicyHandler(st *store.Store, logger *slog.Logger) *Complianc
 		store:  st,
 		logger: logger,
 	}
-}
-
-// enqueueCompliancePolicyReindex enqueues a search index update for a compliance policy.
-// When rules is non-nil, action_names is included in the update. When nil, it is skipped
-// (HSET is additive, so existing action_names stays unchanged).
-func (h *CompliancePolicyHandler) enqueueCompliancePolicyReindex(ctx context.Context, p db.CompliancePoliciesProjection, rules []db.CompliancePolicyRulesProjection) {
-	data := &taskqueue.SearchEntityData{
-		Name:        p.Name,
-		Description: p.Description,
-	}
-	if rules != nil {
-		var actionNames []string
-		for _, r := range rules {
-			if r.ActionName != "" {
-				actionNames = append(actionNames, r.ActionName)
-			}
-		}
-		data.ActionNames = strings.Join(actionNames, " ")
-		data.HasActionNames = true
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeCompliancePolicy, p.ID, data)
 }
 
 // CreateCompliancePolicy creates a new compliance policy.
@@ -86,7 +62,6 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, []db.CompliancePolicyRulesProjection{})
 
 	return connect.NewResponse(&pm.CreateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -183,7 +158,6 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -225,7 +199,6 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, nil)
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -260,11 +233,8 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	if h.searchIdx != nil {
-		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeCompliancePolicy, req.Msg.Id, nil); err != nil {
-			h.logger.Warn("failed to enqueue compliance policy removal from search", "id", req.Msg.Id, "error", err)
-		}
-	}
+	// Search index removal is handled by api.SearchListener (Phase 2e
+	// of #81): the listener fires on CompliancePolicyDeleted.
 
 	return connect.NewResponse(&pm.DeleteCompliancePolicyResponse{}), nil
 }
@@ -332,7 +302,6 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
 
 	return connect.NewResponse(&pm.AddCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
@@ -379,7 +348,6 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
-	h.enqueueCompliancePolicyReindex(ctx, policy, rules)
 
 	return connect.NewResponse(&pm.RemoveCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
