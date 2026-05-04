@@ -49,3 +49,28 @@ SELECT COUNT(*)::bigint
 FROM security_alerts_projection
 WHERE device_id = $1
   AND (sqlc.arg(include_acknowledged)::bool OR NOT acknowledged);
+
+-- Write-side queries for the Go projector that replaced
+-- project_security_alert_event() in #96. ON CONFLICT DO NOTHING on
+-- insert keeps replay-from-events idempotent (the same event_id
+-- inserted twice is a no-op); the projector listener can re-fire on
+-- crash recovery without polluting the projection.
+--
+-- name: InsertSecurityAlertProjection :exec
+INSERT INTO security_alerts_projection (
+    event_id, device_id, alert_type, message, details, raised_at
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (event_id) DO NOTHING;
+
+-- AcknowledgeSecurityAlertProjection updates the ack columns. Returns
+-- the affected row count so the projector listener can detect the
+-- "acknowledged before alert exists" race (out-of-order replay) and
+-- log it for operator visibility — matching the RAISE EXCEPTION
+-- contract the deleted PL/pgSQL projector had.
+--
+-- name: AcknowledgeSecurityAlertProjection :execrows
+UPDATE security_alerts_projection
+SET acknowledged = TRUE,
+    acknowledged_at = $2,
+    acknowledged_by = $3
+WHERE event_id = $1::uuid;

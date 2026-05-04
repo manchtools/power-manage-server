@@ -12,6 +12,33 @@ import (
 	"github.com/google/uuid"
 )
 
+const acknowledgeSecurityAlertProjection = `-- name: AcknowledgeSecurityAlertProjection :execrows
+UPDATE security_alerts_projection
+SET acknowledged = TRUE,
+    acknowledged_at = $2,
+    acknowledged_by = $3
+WHERE event_id = $1::uuid
+`
+
+type AcknowledgeSecurityAlertProjectionParams struct {
+	Column1        uuid.UUID  `json:"column_1"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at"`
+	AcknowledgedBy *string    `json:"acknowledged_by"`
+}
+
+// AcknowledgeSecurityAlertProjection updates the ack columns. Returns
+// the affected row count so the projector listener can detect the
+// "acknowledged before alert exists" race (out-of-order replay) and
+// log it for operator visibility — matching the RAISE EXCEPTION
+// contract the deleted PL/pgSQL projector had.
+func (q *Queries) AcknowledgeSecurityAlertProjection(ctx context.Context, arg AcknowledgeSecurityAlertProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acknowledgeSecurityAlertProjection, arg.Column1, arg.AcknowledgedAt, arg.AcknowledgedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countSecurityAlertsForDevice = `-- name: CountSecurityAlertsForDevice :one
 SELECT COUNT(*)::bigint
 FROM security_alerts_projection
@@ -84,6 +111,39 @@ func (q *Queries) GetSecurityAlert(ctx context.Context, eventID uuid.UUID) (GetS
 		&i.AcknowledgedBy,
 	)
 	return i, err
+}
+
+const insertSecurityAlertProjection = `-- name: InsertSecurityAlertProjection :exec
+INSERT INTO security_alerts_projection (
+    event_id, device_id, alert_type, message, details, raised_at
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (event_id) DO NOTHING
+`
+
+type InsertSecurityAlertProjectionParams struct {
+	EventID   uuid.UUID `json:"event_id"`
+	DeviceID  string    `json:"device_id"`
+	AlertType string    `json:"alert_type"`
+	Message   string    `json:"message"`
+	Details   []byte    `json:"details"`
+	RaisedAt  time.Time `json:"raised_at"`
+}
+
+// Write-side queries for the Go projector that replaced
+// project_security_alert_event() in #96. ON CONFLICT DO NOTHING on
+// insert keeps replay-from-events idempotent (the same event_id
+// inserted twice is a no-op); the projector listener can re-fire on
+// crash recovery without polluting the projection.
+func (q *Queries) InsertSecurityAlertProjection(ctx context.Context, arg InsertSecurityAlertProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertSecurityAlertProjection,
+		arg.EventID,
+		arg.DeviceID,
+		arg.AlertType,
+		arg.Message,
+		arg.Details,
+		arg.RaisedAt,
+	)
+	return err
 }
 
 const listSecurityAlertsForDevice = `-- name: ListSecurityAlertsForDevice :many
