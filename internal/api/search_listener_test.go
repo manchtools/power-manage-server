@@ -192,6 +192,7 @@ func TestAffectedSearchOps(t *testing.T) {
 		},
 
 		// UserGroup scope (added in Phase 2b).
+		// Group-stream events use the group ID directly as StreamID.
 		{
 			"UserGroupCreated reindexes user group",
 			store.PersistedEvent{EventType: "UserGroupCreated", StreamID: "UGRP1", StreamType: "user_group"},
@@ -203,13 +204,8 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
 		},
 		{
-			"UserGroupMemberAdded reindexes user group (member_count changed)",
-			store.PersistedEvent{EventType: "UserGroupMemberAdded", StreamID: "UGRP1", StreamType: "user_group"},
-			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
-		},
-		{
-			"UserGroupRoleAssigned reindexes user group (roles list changed)",
-			store.PersistedEvent{EventType: "UserGroupRoleAssigned", StreamID: "UGRP1", StreamType: "user_group"},
+			"UserGroupQueryUpdated reindexes user group",
+			store.PersistedEvent{EventType: "UserGroupQueryUpdated", StreamID: "UGRP1", StreamType: "user_group"},
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
 		},
 		{
@@ -221,6 +217,38 @@ func TestAffectedSearchOps(t *testing.T) {
 			"UserGroupDeleted removes user group",
 			store.PersistedEvent{EventType: "UserGroupDeleted", StreamID: "UGRP1", StreamType: "user_group"},
 			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+
+		// Member + role events use a COMPOSITE StreamID
+		// "<group_id>:<user_id>" (members) or
+		// "<group_id>:role:<role_id>" (roles). The classifier MUST
+		// extract the group_id prefix — passing the composite would
+		// make loadSearchEntityData fail to find the row and the
+		// reindex would silently drop. CodeRabbit catch on PR #112.
+		{
+			"UserGroupMemberAdded extracts group_id from composite StreamID",
+			store.PersistedEvent{EventType: "UserGroupMemberAdded", StreamID: "UGRP1:USR42", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupMemberRemoved extracts group_id",
+			store.PersistedEvent{EventType: "UserGroupMemberRemoved", StreamID: "UGRP1:USR42", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupRoleAssigned extracts group_id from <group>:role:<role> composite",
+			store.PersistedEvent{EventType: "UserGroupRoleAssigned", StreamID: "UGRP1:role:ROLE42", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupRoleRevoked extracts group_id",
+			store.PersistedEvent{EventType: "UserGroupRoleRevoked", StreamID: "UGRP1:role:ROLE42", StreamType: "user_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+		},
+		{
+			"UserGroupMemberAdded with empty StreamID returns no-op (defensive)",
+			store.PersistedEvent{EventType: "UserGroupMemberAdded", StreamID: "", StreamType: "user_group"},
+			nil,
 		},
 
 		// Out-of-scope: event types from handlers not yet ported

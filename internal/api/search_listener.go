@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -128,23 +129,35 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// ---------------------------------------------------------
 	// UserGroup scope
 	// ---------------------------------------------------------
-	// Name, description, dynamic_query, maintenance window, and
-	// member_count are denormalised in the search row. Member-add /
-	// member-remove + role-assign / role-revoke also touch the
-	// projection's updated_at and (transitively, via the role list)
-	// the searchable surface, so they reindex too.
+	// Group-stream events (Created, Updated, QueryUpdated,
+	// MaintenanceWindowSet) carry the group ID directly in StreamID
+	// — these reindex against e.StreamID.
 	case "UserGroupCreated",
 		"UserGroupUpdated",
 		"UserGroupQueryUpdated",
-		"UserGroupMaintenanceWindowSet",
-		"UserGroupMemberAdded",
-		"UserGroupMemberRemoved",
-		"UserGroupRoleAssigned",
-		"UserGroupRoleRevoked":
+		"UserGroupMaintenanceWindowSet":
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: e.StreamID}}
 
 	case "UserGroupDeleted":
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+
+	// Member / role events use a COMPOSITE StreamID:
+	//   - Members: "<group_id>:<user_id>"
+	//   - Roles:   "<group_id>:role:<role_id>"
+	// We need the group_id prefix to load the user_groups_projection
+	// row. Same defensive prefix-split pattern as the system-action
+	// listener (#77) — the user_id / role_id suffixes are irrelevant
+	// to the search payload (member_count + role list are already
+	// denormalised on the projection row by the projector).
+	case "UserGroupMemberAdded",
+		"UserGroupMemberRemoved",
+		"UserGroupRoleAssigned",
+		"UserGroupRoleRevoked":
+		groupID, _, _ := strings.Cut(e.StreamID, ":")
+		if groupID == "" {
+			return nil
+		}
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: groupID}}
 
 	// ---------------------------------------------------------
 	// Execution scope
