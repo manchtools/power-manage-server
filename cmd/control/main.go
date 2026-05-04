@@ -432,6 +432,18 @@ func main() {
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
+		// Phase 1 of #81: register the store-side search listener so
+		// every event that affects the search index funnels through
+		// one classifier (api.AffectedSearchOps) instead of ~48
+		// scattered handler-side enqueueXxxReindex calls.
+		//
+		// During Phase 1 the listener and the existing handler-side
+		// enqueues both fire — the Asynq worker dedupes on
+		// (scope, id) so functional behaviour is unchanged. Phase 2
+		// (separate PR) removes the handler-side calls once we've
+		// validated the listener catches everything in production.
+		st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
+
 		// Wire the remote terminal session token store. Tokens live in
 		// Valkey under pm:terminal:session:* with a short TTL; minted
 		// by ControlService.StartTerminal and consumed by the gateway
