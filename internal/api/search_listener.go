@@ -97,6 +97,50 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case "DeviceDeleted":
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDevice, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// DeviceGroup scope
+	// ---------------------------------------------------------
+	// Name, description, dynamic_query, sync interval, member_count,
+	// and maintenance window are all denormalised in the search row
+	// per DeviceGroupHandler.enqueueDeviceGroupReindex. Member-add /
+	// member-remove events update member_count; the row reload picks
+	// that up.
+	case "DeviceGroupCreated",
+		"DeviceGroupRenamed",
+		"DeviceGroupDescriptionUpdated",
+		"DeviceGroupQueryUpdated",
+		"DeviceGroupSyncIntervalSet",
+		"DeviceGroupMaintenanceWindowSet",
+		"DeviceGroupMemberAdded",
+		"DeviceGroupMemberRemoved":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
+
+	case "DeviceGroupDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
+
+	// DeviceAddedToGroup / DeviceRemovedFromGroup / DeviceGroupAssigned
+	// / DeviceGroupUnassigned do not change device_groups_projection
+	// fields directly — they live on different relationship tables.
+	// The DeviceGroupMemberAdded/Removed cases above already cover
+	// the membership-count refresh.
+
+	// ---------------------------------------------------------
+	// Execution scope
+	// ---------------------------------------------------------
+	// Status, duration, action linkage, and the changed/compliant
+	// flags all live in the search row per the DispatchAction
+	// handler's existing inline enqueue. Every execution lifecycle
+	// event mutates one of those fields, so each one reindexes.
+	case "ExecutionCreated",
+		"ExecutionScheduled",
+		"ExecutionDispatched",
+		"ExecutionStarted",
+		"ExecutionCompleted",
+		"ExecutionFailed",
+		"ExecutionCancelled",
+		"ExecutionTimedOut":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeExecution, ID: e.StreamID}}
 	}
 
 	return nil
@@ -230,6 +274,68 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 			}
 		}
 		return data, nil
+
+	case search.ScopeDeviceGroup:
+		g, err := q.GetDeviceGroupByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		isDynamic := "false"
+		if g.IsDynamic {
+			isDynamic = "true"
+		}
+		var createdAt int64
+		if g.CreatedAt != nil {
+			createdAt = g.CreatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:        g.Name,
+			Description: g.Description,
+			IsDynamic:   isDynamic,
+			MemberCount: g.MemberCount,
+			CreatedAt:   createdAt,
+		}, nil
+
+	case search.ScopeExecution:
+		// Execution rows denormalise action name + device hostname
+		// into the search payload so a search hit can render without
+		// a join. Mirror the inline assembly the DispatchAction
+		// handler does today; missing action / device rows are
+		// non-fatal (the search payload renders the empty fields).
+		exec, err := q.GetExecutionByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		var actionName, deviceHostname string
+		execActionID := ""
+		if exec.ActionID != nil {
+			execActionID = *exec.ActionID
+			if action, aErr := q.GetActionByID(ctx, *exec.ActionID); aErr == nil {
+				actionName = action.Name
+			}
+		}
+		if device, dErr := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: exec.DeviceID}); dErr == nil {
+			deviceHostname = device.Hostname
+		}
+		var execCreatedAt, execDurationMs int64
+		if exec.CreatedAt != nil {
+			execCreatedAt = exec.CreatedAt.Unix()
+		}
+		if exec.DurationMs != nil {
+			execDurationMs = *exec.DurationMs
+		}
+		return &taskqueue.SearchEntityData{
+			ActionName:     actionName,
+			DeviceHostname: deviceHostname,
+			Status:         exec.Status,
+			Type:           exec.ActionType,
+			DeviceID:       exec.DeviceID,
+			CreatedAt:      execCreatedAt,
+			DurationMs:     execDurationMs,
+			Changed:        exec.Changed,
+			DesiredState:   exec.DesiredState,
+			ActionID:       execActionID,
+		}, nil
 	}
 
 	// Unknown scope. Returning an explicit error rather than (nil, nil)

@@ -110,15 +110,67 @@ func TestAffectedSearchOps(t *testing.T) {
 			nil,
 		},
 
-		// Out-of-scope (Phase 2): event types from other handlers
-		// classify as nil today. When Phase 2 adds them they MUST
-		// move from nil to a populated slice in the same PR that
-		// removes the handler-side enqueue.
+		// DeviceGroup scope (added in Phase 2 alongside execution).
 		{
-			"DeviceGroupCreated is Phase-2 scope (returns nil today)",
+			"DeviceGroupCreated reindexes device group",
 			store.PersistedEvent{EventType: "DeviceGroupCreated", StreamID: "DGRP1", StreamType: "device_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
+		},
+		{
+			"DeviceGroupRenamed reindexes device group",
+			store.PersistedEvent{EventType: "DeviceGroupRenamed", StreamID: "DGRP1", StreamType: "device_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
+		},
+		{
+			"DeviceGroupMemberAdded reindexes device group (member_count changed)",
+			store.PersistedEvent{EventType: "DeviceGroupMemberAdded", StreamID: "DGRP1", StreamType: "device_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
+		},
+		{
+			"DeviceGroupMaintenanceWindowSet reindexes device group",
+			store.PersistedEvent{EventType: "DeviceGroupMaintenanceWindowSet", StreamID: "DGRP1", StreamType: "device_group"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
+		},
+		{
+			"DeviceGroupDeleted removes device group",
+			store.PersistedEvent{EventType: "DeviceGroupDeleted", StreamID: "DGRP1", StreamType: "device_group"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
+		},
+		{
+			// DeviceGroupAssigned/Unassigned live on a relationship
+			// table, not the device_group projection itself.
+			"DeviceGroupAssigned is search-irrelevant",
+			store.PersistedEvent{EventType: "DeviceGroupAssigned", StreamID: "DGRP1", StreamType: "device_group"},
 			nil,
 		},
+
+		// Execution scope — every lifecycle event reindexes
+		// because status / duration / action linkage all change.
+		{
+			"ExecutionScheduled reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionScheduled", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionCancelled reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionCancelled", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionFailed reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionFailed", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+		{
+			"ExecutionTimedOut reindexes execution",
+			store.PersistedEvent{EventType: "ExecutionTimedOut", StreamID: "EXEC1", StreamType: "execution"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeExecution, ID: "EXEC1"}},
+		},
+
+		// Out-of-scope: event types from handlers not yet ported
+		// classify as nil today. When subsequent Phase 2 PRs add a
+		// scope they MUST move from nil to a populated slice in the
+		// same PR that removes the handler-side enqueue.
 		{
 			"ActionSetCreated is Phase-2 scope (returns nil today)",
 			store.PersistedEvent{EventType: "ActionSetCreated", StreamID: "AS1", StreamType: "action_set"},
