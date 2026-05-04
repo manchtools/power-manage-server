@@ -337,13 +337,41 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeDefinition, ID: "DEF1"}},
 		},
 
+		// Action scope (added in Phase 2d). Every classified event
+		// has an explicit row.
+		{
+			"ActionCreated reindexes action",
+			store.PersistedEvent{EventType: "ActionCreated", StreamID: "ACT1", StreamType: "action"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+		{
+			"ActionRenamed reindexes action",
+			store.PersistedEvent{EventType: "ActionRenamed", StreamID: "ACT1", StreamType: "action"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+		{
+			"ActionDescriptionUpdated reindexes action",
+			store.PersistedEvent{EventType: "ActionDescriptionUpdated", StreamID: "ACT1", StreamType: "action"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+		{
+			"ActionParamsUpdated reindexes action (isCompliance derived from params can flip)",
+			store.PersistedEvent{EventType: "ActionParamsUpdated", StreamID: "ACT1", StreamType: "action"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+		{
+			"ActionDeleted removes action (cascade IDs to parent action_sets resolved at dispatch time)",
+			store.PersistedEvent{EventType: "ActionDeleted", StreamID: "ACT1", StreamType: "action"},
+			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+
 		// Out-of-scope: event types from handlers not yet ported
 		// classify as nil today. When subsequent Phase 2 PRs add a
 		// scope they MUST move from nil to a populated slice in the
 		// same PR that removes the handler-side enqueue.
 		{
-			"ActionCreated is Phase-2d scope (returns nil today)",
-			store.PersistedEvent{EventType: "ActionCreated", StreamID: "ACT1", StreamType: "action"},
+			"CompliancePolicyCreated is Phase-2e scope (returns nil today)",
+			store.PersistedEvent{EventType: "CompliancePolicyCreated", StreamID: "CP1", StreamType: "compliance_policy"},
 			nil,
 		},
 
