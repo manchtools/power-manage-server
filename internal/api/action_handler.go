@@ -18,7 +18,6 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -479,7 +478,6 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.CreateActionResponse{
 		Action: h.actionToProto(action),
@@ -580,7 +578,6 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -624,7 +621,6 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -725,7 +721,6 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	h.enqueueActionReindex(ctx, action)
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -807,12 +802,6 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	// Capture cascade IDs from Valkey before deleting.
-	var cascadeIDs []string
-	if h.searchIdx != nil {
-		cascadeIDs = h.searchIdx.GetReverseMembers(ctx, "action", req.Msg.Id)
-	}
-
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
@@ -824,11 +813,10 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	if h.searchIdx != nil {
-		if err := h.searchIdx.EnqueueRemove(ctx, "action", req.Msg.Id, cascadeIDs); err != nil {
-			h.logger.Warn("failed to enqueue search index remove", "scope", "action", "error", err)
-		}
-	}
+	// Search index removal + cascade-rebuild of parent action_sets
+	// is handled by api.SearchListener (Phase 2d of #81): the
+	// listener calls GetReverseMembers + EnqueueRemove on
+	// ActionDeleted.
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
 }
@@ -1743,36 +1731,6 @@ func extractActionParamsMsg(action *pm.Action) proto.Message {
 	default:
 		return nil
 	}
-}
-
-// enqueueActionReindex enqueues a search index update for an action.
-func (h *ActionHandler) enqueueActionReindex(ctx context.Context, a db.ActionsProjection) {
-	desc := ""
-	if a.Description != nil {
-		desc = *a.Description
-	}
-	isCompliance := false
-	var params map[string]any
-	if json.Unmarshal(a.Params, &params) == nil {
-		if v, ok := params["isCompliance"].(bool); ok {
-			isCompliance = v
-		}
-	}
-	var createdAt, updatedAt int64
-	if a.CreatedAt != nil {
-		createdAt = a.CreatedAt.Unix()
-	}
-	if a.UpdatedAt != nil {
-		updatedAt = a.UpdatedAt.Unix()
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeAction, a.ID, &taskqueue.SearchEntityData{
-		Name:         a.Name,
-		Description:  desc,
-		Type:         a.ActionType,
-		IsCompliance: isCompliance,
-		CreatedAt:    createdAt,
-		UpdatedAt:    updatedAt,
-	})
 }
 
 func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {

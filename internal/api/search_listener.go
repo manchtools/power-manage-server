@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -216,6 +217,22 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case "DefinitionDeleted":
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDefinition, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// Action scope
+	// ---------------------------------------------------------
+	// Name, description, type, and the isCompliance flag (parsed
+	// from action.params) all live on the search row. ParamsUpdated
+	// triggers a reindex because the isCompliance derivation can
+	// flip when params change.
+	case "ActionCreated",
+		"ActionRenamed",
+		"ActionDescriptionUpdated",
+		"ActionParamsUpdated":
+		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeAction, ID: e.StreamID}}
+
+	case "ActionDeleted":
+		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeAction, ID: e.StreamID}}
 	}
 
 	return nil
@@ -401,6 +418,42 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 			UpdatedAt:   updatedAt,
 		}, nil
 
+	case search.ScopeAction:
+		a, err := q.GetActionByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		desc := ""
+		if a.Description != nil {
+			desc = *a.Description
+		}
+		// isCompliance lives in action.params as a boolean. The
+		// search row denormalises it so a search hit can render
+		// without parsing JSON. Mirrors the handler's old
+		// enqueueActionReindex shape.
+		isCompliance := false
+		var params map[string]any
+		if json.Unmarshal(a.Params, &params) == nil {
+			if v, ok := params["isCompliance"].(bool); ok {
+				isCompliance = v
+			}
+		}
+		var createdAt, updatedAt int64
+		if a.CreatedAt != nil {
+			createdAt = a.CreatedAt.Unix()
+		}
+		if a.UpdatedAt != nil {
+			updatedAt = a.UpdatedAt.Unix()
+		}
+		return &taskqueue.SearchEntityData{
+			Name:         a.Name,
+			Description:  desc,
+			Type:         a.ActionType,
+			IsCompliance: isCompliance,
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+		}, nil
+
 	case search.ScopeDefinition:
 		d, err := q.GetDefinitionByID(ctx, id)
 		if err != nil {
@@ -509,7 +562,7 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, scope, id string
 // no race.
 func cascadeIDsForRemove(ctx context.Context, idx *search.Index, scope, id string) []string {
 	switch scope {
-	case search.ScopeActionSet, search.ScopeDefinition:
+	case search.ScopeAction, search.ScopeActionSet, search.ScopeDefinition:
 		return idx.GetReverseMembers(ctx, scope, id)
 	}
 	return nil
