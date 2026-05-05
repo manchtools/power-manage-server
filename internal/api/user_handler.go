@@ -116,7 +116,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		// want a specific already-exists error code. For now,
 		// return a structured Internal error and log the actual
 		// cause so operators can triage.
-		slog.Error("failed to append UserCreated event", "user_id", id, "email", req.Msg.Email, "error", err)
+		h.logger.Error("failed to append UserCreated event", "user_id", id, "email", req.Msg.Email, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
 	}
 
@@ -133,7 +133,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			// is already created so we can't fail the RPC, but at
 			// least surface this in operator logs so the gap can be
 			// triaged before a confused user files a ticket.
-			slog.Error("failed to look up default User role; new user created with no roles",
+			h.logger.Error("failed to look up default User role; new user created with no roles",
 				"user_id", id, "email", req.Msg.Email, "error", err)
 		}
 	}
@@ -155,7 +155,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			// "user has no permissions despite being assigned the
 			// admin role" need this in journalctl ERROR output, not
 			// hidden in Warn.
-			slog.Error("failed to append UserRoleAssigned event; user will be missing this role",
+			h.logger.Error("failed to append UserRoleAssigned event; user will be missing this role",
 				"user_id", id, "role_id", roleID, "error", err)
 		}
 	}
@@ -270,7 +270,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 	// Populate inherited roles from user group memberships
 	inheritedRoles, err := h.store.Queries().ListAllInheritedRoles(ctx)
 	if err != nil {
-		slog.Warn("failed to load inherited roles", "error", err)
+		h.logger.Warn("failed to load inherited roles", "error", err)
 	} else {
 		inheritedMap := make(map[string][]*pm.InheritedRole)
 		for _, ir := range inheritedRoles {

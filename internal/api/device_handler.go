@@ -658,6 +658,12 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
+			// Decrypt failure on stored material is alarming —
+			// possible key-rotation drift, corrupted ciphertext,
+			// or HSM/KMS issue. Log device + action context so
+			// operators can triage without re-running the RPC.
+			h.logger.Error("failed to decrypt LPS password (current)",
+				"device_id", p.DeviceID, "action_id", p.ActionID, "error", err)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
@@ -682,6 +688,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
+			h.logger.Error("failed to decrypt LPS password (history)",
+				"device_id", p.DeviceID, "action_id", p.ActionID, "error", err)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
@@ -732,6 +740,8 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
+			h.logger.Error("failed to decrypt LUKS passphrase (current)",
+				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
@@ -765,6 +775,8 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
+			h.logger.Error("failed to decrypt LUKS passphrase (history)",
+				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
