@@ -32,6 +32,25 @@ func (q *Queries) CountUsersWithRole(ctx context.Context, roleID string) (int64,
 	return count, err
 }
 
+const deleteUserRoleProjection = `-- name: DeleteUserRoleProjection :exec
+DELETE FROM user_roles_projection
+WHERE user_id = $1
+  AND role_id = $2
+`
+
+type DeleteUserRoleProjectionParams struct {
+	UserID string `json:"user_id"`
+	RoleID string `json:"role_id"`
+}
+
+// UserRoleRevoked handler. Plain DELETE — silently no-op on a miss
+// matches the PL/pgSQL projector's behaviour under repeated revoke
+// events.
+func (q *Queries) DeleteUserRoleProjection(ctx context.Context, arg DeleteUserRoleProjectionParams) error {
+	_, err := q.db.Exec(ctx, deleteUserRoleProjection, arg.UserID, arg.RoleID)
+	return err
+}
+
 const deleteUserRolesByRole = `-- name: DeleteUserRolesByRole :exec
 DELETE FROM user_roles_projection WHERE role_id = $1
 `
@@ -184,6 +203,35 @@ func (q *Queries) InsertRoleProjection(ctx context.Context, arg InsertRoleProjec
 		arg.IsSystem,
 		arg.CreatedAt,
 		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertUserRoleProjection = `-- name: InsertUserRoleProjection :exec
+INSERT INTO user_roles_projection (
+    user_id, role_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (user_id, role_id) DO NOTHING
+`
+
+type InsertUserRoleProjectionParams struct {
+	UserID            string    `json:"user_id"`
+	RoleID            string    `json:"role_id"`
+	AssignedAt        time.Time `json:"assigned_at"`
+	AssignedBy        string    `json:"assigned_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserRoleAssigned handler. ON CONFLICT (user_id, role_id) DO NOTHING
+// preserves the PL/pgSQL projector's idempotency under reconciler
+// replays.
+func (q *Queries) InsertUserRoleProjection(ctx context.Context, arg InsertUserRoleProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertUserRoleProjection,
+		arg.UserID,
+		arg.RoleID,
+		arg.AssignedAt,
+		arg.AssignedBy,
 		arg.ProjectionVersion,
 	)
 	return err
