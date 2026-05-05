@@ -64,7 +64,11 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "identity_provider_projector"),
 	))
-	// Subsequent ports under #105–#106 add their listener here.
+	st.RegisterEventListener(SCIMGroupMappingListener(
+		st,
+		loggerFor(logger, "scim_group_mapping_projector"),
+	))
+	// Subsequent ports under #106 add their listener here.
 }
 
 // loggerFor returns a sub-logger tagged with the projector

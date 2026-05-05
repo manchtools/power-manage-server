@@ -35,6 +35,25 @@ func (q *Queries) CountSCIMUsers(ctx context.Context, providerID string) (int64,
 	return count, err
 }
 
+const deleteSCIMGroupMappingByCompositeKey = `-- name: DeleteSCIMGroupMappingByCompositeKey :exec
+DELETE FROM scim_group_mapping_projection
+WHERE provider_id = $1
+  AND scim_group_id = $2
+`
+
+type DeleteSCIMGroupMappingByCompositeKeyParams struct {
+	ProviderID  string `json:"provider_id"`
+	ScimGroupID string `json:"scim_group_id"`
+}
+
+// SCIMGroupUnmapped handler. Plain DELETE — silently no-op on a
+// miss matches the PL/pgSQL projector's behaviour under repeated
+// unmap events.
+func (q *Queries) DeleteSCIMGroupMappingByCompositeKey(ctx context.Context, arg DeleteSCIMGroupMappingByCompositeKeyParams) error {
+	_, err := q.db.Exec(ctx, deleteSCIMGroupMappingByCompositeKey, arg.ProviderID, arg.ScimGroupID)
+	return err
+}
+
 const findSCIMUserByEmail = `-- name: FindSCIMUserByEmail :one
 SELECT u.id, u.email, u.password_hash, u.role, u.created_at, u.updated_at, u.last_login_at, u.disabled, u.is_deleted, u.projection_version, u.session_version, u.has_password, u.totp_enabled, u.display_name, u.given_name, u.family_name, u.preferred_username, u.picture, u.locale, u.linux_username, u.linux_uid, u.ssh_public_keys, u.ssh_access_enabled, u.ssh_allow_pubkey, u.ssh_allow_password, u.system_user_action_id, u.system_ssh_action_id, u.user_provisioning_enabled, u.system_tty_action_id, il.external_id AS scim_external_id
 FROM users_projection u
@@ -530,4 +549,71 @@ func (q *Queries) ListSCIMUsers(ctx context.Context, arg ListSCIMUsersParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateSCIMGroupMappingDisplayName = `-- name: UpdateSCIMGroupMappingDisplayName :exec
+UPDATE scim_group_mapping_projection
+SET scim_display_name = COALESCE($1::TEXT, scim_display_name),
+    projection_version = $2
+WHERE provider_id = $3
+  AND scim_group_id = $4
+  AND projection_version < $2
+`
+
+type UpdateSCIMGroupMappingDisplayNameParams struct {
+	ScimDisplayName   *string `json:"scim_display_name"`
+	ProjectionVersion int64   `json:"projection_version"`
+	ProviderID        string  `json:"provider_id"`
+	ScimGroupID       string  `json:"scim_group_id"`
+}
+
+// SCIMGroupMappingUpdated handler. Only display_name is updatable;
+// nil pointer collapses to SQL NULL, COALESCE preserves existing.
+// Stale-replay guard via projection_version.
+func (q *Queries) UpdateSCIMGroupMappingDisplayName(ctx context.Context, arg UpdateSCIMGroupMappingDisplayNameParams) error {
+	_, err := q.db.Exec(ctx, updateSCIMGroupMappingDisplayName,
+		arg.ScimDisplayName,
+		arg.ProjectionVersion,
+		arg.ProviderID,
+		arg.ScimGroupID,
+	)
+	return err
+}
+
+const upsertSCIMGroupMapping = `-- name: UpsertSCIMGroupMapping :exec
+INSERT INTO scim_group_mapping_projection (
+    id, provider_id, scim_group_id, scim_display_name,
+    user_group_id, created_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (provider_id, scim_group_id) DO UPDATE SET
+    scim_display_name = EXCLUDED.scim_display_name,
+    user_group_id = EXCLUDED.user_group_id,
+    projection_version = EXCLUDED.projection_version
+`
+
+type UpsertSCIMGroupMappingParams struct {
+	ID                string    `json:"id"`
+	ProviderID        string    `json:"provider_id"`
+	ScimGroupID       string    `json:"scim_group_id"`
+	ScimDisplayName   string    `json:"scim_display_name"`
+	UserGroupID       string    `json:"user_group_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// SCIMGroupMapped handler. ON CONFLICT (provider_id, scim_group_id)
+// DO UPDATE matches the PL/pgSQL projector — re-mapping the same
+// (provider, scim_group) refreshes scim_display_name + user_group_id
+// without minting a duplicate row.
+func (q *Queries) UpsertSCIMGroupMapping(ctx context.Context, arg UpsertSCIMGroupMappingParams) error {
+	_, err := q.db.Exec(ctx, upsertSCIMGroupMapping,
+		arg.ID,
+		arg.ProviderID,
+		arg.ScimGroupID,
+		arg.ScimDisplayName,
+		arg.UserGroupID,
+		arg.CreatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
 }
