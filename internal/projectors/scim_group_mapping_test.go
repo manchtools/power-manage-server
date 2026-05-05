@@ -10,6 +10,7 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -277,6 +278,74 @@ func TestSCIMGroupMappingListener_MapReplayIsIdempotent(t *testing.T) {
 	).Scan(&displayName, &ugID))
 	assert.Equal(t, "Refreshed", displayName, "ON CONFLICT DO UPDATE refreshes display_name")
 	assert.Equal(t, groupB, ugID, "ON CONFLICT DO UPDATE refreshes user_group_id")
+}
+
+// TestSCIMGroupMappingListener_StaleUpdateIgnored verifies the
+// projection_version guard on UpdateSCIMGroupMappingDisplayName: an
+// older SCIMGroupMappingUpdated event must not overwrite a projection
+// that was already advanced by a newer event. The PR description
+// called out this guard as the key tightening over the PL/pgSQL
+// original; it deserves a dedicated regression test.
+func TestSCIMGroupMappingListener_StaleUpdateIgnored(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	idpID := testutil.NewID()
+	groupID := testutil.CreateTestUserGroup(t, st, "actor", "scim-stale")
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider", StreamID: idpID,
+		EventType: "IdentityProviderCreated",
+		Data: map[string]any{
+			"name": "x", "slug": "x-" + testutil.NewID(),
+			"client_id": "c", "issuer_url": "https://x.example.com",
+		},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	mappingID := "mapping-" + testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping", StreamID: mappingID,
+		EventType: "SCIMGroupMapped",
+		Data: map[string]any{
+			"provider_id": idpID, "scim_group_id": "sg-stale",
+			"scim_display_name": "Initial", "user_group_id": groupID,
+		},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping", StreamID: mappingID,
+		EventType: "SCIMGroupMappingUpdated",
+		Data: map[string]any{
+			"provider_id": idpID, "scim_group_id": "sg-stale",
+			"scim_display_name": "Current State",
+		},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	// Capture current projection_version, then apply a stale UPDATE
+	// directly with version-5. The guard must reject it.
+	var currentVer int64
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT projection_version FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
+		idpID, "sg-stale",
+	).Scan(&currentVer))
+	older := currentVer - 5
+	staleName := "stale replay would set this"
+	require.NoError(t, st.Queries().UpdateSCIMGroupMappingDisplayName(ctx, db.UpdateSCIMGroupMappingDisplayNameParams{
+		ProviderID:        idpID,
+		ScimGroupID:       "sg-stale",
+		ScimDisplayName:   &staleName,
+		ProjectionVersion: older,
+	}))
+
+	var displayName string
+	var afterVer int64
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT scim_display_name, projection_version FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
+		idpID, "sg-stale",
+	).Scan(&displayName, &afterVer))
+	assert.Equal(t, "Current State", displayName, "stale projection_version must NOT clobber fresher state")
+	assert.Equal(t, currentVer, afterVer, "projection_version unchanged when guard rejects")
 }
 
 // TestSCIMGroupMappingListener_IgnoresWrongStreamType — defensive.
