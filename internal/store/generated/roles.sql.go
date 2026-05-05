@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const countRoles = `-- name: CountRoles :one
@@ -29,6 +30,19 @@ func (q *Queries) CountUsersWithRole(ctx context.Context, roleID string) (int64,
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteUserRolesByRole = `-- name: DeleteUserRolesByRole :exec
+DELETE FROM user_roles_projection WHERE role_id = $1
+`
+
+// RoleDeleted handler — second half. Cascades the delete to
+// user_roles_projection so user-permission queries no longer surface
+// this role's permissions. Wrapped with SoftDeleteRoleProjection in
+// store.WithTx for inter-write atomicity.
+func (q *Queries) DeleteUserRolesByRole(ctx context.Context, roleID string) error {
+	_, err := q.db.Exec(ctx, deleteUserRolesByRole, roleID)
+	return err
 }
 
 const getRoleByID = `-- name: GetRoleByID :one
@@ -139,6 +153,42 @@ func (q *Queries) GetUserRoles(ctx context.Context, userID string) ([]RolesProje
 	return items, nil
 }
 
+const insertRoleProjection = `-- name: InsertRoleProjection :exec
+INSERT INTO roles_projection (
+    id, name, description, permissions, is_system,
+    created_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertRoleProjectionParams struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	Permissions       []string  `json:"permissions"`
+	IsSystem          bool      `json:"is_system"`
+	CreatedAt         time.Time `json:"created_at"`
+	CreatedBy         string    `json:"created_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// RoleCreated handler. ON CONFLICT DO NOTHING for replay safety —
+// the reconciler may re-deliver the event; if a row already exists
+// under the same id, leave it alone (RoleUpdated owns mutations).
+func (q *Queries) InsertRoleProjection(ctx context.Context, arg InsertRoleProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertRoleProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Permissions,
+		arg.IsSystem,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
 const listRoles = `-- name: ListRoles :many
 SELECT id, name, description, permissions, is_system, created_at, created_by, updated_at, is_deleted, projection_version FROM roles_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
 `
@@ -201,6 +251,68 @@ func (q *Queries) ListUserIDsWithRole(ctx context.Context, roleID string) ([]str
 		return nil, err
 	}
 	return items, nil
+}
+
+const softDeleteRoleProjection = `-- name: SoftDeleteRoleProjection :exec
+UPDATE roles_projection
+SET is_deleted        = TRUE,
+    updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteRoleProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// RoleDeleted handler — first half. Marks the role as deleted but
+// leaves the row so the audit log resolves role names. Listener
+// pairs this with DeleteUserRolesByRole inside store.WithTx so the
+// projection never observes "role deleted but memberships remain".
+func (q *Queries) SoftDeleteRoleProjection(ctx context.Context, arg SoftDeleteRoleProjectionParams) error {
+	_, err := q.db.Exec(ctx, softDeleteRoleProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	return err
+}
+
+const updateRoleProjection = `-- name: UpdateRoleProjection :exec
+UPDATE roles_projection
+SET name              = COALESCE($1::TEXT, name),
+    description       = COALESCE($2::TEXT, description),
+    permissions       = COALESCE($3::TEXT[], permissions),
+    updated_at        = $4,
+    projection_version = $5
+WHERE id = $6
+  AND projection_version < $5
+`
+
+type UpdateRoleProjectionParams struct {
+	Name              *string    `json:"name"`
+	Description       *string    `json:"description"`
+	Permissions       []string   `json:"permissions"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ID                string     `json:"id"`
+}
+
+// RoleUpdated handler. nil pointers from the listener collapse to
+// SQL NULL, which COALESCE preserves the existing column. Empty-
+// string Name is converted to nil at the listener layer (NULLIF
+// equivalent), so this query treats both omitted and empty Name
+// identically. The `projection_version` guard rejects stale
+// reconciler replays.
+func (q *Queries) UpdateRoleProjection(ctx context.Context, arg UpdateRoleProjectionParams) error {
+	_, err := q.db.Exec(ctx, updateRoleProjection,
+		arg.Name,
+		arg.Description,
+		arg.Permissions,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	return err
 }
 
 const updateSystemRolePermissions = `-- name: UpdateSystemRolePermissions :execrows
