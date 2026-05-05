@@ -3,8 +3,10 @@ package projectors_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -340,27 +342,26 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Simulate a stale RoleDeleted replay by calling the SAME
-	// listener helpers the post-commit hook would use, but with an
-	// artificially-stale projection_version. This exercises the
-	// transactional fix without faking an event.
+	// Drive the REAL listener with a synthetic PersistedEvent whose
+	// SequenceNum is older than the row's current projection_version.
+	// Calling the public projector entrypoint exercises the
+	// applyRoleDeleted bug-fix branch (rows-affected check skips the
+	// cascade) — duplicating the SQL inline would have left the
+	// branch untested even if it was deleted.
 	older := live.ProjectionVersion - 5
 	staleAt := live.CreatedAt
-	err = st.WithTx(ctx, func(q *store.Queries) error {
-		n, err := q.SoftDeleteRoleProjection(ctx, db.SoftDeleteRoleProjectionParams{
-			ID:                roleID,
-			UpdatedAt:         &staleAt,
-			ProjectionVersion: older,
-		})
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return nil // listener's bug-fix branch: skip cascade
-		}
-		return q.DeleteUserRolesByRole(ctx, roleID)
+	listener := projectors.RoleListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &older,
+		StreamType:  "role",
+		StreamID:    roleID,
+		EventType:   "RoleDeleted",
+		Data:        []byte("{}"),
+		ActorType:   "user",
+		ActorID:     "u",
+		OccurredAt:  staleAt,
 	})
-	require.NoError(t, err)
 
 	// Memberships still there.
 	count := 0
