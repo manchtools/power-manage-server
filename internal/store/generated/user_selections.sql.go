@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const getUserSelection = `-- name: GetUserSelection :one
@@ -132,4 +133,47 @@ func (q *Queries) ListUserSelectionsForDevice(ctx context.Context, deviceID stri
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertUserSelectionProjection = `-- name: UpsertUserSelectionProjection :exec
+INSERT INTO user_selections_projection (
+    id, device_id, source_type, source_id, selected,
+    updated_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (device_id, source_type, source_id) DO UPDATE SET
+    selected = EXCLUDED.selected,
+    updated_at = EXCLUDED.updated_at,
+    projection_version = EXCLUDED.projection_version
+WHERE user_selections_projection.projection_version < EXCLUDED.projection_version
+`
+
+type UpsertUserSelectionProjectionParams struct {
+	ID                string    `json:"id"`
+	DeviceID          string    `json:"device_id"`
+	SourceType        string    `json:"source_type"`
+	SourceID          string    `json:"source_id"`
+	Selected          bool      `json:"selected"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	CreatedBy         string    `json:"created_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserSelectionChanged handler. ON CONFLICT (device_id, source_type,
+// source_id) DO UPDATE matches the PL/pgSQL projector — repeated
+// selection toggles refresh the row in place. Stale-replay guard
+// on the conflict-update path: only overwrite if the incoming
+// projection_version is newer (matching the WHERE-guard pattern
+// established for other ports).
+func (q *Queries) UpsertUserSelectionProjection(ctx context.Context, arg UpsertUserSelectionProjectionParams) error {
+	_, err := q.db.Exec(ctx, upsertUserSelectionProjection,
+		arg.ID,
+		arg.DeviceID,
+		arg.SourceType,
+		arg.SourceID,
+		arg.Selected,
+		arg.UpdatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
