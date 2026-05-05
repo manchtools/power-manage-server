@@ -82,3 +82,20 @@ WHERE id = $1
 -- this role's permissions. Wrapped with SoftDeleteRoleProjection in
 -- store.WithTx for inter-write atomicity.
 DELETE FROM user_roles_projection WHERE role_id = $1;
+
+-- name: InsertUserRoleProjection :exec
+-- UserRoleAssigned handler. ON CONFLICT (user_id, role_id) DO NOTHING
+-- preserves the PL/pgSQL projector's idempotency under reconciler
+-- replays.
+INSERT INTO user_roles_projection (
+    user_id, role_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- name: DeleteUserRoleProjection :exec
+-- UserRoleRevoked handler. Plain DELETE — silently no-op on a miss
+-- matches the PL/pgSQL projector's behaviour under repeated revoke
+-- events.
+DELETE FROM user_roles_projection
+WHERE user_id = $1
+  AND role_id = $2;
