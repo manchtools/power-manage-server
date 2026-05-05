@@ -93,7 +93,16 @@ func TestUserRoleRevokedFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "role-X", got.RoleID)
 	})
 
-	t.Run("missing user_id or role_id is a validation error", func(t *testing.T) {
+	t.Run("missing user_id is a validation error", func(t *testing.T) {
+		_, err := projectors.UserRoleRevokedFromEvent(store.PersistedEvent{
+			StreamType: "user_role", EventType: "UserRoleRevoked",
+			Data: jsonOrFail(t, map[string]any{"role_id": "r"}),
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "user_id")
+	})
+
+	t.Run("missing role_id is a validation error", func(t *testing.T) {
 		_, err := projectors.UserRoleRevokedFromEvent(store.PersistedEvent{
 			StreamType: "user_role", EventType: "UserRoleRevoked",
 			Data: jsonOrFail(t, map[string]any{"user_id": "u"}),
