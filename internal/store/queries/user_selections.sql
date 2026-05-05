@@ -36,3 +36,20 @@ WHERE asn.mode = 1 AND asn.is_deleted = FALSE
     OR (asn.target_type = 'user_group' AND asn.target_id IN (SELECT group_id FROM owner_groups))
   )
 ORDER BY asn.created_at DESC;
+
+-- name: UpsertUserSelectionProjection :exec
+-- UserSelectionChanged handler. ON CONFLICT (device_id, source_type,
+-- source_id) DO UPDATE matches the PL/pgSQL projector — repeated
+-- selection toggles refresh the row in place. Stale-replay guard
+-- on the conflict-update path: only overwrite if the incoming
+-- projection_version is newer (matching the WHERE-guard pattern
+-- established for other ports).
+INSERT INTO user_selections_projection (
+    id, device_id, source_type, source_id, selected,
+    updated_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (device_id, source_type, source_id) DO UPDATE SET
+    selected = EXCLUDED.selected,
+    updated_at = EXCLUDED.updated_at,
+    projection_version = EXCLUDED.projection_version
+WHERE user_selections_projection.projection_version < EXCLUDED.projection_version;

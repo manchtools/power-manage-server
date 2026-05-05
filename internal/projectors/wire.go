@@ -68,7 +68,14 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "scim_group_mapping_projector"),
 	))
-	// Subsequent ports under #106 add their listener here.
+	st.RegisterEventListener(UserSelectionListener(
+		st,
+		loggerFor(logger, "user_selection_projector"),
+	))
+	// All 11 ports of tracker #107 are now wired here. Future ports
+	// of the un-ported domain projectors (user, device, action,
+	// execution, assignment, compliance, etc.) will land in a
+	// separate tracker.
 }
 
 // loggerFor returns a sub-logger tagged with the projector
