@@ -263,8 +263,8 @@ func applyIdentityLinkLoginUpdated(ctx context.Context, st *store.Store, logger 
 		ProviderID:        payload.ProviderID,
 		ExternalID:        payload.ExternalID,
 		LastLoginAt:       &loginAt,
-		Column4:           payload.ExternalEmail,
-		Column5:           payload.ExternalName,
+		ExternalEmail:     payload.ExternalEmail,
+		ExternalName:      payload.ExternalName,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to update identity_link login",

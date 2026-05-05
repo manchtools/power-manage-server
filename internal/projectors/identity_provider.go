@@ -74,6 +74,21 @@ type IdentityProviderUpdatedPayload struct {
 	GroupMapping             []byte // nil if absent; raw JSONB bytes if present
 }
 
+// LogValue mirrors the Created variant's masking on
+// ClientSecretEncrypted. The listener doesn't currently log this
+// payload directly, but symmetry keeps the safety from regressing
+// if a future caller adds `slog.Any("payload", payload)` to a Warn.
+// "[REDACTED]" only emitted when the secret was set in the payload
+// — nil-pointer "not present" stays nil so log readers can tell the
+// update didn't touch the secret.
+func (p IdentityProviderUpdatedPayload) LogValue() slog.Value {
+	attrs := []slog.Attr{slog.String("id", p.ID)}
+	if p.ClientSecretEncrypted != nil {
+		attrs = append(attrs, slog.String("client_secret_encrypted", "[REDACTED]"))
+	}
+	return slog.GroupValue(attrs...)
+}
+
 // IdentityLinkPayload covers IdentityLinked + IdentityLinkLoginUpdated.
 // Both reference (provider_id, external_id) as the lookup key.
 type IdentityLinkPayload struct {

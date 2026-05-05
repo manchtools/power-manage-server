@@ -53,13 +53,13 @@ ON CONFLICT (provider_id, external_id) DO UPDATE SET
 -- emits this on every successful SSO login but doesn't always carry
 -- email/name updates.
 UPDATE identity_links_projection
-SET last_login_at = $3,
-    external_email = COALESCE(NULLIF($4::TEXT, ''), external_email),
-    external_name = COALESCE(NULLIF($5::TEXT, ''), external_name),
-    projection_version = $6
-WHERE provider_id = $1
-  AND external_id = $2
-  AND projection_version < $6;
+SET last_login_at = sqlc.arg('last_login_at'),
+    external_email = COALESCE(NULLIF(sqlc.arg('external_email')::TEXT, ''), external_email),
+    external_name = COALESCE(NULLIF(sqlc.arg('external_name')::TEXT, ''), external_name),
+    projection_version = sqlc.arg('projection_version')
+WHERE provider_id = sqlc.arg('provider_id')
+  AND external_id = sqlc.arg('external_id')
+  AND projection_version < sqlc.arg('projection_version');
 
 -- name: DeleteIdentityLinkByID :exec
 -- IdentityUnlinked handler. Stream_id IS the link id (set by the

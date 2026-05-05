@@ -241,22 +241,22 @@ func (q *Queries) ListLinkedProviderIDsForUser(ctx context.Context, userID strin
 
 const updateIdentityLinkLogin = `-- name: UpdateIdentityLinkLogin :exec
 UPDATE identity_links_projection
-SET last_login_at = $3,
-    external_email = COALESCE(NULLIF($4::TEXT, ''), external_email),
-    external_name = COALESCE(NULLIF($5::TEXT, ''), external_name),
-    projection_version = $6
-WHERE provider_id = $1
-  AND external_id = $2
-  AND projection_version < $6
+SET last_login_at = $1,
+    external_email = COALESCE(NULLIF($2::TEXT, ''), external_email),
+    external_name = COALESCE(NULLIF($3::TEXT, ''), external_name),
+    projection_version = $4
+WHERE provider_id = $5
+  AND external_id = $6
+  AND projection_version < $4
 `
 
 type UpdateIdentityLinkLoginParams struct {
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	ExternalEmail     string     `json:"external_email"`
+	ExternalName      string     `json:"external_name"`
+	ProjectionVersion int64      `json:"projection_version"`
 	ProviderID        string     `json:"provider_id"`
 	ExternalID        string     `json:"external_id"`
-	LastLoginAt       *time.Time `json:"last_login_at"`
-	Column4           string     `json:"column_4"`
-	Column5           string     `json:"column_5"`
-	ProjectionVersion int64      `json:"projection_version"`
 }
 
 // IdentityLinkLoginUpdated handler. Empty external_email /
@@ -265,12 +265,12 @@ type UpdateIdentityLinkLoginParams struct {
 // email/name updates.
 func (q *Queries) UpdateIdentityLinkLogin(ctx context.Context, arg UpdateIdentityLinkLoginParams) error {
 	_, err := q.db.Exec(ctx, updateIdentityLinkLogin,
+		arg.LastLoginAt,
+		arg.ExternalEmail,
+		arg.ExternalName,
+		arg.ProjectionVersion,
 		arg.ProviderID,
 		arg.ExternalID,
-		arg.LastLoginAt,
-		arg.Column4,
-		arg.Column5,
-		arg.ProjectionVersion,
 	)
 	return err
 }
