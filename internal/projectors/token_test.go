@@ -225,6 +225,44 @@ func TestTokenListener_StaleReplayRejected(t *testing.T) {
 	assert.Equal(t, currentVer, after.ProjectionVersion)
 }
 
+// TestTokenListener_StaleReplayRejected_TokenUsed is the load-bearing
+// guard test for IncrementTokenUseProjection. Without the
+// projection_version guard, a duplicate reconciler replay of TokenUsed
+// would erroneously bump current_uses twice. The PR description
+// specifically called this out as the most critical guarded path; it
+// deserves a dedicated regression test rather than relying on the
+// SetTokenDisabledProjection coverage alone.
+func TestTokenListener_StaleReplayRejected_TokenUsed(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	tokenID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "token", StreamID: tokenID, EventType: "TokenCreated",
+		Data: map[string]any{"value_hash": "h-" + testutil.NewID(), "name": "n", "max_uses": 3},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "token", StreamID: tokenID, EventType: "TokenUsed",
+		Data: map[string]any{}, ActorType: "system", ActorID: "registration",
+	}))
+	current, err := st.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: tokenID})
+	require.NoError(t, err)
+	require.Equal(t, int32(1), current.CurrentUses)
+	currentVer := current.ProjectionVersion
+
+	// Stale replay of TokenUsed would re-bump current_uses to 2; the
+	// projection_version guard must reject it so the count stays at 1.
+	require.NoError(t, st.Queries().IncrementTokenUseProjection(ctx, db.IncrementTokenUseProjectionParams{
+		ID:                tokenID,
+		ProjectionVersion: currentVer - 5,
+	}))
+	after, err := st.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: tokenID})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), after.CurrentUses, "stale projection_version must NOT double-increment current_uses")
+	assert.Equal(t, currentVer, after.ProjectionVersion, "projection_version unchanged when guard rejects")
+}
+
 // TestTokenListener_IgnoresWrongStreamType — defensive.
 func TestTokenListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)
