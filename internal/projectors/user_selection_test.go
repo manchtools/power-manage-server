@@ -98,6 +98,27 @@ func TestUserSelectionChangedFromEvent_Pure(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, projectors.ErrIgnoredEvent))
 	})
+
+	t.Run("non-boolean selected is a validation error", func(t *testing.T) {
+		// Pins the contract documented on UserSelectionChangedPayload:
+		// the deleted PL/pgSQL projector silently coerced non-bool
+		// values via `::BOOLEAN` → NULL → COALESCE → FALSE. The Go
+		// decoder deliberately rejects them at json.Unmarshal time
+		// so malformed payloads fail loudly instead of producing
+		// silently-defaulted projection rows.
+		for _, badSelected := range []any{"true", "false", 1, 0, []any{}, map[string]any{}} {
+			_, err := projectors.UserSelectionChangedFromEvent(store.PersistedEvent{
+				StreamType: "user_selection", EventType: "UserSelectionChanged",
+				Data: jsonOrFail(t, map[string]any{
+					"device_id": "d", "source_type": "user", "source_id": "s",
+					"selected": badSelected,
+				}),
+			})
+			require.Errorf(t, err, "non-bool selected=%v should be rejected", badSelected)
+			assert.Falsef(t, errors.Is(err, projectors.ErrIgnoredEvent),
+				"non-bool selected=%v must NOT be silently swallowed as ErrIgnoredEvent", badSelected)
+		}
+	})
 }
 
 // TestUserSelectionListener_UpsertSelectThenDeselect walks the
