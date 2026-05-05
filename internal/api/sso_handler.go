@@ -331,7 +331,8 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		ActorType: "user",
 		ActorID:   user.ID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "provider", provider.Slug, "error", err)
+		h.logger.Error("AUDIT GAP: failed to append UserLoggedIn event; SSO login proceeded without audit record",
+			"user_id", user.ID, "provider", provider.Slug, "error", err)
 	} else {
 		h.logger.Debug("event appended",
 			"request_id", middleware.RequestIDFromContext(ctx),

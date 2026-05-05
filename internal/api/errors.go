@@ -65,6 +65,7 @@ const (
 	ErrDynamicGroupManualModify = "dynamic_group_manual_modify"
 	ErrCannotDeleteSystemRole   = "cannot_delete_system_role"
 	ErrCannotRenameSystemRole   = "cannot_rename_system_role"
+	ErrCannotRemoveLastAdmin    = "cannot_remove_last_admin"
 	ErrRoleInUse                = "role_in_use"
 	ErrSCIMAlreadyEnabled       = "scim_already_enabled"
 	ErrSCIMNotEnabled           = "scim_not_enabled"

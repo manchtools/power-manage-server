@@ -629,13 +629,13 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	// Get current passwords
 	current, err := h.store.Queries().GetCurrentLpsPasswords(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, fmt.Errorf("get current LPS passwords: %w", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load current LPS passwords")
 	}
 
 	// Get password history
 	history, err := h.store.Queries().GetLpsPasswordHistory(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, fmt.Errorf("get LPS password history: %w", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LPS password history")
 	}
 
 	// Convert to proto
@@ -658,7 +658,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt LPS password: %w", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
@@ -682,7 +682,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt LPS password: %w", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
@@ -707,12 +707,12 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 
 	current, err := h.store.Queries().GetCurrentLuksKeys(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, fmt.Errorf("get current LUKS keys: %w", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load current LUKS keys")
 	}
 
 	history, err := h.store.Queries().GetLuksKeyHistory(ctx, req.Msg.DeviceId)
 	if err != nil {
-		return nil, fmt.Errorf("get LUKS key history: %w", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LUKS key history")
 	}
 
 	resp := &pm.GetDeviceLuksKeysResponse{}
@@ -732,7 +732,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt LUKS passphrase: %w", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,
@@ -765,7 +765,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt LUKS passphrase: %w", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,

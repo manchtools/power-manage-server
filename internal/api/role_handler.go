@@ -356,7 +356,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 		}
 		if userCount <= 1 {
-			return nil, apiErrorCtx(ctx, ErrCannotRenameSystemRole, connect.CodeFailedPrecondition, "cannot remove last user from Admin role")
+			return nil, apiErrorCtx(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove last user from Admin role")
 		}
 	}
 

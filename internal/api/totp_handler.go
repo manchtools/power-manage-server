@@ -75,11 +75,6 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 	}
 
 	// Store via event
-	hashesAny := make([]any, len(hashes))
-	for i, h := range hashes {
-		hashesAny[i] = h
-	}
-
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
@@ -402,7 +397,13 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}
 
-	// Emit login event
+	// Emit login event. Audit-grade: a UserLoggedIn append failure
+	// USED to log at Warn and let the login proceed with valid
+	// tokens, which meant an attacker capable of triggering
+	// event-store exhaustion could perform unlogged logins. Now
+	// logged at Error so audit-trail gaps surface in operator
+	// alerts; the RPC still succeeds (tokens already minted, no
+	// safe rollback) but the gap is loud rather than silent.
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   claims.UserID,
@@ -411,7 +412,8 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		ActorType:  "user",
 		ActorID:    claims.UserID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserLoggedIn event", "user_id", claims.UserID, "error", err)
+		h.logger.Error("AUDIT GAP: failed to append UserLoggedIn event; login proceeded without audit record",
+			"user_id", claims.UserID, "error", err)
 	} else {
 		h.logger.Debug("event appended",
 			"request_id", middleware.RequestIDFromContext(ctx),

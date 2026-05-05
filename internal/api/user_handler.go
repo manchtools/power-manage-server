@@ -102,7 +102,22 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
+		// The previous code mapped EVERY AppendEvent failure to
+		// ErrEmailAlreadyExists / CodeAlreadyExists, which lied
+		// to clients on DB outages, projection-trigger violations,
+		// concurrent stream-version conflicts (which Store.AppendEvent
+		// retries internally and surfaces as "version conflict
+		// after N retries"), or any transient append failure.
+		// Detecting a true duplicate-email violation HERE is
+		// unreliable because Store.AppendEvent's internal
+		// 23505-retry loop masks the original PgError.
+		// Defer-to-handler-pre-check is the cleaner fix: callers
+		// should look up the email BEFORE AppendEvent if they
+		// want a specific already-exists error code. For now,
+		// return a structured Internal error and log the actual
+		// cause so operators can triage.
+		slog.Error("failed to append UserCreated event", "user_id", id, "email", req.Msg.Email, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
 	}
 
 	// Auto-assign specified roles, or default User role if none specified
@@ -112,6 +127,14 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
 		if err == nil {
 			roleIDs = []string{userRole.ID}
+		} else {
+			// The default-role lookup used to fail silently, leaving
+			// a freshly-created user with zero permissions. The user
+			// is already created so we can't fail the RPC, but at
+			// least surface this in operator logs so the gap can be
+			// triaged before a confused user files a ticket.
+			slog.Error("failed to look up default User role; new user created with no roles",
+				"user_id", id, "email", req.Msg.Email, "error", err)
 		}
 	}
 	for _, roleID := range roleIDs {
@@ -126,7 +149,14 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			ActorType: "user",
 			ActorID:   userCtx.ID,
 		}); err != nil {
-			slog.Warn("failed to append UserRoleAssigned event", "user_id", id, "role_id", roleID, "error", err)
+			// Escalated from Warn to Error: a UserRoleAssigned
+			// failure leaves the user with one fewer role than the
+			// caller asked for, silently. Operators triaging
+			// "user has no permissions despite being assigned the
+			// admin role" need this in journalctl ERROR output, not
+			// hidden in Warn.
+			slog.Error("failed to append UserRoleAssigned event; user will be missing this role",
+				"user_id", id, "role_id", roleID, "error", err)
 		}
 	}
 
