@@ -8,8 +8,15 @@ import (
 )
 
 // UserSelectionChangedPayload mirrors the PL/pgSQL projector's
-// COALESCE on the boolean — missing or non-bool `selected` defaults
-// to FALSE. The composite-key fields are required.
+// `selected` handling for the omitted-field case (defaults to
+// FALSE), but tightens the non-bool case: a non-bool `selected`
+// (e.g. a string or number) makes json.Unmarshal fail and the whole
+// event is rejected at the decoder, where the PL/pgSQL projector's
+// `COALESCE((event.data->>'selected')::BOOLEAN, FALSE)` would have
+// silently coerced it to NULL → FALSE. This is a deliberate
+// hardening — malformed payloads should fail loudly, not produce
+// silently-defaulted projection rows. Composite-key fields
+// (device_id, source_type, source_id) remain required.
 type UserSelectionChangedPayload struct {
 	ID         string
 	DeviceID   string

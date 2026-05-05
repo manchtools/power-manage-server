@@ -44,6 +44,15 @@ ORDER BY asn.created_at DESC;
 -- on the conflict-update path: only overwrite if the incoming
 -- projection_version is newer (matching the WHERE-guard pattern
 -- established for other ports).
+--
+-- Note on `id` and `created_by`: the conflict-update branch does
+-- NOT touch them, so a row's `id` always reflects the FIRST
+-- UserSelectionChanged event for the composite key, not the most
+-- recent one. Queries scope by (device_id, source_type, source_id)
+-- and never join on `id`, so this is invisible to consumers — but
+-- a developer eyeballing event_id vs row_id during debugging
+-- should expect the divergence. Same shape as the deleted
+-- PL/pgSQL projector.
 INSERT INTO user_selections_projection (
     id, device_id, source_type, source_id, selected,
     updated_at, created_by, projection_version
