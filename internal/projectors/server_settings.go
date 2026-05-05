@@ -54,11 +54,11 @@ func ServerSettingsUpdatedFromEvent(e store.PersistedEvent) (ServerSettingsUpdat
 	return p, nil
 }
 
-// ApplyServerSettingsUpdateForTest exposes the SQL UPDATE side of
-// the listener so tests can drive it with a synthetic
-// projection_version (e.g. an artificially-stale replay). Production
-// code goes through the listener; this is test-only seam.
-func ApplyServerSettingsUpdateForTest(ctx context.Context, st *store.Store, u ServerSettingsUpdate) error {
+// ApplyServerSettingsUpdate runs the COALESCE-based UPDATE behind
+// the listener. Shared between the production listener and the test
+// suite, which uses it to drive a synthetic projection_version (e.g.
+// an artificially-stale replay) without faking an event.
+func ApplyServerSettingsUpdate(ctx context.Context, st *store.Store, u ServerSettingsUpdate) error {
 	return st.Queries().UpdateServerSettings(ctx, db.UpdateServerSettingsParams{
 		UserProvisioningEnabled: u.UserProvisioningEnabled,
 		SshAccessForAll:         u.SshAccessForAll,

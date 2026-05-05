@@ -194,7 +194,7 @@ func TestServerSettingsListener_StaleReplayRejected(t *testing.T) {
 	// projection_version directly via the sqlc query — the listener's
 	// SQL guard `WHERE projection_version < $N` should reject.
 	older := beforeReplay.ProjectionVersion - 5
-	require.NoError(t, projectors.ApplyServerSettingsUpdateForTest(ctx, st, projectors.ServerSettingsUpdate{
+	require.NoError(t, projectors.ApplyServerSettingsUpdate(ctx, st, projectors.ServerSettingsUpdate{
 		UserProvisioningEnabled: boolPtr(false),
 		SshAccessForAll:         boolPtr(false),
 		OccurredAt:              beforeReplay.UpdatedAt,

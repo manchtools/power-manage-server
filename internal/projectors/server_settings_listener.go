@@ -41,7 +41,7 @@ func ServerSettingsListener(st *store.Store, logger *slog.Logger) store.EventLis
 			return
 		}
 
-		if err := ApplyServerSettingsUpdateForTest(ctx, st, ServerSettingsUpdate{
+		if err := ApplyServerSettingsUpdate(ctx, st, ServerSettingsUpdate{
 			UserProvisioningEnabled: payload.UserProvisioningEnabled,
 			SshAccessForAll:         payload.SshAccessForAll,
 			OccurredAt:              e.OccurredAt,
