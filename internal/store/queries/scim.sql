@@ -64,3 +64,36 @@ SELECT ug.*, (
 FROM user_groups_projection ug
 WHERE ug.id = $1 AND ug.is_deleted = FALSE;
 
+
+-- name: UpsertSCIMGroupMapping :exec
+-- SCIMGroupMapped handler. ON CONFLICT (provider_id, scim_group_id)
+-- DO UPDATE matches the PL/pgSQL projector — re-mapping the same
+-- (provider, scim_group) refreshes scim_display_name + user_group_id
+-- without minting a duplicate row.
+INSERT INTO scim_group_mapping_projection (
+    id, provider_id, scim_group_id, scim_display_name,
+    user_group_id, created_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (provider_id, scim_group_id) DO UPDATE SET
+    scim_display_name = EXCLUDED.scim_display_name,
+    user_group_id = EXCLUDED.user_group_id,
+    projection_version = EXCLUDED.projection_version;
+
+-- name: DeleteSCIMGroupMappingByCompositeKey :exec
+-- SCIMGroupUnmapped handler. Plain DELETE — silently no-op on a
+-- miss matches the PL/pgSQL projector's behaviour under repeated
+-- unmap events.
+DELETE FROM scim_group_mapping_projection
+WHERE provider_id = $1
+  AND scim_group_id = $2;
+
+-- name: UpdateSCIMGroupMappingDisplayName :exec
+-- SCIMGroupMappingUpdated handler. Only display_name is updatable;
+-- nil pointer collapses to SQL NULL, COALESCE preserves existing.
+-- Stale-replay guard via projection_version.
+UPDATE scim_group_mapping_projection
+SET scim_display_name = COALESCE(sqlc.narg('scim_display_name')::TEXT, scim_display_name),
+    projection_version = sqlc.arg('projection_version')
+WHERE provider_id = sqlc.arg('provider_id')
+  AND scim_group_id = sqlc.arg('scim_group_id')
+  AND projection_version < sqlc.arg('projection_version');
