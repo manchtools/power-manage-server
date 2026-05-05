@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const createLuksToken = `-- name: CreateLuksToken :one
@@ -194,6 +195,124 @@ func (q *Queries) GetLuksRevocationStreamID(ctx context.Context, arg GetLuksRevo
 	var stream_id string
 	err := row.Scan(&stream_id)
 	return stream_id, err
+}
+
+const insertLuksKey = `-- name: InsertLuksKey :exec
+INSERT INTO luks_keys_projection
+    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertLuksKeyParams struct {
+	DeviceID       string    `json:"device_id"`
+	ActionID       string    `json:"action_id"`
+	DevicePath     string    `json:"device_path"`
+	Passphrase     string    `json:"passphrase"`
+	RotatedAt      time.Time `json:"rotated_at"`
+	RotationReason string    `json:"rotation_reason"`
+}
+
+// Step 2 of LuksKeyRotated projection. Always inserts a new row;
+// step 3's trim keeps only the latest 3 by rotated_at.
+func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) error {
+	_, err := q.db.Exec(ctx, insertLuksKey,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.DevicePath,
+		arg.Passphrase,
+		arg.RotatedAt,
+		arg.RotationReason,
+	)
+	return err
+}
+
+const markLuksKeysNotCurrent = `-- name: MarkLuksKeysNotCurrent :exec
+UPDATE luks_keys_projection
+SET is_current = FALSE
+WHERE device_id = $1
+  AND action_id = $2
+  AND device_path = $3
+  AND is_current = TRUE
+`
+
+type MarkLuksKeysNotCurrentParams struct {
+	DeviceID   string `json:"device_id"`
+	ActionID   string `json:"action_id"`
+	DevicePath string `json:"device_path"`
+}
+
+// Step 1 of LuksKeyRotated projection. Flip the current row for the
+// (device_id, action_id, device_path) triple so the new key
+// (inserted by step 2) is the only is_current=TRUE row. The
+// `is_current = TRUE` predicate keeps the result identical (rows
+// already FALSE stay FALSE) but skips a write per historical row,
+// reducing write amplification on the hot path.
+func (q *Queries) MarkLuksKeysNotCurrent(ctx context.Context, arg MarkLuksKeysNotCurrentParams) error {
+	_, err := q.db.Exec(ctx, markLuksKeysNotCurrent, arg.DeviceID, arg.ActionID, arg.DevicePath)
+	return err
+}
+
+const trimLuksKeysToLast3 = `-- name: TrimLuksKeysToLast3 :exec
+DELETE FROM luks_keys_projection AS k
+WHERE k.device_id = $1
+  AND k.action_id = $2
+  AND k.device_path = $3
+  AND k.id NOT IN (
+      SELECT id FROM luks_keys_projection
+      WHERE device_id = $1
+        AND action_id = $2
+        AND device_path = $3
+      ORDER BY rotated_at DESC
+      LIMIT 3
+  )
+`
+
+type TrimLuksKeysToLast3Params struct {
+	DeviceID   string `json:"device_id"`
+	ActionID   string `json:"action_id"`
+	DevicePath string `json:"device_path"`
+}
+
+// Step 3 of LuksKeyRotated projection. Keep only the latest 3 keys
+// per (device_id, action_id, device_path) — operational requirement
+// mirrors the LPS trim policy (retain previous in case rotation was
+// mid-flight; deeper history bloats encrypted-passphrase storage).
+func (q *Queries) TrimLuksKeysToLast3(ctx context.Context, arg TrimLuksKeysToLast3Params) error {
+	_, err := q.db.Exec(ctx, trimLuksKeysToLast3, arg.DeviceID, arg.ActionID, arg.DevicePath)
+	return err
+}
+
+const updateLuksKeyRevocationStatus = `-- name: UpdateLuksKeyRevocationStatus :exec
+UPDATE luks_keys_projection
+SET revocation_status = $3,
+    revocation_error  = $4,
+    revocation_at     = $5
+WHERE device_id  = $1
+  AND action_id  = $2
+  AND is_current = TRUE
+`
+
+type UpdateLuksKeyRevocationStatusParams struct {
+	DeviceID         string     `json:"device_id"`
+	ActionID         string     `json:"action_id"`
+	RevocationStatus *string    `json:"revocation_status"`
+	RevocationError  *string    `json:"revocation_error"`
+	RevocationAt     *time.Time `json:"revocation_at"`
+}
+
+// Used by the three revocation events (Dispatched, Revoked, Failed).
+// Updates ONLY the current row for the (device_id, action_id) pair
+// — the PL/pgSQL projector keyed on `is_current = TRUE` so older
+// rotated-out rows keep their historical revocation_status.
+func (q *Queries) UpdateLuksKeyRevocationStatus(ctx context.Context, arg UpdateLuksKeyRevocationStatusParams) error {
+	_, err := q.db.Exec(ctx, updateLuksKeyRevocationStatus,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.RevocationStatus,
+		arg.RevocationError,
+		arg.RevocationAt,
+	)
+	return err
 }
 
 const validateAndConsumeLuksToken = `-- name: ValidateAndConsumeLuksToken :one
