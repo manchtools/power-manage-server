@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const countTokens = `-- name: CountTokens :one
@@ -117,6 +118,69 @@ func (q *Queries) GetValidToken(ctx context.Context, valueHash string) (TokensPr
 	return i, err
 }
 
+const incrementTokenUseProjection = `-- name: IncrementTokenUseProjection :exec
+UPDATE tokens_projection
+SET current_uses      = current_uses + 1,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type IncrementTokenUseProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// TokenUsed handler. Uses current_uses + 1 (matches PL/pgSQL); a
+// duplicate event from the reconciler would erroneously bump the
+// counter twice without the projection_version guard, so the guard
+// is load-bearing here, not just defensive.
+func (q *Queries) IncrementTokenUseProjection(ctx context.Context, arg IncrementTokenUseProjectionParams) error {
+	_, err := q.db.Exec(ctx, incrementTokenUseProjection, arg.ID, arg.ProjectionVersion)
+	return err
+}
+
+const insertTokenProjection = `-- name: InsertTokenProjection :exec
+INSERT INTO tokens_projection (
+    id, value_hash, name, one_time, max_uses, expires_at,
+    created_at, created_by, owner_id, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertTokenProjectionParams struct {
+	ID                string     `json:"id"`
+	ValueHash         string     `json:"value_hash"`
+	Name              string     `json:"name"`
+	OneTime           bool       `json:"one_time"`
+	MaxUses           int32      `json:"max_uses"`
+	ExpiresAt         *time.Time `json:"expires_at"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	OwnerID           *string    `json:"owner_id"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// TokenCreated handler. ON CONFLICT DO NOTHING for replay safety —
+// the reconciler may re-deliver the event; if a row already exists
+// under the same id, leave it alone. Composite-key partials
+// (TokenRenamed/Used/etc) own subsequent mutations.
+func (q *Queries) InsertTokenProjection(ctx context.Context, arg InsertTokenProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertTokenProjection,
+		arg.ID,
+		arg.ValueHash,
+		arg.Name,
+		arg.OneTime,
+		arg.MaxUses,
+		arg.ExpiresAt,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.OwnerID,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
 const listActiveTokens = `-- name: ListActiveTokens :many
 SELECT id, value_hash, name, one_time, max_uses, current_uses, expires_at, created_at, created_by, disabled, is_deleted, projection_version, owner_id FROM tokens_projection
 WHERE is_deleted = FALSE
@@ -212,4 +276,66 @@ func (q *Queries) ListTokens(ctx context.Context, arg ListTokensParams) ([]Token
 		return nil, err
 	}
 	return items, nil
+}
+
+const renameTokenProjection = `-- name: RenameTokenProjection :exec
+UPDATE tokens_projection
+SET name              = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type RenameTokenProjectionParams struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// TokenRenamed handler. projection_version guard rejects stale
+// reconciler replays.
+func (q *Queries) RenameTokenProjection(ctx context.Context, arg RenameTokenProjectionParams) error {
+	_, err := q.db.Exec(ctx, renameTokenProjection, arg.ID, arg.Name, arg.ProjectionVersion)
+	return err
+}
+
+const setTokenDisabledProjection = `-- name: SetTokenDisabledProjection :exec
+UPDATE tokens_projection
+SET disabled          = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SetTokenDisabledProjectionParams struct {
+	ID                string `json:"id"`
+	Disabled          bool   `json:"disabled"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// TokenDisabled / TokenEnabled handler — same shape, parameterised
+// on the disabled bool. Listener picks the bool per event_type.
+func (q *Queries) SetTokenDisabledProjection(ctx context.Context, arg SetTokenDisabledProjectionParams) error {
+	_, err := q.db.Exec(ctx, setTokenDisabledProjection, arg.ID, arg.Disabled, arg.ProjectionVersion)
+	return err
+}
+
+const softDeleteTokenProjection = `-- name: SoftDeleteTokenProjection :exec
+UPDATE tokens_projection
+SET is_deleted        = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type SoftDeleteTokenProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// TokenDeleted handler. Marks the row deleted; row stays so audit
+// queries can resolve token names by id.
+func (q *Queries) SoftDeleteTokenProjection(ctx context.Context, arg SoftDeleteTokenProjectionParams) error {
+	_, err := q.db.Exec(ctx, softDeleteTokenProjection, arg.ID, arg.ProjectionVersion)
+	return err
 }
