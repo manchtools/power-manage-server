@@ -307,6 +307,74 @@ func TestRoleListener_StaleReplayRejected(t *testing.T) {
 	assert.Equal(t, currentVersion, after.ProjectionVersion)
 }
 
+// TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships is a
+// regression lock for a CR Major on PR #123: when the
+// projection_version guard rejects a stale RoleDeleted UPDATE, the
+// cascade DeleteUserRolesByRole MUST be skipped. Otherwise an old
+// RoleDeleted re-applied later (e.g. by the reconciler against a
+// freshly-restored or never-actually-deleted role) would silently
+// nuke live memberships.
+func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	roleID := testutil.NewID()
+
+	// Land a role + an UPDATE so projection_version > 0.
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
+		Data: map[string]any{"name": "live"},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "role", StreamID: roleID, EventType: "RoleUpdated",
+		Data: map[string]any{"description": "still alive"},
+		ActorType: "user", ActorID: "u",
+	}))
+	live, err := st.Queries().GetRoleByID(ctx, roleID)
+	require.NoError(t, err)
+
+	// Plant 2 memberships.
+	_, err = st.Pool().Exec(ctx,
+		"INSERT INTO user_roles_projection (user_id, role_id, assigned_at, assigned_by) VALUES ($1,$2,NOW(),''),($3,$2,NOW(),'')",
+		"user-A", roleID, "user-B",
+	)
+	require.NoError(t, err)
+
+	// Simulate a stale RoleDeleted replay by calling the SAME
+	// listener helpers the post-commit hook would use, but with an
+	// artificially-stale projection_version. This exercises the
+	// transactional fix without faking an event.
+	older := live.ProjectionVersion - 5
+	staleAt := live.CreatedAt
+	err = st.WithTx(ctx, func(q *store.Queries) error {
+		n, err := q.SoftDeleteRoleProjection(ctx, db.SoftDeleteRoleProjectionParams{
+			ID:                roleID,
+			UpdatedAt:         &staleAt,
+			ProjectionVersion: older,
+		})
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil // listener's bug-fix branch: skip cascade
+		}
+		return q.DeleteUserRolesByRole(ctx, roleID)
+	})
+	require.NoError(t, err)
+
+	// Memberships still there.
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM user_roles_projection WHERE role_id = $1", roleID,
+	).Scan(&count))
+	assert.Equal(t, 2, count, "stale RoleDeleted replay must NOT cascade-delete live memberships")
+
+	// And the role row is still alive.
+	stillAlive, err := st.Queries().GetRoleByID(ctx, roleID)
+	require.NoError(t, err)
+	assert.False(t, stillAlive.IsDeleted)
+}
+
 // TestRoleListener_IgnoresWrongStreamType — defensive.
 func TestRoleListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)

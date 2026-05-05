@@ -253,7 +253,7 @@ func (q *Queries) ListUserIDsWithRole(ctx context.Context, roleID string) ([]str
 	return items, nil
 }
 
-const softDeleteRoleProjection = `-- name: SoftDeleteRoleProjection :exec
+const softDeleteRoleProjection = `-- name: SoftDeleteRoleProjection :execrows
 UPDATE roles_projection
 SET is_deleted        = TRUE,
     updated_at        = $2,
@@ -272,9 +272,17 @@ type SoftDeleteRoleProjectionParams struct {
 // leaves the row so the audit log resolves role names. Listener
 // pairs this with DeleteUserRolesByRole inside store.WithTx so the
 // projection never observes "role deleted but memberships remain".
-func (q *Queries) SoftDeleteRoleProjection(ctx context.Context, arg SoftDeleteRoleProjectionParams) error {
-	_, err := q.db.Exec(ctx, softDeleteRoleProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
-	return err
+// Returns rows-affected so the listener can SKIP the cascade
+// DeleteUserRolesByRole when the projection_version guard rejects
+// a stale replay; otherwise an old RoleDeleted re-applied by the
+// reconciler would silently nuke a freshly-restored role's
+// memberships.
+func (q *Queries) SoftDeleteRoleProjection(ctx context.Context, arg SoftDeleteRoleProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteRoleProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateRoleProjection = `-- name: UpdateRoleProjection :exec

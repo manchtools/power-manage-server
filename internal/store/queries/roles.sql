@@ -59,11 +59,16 @@ SET name              = COALESCE(sqlc.narg('name')::TEXT, name),
 WHERE id = sqlc.arg('id')
   AND projection_version < sqlc.arg('projection_version');
 
--- name: SoftDeleteRoleProjection :exec
+-- name: SoftDeleteRoleProjection :execrows
 -- RoleDeleted handler — first half. Marks the role as deleted but
 -- leaves the row so the audit log resolves role names. Listener
 -- pairs this with DeleteUserRolesByRole inside store.WithTx so the
 -- projection never observes "role deleted but memberships remain".
+-- Returns rows-affected so the listener can SKIP the cascade
+-- DeleteUserRolesByRole when the projection_version guard rejects
+-- a stale replay; otherwise an old RoleDeleted re-applied by the
+-- reconciler would silently nuke a freshly-restored role's
+-- memberships.
 UPDATE roles_projection
 SET is_deleted        = TRUE,
     updated_at        = $2,

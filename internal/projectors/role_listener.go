@@ -93,12 +93,23 @@ func applyRoleUpdated(ctx context.Context, st *store.Store, logger *slog.Logger,
 func applyRoleDeleted(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
 	roleID := e.StreamID
 	if err := st.WithTx(ctx, func(q *store.Queries) error {
-		if err := q.SoftDeleteRoleProjection(ctx, db.SoftDeleteRoleProjectionParams{
+		// SoftDeleteRoleProjection returns rows-affected. If the
+		// projection_version guard rejected the UPDATE (stale
+		// reconciler replay, or row already at a newer version), we
+		// must NOT cascade the membership delete — otherwise an old
+		// RoleDeleted re-applied later would silently nuke a
+		// freshly-restored role's memberships. CR caught this on PR
+		// #123.
+		n, err := q.SoftDeleteRoleProjection(ctx, db.SoftDeleteRoleProjectionParams{
 			ID:                roleID,
 			UpdatedAt:         &e.OccurredAt,
 			ProjectionVersion: deref(e.SequenceNum),
-		}); err != nil {
+		})
+		if err != nil {
 			return err
+		}
+		if n == 0 {
+			return nil
 		}
 		return q.DeleteUserRolesByRole(ctx, roleID)
 	}); err != nil {
