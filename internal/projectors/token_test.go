@@ -94,13 +94,20 @@ func TestTokenRenamedFromEvent_Pure(t *testing.T) {
 	_, err = projectors.TokenRenamedFromEvent(store.PersistedEvent{
 		StreamType: "user", EventType: "TokenRenamed",
 	})
-	assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
+	assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent), "wrong stream_type → ErrIgnoredEvent")
+
+	_, err = projectors.TokenRenamedFromEvent(store.PersistedEvent{
+		StreamType: "token", EventType: "TokenCreated",
+	})
+	assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent), "wrong event_type → ErrIgnoredEvent")
 
 	_, err = projectors.TokenRenamedFromEvent(store.PersistedEvent{
 		StreamType: "token", StreamID: "tok-1", EventType: "TokenRenamed",
 		Data: jsonOrFail(t, map[string]any{}),
 	})
 	require.Error(t, err, "missing name is a validation error")
+	assert.False(t, errors.Is(err, projectors.ErrIgnoredEvent),
+		"validation failure must NOT be silently swallowed by the listener wrapper")
 }
 
 // TestTokenListener_CreateRenameUseDisableEnableDeleteLifecycle walks
