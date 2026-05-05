@@ -22,6 +22,17 @@ func (q *Queries) CountIdentityLinksForUser(ctx context.Context, userID string) 
 	return count, err
 }
 
+const deleteIdentityLinkByID = `-- name: DeleteIdentityLinkByID :exec
+DELETE FROM identity_links_projection WHERE id = $1
+`
+
+// IdentityUnlinked handler. Stream_id IS the link id (set by the
+// handler that emitted IdentityLinked).
+func (q *Queries) DeleteIdentityLinkByID(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, deleteIdentityLinkByID, id)
+	return err
+}
+
 const getIdentityLinkByID = `-- name: GetIdentityLinkByID :one
 SELECT id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at, projection_version FROM identity_links_projection
 WHERE id = $1
@@ -226,4 +237,82 @@ func (q *Queries) ListLinkedProviderIDsForUser(ctx context.Context, userID strin
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateIdentityLinkLogin = `-- name: UpdateIdentityLinkLogin :exec
+UPDATE identity_links_projection
+SET last_login_at = $3,
+    external_email = COALESCE(NULLIF($4::TEXT, ''), external_email),
+    external_name = COALESCE(NULLIF($5::TEXT, ''), external_name),
+    projection_version = $6
+WHERE provider_id = $1
+  AND external_id = $2
+  AND projection_version < $6
+`
+
+type UpdateIdentityLinkLoginParams struct {
+	ProviderID        string     `json:"provider_id"`
+	ExternalID        string     `json:"external_id"`
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	Column4           string     `json:"column_4"`
+	Column5           string     `json:"column_5"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// IdentityLinkLoginUpdated handler. Empty external_email /
+// external_name preserve existing (NULLIF semantics) — the handler
+// emits this on every successful SSO login but doesn't always carry
+// email/name updates.
+func (q *Queries) UpdateIdentityLinkLogin(ctx context.Context, arg UpdateIdentityLinkLoginParams) error {
+	_, err := q.db.Exec(ctx, updateIdentityLinkLogin,
+		arg.ProviderID,
+		arg.ExternalID,
+		arg.LastLoginAt,
+		arg.Column4,
+		arg.Column5,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const upsertIdentityLink = `-- name: UpsertIdentityLink :exec
+INSERT INTO identity_links_projection (
+    id, user_id, provider_id, external_id,
+    external_email, external_name,
+    linked_at, last_login_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+ON CONFLICT (provider_id, external_id) DO UPDATE SET
+    external_email = EXCLUDED.external_email,
+    external_name = EXCLUDED.external_name,
+    last_login_at = EXCLUDED.last_login_at,
+    projection_version = EXCLUDED.projection_version
+`
+
+type UpsertIdentityLinkParams struct {
+	ID                string    `json:"id"`
+	UserID            string    `json:"user_id"`
+	ProviderID        string    `json:"provider_id"`
+	ExternalID        string    `json:"external_id"`
+	ExternalEmail     string    `json:"external_email"`
+	ExternalName      string    `json:"external_name"`
+	LinkedAt          time.Time `json:"linked_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// IdentityLinked handler. ON CONFLICT (provider_id, external_id) DO
+// UPDATE matches the PL/pgSQL projector — re-linking the same
+// external identity (e.g. on next login) refreshes external_email,
+// external_name, and last_login_at without minting a new row.
+func (q *Queries) UpsertIdentityLink(ctx context.Context, arg UpsertIdentityLinkParams) error {
+	_, err := q.db.Exec(ctx, upsertIdentityLink,
+		arg.ID,
+		arg.UserID,
+		arg.ProviderID,
+		arg.ExternalID,
+		arg.ExternalEmail,
+		arg.ExternalName,
+		arg.LinkedAt,
+		arg.ProjectionVersion,
+	)
+	return err
 }

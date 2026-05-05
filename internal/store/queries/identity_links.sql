@@ -30,3 +30,38 @@ SELECT il.*, u.has_password
 FROM identity_links_projection il
 JOIN users_projection u ON u.id = il.user_id
 WHERE il.provider_id = $1 AND u.is_deleted = FALSE;
+
+-- name: UpsertIdentityLink :exec
+-- IdentityLinked handler. ON CONFLICT (provider_id, external_id) DO
+-- UPDATE matches the PL/pgSQL projector — re-linking the same
+-- external identity (e.g. on next login) refreshes external_email,
+-- external_name, and last_login_at without minting a new row.
+INSERT INTO identity_links_projection (
+    id, user_id, provider_id, external_id,
+    external_email, external_name,
+    linked_at, last_login_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
+ON CONFLICT (provider_id, external_id) DO UPDATE SET
+    external_email = EXCLUDED.external_email,
+    external_name = EXCLUDED.external_name,
+    last_login_at = EXCLUDED.last_login_at,
+    projection_version = EXCLUDED.projection_version;
+
+-- name: UpdateIdentityLinkLogin :exec
+-- IdentityLinkLoginUpdated handler. Empty external_email /
+-- external_name preserve existing (NULLIF semantics) — the handler
+-- emits this on every successful SSO login but doesn't always carry
+-- email/name updates.
+UPDATE identity_links_projection
+SET last_login_at = $3,
+    external_email = COALESCE(NULLIF($4::TEXT, ''), external_email),
+    external_name = COALESCE(NULLIF($5::TEXT, ''), external_name),
+    projection_version = $6
+WHERE provider_id = $1
+  AND external_id = $2
+  AND projection_version < $6;
+
+-- name: DeleteIdentityLinkByID :exec
+-- IdentityUnlinked handler. Stream_id IS the link id (set by the
+-- handler that emitted IdentityLinked).
+DELETE FROM identity_links_projection WHERE id = $1;
