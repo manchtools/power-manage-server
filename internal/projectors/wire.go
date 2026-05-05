@@ -60,7 +60,11 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "token_projector"),
 	))
-	// Subsequent ports under #104–#106 add their listener here.
+	st.RegisterEventListener(IdentityProviderListener(
+		st,
+		loggerFor(logger, "identity_provider_projector"),
+	))
+	// Subsequent ports under #105–#106 add their listener here.
 }
 
 // loggerFor returns a sub-logger tagged with the projector

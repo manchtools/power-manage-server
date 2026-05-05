@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const countIdentityProviders = `-- name: CountIdentityProviders :one
@@ -19,6 +20,29 @@ func (q *Queries) CountIdentityProviders(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteIdentityLinksByProvider = `-- name: DeleteIdentityLinksByProvider :exec
+DELETE FROM identity_links_projection WHERE provider_id = $1
+`
+
+// IdentityProviderDeleted handler — second half (cascade). Run only
+// if SoftDeleteIdentityProviderProjection affected a row.
+func (q *Queries) DeleteIdentityLinksByProvider(ctx context.Context, providerID string) error {
+	_, err := q.db.Exec(ctx, deleteIdentityLinksByProvider, providerID)
+	return err
+}
+
+const deleteSCIMGroupMappingsByProvider = `-- name: DeleteSCIMGroupMappingsByProvider :exec
+DELETE FROM scim_group_mapping_projection WHERE provider_id = $1
+`
+
+// IdentityProviderDeleted handler — third half (cascade). Also reused
+// by IdentityProviderSCIMDisabled (where SCIM mapping cleanup is the
+// only side-effect besides flipping scim_enabled).
+func (q *Queries) DeleteSCIMGroupMappingsByProvider(ctx context.Context, providerID string) error {
+	_, err := q.db.Exec(ctx, deleteSCIMGroupMappingsByProvider, providerID)
+	return err
 }
 
 const getIdentityProviderByID = `-- name: GetIdentityProviderByID :one
@@ -155,6 +179,71 @@ func (q *Queries) GetLinkedProvidersDisablingPassword(ctx context.Context, userI
 	return items, nil
 }
 
+const insertIdentityProviderProjection = `-- name: InsertIdentityProviderProjection :exec
+INSERT INTO identity_providers_projection (
+    id, name, slug, provider_type, enabled,
+    client_id, client_secret_encrypted,
+    issuer_url, authorization_url, token_url, userinfo_url,
+    scopes, auto_create_users, auto_link_by_email,
+    default_role_id, disable_password_for_linked,
+    group_claim, group_mapping,
+    created_at, created_by, updated_at, projection_version
+) VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $18, $20)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertIdentityProviderProjectionParams struct {
+	ID                       string    `json:"id"`
+	Name                     string    `json:"name"`
+	Slug                     string    `json:"slug"`
+	ProviderType             string    `json:"provider_type"`
+	ClientID                 string    `json:"client_id"`
+	ClientSecretEncrypted    string    `json:"client_secret_encrypted"`
+	IssuerUrl                string    `json:"issuer_url"`
+	AuthorizationUrl         string    `json:"authorization_url"`
+	TokenUrl                 string    `json:"token_url"`
+	UserinfoUrl              string    `json:"userinfo_url"`
+	Scopes                   []string  `json:"scopes"`
+	AutoCreateUsers          bool      `json:"auto_create_users"`
+	AutoLinkByEmail          bool      `json:"auto_link_by_email"`
+	DefaultRoleID            string    `json:"default_role_id"`
+	DisablePasswordForLinked bool      `json:"disable_password_for_linked"`
+	GroupClaim               string    `json:"group_claim"`
+	GroupMapping             []byte    `json:"group_mapping"`
+	CreatedAt                time.Time `json:"created_at"`
+	CreatedBy                string    `json:"created_by"`
+	ProjectionVersion        int64     `json:"projection_version"`
+}
+
+// IdentityProviderCreated handler. ON CONFLICT DO NOTHING for replay
+// safety (reconciler may re-deliver the event). All COALESCE defaults
+// are normalized to zero values at the listener layer.
+func (q *Queries) InsertIdentityProviderProjection(ctx context.Context, arg InsertIdentityProviderProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertIdentityProviderProjection,
+		arg.ID,
+		arg.Name,
+		arg.Slug,
+		arg.ProviderType,
+		arg.ClientID,
+		arg.ClientSecretEncrypted,
+		arg.IssuerUrl,
+		arg.AuthorizationUrl,
+		arg.TokenUrl,
+		arg.UserinfoUrl,
+		arg.Scopes,
+		arg.AutoCreateUsers,
+		arg.AutoLinkByEmail,
+		arg.DefaultRoleID,
+		arg.DisablePasswordForLinked,
+		arg.GroupClaim,
+		arg.GroupMapping,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
 const listEnabledIdentityProviders = `-- name: ListEnabledIdentityProviders :many
 SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
 WHERE is_deleted = FALSE AND enabled = TRUE
@@ -265,4 +354,191 @@ func (q *Queries) ListIdentityProviders(ctx context.Context, arg ListIdentityPro
 		return nil, err
 	}
 	return items, nil
+}
+
+const rotateIdentityProviderSCIMToken = `-- name: RotateIdentityProviderSCIMToken :exec
+UPDATE identity_providers_projection
+SET scim_token_hash = $2,
+    updated_at = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type RotateIdentityProviderSCIMTokenParams struct {
+	ID                string    `json:"id"`
+	ScimTokenHash     string    `json:"scim_token_hash"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// IdentityProviderSCIMTokenRotated handler. Updates only the hash
+// (does not touch scim_enabled, so accidental rotation on a disabled
+// provider stays disabled).
+func (q *Queries) RotateIdentityProviderSCIMToken(ctx context.Context, arg RotateIdentityProviderSCIMTokenParams) error {
+	_, err := q.db.Exec(ctx, rotateIdentityProviderSCIMToken,
+		arg.ID,
+		arg.ScimTokenHash,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const setIdentityProviderSCIMDisabled = `-- name: SetIdentityProviderSCIMDisabled :execrows
+UPDATE identity_providers_projection
+SET scim_enabled = FALSE,
+    scim_token_hash = '',
+    updated_at = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SetIdentityProviderSCIMDisabledParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// IdentityProviderSCIMDisabled handler. Returns rows-affected so the
+// listener can SHORT-CIRCUIT the SCIM mapping cascade DELETE on stale
+// replay.
+func (q *Queries) SetIdentityProviderSCIMDisabled(ctx context.Context, arg SetIdentityProviderSCIMDisabledParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setIdentityProviderSCIMDisabled, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setIdentityProviderSCIMEnabled = `-- name: SetIdentityProviderSCIMEnabled :exec
+UPDATE identity_providers_projection
+SET scim_enabled = TRUE,
+    scim_token_hash = $2,
+    updated_at = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type SetIdentityProviderSCIMEnabledParams struct {
+	ID                string    `json:"id"`
+	ScimTokenHash     string    `json:"scim_token_hash"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// IdentityProviderSCIMEnabled handler. scim_token_hash is required
+// on enable — the handler never emits this event without one.
+func (q *Queries) SetIdentityProviderSCIMEnabled(ctx context.Context, arg SetIdentityProviderSCIMEnabledParams) error {
+	_, err := q.db.Exec(ctx, setIdentityProviderSCIMEnabled,
+		arg.ID,
+		arg.ScimTokenHash,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const softDeleteIdentityProviderProjection = `-- name: SoftDeleteIdentityProviderProjection :execrows
+UPDATE identity_providers_projection
+SET is_deleted = TRUE,
+    enabled = FALSE,
+    scim_enabled = FALSE,
+    updated_at = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteIdentityProviderProjectionParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// IdentityProviderDeleted handler — first half. Returns rows-affected
+// so the listener can SHORT-CIRCUIT the cascade DELETEs when
+// projection_version guard rejects a stale replay (per the
+// multi-write-asymmetric-guard discipline that CR caught on #101).
+func (q *Queries) SoftDeleteIdentityProviderProjection(ctx context.Context, arg SoftDeleteIdentityProviderProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteIdentityProviderProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateIdentityProviderProjection = `-- name: UpdateIdentityProviderProjection :exec
+UPDATE identity_providers_projection
+SET name = COALESCE($1::TEXT, name),
+    enabled = COALESCE($2::BOOLEAN, enabled),
+    client_id = COALESCE($3::TEXT, client_id),
+    client_secret_encrypted = COALESCE($4::TEXT, client_secret_encrypted),
+    issuer_url = COALESCE($5::TEXT, issuer_url),
+    authorization_url = COALESCE($6::TEXT, authorization_url),
+    token_url = COALESCE($7::TEXT, token_url),
+    userinfo_url = COALESCE($8::TEXT, userinfo_url),
+    scopes = COALESCE($9::TEXT[], scopes),
+    auto_create_users = COALESCE($10::BOOLEAN, auto_create_users),
+    auto_link_by_email = COALESCE($11::BOOLEAN, auto_link_by_email),
+    default_role_id = COALESCE($12::TEXT, default_role_id),
+    disable_password_for_linked = COALESCE($13::BOOLEAN, disable_password_for_linked),
+    group_claim = COALESCE($14::TEXT, group_claim),
+    group_mapping = COALESCE($15::JSONB, group_mapping),
+    updated_at = $16,
+    projection_version = $17
+WHERE id = $18
+  AND projection_version < $17
+`
+
+type UpdateIdentityProviderProjectionParams struct {
+	Name                     *string   `json:"name"`
+	Enabled                  *bool     `json:"enabled"`
+	ClientID                 *string   `json:"client_id"`
+	ClientSecretEncrypted    *string   `json:"client_secret_encrypted"`
+	IssuerUrl                *string   `json:"issuer_url"`
+	AuthorizationUrl         *string   `json:"authorization_url"`
+	TokenUrl                 *string   `json:"token_url"`
+	UserinfoUrl              *string   `json:"userinfo_url"`
+	Scopes                   []string  `json:"scopes"`
+	AutoCreateUsers          *bool     `json:"auto_create_users"`
+	AutoLinkByEmail          *bool     `json:"auto_link_by_email"`
+	DefaultRoleID            *string   `json:"default_role_id"`
+	DisablePasswordForLinked *bool     `json:"disable_password_for_linked"`
+	GroupClaim               *string   `json:"group_claim"`
+	GroupMapping             []byte    `json:"group_mapping"`
+	UpdatedAt                time.Time `json:"updated_at"`
+	ProjectionVersion        int64     `json:"projection_version"`
+	ID                       string    `json:"id"`
+}
+
+// IdentityProviderUpdated handler. nil pointer params land as SQL NULL
+// which COALESCE preserves the existing column value. The listener
+// collapses empty-string to nil for NULLIF-shaped fields (client_id,
+// client_secret_encrypted, issuer_url) before dispatch. Stale-replay
+// guard via projection_version.
+func (q *Queries) UpdateIdentityProviderProjection(ctx context.Context, arg UpdateIdentityProviderProjectionParams) error {
+	_, err := q.db.Exec(ctx, updateIdentityProviderProjection,
+		arg.Name,
+		arg.Enabled,
+		arg.ClientID,
+		arg.ClientSecretEncrypted,
+		arg.IssuerUrl,
+		arg.AuthorizationUrl,
+		arg.TokenUrl,
+		arg.UserinfoUrl,
+		arg.Scopes,
+		arg.AutoCreateUsers,
+		arg.AutoLinkByEmail,
+		arg.DefaultRoleID,
+		arg.DisablePasswordForLinked,
+		arg.GroupClaim,
+		arg.GroupMapping,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	return err
 }
