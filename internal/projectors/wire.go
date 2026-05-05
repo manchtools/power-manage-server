@@ -44,7 +44,11 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "luks_key_projector"),
 	))
-	// Subsequent ports under #100–#106 add their listener here.
+	st.RegisterEventListener(ServerSettingsListener(
+		st,
+		loggerFor(logger, "server_settings_projector"),
+	))
+	// Subsequent ports under #101–#106 add their listener here.
 }
 
 // loggerFor returns a sub-logger tagged with the projector

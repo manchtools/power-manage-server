@@ -7,6 +7,7 @@ package generated
 
 import (
 	"context"
+	"time"
 )
 
 const getServerSettings = `-- name: GetServerSettings :one
@@ -24,4 +25,38 @@ func (q *Queries) GetServerSettings(ctx context.Context) (ServerSettingsProjecti
 		&i.ProjectionVersion,
 	)
 	return i, err
+}
+
+const updateServerSettings = `-- name: UpdateServerSettings :exec
+UPDATE server_settings_projection
+SET user_provisioning_enabled = COALESCE($1::BOOLEAN, user_provisioning_enabled),
+    ssh_access_for_all        = COALESCE($2::BOOLEAN, ssh_access_for_all),
+    updated_at                = $3,
+    projection_version        = $4
+WHERE id = 'global'
+  AND projection_version < $4
+`
+
+type UpdateServerSettingsParams struct {
+	UserProvisioningEnabled *bool     `json:"user_provisioning_enabled"`
+	SshAccessForAll         *bool     `json:"ssh_access_for_all"`
+	UpdatedAt               time.Time `json:"updated_at"`
+	ProjectionVersion       int64     `json:"projection_version"`
+}
+
+// Replaces the deleted PL/pgSQL project_server_settings_event
+// function. COALESCE preserves existing column values when the
+// event payload omits a field — sqlc.narg yields nullable *bool
+// params, and the listener passes nil for any field the event left
+// out, which COALESCE collapses to the existing value. The
+// `projection_version` guard protects against stale reconciler
+// replays clobbering a fresher state.
+func (q *Queries) UpdateServerSettings(ctx context.Context, arg UpdateServerSettingsParams) error {
+	_, err := q.db.Exec(ctx, updateServerSettings,
+		arg.UserProvisioningEnabled,
+		arg.SshAccessForAll,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	return err
 }
