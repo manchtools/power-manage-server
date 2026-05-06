@@ -189,8 +189,12 @@ func TestRebuildAll_PortedToken_RoundTrip(t *testing.T) {
 	_, err = st.Pool().Exec(ctx, "TRUNCATE tokens_projection CASCADE")
 	require.NoError(t, err)
 
+	_, err = st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
+	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
+
 	res, err := st.RebuildAll(ctx, "tokens")
 	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
 	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
 
 	after, err := st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
@@ -237,8 +241,14 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 	_, err = st.Pool().Exec(ctx, "TRUNCATE user_selections_projection CASCADE")
 	require.NoError(t, err)
 
+	_, err = st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
+		DeviceID: deviceID, SourceType: "user_group", SourceID: groupID,
+	})
+	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
+
 	res, err := st.RebuildAll(ctx, "user_selections")
 	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
 	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
 
 	after, err := st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
