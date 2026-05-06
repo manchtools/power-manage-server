@@ -195,6 +195,7 @@ func TestRebuildAll_PortedToken_RoundTrip(t *testing.T) {
 	res, err := st.RebuildAll(ctx, "tokens")
 	require.NoError(t, err)
 	require.Len(t, res.Targets, 1)
+	assert.Equal(t, "tokens", res.Targets[0].Name)
 	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
 
 	after, err := st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
@@ -249,6 +250,7 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 	res, err := st.RebuildAll(ctx, "user_selections")
 	require.NoError(t, err)
 	require.Len(t, res.Targets, 1)
+	assert.Equal(t, "user_selections", res.Targets[0].Name)
 	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
 
 	after, err := st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
