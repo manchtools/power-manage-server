@@ -269,6 +269,24 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 // production-scale event store (10k–100k events) this completes in
 // seconds — fine for an emergency-rebuild operator command.
 func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
+	// Resolve the dispatch strategy BEFORE issuing any TRUNCATE.
+	// TRUNCATE takes ACCESS EXCLUSIVE on every named table; even
+	// though the outer rebuild transaction rolls those locks back
+	// on error, holding them briefly still blocks readers and
+	// writers and makes safety contingent on the surrounding tx.
+	// A miswired ported target — no Go applier registered AND no
+	// PL/pgSQL Function — would otherwise lock the projection
+	// before failing. dispatchViaPlpgsql with an empty Function
+	// name builds valid SQL that returns rows without invoking any
+	// projector, so the operator would see "rebuild succeeded"
+	// against the freshly truncated table; this guard exists to
+	// turn that silent-no-op (the #125 footgun) into a clear
+	// error.
+	apply := s.rebuildApplyFor(t.Name)
+	if apply == nil && t.Function == "" {
+		return 0, fmt.Errorf("rebuild target %q has no PL/pgSQL Function and no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+	}
+
 	for _, table := range t.Tables {
 		stmt := "TRUNCATE TABLE " + table
 		if t.Cascade {
@@ -279,18 +297,8 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 		}
 	}
 
-	if apply := s.rebuildApplyFor(t.Name); apply != nil {
+	if apply != nil {
 		return s.dispatchViaGoApplier(ctx, tx, t, apply)
-	}
-	// Defensive guard against the silent-no-op rebuild that
-	// motivated #125: if no Go applier is registered AND no PL/pgSQL
-	// Function is set, dispatchViaPlpgsql would build a SELECT with
-	// an empty function name, which is valid SQL that returns rows
-	// without invoking any projector. The TRUNCATE above has already
-	// wiped the projection, so operators would see "rebuild
-	// succeeded" against an empty table. Fail loudly instead.
-	if t.Function == "" {
-		return 0, fmt.Errorf("rebuild target %q has no PL/pgSQL Function and no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
 	}
 	return s.dispatchViaPlpgsql(ctx, tx, t)
 }

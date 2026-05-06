@@ -275,12 +275,33 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	st := testutil.SetupPostgresWithoutProjectors(t)
 	ctx := context.Background()
 
-	_, err := st.RebuildAll(ctx, "roles")
+	// Seed a row directly into the projection so we can prove the
+	// guard fires BEFORE the destructive TRUNCATE — a miswired
+	// ported target should not even briefly hold ACCESS EXCLUSIVE
+	// on roles_projection.
+	roleID := testutil.NewID()
+	_, err := st.Pool().Exec(ctx,
+		`INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, projection_version)
+		 VALUES ($1, 'guard-canary', '', ARRAY[]::TEXT[], false, NOW(), 0)`,
+		roleID,
+	)
+	require.NoError(t, err)
+
+	_, err = st.RebuildAll(ctx, "roles")
 	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
 	assert.Contains(t, err.Error(), "no PL/pgSQL Function and no Go applier registered",
 		"error must name the missing-applier failure mode so operators can wire WireAll")
 	assert.Contains(t, err.Error(), "roles",
 		"error must name the offending target")
+
+	// The canary row must still be there — the guard fail-fasts
+	// before TRUNCATE, so the projection is untouched.
+	var count int
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
+	).Scan(&count))
+	assert.Equal(t, 1, count,
+		"the guard must reject before TRUNCATE; finding zero rows means a destructive op fired before the dispatch-strategy check")
 }
 
 // TestRebuildAll_TransactionalAtomicity — if the projector function
