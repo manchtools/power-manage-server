@@ -275,10 +275,16 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	st := testutil.SetupPostgresWithoutProjectors(t)
 	ctx := context.Background()
 
-	// Seed a row directly into the projection so we can prove the
-	// guard fires BEFORE the destructive TRUNCATE — a miswired
-	// ported target should not even briefly hold ACCESS EXCLUSIVE
-	// on roles_projection.
+	// Seed a row directly into the projection. The post-rebuild
+	// invariant we assert is that the projection is untouched as
+	// observed from an external connection — strictly, this only
+	// catches the user-visible failure mode. The whole RebuildAll
+	// runs inside pgx.BeginFunc, so a hypothetical "TRUNCATE then
+	// error" would also roll back and look identical from the
+	// outside. The guarantee that the guard fires *before* TRUNCATE
+	// (and therefore avoids briefly holding ACCESS EXCLUSIVE on a
+	// production projection) is verified by reading runOneTarget,
+	// not by this test alone.
 	roleID := testutil.NewID()
 	_, err := st.Pool().Exec(ctx,
 		`INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, projection_version)
@@ -301,7 +307,7 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
 	).Scan(&count))
 	assert.Equal(t, 1, count,
-		"the guard must reject before TRUNCATE; finding zero rows means a destructive op fired before the dispatch-strategy check")
+		"projection must survive the failed rebuild; finding zero rows means either the guard ran too late or the outer transaction failed to roll back a destructive op")
 }
 
 // TestRebuildAll_TransactionalAtomicity — if the projector function
