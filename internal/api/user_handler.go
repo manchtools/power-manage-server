@@ -72,6 +72,21 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 
 	id := ulid.Make().String()
 
+	// Pre-check for an already-existing email so clients get a
+	// structured AlreadyExists response in the common case. The
+	// projection's UNIQUE WHERE NOT is_deleted constraint still
+	// backstops correctness against the rare race where two
+	// concurrent CreateUser calls slip past this check; that path
+	// will surface as the generic Internal error from the
+	// AppendEvent failure below, which matches the previous
+	// behaviour for true unique violations the 23505-retry loop
+	// masks. This pre-check restores AlreadyExists semantics for
+	// the typical (non-racing) path that clients want to
+	// localize.
+	if _, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email); err == nil {
+		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
+	}
+
 	// Assign Linux UID and derive username
 	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
 	if err != nil {
