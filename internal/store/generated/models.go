@@ -354,7 +354,8 @@ type OsqueryResult struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
-type ProjectionError struct {
+// Captures errors raised inside PL/pgSQL projector functions invoked via the project_event() trigger. Go projectors registered through projectors.WireAll do NOT write here — they emit slog.Warn instead. An empty table means "no PL/pgSQL projector errors", not "no projector errors of any kind". Inspect slog output for the Go side.
+type PlpgsqlProjectionError struct {
 	ID           int64      `json:"id"`
 	EventID      *uuid.UUID `json:"event_id"`
 	EventType    *string    `json:"event_type"`

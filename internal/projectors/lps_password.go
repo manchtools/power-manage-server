@@ -18,7 +18,7 @@ import (
 // The deleted PL/pgSQL projector cast `(event.data->>'rotated_at')::TIMESTAMPTZ`
 // directly. Pre-parsing in Go preserves the same shape: a parse error
 // here is the analogue of a Postgres cast failure, which the PL/pgSQL
-// version would have surfaced via the projection_errors table.
+// version would have surfaced via the plpgsql_projection_errors table.
 type LpsPasswordRotatedPayload struct {
 	DeviceID       string    `json:"device_id"`
 	ActionID       string    `json:"action_id"`
