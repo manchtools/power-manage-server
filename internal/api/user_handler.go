@@ -90,7 +90,11 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	if _, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email); err == nil {
 		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		h.logger.Error("failed to pre-check email uniqueness", "email", req.Msg.Email, "error", err)
+		// Don't log raw email (PII). At this point the user doesn't
+		// exist yet (we're checking IF they should), so there's no
+		// user_id either. Operators triaging this can correlate
+		// from the request_id in the surrounding handler logs.
+		h.logger.Error("failed to pre-check email uniqueness", "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check email uniqueness")
 	}
 
@@ -138,7 +142,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		// want a specific already-exists error code. For now,
 		// return a structured Internal error and log the actual
 		// cause so operators can triage.
-		h.logger.Error("failed to append UserCreated event", "user_id", id, "email", req.Msg.Email, "error", err)
+		h.logger.Error("failed to append UserCreated event", "user_id", id, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
 	}
 
@@ -156,7 +160,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			// least surface this in operator logs so the gap can be
 			// triaged before a confused user files a ticket.
 			h.logger.Error("failed to look up default User role; new user created with no roles",
-				"user_id", id, "email", req.Msg.Email, "error", err)
+				"user_id", id, "error", err)
 		}
 	}
 	for _, roleID := range roleIDs {

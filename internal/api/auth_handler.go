@@ -126,7 +126,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		)
 	}
 
-	h.logger.Info("user logged in", "user_id", user.ID, "email", user.Email)
+	h.logger.Info("user logged in", "user_id", user.ID)
 
 	protoUser := userToProto(user)
 	// Populate user roles

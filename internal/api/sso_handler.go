@@ -241,13 +241,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to verify id_token")
 	}
 
-	h.logger.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
+	h.logger.Info("SSO claims verified", "slug", req.Msg.Slug, "subject", claims.Subject)
 
 	// Link or create user
 	linker := idp.NewLinker(h.store.Queries(), &storeEventAdapter{store: h.store})
 	linkResult, err := linker.LinkOrCreate(ctx, provider, claims)
 	if err != nil {
-		h.logger.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
+		h.logger.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "subject", claims.Subject)
 		if errors.Is(err, idp.ErrNoMatchingAccount) {
 			return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, err.Error())
 		}
