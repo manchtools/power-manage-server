@@ -262,7 +262,6 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 				"user_id", linkResult.UserID,
 				"is_new", linkResult.IsNew,
 				"slug", req.Msg.Slug,
-				"email", claims.Email,
 				"subject", claims.Subject,
 			)
 			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "account not found")
