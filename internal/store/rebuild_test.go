@@ -300,8 +300,10 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	assert.Contains(t, err.Error(), "roles",
 		"error must name the offending target")
 
-	// The canary row must still be there — the guard fail-fasts
-	// before TRUNCATE, so the projection is untouched.
+	// The canary row must still be there. As called out above,
+	// this only proves the user-visible invariant (failed rebuild
+	// leaves the projection intact); strict pre-TRUNCATE ordering
+	// is verified by reading runOneTarget.
 	var count int
 	require.NoError(t, st.Pool().QueryRow(ctx,
 		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
