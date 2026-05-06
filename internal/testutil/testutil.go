@@ -64,7 +64,14 @@ func setupPostgresContainer(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("start postgres container: %v", err)
 	}
-	t.Cleanup(func() { container.Terminate(context.Background()) })
+	t.Cleanup(func() {
+		// Bound the teardown so a wedged Docker daemon cannot hang
+		// the cleanup goroutine indefinitely and stall the rest of
+		// the suite. CR caught this on PR #132.
+		termCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = container.Terminate(termCtx)
+	})
 
 	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
