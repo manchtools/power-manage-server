@@ -42,9 +42,12 @@ func NewID() string {
 	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }
 
-// SetupPostgres starts a PostgreSQL testcontainer and returns a connected Store.
-// The container is stopped when the test completes.
-func SetupPostgres(t *testing.T) *store.Store {
+// setupPostgresContainer is the shared bootstrap used by both public
+// helpers. Production-parity bits (image tag, wait strategy, cleanup
+// hooks) live here exactly once so the two helpers cannot drift —
+// e.g. an image bump applies uniformly. Returns the connected Store;
+// callers decide whether to wire projectors.
+func setupPostgresContainer(t *testing.T) *store.Store {
 	t.Helper()
 	ctx := context.Background()
 
@@ -73,6 +76,14 @@ func SetupPostgres(t *testing.T) *store.Store {
 		t.Fatalf("create store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	return st
+}
+
+// SetupPostgres starts a PostgreSQL testcontainer and returns a connected Store.
+// The container is stopped when the test completes.
+func SetupPostgres(t *testing.T) *store.Store {
+	t.Helper()
+	st := setupPostgresContainer(t)
 
 	// Wire the same Go-side projector listeners that production
 	// boot wires in cmd/control/main.go. Without this, handlers
@@ -96,35 +107,7 @@ func SetupPostgres(t *testing.T) *store.Store {
 // helper for tests that read projection state.
 func SetupPostgresWithoutProjectors(t *testing.T) *store.Store {
 	t.Helper()
-	ctx := context.Background()
-
-	container, err := postgres.Run(ctx,
-		"postgres:17-alpine",
-		postgres.WithDatabase("power_manage_test"),
-		postgres.WithUsername("test"),
-		postgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second)),
-	)
-	if err != nil {
-		t.Fatalf("start postgres container: %v", err)
-	}
-	t.Cleanup(func() { container.Terminate(context.Background()) })
-
-	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("get connection string: %v", err)
-	}
-
-	st, err := store.New(ctx, connStr)
-	if err != nil {
-		t.Fatalf("create store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-
-	return st
+	return setupPostgresContainer(t)
 }
 
 // CreateTestUser creates a user via events and returns the user ID.
