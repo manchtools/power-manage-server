@@ -70,7 +70,13 @@ func setupPostgresContainer(t *testing.T) *store.Store {
 		// the suite. CR caught this on PR #132.
 		termCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = container.Terminate(termCtx)
+		if err := container.Terminate(termCtx); err != nil {
+			// Log without failing the test — the test result is
+			// already finalized at cleanup time. Surfacing the error
+			// gives operators a chance to spot leaked containers or
+			// flaky Docker teardown.
+			t.Logf("testutil: terminate postgres container: %v", err)
+		}
 	})
 
 	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
