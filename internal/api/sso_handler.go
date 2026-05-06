@@ -241,13 +241,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "failed to verify id_token")
 	}
 
-	h.logger.Info("SSO claims verified", "slug", req.Msg.Slug, "email", claims.Email, "subject", claims.Subject)
+	h.logger.Info("SSO claims verified", "slug", req.Msg.Slug, "subject", claims.Subject)
 
 	// Link or create user
 	linker := idp.NewLinker(h.store.Queries(), &storeEventAdapter{store: h.store})
 	linkResult, err := linker.LinkOrCreate(ctx, provider, claims)
 	if err != nil {
-		h.logger.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "email", claims.Email)
+		h.logger.Warn("SSO user link/create failed", "error", err, "slug", req.Msg.Slug, "subject", claims.Subject)
 		if errors.Is(err, idp.ErrNoMatchingAccount) {
 			return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, err.Error())
 		}
@@ -262,7 +262,6 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 				"user_id", linkResult.UserID,
 				"is_new", linkResult.IsNew,
 				"slug", req.Msg.Slug,
-				"email", claims.Email,
 				"subject", claims.Subject,
 			)
 			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "account not found")
@@ -331,7 +330,8 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		ActorType: "user",
 		ActorID:   user.ID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "provider", provider.Slug, "error", err)
+		h.logger.Error("AUDIT GAP: failed to append UserLoggedIn event; SSO login proceeded without audit record",
+			"user_id", user.ID, "provider", provider.Slug, "error", err)
 	} else {
 		h.logger.Debug("event appended",
 			"request_id", middleware.RequestIDFromContext(ctx),

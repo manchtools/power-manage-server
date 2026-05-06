@@ -115,7 +115,8 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		ActorType:  "user",
 		ActorID:    user.ID,
 	}); err != nil {
-		h.logger.Warn("failed to append UserLoggedIn event", "user_id", user.ID, "error", err)
+		h.logger.Error("AUDIT GAP: failed to append UserLoggedIn event; password login proceeded without audit record",
+			"user_id", user.ID, "error", err)
 	} else {
 		h.logger.Debug("event appended",
 			"request_id", middleware.RequestIDFromContext(ctx),
@@ -125,7 +126,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		)
 	}
 
-	h.logger.Info("user logged in", "user_id", user.ID, "email", user.Email)
+	h.logger.Info("user logged in", "user_id", user.ID)
 
 	protoUser := userToProto(user)
 	// Populate user roles

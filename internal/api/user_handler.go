@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -72,6 +74,30 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 
 	id := ulid.Make().String()
 
+	// Pre-check for an already-existing email so clients get a
+	// structured AlreadyExists response in the common case. The
+	// projection's UNIQUE WHERE NOT is_deleted constraint still
+	// backstops correctness against the rare race where two
+	// concurrent CreateUser calls slip past this check.
+	//
+	// Distinguish three branches: row found → AlreadyExists;
+	// pgx.ErrNoRows → proceed (the email is free); any other
+	// error → surface as Internal so a transient DB problem
+	// doesn't get silently mistaken for "free to create" and
+	// then re-surface as the generic Internal from AppendEvent
+	// later — matching the established pattern in
+	// auth_handler.go:59 and sso_handler.go:179.
+	if _, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email); err == nil {
+		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		// Don't log raw email (PII). At this point the user doesn't
+		// exist yet (we're checking IF they should), so there's no
+		// user_id either. Operators triaging this can correlate
+		// from the request_id in the surrounding handler logs.
+		h.logger.Error("failed to pre-check email uniqueness", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check email uniqueness")
+	}
+
 	// Assign Linux UID and derive username
 	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
 	if err != nil {
@@ -102,7 +128,22 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		ActorID:   userCtx.ID,
 	})
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
+		// The previous code mapped EVERY AppendEvent failure to
+		// ErrEmailAlreadyExists / CodeAlreadyExists, which lied
+		// to clients on DB outages, projection-trigger violations,
+		// concurrent stream-version conflicts (which Store.AppendEvent
+		// retries internally and surfaces as "version conflict
+		// after N retries"), or any transient append failure.
+		// Detecting a true duplicate-email violation HERE is
+		// unreliable because Store.AppendEvent's internal
+		// 23505-retry loop masks the original PgError.
+		// Defer-to-handler-pre-check is the cleaner fix: callers
+		// should look up the email BEFORE AppendEvent if they
+		// want a specific already-exists error code. For now,
+		// return a structured Internal error and log the actual
+		// cause so operators can triage.
+		h.logger.Error("failed to append UserCreated event", "user_id", id, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
 	}
 
 	// Auto-assign specified roles, or default User role if none specified
@@ -112,6 +153,14 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
 		if err == nil {
 			roleIDs = []string{userRole.ID}
+		} else {
+			// The default-role lookup used to fail silently, leaving
+			// a freshly-created user with zero permissions. The user
+			// is already created so we can't fail the RPC, but at
+			// least surface this in operator logs so the gap can be
+			// triaged before a confused user files a ticket.
+			h.logger.Error("failed to look up default User role; new user created with no roles",
+				"user_id", id, "error", err)
 		}
 	}
 	for _, roleID := range roleIDs {
@@ -126,7 +175,14 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			ActorType: "user",
 			ActorID:   userCtx.ID,
 		}); err != nil {
-			slog.Warn("failed to append UserRoleAssigned event", "user_id", id, "role_id", roleID, "error", err)
+			// Escalated from Warn to Error: a UserRoleAssigned
+			// failure leaves the user with one fewer role than the
+			// caller asked for, silently. Operators triaging
+			// "user has no permissions despite being assigned the
+			// admin role" need this in journalctl ERROR output, not
+			// hidden in Warn.
+			h.logger.Error("failed to append UserRoleAssigned event; user will be missing this role",
+				"user_id", id, "role_id", roleID, "error", err)
 		}
 	}
 
@@ -240,7 +296,7 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 	// Populate inherited roles from user group memberships
 	inheritedRoles, err := h.store.Queries().ListAllInheritedRoles(ctx)
 	if err != nil {
-		slog.Warn("failed to load inherited roles", "error", err)
+		h.logger.Warn("failed to load inherited roles", "error", err)
 	} else {
 		inheritedMap := make(map[string][]*pm.InheritedRole)
 		for _, ir := range inheritedRoles {
