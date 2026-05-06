@@ -21,9 +21,11 @@
 // half-replayed against a TRUNCATE'd table.
 //
 // Once a stream type's project_<stream>_event() is ported to a Go
-// projector (#96–#106), this file's per-target Function field gets
-// flipped from a PL/pgSQL call to a Go projector invocation. The
-// callers and operator surface stay identical.
+// projector (#96–#106), the PL/pgSQL stub is dropped via a cleanup
+// migration, this target's Function field is cleared, and
+// RebuildAll dispatches through the Go applier registered via
+// projectors.WireAll → RegisterRebuildApply. The callers and
+// operator surface stay identical.
 //
 // Refs manchtools/power-manage-server#94, manchtools/power-manage-server#107.
 package store
@@ -75,11 +77,13 @@ type TargetResult struct {
 // applies both 'action' and 'definition' events because compliance-
 // policy definitions create derived action rows).
 //
-// Function is the PL/pgSQL function name that gets called per
-// matching event. During the Phase 1 migration this is
-// project_<X>_event(); once a stream type is ported (#96–#106),
-// callers swap this to a Go projector dispatcher and the PL/pgSQL
-// function is dropped from the schema.
+// Function is the PL/pgSQL function name dispatched per matching
+// event when no Go applier is registered for this target. After
+// migration 028 the three ported targets (roles, tokens,
+// user_selections) leave Function empty — RebuildAll dispatches
+// them through the Go appliers wired in projectors.WireAll. The
+// remaining unported targets still carry their project_<X>_event()
+// reference until their respective ports land.
 type rebuildTarget struct {
 	Name        string
 	Tables      []string
@@ -111,10 +115,10 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_user_event",
 	},
 	{
+		// Ported to projectors.ApplyToken via projectors.WireAll.
 		Name:        "tokens",
 		Tables:      []string{"tokens_projection"},
 		StreamTypes: []string{"token"},
-		Function:    "project_token_event",
 	},
 	{
 		Name:        "devices",
@@ -167,17 +171,17 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_assignment_event",
 	},
 	{
+		// Ported to projectors.ApplyUserSelection via projectors.WireAll.
 		Name:        "user_selections",
 		Tables:      []string{"user_selections_projection"},
 		StreamTypes: []string{"user_selection"},
-		Function:    "project_user_selection_event",
 	},
 	{
+		// Ported to projectors.ApplyRole via projectors.WireAll.
 		Name:        "roles",
 		Tables:      []string{"roles_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"role"},
-		Function:    "project_role_event",
 	},
 	{
 		Name:        "user_groups",
@@ -265,6 +269,24 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 // production-scale event store (10k–100k events) this completes in
 // seconds — fine for an emergency-rebuild operator command.
 func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
+	// Resolve the dispatch strategy BEFORE issuing any TRUNCATE.
+	// TRUNCATE takes ACCESS EXCLUSIVE on every named table; even
+	// though the outer rebuild transaction rolls those locks back
+	// on error, holding them briefly still blocks readers and
+	// writers and makes safety contingent on the surrounding tx.
+	// A miswired ported target — no Go applier registered AND no
+	// PL/pgSQL Function — would otherwise lock the projection
+	// before failing. dispatchViaPlpgsql with an empty Function
+	// name builds valid SQL that returns rows without invoking any
+	// projector, so the operator would see "rebuild succeeded"
+	// against the freshly truncated table; this guard exists to
+	// turn that silent-no-op (the #125 footgun) into a clear
+	// error.
+	apply := s.rebuildApplyFor(t.Name)
+	if apply == nil && t.Function == "" {
+		return 0, fmt.Errorf("rebuild target %q has no PL/pgSQL Function and no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+	}
+
 	for _, table := range t.Tables {
 		stmt := "TRUNCATE TABLE " + table
 		if t.Cascade {
@@ -275,7 +297,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 		}
 	}
 
-	if apply := s.rebuildApplyFor(t.Name); apply != nil {
+	if apply != nil {
 		return s.dispatchViaGoApplier(ctx, tx, t, apply)
 	}
 	return s.dispatchViaPlpgsql(ctx, tx, t)

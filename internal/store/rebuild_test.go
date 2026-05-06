@@ -261,6 +261,57 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 	assert.Equal(t, before.Selected, after.Selected)
 }
 
+// TestRebuildAll_GoApplierMissingFailsLoudly — defensive guard for
+// the silent-no-op rebuild that motivated #125. After migration 028
+// the three ported targets carry an empty Function; if the Go
+// applier registration ever drifts (a WireAll entry is removed, a
+// refactor renames the target, a code path constructs a Store
+// without wiring), runOneTarget must fail loudly instead of falling
+// through to dispatchViaPlpgsql with an empty function name —
+// which builds valid SQL that returns rows without invoking any
+// projector and reports "rebuild succeeded" against the freshly
+// truncated projection.
+func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t)
+	ctx := context.Background()
+
+	// Seed a row directly into the projection. The post-rebuild
+	// invariant we assert is that the projection is untouched as
+	// observed from an external connection — strictly, this only
+	// catches the user-visible failure mode. The whole RebuildAll
+	// runs inside pgx.BeginFunc, so a hypothetical "TRUNCATE then
+	// error" would also roll back and look identical from the
+	// outside. The guarantee that the guard fires *before* TRUNCATE
+	// (and therefore avoids briefly holding ACCESS EXCLUSIVE on a
+	// production projection) is verified by reading runOneTarget,
+	// not by this test alone.
+	roleID := testutil.NewID()
+	_, err := st.Pool().Exec(ctx,
+		`INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, projection_version)
+		 VALUES ($1, 'guard-canary', '', ARRAY[]::TEXT[], false, NOW(), 0)`,
+		roleID,
+	)
+	require.NoError(t, err)
+
+	_, err = st.RebuildAll(ctx, "roles")
+	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
+	assert.Contains(t, err.Error(), "no PL/pgSQL Function and no Go applier registered",
+		"error must name the missing-applier failure mode so operators can wire WireAll")
+	assert.Contains(t, err.Error(), "roles",
+		"error must name the offending target")
+
+	// The canary row must still be there. As called out above,
+	// this only proves the user-visible invariant (failed rebuild
+	// leaves the projection intact); strict pre-TRUNCATE ordering
+	// is verified by reading runOneTarget.
+	var count int
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
+	).Scan(&count))
+	assert.Equal(t, 1, count,
+		"projection must survive the failed rebuild; finding zero rows means either the guard ran too late or the outer transaction failed to roll back a destructive op")
+}
+
 // TestRebuildAll_TransactionalAtomicity — if the projector function
 // fails partway through replay, the whole rebuild must roll back so
 // the projection is not left half-replayed against a TRUNCATE'd
