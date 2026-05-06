@@ -288,28 +288,34 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 	nextPageToken := buildNextPageToken(int32(len(users)), offset, pageSize, count)
 
 	protoUsers := make([]*pm.User, len(users))
+	pageUserIDs := make([]string, len(users))
 	for i, u := range users {
 		protoUsers[i] = userToProto(u)
 		h.populateUserRoles(ctx, protoUsers[i])
+		pageUserIDs[i] = u.ID
 	}
 
-	// Populate inherited roles from user group memberships
-	inheritedRoles, err := h.store.Queries().ListAllInheritedRoles(ctx)
-	if err != nil {
-		h.logger.Warn("failed to load inherited roles", "error", err)
-	} else {
-		inheritedMap := make(map[string][]*pm.InheritedRole)
-		for _, ir := range inheritedRoles {
-			inheritedMap[ir.UserID] = append(inheritedMap[ir.UserID], &pm.InheritedRole{
-				RoleId:    ir.RoleID,
-				RoleName:  ir.RoleName,
-				GroupId:   ir.GroupID,
-				GroupName: ir.GroupName,
-			})
-		}
-		for _, u := range protoUsers {
-			if roles, ok := inheritedMap[u.Id]; ok {
-				u.InheritedRoles = roles
+	// Populate inherited roles from user group memberships. Scope
+	// to the page's user IDs so the query cost stays page-bounded
+	// instead of linear with system-wide group membership count.
+	if len(pageUserIDs) > 0 {
+		inheritedRoles, err := h.store.Queries().ListInheritedRolesByUserIDs(ctx, pageUserIDs)
+		if err != nil {
+			h.logger.Warn("failed to load inherited roles", "error", err)
+		} else {
+			inheritedMap := make(map[string][]*pm.InheritedRole)
+			for _, ir := range inheritedRoles {
+				inheritedMap[ir.UserID] = append(inheritedMap[ir.UserID], &pm.InheritedRole{
+					RoleId:    ir.RoleID,
+					RoleName:  ir.RoleName,
+					GroupId:   ir.GroupID,
+					GroupName: ir.GroupName,
+				})
+			}
+			for _, u := range protoUsers {
+				if roles, ok := inheritedMap[u.Id]; ok {
+					u.InheritedRoles = roles
+				}
 			}
 		}
 	}
