@@ -261,6 +261,28 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 	assert.Equal(t, before.Selected, after.Selected)
 }
 
+// TestRebuildAll_GoApplierMissingFailsLoudly — defensive guard for
+// the silent-no-op rebuild that motivated #125. After migration 028
+// the three ported targets carry an empty Function; if the Go
+// applier registration ever drifts (a WireAll entry is removed, a
+// refactor renames the target, a code path constructs a Store
+// without wiring), runOneTarget must fail loudly instead of falling
+// through to dispatchViaPlpgsql with an empty function name —
+// which builds valid SQL that returns rows without invoking any
+// projector and reports "rebuild succeeded" against the freshly
+// truncated projection. CR caught this on PR #132.
+func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t)
+	ctx := context.Background()
+
+	_, err := st.RebuildAll(ctx, "roles")
+	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
+	assert.Contains(t, err.Error(), "no PL/pgSQL Function and no Go applier registered",
+		"error must name the missing-applier failure mode so operators can wire WireAll")
+	assert.Contains(t, err.Error(), "roles",
+		"error must name the offending target")
+}
+
 // TestRebuildAll_TransactionalAtomicity — if the projector function
 // fails partway through replay, the whole rebuild must roll back so
 // the projection is not left half-replayed against a TRUNCATE'd

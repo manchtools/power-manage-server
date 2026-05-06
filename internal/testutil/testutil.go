@@ -86,6 +86,47 @@ func SetupPostgres(t *testing.T) *store.Store {
 	return st
 }
 
+// SetupPostgresWithoutProjectors is identical to SetupPostgres but
+// skips projectors.WireAll. Used only to exercise failure modes
+// that depend on the projector pipeline being unwired — e.g. the
+// RebuildAll guard that fires when neither a Go applier nor a
+// PL/pgSQL Function is set for a target.
+//
+// Production code paths must always call WireAll; never use this
+// helper for tests that read projection state.
+func SetupPostgresWithoutProjectors(t *testing.T) *store.Store {
+	t.Helper()
+	ctx := context.Background()
+
+	container, err := postgres.Run(ctx,
+		"postgres:17-alpine",
+		postgres.WithDatabase("power_manage_test"),
+		postgres.WithUsername("test"),
+		postgres.WithPassword("test"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(30*time.Second)),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	t.Cleanup(func() { container.Terminate(context.Background()) })
+
+	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("get connection string: %v", err)
+	}
+
+	st, err := store.New(ctx, connStr)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	return st
+}
+
 // CreateTestUser creates a user via events and returns the user ID.
 func CreateTestUser(t *testing.T, st *store.Store, email, password, role string) string {
 	t.Helper()

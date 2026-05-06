@@ -280,6 +280,16 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 	if apply := s.rebuildApplyFor(t.Name); apply != nil {
 		return s.dispatchViaGoApplier(ctx, tx, t, apply)
 	}
+	// Defensive guard against the silent-no-op rebuild that
+	// motivated #125: if no Go applier is registered AND no PL/pgSQL
+	// Function is set, dispatchViaPlpgsql would build a SELECT with
+	// an empty function name, which is valid SQL that returns rows
+	// without invoking any projector. The TRUNCATE above has already
+	// wiped the projection, so operators would see "rebuild
+	// succeeded" against an empty table. Fail loudly instead.
+	if t.Function == "" {
+		return 0, fmt.Errorf("rebuild target %q has no PL/pgSQL Function and no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+	}
 	return s.dispatchViaPlpgsql(ctx, tx, t)
 }
 
