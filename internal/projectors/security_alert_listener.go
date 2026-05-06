@@ -73,9 +73,10 @@ func SecurityAlertListener(st *store.Store, logger *slog.Logger) store.EventList
 				// Malformed alert_id — log and skip. The deleted
 				// PL/pgSQL projector raised an EXCEPTION in this
 				// case so a sidecar trigger could catch it and
-				// write to projection_errors. Post-commit listener
-				// equivalent: log to stderr via slog.Warn so the
-				// operator sees it and can correlate with the event.
+				// write to plpgsql_projection_errors. Post-commit
+				// listener equivalent: log to stderr via slog.Warn
+				// so the operator sees it and can correlate with
+				// the event.
 				logger.Warn("security_alert projector: invalid SecurityAlertAcknowledged payload",
 					"event_id", e.ID, "error", err)
 				return
