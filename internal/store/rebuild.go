@@ -220,7 +220,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		for _, t := range targets {
 			tStart := time.Now()
-			applied, runErr := runOneTarget(ctx, tx, t)
+			applied, runErr := s.runOneTarget(ctx, tx, t)
 			if runErr != nil {
 				return fmt.Errorf("rebuild target %q: %w", t.Name, runErr)
 			}
@@ -264,7 +264,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 // roundtrip plus the Postgres-side projector execution. For a
 // production-scale event store (10k–100k events) this completes in
 // seconds — fine for an emergency-rebuild operator command.
-func runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
+func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
 	for _, table := range t.Tables {
 		stmt := "TRUNCATE TABLE " + table
 		if t.Cascade {
@@ -275,6 +275,64 @@ func runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error
 		}
 	}
 
+	if apply := s.rebuildApplyFor(t.Name); apply != nil {
+		return s.dispatchViaGoApplier(ctx, tx, t, apply)
+	}
+	return s.dispatchViaPlpgsql(ctx, tx, t)
+}
+
+// dispatchViaGoApplier replays every event matching the target's
+// stream types through the registered Go applier. Loads the full
+// event row into Go (we need the payload, actor, occurred_at —
+// PL/pgSQL dispatch only needed the row composite). Each apply runs
+// against tx-bound queries so writes share atomicity with the outer
+// rebuild transaction.
+//
+// Refs manchtools/power-manage-server#125.
+func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply) (int64, error) {
+	q := s.queries.WithTx(tx)
+	rows, err := tx.Query(ctx,
+		`SELECT id, sequence_num, stream_type, stream_id, stream_version,
+		        event_type, data, metadata, actor_type, actor_id, occurred_at
+		   FROM events
+		  WHERE stream_type = ANY($1)
+		  ORDER BY sequence_num`,
+		t.StreamTypes,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("load events for %s: %w", t.Name, err)
+	}
+	events := make([]PersistedEvent, 0, 256)
+	for rows.Next() {
+		var ev PersistedEvent
+		if err := rows.Scan(
+			&ev.ID, &ev.SequenceNum, &ev.StreamType, &ev.StreamID, &ev.StreamVersion,
+			&ev.EventType, &ev.Data, &ev.Metadata, &ev.ActorType, &ev.ActorID, &ev.OccurredAt,
+		); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scan event row for %s: %w", t.Name, err)
+		}
+		events = append(events, ev)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate events for %s: %w", t.Name, err)
+	}
+
+	for _, ev := range events {
+		if err := apply(ctx, q, ev); err != nil {
+			return 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
+		}
+	}
+	return int64(len(events)), nil
+}
+
+// dispatchViaPlpgsql runs the legacy `SELECT project_<X>_event(events.*)`
+// dispatch for targets that have not yet been ported to a Go
+// projector. Once tracker #107's last domain projector is ported and
+// the PL/pgSQL stubs are dropped, this branch and the rebuildTarget
+// Function field can be removed.
+func (s *Store) dispatchViaPlpgsql(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
 	rows, err := tx.Query(ctx,
 		"SELECT id FROM events WHERE stream_type = ANY($1) ORDER BY sequence_num",
 		t.StreamTypes,

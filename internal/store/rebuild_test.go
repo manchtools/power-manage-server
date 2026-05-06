@@ -110,6 +110,157 @@ func TestRebuildAll_UnknownTargetIsRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "nonexistent")
 }
 
+// TestRebuildAll_PortedProjector_RoundTrip — covers the regression
+// from manchtools/power-manage-server#125: once a projector is
+// ported to a Go listener, the corresponding PL/pgSQL
+// project_<X>_event() becomes a no-op stub. RebuildAll then
+// TRUNCATEs the projection and dispatches every event through the
+// stub, leaving the projection empty.
+//
+// The fix routes ported targets through a Go applier registered in
+// projectors.WireAll. This test exercises that path end-to-end on
+// the "roles" target — the first ported projector that owned a
+// rebuild target — by creating a role via the live pipeline,
+// truncating its projection, calling RebuildAll, and asserting the
+// row reappears with the same fields.
+func TestRebuildAll_PortedProjector_RoundTrip(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	roleID := testutil.CreateTestRole(t, st, adminID, "RebuildPortedRole", []string{"users:read"})
+
+	before, err := st.Queries().GetRoleByID(ctx, roleID)
+	require.NoError(t, err, "role must exist after live pipeline projection")
+	assert.Equal(t, "RebuildPortedRole", before.Name)
+
+	_, err = st.Pool().Exec(ctx, "TRUNCATE roles_projection CASCADE")
+	require.NoError(t, err)
+
+	_, err = st.Queries().GetRoleByID(ctx, roleID)
+	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
+
+	res, err := st.RebuildAll(ctx, "roles")
+	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
+	assert.Equal(t, "roles", res.Targets[0].Name)
+	assert.Greater(t, res.Targets[0].EventsApplied, int64(0),
+		"at least the RoleCreated event must have been replayed")
+
+	after, err := st.Queries().GetRoleByID(ctx, roleID)
+	require.NoError(t, err, "rebuild must restore the role projection — issue #125 regression if this fails")
+	assert.Equal(t, before.Name, after.Name)
+	assert.Equal(t, before.ID, after.ID)
+}
+
+// TestRebuildAll_PortedToken_RoundTrip — same #125 regression
+// coverage as the roles test, but for the tokens target. Different
+// applier path, so deserves its own test rather than relying on the
+// roles test as a stand-in.
+func TestRebuildAll_PortedToken_RoundTrip(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	tokenID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "token",
+		StreamID:   tokenID,
+		EventType:  "TokenCreated",
+		Data: map[string]any{
+			"id":         tokenID,
+			"value_hash": "test-hash",
+			"name":       "RebuildPortedToken",
+			"one_time":   false,
+			"max_uses":   nil,
+			"expires_at": nil,
+			"owner_id":   adminID,
+			"created_by": adminID,
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	}))
+
+	before, err := st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
+	require.NoError(t, err, "token must exist after live pipeline projection")
+	assert.Equal(t, "RebuildPortedToken", before.Name)
+
+	_, err = st.Pool().Exec(ctx, "TRUNCATE tokens_projection CASCADE")
+	require.NoError(t, err)
+
+	_, err = st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
+	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
+
+	res, err := st.RebuildAll(ctx, "tokens")
+	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
+	assert.Equal(t, "tokens", res.Targets[0].Name)
+	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
+
+	after, err := st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
+	require.NoError(t, err, "rebuild must restore the token projection — issue #125 regression if this fails")
+	assert.Equal(t, before.Name, after.Name)
+	assert.Equal(t, before.ID, after.ID)
+}
+
+// TestRebuildAll_PortedUserSelection_RoundTrip — third ported target
+// with a rebuild entry. Different applier (single UPSERT, no
+// transaction wrap) so worth its own coverage even though the role
+// + token tests already prove the dispatcher path.
+func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "rebuild-user-selection-host")
+	groupID := testutil.CreateTestUserGroup(t, st, adminID, "RebuildPortedSelectionGroup")
+
+	selectionID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_selection",
+		StreamID:   selectionID,
+		EventType:  "UserSelectionChanged",
+		Data: map[string]any{
+			"id":          selectionID,
+			"device_id":   deviceID,
+			"source_type": "user_group",
+			"source_id":   groupID,
+			"selected":    true,
+			"created_by":  adminID,
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	}))
+
+	before, err := st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
+		DeviceID: deviceID, SourceType: "user_group", SourceID: groupID,
+	})
+	require.NoError(t, err, "selection must exist after live pipeline projection")
+	assert.True(t, before.Selected)
+
+	_, err = st.Pool().Exec(ctx, "TRUNCATE user_selections_projection CASCADE")
+	require.NoError(t, err)
+
+	_, err = st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
+		DeviceID: deviceID, SourceType: "user_group", SourceID: groupID,
+	})
+	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
+
+	res, err := st.RebuildAll(ctx, "user_selections")
+	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
+	assert.Equal(t, "user_selections", res.Targets[0].Name)
+	assert.Greater(t, res.Targets[0].EventsApplied, int64(0))
+
+	after, err := st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
+		DeviceID: deviceID, SourceType: "user_group", SourceID: groupID,
+	})
+	require.NoError(t, err, "rebuild must restore the user_selection projection — issue #125 regression if this fails")
+	assert.Equal(t, before.ID, after.ID)
+	assert.Equal(t, before.Selected, after.Selected)
+}
+
 // TestRebuildAll_TransactionalAtomicity — if the projector function
 // fails partway through replay, the whole rebuild must roll back so
 // the projection is not left half-replayed against a TRUNCATE'd

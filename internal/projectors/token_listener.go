@@ -30,53 +30,57 @@ func TokenListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		return func(context.Context, store.PersistedEvent) {}
 	}
 	return func(ctx context.Context, e store.PersistedEvent) {
-		if e.StreamType != "token" {
-			return
-		}
-		switch e.EventType {
-		case "TokenCreated":
-			applyTokenCreated(ctx, st, logger, e)
-		case "TokenRenamed":
-			applyTokenRenamed(ctx, st, logger, e)
-		case "TokenUsed":
-			applyTokenSimpleUpdate(ctx, st, logger, e, func(q *store.Queries, ver int64) error {
-				return q.IncrementTokenUseProjection(ctx, db.IncrementTokenUseProjectionParams{
-					ID: e.StreamID, ProjectionVersion: ver,
-				})
-			})
-		case "TokenDisabled":
-			applyTokenSimpleUpdate(ctx, st, logger, e, func(q *store.Queries, ver int64) error {
-				return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
-					ID: e.StreamID, Disabled: true, ProjectionVersion: ver,
-				})
-			})
-		case "TokenEnabled":
-			applyTokenSimpleUpdate(ctx, st, logger, e, func(q *store.Queries, ver int64) error {
-				return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
-					ID: e.StreamID, Disabled: false, ProjectionVersion: ver,
-				})
-			})
-		case "TokenDeleted":
-			applyTokenSimpleUpdate(ctx, st, logger, e, func(q *store.Queries, ver int64) error {
-				return q.SoftDeleteTokenProjection(ctx, db.SoftDeleteTokenProjectionParams{
-					ID: e.StreamID, ProjectionVersion: ver,
-				})
-			})
+		if err := ApplyToken(ctx, st.Queries(), e); err != nil {
+			logger.Warn("token projector: failed to apply event",
+				"event_id", e.ID, "event_type", e.EventType, "token_id", e.StreamID, "error", err)
 		}
 	}
 }
 
-func applyTokenCreated(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+// ApplyToken is the transactional core of the token projector. The
+// listener wraps it for live-event dispatch; the rebuild path
+// (manchtools/power-manage-server#125) registers it via
+// RegisterRebuildApply so RebuildAll re-derives the projection from
+// the event store instead of dispatching to the no-op PL/pgSQL stub.
+func ApplyToken(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "token" {
+		return nil
+	}
+	ver := deref(e.SequenceNum)
+	switch e.EventType {
+	case "TokenCreated":
+		return applyTokenCreated(ctx, q, e)
+	case "TokenRenamed":
+		return applyTokenRenamed(ctx, q, e)
+	case "TokenUsed":
+		return q.IncrementTokenUseProjection(ctx, db.IncrementTokenUseProjectionParams{
+			ID: e.StreamID, ProjectionVersion: ver,
+		})
+	case "TokenDisabled":
+		return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
+			ID: e.StreamID, Disabled: true, ProjectionVersion: ver,
+		})
+	case "TokenEnabled":
+		return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
+			ID: e.StreamID, Disabled: false, ProjectionVersion: ver,
+		})
+	case "TokenDeleted":
+		return q.SoftDeleteTokenProjection(ctx, db.SoftDeleteTokenProjectionParams{
+			ID: e.StreamID, ProjectionVersion: ver,
+		})
+	}
+	return nil
+}
+
+func applyTokenCreated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := TokenCreatedFromEvent(e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
-			return
+			return nil
 		}
-		logger.Warn("token projector: invalid TokenCreated payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
-	if err := st.Queries().InsertTokenProjection(ctx, db.InsertTokenProjectionParams{
+	return q.InsertTokenProjection(ctx, db.InsertTokenProjectionParams{
 		ID:                payload.ID,
 		ValueHash:         payload.ValueHash,
 		Name:              payload.Name,
@@ -87,43 +91,20 @@ func applyTokenCreated(ctx context.Context, st *store.Store, logger *slog.Logger
 		CreatedBy:         payload.CreatedBy,
 		OwnerID:           payload.OwnerID,
 		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		logger.Warn("token projector: failed to insert TokenCreated",
-			"event_id", e.ID, "token_id", payload.ID, "error", err)
-	}
+	})
 }
 
-func applyTokenRenamed(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+func applyTokenRenamed(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := TokenRenamedFromEvent(e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
-			return
+			return nil
 		}
-		logger.Warn("token projector: invalid TokenRenamed payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
-	if err := st.Queries().RenameTokenProjection(ctx, db.RenameTokenProjectionParams{
+	return q.RenameTokenProjection(ctx, db.RenameTokenProjectionParams{
 		ID:                payload.ID,
 		Name:              payload.Name,
 		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		logger.Warn("token projector: failed to apply TokenRenamed",
-			"event_id", e.ID, "token_id", payload.ID, "error", err)
-	}
-}
-
-// applyTokenSimpleUpdate is the shared scaffold for the four
-// no-payload event types (Used, Disabled, Enabled, Deleted). They
-// all key off StreamID + the event sequence_num and differ only in
-// which sqlc query they call — the closure isolates that one
-// difference.
-func applyTokenSimpleUpdate(
-	ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent,
-	apply func(q *store.Queries, projectionVersion int64) error,
-) {
-	if err := apply(st.Queries(), deref(e.SequenceNum)); err != nil {
-		logger.Warn("token projector: failed to apply token update",
-			"event_id", e.ID, "event_type", e.EventType, "token_id", e.StreamID, "error", err)
-	}
+	})
 }
