@@ -270,7 +270,7 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 // through to dispatchViaPlpgsql with an empty function name —
 // which builds valid SQL that returns rows without invoking any
 // projector and reports "rebuild succeeded" against the freshly
-// truncated projection. CR caught this on PR #132.
+// truncated projection.
 func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	st := testutil.SetupPostgresWithoutProjectors(t)
 	ctx := context.Background()

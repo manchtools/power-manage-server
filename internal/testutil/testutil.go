@@ -67,7 +67,7 @@ func setupPostgresContainer(t *testing.T) *store.Store {
 	t.Cleanup(func() {
 		// Bound the teardown so a wedged Docker daemon cannot hang
 		// the cleanup goroutine indefinitely and stall the rest of
-		// the suite. CR caught this on PR #132.
+		// the suite.
 		termCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := container.Terminate(termCtx); err != nil {
