@@ -52,18 +52,34 @@ type Event struct {
 // failures are observability, not correctness.
 type EventListener func(ctx context.Context, ev PersistedEvent)
 
+// RebuildApply replays one event during a RebuildAll pass. It runs
+// inside the rebuild's outer transaction, so the supplied *Queries is
+// already tx-bound — applier writes commit (or roll back) atomically
+// with the surrounding TRUNCATEs and other targets in the same
+// rebuild. Applier returns an error to abort the entire rebuild;
+// successful no-ops (event type the projector doesn't care about)
+// must return nil.
+//
+// Wired in projectors.WireAll for every Go-ported projector that
+// owns an entry in AllRebuildTargets. RebuildAll falls back to the
+// PL/pgSQL Function dispatch when no applier is registered for the
+// target — preserves operator behaviour for not-yet-ported targets.
+//
+// Refs manchtools/power-manage-server#125.
+type RebuildApply func(ctx context.Context, q *Queries, ev PersistedEvent) error
+
 // Store wraps the database connection and provides access to queries.
 type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
 
-	// listenersMu guards listeners + OnEventAppended. Documented
-	// usage is "register at boot, then start serving", but Go's race
-	// detector won't catch a future caller that registers after
-	// AppendEvent is in flight (concurrent slice append + range read
-	// is a data race). RWMutex is cheap on the hot read path
-	// (fireListeners holds RLock) and lets boot code register without
-	// extra ceremony.
+	// listenersMu guards listeners + OnEventAppended +
+	// rebuildAppliers. Documented usage is "register at boot, then
+	// start serving", but Go's race detector won't catch a future
+	// caller that registers after AppendEvent is in flight
+	// (concurrent slice append + range read is a data race). RWMutex
+	// is cheap on the hot read path (fireListeners holds RLock) and
+	// lets boot code register without extra ceremony.
 	listenersMu sync.RWMutex
 
 	// listeners are invoked after every successful AppendEvent /
@@ -73,6 +89,14 @@ type Store struct {
 	// can append additional consumers without callers stomping on
 	// each other.
 	listeners []EventListener
+
+	// rebuildAppliers maps a rebuild-target name to a Go applier
+	// that runOneTarget calls per event in lieu of the no-op
+	// PL/pgSQL stub left behind by tracker #107 ports. Populated at
+	// boot via projectors.WireAll → RegisterRebuildApply. Lookup is
+	// guarded by listenersMu (same boot-once-then-read posture as
+	// listeners). See manchtools/power-manage-server#125.
+	rebuildAppliers map[string]RebuildApply
 
 	// OnEventAppended is preserved for backwards compatibility with
 	// the search-indexing wiring at cmd/control/main.go. Setting it
@@ -94,6 +118,34 @@ func (s *Store) RegisterEventListener(fn EventListener) {
 	s.listenersMu.Lock()
 	s.listeners = append(s.listeners, fn)
 	s.listenersMu.Unlock()
+}
+
+// RegisterRebuildApply binds a Go applier to a named rebuild target.
+// Subsequent RebuildAll calls dispatch matching events through this
+// closure instead of the (now no-op) PL/pgSQL project_<X>_event()
+// stub. Re-registering the same name overwrites — boot-time wiring
+// is expected to call this once per target.
+//
+// Refs manchtools/power-manage-server#125.
+func (s *Store) RegisterRebuildApply(name string, fn RebuildApply) {
+	if fn == nil || name == "" {
+		return
+	}
+	s.listenersMu.Lock()
+	if s.rebuildAppliers == nil {
+		s.rebuildAppliers = make(map[string]RebuildApply)
+	}
+	s.rebuildAppliers[name] = fn
+	s.listenersMu.Unlock()
+}
+
+// rebuildApplyFor returns the registered applier for a target name,
+// or nil when no Go applier is wired (in which case runOneTarget
+// falls back to PL/pgSQL Function dispatch).
+func (s *Store) rebuildApplyFor(name string) RebuildApply {
+	s.listenersMu.RLock()
+	defer s.listenersMu.RUnlock()
+	return s.rebuildAppliers[name]
 }
 
 // fireListeners invokes both the legacy OnEventAppended callback (if

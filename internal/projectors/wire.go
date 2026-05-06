@@ -76,6 +76,20 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// of the un-ported domain projectors (user, device, action,
 	// execution, assignment, compliance, etc.) will land in a
 	// separate tracker.
+
+	// Rebuild appliers (manchtools/power-manage-server#125). Only
+	// the ported projectors that own a rebuildTarget in
+	// store.AllRebuildTargets need this wiring — RebuildAll
+	// dispatches everything else through the legacy PL/pgSQL
+	// Function. Of the 11 #107 ports, three own rebuild targets:
+	// roles, tokens, user_selections. The other eight projector
+	// streams (security_alert, totp, lps_password, luks_key,
+	// server_settings, user_role, identity_provider,
+	// scim_group_mapping) never had a rebuild target so RebuildAll
+	// does not touch them.
+	st.RegisterRebuildApply("roles", ApplyRole)
+	st.RegisterRebuildApply("tokens", ApplyToken)
+	st.RegisterRebuildApply("user_selections", ApplyUserSelection)
 }
 
 // loggerFor returns a sub-logger tagged with the projector

@@ -20,39 +20,46 @@ func UserSelectionListener(st *store.Store, logger *slog.Logger) store.EventList
 		return func(context.Context, store.PersistedEvent) {}
 	}
 	return func(ctx context.Context, e store.PersistedEvent) {
-		if e.StreamType != "user_selection" {
-			return
-		}
-		if e.EventType != "UserSelectionChanged" {
-			return
-		}
-
-		payload, err := UserSelectionChangedFromEvent(e)
-		if err != nil {
-			if errors.Is(err, ErrIgnoredEvent) {
-				return
-			}
-			logger.Warn("user_selection projector: invalid UserSelectionChanged payload",
-				"event_id", e.ID, "error", err)
-			return
-		}
-
-		if err := st.Queries().UpsertUserSelectionProjection(ctx, db.UpsertUserSelectionProjectionParams{
-			ID:                payload.ID,
-			DeviceID:          payload.DeviceID,
-			SourceType:        payload.SourceType,
-			SourceID:          payload.SourceID,
-			Selected:          payload.Selected,
-			UpdatedAt:         e.OccurredAt,
-			CreatedBy:         payload.CreatedBy,
-			ProjectionVersion: deref(e.SequenceNum),
-		}); err != nil {
-			logger.Warn("user_selection projector: failed to upsert UserSelectionChanged",
+		if err := ApplyUserSelection(ctx, st.Queries(), e); err != nil {
+			logger.Warn("user_selection projector: failed to apply UserSelectionChanged",
 				"event_id", e.ID,
-				"device_id", payload.DeviceID,
-				"source_type", payload.SourceType,
-				"source_id", payload.SourceID,
+				"stream_id", e.StreamID,
 				"error", err)
 		}
 	}
 }
+
+// ApplyUserSelection is the transactional core of the user_selection
+// projector. The listener wraps it for live-event dispatch; the
+// rebuild path (manchtools/power-manage-server#125) registers it via
+// RegisterRebuildApply so RebuildAll re-derives the projection from
+// the event store instead of dispatching to the no-op PL/pgSQL stub.
+//
+// Returns nil for non-matching stream/event types so the rebuild
+// loop treats them as harmless no-ops.
+func ApplyUserSelection(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "user_selection" {
+		return nil
+	}
+	if e.EventType != "UserSelectionChanged" {
+		return nil
+	}
+	payload, err := UserSelectionChangedFromEvent(e)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	return q.UpsertUserSelectionProjection(ctx, db.UpsertUserSelectionProjectionParams{
+		ID:                payload.ID,
+		DeviceID:          payload.DeviceID,
+		SourceType:        payload.SourceType,
+		SourceID:          payload.SourceID,
+		Selected:          payload.Selected,
+		UpdatedAt:         e.OccurredAt,
+		CreatedBy:         payload.CreatedBy,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+}
+
