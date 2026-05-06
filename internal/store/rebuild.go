@@ -21,9 +21,11 @@
 // half-replayed against a TRUNCATE'd table.
 //
 // Once a stream type's project_<stream>_event() is ported to a Go
-// projector (#96–#106), this file's per-target Function field gets
-// flipped from a PL/pgSQL call to a Go projector invocation. The
-// callers and operator surface stay identical.
+// projector (#96–#106), the PL/pgSQL stub is dropped via a cleanup
+// migration, this target's Function field is cleared, and
+// RebuildAll dispatches through the Go applier registered via
+// projectors.WireAll → RegisterRebuildApply. The callers and
+// operator surface stay identical.
 //
 // Refs manchtools/power-manage-server#94, manchtools/power-manage-server#107.
 package store

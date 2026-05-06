@@ -163,6 +163,16 @@ DROP FUNCTION IF EXISTS project_luks_key_event(events);
 
 -- Restore the no-op stubs first so project_event() has functions to
 -- PERFORM when we put the WHEN clauses back.
+--
+-- These no-op restorations match the stub shape the per-port
+-- migrations (018-027) left behind. Goose runs Downs in reverse
+-- order, so a `goose down` from 028 to 017 executes 028's Down
+-- first (this block — restores stubs) then 027's Down, 026's Down,
+-- etc., each of which overwrites its respective stub with the
+-- original full PL/pgSQL implementation. End state at version 017
+-- is the pre-#107 schema with every projector PL/pgSQL.
+
+
 
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION project_token_event(event events) RETURNS void AS $$
