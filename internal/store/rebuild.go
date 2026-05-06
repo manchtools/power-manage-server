@@ -75,11 +75,13 @@ type TargetResult struct {
 // applies both 'action' and 'definition' events because compliance-
 // policy definitions create derived action rows).
 //
-// Function is the PL/pgSQL function name that gets called per
-// matching event. During the Phase 1 migration this is
-// project_<X>_event(); once a stream type is ported (#96–#106),
-// callers swap this to a Go projector dispatcher and the PL/pgSQL
-// function is dropped from the schema.
+// Function is the PL/pgSQL function name dispatched per matching
+// event when no Go applier is registered for this target. After
+// migration 028 the three ported targets (roles, tokens,
+// user_selections) leave Function empty — RebuildAll dispatches
+// them through the Go appliers wired in projectors.WireAll. The
+// remaining unported targets still carry their project_<X>_event()
+// reference until their respective ports land.
 type rebuildTarget struct {
 	Name        string
 	Tables      []string
@@ -111,10 +113,10 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_user_event",
 	},
 	{
+		// Ported to projectors.ApplyToken via projectors.WireAll.
 		Name:        "tokens",
 		Tables:      []string{"tokens_projection"},
 		StreamTypes: []string{"token"},
-		Function:    "project_token_event",
 	},
 	{
 		Name:        "devices",
@@ -167,17 +169,17 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_assignment_event",
 	},
 	{
+		// Ported to projectors.ApplyUserSelection via projectors.WireAll.
 		Name:        "user_selections",
 		Tables:      []string{"user_selections_projection"},
 		StreamTypes: []string{"user_selection"},
-		Function:    "project_user_selection_event",
 	},
 	{
+		// Ported to projectors.ApplyRole via projectors.WireAll.
 		Name:        "roles",
 		Tables:      []string{"roles_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"role"},
-		Function:    "project_role_event",
 	},
 	{
 		Name:        "user_groups",
