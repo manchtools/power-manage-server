@@ -22,9 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Use the latest stable Go for the lint job specifically. The
+      # other CI workflows (Tests) track go.mod's minimum-version
+      # directive so we don't accidentally rely on a feature absent
+      # from the supported floor. The lint job is different: its
+      # job is to surface stdlib vulns and drift, so it should
+      # always run against the latest patched toolchain.
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: 'stable'
 
       - name: gofmt
         run: |
