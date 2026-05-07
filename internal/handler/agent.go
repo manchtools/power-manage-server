@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -226,9 +226,16 @@ func BootstrapRedirectMiddleware(next http.Handler, bootstrapHost, assignedHost 
 		// :authority pseudo-header). Strip any port so we compare
 		// just the hostname — the agent may include the port,
 		// the bootstrap config typically doesn't.
+		//
+		// net.SplitHostPort handles bracketed IPv6 authorities
+		// ([2001:db8::1]:443) correctly; falling back to the raw
+		// r.Host when there is no port keeps unbracketed IPv4 /
+		// hostname inputs working unchanged. Audit / CR catch:
+		// strings.IndexByte(':') broke IPv6 by truncating at the
+		// first internal colon and producing reqHost == "[".
 		reqHost := r.Host
-		if i := strings.IndexByte(reqHost, ':'); i >= 0 {
-			reqHost = reqHost[:i]
+		if h, _, err := net.SplitHostPort(reqHost); err == nil {
+			reqHost = h
 		}
 		if reqHost != bootstrapHost {
 			next.ServeHTTP(w, r)
