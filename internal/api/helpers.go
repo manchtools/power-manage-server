@@ -92,3 +92,18 @@ func enqueueSearchReindex(ctx context.Context, idx *search.Index, logger *slog.L
 		logger.Warn("failed to enqueue search reindex", "scope", scope, "id", id, "error", err)
 	}
 }
+
+// logEnrichmentErr logs an enrichment-lookup failure with consistent
+// shape. Used by handler response-building loops where the lookup
+// degrades the response (missing field) but doesn't fail the RPC.
+// Replaces the silent `if err == nil { use(x) }` anti-pattern flagged
+// by audit findings F006/F007 ("always log errors and never ignore
+// them"). Pass operation as the underlying call site (e.g.
+// "GetActionByID") so an operator searching logs can find every
+// failed enrichment of that specific lookup across handlers.
+func logEnrichmentErr(operation, idKey, idValue string, err error) {
+	slog.Warn("enrichment lookup failed",
+		"operation", operation,
+		idKey, idValue,
+		"error", err)
+}

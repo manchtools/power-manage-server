@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -105,6 +106,26 @@ type Store struct {
 	// reassign at runtime should go through RegisterEventListener
 	// instead. (rc11 review round 4: search-indexer wiring migrated.)
 	OnEventAppended func(ctx context.Context, ev PersistedEvent)
+
+	// logger is used by fireListeners to log panic recoveries through
+	// the standard logging pipeline instead of os.Stderr. Optional;
+	// when nil, falls back to os.Stderr so unit tests that construct
+	// a Store directly don't require log plumbing. Set via SetLogger
+	// from cmd/{control,indexer}/main.go after construction.
+	logger *slog.Logger
+}
+
+// SetLogger plumbs a slog.Logger for fireListeners' panic-recovery
+// pathway. Optional; when nil, the recovery path falls back to
+// os.Stderr (preserved so unit tests that construct Store directly
+// keep working). Boot-once posture matches RegisterEventListener,
+// but the lock is taken anyway so a future caller that swaps the
+// logger after AppendEvent traffic starts doesn't race with the
+// reader in fireListeners.
+func (s *Store) SetLogger(logger *slog.Logger) {
+	s.listenersMu.Lock()
+	s.logger = logger
+	s.listenersMu.Unlock()
 }
 
 // RegisterEventListener appends a post-commit hook. Multiple
@@ -158,28 +179,40 @@ func (s *Store) rebuildApplyFor(name string) RebuildApply {
 // rc11 #77 caught this: a panicking listener used to bubble up
 // through AppendEvent and fail the RPC even though the event was
 // durable, breaking the "event committed → RPC succeeds" contract.
-// We log panics to stderr because the Store has no slog handle; the
-// listener owner is responsible for richer logging inside its own
-// body if needed.
+// Panics route through s.logger when set (cmd/control + cmd/indexer
+// call SetLogger at boot); the os.Stderr fallback exists so unit
+// tests constructing Store directly keep working.
 func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
-	safe := func(name string, fn func()) {
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "store: %s listener panicked on %s/%s: %v\n", name, row.StreamType, row.EventType, r)
-			}
-		}()
-		fn()
-	}
 	// Snapshot under RLock so the dispatch loop runs without holding
 	// the mutex (listeners may take milliseconds; we don't want to
 	// block concurrent RegisterEventListener calls or other readers
 	// for that long). Slice header copy is safe because
 	// RegisterEventListener appends — never mutates an existing
-	// element.
+	// element. Logger is snapshotted under the same lock so a
+	// concurrent SetLogger doesn't race with the panic-recovery read
+	// inside the closure below.
 	s.listenersMu.RLock()
 	onEvent := s.OnEventAppended
 	listeners := s.listeners
+	logger := s.logger
 	s.listenersMu.RUnlock()
+
+	safe := func(name string, fn func()) {
+		defer func() {
+			if r := recover(); r != nil {
+				if logger != nil {
+					logger.Error("store: listener panicked",
+						"listener", name,
+						"stream_type", row.StreamType,
+						"event_type", row.EventType,
+						"panic", r)
+				} else {
+					fmt.Fprintf(os.Stderr, "store: %s listener panicked on %s/%s: %v\n", name, row.StreamType, row.EventType, r)
+				}
+			}
+		}()
+		fn()
+	}
 
 	if onEvent != nil {
 		safe("OnEventAppended", func() { onEvent(ctx, row) })

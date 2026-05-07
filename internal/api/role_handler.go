@@ -45,10 +45,15 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		}
 	}
 
-	// Check name uniqueness
+	// Check name uniqueness — distinguishing NotFound from a transient
+	// DB error matters: silently treating any error as "name available"
+	// would let a concurrent CreateRole succeed twice on a flaky DB.
 	_, err := h.store.Queries().GetRoleByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrRoleNameExists, connect.CodeAlreadyExists, "role name already exists")
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role name uniqueness")
 	}
 
 	userCtx, err := requireAuth(ctx)

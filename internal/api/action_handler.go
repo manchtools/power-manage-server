@@ -864,14 +864,16 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
-		// These values are currently unconditionally overwritten by the
-		// re-sign call below — see issue #137 for the contract decision
-		// pending. Marked ignored so the new staticcheck CI step passes
-		// without papering over the underlying ambiguity.
-		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
-		signature = action.Signature
-		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
-		paramsCanonical = action.ParamsCanonical
+		// NOTE: action.Signature and action.ParamsCanonical are
+		// loaded from the stored row in the original PR-1 shape but
+		// were unconditionally overwritten by the re-sign call below.
+		// The contract decision (re-sign every dispatch vs. respect
+		// stored signature) is tracked in #137. Until that lands,
+		// drop the dead loads — keeping them only as //lint:ignore
+		// stubs trips ineffassign in golangci-lint and adds noise
+		// without addressing the underlying ambiguity. The comment
+		// stays here so a future contributor sees why these fields
+		// are conspicuously absent on the stored-action branch.
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
@@ -1135,6 +1137,8 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 		}
 		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchAssignedActions",
+				"device_id", req.Msg.DeviceId, "action_id", action.ID, "error", err)
 			continue
 		}
 		executions = append(executions, resp.Msg.Execution)
@@ -1164,6 +1168,9 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 		}
 		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchActionSet",
+				"device_id", req.Msg.DeviceId, "action_set_id", req.Msg.ActionSetId,
+				"action_id", action.ID, "error", err)
 			continue
 		}
 		executions = append(executions, resp.Msg.Execution)
@@ -1189,6 +1196,10 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 	for _, set := range actionSets {
 		actions, err := h.store.Queries().ListActionsInSet(ctx, set.ID)
 		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchDefinition",
+				"reason", "list actions in set",
+				"device_id", req.Msg.DeviceId, "definition_id", req.Msg.DefinitionId,
+				"action_set_id", set.ID, "error", err)
 			continue
 		}
 		for _, action := range actions {
@@ -1198,6 +1209,9 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 			}
 			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 			if err != nil {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchDefinition",
+					"device_id", req.Msg.DeviceId, "definition_id", req.Msg.DefinitionId,
+					"action_set_id", set.ID, "action_id", action.ID, "error", err)
 				continue
 			}
 			executions = append(executions, resp.Msg.Execution)
@@ -1232,6 +1246,10 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 			if err == nil {
 				executions = append(executions, resp.Msg.Execution)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "action", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "action_id", source.ActionId, "error", err)
 			}
 
 		case *pm.DispatchToGroupRequest_ActionSetId:
@@ -1242,6 +1260,10 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 			resp, err := h.DispatchActionSet(ctx, connect.NewRequest(setReq))
 			if err == nil {
 				executions = append(executions, resp.Msg.Executions...)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "action_set", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "action_set_id", source.ActionSetId, "error", err)
 			}
 
 		case *pm.DispatchToGroupRequest_DefinitionId:
@@ -1252,6 +1274,10 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 			resp, err := h.DispatchDefinition(ctx, connect.NewRequest(defReq))
 			if err == nil {
 				executions = append(executions, resp.Msg.Executions...)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "definition", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "definition_id", source.DefinitionId, "error", err)
 			}
 
 		case *pm.DispatchToGroupRequest_InlineAction:
@@ -1262,6 +1288,10 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
 			if err == nil {
 				executions = append(executions, resp.Msg.Execution)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "inline_action", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "error", err)
 			}
 		}
 	}
@@ -1289,6 +1319,8 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, []string{*exec.ActionID})
 		if err == nil && len(rows) > 0 {
 			protoExec.ActionName = rows[0].Name
+		} else if err != nil {
+			logEnrichmentErr("GetActionNamesByIDs", "action_id", *exec.ActionID, err)
 		}
 	}
 
@@ -1356,7 +1388,10 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	}
 	if len(actionIDs) > 0 {
 		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, actionIDs)
-		if err == nil {
+		if err != nil {
+			h.logger.Warn("GetActionNamesByIDs bulk enrichment failed",
+				"action_id_count", len(actionIDs), "error", err)
+		} else {
 			nameMap := make(map[string]string, len(rows))
 			for _, row := range rows {
 				nameMap[row.ID] = row.Name

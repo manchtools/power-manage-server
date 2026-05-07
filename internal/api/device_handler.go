@@ -72,6 +72,8 @@ func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesPr
 		for _, t := range inv {
 			search.EnrichDeviceInventory(data, t.TableName, t.Rows)
 		}
+	} else {
+		logEnrichmentErr("GetDeviceInventoryByTables", "device_id", d.ID, err)
 	}
 	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDevice, d.ID, data)
 }
@@ -647,6 +649,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
 		if err == nil {
 			actionName = action.Name
+		} else {
+			logEnrichmentErr("GetActionByID", "action_id", p.ActionID, err)
 		}
 
 		// Look up device hostname
@@ -654,6 +658,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: p.DeviceID})
 		if err == nil {
 			deviceHostname = device.Hostname
+		} else {
+			logEnrichmentErr("GetDeviceByID", "device_id", p.DeviceID, err)
 		}
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
@@ -684,6 +690,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
 		if err == nil {
 			actionName = action.Name
+		} else {
+			logEnrichmentErr("GetActionByID", "action_id", p.ActionID, err)
 		}
 
 		decPassword, err := h.encryptor.Decrypt(p.Password)
@@ -730,12 +738,16 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
 		if err == nil {
 			actionName = action.Name
+		} else {
+			logEnrichmentErr("GetActionByID", "action_id", k.ActionID, err)
 		}
 
 		deviceHostname := ""
 		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: k.DeviceID})
 		if err == nil {
 			deviceHostname = device.Hostname
+		} else {
+			logEnrichmentErr("GetDeviceByID", "device_id", k.DeviceID, err)
 		}
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
@@ -771,6 +783,8 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
 		if err == nil {
 			actionName = action.Name
+		} else {
+			logEnrichmentErr("GetActionByID", "action_id", k.ActionID, err)
 		}
 
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/hibiken/asynq"
 )
@@ -140,9 +141,9 @@ func (c *Client) Close() error {
 	if err := c.inspector.Close(); err != nil {
 		// Inspector close errors are non-fatal — the underlying
 		// connection is shared with the client which we still close
-		// below. Log via the returned error from client.Close so the
-		// caller sees the more authoritative failure.
-		_ = err
+		// below. The authoritative failure surfaces via client.Close,
+		// but log here so silent inspector trouble is observable.
+		slog.Warn("taskqueue: inspector close failed", "error", err)
 	}
 	return c.client.Close()
 }

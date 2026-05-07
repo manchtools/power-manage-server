@@ -137,6 +137,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+	st.SetLogger(logger)
 	logger.Info("database initialized", "url", maskDatabaseURL(cfg.DatabaseURL))
 
 	// Create admin user if specified and not exists
