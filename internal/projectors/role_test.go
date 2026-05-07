@@ -17,7 +17,7 @@ import (
 )
 
 // TestRoleCreatedFromEvent_Pure exercises the decoder for RoleCreated.
-// The PL/pgSQL projector defaulted description to '', permissions to
+// The PL/pgSQL projector defaulted description to "", permissions to
 // '{}', is_system to FALSE — Go shape mirrors via zero values + an
 // explicit empty-slice for permissions when the payload omits the key.
 func TestRoleCreatedFromEvent_Pure(t *testing.T) {
@@ -87,7 +87,7 @@ func TestRoleCreatedFromEvent_Pure(t *testing.T) {
 
 // TestRoleUpdatedFromEvent_Pure covers the partial-update decoder.
 // PL/pgSQL semantics:
-//   - name uses `COALESCE(NULLIF(payload, ''), existing)` — empty
+//   - name uses `COALESCE(NULLIF(payload, ""), existing)` — empty
 //     string is "no update"; missing field is also "no update".
 //   - description uses `COALESCE(payload, existing)` — empty string
 //     IS an update; missing field is "no update".
@@ -147,7 +147,7 @@ func TestRoleUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("name=\"\" → preserved-via-NULLIF (treated as missing)", func(t *testing.T) {
-		// PL/pgSQL: `NULLIF(event.data->>'name', '')` collapses
+		// PL/pgSQL: `NULLIF(event.data->>'name', "")` collapses
 		// empty-string to NULL, then COALESCE keeps existing.
 		got, err := projectors.RoleUpdatedFromEvent(store.PersistedEvent{
 			StreamType: "role", StreamID: "r-1", EventType: "RoleUpdated",
