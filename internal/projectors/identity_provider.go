@@ -52,7 +52,7 @@ func (p IdentityProviderCreatedPayload) LogValue() slog.Value {
 // IdentityProviderUpdatedPayload — partial update with pointer fields
 // that distinguish "field present" from "field omitted". The
 // PL/pgSQL projector mixes COALESCE (preserve on NULL) and
-// `COALESCE(NULLIF(payload, ”), existing)` (preserve on missing OR
+// `COALESCE(NULLIF(payload, ''), existing)` (preserve on missing OR
 // empty-string) per field; we collapse empty-string to nil at the
 // listener layer for the NULLIF-shaped fields.
 type IdentityProviderUpdatedPayload struct {
@@ -220,7 +220,7 @@ type idpUpdatedRaw struct {
 // IdentityProviderUpdatedFromEvent decodes IdentityProviderUpdated.
 // Empty-string is collapsed to nil for the NULLIF-semantic fields
 // (client_id, client_secret_encrypted, issuer_url) to match the
-// PL/pgSQL projector's `COALESCE(NULLIF(payload, ”), existing)`.
+// PL/pgSQL projector's `COALESCE(NULLIF(payload, ''), existing)`.
 func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderUpdatedPayload, error) {
 	if e.StreamType != "identity_provider" || e.EventType != "IdentityProviderUpdated" {
 		return IdentityProviderUpdatedPayload{}, ErrIgnoredEvent

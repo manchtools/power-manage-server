@@ -54,26 +54,28 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 | Package | Purpose |
 |---------|---------|
+| `internal/actionparams` | Per-action-type parameter validation, schedule serialization, and proto/wire conversion shared by the action and dispatch handlers |
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, compliance, etc.) |
-| `internal/auth` | JWT bearer authentication, OPA authorization, TOTP 2FA, rate limiting, self-scope enforcement |
+| `internal/asynqutil` | Asynq task-queue helpers shared between the control inbox worker and the per-device gateway dispatchers |
+| `internal/auth` | JWT bearer authentication, dynamic-RBAC permission map (Go authorizer in `authorizer.go`), TOTP 2FA, rate limiting, self-scope enforcement |
 | `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
 | `internal/config` | Configuration loading (gateway) |
 | `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
 | `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
 | `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys, LPS passwords) |
-| `internal/agentrelease` | GitHub Releases polling cache — fetches latest agent binary version, per-arch download URLs, and SHA256 checksums every 5 minutes |
 | `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
+| `internal/gateway/registry` | Multi-gateway device→gateway routing registry (Valkey-backed) |
 | `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control, auto-update info) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
 | `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certs, enforces SPIFFE peer-class URI SANs (`agent` / `gateway` / `control`) on each listener |
+| `internal/projectors` | Go event-listener projector ports (tracker #107) — pure decoders + listener factories + sqlc-driven applies that replace the older PL/pgSQL projector functions |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
 | `internal/search` | Full-text search indexer using Valkey RediSearch — FT index management, Asynq reindex workers, cascade updates |
 | `internal/store` | PostgreSQL event store, migrations, sqlc queries |
 | `internal/taskqueue` | Asynq task queue client, task type constants, payload structs |
 | `internal/terminal` | Session token store (Valkey-backed) for remote terminal sessions |
-| `internal/gateway/registry` | Multi-gateway device→gateway routing registry (Valkey-backed) |
 | `internal/testutil` | Test helpers — PostgreSQL testcontainers, test entity factories, auth context injection |
 
 ## API Reference
@@ -401,16 +403,24 @@ Permission-based authorization replaces the old admin/user role model. Roles are
 | `ListActiveTerminalSessions` | View active terminal sessions (admin) |
 | `TerminateTerminalSession` | Forcibly terminate any terminal session (admin) |
 
-### OPA Authorization (`internal/auth/opa.go`)
+### Authorization (`internal/auth/authorizer.go`)
 
-Embedded Rego policies (`internal/auth/policies/authz.rego`) evaluate every RPC call based on the user's effective permissions (union of all assigned roles).
+Pure-Go authorizer evaluates every RPC call against the user's effective permissions (union of all assigned roles, including built-in roles synthesised from group membership). No OPA / Rego — the authorizer is a permission-map lookup with two scope variants:
+
+- `:self` — the resource owner is the authenticated user. Enforced at the handler boundary via `auth.EnforceSelfScope` so every handler that grants a `:self` permission rejects calls aimed at other users.
+- `:assigned` — the resource is in the user's assignment scope (devices reachable through assignment, action sets the user owns, etc.).
+
+The full permission catalog lives in `internal/auth/permissions.go`; the interceptor pipeline at `internal/auth/interceptor.go` wires it into Connect-RPC.
 
 ### Rate Limiting (`internal/auth/ratelimit.go`)
 
-Sliding-window rate limiter keyed by IP address:
-- Login: 10 attempts per 15 minutes
-- RefreshToken: 30 attempts per 15 minutes
-- Register: 10 attempts per 15 minutes
+Sliding-window rate limiter keyed by IP address. Current configured limits in `cmd/control/main.go`:
+
+- Login: 1000 attempts per minute
+- RefreshToken: 1000 attempts per minute
+- Register: 1000 attempts per minute
+
+These values are deliberately loose (operator-friendly defaults that stop pathological retry loops without rejecting legitimate clients). Tightening to credential-spray-resistant values is tracked separately — see [#142](https://github.com/manchtools/power-manage-server/issues/142) (rate-limit gaps on Logout / RenewCertificate) and [#145](https://github.com/manchtools/power-manage-server/issues/145) (Login / Register tightening, audit F036).
 
 Background goroutine cleans up stale entries every 5 minutes.
 
