@@ -177,7 +177,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		}
 		groups = append(groups, &pm.ActionGroup{
 			SourceLabel: g.SourceLabel,
-			Schedule:    scheduleFromJSON(g.Schedule),
+			Schedule:    actionparams.ScheduleFromJSON(g.Schedule),
 			Actions:     groupActions,
 		})
 	}
@@ -232,7 +232,7 @@ func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
 		actionparams.PopulateAction(action, a.ActionType, a.Params)
 	}
 	if len(a.Schedule) > 0 {
-		action.Schedule = scheduleFromJSON(a.Schedule)
+		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
 	return action
 }
@@ -518,7 +518,7 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 	}
 
 	if len(a.Schedule) > 0 {
-		action.Schedule = scheduleFromJSON(a.Schedule)
+		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
 
 	return action

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -226,7 +227,7 @@ func BootstrapRedirectMiddleware(next http.Handler, bootstrapHost, assignedHost 
 		// just the hostname — the agent may include the port,
 		// the bootstrap config typically doesn't.
 		reqHost := r.Host
-		if i := indexByte(reqHost, ':'); i >= 0 {
+		if i := strings.IndexByte(reqHost, ':'); i >= 0 {
 			reqHost = reqHost[:i]
 		}
 		if reqHost != bootstrapHost {
@@ -241,17 +242,6 @@ func BootstrapRedirectMiddleware(next http.Handler, bootstrapHost, assignedHost 
 		)
 		http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 	})
-}
-
-// indexByte is a tiny stdlib-free helper so this file doesn't need
-// the strings import for one call.
-func indexByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // Stream handles the bidirectional stream between agent and server.

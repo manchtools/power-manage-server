@@ -55,7 +55,7 @@ type ControlServiceConfig struct {
 }
 
 // NewControlService creates a new control service.
-func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
+func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ca.ActionSigner, certAuth *ca.CA, gatewayURL string, logger *slog.Logger, enc *crypto.Encryptor, cfg ControlServiceConfig) *ControlService {
 	actionHandler := NewActionHandler(st, logger.With("component", "action_handler"), signer)
 	systemActions := NewSystemActionManager(st, signer, logger)
 	settingsHandler := NewSettingsHandler(st, logger, systemActions)

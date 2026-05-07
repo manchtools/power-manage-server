@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -49,7 +50,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 	// payload defensively — see action_set_handler.go.CreateActionSet
 	// for the rationale (default-schedule fallback in the projector).
 	if req.Msg.Schedule != nil {
-		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
 			data["schedule"] = schedule
 		}
 	}
@@ -189,7 +190,7 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 
 	data := map[string]any{}
 	if req.Msg.Schedule != nil {
-		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
 			data["schedule"] = schedule
 		}
 	}
@@ -413,7 +414,7 @@ func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.De
 		Description: d.Description,
 		MemberCount: d.MemberCount,
 		CreatedBy:   d.CreatedBy,
-		Schedule:    scheduleFromJSON(d.Schedule),
+		Schedule:    actionparams.ScheduleFromJSON(d.Schedule),
 	}
 
 	if d.CreatedAt != nil {
