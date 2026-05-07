@@ -623,6 +623,64 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 }
 
 // GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
+// distinctIDs collects distinct non-empty values from id-typed slices,
+// preserving first-seen ordering. Used by the response loops below
+// to feed bulk-load queries (GetActionNamesByIDs / GetDeviceHostnamesByIDs)
+// that audit F008 introduced — the previous shape made one round-trip
+// per row, which on a device with 50 LUKS keys was ~100 sequential
+// queries per RPC.
+func distinctIDs(idSlices ...[]string) []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0)
+	for _, slice := range idSlices {
+		for _, id := range slice {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// loadActionNamesByIDs bulk-loads action_id → name. Failed lookups
+// (typically: action deleted between when the row was written and
+// when the RPC is served) drop out of the map; callers default to
+// empty string. Audit F008.
+func (h *DeviceHandler) loadActionNamesByIDs(ctx context.Context, ids []string) map[string]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := h.store.Queries().GetActionNamesByIDs(ctx, ids)
+	if err != nil {
+		logEnrichmentErr("GetActionNamesByIDs", "action_id_count", fmt.Sprint(len(ids)), err)
+		return nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Name
+	}
+	return out
+}
+
+// loadDeviceHostnamesByIDs bulk-loads device_id → hostname. Audit F008.
+func (h *DeviceHandler) loadDeviceHostnamesByIDs(ctx context.Context, ids []string) map[string]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := h.store.Queries().GetDeviceHostnamesByIDs(ctx, ids)
+	if err != nil {
+		logEnrichmentErr("GetDeviceHostnamesByIDs", "device_id_count", fmt.Sprint(len(ids)), err)
+		return nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Hostname
+	}
+	return out
+}
+
 func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -640,28 +698,27 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LPS password history")
 	}
 
+	// Bulk-load enrichment names (audit F008): one round-trip each
+	// instead of one per row inside the loops below. Both loops feed
+	// the same actionIDs set; only `current` rows have a per-row
+	// hostname.
+	actionIDsCurrent := make([]string, len(current))
+	deviceIDsCurrent := make([]string, len(current))
+	for i, p := range current {
+		actionIDsCurrent[i] = p.ActionID
+		deviceIDsCurrent[i] = p.DeviceID
+	}
+	actionIDsHistory := make([]string, len(history))
+	for i, p := range history {
+		actionIDsHistory[i] = p.ActionID
+	}
+	actionNames := h.loadActionNamesByIDs(ctx, distinctIDs(actionIDsCurrent, actionIDsHistory))
+	deviceHostnames := h.loadDeviceHostnamesByIDs(ctx, distinctIDs(deviceIDsCurrent))
+
 	// Convert to proto
 	resp := &pm.GetDeviceLpsPasswordsResponse{}
 
 	for _, p := range current {
-		// Look up action name
-		actionName := ""
-		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
-		if err == nil {
-			actionName = action.Name
-		} else {
-			logEnrichmentErr("GetActionByID", "action_id", p.ActionID, err)
-		}
-
-		// Look up device hostname
-		deviceHostname := ""
-		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: p.DeviceID})
-		if err == nil {
-			deviceHostname = device.Hostname
-		} else {
-			logEnrichmentErr("GetDeviceByID", "device_id", p.DeviceID, err)
-		}
-
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
 			// Decrypt failure on stored material is alarming —
@@ -674,9 +731,9 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		}
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
-			DeviceHostname: deviceHostname,
+			DeviceHostname: deviceHostnames[p.DeviceID],
 			ActionId:       p.ActionID,
-			ActionName:     actionName,
+			ActionName:     actionNames[p.ActionID],
 			Username:       p.Username,
 			Password:       decPassword,
 			RotationReason: p.RotationReason,
@@ -686,14 +743,6 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	}
 
 	for _, p := range history {
-		actionName := ""
-		action, err := h.store.Queries().GetActionByID(ctx, p.ActionID)
-		if err == nil {
-			actionName = action.Name
-		} else {
-			logEnrichmentErr("GetActionByID", "action_id", p.ActionID, err)
-		}
-
 		decPassword, err := h.encryptor.Decrypt(p.Password)
 		if err != nil {
 			h.logger.Error("failed to decrypt LPS password (history)",
@@ -703,7 +752,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		entry := &pm.LpsPassword{
 			DeviceId:       p.DeviceID,
 			ActionId:       p.ActionID,
-			ActionName:     actionName,
+			ActionName:     actionNames[p.ActionID],
 			Username:       p.Username,
 			Password:       decPassword,
 			RotationReason: p.RotationReason,
@@ -731,25 +780,24 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LUKS key history")
 	}
 
+	// Bulk-load enrichment names (audit F008): one round-trip each
+	// instead of one per row.
+	actionIDsCurrent := make([]string, len(current))
+	deviceIDsCurrent := make([]string, len(current))
+	for i, k := range current {
+		actionIDsCurrent[i] = k.ActionID
+		deviceIDsCurrent[i] = k.DeviceID
+	}
+	actionIDsHistory := make([]string, len(history))
+	for i, k := range history {
+		actionIDsHistory[i] = k.ActionID
+	}
+	actionNames := h.loadActionNamesByIDs(ctx, distinctIDs(actionIDsCurrent, actionIDsHistory))
+	deviceHostnames := h.loadDeviceHostnamesByIDs(ctx, distinctIDs(deviceIDsCurrent))
+
 	resp := &pm.GetDeviceLuksKeysResponse{}
 
 	for _, k := range current {
-		actionName := ""
-		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
-		if err == nil {
-			actionName = action.Name
-		} else {
-			logEnrichmentErr("GetActionByID", "action_id", k.ActionID, err)
-		}
-
-		deviceHostname := ""
-		device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: k.DeviceID})
-		if err == nil {
-			deviceHostname = device.Hostname
-		} else {
-			logEnrichmentErr("GetDeviceByID", "device_id", k.DeviceID, err)
-		}
-
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (current)",
@@ -758,9 +806,9 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		}
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,
-			DeviceHostname: deviceHostname,
+			DeviceHostname: deviceHostnames[k.DeviceID],
 			ActionId:       k.ActionID,
-			ActionName:     actionName,
+			ActionName:     actionNames[k.ActionID],
 			DevicePath:     k.DevicePath,
 			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
@@ -779,14 +827,6 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 	}
 
 	for _, k := range history {
-		actionName := ""
-		action, err := h.store.Queries().GetActionByID(ctx, k.ActionID)
-		if err == nil {
-			actionName = action.Name
-		} else {
-			logEnrichmentErr("GetActionByID", "action_id", k.ActionID, err)
-		}
-
 		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (history)",
@@ -796,7 +836,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		entry := &pm.LuksKey{
 			DeviceId:       k.DeviceID,
 			ActionId:       k.ActionID,
-			ActionName:     actionName,
+			ActionName:     actionNames[k.ActionID],
 			DevicePath:     k.DevicePath,
 			Passphrase:     decPassphrase,
 			RotationReason: k.RotationReason,
