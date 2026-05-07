@@ -25,6 +25,75 @@ func (q *Queries) CountActionSets(ctx context.Context, unassignedOnly bool) (int
 	return count, err
 }
 
+const decrementDefinitionMemberCountByActionSet = `-- name: DecrementDefinitionMemberCountByActionSet :exec
+UPDATE definitions_projection
+SET member_count = member_count - 1
+WHERE id IN (
+    SELECT definition_id FROM definition_members_projection WHERE action_set_id = $1
+)
+`
+
+// ActionSetDeleted handler — third half. Mirrors the PL/pgSQL
+// subquery `UPDATE definitions_projection SET member_count = member_count - 1
+// WHERE id IN (SELECT definition_id FROM definition_members_projection
+// WHERE action_set_id = ...)`. Runs BEFORE
+// DeleteDefinitionMembersByActionSet — once we delete those member
+// rows the subquery would return empty and the recount would no-op.
+// definitions_projection is still owned by the PL/pgSQL projector
+// (project_definition_event), so no projection_version guard here:
+// doing one would require coordinating versioning across two
+// projector codebases. The cascade itself is gated by
+// SoftDeleteActionSetProjection's :execrows short-circuit upstream.
+func (q *Queries) DecrementDefinitionMemberCountByActionSet(ctx context.Context, actionSetID string) error {
+	_, err := q.db.Exec(ctx, decrementDefinitionMemberCountByActionSet, actionSetID)
+	return err
+}
+
+const deleteActionSetMember = `-- name: DeleteActionSetMember :exec
+DELETE FROM action_set_members_projection
+WHERE set_id = $1
+  AND action_id = $2
+`
+
+type DeleteActionSetMemberParams struct {
+	SetID    string `json:"set_id"`
+	ActionID string `json:"action_id"`
+}
+
+// ActionSetMemberRemoved handler — first half. Plain DELETE — silently
+// no-op on a miss matches the PL/pgSQL projector's behaviour.
+func (q *Queries) DeleteActionSetMember(ctx context.Context, arg DeleteActionSetMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteActionSetMember, arg.SetID, arg.ActionID)
+	return err
+}
+
+const deleteActionSetMembersBySet = `-- name: DeleteActionSetMembersBySet :exec
+DELETE FROM action_set_members_projection WHERE set_id = $1
+`
+
+// ActionSetDeleted handler — second half. Wipes every member row for
+// the deleted set. Wrapped with SoftDeleteActionSetProjection +
+// DecrementDefinitionMemberCountByActionSet +
+// DeleteDefinitionMembersByActionSet inside store.WithTx for inter-
+// write atomicity.
+func (q *Queries) DeleteActionSetMembersBySet(ctx context.Context, setID string) error {
+	_, err := q.db.Exec(ctx, deleteActionSetMembersBySet, setID)
+	return err
+}
+
+const deleteDefinitionMembersByActionSet = `-- name: DeleteDefinitionMembersByActionSet :exec
+DELETE FROM definition_members_projection WHERE action_set_id = $1
+`
+
+// ActionSetDeleted handler — fourth half. Removes every
+// definition_members_projection row that referenced the deleted set
+// so the parent definition's member list no longer surfaces the
+// ghost.
+func (q *Queries) DeleteDefinitionMembersByActionSet(ctx context.Context, actionSetID string) error {
+	_, err := q.db.Exec(ctx, deleteDefinitionMembersByActionSet, actionSetID)
+	return err
+}
+
 const getActionSetByID = `-- name: GetActionSetByID :one
 
 SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, updated_at, schedule FROM action_sets_projection
@@ -94,6 +163,79 @@ func (q *Queries) GetActionSetMember(ctx context.Context, arg GetActionSetMember
 		&i.ProjectionVersion,
 	)
 	return i, err
+}
+
+const insertActionSetMember = `-- name: InsertActionSetMember :exec
+INSERT INTO action_set_members_projection (
+    set_id, action_id, sort_order, added_at, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (set_id, action_id) DO NOTHING
+`
+
+type InsertActionSetMemberParams struct {
+	SetID             string     `json:"set_id"`
+	ActionID          string     `json:"action_id"`
+	SortOrder         int32      `json:"sort_order"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetMemberAdded handler — first half. ON CONFLICT DO NOTHING
+// preserves the PL/pgSQL projector's idempotency under reconciler
+// replays. The composite PK (set_id, action_id) makes this safe.
+func (q *Queries) InsertActionSetMember(ctx context.Context, arg InsertActionSetMemberParams) error {
+	_, err := q.db.Exec(ctx, insertActionSetMember,
+		arg.SetID,
+		arg.ActionID,
+		arg.SortOrder,
+		arg.AddedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertActionSetProjection = `-- name: InsertActionSetProjection :exec
+
+INSERT INTO action_sets_projection (
+    id, name, description, schedule,
+    created_at, updated_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertActionSetProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	Schedule          []byte     `json:"schedule"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// Projector writes (manchtools/power-manage-server#136). Replaces the
+// deleted PL/pgSQL project_action_set_event() function; called from
+// projectors.ApplyActionSet via projectors.ActionSetListener.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE carries an
+// explicit `WHERE projection_version < $N` guard and uses :execrows
+// so the listener can short-circuit cascades on stale-replay
+// (asymmetric-guard discipline; see role_listener for the canonical
+// shape).
+// ActionSetCreated handler. ON CONFLICT DO NOTHING for replay safety.
+// Schedule defaults to '{"interval_hours": 8}' (the column default
+// mirrors the PL/pgSQL COALESCE fallback for the missing payload key).
+func (q *Queries) InsertActionSetProjection(ctx context.Context, arg InsertActionSetProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertActionSetProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Schedule,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
 
 const listActionSetMembers = `-- name: ListActionSetMembers :many
@@ -234,4 +376,211 @@ func (q *Queries) ListActionsInSet(ctx context.Context, setID string) ([]Actions
 		return nil, err
 	}
 	return items, nil
+}
+
+const recountActionSetMembers = `-- name: RecountActionSetMembers :execrows
+UPDATE action_sets_projection
+SET member_count      = (SELECT COUNT(*) FROM action_set_members_projection WHERE set_id = $1),
+    updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type RecountActionSetMembersParams struct {
+	SetID             string     `json:"set_id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetMemberAdded / ActionSetMemberRemoved handler — second half.
+// Recomputes member_count from the live row count, mirroring the
+// PL/pgSQL `(SELECT COUNT(*) ...)` subquery. Guarded so a stale replay
+// doesn't roll member_count backwards or stamp an old version.
+func (q *Queries) RecountActionSetMembers(ctx context.Context, arg RecountActionSetMembersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recountActionSetMembers, arg.SetID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameActionSetProjection = `-- name: RenameActionSetProjection :execrows
+UPDATE action_sets_projection
+SET name              = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type RenameActionSetProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetRenamed handler. Stale-replay guard via projection_version.
+func (q *Queries) RenameActionSetProjection(ctx context.Context, arg RenameActionSetProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameActionSetProjection,
+		arg.ID,
+		arg.Name,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteActionSetProjection = `-- name: SoftDeleteActionSetProjection :execrows
+UPDATE action_sets_projection
+SET is_deleted        = TRUE,
+    updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteActionSetProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetDeleted handler — first half. Returns rows-affected so the
+// listener can SKIP the cascade (members + parent-definition recount +
+// definition_members cleanup) when the projection_version guard
+// rejects a stale replay; otherwise an old ActionSetDeleted re-applied
+// by the reconciler would silently nuke a freshly-restored set's
+// members and decrement live definitions' member_count.
+func (q *Queries) SoftDeleteActionSetProjection(ctx context.Context, arg SoftDeleteActionSetProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteActionSetProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchActionSetUpdatedAt = `-- name: TouchActionSetUpdatedAt :execrows
+UPDATE action_sets_projection
+SET updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type TouchActionSetUpdatedAtParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetMemberReordered handler — second half. Bumps updated_at +
+// projection_version on the parent set so listing/cache invalidation
+// sees the change. Guarded for stale-replay safety.
+func (q *Queries) TouchActionSetUpdatedAt(ctx context.Context, arg TouchActionSetUpdatedAtParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchActionSetUpdatedAt, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateActionSetDescriptionProjection = `-- name: UpdateActionSetDescriptionProjection :execrows
+UPDATE action_sets_projection
+SET description       = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateActionSetDescriptionProjectionParams struct {
+	ID                string     `json:"id"`
+	Description       string     `json:"description"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetDescriptionUpdated handler. Empty-string description is a
+// valid value (matches the PL/pgSQL `COALESCE(payload, ”)` collapse —
+// the listener decoder substitutes ” when the payload key is missing).
+func (q *Queries) UpdateActionSetDescriptionProjection(ctx context.Context, arg UpdateActionSetDescriptionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActionSetDescriptionProjection,
+		arg.ID,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateActionSetMemberSortOrder = `-- name: UpdateActionSetMemberSortOrder :execrows
+UPDATE action_set_members_projection
+SET sort_order        = $3,
+    projection_version = $4
+WHERE set_id = $1
+  AND action_id = $2
+  AND projection_version < $4
+`
+
+type UpdateActionSetMemberSortOrderParams struct {
+	SetID             string `json:"set_id"`
+	ActionID          string `json:"action_id"`
+	SortOrder         int32  `json:"sort_order"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// ActionSetMemberReordered handler — first half. Per-member
+// projection_version guards the row so a stale reorder cannot clobber
+// a fresher position.
+func (q *Queries) UpdateActionSetMemberSortOrder(ctx context.Context, arg UpdateActionSetMemberSortOrderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActionSetMemberSortOrder,
+		arg.SetID,
+		arg.ActionID,
+		arg.SortOrder,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateActionSetScheduleProjection = `-- name: UpdateActionSetScheduleProjection :execrows
+UPDATE action_sets_projection
+SET schedule          = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateActionSetScheduleProjectionParams struct {
+	ID                string     `json:"id"`
+	Schedule          []byte     `json:"schedule"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionSetScheduleUpdated handler. The decoder defaults a missing
+// schedule key to the column default '{"interval_hours": 8}' so this
+// query always receives a non-NULL JSONB blob.
+func (q *Queries) UpdateActionSetScheduleProjection(ctx context.Context, arg UpdateActionSetScheduleProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActionSetScheduleProjection,
+		arg.ID,
+		arg.Schedule,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

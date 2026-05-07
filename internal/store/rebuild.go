@@ -144,11 +144,27 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_execution_event",
 	},
 	{
+		// Ported to projectors.ApplyActionSet via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline
+		// in project_event() stays quiet until the dispatcher itself
+		// drops its `WHEN 'action_set'` clause in the Phase 2 cleanup.
+		//
+		// Both action_sets_projection AND action_set_members_projection
+		// must be TRUNCATEd: the legacy rebuild_action_sets_projection()
+		// truncated both, and replaying events through ApplyActionSet
+		// requires the same starting state (otherwise pre-rebuild
+		// member rows leak through ON CONFLICT DO NOTHING and the
+		// recounted member_count + sort_orders end up echoing a hybrid
+		// of pre- and post-rebuild state). Listed in declaration order;
+		// CASCADE on the parent isn't strictly required since there's
+		// no FK linking the tables, but it's kept for symmetry with the
+		// legacy PL/pgSQL behaviour.
 		Name:        "action_sets",
-		Tables:      []string{"action_sets_projection"},
+		Tables:      []string{"action_sets_projection", "action_set_members_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"action_set"},
-		Function:    "project_action_set_event",
 	},
 	{
 		Name:        "definitions",
