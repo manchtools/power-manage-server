@@ -9,7 +9,7 @@ import (
 
 // RoleCreatedPayload represents the decoded shape of a RoleCreated
 // event. The deleted PL/pgSQL projector applied COALESCE defaults
-// for description (”), permissions ('{}'), and is_system (FALSE);
+// for description (""), permissions ('{}'), and is_system (FALSE);
 // the Go decoder mirrors via zero values + an explicit empty slice
 // so the listener can pass them through unchanged.
 type RoleCreatedPayload struct {
@@ -26,7 +26,7 @@ type RoleCreatedPayload struct {
 // semantics:
 //
 //   - Name: present-with-value → update; missing OR empty-string →
-//     keep existing (PL/pgSQL `COALESCE(NULLIF(payload, ”), existing)`).
+//     keep existing (PL/pgSQL `COALESCE(NULLIF(payload, ""), existing)`).
 //   - Description: present (incl. empty string) → update; missing →
 //     keep (PL/pgSQL `COALESCE(payload, existing)`).
 //   - Permissions: present (incl. empty array) → update; missing →
@@ -56,7 +56,7 @@ type roleCreatedRaw struct {
 // for any other (stream, event_type) so the listener wrapper can
 // silently no-op.
 //
-// Defaults match the PL/pgSQL projector: missing description → ”;
+// Defaults match the PL/pgSQL projector: missing description → "";
 // missing permissions → empty slice; missing is_system → false.
 func RoleCreatedFromEvent(e store.PersistedEvent) (RoleCreatedPayload, error) {
 	if e.StreamType != "role" || e.EventType != "RoleCreated" {
@@ -106,7 +106,7 @@ type roleUpdatedRaw struct {
 // non-nil = update; nil = preserve.
 //
 // Empty-string Name is collapsed to nil (preserve) to match the
-// PL/pgSQL `NULLIF(name, ”)` semantics — a UI that sends "" for
+// PL/pgSQL `NULLIF(name, "")` semantics — a UI that sends "" for
 // the name field doesn't blank the role.
 func RoleUpdatedFromEvent(e store.PersistedEvent) (RoleUpdatedPayload, error) {
 	if e.StreamType != "role" || e.EventType != "RoleUpdated" {

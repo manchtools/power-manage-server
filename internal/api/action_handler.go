@@ -30,7 +30,7 @@ type ActionSigner interface {
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
-	taskQueueHolder // aqClient is nil during Phase 2 dual-write if Valkey is not configured
+	taskQueueHolder // aqClient is nil when CONTROL_VALKEY_ADDR is unset (in-process mode without Valkey)
 	searchIndexHolder
 	store  *store.Store
 	logger *slog.Logger
