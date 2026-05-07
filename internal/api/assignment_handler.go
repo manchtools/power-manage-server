@@ -401,19 +401,21 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	protoCompliancePolicies := make([]*pm.CompliancePolicy, 0, len(compliancePolicyIDs))
 	for id := range compliancePolicyIDs {
 		cp, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
-		if err == nil {
-			protoPolicy := &pm.CompliancePolicy{
-				Id:          cp.ID,
-				Name:        cp.Name,
-				Description: cp.Description,
-				RuleCount:   cp.RuleCount,
-				CreatedBy:   cp.CreatedBy,
-			}
-			if cp.CreatedAt != nil {
-				protoPolicy.CreatedAt = timestamppb.New(*cp.CreatedAt)
-			}
-			protoCompliancePolicies = append(protoCompliancePolicies, protoPolicy)
+		if err != nil {
+			logEnrichmentErr("GetCompliancePolicyByID", "compliance_policy_id", id, err)
+			continue
 		}
+		protoPolicy := &pm.CompliancePolicy{
+			Id:          cp.ID,
+			Name:        cp.Name,
+			Description: cp.Description,
+			RuleCount:   cp.RuleCount,
+			CreatedBy:   cp.CreatedBy,
+		}
+		if cp.CreatedAt != nil {
+			protoPolicy.CreatedAt = timestamppb.New(*cp.CreatedAt)
+		}
+		protoCompliancePolicies = append(protoCompliancePolicies, protoPolicy)
 	}
 
 	return connect.NewResponse(&pm.GetDeviceAssignmentsResponse{

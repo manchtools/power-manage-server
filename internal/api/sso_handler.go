@@ -47,7 +47,11 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 		PasswordEnabled: h.passwordAuthEnabled,
 	}
 
-	// If email is provided, check user-specific auth methods
+	// If email is provided, check user-specific auth methods. Lookup
+	// failures other than not-found get logged so silent DB drift is
+	// observable; the *response* never reveals the distinction
+	// between "no such user" and "lookup errored" — that's a deliberate
+	// info-leak guard, see the comment below.
 	if req.Msg.Email != "" {
 		user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)
 		if err == nil {
@@ -56,10 +60,23 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 			// Check if any linked provider disables password
 			if h.passwordAuthEnabled {
 				disablingProviders, err := h.store.Queries().GetLinkedProvidersDisablingPassword(ctx, user.ID)
-				if err == nil && len(disablingProviders) > 0 {
-					resp.PasswordEnabled = false
+				if err == nil {
+					if len(disablingProviders) > 0 {
+						resp.PasswordEnabled = false
+					}
+				} else {
+					// Pre-auth path: never log raw user.ID (would
+					// confirm-existence to anyone with log access
+					// from an unauthenticated request). Operator
+					// triage works from the operation name + error.
+					h.logger.Warn("sso: GetLinkedProvidersDisablingPassword failed", "error", err)
 				}
 			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			// Pre-auth path; the email is in req.Msg but logging
+			// it would correlate the failure to a specific user.
+			// Stay anonymous — surface the operation + the err.
+			h.logger.Warn("sso: GetUserByEmail failed (non-NotFound)", "error", err)
 		}
 		// If user not found, don't reveal it — just show global defaults
 	}
@@ -74,6 +91,8 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 				ProviderType: p.ProviderType,
 			})
 		}
+	} else {
+		h.logger.Warn("sso: ListEnabledIdentityProviders failed", "error", err)
 	}
 
 	return connect.NewResponse(resp), nil

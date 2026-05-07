@@ -259,6 +259,8 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 	})
 	if err == nil {
 		devicePath = key.DevicePath
+	} else {
+		logEnrichmentErr("GetCurrentLuksKeyForAction", "device_id", req.Msg.DeviceId, err)
 	}
 
 	return connect.NewResponse(&pm.ValidateLuksTokenResponse{

@@ -151,18 +151,24 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 				if action.Description != nil {
 					item.SourceDescription = *action.Description
 				}
+			} else {
+				logEnrichmentErr("GetActionByID", "action_id", asn.SourceID, err)
 			}
 		case "action_set":
 			set, err := h.store.Queries().GetActionSetByID(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = set.Name
 				item.SourceDescription = set.Description
+			} else {
+				logEnrichmentErr("GetActionSetByID", "action_set_id", asn.SourceID, err)
 			}
 		case "definition":
 			def, err := h.store.Queries().GetDefinitionByID(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = def.Name
 				item.SourceDescription = def.Description
+			} else {
+				logEnrichmentErr("GetDefinitionByID", "definition_id", asn.SourceID, err)
 			}
 		}
 

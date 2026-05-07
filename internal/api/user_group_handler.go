@@ -40,10 +40,15 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	// Check name uniqueness
+	// Check name uniqueness — distinguishing NotFound from a transient
+	// DB error matters: silently treating any error as "name available"
+	// would let a concurrent CreateUserGroup succeed twice on a flaky DB.
 	_, err := h.store.Queries().GetUserGroupByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check user group name uniqueness")
 	}
 
 	userCtx, err := requireAuth(ctx)

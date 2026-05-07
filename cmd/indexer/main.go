@@ -65,6 +65,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer st.Close()
+	st.SetLogger(logger)
 	logger.Info("database initialized")
 
 	// Initialize go-redis client for RediSearch.
