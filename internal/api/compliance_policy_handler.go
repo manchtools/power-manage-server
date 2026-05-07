@@ -62,7 +62,6 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-
 	return connect.NewResponse(&pm.CreateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
 	}), nil
@@ -158,7 +157,6 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
 	}), nil
@@ -198,7 +196,6 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateCompliancePolicyResponse{
 		Policy: h.policyToProto(policy, nil),
@@ -302,7 +299,6 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
 
-
 	return connect.NewResponse(&pm.AddCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),
 	}), nil
@@ -347,7 +343,6 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
-
 
 	return connect.NewResponse(&pm.RemoveCompliancePolicyRuleResponse{
 		Policy: h.policyToProto(policy, rules),

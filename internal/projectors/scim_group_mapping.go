@@ -9,7 +9,7 @@ import (
 
 // SCIMGroupMappedPayload covers the upsert path. The PL/pgSQL
 // projector required provider_id, scim_group_id, user_group_id and
-// defaulted scim_display_name to ''.
+// defaulted scim_display_name to "" (empty string).
 type SCIMGroupMappedPayload struct {
 	ID              string
 	ProviderID      string

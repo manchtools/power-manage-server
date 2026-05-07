@@ -62,4 +62,3 @@ func TestUpdateUserLinuxUsername_PermissionExists(t *testing.T) {
 
 	assert.True(t, defaultSet["UpdateUserLinuxUsername:self"], "DefaultUserPermissions() should include UpdateUserLinuxUsername:self")
 }
-

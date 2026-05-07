@@ -24,8 +24,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // DeviceHandler handles device management RPCs.
@@ -1048,4 +1048,3 @@ func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Re
 		Assignees: assignees,
 	}), nil
 }
-

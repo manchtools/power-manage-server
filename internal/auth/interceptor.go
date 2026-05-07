@@ -23,15 +23,15 @@ const (
 
 // PublicProcedures are procedures that don't require authentication.
 var PublicProcedures = map[string]bool{
-	"/pm.v1.ControlService/Login":           true,
-	"/pm.v1.ControlService/RefreshToken":    true,
-	"/pm.v1.ControlService/Logout":          true,
+	"/pm.v1.ControlService/Login":            true,
+	"/pm.v1.ControlService/RefreshToken":     true,
+	"/pm.v1.ControlService/Logout":           true,
 	"/pm.v1.ControlService/Register":         true,
 	"/pm.v1.ControlService/RenewCertificate": true,
-	"/pm.v1.ControlService/VerifyLoginTOTP": true,
-	"/pm.v1.ControlService/ListAuthMethods": true,
-	"/pm.v1.ControlService/GetSSOLoginURL":  true,
-	"/pm.v1.ControlService/SSOCallback":             true,
+	"/pm.v1.ControlService/VerifyLoginTOTP":  true,
+	"/pm.v1.ControlService/ListAuthMethods":  true,
+	"/pm.v1.ControlService/GetSSOLoginURL":   true,
+	"/pm.v1.ControlService/SSOCallback":      true,
 }
 
 // TrustedProxies is the set of IP addresses/CIDRs trusted to set
@@ -137,7 +137,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.loginLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
 			}
 		}
 
@@ -146,7 +146,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.refreshLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
 			}
 		}
 
@@ -155,7 +155,7 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.registerLimiter.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx,errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
 			}
 		}
 
@@ -167,21 +167,21 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// Extract token from Authorization: Bearer header
 		authHeader := req.Header().Get("Authorization")
 		if authHeader == "" {
-			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
+			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 		parts := strings.SplitN(authHeader, " ", 2)
 		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
+			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
 		}
 		tokenString := parts[1]
 		if tokenString == "" {
-			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
+			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 
 		// Validate token
 		claims, err := i.jwtManager.ValidateToken(tokenString, TokenTypeAccess)
 		if err != nil {
-			return nil, authErrorCtx(ctx,errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
+			return nil, authErrorCtx(ctx, errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
 		}
 
 		// Add user context with permissions from JWT
@@ -242,7 +242,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 				Action:    action,
 			}
 			if !Authorize(input) {
-				return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
+				return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 			}
 			return next(ctx, req)
 		}
@@ -250,7 +250,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
-			return nil, authErrorCtx(ctx,errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 		}
 
 		input := AuthzInput{
@@ -260,7 +260,7 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		}
 
 		if !Authorize(input) {
-			return nil, authErrorCtx(ctx,errPermissionDenied, connect.CodePermissionDenied, "permission denied")
+			return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
 
 		return next(ctx, req)

@@ -34,38 +34,38 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
-	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/mtls"
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
 // version is set at build time via -ldflags.
 var version = "dev"
 
 type Config struct {
-	ListenAddr                   string
-	DatabaseURL                  string
-	JWTSecret                    string
-	CACertPath                   string
-	CAKeyPath                    string
-	CertValidity                 time.Duration
-	LogLevel                     string
-	LogFormat                    string
-	AdminEmail                   string
-	AdminPassword                string
-	CORSOrigins                  []string
-	GatewayURL                   string
-	TerminalGatewayURL           string // public WebSocket URL of the gateway terminal endpoint, e.g. wss://gw.example.com/terminal
-	DynamicGroupEvalInterval     time.Duration
-	PasswordAuthEnabled          bool
-	SSOCallbackBaseURL           string
-	SCIMBaseURL                  string
-	TrustedProxies               []string
-	CATrustBundlePath            string
+	ListenAddr               string
+	DatabaseURL              string
+	JWTSecret                string
+	CACertPath               string
+	CAKeyPath                string
+	CertValidity             time.Duration
+	LogLevel                 string
+	LogFormat                string
+	AdminEmail               string
+	AdminPassword            string
+	CORSOrigins              []string
+	GatewayURL               string
+	TerminalGatewayURL       string // public WebSocket URL of the gateway terminal endpoint, e.g. wss://gw.example.com/terminal
+	DynamicGroupEvalInterval time.Duration
+	PasswordAuthEnabled      bool
+	SSOCallbackBaseURL       string
+	SCIMBaseURL              string
+	TrustedProxies           []string
+	CATrustBundlePath        string
 
 	// Public listener TLS (optional — plain HTTP/1.1 when disabled)
 	TLSEnabled bool
@@ -321,9 +321,9 @@ func main() {
 
 	// Setup Connect-RPC service
 	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
-		PasswordAuthEnabled:       cfg.PasswordAuthEnabled,
-		SSOCallbackBaseURL:        cfg.SSOCallbackBaseURL,
-		SCIMBaseURL:               cfg.SCIMBaseURL,
+		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
+		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
+		SCIMBaseURL:         cfg.SCIMBaseURL,
 	})
 
 	// Seed SSH access for all from env var (one-time: only sets if DB value is still false)

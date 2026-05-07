@@ -70,7 +70,6 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
 
-
 	return connect.NewResponse(&pm.CreateActionSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
@@ -172,7 +171,6 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
@@ -213,7 +211,6 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
 		Set: h.actionSetToProto(set),
 	}), nil
@@ -247,7 +244,6 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateActionSetResponse{
 		Set: h.actionSetToProto(set),

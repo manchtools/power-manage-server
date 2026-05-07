@@ -27,15 +27,15 @@ import (
 var version = "dev"
 
 type Config struct {
-	DatabaseURL        string
-	ValkeyAddr         string
-	ValkeyPassword     string
-	ValkeyDB           int
-	LogLevel           string
-	LogFormat          string
-	ReconcileInterval  time.Duration
-	Concurrency        int
-	HealthAddr         string
+	DatabaseURL       string
+	ValkeyAddr        string
+	ValkeyPassword    string
+	ValkeyDB          int
+	LogLevel          string
+	LogFormat         string
+	ReconcileInterval time.Duration
+	Concurrency       int
+	HealthAddr        string
 }
 
 func main() {

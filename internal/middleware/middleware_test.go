@@ -82,7 +82,7 @@ func TestSecurityHeaders_SetsAllHeaders(t *testing.T) {
 		"X-Frame-Options":        "DENY",
 		"X-Content-Type-Options": "nosniff",
 		"Referrer-Policy":        "strict-origin-when-cross-origin",
-		"X-XSS-Protection":      "0",
+		"X-XSS-Protection":       "0",
 		"Permissions-Policy":     "camera=(), microphone=(), geolocation=()",
 	}
 

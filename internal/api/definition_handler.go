@@ -69,7 +69,6 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
 
-
 	return connect.NewResponse(&pm.CreateDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
@@ -169,7 +168,6 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
@@ -211,7 +209,6 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
 	}), nil
@@ -245,7 +242,6 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateDefinitionResponse{
 		Definition: h.definitionToProto(def),
@@ -409,7 +405,6 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		Definition: h.definitionToProto(def),
 	}), nil
 }
-
 
 func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {
 	def := &pm.Definition{

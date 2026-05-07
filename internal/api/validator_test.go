@@ -90,12 +90,12 @@ func TestValidate_Optional_TooShort(t *testing.T) {
 
 func TestToSnakeCase(t *testing.T) {
 	tests := map[string]string{
-		"Name":            "name",
-		"UserID":          "user_i_d",
-		"ActionSetID":     "action_set_i_d",
-		"createdAt":       "created_at",
-		"simple":          "simple",
-		"HTTPStatusCode":  "h_t_t_p_status_code",
+		"Name":           "name",
+		"UserID":         "user_i_d",
+		"ActionSetID":    "action_set_i_d",
+		"createdAt":      "created_at",
+		"simple":         "simple",
+		"HTTPStatusCode": "h_t_t_p_status_code",
 	}
 	for input, expected := range tests {
 		assert.Equal(t, expected, sdkvalidate.ToSnakeCase(input), "ToSnakeCase(%q)", input)

@@ -87,4 +87,3 @@ func DeviceIDFromTLS(state *tls.ConnectionState) (string, error) {
 
 	return deviceID, nil
 }
-

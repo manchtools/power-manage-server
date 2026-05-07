@@ -56,18 +56,18 @@ type DeviceHelloPayload struct {
 
 // DeviceHeartbeatPayload is the payload for TypeDeviceHeartbeat tasks.
 type DeviceHeartbeatPayload struct {
-	DeviceID       string  `json:"device_id"`
-	AgentVersion   string  `json:"agent_version,omitempty"`
-	UptimeSeconds  int64   `json:"uptime_seconds,omitempty"`
-	CpuPercent     float32 `json:"cpu_percent,omitempty"`
-	MemoryPercent  float32 `json:"memory_percent,omitempty"`
-	DiskPercent    float32 `json:"disk_percent,omitempty"`
+	DeviceID      string  `json:"device_id"`
+	AgentVersion  string  `json:"agent_version,omitempty"`
+	UptimeSeconds int64   `json:"uptime_seconds,omitempty"`
+	CpuPercent    float32 `json:"cpu_percent,omitempty"`
+	MemoryPercent float32 `json:"memory_percent,omitempty"`
+	DiskPercent   float32 `json:"disk_percent,omitempty"`
 }
 
 // ExecutionResultPayload is the payload for TypeExecutionResult tasks.
 // Contains the protojson-encoded ActionResult plus the device ID.
 type ExecutionResultPayload struct {
-	DeviceID    string `json:"device_id"`
+	DeviceID string `json:"device_id"`
 	// ActionResultJSON is the protojson-serialized pm.ActionResult.
 	ActionResultJSON []byte `json:"action_result_json"`
 }
@@ -168,10 +168,10 @@ type SearchRemovePayload struct {
 
 // SearchEntityData carries pre-populated entity data in search payloads.
 type SearchEntityData struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	MemberCount  int32  `json:"member_count,omitempty"`
-	Type         int32  `json:"type,omitempty"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	MemberCount    int32  `json:"member_count,omitempty"`
+	Type           int32  `json:"type,omitempty"`
 	IsCompliance   bool   `json:"is_compliance,omitempty"`
 	ActionNames    string `json:"action_names,omitempty"`
 	HasActionNames bool   `json:"has_action_names,omitempty"`

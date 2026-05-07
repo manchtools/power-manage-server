@@ -9,15 +9,15 @@
 //
 // Two key namespaces:
 //
-//   pm:gateway:terminal:<gateway_id>  → public WebSocket URL
-//     Written by each gateway at startup with a TTL, refreshed by
-//     a heartbeat goroutine, deleted on clean shutdown. A crashed
-//     gateway is invisible within the TTL.
+//	pm:gateway:terminal:<gateway_id>  → public WebSocket URL
+//	  Written by each gateway at startup with a TTL, refreshed by
+//	  a heartbeat goroutine, deleted on clean shutdown. A crashed
+//	  gateway is invisible within the TTL.
 //
-//   pm:device:gateway:<device_id>     → gateway_id
-//     Written by the gateway when an agent connects, refreshed on
-//     each agent heartbeat, deleted on clean disconnect. A crashed
-//     agent or gateway is invisible within the TTL.
+//	pm:device:gateway:<device_id>     → gateway_id
+//	  Written by the gateway when an agent connects, refreshed on
+//	  each agent heartbeat, deleted on clean disconnect. A crashed
+//	  agent or gateway is invisible within the TTL.
 //
 // The control server queries both keys in turn from
 // ControlService.StartTerminal so the minted session token carries
@@ -71,8 +71,8 @@ const (
 )
 
 func gatewayKey(gatewayID string) string         { return gatewayKeyPrefix + gatewayID }
-func gatewayInternalKey(gatewayID string) string  { return gatewayInternalKeyPrefix + gatewayID }
-func deviceKey(deviceID string) string            { return deviceKeyPrefix + deviceID }
+func gatewayInternalKey(gatewayID string) string { return gatewayInternalKeyPrefix + gatewayID }
+func deviceKey(deviceID string) string           { return deviceKeyPrefix + deviceID }
 
 // Backend is the storage interface the Registry depends on. Two
 // implementations ship with this package: ValkeyBackend (production)

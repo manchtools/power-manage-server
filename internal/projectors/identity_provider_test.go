@@ -20,7 +20,7 @@ import (
 // TestIdentityProviderCreatedFromEvent_Pure exercises the decoder
 // for IdentityProviderCreated. PL/pgSQL defaulted: provider_type='oidc',
 // scopes='{}', auto_create_users=FALSE, auto_link_by_email=FALSE,
-// default_role_id='', etc. Pointer fields on the encrypted secret
+// default_role_id="" (empty string), etc. Pointer fields on the encrypted secret
 // preserve the empty-vs-omitted distinction.
 func TestIdentityProviderCreatedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with all fields", func(t *testing.T) {
@@ -156,7 +156,7 @@ func TestIdentityProviderListener_FullLifecycle(t *testing.T) {
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider", StreamID: idpID,
 		EventType: "IdentityProviderUpdated",
-		Data: map[string]any{"name": "renamed", "enabled": false},
+		Data:      map[string]any{"name": "renamed", "enabled": false},
 		ActorType: "user", ActorID: "u",
 	}))
 	idp, err = st.Queries().GetIdentityProviderByID(ctx, idpID)
@@ -359,9 +359,9 @@ func TestIdentityLinkListener_LinkUpdateUnlink(t *testing.T) {
 		StreamType: "identity_provider", StreamID: linkID,
 		EventType: "IdentityLinkLoginUpdated",
 		Data: map[string]any{
-			"provider_id":    idpID,
-			"external_id":    "ext-1",
-			"external_name":  "Updated Name",
+			"provider_id":   idpID,
+			"external_id":   "ext-1",
+			"external_name": "Updated Name",
 		},
 		ActorType: "user", ActorID: userID,
 	}))

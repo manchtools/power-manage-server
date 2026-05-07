@@ -41,10 +41,10 @@ type SystemActionsCleaner interface {
 
 // Handler handles SCIM v2 API requests.
 type Handler struct {
-	store          *store.Store
-	logger         *slog.Logger
-	rateLimiter    *auth.RateLimiter
-	systemActions  SystemActionsCleaner // optional; nil = no cleanup on delete
+	store         *store.Store
+	logger        *slog.Logger
+	rateLimiter   *auth.RateLimiter
+	systemActions SystemActionsCleaner // optional; nil = no cleanup on delete
 }
 
 // NewHandler creates an http.Handler that serves all SCIM v2 routes.

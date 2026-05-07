@@ -307,15 +307,15 @@ func TestTerminateTerminalSession_NotAuthenticated(t *testing.T) {
 
 func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 	cases := map[string]string{
-		"":                                       "",
-		"wss://gw/terminal":                      "wss://gw/terminal",
-		"wss://gw/terminal/":                     "wss://gw/terminal",
-		"wss://gw/terminal?token=abc":            "wss://gw/terminal",
-		"wss://gw/terminal?token=abc&extra=1":    "wss://gw/terminal",
-		"wss://gw/terminal#frag":                 "wss://gw/terminal",
+		"":                                    "",
+		"wss://gw/terminal":                   "wss://gw/terminal",
+		"wss://gw/terminal/":                  "wss://gw/terminal",
+		"wss://gw/terminal?token=abc":         "wss://gw/terminal",
+		"wss://gw/terminal?token=abc&extra=1": "wss://gw/terminal",
+		"wss://gw/terminal#frag":              "wss://gw/terminal",
 		// Userinfo credentials must be stripped.
-		"wss://admin:secret@gw/terminal":         "wss://gw/terminal",
-		"wss://user@gw/terminal?token=abc":       "wss://gw/terminal",
+		"wss://admin:secret@gw/terminal":   "wss://gw/terminal",
+		"wss://user@gw/terminal?token=abc": "wss://gw/terminal",
 	}
 	for in, want := range cases {
 		got := api.GatewayBaseURL(in)

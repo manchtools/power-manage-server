@@ -17,7 +17,7 @@ import (
 // TestSCIMGroupMappedFromEvent_Pure exercises the decoder. provider_id,
 // scim_group_id, and user_group_id are required (composite-key
 // columns + FK to user_groups_projection); scim_display_name defaults
-// to '' to match the PL/pgSQL COALESCE.
+// to "" (empty string) to match the PL/pgSQL COALESCE.
 func TestSCIMGroupMappedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with display name", func(t *testing.T) {
 		got, err := projectors.SCIMGroupMappedFromEvent(store.PersistedEvent{
@@ -95,7 +95,7 @@ func TestSCIMGroupUnmappedFromEvent_Pure(t *testing.T) {
 	got, err := projectors.SCIMGroupUnmappedFromEvent(store.PersistedEvent{
 		StreamType: "scim_group_mapping", StreamID: "m",
 		EventType: "SCIMGroupUnmapped",
-		Data: jsonOrFail(t, map[string]any{"provider_id": "p", "scim_group_id": "sg"}),
+		Data:      jsonOrFail(t, map[string]any{"provider_id": "p", "scim_group_id": "sg"}),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "p", got.ProviderID)

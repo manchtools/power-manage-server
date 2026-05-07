@@ -174,8 +174,8 @@ func TestReorderActionInSet(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = h.ReorderActionInSet(ctx, connect.NewRequest(&pm.ReorderActionInSetRequest{
-		SetId:     setID,
-		ActionId:  actionID,
+		SetId:    setID,
+		ActionId: actionID,
 		NewOrder: 5,
 	}))
 	require.NoError(t, err)

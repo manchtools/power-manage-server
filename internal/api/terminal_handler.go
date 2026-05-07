@@ -31,11 +31,11 @@ import (
 // inventory; this handler implements the user-initiated open and
 // graceful stop paths.
 type TerminalHandler struct {
-	store      *store.Store
-	tokenStore *terminal.TokenStore
-	registry   *registry.Registry // multi-gateway routing; may be nil for single-gateway fallback
+	store       *store.Store
+	tokenStore  *terminal.TokenStore
+	registry    *registry.Registry // multi-gateway routing; may be nil for single-gateway fallback
 	fallbackURL string             // used only when registry is nil
-	logger     *slog.Logger
+	logger      *slog.Logger
 
 	// internalHTTPClient is an mTLS-configured HTTP client used to
 	// call GatewayService on each live gateway for admin fan-out
@@ -470,9 +470,9 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 	}
 
 	var (
-		mu       sync.Mutex
-		all      []*pm.TerminalSessionInfo
-		wg       sync.WaitGroup
+		mu  sync.Mutex
+		all []*pm.TerminalSessionInfo
+		wg  sync.WaitGroup
 	)
 
 	for gwID, gwURL := range gateways {

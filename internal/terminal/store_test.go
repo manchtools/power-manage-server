@@ -240,9 +240,9 @@ func TestTokenStore_Mint_RequiresFields(t *testing.T) {
 	store := NewTokenStore(NewFakeBackend(nil))
 	ctx := context.Background()
 	cases := []MintParams{
-		{DeviceID: "d", TtyUser: "u"},          // no UserID
-		{UserID: "u", TtyUser: "u"},            // no DeviceID
-		{UserID: "u", DeviceID: "d"},           // no TtyUser
+		{DeviceID: "d", TtyUser: "u"}, // no UserID
+		{UserID: "u", TtyUser: "u"},   // no DeviceID
+		{UserID: "u", DeviceID: "d"},  // no TtyUser
 	}
 	for i, p := range cases {
 		if _, err := store.Mint(ctx, p); err == nil {
@@ -270,4 +270,3 @@ func TestTokenStore_MintGeneratesUniqueIDs(t *testing.T) {
 		seen[res.SessionID] = struct{}{}
 	}
 }
-

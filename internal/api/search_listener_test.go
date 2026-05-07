@@ -17,9 +17,9 @@ import (
 // time rather than as silently-stale search results in production.
 func TestAffectedSearchOps(t *testing.T) {
 	cases := []struct {
-		name      string
-		event     store.PersistedEvent
-		want      []api.SearchAffected
+		name  string
+		event store.PersistedEvent
+		want  []api.SearchAffected
 	}{
 		// User scope — reindex on field-changing events
 		{

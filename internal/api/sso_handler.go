@@ -21,23 +21,23 @@ import (
 
 // SSOHandler handles SSO authentication flow RPCs.
 type SSOHandler struct {
-	store              *store.Store
-	logger             *slog.Logger
-	jwtManager         *auth.JWTManager
-	enc                *crypto.Encryptor
+	store               *store.Store
+	logger              *slog.Logger
+	jwtManager          *auth.JWTManager
+	enc                 *crypto.Encryptor
 	passwordAuthEnabled bool
-	callbackBaseURL    string
+	callbackBaseURL     string
 }
 
 // NewSSOHandler creates a new SSO handler.
 func NewSSOHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTManager, enc *crypto.Encryptor, passwordAuthEnabled bool, callbackBaseURL string) *SSOHandler {
 	return &SSOHandler{
-		store:              st,
-		logger:             logger,
-		jwtManager:         jwtManager,
-		enc:                enc,
+		store:               st,
+		logger:              logger,
+		jwtManager:          jwtManager,
+		enc:                 enc,
 		passwordAuthEnabled: passwordAuthEnabled,
-		callbackBaseURL:    callbackBaseURL,
+		callbackBaseURL:     callbackBaseURL,
 	}
 }
 
@@ -148,7 +148,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		ClientSecret:     clientSecret,
 		Scopes:           provider.Scopes,
 		RedirectURL:      callbackURL,
-		GroupClaim:        provider.GroupClaim,
+		GroupClaim:       provider.GroupClaim,
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")
@@ -221,7 +221,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		ClientSecret:     clientSecret,
 		Scopes:           provider.Scopes,
 		RedirectURL:      callbackURL,
-		GroupClaim:        provider.GroupClaim,
+		GroupClaim:       provider.GroupClaim,
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to initialize OIDC provider")

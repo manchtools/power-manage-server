@@ -181,7 +181,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err == nil {
 		// Already exists — update display name if changed and return existing resource.
-			h.logger.Debug("SCIM createGroup: group already exists, syncing", "scim_group_id", scimGroupID, "user_group_id", existing.UserGroupID)
+		h.logger.Debug("SCIM createGroup: group already exists, syncing", "scim_group_id", scimGroupID, "user_group_id", existing.UserGroupID)
 		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
 		if existing.ScimDisplayName != scimGroup.DisplayName {
 			h.appendEvent(ctx, store.Event{
@@ -675,7 +675,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		// Add new members
 		for _, userID := range members {
 			if !currentSet[userID] {
-			h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
+				h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
@@ -694,7 +694,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		// Remove old members
 		for _, userID := range currentMemberIDs {
 			if !requestedSet[userID] {
-			h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
+				h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",

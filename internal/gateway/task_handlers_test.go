@@ -259,4 +259,3 @@ func TestDeviceTaskHandler_BuildsActionMessage(t *testing.T) {
 	require.NotNil(t, action.GetPackage())
 	assert.Equal(t, "htop", action.GetPackage().Name)
 }
-

@@ -60,11 +60,11 @@ func TestLinkOrCreate_AutoCreateUserIncludesLinuxFields(t *testing.T) {
 	}
 
 	claims := &UserClaims{
-		Subject:          "ext-user-123",
-		Email:            "john.doe@example.com",
-		Name:             "John Doe",
-		GivenName:        "John",
-		FamilyName:       "Doe",
+		Subject:           "ext-user-123",
+		Email:             "john.doe@example.com",
+		Name:              "John Doe",
+		GivenName:         "John",
+		FamilyName:        "Doe",
 		PreferredUsername: "johndoe",
 	}
 

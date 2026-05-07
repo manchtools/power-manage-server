@@ -47,12 +47,12 @@ func TestPeerClassFromCert_Roundtrip(t *testing.T) {
 // ambiguous multi-class certs.
 func TestPeerClassFromCert_Errors(t *testing.T) {
 	cases := map[string]*x509.Certificate{
-		"nil cert":        nil,
-		"no URI SAN":      {},
-		"wrong scheme":    {URIs: []*url.URL{mustURL(t, "https://power-manage/agent")}},
-		"wrong host":      {URIs: []*url.URL{mustURL(t, "spiffe://other/agent")}},
-		"unknown class":   {URIs: []*url.URL{mustURL(t, "spiffe://power-manage/admin")}},
-		"empty class":     {URIs: []*url.URL{mustURL(t, "spiffe://power-manage/")}},
+		"nil cert":      nil,
+		"no URI SAN":    {},
+		"wrong scheme":  {URIs: []*url.URL{mustURL(t, "https://power-manage/agent")}},
+		"wrong host":    {URIs: []*url.URL{mustURL(t, "spiffe://other/agent")}},
+		"unknown class": {URIs: []*url.URL{mustURL(t, "spiffe://power-manage/admin")}},
+		"empty class":   {URIs: []*url.URL{mustURL(t, "spiffe://power-manage/")}},
 		"multi-class": {URIs: []*url.URL{
 			mustURL(t, "spiffe://power-manage/agent"),
 			mustURL(t, "spiffe://power-manage/gateway"),

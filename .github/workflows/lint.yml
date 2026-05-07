@@ -1,0 +1,61 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, 'v*']
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/lint.yml'
+  pull_request:
+    paths:
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/lint.yml'
+
+jobs:
+  lint:
+    name: gofmt + vet + staticcheck + govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Use the latest stable Go for the lint job specifically. The
+      # other CI workflows (Tests) track go.mod's minimum-version
+      # directive so we don't accidentally rely on a feature absent
+      # from the supported floor. The lint job is different: its
+      # job is to surface stdlib vulns and drift, so it should
+      # always run against the latest patched toolchain.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
+      - name: govulncheck (production packages)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # Exclude internal/testutil — it pulls testcontainers which
+          # transitively imports github.com/docker/docker, currently
+          # affected by GO-2026-4887 + GO-2026-4883 with no upstream
+          # fix available. Test fixtures aren't reachable from any
+          # production binary.
+          PKGS=$(go list ./... | grep -v 'internal/testutil')
+          govulncheck $PKGS
