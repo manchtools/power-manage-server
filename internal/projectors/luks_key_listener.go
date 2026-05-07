@@ -21,7 +21,7 @@ import (
 //   - LuksDeviceKeyRevoked: UPDATE current row's revocation_status='success'
 //     (note column-value vs event-name mismatch — matches PL/pgSQL).
 //   - LuksDeviceKeyRevocationFailed: UPDATE revocation_status='failed'
-//     + revocation_error captured.
+//   - revocation_error captured.
 //
 // LuksDeviceKeyRevocationRequested is intentionally a no-op (the
 // PL/pgSQL projector also lacked a case for it). The Requested event

@@ -18,26 +18,26 @@ import (
 
 // ControlService implements the ControlService Connect-RPC service.
 type ControlService struct {
-	registration  *RegistrationHandler
-	auth          *AuthHandler
-	totp          *TOTPHandler
-	user          *UserHandler
-	device        *DeviceHandler
-	token         *TokenHandler
-	action        *ActionHandler
-	actionSet     *ActionSetHandler
-	definition    *DefinitionHandler
-	deviceGroup   *DeviceGroupHandler
-	assignment    *AssignmentHandler
-	userSelection *UserSelectionHandler
-	audit         *AuditHandler
-	osquery       *OSQueryHandler
-	logs          *LogsHandler
-	role          *RoleHandler
-	userGroup     *UserGroupHandler
-	idp           *IDPHandler
-	sso           *SSOHandler
-	identityLink  *IdentityLinkHandler
+	registration     *RegistrationHandler
+	auth             *AuthHandler
+	totp             *TOTPHandler
+	user             *UserHandler
+	device           *DeviceHandler
+	token            *TokenHandler
+	action           *ActionHandler
+	actionSet        *ActionSetHandler
+	definition       *DefinitionHandler
+	deviceGroup      *DeviceGroupHandler
+	assignment       *AssignmentHandler
+	userSelection    *UserSelectionHandler
+	audit            *AuditHandler
+	osquery          *OSQueryHandler
+	logs             *LogsHandler
+	role             *RoleHandler
+	userGroup        *UserGroupHandler
+	idp              *IDPHandler
+	sso              *SSOHandler
+	identityLink     *IdentityLinkHandler
 	compliance       *ComplianceHandler
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
@@ -49,9 +49,9 @@ type ControlService struct {
 
 // ControlServiceConfig holds configuration for the control service.
 type ControlServiceConfig struct {
-	PasswordAuthEnabled       bool
-	SSOCallbackBaseURL        string
-	SCIMBaseURL               string
+	PasswordAuthEnabled bool
+	SSOCallbackBaseURL  string
+	SCIMBaseURL         string
 }
 
 // NewControlService creates a new control service.
@@ -60,26 +60,26 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer Acti
 	systemActions := NewSystemActionManager(st, signer, logger)
 	settingsHandler := NewSettingsHandler(st, logger, systemActions)
 	return &ControlService{
-		registration:  NewRegistrationHandler(st, certAuth, gatewayURL, logger),
-		auth:          NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager, cfg.PasswordAuthEnabled),
-		totp:          NewTOTPHandler(st, logger.With("component", "totp_handler"), jwtManager, enc, ""),
-		user:          NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
-		device:        NewDeviceHandler(st, enc, logger.With("component", "device_handler")),
-		token:         NewTokenHandler(st, logger.With("component", "token_handler")),
-		action:        actionHandler,
-		actionSet:     NewActionSetHandler(st, logger.With("component", "action_set_handler")),
-		definition:    NewDefinitionHandler(st, logger.With("component", "definition_handler")),
-		deviceGroup:   NewDeviceGroupHandler(st, logger.With("component", "device_group_handler")),
-		assignment:    NewAssignmentHandler(st, logger.With("component", "assignment_handler"), actionHandler),
-		userSelection: NewUserSelectionHandler(st, logger.With("component", "user_selection_handler")),
-		audit:         NewAuditHandler(st, logger.With("component", "audit_handler")),
-		osquery:       NewOSQueryHandler(st, logger.With("component", "osquery_handler")),
-		logs:          NewLogsHandler(st, logger.With("component", "logs_handler")),
-		role:          NewRoleHandler(st, logger.With("component", "role_handler")),
-		userGroup:     NewUserGroupHandler(st, logger.With("component", "user_group_handler")),
-		idp:           NewIDPHandler(st, enc, cfg.SCIMBaseURL, logger.With("component", "idp_handler")),
-		sso:           NewSSOHandler(st, logger.With("component", "sso_handler"), jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
-		identityLink:  NewIdentityLinkHandler(st, logger.With("component", "identity_link_handler")),
+		registration:     NewRegistrationHandler(st, certAuth, gatewayURL, logger),
+		auth:             NewAuthHandler(st, logger.With("component", "auth_handler"), jwtManager, cfg.PasswordAuthEnabled),
+		totp:             NewTOTPHandler(st, logger.With("component", "totp_handler"), jwtManager, enc, ""),
+		user:             NewUserHandler(st, logger.With("component", "user_handler"), systemActions),
+		device:           NewDeviceHandler(st, enc, logger.With("component", "device_handler")),
+		token:            NewTokenHandler(st, logger.With("component", "token_handler")),
+		action:           actionHandler,
+		actionSet:        NewActionSetHandler(st, logger.With("component", "action_set_handler")),
+		definition:       NewDefinitionHandler(st, logger.With("component", "definition_handler")),
+		deviceGroup:      NewDeviceGroupHandler(st, logger.With("component", "device_group_handler")),
+		assignment:       NewAssignmentHandler(st, logger.With("component", "assignment_handler"), actionHandler),
+		userSelection:    NewUserSelectionHandler(st, logger.With("component", "user_selection_handler")),
+		audit:            NewAuditHandler(st, logger.With("component", "audit_handler")),
+		osquery:          NewOSQueryHandler(st, logger.With("component", "osquery_handler")),
+		logs:             NewLogsHandler(st, logger.With("component", "logs_handler")),
+		role:             NewRoleHandler(st, logger.With("component", "role_handler")),
+		userGroup:        NewUserGroupHandler(st, logger.With("component", "user_group_handler")),
+		idp:              NewIDPHandler(st, enc, cfg.SCIMBaseURL, logger.With("component", "idp_handler")),
+		sso:              NewSSOHandler(st, logger.With("component", "sso_handler"), jwtManager, enc, cfg.PasswordAuthEnabled, cfg.SSOCallbackBaseURL),
+		identityLink:     NewIdentityLinkHandler(st, logger.With("component", "identity_link_handler")),
 		compliance:       NewComplianceHandler(st, logger.With("component", "compliance_handler")),
 		compliancePolicy: NewCompliancePolicyHandler(st, logger.With("component", "compliance_policy_handler")),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
@@ -837,4 +837,3 @@ func (s *ControlService) TerminateTerminalSession(ctx context.Context, req *conn
 	}
 	return s.terminal.TerminateTerminalSession(ctx, req)
 }
-

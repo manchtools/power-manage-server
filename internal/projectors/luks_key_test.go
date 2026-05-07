@@ -52,7 +52,7 @@ func TestLuksKeyRotatedFromEvent_Pure(t *testing.T) {
 			StreamType: "luks_key",
 			EventType:  "LuksKeyRotated",
 			Data: jsonOrFail(t, map[string]any{
-				"device_id":   "d", "action_id": "a", "device_path": "/dev/sda1",
+				"device_id": "d", "action_id": "a", "device_path": "/dev/sda1",
 				"passphrase": "ENC:s", "rotated_at": rotatedAt.Format(time.RFC3339),
 			}),
 		})

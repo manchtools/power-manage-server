@@ -62,4 +62,3 @@ func ApplyUserSelection(ctx context.Context, q *store.Queries, e store.Persisted
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 }
-

@@ -122,7 +122,7 @@ func extractSDKCodes(t *testing.T) []string {
 	// an optional `: string` type annotation so a future refactor to
 	// `export const ErrFoo: string = "…"` or a template literal
 	// doesn't silently hide the code from the parity check.
-	re := regexp.MustCompile(`export\s+const\s+Err\w+(?:\s*:\s*string)?\s*=\s*['"`+"`"+`]([a-z][a-z0-9_]*)['"`+"`"+`]`)
+	re := regexp.MustCompile(`export\s+const\s+Err\w+(?:\s*:\s*string)?\s*=\s*['"` + "`" + `]([a-z][a-z0-9_]*)['"` + "`" + `]`)
 	matches := re.FindAllStringSubmatch(string(data), -1)
 	seen := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
@@ -151,4 +151,3 @@ func diff(a, b []string) []string {
 	sort.Strings(out)
 	return out
 }
-

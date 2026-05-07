@@ -32,7 +32,6 @@ func NewDeviceGroupHandler(st *store.Store, logger *slog.Logger) *DeviceGroupHan
 	}
 }
 
-
 // CreateDeviceGroup creates a new device group.
 func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect.Request[pm.CreateDeviceGroupRequest]) (*connect.Response[pm.CreateDeviceGroupResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
@@ -80,7 +79,6 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
-
 
 	return connect.NewResponse(&pm.CreateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -208,7 +206,6 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
 	}), nil
@@ -242,7 +239,6 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -342,7 +338,6 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
 
-
 	return connect.NewResponse(&pm.AddDeviceToGroupResponse{
 		Group: h.deviceGroupToProto(group),
 	}), nil
@@ -387,7 +382,6 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
-
 
 	return connect.NewResponse(&pm.RemoveDeviceFromGroupResponse{
 		Group: h.deviceGroupToProto(group),
@@ -437,7 +431,6 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupQueryResponse{
 		Group: h.deviceGroupToProto(group),
@@ -514,7 +507,6 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 		devicesRemoved = membersBefore - group.MemberCount
 	}
 
-
 	return connect.NewResponse(&pm.EvaluateDynamicGroupResponse{
 		Group:          h.deviceGroupToProto(group),
 		DevicesAdded:   devicesAdded,
@@ -561,7 +553,6 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
 		Group: h.deviceGroupToProto(group),

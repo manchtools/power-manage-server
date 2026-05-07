@@ -195,4 +195,3 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 	h.logger.Info("log query dispatched", "query_id", payload.QueryID, "unit", payload.Unit)
 	return nil
 }
-

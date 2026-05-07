@@ -31,11 +31,11 @@ const (
 // bidi stream via the connection manager and terminal session
 // registry, and tees stdin to the audit queue.
 type TerminalBridgeHandler struct {
-	manager       *connection.Manager
-	sessions      *connection.TerminalSessionRegistry
-	controlProxy  *ControlProxy
-	aqClient      *taskqueue.Client
-	logger        *slog.Logger
+	manager      *connection.Manager
+	sessions     *connection.TerminalSessionRegistry
+	controlProxy *ControlProxy
+	aqClient     *taskqueue.Client
+	logger       *slog.Logger
 }
 
 // NewTerminalBridgeHandler constructs a bridge handler.

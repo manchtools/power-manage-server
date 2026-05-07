@@ -7,14 +7,14 @@ import (
 // serviceProviderConfig handles GET /scim/v2/{slug}/ServiceProviderConfig
 func (h *Handler) serviceProviderConfig(w http.ResponseWriter, r *http.Request) {
 	config := map[string]any{
-		"schemas": []string{SPConfigSchema},
+		"schemas":          []string{SPConfigSchema},
 		"documentationUri": "https://tools.ietf.org/html/rfc7644",
 		"patch": map[string]any{
 			"supported": true,
 		},
 		"bulk": map[string]any{
-			"supported":  false,
-			"maxOperations": 0,
+			"supported":      false,
+			"maxOperations":  0,
 			"maxPayloadSize": 0,
 		},
 		"filter": map[string]any{

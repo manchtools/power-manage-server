@@ -18,15 +18,15 @@ import (
 // sensitiveEventFields are JSON keys that must be redacted from audit event data
 // to prevent exposure of secrets (passwords, passphrases, keys) through the audit log.
 var sensitiveEventFields = map[string]bool{
-	"password":       true,
-	"passphrase":     true,
-	"preshared_key":  true,
-	"password_hash":  true,
-	"lps.rotations":  true,
-	"script":         true,
-	"content":        true,
-	"unit_content":   true,
-	"gpg_key":        true,
+	"password":      true,
+	"passphrase":    true,
+	"preshared_key": true,
+	"password_hash": true,
+	"lps.rotations": true,
+	"script":        true,
+	"content":       true,
+	"unit_content":  true,
+	"gpg_key":       true,
 }
 
 // AuditHandler handles audit log RPCs.

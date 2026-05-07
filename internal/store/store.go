@@ -377,4 +377,3 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 
 	return nil
 }
-

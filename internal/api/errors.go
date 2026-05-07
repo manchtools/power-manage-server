@@ -75,7 +75,7 @@ const (
 	ErrNoAssignmentFound        = "no_assignment_found"
 	ErrDeviceNotConnected       = "device_not_connected"
 	ErrCannotUnlinkOtherUser    = "cannot_unlink_other_user"
-	ErrLastAuthMethod            = "last_auth_method"
+	ErrLastAuthMethod           = "last_auth_method"
 
 	// Remote terminal sessions
 	ErrTerminalLinuxUsernameNotSet = "terminal_linux_username_not_set"
@@ -94,9 +94,9 @@ const (
 
 // Compliance policy error codes.
 const (
-	ErrCompliancePolicyNotFound  = "compliance_policy_not_found"
+	ErrCompliancePolicyNotFound   = "compliance_policy_not_found"
 	ErrCompliancePolicyNameExists = "compliance_policy_name_exists"
-	ErrActionNotCompliance       = "action_not_compliance"
+	ErrActionNotCompliance        = "action_not_compliance"
 )
 
 // Validation error codes.

@@ -17,7 +17,7 @@ import (
 )
 
 // TestRoleCreatedFromEvent_Pure exercises the decoder for RoleCreated.
-// The PL/pgSQL projector defaulted description to '', permissions to
+// The PL/pgSQL projector defaulted description to ”, permissions to
 // '{}', is_system to FALSE — Go shape mirrors via zero values + an
 // explicit empty-slice for permissions when the payload omits the key.
 func TestRoleCreatedFromEvent_Pure(t *testing.T) {
@@ -87,12 +87,13 @@ func TestRoleCreatedFromEvent_Pure(t *testing.T) {
 
 // TestRoleUpdatedFromEvent_Pure covers the partial-update decoder.
 // PL/pgSQL semantics:
-//   - name uses `COALESCE(NULLIF(payload, ''), existing)` — empty
+//   - name uses `COALESCE(NULLIF(payload, ”), existing)` — empty
 //     string is "no update"; missing field is also "no update".
 //   - description uses `COALESCE(payload, existing)` — empty string
 //     IS an update; missing field is "no update".
 //   - permissions uses array COALESCE — missing field is "no update";
 //     empty array IS an update.
+//
 // Pointer fields distinguish "field present" from "field omitted".
 func TestRoleUpdatedFromEvent_Pure(t *testing.T) {
 	t.Run("all fields present", func(t *testing.T) {
@@ -194,7 +195,7 @@ func TestRoleListener_CreateUpdateLifecycle(t *testing.T) {
 	// Partial update: only description.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleUpdated",
-		Data: map[string]any{"description": "updated"},
+		Data:      map[string]any{"description": "updated"},
 		ActorType: "user", ActorID: "u-1",
 	}))
 	got, err = st.Queries().GetRoleByID(ctx, roleID)
@@ -206,7 +207,7 @@ func TestRoleListener_CreateUpdateLifecycle(t *testing.T) {
 	// Update permissions to an explicit empty array (clear).
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleUpdated",
-		Data: map[string]any{"permissions": []string{}},
+		Data:      map[string]any{"permissions": []string{}},
 		ActorType: "user", ActorID: "u-1",
 	}))
 	got, err = st.Queries().GetRoleByID(ctx, roleID)
@@ -227,7 +228,7 @@ func TestRoleListener_DeleteCascadesUserRoles(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
-		Data: map[string]any{"name": "tmp", "permissions": []string{"x"}},
+		Data:      map[string]any{"name": "tmp", "permissions": []string{"x"}},
 		ActorType: "user", ActorID: "u-1",
 	}))
 
@@ -250,8 +251,8 @@ func TestRoleListener_DeleteCascadesUserRoles(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleDeleted",
-		Data:       map[string]any{},
-		ActorType:  "user", ActorID: "u-1",
+		Data:      map[string]any{},
+		ActorType: "user", ActorID: "u-1",
 	}))
 
 	// Role row marked deleted (won't show up via GetRoleByID which
@@ -280,12 +281,12 @@ func TestRoleListener_StaleReplayRejected(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
-		Data: map[string]any{"name": "first"},
+		Data:      map[string]any{"name": "first"},
 		ActorType: "user", ActorID: "u",
 	}))
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleUpdated",
-		Data: map[string]any{"description": "current state"},
+		Data:      map[string]any{"description": "current state"},
 		ActorType: "user", ActorID: "u",
 	}))
 	current, err := st.Queries().GetRoleByID(ctx, roleID)
@@ -324,12 +325,12 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 	// Land a role + an UPDATE so projection_version > 0.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
-		Data: map[string]any{"name": "live"},
+		Data:      map[string]any{"name": "live"},
 		ActorType: "user", ActorID: "u",
 	}))
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleUpdated",
-		Data: map[string]any{"description": "still alive"},
+		Data:      map[string]any{"description": "still alive"},
 		ActorType: "user", ActorID: "u",
 	}))
 	live, err := st.Queries().GetRoleByID(ctx, roleID)

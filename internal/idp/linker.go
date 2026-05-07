@@ -28,7 +28,7 @@ type LinkResult struct {
 
 // Linker handles the logic of linking external identities to local users.
 type Linker struct {
-	queries Querier
+	queries  Querier
 	appender EventAppender
 }
 

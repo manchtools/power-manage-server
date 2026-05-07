@@ -12,11 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
-// Helper: round-trip-friendly seed schedule. Stored as JSONB on the
-// projection row when the projector inserts; we don't depend on the
-// shape here beyond it being non-empty.
-const treeTestScheduleJSON = `{"interval_hours": 2}`
-
 // Verifies the new tree resolver classifies a directly-assigned action
 // as standalone, with action-layer mode applied.
 func TestResolveDeviceTree_StandaloneAction(t *testing.T) {

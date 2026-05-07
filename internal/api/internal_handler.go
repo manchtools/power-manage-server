@@ -521,4 +521,3 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 
 	return action
 }
-

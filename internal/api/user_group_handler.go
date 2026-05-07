@@ -88,7 +88,6 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
 
-
 	return connect.NewResponse(&pm.CreateUserGroupResponse{
 		Group: userGroupToProto(group, nil, false),
 	}), nil
@@ -202,7 +201,6 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
-
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.GroupId)
 
@@ -641,7 +639,6 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
-
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
@@ -730,7 +727,6 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	} else if group.MemberCount < membersBefore {
 		usersRemoved = membersBefore - group.MemberCount
 	}
-
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
 	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)

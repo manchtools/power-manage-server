@@ -132,7 +132,7 @@ func TestUserRoleListener_AssignAndRevoke(t *testing.T) {
 	// Plant a role row so the FK-less projection writes don't surprise us.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
-		Data: map[string]any{"name": "tmp", "permissions": []string{"x"}},
+		Data:      map[string]any{"name": "tmp", "permissions": []string{"x"}},
 		ActorType: "user", ActorID: "u",
 	}))
 
@@ -183,7 +183,7 @@ func TestUserRoleListener_AssignReplayIsIdempotent(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
-		Data: map[string]any{"name": "tmp", "permissions": []string{"x"}},
+		Data:      map[string]any{"name": "tmp", "permissions": []string{"x"}},
 		ActorType: "user", ActorID: "u",
 	}))
 

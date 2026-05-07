@@ -13,15 +13,15 @@ import (
 
 // Agent represents a connected agent.
 type Agent struct {
-	DeviceID     string
-	Hostname     string
-	Version      string
-	ConnectedAt  time.Time
-	LastSeen     time.Time
-	Stream       *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]
-	sendMu       sync.Mutex
-	ctx          context.Context
-	cancel       context.CancelFunc
+	DeviceID    string
+	Hostname    string
+	Version     string
+	ConnectedAt time.Time
+	LastSeen    time.Time
+	Stream      *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]
+	sendMu      sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // Send sends a message to the agent.

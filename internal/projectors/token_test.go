@@ -16,7 +16,7 @@ import (
 )
 
 // TestTokenCreatedFromEvent_Pure exercises the decoder. The PL/pgSQL
-// projector defaulted name='', one_time=FALSE, max_uses=0; the Go
+// projector defaulted name="" (empty string), one_time=FALSE, max_uses=0; the Go
 // shape mirrors via zero values.
 func TestTokenCreatedFromEvent_Pure(t *testing.T) {
 	expires := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -208,7 +208,7 @@ func TestTokenListener_StaleReplayRejected(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "token", StreamID: tokenID, EventType: "TokenCreated",
-		Data: map[string]any{"value_hash": "h-" + testutil.NewID(), "name": "n"},
+		Data:      map[string]any{"value_hash": "h-" + testutil.NewID(), "name": "n"},
 		ActorType: "user", ActorID: "u",
 	}))
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
@@ -246,7 +246,7 @@ func TestTokenListener_StaleReplayRejected_TokenUsed(t *testing.T) {
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "token", StreamID: tokenID, EventType: "TokenCreated",
-		Data: map[string]any{"value_hash": "h-" + testutil.NewID(), "name": "n", "max_uses": 3},
+		Data:      map[string]any{"value_hash": "h-" + testutil.NewID(), "name": "n", "max_uses": 3},
 		ActorType: "user", ActorID: "u",
 	}))
 	require.NoError(t, st.AppendEvent(ctx, store.Event{

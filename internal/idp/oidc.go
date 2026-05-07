@@ -30,7 +30,7 @@ type ProviderConfig struct {
 	ClientSecret     string
 	Scopes           []string
 	RedirectURL      string
-	GroupClaim        string
+	GroupClaim       string
 }
 
 // NewOIDCProvider creates a new OIDC provider by performing discovery.
@@ -104,15 +104,15 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 
 // UserClaims holds the extracted claims from an OIDC id_token or userinfo.
 type UserClaims struct {
-	Subject          string
-	Email            string
-	Name             string
-	GivenName        string
-	FamilyName       string
+	Subject           string
+	Email             string
+	Name              string
+	GivenName         string
+	FamilyName        string
 	PreferredUsername string
-	Picture          string
-	Locale           string
-	Groups           []string
+	Picture           string
+	Locale            string
+	Groups            []string
 }
 
 // VerifyAndExtractClaims verifies the id_token and extracts claims.

@@ -93,8 +93,8 @@ func TestSecurityAlertAckParamsFromEvent_Pure(t *testing.T) {
 
 	t.Run("happy path", func(t *testing.T) {
 		payload, _ := json.Marshal(map[string]any{
-			"alert_id":         alertID.String(),
-			"acknowledged_by":  "admin@example.com",
+			"alert_id":        alertID.String(),
+			"acknowledged_by": "admin@example.com",
 		})
 		got, err := projectors.SecurityAlertAckParamsFromEvent(store.PersistedEvent{
 			StreamType: "device", EventType: "SecurityAlertAcknowledged",

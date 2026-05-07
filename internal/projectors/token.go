@@ -39,7 +39,7 @@ type tokenCreatedRaw struct {
 }
 
 // TokenCreatedFromEvent decodes TokenCreated. Defaults match the
-// PL/pgSQL projector: missing name → ''; missing one_time → false;
+// PL/pgSQL projector: missing name → "" (empty string); missing one_time → false;
 // missing max_uses → 0; missing expires_at → nil (stays NULL); missing
 // owner_id → nil. value_hash is required (UNIQUE NOT NULL).
 func TokenCreatedFromEvent(e store.PersistedEvent) (TokenCreatedPayload, error) {

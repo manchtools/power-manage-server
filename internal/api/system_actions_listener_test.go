@@ -24,10 +24,10 @@ import (
 //   - Unknown event types return SyncOpNone.
 func TestAffectedFromEvent(t *testing.T) {
 	cases := []struct {
-		name       string
-		event      store.PersistedEvent
-		wantOp     SyncOp
-		wantUsers  []string
+		name      string
+		event     store.PersistedEvent
+		wantOp    SyncOp
+		wantUsers []string
 	}{
 		// Per-user events keyed by stream_id.
 		{
@@ -363,4 +363,3 @@ func mustMarshalJSON(t *testing.T, v any) []byte {
 	}
 	return b
 }
-

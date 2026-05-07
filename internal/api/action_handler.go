@@ -478,7 +478,6 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-
 	return connect.NewResponse(&pm.CreateActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
@@ -578,7 +577,6 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
 
-
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
@@ -620,7 +618,6 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
-
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -720,7 +717,6 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 			"action_id", req.Msg.Id)
 		return nil, err
 	}
-
 
 	return connect.NewResponse(&pm.UpdateActionResponse{
 		Action: h.actionToProto(action),
@@ -868,7 +864,13 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
+		// These values are currently unconditionally overwritten by the
+		// re-sign call below — see issue #137 for the contract decision
+		// pending. Marked ignored so the new staticcheck CI step passes
+		// without papering over the underlying ambiguity.
+		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
 		signature = action.Signature
+		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
 		paramsCanonical = action.ParamsCanonical
 
 	case *pm.DispatchActionRequest_InlineAction:

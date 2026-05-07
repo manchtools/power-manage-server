@@ -79,7 +79,7 @@ type Index struct {
 	aqClient *taskqueue.Client
 	logger   *slog.Logger
 
-	mu        sync.Mutex
+	mu         sync.Mutex
 	rebuilding bool
 }
 
@@ -931,7 +931,7 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 				"device_id":       e.DeviceID,
 				"action_id":       actionID,
 				"desired_state":   strconv.Itoa(int(e.DesiredState)),
-				"changed":        strconv.FormatBool(e.Changed),
+				"changed":         strconv.FormatBool(e.Changed),
 			}
 			if e.CreatedAt != nil {
 				execFields["created_at"] = strconv.FormatInt(e.CreatedAt.Unix(), 10)

@@ -10,14 +10,14 @@ import (
 
 // SCIM schema URIs.
 const (
-	UserSchema            = "urn:ietf:params:scim:schemas:core:2.0:User"
-	GroupSchema           = "urn:ietf:params:scim:schemas:core:2.0:Group"
-	ListResponseSchema    = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
-	PatchOpSchema         = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
-	ErrorSchema           = "urn:ietf:params:scim:api:messages:2.0:Error"
-	SPConfigSchema        = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
-	ResourceTypeSchema    = "urn:ietf:params:scim:schemas:core:2.0:ResourceType"
-	SchemaSchema          = "urn:ietf:params:scim:schemas:core:2.0:Schema"
+	UserSchema         = "urn:ietf:params:scim:schemas:core:2.0:User"
+	GroupSchema        = "urn:ietf:params:scim:schemas:core:2.0:Group"
+	ListResponseSchema = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
+	PatchOpSchema      = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
+	ErrorSchema        = "urn:ietf:params:scim:api:messages:2.0:Error"
+	SPConfigSchema     = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
+	ResourceTypeSchema = "urn:ietf:params:scim:schemas:core:2.0:ResourceType"
+	SchemaSchema       = "urn:ietf:params:scim:schemas:core:2.0:Schema"
 )
 
 // SCIM content type.
