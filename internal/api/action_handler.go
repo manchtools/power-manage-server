@@ -864,14 +864,16 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		timeoutSeconds = action.TimeoutSeconds
 		actionID = &source.ActionId
-		// These values are currently unconditionally overwritten by the
-		// re-sign call below — see issue #137 for the contract decision
-		// pending. Marked ignored so the new staticcheck CI step passes
-		// without papering over the underlying ambiguity.
-		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
-		signature = action.Signature
-		//lint:ignore SA4006 see https://github.com/manchtools/power-manage-server/issues/137
-		paramsCanonical = action.ParamsCanonical
+		// NOTE: action.Signature and action.ParamsCanonical are
+		// loaded from the stored row in the original PR-1 shape but
+		// were unconditionally overwritten by the re-sign call below.
+		// The contract decision (re-sign every dispatch vs. respect
+		// stored signature) is tracked in #137. Until that lands,
+		// drop the dead loads — keeping them only as //lint:ignore
+		// stubs trips ineffassign in golangci-lint and adds noise
+		// without addressing the underlying ambiguity. The comment
+		// stays here so a future contributor sees why these fields
+		// are conspicuously absent on the stored-action branch.
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction
