@@ -181,10 +181,15 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_device_group_event",
 	},
 	{
+		// Ported to projectors.ApplyAssignment via projectors.WireAll
+		// (manchtools/power-manage-server#137). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline
+		// in project_event() stays quiet until the dispatcher itself
+		// drops its `WHEN 'assignment'` clause in the Phase 2 cleanup.
 		Name:        "assignments",
 		Tables:      []string{"assignments_projection"},
 		StreamTypes: []string{"assignment"},
-		Function:    "project_assignment_event",
 	},
 	{
 		// Ported to projectors.ApplyUserSelection via projectors.WireAll.

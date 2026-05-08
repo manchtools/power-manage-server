@@ -738,6 +738,126 @@ FROM effective
 WHERE should_apply
 ORDER BY assignment_sort, definition_sort, action_set_sort, action_sort, id;
 
+-- Projector writes (manchtools/power-manage-server#137). Replaces the
+-- deleted PL/pgSQL project_assignment_event() function; called from
+-- projectors.ApplyAssignment via projectors.AssignmentListener.
+--
+-- Tightening vs the PL/pgSQL projector: every UPDATE carries an
+-- explicit `WHERE projection_version < $N` guard and uses :execrows so
+-- the listener can short-circuit cascades on stale-replay (asymmetric-
+-- guard discipline; see role_listener / action_set_listener for the
+-- canonical shape).
+--
+-- Compliance cascade is intentionally NOT ported in this wave: the
+-- compliance projector is still PL/pgSQL (project_compliance_event /
+-- project_compliance_policy_event remain live, see migrations 003 +
+-- 029-style follow-ups). The assignment listener invokes the existing
+-- evaluate_device_compliance_policies() PL/pgSQL function via
+-- EvaluateDeviceCompliancePolicies so the cascade behaviour is
+-- preserved verbatim until the compliance port lands.
+
+-- name: InsertAssignmentProjection :execrows
+-- AssignmentCreated handler. The PL/pgSQL projector used
+-- ON CONFLICT (source_type, source_id, target_type, target_id) DO UPDATE
+-- so a re-create of a previously soft-deleted assignment revives the
+-- row in place rather than failing the unique-tuple constraint. We
+-- preserve that semantics, but tighten the UPDATE branch with a
+-- projection_version guard so a stale reconciler replay doesn't
+-- silently roll back a fresher row.
+--
+-- :execrows lets the listener short-circuit the compliance cascade
+-- when the conditional UPDATE branch is rejected by the guard
+-- (n == 0). The first AssignmentCreated for a (source, target) tuple
+-- always lands on the INSERT path and reports n == 1 — the n == 0
+-- ambiguity only arises on the UPDATE branch, so a guarded-out replay
+-- is the ONLY thing that produces n == 0. Insert OR successful update
+-- both yield n == 1; the cascade fires for either, matching the
+-- PL/pgSQL projector which ran the cascade unconditionally for
+-- AssignmentCreated.
+INSERT INTO assignments_projection (
+    id, source_type, source_id, target_type, target_id,
+    sort_order, mode, created_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (source_type, source_id, target_type, target_id) DO UPDATE
+    SET is_deleted        = FALSE,
+        sort_order        = EXCLUDED.sort_order,
+        mode              = EXCLUDED.mode,
+        projection_version = EXCLUDED.projection_version
+    WHERE assignments_projection.projection_version < EXCLUDED.projection_version;
+
+-- name: UpdateAssignmentModeProjection :execrows
+-- AssignmentModeChanged handler. Single UPDATE guarded by
+-- projection_version. The handler layer (assignment_handler.go) does
+-- not currently emit AssignmentModeChanged — assignments are immutable
+-- per the project's mutation model — but the projector keeps parity
+-- with the PL/pgSQL version so any historical events in production
+-- event stores still replay cleanly during a rebuild.
+UPDATE assignments_projection
+SET mode               = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: UpdateAssignmentSortOrderProjection :execrows
+-- AssignmentSortOrderChanged handler. Same parity rationale as
+-- UpdateAssignmentModeProjection: not emitted today, but the PL/pgSQL
+-- projector handled the event and a rebuild against an event store
+-- containing such events must replay them identically.
+UPDATE assignments_projection
+SET sort_order         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: SoftDeleteAssignmentProjection :one
+-- AssignmentDeleted handler. The PL/pgSQL projector did SELECT-then-
+-- UPDATE because the AssignmentDeleted event payload is empty —
+-- source/target details have to be recovered from the existing row to
+-- drive the compliance cascade. Combine into one statement via UPDATE
+-- ... RETURNING so the listener gets the row + the rows-affected
+-- signal in a single round-trip and the read happens against the same
+-- snapshot the UPDATE writes against.
+--
+-- :one + nullable scan: when the projection_version guard rejects the
+-- UPDATE, RETURNING produces zero rows and pgx surfaces ErrNoRows.
+-- The listener treats that as "stale replay, skip the compliance
+-- cascade" — same shape as SoftDelete on action_set + role +
+-- identity_provider, just with the row contents tunnelled out at the
+-- same time.
+UPDATE assignments_projection
+SET is_deleted         = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+RETURNING source_type, source_id, target_type, target_id;
+
+-- name: ListDeviceGroupMemberDeviceIDs :many
+-- AssignmentCreated / AssignmentDeleted handler — compliance cascade
+-- helper. Mirrors the PL/pgSQL `FOR v_device_id IN SELECT device_id
+-- FROM device_group_members_projection WHERE group_id = ...` loop. The
+-- listener iterates the returned device IDs and calls
+-- EvaluateDeviceCompliancePolicies for each.
+SELECT device_id
+FROM device_group_members_projection
+WHERE group_id = $1;
+
+-- name: DeleteCompliancePolicyEvaluationsForDevicePolicy :exec
+-- AssignmentDeleted handler — compliance cascade cleanup. Mirrors the
+-- PL/pgSQL `DELETE FROM compliance_policy_evaluation_projection WHERE
+-- device_id = ... AND policy_id = ...`. Runs BEFORE
+-- EvaluateDeviceCompliancePolicies so the re-evaluation sees a clean
+-- slate for the unassigned policy.
+DELETE FROM compliance_policy_evaluation_projection
+WHERE device_id = $1
+  AND policy_id = $2;
+
+-- name: EvaluateDeviceCompliancePolicies :exec
+-- Invokes the existing PL/pgSQL evaluate_device_compliance_policies
+-- function. Compliance is deferred to a later phase of #136; until
+-- then, the assignment listener calls through to PL/pgSQL via this
+-- typed shim so the cascade behaviour is preserved.
+SELECT evaluate_device_compliance_policies($1::TEXT);
+
 -- Get all assignments targeting a user directly or via their user groups.
 -- name: ListAssignmentsForUser :many
 SELECT * FROM assignments_projection
