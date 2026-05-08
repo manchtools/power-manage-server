@@ -95,3 +95,244 @@ SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count;
 SELECT COUNT(*) FROM users_projection
 WHERE is_deleted = FALSE
 AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE;
+
+-- ============================================================================
+-- Projector listener writes (manchtools/power-manage-server#138).
+-- ============================================================================
+--
+-- Mirrors the deleted PL/pgSQL project_user_group_event(): every event
+-- handler the projector dispatched on (UserGroupCreated, UserGroupUpdated,
+-- UserGroupQueryUpdated, UserGroupMaintenanceWindowSet, UserGroupDeleted,
+-- UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupRoleAssigned,
+-- UserGroupRoleRevoked, UserGroupMembersRebuilt) gets a typed sqlc query
+-- here so the listener can compose them in Go.
+--
+-- Tightening vs the PL/pgSQL projector: every UPDATE carries an explicit
+-- `WHERE projection_version < $N` guard and uses :execrows so the listener
+-- can short-circuit cascades on stale-replay (asymmetric-guard discipline;
+-- see role_listener for the canonical shape).
+--
+-- Dynamic-query engine scope: the dynamic-query evaluator
+-- (evaluate_dynamic_user_group, validate_user_group_query) STAYS in
+-- PL/pgSQL until a later phase. The listener only persists the query
+-- column + (re-)enqueues the group via EnqueueDynamicUserGroupEvaluation
+-- when is_dynamic flips on; the evaluator runs unchanged inside Postgres.
+
+-- name: InsertUserGroupProjection :exec
+-- UserGroupCreated handler. ON CONFLICT DO NOTHING for replay safety —
+-- the unique constraint is the primary key (id), so a re-application of
+-- UserGroupCreated for the same stream lands as a no-op. The PL/pgSQL
+-- projector raised on the second insert; we soften that to the same
+-- replay-safe shape every other ported projector uses.
+INSERT INTO user_groups_projection (
+    id, name, description, member_count,
+    created_at, created_by, updated_at, projection_version,
+    is_dynamic, dynamic_query
+) VALUES ($1, $2, $3, 0, $4, $5, $4, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: UpdateUserGroupProjection :execrows
+-- UserGroupUpdated handler. Description is COALESCE-preserved when the
+-- payload omits it (matches the PL/pgSQL `COALESCE(payload, description)`
+-- semantics — pass NULL for description to preserve, the empty string to
+-- explicitly blank it). Stale-replay guard via projection_version.
+UPDATE user_groups_projection
+SET name              = sqlc.arg('name'),
+    description       = COALESCE(sqlc.narg('description')::TEXT, description),
+    updated_at        = sqlc.arg('updated_at'),
+    projection_version = sqlc.arg('projection_version')
+WHERE id = sqlc.arg('id')
+  AND projection_version < sqlc.arg('projection_version');
+
+-- name: UpdateUserGroupQueryProjection :execrows
+-- UserGroupQueryUpdated handler — first half. Persists the dynamic-
+-- query toggle + query string. Stale-replay guard via projection_version.
+-- The listener follows up with WipeUserGroupMembersOnDynamicFlip +
+-- ResetUserGroupMemberCount + EnqueueDynamicUserGroupEvaluation when the
+-- group flips to dynamic, gated by this UPDATE's :execrows count.
+UPDATE user_groups_projection
+SET is_dynamic         = $2,
+    dynamic_query      = $3,
+    updated_at         = $4,
+    projection_version = $5
+WHERE id = $1
+  AND projection_version < $5;
+
+-- name: ResetUserGroupMemberCount :exec
+-- UserGroupQueryUpdated handler — flip-to-dynamic cascade half. Mirrors
+-- the PL/pgSQL `UPDATE user_groups_projection SET member_count = 0 WHERE
+-- id = ...` that runs after wiping the static-member rows. No
+-- projection_version guard here: the gate lives upstream on
+-- UpdateUserGroupQueryProjection's :execrows, so a stale event can't
+-- reach this statement.
+UPDATE user_groups_projection
+SET member_count = 0
+WHERE id = $1;
+
+-- name: WipeUserGroupMembers :exec
+-- UserGroupQueryUpdated (flip-to-dynamic) and UserGroupMembersRebuilt
+-- handler. The dynamic-query evaluator owns the member set after the
+-- flip, so any static rows left behind would surface as ghost members.
+DELETE FROM user_group_members_projection WHERE group_id = $1;
+
+-- name: EnqueueDynamicUserGroupEvaluation :exec
+-- UserGroupCreated (when is_dynamic) and UserGroupQueryUpdated (when
+-- flip-to-dynamic) handler. Mirrors the PL/pgSQL `INSERT INTO
+-- dynamic_user_group_evaluation_queue ... ON CONFLICT (group_id) DO
+-- UPDATE SET queued_at = clock_timestamp()` so a re-queue refreshes the
+-- queued_at timestamp. The reason text is the caller-provided trigger
+-- ('group_created' or 'query_updated') for operator visibility into
+-- evaluator-queue churn.
+INSERT INTO dynamic_user_group_evaluation_queue (group_id, reason)
+VALUES ($1, $2)
+ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
+
+-- name: UpdateUserGroupMaintenanceWindowProjection :execrows
+-- UserGroupMaintenanceWindowSet handler. Mirrors the PL/pgSQL
+-- `COALESCE(payload, '{}'::JSONB)`: the listener decoder substitutes
+-- '{}' when the payload key is missing so this query always receives a
+-- non-NULL JSONB blob. Stale-replay guard via projection_version.
+UPDATE user_groups_projection
+SET maintenance_window = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4;
+
+-- name: SoftDeleteUserGroupProjection :execrows
+-- UserGroupDeleted handler — first half. Returns rows-affected so the
+-- listener can SKIP the cascade (scim_group_mapping cleanup, member
+-- wipe, role-assignment wipe, dynamic-queue cleanup) when the
+-- projection_version guard rejects a stale replay; otherwise an old
+-- UserGroupDeleted re-applied by the reconciler would silently nuke a
+-- freshly-restored group's members + role assignments + downstream
+-- SCIM mapping.
+UPDATE user_groups_projection
+SET is_deleted         = TRUE,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: DeleteScimGroupMappingsByUserGroup :exec
+-- UserGroupDeleted handler — second half. Mirrors the PL/pgSQL
+-- `DELETE FROM scim_group_mapping_projection WHERE user_group_id = ...`
+-- that ran BEFORE the soft-delete UPDATE in the projector. Order in the
+-- listener is reversed (soft-delete first, gated cleanup second) so the
+-- :execrows short-circuit can skip the unguarded DELETE on stale
+-- replay. scim_group_mapping_projection is owned by the SCIM-group-
+-- mapping projector (already ported); no projection_version guard is
+-- viable across the two listeners.
+DELETE FROM scim_group_mapping_projection WHERE user_group_id = $1;
+
+-- name: DeleteUserGroupMembersByGroup :exec
+-- UserGroupDeleted handler — third half. Wipes every static member row
+-- for the deleted group. Wrapped with SoftDeleteUserGroupProjection +
+-- the other cascade halves inside store.WithTx for inter-write
+-- atomicity.
+DELETE FROM user_group_members_projection WHERE group_id = $1;
+
+-- name: DeleteUserGroupRolesByGroup :exec
+-- UserGroupDeleted handler — fourth half. Wipes every role assignment
+-- for the deleted group so future ListUserGroupRoles calls don't
+-- surface ghosts.
+DELETE FROM user_group_roles_projection WHERE group_id = $1;
+
+-- name: DeleteDynamicUserGroupEvaluationQueueRow :exec
+-- UserGroupDeleted handler — fifth half. Removes the queue entry so the
+-- next dynamic-evaluation pass doesn't try to reconcile a deleted
+-- group.
+DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = $1;
+
+-- name: IsUserGroupDynamic :one
+-- UserGroupMemberAdded / UserGroupMemberRemoved gate. Mirrors the
+-- PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out: when the
+-- parent group is dynamic, member-mutation events are no-ops because
+-- the evaluator owns the member set. Returns FALSE for missing or
+-- soft-deleted groups so the listener treats them as static (matches
+-- the PL/pgSQL NOT EXISTS branch — a non-existent or deleted group has
+-- no row with is_dynamic = TRUE, so the projector falls through to the
+-- INSERT/DELETE).
+SELECT COALESCE((
+    SELECT is_dynamic FROM user_groups_projection
+    WHERE id = $1 AND is_deleted = FALSE
+), FALSE)::BOOLEAN AS is_dynamic;
+
+-- name: InsertUserGroupMember :exec
+-- UserGroupMemberAdded handler — first half. ON CONFLICT DO NOTHING
+-- preserves the PL/pgSQL projector's idempotency under reconciler
+-- replays. The composite PK (group_id, user_id) makes this safe.
+INSERT INTO user_group_members_projection (
+    group_id, user_id, added_at, added_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (group_id, user_id) DO NOTHING;
+
+-- name: DeleteUserGroupMember :exec
+-- UserGroupMemberRemoved handler — first half. Plain DELETE — silently
+-- no-op on a miss matches the PL/pgSQL projector's behaviour.
+DELETE FROM user_group_members_projection
+WHERE group_id = $1
+  AND user_id = $2;
+
+-- name: IncrementUserGroupMemberCount :execrows
+-- UserGroupMemberAdded handler — second half. Mirrors the PL/pgSQL
+-- `member_count = member_count + 1` increment + updated_at /
+-- projection_version stamp. Stale-replay guard via projection_version.
+--
+-- Unlike action_set's RecountActionSetMembers (which COUNT(*)s the live
+-- table), this matches the PL/pgSQL projector's monotonic counter +/-1
+-- shape verbatim — switching to a recount would change the convergence
+-- behaviour for out-of-order replay (a recount converges to the
+-- LIVE row count regardless of replay order; the +/-1 form requires
+-- monotonic event order to converge correctly). Both shapes are correct
+-- under monotonic replay; preserving the PL/pgSQL form keeps the
+-- per-event semantics identical.
+UPDATE user_groups_projection
+SET member_count       = member_count + 1,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: DecrementUserGroupMemberCount :execrows
+-- UserGroupMemberRemoved handler — second half. Mirrors the PL/pgSQL
+-- `member_count = GREATEST(member_count - 1, 0)` decrement (the
+-- GREATEST clamp protects against drift from out-of-order replays of
+-- Removed without a prior Added). Stale-replay guard via
+-- projection_version.
+UPDATE user_groups_projection
+SET member_count       = GREATEST(member_count - 1, 0),
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: SetUserGroupMemberCount :execrows
+-- UserGroupMembersRebuilt handler — second half. Sets member_count to
+-- the rebuilt user_id list length (the PL/pgSQL projector used
+-- `jsonb_array_length(event.data->'user_ids')`; the Go listener pre-
+-- computes the length and passes it in). Stale-replay guard via
+-- projection_version.
+UPDATE user_groups_projection
+SET member_count       = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4;
+
+-- name: InsertUserGroupRole :exec
+-- UserGroupRoleAssigned handler. ON CONFLICT DO NOTHING preserves the
+-- PL/pgSQL projector's idempotency under reconciler replays. The
+-- composite PK (group_id, role_id) makes this safe. No parent-row
+-- update — role assignments are independent of member_count.
+INSERT INTO user_group_roles_projection (
+    group_id, role_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (group_id, role_id) DO NOTHING;
+
+-- name: DeleteUserGroupRole :exec
+-- UserGroupRoleRevoked handler. Plain DELETE — silently no-op on a
+-- miss matches the PL/pgSQL projector's behaviour.
+DELETE FROM user_group_roles_projection
+WHERE group_id = $1
+  AND role_id = $2;

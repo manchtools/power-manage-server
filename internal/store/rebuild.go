@@ -200,11 +200,26 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"role"},
 	},
 	{
+		// Ported to projectors.ApplyUserGroup via projectors.WireAll
+		// (manchtools/power-manage-server#138). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline
+		// in project_event() stays quiet until the dispatcher itself
+		// drops its `WHEN 'user_group'` clause in the Phase 2 cleanup.
+		//
+		// `TRUNCATE user_groups_projection CASCADE` matches the legacy
+		// rebuild_user_groups_projection() blast radius verbatim:
+		// PostgreSQL walks the FK graph and truncates every table that
+		// references user_groups_projection — user_group_members_projection,
+		// user_group_roles_projection, dynamic_user_group_evaluation_queue,
+		// AND scim_group_mapping_projection. The legacy operator
+		// behaviour is "user-group rebuild also wipes SCIM mappings";
+		// preserving that quirk here keeps the rebuild semantics
+		// bit-identical until a future port revisits it.
 		Name:        "user_groups",
 		Tables:      []string{"user_groups_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"user_group"},
-		Function:    "project_user_group_event",
 	},
 }
 

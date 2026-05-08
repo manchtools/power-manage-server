@@ -76,10 +76,14 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "action_set_projector"),
 	))
+	st.RegisterEventListener(UserGroupListener(
+		st,
+		loggerFor(logger, "user_group_projector"),
+	))
 	// All 11 ports of tracker #107 are now wired here, plus the
-	// first Phase 2 port (action_set, #136). Future Phase 2 ports of
-	// the remaining domain projectors (user, device, action,
-	// definition, device_group, assignment, execution, user_group,
+	// first two Phase 2 ports (action_set #136, user_group #138).
+	// Future Phase 2 ports of the remaining domain projectors (user,
+	// device, action, definition, device_group, assignment, execution,
 	// compliance, compliance_policy) land here too.
 
 	// Rebuild appliers (manchtools/power-manage-server#125). Only
@@ -87,12 +91,13 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// store.AllRebuildTargets need this wiring — RebuildAll
 	// dispatches everything else through the legacy PL/pgSQL
 	// Function. Of the 11 #107 ports, three own rebuild targets:
-	// roles, tokens, user_selections. The action_set port (#136)
-	// adds a fourth.
+	// roles, tokens, user_selections. The action_set port (#136) and
+	// user_group port (#138) add two more.
 	st.RegisterRebuildApply("roles", ApplyRole)
 	st.RegisterRebuildApply("tokens", ApplyToken)
 	st.RegisterRebuildApply("user_selections", ApplyUserSelection)
 	st.RegisterRebuildApply("action_sets", ApplyActionSet)
+	st.RegisterRebuildApply("user_groups", ApplyUserGroup)
 }
 
 // loggerFor returns a sub-logger tagged with the projector
