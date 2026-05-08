@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+const claimDeviceGroupForMembership = `-- name: ClaimDeviceGroupForMembership :execrows
+UPDATE device_groups_projection
+SET projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+  AND is_deleted = FALSE
+  AND is_dynamic = FALSE
+`
+
+type ClaimDeviceGroupForMembershipParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// Atomic guard for the four member-mutation events
+// (DeviceGroupMemberAdded, DeviceAddedToGroup, DeviceGroupMemberRemoved,
+// DeviceRemovedFromGroup). Bumps projection_version only when ALL of:
+//
+//  1. The group exists.
+//  2. The group is NOT soft-deleted (a member event replayed after
+//     a Deleted must not bring rows back).
+//  3. The group is NOT dynamic (the dynamic-query evaluator owns
+//     the member set; explicit member events are no-ops there —
+//     mirrors the PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)`
+//     early-out).
+//  4. The event is newer than the current projection_version.
+//
+// Returns n=1 when the listener may proceed with the membership
+// mutation, n=0 when the event must be skipped. Doing the version
+// check BEFORE any child-row mutation prevents the stale-replay
+// holes CR caught on the user_group port (PR #174 / fingerprint
+// "Guard stale member replays before touching..."): without this
+// guard a stale MemberAdded after a Removed would recreate the
+// deleted membership row, and a stale MemberRemoved would delete
+// a live one.
+func (q *Queries) ClaimDeviceGroupForMembership(ctx context.Context, arg ClaimDeviceGroupForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimDeviceGroupForMembership, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countDeviceGroups = `-- name: CountDeviceGroups :one
 SELECT COUNT(*) FROM device_groups_projection
 WHERE is_deleted = FALSE
@@ -33,6 +76,73 @@ func (q *Queries) CountMatchingDevicesForQuery(ctx context.Context, query string
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteDeviceGroupMember = `-- name: DeleteDeviceGroupMember :exec
+DELETE FROM device_group_members_projection
+WHERE group_id = $1
+  AND device_id = $2
+`
+
+type DeleteDeviceGroupMemberParams struct {
+	GroupID  string `json:"group_id"`
+	DeviceID string `json:"device_id"`
+}
+
+// DeviceGroupMemberRemoved / DeviceRemovedFromGroup handler — second
+// half. Plain DELETE — silently no-op on a miss matches the PL/pgSQL
+// projector's behaviour.
+func (q *Queries) DeleteDeviceGroupMember(ctx context.Context, arg DeleteDeviceGroupMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteDeviceGroupMember, arg.GroupID, arg.DeviceID)
+	return err
+}
+
+const deleteDeviceGroupMembersByGroup = `-- name: DeleteDeviceGroupMembersByGroup :exec
+DELETE FROM device_group_members_projection WHERE group_id = $1
+`
+
+// DeviceGroupDeleted handler — second half. Wipes every member row for
+// the deleted group. Wrapped with SoftDeleteDeviceGroupProjection +
+// DeleteDynamicDeviceGroupEvaluationQueueRow inside store.WithTx for
+// inter-write atomicity.
+func (q *Queries) DeleteDeviceGroupMembersByGroup(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, deleteDeviceGroupMembersByGroup, groupID)
+	return err
+}
+
+const deleteDynamicDeviceGroupEvaluationQueueRow = `-- name: DeleteDynamicDeviceGroupEvaluationQueueRow :exec
+DELETE FROM dynamic_group_evaluation_queue WHERE group_id = $1
+`
+
+// DeviceGroupDeleted handler — third half. Removes the queue entry so
+// the next dynamic-evaluation pass doesn't try to reconcile a deleted
+// group.
+func (q *Queries) DeleteDynamicDeviceGroupEvaluationQueueRow(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, deleteDynamicDeviceGroupEvaluationQueueRow, groupID)
+	return err
+}
+
+const enqueueDynamicDeviceGroupEvaluation = `-- name: EnqueueDynamicDeviceGroupEvaluation :exec
+INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
+VALUES ($1, clock_timestamp(), $2)
+ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp()
+`
+
+type EnqueueDynamicDeviceGroupEvaluationParams struct {
+	GroupID string  `json:"group_id"`
+	Reason  *string `json:"reason"`
+}
+
+// DeviceGroupCreated (when is_dynamic) and DeviceGroupQueryUpdated
+// (when flip-to-dynamic) handler. Mirrors the PL/pgSQL `INSERT INTO
+// dynamic_group_evaluation_queue ... ON CONFLICT (group_id) DO UPDATE
+// SET queued_at = clock_timestamp()` so a re-queue refreshes the
+// queued_at timestamp. The reason text is the caller-provided trigger
+// ('group_created' or 'query_updated') for operator visibility into
+// evaluator-queue churn.
+func (q *Queries) EnqueueDynamicDeviceGroupEvaluation(ctx context.Context, arg EnqueueDynamicDeviceGroupEvaluationParams) error {
+	_, err := q.db.Exec(ctx, enqueueDynamicDeviceGroupEvaluation, arg.GroupID, arg.Reason)
+	return err
 }
 
 const evaluateDynamicGroup = `-- name: EvaluateDynamicGroup :exec
@@ -168,6 +278,96 @@ func (q *Queries) GetDynamicGroupsNeedingEvaluation(ctx context.Context, limit i
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertDeviceGroupMember = `-- name: InsertDeviceGroupMember :exec
+INSERT INTO device_group_members_projection (
+    group_id, device_id, added_at, projection_version
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (group_id, device_id) DO NOTHING
+`
+
+type InsertDeviceGroupMemberParams struct {
+	GroupID           string     `json:"group_id"`
+	DeviceID          string     `json:"device_id"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DeviceGroupMemberAdded / DeviceAddedToGroup handler — second half.
+// ON CONFLICT DO NOTHING preserves the PL/pgSQL projector's idempotency
+// under reconciler replays. The composite PK (group_id, device_id)
+// makes this safe.
+func (q *Queries) InsertDeviceGroupMember(ctx context.Context, arg InsertDeviceGroupMemberParams) error {
+	_, err := q.db.Exec(ctx, insertDeviceGroupMember,
+		arg.GroupID,
+		arg.DeviceID,
+		arg.AddedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertDeviceGroupProjection = `-- name: InsertDeviceGroupProjection :exec
+
+INSERT INTO device_groups_projection (
+    id, name, description, is_dynamic, dynamic_query,
+    created_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertDeviceGroupProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	IsDynamic         bool       `json:"is_dynamic"`
+	DynamicQuery      *string    `json:"dynamic_query"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#136).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_device_group_event(): every event
+// handler the projector dispatched on (DeviceGroupCreated,
+// DeviceGroupRenamed, DeviceGroupDescriptionUpdated,
+// DeviceGroupQueryUpdated, DeviceGroupSyncIntervalSet,
+// DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded /
+// DeviceAddedToGroup, DeviceGroupMemberRemoved / DeviceRemovedFromGroup,
+// DeviceGroupDeleted) gets a typed sqlc query here so the listener can
+// compose them in Go.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE carries an explicit
+// `WHERE projection_version < $N` guard and uses :execrows so the listener
+// can short-circuit cascades on stale-replay (asymmetric-guard discipline;
+// see role_listener / action_set_listener for the canonical shape).
+//
+// Dynamic-query engine scope: the dynamic-query evaluator
+// (evaluate_dynamic_group, validate_dynamic_query) STAYS in PL/pgSQL
+// until a later phase. The listener only persists the query column +
+// (re-)enqueues the group via EnqueueDynamicDeviceGroupEvaluation when
+// is_dynamic flips on; the evaluator runs unchanged inside Postgres.
+// DeviceGroupCreated handler. ON CONFLICT DO NOTHING for replay safety —
+// the unique constraint is the primary key (id), so a re-application of
+// DeviceGroupCreated for the same stream lands as a no-op. The PL/pgSQL
+// projector raised on the second insert; we soften that to the same
+// replay-safe shape every other ported projector uses.
+func (q *Queries) InsertDeviceGroupProjection(ctx context.Context, arg InsertDeviceGroupProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertDeviceGroupProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
 
 const listDeviceGroupMembers = `-- name: ListDeviceGroupMembers :many
@@ -398,6 +598,210 @@ func (q *Queries) QueueAllDynamicGroups(ctx context.Context) error {
 	return err
 }
 
+const recountDeviceGroupMembers = `-- name: RecountDeviceGroupMembers :exec
+UPDATE device_groups_projection
+SET member_count = (SELECT COUNT(*) FROM device_group_members_projection WHERE group_id = $1)
+WHERE id = $1
+`
+
+// Recompute member_count from the live row count after the listener
+// has applied a membership mutation. Run in the same transaction as
+// ClaimDeviceGroupForMembership + the INSERT/DELETE so the parent
+// row is never observed with a stale count. No projection_version
+// guard here: the Claim above already stamped the version.
+func (q *Queries) RecountDeviceGroupMembers(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, recountDeviceGroupMembers, groupID)
+	return err
+}
+
+const renameDeviceGroupProjection = `-- name: RenameDeviceGroupProjection :execrows
+UPDATE device_groups_projection
+SET name              = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type RenameDeviceGroupProjectionParams struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceGroupRenamed handler. Stale-replay guard via projection_version.
+func (q *Queries) RenameDeviceGroupProjection(ctx context.Context, arg RenameDeviceGroupProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameDeviceGroupProjection, arg.ID, arg.Name, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resetDeviceGroupMemberCount = `-- name: ResetDeviceGroupMemberCount :exec
+UPDATE device_groups_projection
+SET member_count = 0
+WHERE id = $1
+`
+
+// DeviceGroupQueryUpdated handler — flip-to-dynamic cascade half. Mirrors
+// the PL/pgSQL `UPDATE device_groups_projection SET member_count = 0
+// WHERE id = ...` that runs after wiping the static-member rows. No
+// projection_version guard here: the gate lives upstream on
+// UpdateDeviceGroupQueryProjection's :execrows, so a stale event can't
+// reach this statement.
+func (q *Queries) ResetDeviceGroupMemberCount(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, resetDeviceGroupMemberCount, id)
+	return err
+}
+
+const softDeleteDeviceGroupProjection = `-- name: SoftDeleteDeviceGroupProjection :execrows
+UPDATE device_groups_projection
+SET is_deleted        = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type SoftDeleteDeviceGroupProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceGroupDeleted handler — first half. Returns rows-affected so the
+// listener can SKIP the cascade (member wipe + dynamic-queue cleanup)
+// when the projection_version guard rejects a stale replay; otherwise
+// an old DeviceGroupDeleted re-applied by the reconciler would silently
+// nuke a freshly-restored group's members.
+func (q *Queries) SoftDeleteDeviceGroupProjection(ctx context.Context, arg SoftDeleteDeviceGroupProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteDeviceGroupProjection, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceGroupDescriptionProjection = `-- name: UpdateDeviceGroupDescriptionProjection :execrows
+UPDATE device_groups_projection
+SET description       = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceGroupDescriptionProjectionParams struct {
+	ID                string `json:"id"`
+	Description       string `json:"description"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceGroupDescriptionUpdated handler. Empty-string description is a
+// valid value (matches the PL/pgSQL `COALESCE(payload, ”)` collapse —
+// the listener decoder substitutes ” when the payload key is missing).
+func (q *Queries) UpdateDeviceGroupDescriptionProjection(ctx context.Context, arg UpdateDeviceGroupDescriptionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceGroupDescriptionProjection, arg.ID, arg.Description, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceGroupMaintenanceWindowProjection = `-- name: UpdateDeviceGroupMaintenanceWindowProjection :execrows
+UPDATE device_groups_projection
+SET maintenance_window = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceGroupMaintenanceWindowProjectionParams struct {
+	ID                string `json:"id"`
+	MaintenanceWindow []byte `json:"maintenance_window"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceGroupMaintenanceWindowSet handler. Mirrors the PL/pgSQL
+// `COALESCE(payload, '{}'::JSONB)`: the listener decoder substitutes
+// '{}' when the payload key is missing so this query always receives a
+// non-NULL JSONB blob. Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceGroupMaintenanceWindowProjection(ctx context.Context, arg UpdateDeviceGroupMaintenanceWindowProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceGroupMaintenanceWindowProjection, arg.ID, arg.MaintenanceWindow, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceGroupQueryProjection = `-- name: UpdateDeviceGroupQueryProjection :one
+WITH prev AS (
+    SELECT dg.id AS prev_id, dg.is_dynamic AS prev_is_dynamic
+    FROM device_groups_projection dg
+    WHERE dg.id = $1
+), bumped AS (
+    UPDATE device_groups_projection dg
+    SET is_dynamic         = $2,
+        dynamic_query      = $3,
+        projection_version = $4
+    WHERE dg.id = $1
+      AND dg.projection_version < $4
+    RETURNING dg.id AS bumped_id
+)
+SELECT prev.prev_is_dynamic FROM prev JOIN bumped ON bumped.bumped_id = prev.prev_id
+`
+
+type UpdateDeviceGroupQueryProjectionParams struct {
+	ID                string  `json:"id"`
+	IsDynamic         bool    `json:"is_dynamic"`
+	DynamicQuery      *string `json:"dynamic_query"`
+	ProjectionVersion int64   `json:"projection_version"`
+}
+
+// DeviceGroupQueryUpdated handler — first half. Persists the dynamic-
+// query toggle + query string. Stale-replay guard via projection_version.
+// Returns the previous is_dynamic value so the listener can tell a
+// true static→dynamic flip from a steady-state dynamic-query edit.
+// Only the flip should trigger the cascade (member wipe + count reset
+// + re-enqueue); editing the query of an already-dynamic group must
+// preserve the live evaluator-owned member set (sibling fix to the
+// CR catch on the user_group port, PR #174).
+//
+// A stale event (projection_version >= current) returns sql.ErrNoRows
+// via pgx — the listener treats that as "skip cascade".
+func (q *Queries) UpdateDeviceGroupQueryProjection(ctx context.Context, arg UpdateDeviceGroupQueryProjectionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, updateDeviceGroupQueryProjection,
+		arg.ID,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+		arg.ProjectionVersion,
+	)
+	var prev_is_dynamic bool
+	err := row.Scan(&prev_is_dynamic)
+	return prev_is_dynamic, err
+}
+
+const updateDeviceGroupSyncIntervalProjection = `-- name: UpdateDeviceGroupSyncIntervalProjection :execrows
+UPDATE device_groups_projection
+SET sync_interval_minutes = $2,
+    projection_version    = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceGroupSyncIntervalProjectionParams struct {
+	ID                  string `json:"id"`
+	SyncIntervalMinutes int32  `json:"sync_interval_minutes"`
+	ProjectionVersion   int64  `json:"projection_version"`
+}
+
+// DeviceGroupSyncIntervalSet handler. The decoder defaults a missing
+// sync_interval_minutes key to 0 (matches the PL/pgSQL COALESCE).
+func (q *Queries) UpdateDeviceGroupSyncIntervalProjection(ctx context.Context, arg UpdateDeviceGroupSyncIntervalProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceGroupSyncIntervalProjection, arg.ID, arg.SyncIntervalMinutes, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const validateDynamicQuery = `-- name: ValidateDynamicQuery :one
 SELECT COALESCE(validate_dynamic_query($1), '')::TEXT AS error_message
 `
@@ -407,4 +811,16 @@ func (q *Queries) ValidateDynamicQuery(ctx context.Context, query string) (strin
 	var error_message string
 	err := row.Scan(&error_message)
 	return error_message, err
+}
+
+const wipeDeviceGroupMembers = `-- name: WipeDeviceGroupMembers :exec
+DELETE FROM device_group_members_projection WHERE group_id = $1
+`
+
+// DeviceGroupQueryUpdated (flip-to-dynamic) handler. The dynamic-query
+// evaluator owns the member set after the flip, so any static rows
+// left behind would surface as ghost members.
+func (q *Queries) WipeDeviceGroupMembers(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, wipeDeviceGroupMembers, groupID)
+	return err
 }

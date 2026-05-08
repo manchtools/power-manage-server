@@ -174,11 +174,26 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_definition_event",
 	},
 	{
+		// Ported to projectors.ApplyDeviceGroup via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'device_group'` clause in the Phase 2 cleanup.
+		//
+		// `TRUNCATE device_groups_projection CASCADE` matches the
+		// legacy rebuild_device_groups_projection() blast radius
+		// verbatim — there are no FKs into the table today, but
+		// CASCADE is preserved for symmetry with the legacy PL/pgSQL
+		// behaviour. Both device_group_members_projection AND
+		// dynamic_group_evaluation_queue must end up empty for the
+		// applier to re-derive them from the event stream; explicit
+		// TRUNCATE here keeps the post-rebuild state deterministic
+		// regardless of FK drift in future migrations.
 		Name:        "device_groups",
-		Tables:      []string{"device_groups_projection"},
+		Tables:      []string{"device_groups_projection", "device_group_members_projection", "dynamic_group_evaluation_queue"},
 		Cascade:     true,
 		StreamTypes: []string{"device_group"},
-		Function:    "project_device_group_event",
 	},
 	{
 		// Ported to projectors.ApplyAssignment via projectors.WireAll

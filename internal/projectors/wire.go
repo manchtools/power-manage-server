@@ -84,11 +84,15 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "user_group_projector"),
 	))
+	st.RegisterEventListener(DeviceGroupListener(
+		st,
+		loggerFor(logger, "device_group_projector"),
+	))
 	// All 11 ports of tracker #107 are now wired here, plus the
-	// first three Phase 2 ports (action_set, assignment, user_group
-	// — all under tracker #136). Future Phase 2 ports of the
-	// remaining domain projectors (user, device, action, definition,
-	// device_group, execution, compliance, compliance_policy) land
+	// first four Phase 2 ports (action_set, assignment, user_group,
+	// device_group — all under tracker #136). Future Phase 2 ports
+	// of the remaining domain projectors (user, device, action,
+	// definition, execution, compliance, compliance_policy) land
 	// here too.
 
 	// Rebuild appliers (manchtools/power-manage-server#125). Only
@@ -96,14 +100,15 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// store.AllRebuildTargets need this wiring — RebuildAll
 	// dispatches everything else through the legacy PL/pgSQL
 	// Function. Of the 11 #107 ports, three own rebuild targets:
-	// roles, tokens, user_selections. The Phase 2 ports add three
-	// more (action_sets, assignments, user_groups).
+	// roles, tokens, user_selections. The Phase 2 ports add four
+	// more (action_sets, assignments, user_groups, device_groups).
 	st.RegisterRebuildApply("roles", ApplyRole)
 	st.RegisterRebuildApply("tokens", ApplyToken)
 	st.RegisterRebuildApply("user_selections", ApplyUserSelection)
 	st.RegisterRebuildApply("action_sets", ApplyActionSet)
 	st.RegisterRebuildApply("assignments", ApplyAssignment)
 	st.RegisterRebuildApply("user_groups", ApplyUserGroup)
+	st.RegisterRebuildApply("device_groups", ApplyDeviceGroup)
 }
 
 // loggerFor returns a sub-logger tagged with the projector
