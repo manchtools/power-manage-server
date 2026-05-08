@@ -871,6 +871,90 @@ func TestUserGroupListener_StaleMembersRebuiltDoesNotOverwrite(t *testing.T) {
 	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion)
 }
 
+// TestUserGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers
+// locks the CR catch on PR #174 (line 234): editing the dynamic_query
+// of an already-dynamic group must NOT trigger the cascade. The
+// cascade (member wipe + member_count zero + re-enqueue) is for the
+// static→dynamic transition only — the evaluator owns the member
+// set in steady state and re-evaluates on its own schedule.
+func TestUserGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	groupID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID, EventType: "UserGroupCreated",
+		Data:      map[string]any{"name": "dyn", "is_dynamic": true, "dynamic_query": "(role equals \"admin\")"},
+		ActorType: "user", ActorID: "u",
+	}))
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@x.com", "pass", "user")
+	_, err := st.Pool().Exec(ctx, `
+		INSERT INTO user_group_members_projection (group_id, user_id, added_at, added_by, projection_version)
+		VALUES ($1, $2, now(), 'system', 0)`, groupID, userID)
+	require.NoError(t, err)
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID, EventType: "UserGroupQueryUpdated",
+		Data:      map[string]any{"is_dynamic": true, "dynamic_query": "(role equals \"superuser\")"},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1", groupID,
+	).Scan(&count))
+	assert.Equal(t, 1, count, "steady-state dynamic-query edit must NOT wipe evaluator-populated members")
+}
+
+// TestUserGroupListener_StaleRoleAssignedDoesNotReinsertRevoked locks
+// the CR catch on PR #174 (line 319): role mutations must be guarded
+// against stale replay. A stale UserGroupRoleAssigned replayed after
+// a Revoked must NOT silently re-grant the inherited permissions.
+func TestUserGroupListener_StaleRoleAssignedDoesNotReinsertRevoked(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	groupID := testutil.CreateTestUserGroup(t, st, "u", "stale-role-grp")
+	roleID := testutil.CreateTestRole(t, st, "u", "stale-role-"+testutil.NewID(), []string{"GetUser"})
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":role:" + roleID, EventType: "UserGroupRoleAssigned",
+		Data:      map[string]any{"group_id": groupID, "role_id": roleID},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":role:" + roleID, EventType: "UserGroupRoleRevoked",
+		Data:      map[string]any{"group_id": groupID, "role_id": roleID},
+		ActorType: "user", ActorID: "u",
+	}))
+	live, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+
+	older := live.ProjectionVersion - 5
+	listener := projectors.UserGroupListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &older,
+		StreamType:  "user_group",
+		StreamID:    groupID + ":role:" + roleID,
+		EventType:   "UserGroupRoleAssigned",
+		Data:        jsonOrFail(t, map[string]any{"group_id": groupID, "role_id": roleID}),
+		ActorType:   "user",
+		ActorID:     "u",
+		OccurredAt:  live.UpdatedAt,
+	})
+
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM user_group_roles_projection WHERE group_id = $1 AND role_id = $2",
+		groupID, roleID,
+	).Scan(&count))
+	assert.Equal(t, 0, count, "stale UserGroupRoleAssigned must NOT reinsert the revoked role")
+
+	after, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion)
+}
+
 // TestUserGroupListener_IgnoresWrongStreamType — defensive.
 func TestUserGroupListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)

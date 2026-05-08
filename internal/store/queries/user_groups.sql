@@ -144,19 +144,52 @@ SET name              = sqlc.arg('name'),
 WHERE id = sqlc.arg('id')
   AND projection_version < sqlc.arg('projection_version');
 
--- name: UpdateUserGroupQueryProjection :execrows
+-- name: UpdateUserGroupQueryProjection :one
 -- UserGroupQueryUpdated handler — first half. Persists the dynamic-
 -- query toggle + query string. Stale-replay guard via projection_version.
--- The listener follows up with WipeUserGroupMembersOnDynamicFlip +
--- ResetUserGroupMemberCount + EnqueueDynamicUserGroupEvaluation when the
--- group flips to dynamic, gated by this UPDATE's :execrows count.
+-- Returns the previous is_dynamic value so the listener can tell a
+-- true static→dynamic flip from a steady-state dynamic-query edit.
+-- Only the flip should trigger the cascade (member wipe + count reset
+-- + re-enqueue); editing the query of an already-dynamic group must
+-- preserve the live member set (CR catch on PR #174).
+--
+-- A stale event (projection_version >= current) returns sql.ErrNoRows
+-- — the listener treats that as "skip cascade" via :one's no-row
+-- error.
+WITH prev AS (
+    SELECT ug.id AS prev_id, ug.is_dynamic AS prev_is_dynamic
+    FROM user_groups_projection ug
+    WHERE ug.id = $1
+), bumped AS (
+    UPDATE user_groups_projection ug
+    SET is_dynamic         = $2,
+        dynamic_query      = $3,
+        updated_at         = $4,
+        projection_version = $5
+    WHERE ug.id = $1
+      AND ug.projection_version < $5
+    RETURNING ug.id AS bumped_id
+)
+SELECT prev.prev_is_dynamic FROM prev JOIN bumped ON bumped.bumped_id = prev.prev_id;
+
+-- name: ClaimUserGroupForRoleMutation :execrows
+-- Atomic guard for UserGroupRoleAssigned / UserGroupRoleRevoked.
+-- Bumps projection_version only when the parent group exists, is not
+-- soft-deleted, and the event is newer than the current version.
+-- Roles can be assigned to BOTH static and dynamic groups, so unlike
+-- ClaimUserGroupForMembership this guard does not check is_dynamic.
+--
+-- Returns n=1 when the listener may proceed with the role-table
+-- mutation, n=0 when the event must be skipped. Doing the version
+-- check BEFORE the role INSERT/DELETE prevents stale replays from
+-- silently granting or revoking inherited permissions (CR catch on
+-- PR #174).
 UPDATE user_groups_projection
-SET is_dynamic         = $2,
-    dynamic_query      = $3,
-    updated_at         = $4,
-    projection_version = $5
+SET updated_at         = $2,
+    projection_version = $3
 WHERE id = $1
-  AND projection_version < $5;
+  AND projection_version < $3
+  AND is_deleted = FALSE;
 
 -- name: ResetUserGroupMemberCount :exec
 -- UserGroupQueryUpdated handler — flip-to-dynamic cascade half. Mirrors

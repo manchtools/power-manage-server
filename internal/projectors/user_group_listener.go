@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -38,8 +40,11 @@ var (
 //     same gate), MembersRebuilt (TRUNCATE-style member wipe + bulk
 //     re-insert + member_count set), each wrapped in store.WithTx so the
 //     parent row never observes "member changed but member_count stale".
-//   - Role assignments: RoleAssigned (INSERT) and RoleRevoked (DELETE),
-//     both single-statement composite-PK writes (no parent-row update).
+//   - Role assignments: RoleAssigned (INSERT) and RoleRevoked (DELETE).
+//     Each runs a Claim guard against the parent before touching
+//     user_group_roles_projection so a stale replay can't silently
+//     grant or revoke inherited permissions; both wrapped in
+//     store.WithTx so the guard + mutation are atomic.
 //
 // Multi-write listeners (Deleted, MemberAdded, MemberRemoved,
 // MembersRebuilt, QueryUpdated when flip-to-dynamic) follow the
@@ -75,7 +80,9 @@ func UserGroupListener(st *store.Store, logger *slog.Logger) store.EventListener
 			"UserGroupDeleted",
 			"UserGroupMemberAdded",
 			"UserGroupMemberRemoved",
-			"UserGroupMembersRebuilt":
+			"UserGroupMembersRebuilt",
+			"UserGroupRoleAssigned",
+			"UserGroupRoleRevoked":
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyUserGroup(ctx, q, e)
 			}); err != nil {
@@ -195,33 +202,32 @@ func applyUserGroupQueryUpdated(ctx context.Context, q *store.Queries, e store.P
 		}
 		return err
 	}
-	updatedAt := e.OccurredAt
-	n, err := q.UpdateUserGroupQueryProjection(ctx, db.UpdateUserGroupQueryProjectionParams{
+	prevIsDynamic, err := q.UpdateUserGroupQueryProjection(ctx, db.UpdateUserGroupQueryProjectionParams{
 		ID:                payload.ID,
 		IsDynamic:         payload.IsDynamic,
 		DynamicQuery:      payload.DynamicQuery,
-		UpdatedAt:         updatedAt,
+		UpdatedAt:         e.OccurredAt,
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 	if err != nil {
+		// pgx surfaces sql.ErrNoRows / pgx.ErrNoRows when the inner
+		// UPDATE's :execrows guard rejects a stale replay (the
+		// CTE join collapses to zero rows). That MUST be treated as
+		// "skip cascade" — propagating the error would roll back the
+		// listener TX and surface a hot loop on every reconciler pass.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		return err
 	}
-	if n == 0 {
-		// Stale UserGroupQueryUpdated replay against a row whose
-		// projection_version has moved past this event. Skipping the
-		// flip-to-dynamic cascade (member wipe + member_count reset +
-		// re-enqueue) is mandatory: otherwise an old QueryUpdated
-		// re-applied later would silently nuke the live group's
-		// members and re-enqueue a group whose query has already
-		// changed downstream.
+	// Cascade ONLY on a true static→dynamic flip. Editing the
+	// dynamic_query of an already-dynamic group must preserve the
+	// live evaluator-owned member set (CR catch on PR #174); without
+	// this gate, a steady-state query edit would wipe + zero +
+	// re-enqueue every member.
+	if !payload.IsDynamic || prevIsDynamic {
 		return nil
 	}
-	if !payload.IsDynamic {
-		return nil
-	}
-	// Flip-to-dynamic cascade: wipe static members + zero member_count
-	// + (re-)enqueue for the evaluator. Mirrors the PL/pgSQL
-	// projector's order verbatim.
 	if err := q.WipeUserGroupMembers(ctx, payload.ID); err != nil {
 		return err
 	}
@@ -366,11 +372,27 @@ func applyUserGroupRoleAssigned(ctx context.Context, q *store.Queries, e store.P
 		}
 		return err
 	}
-	assignedAt := e.OccurredAt
+	// Atomic guard FIRST: bumps projection_version only when the
+	// parent group exists, is alive, and the event is newer.
+	// n==0 means skip the role mutation. Doing the version check
+	// AFTER the INSERT (the prior shape) let stale replays reinsert
+	// revoked role assignments — silently re-granting inherited
+	// permissions (CR catch on PR #174).
+	n, err := q.ClaimUserGroupForRoleMutation(ctx, db.ClaimUserGroupForRoleMutationParams{
+		ID:                payload.GroupID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
 	return q.InsertUserGroupRole(ctx, db.InsertUserGroupRoleParams{
 		GroupID:           payload.GroupID,
 		RoleID:            payload.RoleID,
-		AssignedAt:        assignedAt,
+		AssignedAt:        e.OccurredAt,
 		AssignedBy:        e.ActorID,
 		ProjectionVersion: deref(e.SequenceNum),
 	})
@@ -383,6 +405,17 @@ func applyUserGroupRoleRevoked(ctx context.Context, q *store.Queries, e store.Pe
 			return nil
 		}
 		return err
+	}
+	n, err := q.ClaimUserGroupForRoleMutation(ctx, db.ClaimUserGroupForRoleMutationParams{
+		ID:                payload.GroupID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
 	}
 	return q.DeleteUserGroupRole(ctx, db.DeleteUserGroupRoleParams{
 		GroupID: payload.GroupID,
