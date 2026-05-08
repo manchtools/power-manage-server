@@ -10,6 +10,42 @@ import (
 	"time"
 )
 
+const claimDefinitionForMembership = `-- name: ClaimDefinitionForMembership :execrows
+UPDATE definitions_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+`
+
+type ClaimDefinitionForMembershipParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// Atomic guard for the three member-mutation events
+// (DefinitionMemberAdded, DefinitionMemberRemoved, DefinitionMemberReordered).
+// Bumps updated_at + projection_version only when the parent
+// definition exists, is not soft-deleted, and the event is newer than
+// the current projection_version.
+//
+// Returns n=1 when the listener may proceed with the membership
+// mutation, n=0 when the event must be skipped. Doing the version
+// check BEFORE any child-row mutation prevents the stale-replay holes
+// CR caught on the user_group port (PR #174): without this guard a
+// stale DefinitionMemberAdded after a Removed would recreate the
+// removed membership row, and a stale Removed would delete a live
+// one.
+func (q *Queries) ClaimDefinitionForMembership(ctx context.Context, arg ClaimDefinitionForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimDefinitionForMembership, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countDefinitions = `-- name: CountDefinitions :one
 SELECT COUNT(*) FROM definitions_projection
 WHERE is_deleted = FALSE
@@ -20,6 +56,24 @@ func (q *Queries) CountDefinitions(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteDefinitionMember = `-- name: DeleteDefinitionMember :exec
+DELETE FROM definition_members_projection
+WHERE definition_id = $1
+  AND action_set_id = $2
+`
+
+type DeleteDefinitionMemberParams struct {
+	DefinitionID string `json:"definition_id"`
+	ActionSetID  string `json:"action_set_id"`
+}
+
+// DefinitionMemberRemoved handler — second half. Plain DELETE —
+// silently no-op on a miss matches the PL/pgSQL projector's behaviour.
+func (q *Queries) DeleteDefinitionMember(ctx context.Context, arg DeleteDefinitionMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteDefinitionMember, arg.DefinitionID, arg.ActionSetID)
+	return err
 }
 
 const getDefinitionByID = `-- name: GetDefinitionByID :one
@@ -91,6 +145,114 @@ func (q *Queries) GetDefinitionMember(ctx context.Context, arg GetDefinitionMemb
 		&i.ProjectionVersion,
 	)
 	return i, err
+}
+
+const insertDefinitionMember = `-- name: InsertDefinitionMember :exec
+INSERT INTO definition_members_projection (
+    definition_id, action_set_id, sort_order, added_at, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (definition_id, action_set_id) DO NOTHING
+`
+
+type InsertDefinitionMemberParams struct {
+	DefinitionID      string     `json:"definition_id"`
+	ActionSetID       string     `json:"action_set_id"`
+	SortOrder         int32      `json:"sort_order"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionMemberAdded handler — second half. ON CONFLICT DO NOTHING
+// preserves the PL/pgSQL projector's idempotency under reconciler
+// replays. The composite PK (definition_id, action_set_id) makes this
+// safe.
+func (q *Queries) InsertDefinitionMember(ctx context.Context, arg InsertDefinitionMemberParams) error {
+	_, err := q.db.Exec(ctx, insertDefinitionMember,
+		arg.DefinitionID,
+		arg.ActionSetID,
+		arg.SortOrder,
+		arg.AddedAt,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertDefinitionProjection = `-- name: InsertDefinitionProjection :exec
+
+INSERT INTO definitions_projection (
+    id, name, description, schedule,
+    created_at, updated_at, created_by, projection_version
+) VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8
+)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertDefinitionProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	Schedule          []byte     `json:"schedule"`
+	CreatedAt         *time.Time `json:"created_at"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#136).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_definition_event(). Eight event
+// types: Created, Renamed, DescriptionUpdated, ScheduleUpdated,
+// MemberAdded, MemberRemoved, MemberReordered, Deleted. The Created
+// event is shared with project_action_event — when the payload carries
+// `action_type` the action projector synthesises an actions_projection
+// row and the definition projector no-ops; otherwise the definition
+// projector inserts a definitions_projection row and the action
+// projector no-ops. The Go listener (action_listener.go) owns BOTH
+// stream types so the dispatch is single-pass.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE on
+// definitions_projection carries an explicit `WHERE projection_version < $N`
+// guard and uses :execrows so the listener can short-circuit cascades
+// on stale-replay (asymmetric-guard discipline; see role_listener /
+// action_set_listener for the canonical shape).
+//
+// Claim-first guard: the three member-mutation events
+// (DefinitionMemberAdded, DefinitionMemberRemoved, DefinitionMemberReordered)
+// all run ClaimDefinitionForMembership BEFORE touching
+// definition_members_projection. The Claim guard bumps
+// definitions_projection.projection_version only when the definition
+// exists, is alive, and the event is newer; the listener short-circuits
+// on n == 0. Doing the version check BEFORE the membership INSERT/
+// DELETE/UPDATE prevents stale replays from silently resurrecting
+// removed members or rolling back fresher reorders — the same hazard
+// the user_group port (PR #174) had to fix retroactively.
+// DefinitionCreated handler — definitions_projection branch (taken
+// when the payload OMITS action_type). ON CONFLICT DO NOTHING for
+// replay safety. Schedule defaults to '{"interval_hours": 8}' (column
+// default mirrors the PL/pgSQL COALESCE fallback for the missing
+// payload key).
+func (q *Queries) InsertDefinitionProjection(ctx context.Context, arg InsertDefinitionProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertDefinitionProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Schedule,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
 
 const listActionSetsInDefinition = `-- name: ListActionSetsInDefinition :many
@@ -219,4 +381,176 @@ func (q *Queries) ListDefinitions(ctx context.Context, arg ListDefinitionsParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const recountDefinitionMembers = `-- name: RecountDefinitionMembers :exec
+UPDATE definitions_projection
+SET member_count = (SELECT COUNT(*) FROM definition_members_projection WHERE definition_id = $1)
+WHERE id = $1
+`
+
+// DefinitionMemberAdded / DefinitionMemberRemoved handler — third half.
+// Recomputes member_count from the live row count after the listener
+// has applied a membership mutation. Run in the same transaction as
+// ClaimDefinitionForMembership + the INSERT/DELETE so the parent row
+// is never observed with a stale count. No projection_version guard
+// here: the Claim above already stamped the version.
+func (q *Queries) RecountDefinitionMembers(ctx context.Context, definitionID string) error {
+	_, err := q.db.Exec(ctx, recountDefinitionMembers, definitionID)
+	return err
+}
+
+const renameDefinitionProjection = `-- name: RenameDefinitionProjection :execrows
+UPDATE definitions_projection
+SET name              = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type RenameDefinitionProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionRenamed handler. Stale-replay guard via projection_version.
+func (q *Queries) RenameDefinitionProjection(ctx context.Context, arg RenameDefinitionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameDefinitionProjection,
+		arg.ID,
+		arg.Name,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteDefinitionProjection = `-- name: SoftDeleteDefinitionProjection :execrows
+UPDATE definitions_projection
+SET is_deleted        = TRUE,
+    updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteDefinitionProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionDeleted handler — definitions_projection branch (taken on
+// the definition stream). Stale-replay guard via projection_version;
+// :execrows lets the listener detect and skip downstream cascades —
+// though there is no cross-table cascade for DefinitionDeleted today
+// (the PL/pgSQL projector left definition_members orphaned by
+// design), so n==0 just short-circuits to a no-op.
+func (q *Queries) SoftDeleteDefinitionProjection(ctx context.Context, arg SoftDeleteDefinitionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteDefinitionProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDefinitionDescriptionProjection = `-- name: UpdateDefinitionDescriptionProjection :execrows
+UPDATE definitions_projection
+SET description       = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateDefinitionDescriptionProjectionParams struct {
+	ID                string     `json:"id"`
+	Description       string     `json:"description"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionDescriptionUpdated handler. Empty-string description is a
+// valid value (matches the PL/pgSQL `COALESCE(payload, ”)` collapse —
+// the listener decoder substitutes ” when the payload key is missing).
+func (q *Queries) UpdateDefinitionDescriptionProjection(ctx context.Context, arg UpdateDefinitionDescriptionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDefinitionDescriptionProjection,
+		arg.ID,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDefinitionMemberSortOrder = `-- name: UpdateDefinitionMemberSortOrder :execrows
+UPDATE definition_members_projection
+SET sort_order        = $3,
+    projection_version = $4
+WHERE definition_id = $1
+  AND action_set_id = $2
+  AND projection_version < $4
+`
+
+type UpdateDefinitionMemberSortOrderParams struct {
+	DefinitionID      string `json:"definition_id"`
+	ActionSetID       string `json:"action_set_id"`
+	SortOrder         int32  `json:"sort_order"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DefinitionMemberReordered handler — second half. Per-member
+// projection_version guards the row so a stale reorder cannot clobber
+// a fresher position.
+func (q *Queries) UpdateDefinitionMemberSortOrder(ctx context.Context, arg UpdateDefinitionMemberSortOrderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDefinitionMemberSortOrder,
+		arg.DefinitionID,
+		arg.ActionSetID,
+		arg.SortOrder,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDefinitionScheduleProjection = `-- name: UpdateDefinitionScheduleProjection :execrows
+UPDATE definitions_projection
+SET schedule          = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateDefinitionScheduleProjectionParams struct {
+	ID                string     `json:"id"`
+	Schedule          []byte     `json:"schedule"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionScheduleUpdated handler. Decoder defaults a missing
+// schedule key to the column default '{"interval_hours": 8}' so this
+// query always receives a non-NULL JSONB blob.
+func (q *Queries) UpdateDefinitionScheduleProjection(ctx context.Context, arg UpdateDefinitionScheduleProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDefinitionScheduleProjection,
+		arg.ID,
+		arg.Schedule,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

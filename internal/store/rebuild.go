@@ -128,14 +128,23 @@ var AllRebuildTargets = []rebuildTarget{
 		Function:    "project_device_event",
 	},
 	{
+		// Ported to projectors.ApplyAction via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'action'` / `WHEN 'definition'` clauses in the
+		// Phase 2 cleanup.
+		//
 		// Same combined ('action' + 'definition') filter as the
 		// original rebuild_actions_projection — the action projector
 		// owns both because some definition events synthesise action
-		// rows (compliance-policy definitions specifically).
+		// rows (compliance-policy definitions specifically). The
+		// per-event StreamType gate inside ApplyAction picks the
+		// correct branch for each event during replay.
 		Name:        "actions",
 		Tables:      []string{"actions_projection"},
 		StreamTypes: []string{"action", "definition"},
-		Function:    "project_action_event",
 	},
 	{
 		Name:        "executions",
@@ -167,11 +176,22 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"action_set"},
 	},
 	{
+		// Ported to projectors.ApplyDefinition (a thin alias to
+		// ApplyAction) via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'definition'` clause in the Phase 2 cleanup.
+		//
+		// `TRUNCATE definitions_projection CASCADE` matches the legacy
+		// rebuild_definitions_projection() blast radius — the cascade
+		// wipes definition_members_projection (FK reference), which
+		// the applier then re-derives from DefinitionMember* events.
 		Name:        "definitions",
 		Tables:      []string{"definitions_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"definition"},
-		Function:    "project_definition_event",
 	},
 	{
 		// Ported to projectors.ApplyDeviceGroup via projectors.WireAll
