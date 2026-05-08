@@ -121,11 +121,16 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"token"},
 	},
 	{
+		// Ported to projectors.ApplyDevice via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'device'` clause in the Phase 2 cleanup.
 		Name:        "devices",
 		Tables:      []string{"devices_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"device"},
-		Function:    "project_device_event",
 	},
 	{
 		// Ported to projectors.ApplyAction via projectors.WireAll
