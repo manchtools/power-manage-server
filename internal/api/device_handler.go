@@ -622,7 +622,6 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 	return device
 }
 
-// GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
 // distinctIDs collects distinct non-empty values from id-typed slices,
 // preserving first-seen ordering. Used by the response loops below
 // to feed bulk-load queries (GetActionNamesByIDs / GetDeviceHostnamesByIDs)
@@ -681,6 +680,7 @@ func (h *DeviceHandler) loadDeviceHostnamesByIDs(ctx context.Context, ids []stri
 	return out
 }
 
+// GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
 func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
