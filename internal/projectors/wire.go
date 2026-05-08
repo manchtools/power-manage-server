@@ -92,12 +92,16 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "compliance_policy_projector"),
 	))
+	st.RegisterEventListener(ComplianceListener(
+		st,
+		loggerFor(logger, "compliance_projector"),
+	))
 	// All 11 ports of tracker #107 are now wired here, plus the
 	// Phase 2 ports landed so far under tracker #136 (action_set,
-	// assignment, user_group, device_group, compliance_policy).
-	// Future Phase 2 ports of the remaining domain projectors (user,
-	// device, action, definition, execution, compliance) land here
-	// too.
+	// assignment, user_group, device_group, compliance_policy,
+	// compliance). Future Phase 2 ports of the remaining domain
+	// projectors (user, device, action, definition, execution) land
+	// here too.
 
 	// Rebuild appliers (manchtools/power-manage-server#125). Only
 	// the ported projectors that own a rebuildTarget in
