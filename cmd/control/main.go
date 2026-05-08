@@ -736,7 +736,7 @@ func main() {
 	internalMux.Handle(internalPath, mtls.RequirePeerClass(logger, mtls.PeerClassGateway)(internalH))
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	internalTLSCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
@@ -881,34 +881,15 @@ func parseFlags() *Config {
 	envInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
-	if cfg.DynamicGroupEvalInterval != 0 {
-		if cfg.DynamicGroupEvalInterval < 30*time.Minute {
-			cfg.DynamicGroupEvalInterval = 30 * time.Minute
-		} else if cfg.DynamicGroupEvalInterval > 8*time.Hour {
-			cfg.DynamicGroupEvalInterval = 8 * time.Hour
-		}
-	}
+	clampInterval(&cfg.DynamicGroupEvalInterval, 30*time.Minute, 8*time.Hour)
 
-	// Clamp system-action reconcile flags. Mirrors the DynamicGroup
-	// pattern above. A 0 sweep timeout would make
-	// context.WithTimeout return an already-cancelled context every
-	// tick, silently breaking the durability safety net; a negative
-	// interval would panic time.NewTicker. Round-3 review of rc11
-	// #77 caught the timeout footgun specifically; round-5 review
-	// added the floor/ceiling on the interval so a misconfigured
-	// 1ms tick can't flood the DB with sweep attempts.
-	if cfg.SystemActionReconcileInterval < 0 {
-		cfg.SystemActionReconcileInterval = 0 // treat as disabled, matching StartReconciliation
-	} else if cfg.SystemActionReconcileInterval > 0 {
-		if cfg.SystemActionReconcileInterval < 10*time.Second {
-			cfg.SystemActionReconcileInterval = 10 * time.Second
-		} else if cfg.SystemActionReconcileInterval > 8*time.Hour {
-			cfg.SystemActionReconcileInterval = 8 * time.Hour
-		}
-	}
-	if cfg.SystemActionReconcileTimeout <= 0 {
-		cfg.SystemActionReconcileTimeout = 5 * time.Minute
-	}
+	// Clamp system-action reconcile flags. The interval treats 0 as
+	// "disabled, matching StartReconciliation"; the timeout's 0 case
+	// would silently break the durability safety net via
+	// context.WithTimeout returning an already-cancelled context, so
+	// it falls back to the 5min default rather than disabling.
+	clampInterval(&cfg.SystemActionReconcileInterval, 10*time.Second, 8*time.Hour)
+	clampDurationFloor(&cfg.SystemActionReconcileTimeout, 5*time.Minute, 0)
 
 	if cfg.JWTSecret == "" {
 		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
@@ -980,6 +961,46 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	logger.Info("admin user created", "email", email, "id", id)
 	return nil
+}
+
+// clampInterval clamps a duration into [minDur, maxDur]. A zero
+// value means "feature disabled" and is preserved unchanged — the
+// callers that consume the duration treat 0 specially (the dynamic-
+// group eval and system-action reconcile paths short-circuit at 0).
+// A negative value is normalised to 0 so a misconfigured -1
+// can't accidentally enable the feature with a tiny clamp value
+// downstream. Audit F041 — consolidates three open-coded clamps
+// in parseFlags.
+func clampInterval(target *time.Duration, minDur, maxDur time.Duration) {
+	if *target < 0 {
+		*target = 0
+		return
+	}
+	if *target == 0 {
+		return
+	}
+	if *target < minDur {
+		*target = minDur
+	} else if *target > maxDur {
+		*target = maxDur
+	}
+}
+
+// clampDurationFloor enforces a minimum on a duration, falling back
+// to a default when the input is non-positive. Used for fields where
+// "no value" (zero or negative) should NOT mean "feature disabled"
+// but instead "use the default" — the system-action reconcile
+// timeout is the canonical case (zero would silently break the
+// safety net via context.WithTimeout returning an already-cancelled
+// context).
+func clampDurationFloor(target *time.Duration, def, minDur time.Duration) {
+	if *target <= 0 {
+		*target = def
+		return
+	}
+	if *target < minDur {
+		*target = minDur
+	}
 }
 
 // envString overrides target with the environment variable value if set.

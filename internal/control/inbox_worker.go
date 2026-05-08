@@ -15,34 +15,28 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
-// ActionSigner signs action payloads so agents can verify authenticity.
-// The Sign method returns the signature bytes for the given action ID,
-// type, and canonical params JSON.
-//
-// A nil ActionSigner disables signing globally (development only).
-// Note that dispatchPendingActions requires a non-nil signer and will
-// skip dispatch for any execution that references an action when the
-// signer is nil, since the agent rejects unsigned payloads.
-type ActionSigner interface {
-	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
-}
-
 // InboxWorker processes tasks from the control:inbox queue.
 // It replaces the PostgreSQL LISTEN-based Handler for gateway → control messages.
+//
+// signer follows the ca.ActionSigner contract: a nil signer disables
+// signing (dev mode); dispatchPendingActions skips any execution
+// referencing an action when signer is nil, since agents reject
+// unsigned payloads.
 type InboxWorker struct {
 	store    *store.Store
 	aqClient *taskqueue.Client
-	signer   ActionSigner
+	signer   ca.ActionSigner
 	logger   *slog.Logger
 }
 
 // NewInboxWorker creates a new inbox worker.
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ActionSigner, logger *slog.Logger) *InboxWorker {
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
 		store:    st,
 		aqClient: aqClient,

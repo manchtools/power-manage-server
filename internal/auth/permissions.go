@@ -66,6 +66,7 @@ func AllPermissions() []PermissionInfo {
 		{"ListActionSets", "Action Sets", "List action sets"},
 		{"RenameActionSet", "Action Sets", "Rename action sets"},
 		{"UpdateActionSetDescription", "Action Sets", "Update action set descriptions"},
+		{"UpdateActionSetSchedule", "Action Sets", "Update action set schedule"},
 		{"DeleteActionSet", "Action Sets", "Delete action sets"},
 		{"AddActionToSet", "Action Sets", "Add actions to sets"},
 		{"RemoveActionFromSet", "Action Sets", "Remove actions from sets"},
@@ -76,6 +77,7 @@ func AllPermissions() []PermissionInfo {
 		{"ListDefinitions", "Definitions", "List definitions"},
 		{"RenameDefinition", "Definitions", "Rename definitions"},
 		{"UpdateDefinitionDescription", "Definitions", "Update definition descriptions"},
+		{"UpdateDefinitionSchedule", "Definitions", "Update definition schedule"},
 		{"DeleteDefinition", "Definitions", "Delete definitions"},
 		{"AddActionSetToDefinition", "Definitions", "Add action sets to definitions"},
 		{"RemoveActionSetFromDefinition", "Definitions", "Remove action sets from definitions"},
@@ -94,6 +96,7 @@ func AllPermissions() []PermissionInfo {
 		{"ValidateDynamicQuery", "Device Groups", "Validate dynamic queries"},
 		{"EvaluateDynamicGroup", "Device Groups", "Evaluate dynamic groups"},
 		{"SetDeviceGroupSyncInterval", "Device Groups", "Set device group sync interval"},
+		{"SetDeviceGroupMaintenanceWindow", "Device Groups", "Set device group maintenance window"},
 		// Assignments
 		{"CreateAssignment", "Assignments", "Create assignments"},
 		{"DeleteAssignment", "Assignments", "Delete assignments"},
@@ -114,6 +117,7 @@ func AllPermissions() []PermissionInfo {
 		// Executions
 		{"GetExecution", "Executions", "View executions"},
 		{"ListExecutions", "Executions", "List executions"},
+		{"CancelExecution", "Executions", "Cancel pending executions"},
 		// OSQuery
 		{"DispatchOSQuery", "OSQuery", "Run OSQuery on device"},
 		{"GetOSQueryResult", "OSQuery", "View OSQuery results"},
@@ -175,6 +179,7 @@ func AllPermissions() []PermissionInfo {
 		{"UpdateUserGroupQuery", "User Groups", "Update user group queries"},
 		{"ValidateUserGroupQuery", "User Groups", "Validate user group queries"},
 		{"EvaluateDynamicUserGroup", "User Groups", "Evaluate dynamic user groups"},
+		{"SetUserGroupMaintenanceWindow", "User Groups", "Set user group maintenance window"},
 		// Identity Providers
 		{"CreateIdentityProvider", "Identity Providers", "Create identity providers"},
 		{"GetIdentityProvider", "Identity Providers", "View identity providers"},
