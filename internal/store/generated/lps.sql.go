@@ -20,7 +20,7 @@ func (q *Queries) DeleteLpsPasswordsByAction(ctx context.Context, actionID strin
 }
 
 const getCurrentLpsPasswords = `-- name: GetCurrentLpsPasswords :many
-SELECT id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current, created_at FROM lps_passwords_projection
+SELECT id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current, created_at, projection_version FROM lps_passwords_projection
 WHERE device_id = $1 AND is_current = TRUE
 ORDER BY rotated_at DESC
 `
@@ -44,6 +44,7 @@ func (q *Queries) GetCurrentLpsPasswords(ctx context.Context, deviceID string) (
 			&i.RotationReason,
 			&i.IsCurrent,
 			&i.CreatedAt,
+			&i.ProjectionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -56,7 +57,7 @@ func (q *Queries) GetCurrentLpsPasswords(ctx context.Context, deviceID string) (
 }
 
 const getLpsPasswordHistory = `-- name: GetLpsPasswordHistory :many
-SELECT id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current, created_at FROM lps_passwords_projection
+SELECT id, device_id, action_id, username, password, rotated_at, rotation_reason, is_current, created_at, projection_version FROM lps_passwords_projection
 WHERE device_id = $1 AND is_current = FALSE
 ORDER BY rotated_at DESC
 LIMIT 20
@@ -81,6 +82,7 @@ func (q *Queries) GetLpsPasswordHistory(ctx context.Context, deviceID string) ([
 			&i.RotationReason,
 			&i.IsCurrent,
 			&i.CreatedAt,
+			&i.ProjectionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -94,23 +96,26 @@ func (q *Queries) GetLpsPasswordHistory(ctx context.Context, deviceID string) ([
 
 const insertLpsPassword = `-- name: InsertLpsPassword :exec
 INSERT INTO lps_passwords_projection
-    (device_id, action_id, username, password, rotated_at, rotation_reason)
-VALUES ($1, $2, $3, $4, $5, $6)
+    (device_id, action_id, username, password, rotated_at, rotation_reason, projection_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertLpsPasswordParams struct {
-	DeviceID       string    `json:"device_id"`
-	ActionID       string    `json:"action_id"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	RotatedAt      time.Time `json:"rotated_at"`
-	RotationReason string    `json:"rotation_reason"`
+	DeviceID          string    `json:"device_id"`
+	ActionID          string    `json:"action_id"`
+	Username          string    `json:"username"`
+	Password          string    `json:"password"`
+	RotatedAt         time.Time `json:"rotated_at"`
+	RotationReason    string    `json:"rotation_reason"`
+	ProjectionVersion int64     `json:"projection_version"`
 }
 
-// Step 2 of LpsPasswordRotated projection. Always inserts a new row
-// — the PL/pgSQL projector did the same, and step 3's trim keeps
-// only the latest 3 by rotated_at so duplicates from a replay are
-// pruned automatically.
+// Step 2 of LpsPasswordRotated projection. Inserts the new row only
+// when the listener confirmed via MarkLpsPasswordsNotCurrent's
+// :execrows that this is NOT a stale replay. The listener
+// short-circuits when n==0, so this insert never runs against a
+// stale event. projection_version on the new row is the same
+// sequence_num that just guarded step 1.
 func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordParams) error {
 	_, err := q.db.Exec(ctx, insertLpsPassword,
 		arg.DeviceID,
@@ -119,33 +124,71 @@ func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordPa
 		arg.Password,
 		arg.RotatedAt,
 		arg.RotationReason,
+		arg.ProjectionVersion,
 	)
 	return err
 }
 
-const markLpsPasswordsNotCurrent = `-- name: MarkLpsPasswordsNotCurrent :exec
-UPDATE lps_passwords_projection
-SET is_current = FALSE
-WHERE device_id = $1
-  AND username = $2
+const lpsPasswordExistsForDeviceUsername = `-- name: LpsPasswordExistsForDeviceUsername :one
+SELECT EXISTS (
+    SELECT 1 FROM lps_passwords_projection
+    WHERE device_id = $1
+      AND username = $2
+)
 `
 
-type MarkLpsPasswordsNotCurrentParams struct {
+type LpsPasswordExistsForDeviceUsernameParams struct {
 	DeviceID string `json:"device_id"`
 	Username string `json:"username"`
 }
 
+// Companion to the asymmetric stale-replay guard in
+// MarkLpsPasswordsNotCurrent. Used by the listener to disambiguate
+// the n==0 case: 0 rows-affected means EITHER "stale replay"
+// (rows exist with projection_version >= the replaying event's
+// sequence_num) OR "first rotation for this user" (no rows at all).
+// The listener proceeds to insert when no rows exist, and
+// short-circuits when rows exist (= the stale-replay case).
+func (q *Queries) LpsPasswordExistsForDeviceUsername(ctx context.Context, arg LpsPasswordExistsForDeviceUsernameParams) (bool, error) {
+	row := q.db.QueryRow(ctx, lpsPasswordExistsForDeviceUsername, arg.DeviceID, arg.Username)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const markLpsPasswordsNotCurrent = `-- name: MarkLpsPasswordsNotCurrent :execrows
+UPDATE lps_passwords_projection
+SET is_current = FALSE,
+    projection_version = $3
+WHERE device_id = $1
+  AND username = $2
+  AND projection_version < $3
+`
+
+type MarkLpsPasswordsNotCurrentParams struct {
+	DeviceID          string `json:"device_id"`
+	Username          string `json:"username"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
 // Step 1 of LpsPasswordRotated projection. Flip every prior row for
 // (device_id, username) so the new password (inserted by step 2) is
-// the only is_current=TRUE row. Idempotent: replaying the same event
-// after the new row already landed leaves the projection unchanged
-// because the new row matches WHERE and gets flipped to FALSE — but
-// the listener wraps both writes in a tx, so a replay of the full
-// listener body keeps the (mark-old-false, insert-new-true) pair
-// consistent.
-func (q *Queries) MarkLpsPasswordsNotCurrent(ctx context.Context, arg MarkLpsPasswordsNotCurrentParams) error {
-	_, err := q.db.Exec(ctx, markLpsPasswordsNotCurrent, arg.DeviceID, arg.Username)
-	return err
+// the only is_current=TRUE row.
+//
+// The projection_version guard rejects stale-replay re-deliveries:
+// a re-fired old event whose sequence_num is <= the last applied
+// version for any matching row gets 0 rows-affected, and the
+// listener short-circuits the cascade insert + trim. Without the
+// guard, a reconciler-driven re-delivery of an old
+// LpsPasswordRotated would re-mark the latest (real-current) row as
+// not_current and insert a duplicate stale row underneath it.
+// Audit F020/F021.
+func (q *Queries) MarkLpsPasswordsNotCurrent(ctx context.Context, arg MarkLpsPasswordsNotCurrentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markLpsPasswordsNotCurrent, arg.DeviceID, arg.Username, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const trimLpsPasswordsToLast3 = `-- name: TrimLpsPasswordsToLast3 :exec
