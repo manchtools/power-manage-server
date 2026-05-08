@@ -10,6 +10,83 @@ import (
 	"time"
 )
 
+const claimUserGroupForMembership = `-- name: ClaimUserGroupForMembership :execrows
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+  AND is_dynamic = FALSE
+`
+
+type ClaimUserGroupForMembershipParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// Atomic guard for the three member-mutation events
+// (UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupMembersRebuilt).
+// The UPDATE bumps updated_at + projection_version only when ALL of:
+//
+//  1. The group exists (id matches).
+//  2. The group is NOT soft-deleted (a member event replayed after a
+//     Deleted must not bring rows back).
+//  3. The group is NOT dynamic (the dynamic-query evaluator owns the
+//     member set; explicit member events are no-ops there — mirrors
+//     the PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out).
+//  4. The event is newer than the current projection_version
+//     (asymmetric-guard discipline; CR catch on PR #174).
+//
+// Returns n=1 when the listener may proceed with the membership-table
+// mutation, n=0 when the event must be skipped. Encoding all four
+// short-circuit reasons in one query keeps the listener side
+// branch-free and — crucially — makes the version check happen
+// BEFORE any child-row mutation, so a stale event cannot recreate a
+// deleted membership row or wipe a live one.
+func (q *Queries) ClaimUserGroupForMembership(ctx context.Context, arg ClaimUserGroupForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimUserGroupForMembership, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const claimUserGroupForRoleMutation = `-- name: ClaimUserGroupForRoleMutation :execrows
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+`
+
+type ClaimUserGroupForRoleMutationParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// Atomic guard for UserGroupRoleAssigned / UserGroupRoleRevoked.
+// Bumps projection_version only when the parent group exists, is not
+// soft-deleted, and the event is newer than the current version.
+// Roles can be assigned to BOTH static and dynamic groups, so unlike
+// ClaimUserGroupForMembership this guard does not check is_dynamic.
+//
+// Returns n=1 when the listener may proceed with the role-table
+// mutation, n=0 when the event must be skipped. Doing the version
+// check BEFORE the role INSERT/DELETE prevents stale replays from
+// silently granting or revoking inherited permissions (CR catch on
+// PR #174).
+func (q *Queries) ClaimUserGroupForRoleMutation(ctx context.Context, arg ClaimUserGroupForRoleMutationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimUserGroupForRoleMutation, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countGroupsWithRole = `-- name: CountGroupsWithRole :one
 SELECT count(*) FROM user_group_roles_projection WHERE role_id = $1
 `
@@ -43,6 +120,119 @@ func (q *Queries) CountUserGroups(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteDynamicUserGroupEvaluationQueueRow = `-- name: DeleteDynamicUserGroupEvaluationQueueRow :exec
+DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = $1
+`
+
+// UserGroupDeleted handler — fifth half. Removes the queue entry so the
+// next dynamic-evaluation pass doesn't try to reconcile a deleted
+// group.
+func (q *Queries) DeleteDynamicUserGroupEvaluationQueueRow(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, deleteDynamicUserGroupEvaluationQueueRow, groupID)
+	return err
+}
+
+const deleteScimGroupMappingsByUserGroup = `-- name: DeleteScimGroupMappingsByUserGroup :exec
+DELETE FROM scim_group_mapping_projection WHERE user_group_id = $1
+`
+
+// UserGroupDeleted handler — second half. Mirrors the PL/pgSQL
+// `DELETE FROM scim_group_mapping_projection WHERE user_group_id = ...`
+// that ran BEFORE the soft-delete UPDATE in the projector. Order in the
+// listener is reversed (soft-delete first, gated cleanup second) so the
+// :execrows short-circuit can skip the unguarded DELETE on stale
+// replay. scim_group_mapping_projection is owned by the SCIM-group-
+// mapping projector (already ported); no projection_version guard is
+// viable across the two listeners.
+func (q *Queries) DeleteScimGroupMappingsByUserGroup(ctx context.Context, userGroupID string) error {
+	_, err := q.db.Exec(ctx, deleteScimGroupMappingsByUserGroup, userGroupID)
+	return err
+}
+
+const deleteUserGroupMember = `-- name: DeleteUserGroupMember :exec
+DELETE FROM user_group_members_projection
+WHERE group_id = $1
+  AND user_id = $2
+`
+
+type DeleteUserGroupMemberParams struct {
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
+}
+
+// UserGroupMemberRemoved handler — first half. Plain DELETE — silently
+// no-op on a miss matches the PL/pgSQL projector's behaviour.
+func (q *Queries) DeleteUserGroupMember(ctx context.Context, arg DeleteUserGroupMemberParams) error {
+	_, err := q.db.Exec(ctx, deleteUserGroupMember, arg.GroupID, arg.UserID)
+	return err
+}
+
+const deleteUserGroupMembersByGroup = `-- name: DeleteUserGroupMembersByGroup :exec
+DELETE FROM user_group_members_projection WHERE group_id = $1
+`
+
+// UserGroupDeleted handler — third half. Wipes every static member row
+// for the deleted group. Wrapped with SoftDeleteUserGroupProjection +
+// the other cascade halves inside store.WithTx for inter-write
+// atomicity.
+func (q *Queries) DeleteUserGroupMembersByGroup(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, deleteUserGroupMembersByGroup, groupID)
+	return err
+}
+
+const deleteUserGroupRole = `-- name: DeleteUserGroupRole :exec
+DELETE FROM user_group_roles_projection
+WHERE group_id = $1
+  AND role_id = $2
+`
+
+type DeleteUserGroupRoleParams struct {
+	GroupID string `json:"group_id"`
+	RoleID  string `json:"role_id"`
+}
+
+// UserGroupRoleRevoked handler. Plain DELETE — silently no-op on a
+// miss matches the PL/pgSQL projector's behaviour.
+func (q *Queries) DeleteUserGroupRole(ctx context.Context, arg DeleteUserGroupRoleParams) error {
+	_, err := q.db.Exec(ctx, deleteUserGroupRole, arg.GroupID, arg.RoleID)
+	return err
+}
+
+const deleteUserGroupRolesByGroup = `-- name: DeleteUserGroupRolesByGroup :exec
+DELETE FROM user_group_roles_projection WHERE group_id = $1
+`
+
+// UserGroupDeleted handler — fourth half. Wipes every role assignment
+// for the deleted group so future ListUserGroupRoles calls don't
+// surface ghosts.
+func (q *Queries) DeleteUserGroupRolesByGroup(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, deleteUserGroupRolesByGroup, groupID)
+	return err
+}
+
+const enqueueDynamicUserGroupEvaluation = `-- name: EnqueueDynamicUserGroupEvaluation :exec
+INSERT INTO dynamic_user_group_evaluation_queue (group_id, reason)
+VALUES ($1, $2)
+ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp()
+`
+
+type EnqueueDynamicUserGroupEvaluationParams struct {
+	GroupID string  `json:"group_id"`
+	Reason  *string `json:"reason"`
+}
+
+// UserGroupCreated (when is_dynamic) and UserGroupQueryUpdated (when
+// flip-to-dynamic) handler. Mirrors the PL/pgSQL `INSERT INTO
+// dynamic_user_group_evaluation_queue ... ON CONFLICT (group_id) DO
+// UPDATE SET queued_at = clock_timestamp()` so a re-queue refreshes the
+// queued_at timestamp. The reason text is the caller-provided trigger
+// ('group_created' or 'query_updated') for operator visibility into
+// evaluator-queue churn.
+func (q *Queries) EnqueueDynamicUserGroupEvaluation(ctx context.Context, arg EnqueueDynamicUserGroupEvaluationParams) error {
+	_, err := q.db.Exec(ctx, enqueueDynamicUserGroupEvaluation, arg.GroupID, arg.Reason)
+	return err
 }
 
 const evaluateDynamicUserGroup = `-- name: EvaluateDynamicUserGroup :exec
@@ -183,6 +373,126 @@ func (q *Queries) GetUserPermissionsWithGroups(ctx context.Context, userID strin
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertUserGroupMember = `-- name: InsertUserGroupMember :exec
+INSERT INTO user_group_members_projection (
+    group_id, user_id, added_at, added_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (group_id, user_id) DO NOTHING
+`
+
+type InsertUserGroupMemberParams struct {
+	GroupID           string    `json:"group_id"`
+	UserID            string    `json:"user_id"`
+	AddedAt           time.Time `json:"added_at"`
+	AddedBy           string    `json:"added_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserGroupMemberAdded handler — first half. ON CONFLICT DO NOTHING
+// preserves the PL/pgSQL projector's idempotency under reconciler
+// replays. The composite PK (group_id, user_id) makes this safe.
+func (q *Queries) InsertUserGroupMember(ctx context.Context, arg InsertUserGroupMemberParams) error {
+	_, err := q.db.Exec(ctx, insertUserGroupMember,
+		arg.GroupID,
+		arg.UserID,
+		arg.AddedAt,
+		arg.AddedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertUserGroupProjection = `-- name: InsertUserGroupProjection :exec
+
+INSERT INTO user_groups_projection (
+    id, name, description, member_count,
+    created_at, created_by, updated_at, projection_version,
+    is_dynamic, dynamic_query
+) VALUES ($1, $2, $3, 0, $4, $5, $4, $6, $7, $8)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertUserGroupProjectionParams struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Description       string    `json:"description"`
+	CreatedAt         time.Time `json:"created_at"`
+	CreatedBy         string    `json:"created_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+	IsDynamic         bool      `json:"is_dynamic"`
+	DynamicQuery      *string   `json:"dynamic_query"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#138).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_user_group_event(): every event
+// handler the projector dispatched on (UserGroupCreated, UserGroupUpdated,
+// UserGroupQueryUpdated, UserGroupMaintenanceWindowSet, UserGroupDeleted,
+// UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupRoleAssigned,
+// UserGroupRoleRevoked, UserGroupMembersRebuilt) gets a typed sqlc query
+// here so the listener can compose them in Go.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE carries an explicit
+// `WHERE projection_version < $N` guard and uses :execrows so the listener
+// can short-circuit cascades on stale-replay (asymmetric-guard discipline;
+// see role_listener for the canonical shape).
+//
+// Dynamic-query engine scope: the dynamic-query evaluator
+// (evaluate_dynamic_user_group, validate_user_group_query) STAYS in
+// PL/pgSQL until a later phase. The listener only persists the query
+// column + (re-)enqueues the group via EnqueueDynamicUserGroupEvaluation
+// when is_dynamic flips on; the evaluator runs unchanged inside Postgres.
+// UserGroupCreated handler. ON CONFLICT DO NOTHING for replay safety —
+// the unique constraint is the primary key (id), so a re-application of
+// UserGroupCreated for the same stream lands as a no-op. The PL/pgSQL
+// projector raised on the second insert; we soften that to the same
+// replay-safe shape every other ported projector uses.
+func (q *Queries) InsertUserGroupProjection(ctx context.Context, arg InsertUserGroupProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertUserGroupProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+	)
+	return err
+}
+
+const insertUserGroupRole = `-- name: InsertUserGroupRole :exec
+INSERT INTO user_group_roles_projection (
+    group_id, role_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (group_id, role_id) DO NOTHING
+`
+
+type InsertUserGroupRoleParams struct {
+	GroupID           string    `json:"group_id"`
+	RoleID            string    `json:"role_id"`
+	AssignedAt        time.Time `json:"assigned_at"`
+	AssignedBy        string    `json:"assigned_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserGroupRoleAssigned handler. ON CONFLICT DO NOTHING preserves the
+// PL/pgSQL projector's idempotency under reconciler replays. The
+// composite PK (group_id, role_id) makes this safe. No parent-row
+// update — role assignments are independent of member_count.
+func (q *Queries) InsertUserGroupRole(ctx context.Context, arg InsertUserGroupRoleParams) error {
+	_, err := q.db.Exec(ctx, insertUserGroupRole,
+		arg.GroupID,
+		arg.RoleID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
 
 const isUserInGroup = `-- name: IsUserInGroup :one
@@ -422,6 +732,191 @@ func (q *Queries) ListUserIDsWithGroupRole(ctx context.Context, roleID string) (
 	return items, nil
 }
 
+const recountUserGroupMembers = `-- name: RecountUserGroupMembers :exec
+UPDATE user_groups_projection
+SET member_count = (
+    SELECT COUNT(*) FROM user_group_members_projection WHERE group_id = $1
+)
+WHERE id = $1
+`
+
+// Recompute member_count from the live row count after the listener
+// has applied a membership mutation. Run in the same transaction as
+// ClaimUserGroupForMembership + the INSERT/DELETE so the parent row
+// is never observed with a stale count. No projection_version guard
+// here: the Claim above already stamped the version, so a recount
+// without re-stamping cannot regress.
+func (q *Queries) RecountUserGroupMembers(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, recountUserGroupMembers, groupID)
+	return err
+}
+
+const resetUserGroupMemberCount = `-- name: ResetUserGroupMemberCount :exec
+UPDATE user_groups_projection
+SET member_count = 0
+WHERE id = $1
+`
+
+// UserGroupQueryUpdated handler — flip-to-dynamic cascade half. Mirrors
+// the PL/pgSQL `UPDATE user_groups_projection SET member_count = 0 WHERE
+// id = ...` that runs after wiping the static-member rows. No
+// projection_version guard here: the gate lives upstream on
+// UpdateUserGroupQueryProjection's :execrows, so a stale event can't
+// reach this statement.
+func (q *Queries) ResetUserGroupMemberCount(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, resetUserGroupMemberCount, id)
+	return err
+}
+
+const softDeleteUserGroupProjection = `-- name: SoftDeleteUserGroupProjection :execrows
+UPDATE user_groups_projection
+SET is_deleted         = TRUE,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteUserGroupProjectionParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserGroupDeleted handler — first half. Returns rows-affected so the
+// listener can SKIP the cascade (scim_group_mapping cleanup, member
+// wipe, role-assignment wipe, dynamic-queue cleanup) when the
+// projection_version guard rejects a stale replay; otherwise an old
+// UserGroupDeleted re-applied by the reconciler would silently nuke a
+// freshly-restored group's members + role assignments + downstream
+// SCIM mapping.
+func (q *Queries) SoftDeleteUserGroupProjection(ctx context.Context, arg SoftDeleteUserGroupProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteUserGroupProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserGroupMaintenanceWindowProjection = `-- name: UpdateUserGroupMaintenanceWindowProjection :execrows
+UPDATE user_groups_projection
+SET maintenance_window = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateUserGroupMaintenanceWindowProjectionParams struct {
+	ID                string    `json:"id"`
+	MaintenanceWindow []byte    `json:"maintenance_window"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserGroupMaintenanceWindowSet handler. Mirrors the PL/pgSQL
+// `COALESCE(payload, '{}'::JSONB)`: the listener decoder substitutes
+// '{}' when the payload key is missing so this query always receives a
+// non-NULL JSONB blob. Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserGroupMaintenanceWindowProjection(ctx context.Context, arg UpdateUserGroupMaintenanceWindowProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserGroupMaintenanceWindowProjection,
+		arg.ID,
+		arg.MaintenanceWindow,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserGroupProjection = `-- name: UpdateUserGroupProjection :execrows
+UPDATE user_groups_projection
+SET name              = $1,
+    description       = COALESCE($2::TEXT, description),
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $5
+  AND projection_version < $4
+`
+
+type UpdateUserGroupProjectionParams struct {
+	Name              string    `json:"name"`
+	Description       *string   `json:"description"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+	ID                string    `json:"id"`
+}
+
+// UserGroupUpdated handler. Description is COALESCE-preserved when the
+// payload omits it (matches the PL/pgSQL `COALESCE(payload, description)`
+// semantics — pass NULL for description to preserve, the empty string to
+// explicitly blank it). Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserGroupProjection(ctx context.Context, arg UpdateUserGroupProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserGroupProjection,
+		arg.Name,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserGroupQueryProjection = `-- name: UpdateUserGroupQueryProjection :one
+WITH prev AS (
+    SELECT ug.id AS prev_id, ug.is_dynamic AS prev_is_dynamic
+    FROM user_groups_projection ug
+    WHERE ug.id = $1
+), bumped AS (
+    UPDATE user_groups_projection ug
+    SET is_dynamic         = $2,
+        dynamic_query      = $3,
+        updated_at         = $4,
+        projection_version = $5
+    WHERE ug.id = $1
+      AND ug.projection_version < $5
+    RETURNING ug.id AS bumped_id
+)
+SELECT prev.prev_is_dynamic FROM prev JOIN bumped ON bumped.bumped_id = prev.prev_id
+`
+
+type UpdateUserGroupQueryProjectionParams struct {
+	ID                string    `json:"id"`
+	IsDynamic         bool      `json:"is_dynamic"`
+	DynamicQuery      *string   `json:"dynamic_query"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// UserGroupQueryUpdated handler — first half. Persists the dynamic-
+// query toggle + query string. Stale-replay guard via projection_version.
+// Returns the previous is_dynamic value so the listener can tell a
+// true static→dynamic flip from a steady-state dynamic-query edit.
+// Only the flip should trigger the cascade (member wipe + count reset
+// + re-enqueue); editing the query of an already-dynamic group must
+// preserve the live member set (CR catch on PR #174).
+//
+// A stale event (projection_version >= current) returns sql.ErrNoRows
+// — the listener treats that as "skip cascade" via :one's no-row
+// error.
+func (q *Queries) UpdateUserGroupQueryProjection(ctx context.Context, arg UpdateUserGroupQueryProjectionParams) (bool, error) {
+	row := q.db.QueryRow(ctx, updateUserGroupQueryProjection,
+		arg.ID,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	var prev_is_dynamic bool
+	err := row.Scan(&prev_is_dynamic)
+	return prev_is_dynamic, err
+}
+
 const userGroupHasRole = `-- name: UserGroupHasRole :one
 SELECT EXISTS(
     SELECT 1 FROM user_group_roles_projection
@@ -450,4 +945,16 @@ func (q *Queries) ValidateUserGroupQuery(ctx context.Context, query string) (str
 	var error_message string
 	err := row.Scan(&error_message)
 	return error_message, err
+}
+
+const wipeUserGroupMembers = `-- name: WipeUserGroupMembers :exec
+DELETE FROM user_group_members_projection WHERE group_id = $1
+`
+
+// UserGroupQueryUpdated (flip-to-dynamic) and UserGroupMembersRebuilt
+// handler. The dynamic-query evaluator owns the member set after the
+// flip, so any static rows left behind would surface as ghost members.
+func (q *Queries) WipeUserGroupMembers(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, wipeUserGroupMembers, groupID)
+	return err
 }
