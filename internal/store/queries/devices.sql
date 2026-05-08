@@ -147,3 +147,205 @@ SELECT group_id FROM device_assigned_groups_projection WHERE device_id = $1;
 -- ≈ 100 sequential round-trips per RPC).
 SELECT id, hostname FROM devices_projection
 WHERE id = ANY($1::TEXT[]) AND is_deleted = FALSE;
+
+-- ============================================================================
+-- Projector listener writes (manchtools/power-manage-server#136).
+-- ============================================================================
+--
+-- Mirrors the deleted PL/pgSQL project_device_event(): every event handler
+-- the projector dispatched on (DeviceRegistered, DeviceSeen,
+-- DeviceHeartbeat, DeviceCertRenewed, DeviceLabelsUpdated, DeviceLabelSet,
+-- DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
+-- DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet) gets a
+-- typed sqlc query here so the listener can compose them in Go.
+--
+-- Tightening vs the PL/pgSQL projector: every UPDATE carries an explicit
+-- `WHERE projection_version < $N` guard and uses :execrows so the listener
+-- can short-circuit cascades on stale-replay (asymmetric-guard discipline;
+-- see role_listener / action_set_listener / device_group_listener for the
+-- canonical shape). The PL/pgSQL projector stamped projection_version
+-- without a guard — an out-of-order event re-applied later would silently
+-- rewind row state.
+--
+-- DELETEs on the assignment tables (DeviceUnassigned / DeviceGroupUnassigned)
+-- carry a `WHERE projection_version <= $N` guard via :execrows so a stale
+-- Unassigned replayed after a re-Assign cannot wipe the live row (CR catch
+-- on PR #179).
+
+-- name: UpsertDeviceProjection :exec
+-- DeviceRegistered handler. ON CONFLICT (id) DO UPDATE re-activates a
+-- soft-deleted row by flipping is_deleted=FALSE — mirrors the PL/pgSQL
+-- projector's revival semantic (an operator re-enrolling a previously
+-- deleted device id gets the row back, preserving the event-sourced
+-- timeline). projection_version is unconditionally bumped here because
+-- DeviceRegistered is the stream's birthing event; replay safety for
+-- subsequent events lives on their per-event guarded UPDATEs.
+INSERT INTO devices_projection (
+    id, hostname, cert_fingerprint, cert_not_after,
+    registered_at, last_seen_at, registration_token_id,
+    labels, projection_version
+) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)
+ON CONFLICT (id) DO UPDATE SET
+    hostname              = EXCLUDED.hostname,
+    cert_fingerprint      = EXCLUDED.cert_fingerprint,
+    cert_not_after        = EXCLUDED.cert_not_after,
+    registered_at         = EXCLUDED.registered_at,
+    last_seen_at          = EXCLUDED.last_seen_at,
+    registration_token_id = EXCLUDED.registration_token_id,
+    labels                = EXCLUDED.labels,
+    projection_version    = EXCLUDED.projection_version,
+    is_deleted            = FALSE;
+
+-- name: InsertDeviceAssignedUserOnRegister :exec
+-- DeviceRegistered cascade — auto-assign the device to the token owner
+-- when the payload carries `assigned_user_id`. ON CONFLICT DO NOTHING
+-- mirrors the PL/pgSQL projector's idempotency. Wrapped with
+-- UpsertDeviceProjection in store.WithTx for cascade atomicity.
+INSERT INTO device_assigned_users_projection (
+    device_id, user_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, user_id) DO NOTHING;
+
+-- name: UpdateDeviceSeenProjection :execrows
+-- DeviceSeen handler. COALESCE preserves the existing column value when
+-- the payload omits the key (matches PL/pgSQL's
+-- `COALESCE(payload, agent_version)` and
+-- `COALESCE(NULLIF(payload, ''), hostname)` collapses). The decoder
+-- leaves a missing/empty hostname as nil so the SQL COALESCE picks the
+-- existing value; same for agent_version. is_deleted=FALSE revives a
+-- soft-deleted row when the agent comes back online — mirrors the
+-- PL/pgSQL projector. Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET last_seen_at        = $2,
+    agent_version       = COALESCE(sqlc.narg('agent_version')::TEXT, agent_version),
+    hostname            = COALESCE(sqlc.narg('hostname')::TEXT, hostname),
+    projection_version  = $3,
+    is_deleted          = FALSE
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: UpdateDeviceHeartbeatProjection :execrows
+-- DeviceHeartbeat handler. agent_version preserved when the payload
+-- omits the key. Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET last_seen_at       = $2,
+    agent_version      = COALESCE(sqlc.narg('agent_version')::TEXT, agent_version),
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: UpdateDeviceCertRenewedProjection :execrows
+-- DeviceCertRenewed handler. cert_not_after preserved when the payload
+-- omits the key (mirrors PL/pgSQL `COALESCE(payload, cert_not_after)`).
+-- Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET cert_fingerprint   = $2,
+    cert_not_after     = COALESCE(sqlc.narg('cert_not_after')::TIMESTAMPTZ, cert_not_after),
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- name: UpdateDeviceLabelsProjection :execrows
+-- DeviceLabelsUpdated handler. The decoder leaves a missing labels key
+-- as a nil byte slice; the SQL COALESCE preserves the existing column
+-- value in that case (matches PL/pgSQL `COALESCE(payload, labels)`).
+-- The :: JSONB cast is required so PostgreSQL can resolve the parameter
+-- type when the value is NULL.
+-- Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET labels             = COALESCE(sqlc.narg('labels')::JSONB, labels),
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2;
+
+-- name: SetDeviceLabelKey :execrows
+-- DeviceLabelSet handler. Mirrors the PL/pgSQL JSONB merge:
+-- `labels || jsonb_build_object(key, value)`. The first COALESCE on
+-- labels handles the (theoretical) NULL case for legacy rows — matches
+-- PL/pgSQL's `COALESCE(labels, '{}'::jsonb) || ...`. Stale-replay guard
+-- via projection_version.
+UPDATE devices_projection
+SET labels             = COALESCE(labels, '{}'::JSONB) || jsonb_build_object(@key::TEXT, @value::TEXT),
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2;
+
+-- name: RemoveDeviceLabelKey :execrows
+-- DeviceLabelRemoved handler. JSONB minus operator drops the key from
+-- the labels object. Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET labels             = labels - @key::TEXT,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2;
+
+-- name: SoftDeleteDeviceProjection :execrows
+-- DeviceDeleted handler — first half. Returns rows-affected so the
+-- listener can SKIP the cascade (assigned-user wipe + assigned-group
+-- wipe) when the projection_version guard rejects a stale replay.
+-- Otherwise an old DeviceDeleted re-applied by the reconciler would
+-- silently nuke a freshly-restored device's assignments.
+UPDATE devices_projection
+SET is_deleted         = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2;
+
+-- name: DeleteDeviceAssignedUsersByDevice :exec
+-- DeviceDeleted handler — second half. Wipes every assigned-user row
+-- for the deleted device. Wrapped with SoftDeleteDeviceProjection +
+-- DeleteDeviceAssignedGroupsByDevice inside store.WithTx for
+-- inter-write atomicity.
+DELETE FROM device_assigned_users_projection WHERE device_id = $1;
+
+-- name: DeleteDeviceAssignedGroupsByDevice :exec
+-- DeviceDeleted handler — third half. Same shape as the assigned-user
+-- wipe, scoped to the assigned-groups junction table.
+DELETE FROM device_assigned_groups_projection WHERE device_id = $1;
+
+-- name: InsertDeviceAssignedUser :exec
+-- DeviceAssigned handler. ON CONFLICT DO NOTHING matches the PL/pgSQL
+-- projector's idempotency.
+INSERT INTO device_assigned_users_projection (
+    device_id, user_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, user_id) DO NOTHING;
+
+-- name: DeleteDeviceAssignedUser :execrows
+-- DeviceUnassigned handler. Stale-replay DELETE protection: the guard
+-- `WHERE projection_version <= $N` ensures a stale Unassigned replayed
+-- after a re-Assign cannot wipe the live row — the live row's
+-- projection_version was bumped by the re-Assign INSERT, so the
+-- stale Unassigned's older sequence_num fails the guard. The :execrows
+-- count gives the listener a hook to log/observe stale rejections
+-- (CR catch on PR #179 pattern, applied to assignment-table DELETEs).
+DELETE FROM device_assigned_users_projection
+WHERE device_id = $1
+  AND user_id = $2
+  AND projection_version <= $3;
+
+-- name: InsertDeviceAssignedGroup :exec
+-- DeviceGroupAssigned handler. ON CONFLICT DO NOTHING matches the
+-- PL/pgSQL projector's idempotency.
+INSERT INTO device_assigned_groups_projection (
+    device_id, group_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, group_id) DO NOTHING;
+
+-- name: DeleteDeviceAssignedGroup :execrows
+-- DeviceGroupUnassigned handler. Same stale-replay guard as
+-- DeleteDeviceAssignedUser.
+DELETE FROM device_assigned_groups_projection
+WHERE device_id = $1
+  AND group_id = $2
+  AND projection_version <= $3;
+
+-- name: UpdateDeviceSyncIntervalProjection :execrows
+-- DeviceSyncIntervalSet handler. The decoder defaults a missing
+-- sync_interval_minutes key to 0 (matches the PL/pgSQL COALESCE).
+-- Stale-replay guard via projection_version.
+UPDATE devices_projection
+SET sync_interval_minutes = $2,
+    projection_version    = $3
+WHERE id = $1
+  AND projection_version < $3;

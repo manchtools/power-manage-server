@@ -60,6 +60,81 @@ func (q *Queries) CountDevicesOnline(ctx context.Context, filterUserID *string) 
 	return count, err
 }
 
+const deleteDeviceAssignedGroup = `-- name: DeleteDeviceAssignedGroup :execrows
+DELETE FROM device_assigned_groups_projection
+WHERE device_id = $1
+  AND group_id = $2
+  AND projection_version <= $3
+`
+
+type DeleteDeviceAssignedGroupParams struct {
+	DeviceID          string `json:"device_id"`
+	GroupID           string `json:"group_id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceGroupUnassigned handler. Same stale-replay guard as
+// DeleteDeviceAssignedUser.
+func (q *Queries) DeleteDeviceAssignedGroup(ctx context.Context, arg DeleteDeviceAssignedGroupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeviceAssignedGroup, arg.DeviceID, arg.GroupID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteDeviceAssignedGroupsByDevice = `-- name: DeleteDeviceAssignedGroupsByDevice :exec
+DELETE FROM device_assigned_groups_projection WHERE device_id = $1
+`
+
+// DeviceDeleted handler — third half. Same shape as the assigned-user
+// wipe, scoped to the assigned-groups junction table.
+func (q *Queries) DeleteDeviceAssignedGroupsByDevice(ctx context.Context, deviceID string) error {
+	_, err := q.db.Exec(ctx, deleteDeviceAssignedGroupsByDevice, deviceID)
+	return err
+}
+
+const deleteDeviceAssignedUser = `-- name: DeleteDeviceAssignedUser :execrows
+DELETE FROM device_assigned_users_projection
+WHERE device_id = $1
+  AND user_id = $2
+  AND projection_version <= $3
+`
+
+type DeleteDeviceAssignedUserParams struct {
+	DeviceID          string `json:"device_id"`
+	UserID            string `json:"user_id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceUnassigned handler. Stale-replay DELETE protection: the guard
+// `WHERE projection_version <= $N` ensures a stale Unassigned replayed
+// after a re-Assign cannot wipe the live row — the live row's
+// projection_version was bumped by the re-Assign INSERT, so the
+// stale Unassigned's older sequence_num fails the guard. The :execrows
+// count gives the listener a hook to log/observe stale rejections
+// (CR catch on PR #179 pattern, applied to assignment-table DELETEs).
+func (q *Queries) DeleteDeviceAssignedUser(ctx context.Context, arg DeleteDeviceAssignedUserParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteDeviceAssignedUser, arg.DeviceID, arg.UserID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteDeviceAssignedUsersByDevice = `-- name: DeleteDeviceAssignedUsersByDevice :exec
+DELETE FROM device_assigned_users_projection WHERE device_id = $1
+`
+
+// DeviceDeleted handler — second half. Wipes every assigned-user row
+// for the deleted device. Wrapped with SoftDeleteDeviceProjection +
+// DeleteDeviceAssignedGroupsByDevice inside store.WithTx for
+// inter-write atomicity.
+func (q *Queries) DeleteDeviceAssignedUsersByDevice(ctx context.Context, deviceID string) error {
+	_, err := q.db.Exec(ctx, deleteDeviceAssignedUsersByDevice, deviceID)
+	return err
+}
+
 const getDeviceByFingerprint = `-- name: GetDeviceByFingerprint :one
 SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE
@@ -260,6 +335,92 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertDeviceAssignedGroup = `-- name: InsertDeviceAssignedGroup :exec
+INSERT INTO device_assigned_groups_projection (
+    device_id, group_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, group_id) DO NOTHING
+`
+
+type InsertDeviceAssignedGroupParams struct {
+	DeviceID          string    `json:"device_id"`
+	GroupID           string    `json:"group_id"`
+	AssignedAt        time.Time `json:"assigned_at"`
+	AssignedBy        string    `json:"assigned_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// DeviceGroupAssigned handler. ON CONFLICT DO NOTHING matches the
+// PL/pgSQL projector's idempotency.
+func (q *Queries) InsertDeviceAssignedGroup(ctx context.Context, arg InsertDeviceAssignedGroupParams) error {
+	_, err := q.db.Exec(ctx, insertDeviceAssignedGroup,
+		arg.DeviceID,
+		arg.GroupID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertDeviceAssignedUser = `-- name: InsertDeviceAssignedUser :exec
+INSERT INTO device_assigned_users_projection (
+    device_id, user_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, user_id) DO NOTHING
+`
+
+type InsertDeviceAssignedUserParams struct {
+	DeviceID          string    `json:"device_id"`
+	UserID            string    `json:"user_id"`
+	AssignedAt        time.Time `json:"assigned_at"`
+	AssignedBy        string    `json:"assigned_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// DeviceAssigned handler. ON CONFLICT DO NOTHING matches the PL/pgSQL
+// projector's idempotency.
+func (q *Queries) InsertDeviceAssignedUser(ctx context.Context, arg InsertDeviceAssignedUserParams) error {
+	_, err := q.db.Exec(ctx, insertDeviceAssignedUser,
+		arg.DeviceID,
+		arg.UserID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const insertDeviceAssignedUserOnRegister = `-- name: InsertDeviceAssignedUserOnRegister :exec
+INSERT INTO device_assigned_users_projection (
+    device_id, user_id, assigned_at, assigned_by, projection_version
+) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (device_id, user_id) DO NOTHING
+`
+
+type InsertDeviceAssignedUserOnRegisterParams struct {
+	DeviceID          string    `json:"device_id"`
+	UserID            string    `json:"user_id"`
+	AssignedAt        time.Time `json:"assigned_at"`
+	AssignedBy        string    `json:"assigned_by"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// DeviceRegistered cascade — auto-assign the device to the token owner
+// when the payload carries `assigned_user_id`. ON CONFLICT DO NOTHING
+// mirrors the PL/pgSQL projector's idempotency. Wrapped with
+// UpsertDeviceProjection in store.WithTx for cascade atomicity.
+func (q *Queries) InsertDeviceAssignedUserOnRegister(ctx context.Context, arg InsertDeviceAssignedUserOnRegisterParams) error {
+	_, err := q.db.Exec(ctx, insertDeviceAssignedUserOnRegister,
+		arg.DeviceID,
+		arg.UserID,
+		arg.AssignedAt,
+		arg.AssignedBy,
+		arg.ProjectionVersion,
+	)
+	return err
 }
 
 const isDeviceDeleted = `-- name: IsDeviceDeleted :one
@@ -609,4 +770,318 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeDeviceLabelKey = `-- name: RemoveDeviceLabelKey :execrows
+UPDATE devices_projection
+SET labels             = labels - $3::TEXT,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type RemoveDeviceLabelKeyParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+	Key               string `json:"key"`
+}
+
+// DeviceLabelRemoved handler. JSONB minus operator drops the key from
+// the labels object. Stale-replay guard via projection_version.
+func (q *Queries) RemoveDeviceLabelKey(ctx context.Context, arg RemoveDeviceLabelKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeDeviceLabelKey, arg.ID, arg.ProjectionVersion, arg.Key)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const setDeviceLabelKey = `-- name: SetDeviceLabelKey :execrows
+UPDATE devices_projection
+SET labels             = COALESCE(labels, '{}'::JSONB) || jsonb_build_object($3::TEXT, $4::TEXT),
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type SetDeviceLabelKeyParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+	Key               string `json:"key"`
+	Value             string `json:"value"`
+}
+
+// DeviceLabelSet handler. Mirrors the PL/pgSQL JSONB merge:
+// `labels || jsonb_build_object(key, value)`. The first COALESCE on
+// labels handles the (theoretical) NULL case for legacy rows — matches
+// PL/pgSQL's `COALESCE(labels, '{}'::jsonb) || ...`. Stale-replay guard
+// via projection_version.
+func (q *Queries) SetDeviceLabelKey(ctx context.Context, arg SetDeviceLabelKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setDeviceLabelKey,
+		arg.ID,
+		arg.ProjectionVersion,
+		arg.Key,
+		arg.Value,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteDeviceProjection = `-- name: SoftDeleteDeviceProjection :execrows
+UPDATE devices_projection
+SET is_deleted         = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type SoftDeleteDeviceProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// DeviceDeleted handler — first half. Returns rows-affected so the
+// listener can SKIP the cascade (assigned-user wipe + assigned-group
+// wipe) when the projection_version guard rejects a stale replay.
+// Otherwise an old DeviceDeleted re-applied by the reconciler would
+// silently nuke a freshly-restored device's assignments.
+func (q *Queries) SoftDeleteDeviceProjection(ctx context.Context, arg SoftDeleteDeviceProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteDeviceProjection, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceCertRenewedProjection = `-- name: UpdateDeviceCertRenewedProjection :execrows
+UPDATE devices_projection
+SET cert_fingerprint   = $2,
+    cert_not_after     = COALESCE($4::TIMESTAMPTZ, cert_not_after),
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceCertRenewedProjectionParams struct {
+	ID                string     `json:"id"`
+	CertFingerprint   *string    `json:"cert_fingerprint"`
+	ProjectionVersion int64      `json:"projection_version"`
+	CertNotAfter      *time.Time `json:"cert_not_after"`
+}
+
+// DeviceCertRenewed handler. cert_not_after preserved when the payload
+// omits the key (mirrors PL/pgSQL `COALESCE(payload, cert_not_after)`).
+// Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceCertRenewedProjection(ctx context.Context, arg UpdateDeviceCertRenewedProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceCertRenewedProjection,
+		arg.ID,
+		arg.CertFingerprint,
+		arg.ProjectionVersion,
+		arg.CertNotAfter,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceHeartbeatProjection = `-- name: UpdateDeviceHeartbeatProjection :execrows
+UPDATE devices_projection
+SET last_seen_at       = $2,
+    agent_version      = COALESCE($4::TEXT, agent_version),
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceHeartbeatProjectionParams struct {
+	ID                string     `json:"id"`
+	LastSeenAt        *time.Time `json:"last_seen_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	AgentVersion      *string    `json:"agent_version"`
+}
+
+// DeviceHeartbeat handler. agent_version preserved when the payload
+// omits the key. Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceHeartbeatProjection(ctx context.Context, arg UpdateDeviceHeartbeatProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceHeartbeatProjection,
+		arg.ID,
+		arg.LastSeenAt,
+		arg.ProjectionVersion,
+		arg.AgentVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceLabelsProjection = `-- name: UpdateDeviceLabelsProjection :execrows
+UPDATE devices_projection
+SET labels             = COALESCE($3::JSONB, labels),
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type UpdateDeviceLabelsProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+	Labels            []byte `json:"labels"`
+}
+
+// DeviceLabelsUpdated handler. The decoder leaves a missing labels key
+// as a nil byte slice; the SQL COALESCE preserves the existing column
+// value in that case (matches PL/pgSQL `COALESCE(payload, labels)`).
+// The :: JSONB cast is required so PostgreSQL can resolve the parameter
+// type when the value is NULL.
+// Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceLabelsProjection(ctx context.Context, arg UpdateDeviceLabelsProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceLabelsProjection, arg.ID, arg.ProjectionVersion, arg.Labels)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceSeenProjection = `-- name: UpdateDeviceSeenProjection :execrows
+UPDATE devices_projection
+SET last_seen_at        = $2,
+    agent_version       = COALESCE($4::TEXT, agent_version),
+    hostname            = COALESCE($5::TEXT, hostname),
+    projection_version  = $3,
+    is_deleted          = FALSE
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceSeenProjectionParams struct {
+	ID                string     `json:"id"`
+	LastSeenAt        *time.Time `json:"last_seen_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	AgentVersion      *string    `json:"agent_version"`
+	Hostname          *string    `json:"hostname"`
+}
+
+// DeviceSeen handler. COALESCE preserves the existing column value when
+// the payload omits the key (matches PL/pgSQL's
+// `COALESCE(payload, agent_version)` and
+// `COALESCE(NULLIF(payload, ”), hostname)` collapses). The decoder
+// leaves a missing/empty hostname as nil so the SQL COALESCE picks the
+// existing value; same for agent_version. is_deleted=FALSE revives a
+// soft-deleted row when the agent comes back online — mirrors the
+// PL/pgSQL projector. Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceSeenProjection(ctx context.Context, arg UpdateDeviceSeenProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceSeenProjection,
+		arg.ID,
+		arg.LastSeenAt,
+		arg.ProjectionVersion,
+		arg.AgentVersion,
+		arg.Hostname,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceSyncIntervalProjection = `-- name: UpdateDeviceSyncIntervalProjection :execrows
+UPDATE devices_projection
+SET sync_interval_minutes = $2,
+    projection_version    = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceSyncIntervalProjectionParams struct {
+	ID                  string `json:"id"`
+	SyncIntervalMinutes int32  `json:"sync_interval_minutes"`
+	ProjectionVersion   int64  `json:"projection_version"`
+}
+
+// DeviceSyncIntervalSet handler. The decoder defaults a missing
+// sync_interval_minutes key to 0 (matches the PL/pgSQL COALESCE).
+// Stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceSyncIntervalProjection(ctx context.Context, arg UpdateDeviceSyncIntervalProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceSyncIntervalProjection, arg.ID, arg.SyncIntervalMinutes, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const upsertDeviceProjection = `-- name: UpsertDeviceProjection :exec
+
+INSERT INTO devices_projection (
+    id, hostname, cert_fingerprint, cert_not_after,
+    registered_at, last_seen_at, registration_token_id,
+    labels, projection_version
+) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)
+ON CONFLICT (id) DO UPDATE SET
+    hostname              = EXCLUDED.hostname,
+    cert_fingerprint      = EXCLUDED.cert_fingerprint,
+    cert_not_after        = EXCLUDED.cert_not_after,
+    registered_at         = EXCLUDED.registered_at,
+    last_seen_at          = EXCLUDED.last_seen_at,
+    registration_token_id = EXCLUDED.registration_token_id,
+    labels                = EXCLUDED.labels,
+    projection_version    = EXCLUDED.projection_version,
+    is_deleted            = FALSE
+`
+
+type UpsertDeviceProjectionParams struct {
+	ID                  string     `json:"id"`
+	Hostname            string     `json:"hostname"`
+	CertFingerprint     *string    `json:"cert_fingerprint"`
+	CertNotAfter        *time.Time `json:"cert_not_after"`
+	RegisteredAt        *time.Time `json:"registered_at"`
+	RegistrationTokenID *string    `json:"registration_token_id"`
+	Labels              []byte     `json:"labels"`
+	ProjectionVersion   int64      `json:"projection_version"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#136).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_device_event(): every event handler
+// the projector dispatched on (DeviceRegistered, DeviceSeen,
+// DeviceHeartbeat, DeviceCertRenewed, DeviceLabelsUpdated, DeviceLabelSet,
+// DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
+// DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet) gets a
+// typed sqlc query here so the listener can compose them in Go.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE carries an explicit
+// `WHERE projection_version < $N` guard and uses :execrows so the listener
+// can short-circuit cascades on stale-replay (asymmetric-guard discipline;
+// see role_listener / action_set_listener / device_group_listener for the
+// canonical shape). The PL/pgSQL projector stamped projection_version
+// without a guard — an out-of-order event re-applied later would silently
+// rewind row state.
+//
+// DELETEs on the assignment tables (DeviceUnassigned / DeviceGroupUnassigned)
+// carry a `WHERE projection_version <= $N` guard via :execrows so a stale
+// Unassigned replayed after a re-Assign cannot wipe the live row (CR catch
+// on PR #179).
+// DeviceRegistered handler. ON CONFLICT (id) DO UPDATE re-activates a
+// soft-deleted row by flipping is_deleted=FALSE — mirrors the PL/pgSQL
+// projector's revival semantic (an operator re-enrolling a previously
+// deleted device id gets the row back, preserving the event-sourced
+// timeline). projection_version is unconditionally bumped here because
+// DeviceRegistered is the stream's birthing event; replay safety for
+// subsequent events lives on their per-event guarded UPDATEs.
+func (q *Queries) UpsertDeviceProjection(ctx context.Context, arg UpsertDeviceProjectionParams) error {
+	_, err := q.db.Exec(ctx, upsertDeviceProjection,
+		arg.ID,
+		arg.Hostname,
+		arg.CertFingerprint,
+		arg.CertNotAfter,
+		arg.RegisteredAt,
+		arg.RegistrationTokenID,
+		arg.Labels,
+		arg.ProjectionVersion,
+	)
+	return err
 }
