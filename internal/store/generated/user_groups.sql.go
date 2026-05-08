@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+const claimUserGroupForMembership = `-- name: ClaimUserGroupForMembership :execrows
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+  AND is_dynamic = FALSE
+`
+
+type ClaimUserGroupForMembershipParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// Atomic guard for the three member-mutation events
+// (UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupMembersRebuilt).
+// The UPDATE bumps updated_at + projection_version only when ALL of:
+//
+//  1. The group exists (id matches).
+//  2. The group is NOT soft-deleted (a member event replayed after a
+//     Deleted must not bring rows back).
+//  3. The group is NOT dynamic (the dynamic-query evaluator owns the
+//     member set; explicit member events are no-ops there — mirrors
+//     the PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out).
+//  4. The event is newer than the current projection_version
+//     (asymmetric-guard discipline; CR catch on PR #174).
+//
+// Returns n=1 when the listener may proceed with the membership-table
+// mutation, n=0 when the event must be skipped. Encoding all four
+// short-circuit reasons in one query keeps the listener side
+// branch-free and — crucially — makes the version check happen
+// BEFORE any child-row mutation, so a stale event cannot recreate a
+// deleted membership row or wipe a live one.
+func (q *Queries) ClaimUserGroupForMembership(ctx context.Context, arg ClaimUserGroupForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimUserGroupForMembership, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countGroupsWithRole = `-- name: CountGroupsWithRole :one
 SELECT count(*) FROM user_group_roles_projection WHERE role_id = $1
 `
@@ -43,34 +86,6 @@ func (q *Queries) CountUserGroups(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
-}
-
-const decrementUserGroupMemberCount = `-- name: DecrementUserGroupMemberCount :execrows
-UPDATE user_groups_projection
-SET member_count       = GREATEST(member_count - 1, 0),
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3
-`
-
-type DecrementUserGroupMemberCountParams struct {
-	ID                string    `json:"id"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ProjectionVersion int64     `json:"projection_version"`
-}
-
-// UserGroupMemberRemoved handler — second half. Mirrors the PL/pgSQL
-// `member_count = GREATEST(member_count - 1, 0)` decrement (the
-// GREATEST clamp protects against drift from out-of-order replays of
-// Removed without a prior Added). Stale-replay guard via
-// projection_version.
-func (q *Queries) DecrementUserGroupMemberCount(ctx context.Context, arg DecrementUserGroupMemberCountParams) (int64, error) {
-	result, err := q.db.Exec(ctx, decrementUserGroupMemberCount, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const deleteDynamicUserGroupEvaluationQueueRow = `-- name: DeleteDynamicUserGroupEvaluationQueueRow :exec
@@ -326,41 +341,6 @@ func (q *Queries) GetUserPermissionsWithGroups(ctx context.Context, userID strin
 	return items, nil
 }
 
-const incrementUserGroupMemberCount = `-- name: IncrementUserGroupMemberCount :execrows
-UPDATE user_groups_projection
-SET member_count       = member_count + 1,
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3
-`
-
-type IncrementUserGroupMemberCountParams struct {
-	ID                string    `json:"id"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ProjectionVersion int64     `json:"projection_version"`
-}
-
-// UserGroupMemberAdded handler — second half. Mirrors the PL/pgSQL
-// `member_count = member_count + 1` increment + updated_at /
-// projection_version stamp. Stale-replay guard via projection_version.
-//
-// Unlike action_set's RecountActionSetMembers (which COUNT(*)s the live
-// table), this matches the PL/pgSQL projector's monotonic counter +/-1
-// shape verbatim — switching to a recount would change the convergence
-// behaviour for out-of-order replay (a recount converges to the
-// LIVE row count regardless of replay order; the +/-1 form requires
-// monotonic event order to converge correctly). Both shapes are correct
-// under monotonic replay; preserving the PL/pgSQL form keeps the
-// per-event semantics identical.
-func (q *Queries) IncrementUserGroupMemberCount(ctx context.Context, arg IncrementUserGroupMemberCountParams) (int64, error) {
-	result, err := q.db.Exec(ctx, incrementUserGroupMemberCount, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const insertUserGroupMember = `-- name: InsertUserGroupMember :exec
 INSERT INTO user_group_members_projection (
     group_id, user_id, added_at, added_by, projection_version
@@ -479,28 +459,6 @@ func (q *Queries) InsertUserGroupRole(ctx context.Context, arg InsertUserGroupRo
 		arg.ProjectionVersion,
 	)
 	return err
-}
-
-const isUserGroupDynamic = `-- name: IsUserGroupDynamic :one
-SELECT COALESCE((
-    SELECT is_dynamic FROM user_groups_projection
-    WHERE id = $1 AND is_deleted = FALSE
-), FALSE)::BOOLEAN AS is_dynamic
-`
-
-// UserGroupMemberAdded / UserGroupMemberRemoved gate. Mirrors the
-// PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out: when the
-// parent group is dynamic, member-mutation events are no-ops because
-// the evaluator owns the member set. Returns FALSE for missing or
-// soft-deleted groups so the listener treats them as static (matches
-// the PL/pgSQL NOT EXISTS branch — a non-existent or deleted group has
-// no row with is_dynamic = TRUE, so the projector falls through to the
-// INSERT/DELETE).
-func (q *Queries) IsUserGroupDynamic(ctx context.Context, id string) (bool, error) {
-	row := q.db.QueryRow(ctx, isUserGroupDynamic, id)
-	var is_dynamic bool
-	err := row.Scan(&is_dynamic)
-	return is_dynamic, err
 }
 
 const isUserInGroup = `-- name: IsUserInGroup :one
@@ -740,6 +698,25 @@ func (q *Queries) ListUserIDsWithGroupRole(ctx context.Context, roleID string) (
 	return items, nil
 }
 
+const recountUserGroupMembers = `-- name: RecountUserGroupMembers :exec
+UPDATE user_groups_projection
+SET member_count = (
+    SELECT COUNT(*) FROM user_group_members_projection WHERE group_id = $1
+)
+WHERE id = $1
+`
+
+// Recompute member_count from the live row count after the listener
+// has applied a membership mutation. Run in the same transaction as
+// ClaimUserGroupForMembership + the INSERT/DELETE so the parent row
+// is never observed with a stale count. No projection_version guard
+// here: the Claim above already stamped the version, so a recount
+// without re-stamping cannot regress.
+func (q *Queries) RecountUserGroupMembers(ctx context.Context, groupID string) error {
+	_, err := q.db.Exec(ctx, recountUserGroupMembers, groupID)
+	return err
+}
+
 const resetUserGroupMemberCount = `-- name: ResetUserGroupMemberCount :exec
 UPDATE user_groups_projection
 SET member_count = 0
@@ -755,40 +732,6 @@ WHERE id = $1
 func (q *Queries) ResetUserGroupMemberCount(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, resetUserGroupMemberCount, id)
 	return err
-}
-
-const setUserGroupMemberCount = `-- name: SetUserGroupMemberCount :execrows
-UPDATE user_groups_projection
-SET member_count       = $2,
-    updated_at         = $3,
-    projection_version = $4
-WHERE id = $1
-  AND projection_version < $4
-`
-
-type SetUserGroupMemberCountParams struct {
-	ID                string    `json:"id"`
-	MemberCount       int32     `json:"member_count"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ProjectionVersion int64     `json:"projection_version"`
-}
-
-// UserGroupMembersRebuilt handler — second half. Sets member_count to
-// the rebuilt user_id list length (the PL/pgSQL projector used
-// `jsonb_array_length(event.data->'user_ids')`; the Go listener pre-
-// computes the length and passes it in). Stale-replay guard via
-// projection_version.
-func (q *Queries) SetUserGroupMemberCount(ctx context.Context, arg SetUserGroupMemberCountParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setUserGroupMemberCount,
-		arg.ID,
-		arg.MemberCount,
-		arg.UpdatedAt,
-		arg.ProjectionVersion,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const softDeleteUserGroupProjection = `-- name: SoftDeleteUserGroupProjection :execrows

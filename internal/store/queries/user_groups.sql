@@ -244,19 +244,46 @@ DELETE FROM user_group_roles_projection WHERE group_id = $1;
 -- group.
 DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = $1;
 
--- name: IsUserGroupDynamic :one
--- UserGroupMemberAdded / UserGroupMemberRemoved gate. Mirrors the
--- PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out: when the
--- parent group is dynamic, member-mutation events are no-ops because
--- the evaluator owns the member set. Returns FALSE for missing or
--- soft-deleted groups so the listener treats them as static (matches
--- the PL/pgSQL NOT EXISTS branch — a non-existent or deleted group has
--- no row with is_dynamic = TRUE, so the projector falls through to the
--- INSERT/DELETE).
-SELECT COALESCE((
-    SELECT is_dynamic FROM user_groups_projection
-    WHERE id = $1 AND is_deleted = FALSE
-), FALSE)::BOOLEAN AS is_dynamic;
+-- name: ClaimUserGroupForMembership :execrows
+-- Atomic guard for the three member-mutation events
+-- (UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupMembersRebuilt).
+-- The UPDATE bumps updated_at + projection_version only when ALL of:
+--
+--   1. The group exists (id matches).
+--   2. The group is NOT soft-deleted (a member event replayed after a
+--      Deleted must not bring rows back).
+--   3. The group is NOT dynamic (the dynamic-query evaluator owns the
+--      member set; explicit member events are no-ops there — mirrors
+--      the PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)` early-out).
+--   4. The event is newer than the current projection_version
+--      (asymmetric-guard discipline; CR catch on PR #174).
+--
+-- Returns n=1 when the listener may proceed with the membership-table
+-- mutation, n=0 when the event must be skipped. Encoding all four
+-- short-circuit reasons in one query keeps the listener side
+-- branch-free and — crucially — makes the version check happen
+-- BEFORE any child-row mutation, so a stale event cannot recreate a
+-- deleted membership row or wipe a live one.
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+  AND is_dynamic = FALSE;
+
+-- name: RecountUserGroupMembers :exec
+-- Recompute member_count from the live row count after the listener
+-- has applied a membership mutation. Run in the same transaction as
+-- ClaimUserGroupForMembership + the INSERT/DELETE so the parent row
+-- is never observed with a stale count. No projection_version guard
+-- here: the Claim above already stamped the version, so a recount
+-- without re-stamping cannot regress.
+UPDATE user_groups_projection
+SET member_count = (
+    SELECT COUNT(*) FROM user_group_members_projection WHERE group_id = $1
+)
+WHERE id = $1;
 
 -- name: InsertUserGroupMember :exec
 -- UserGroupMemberAdded handler — first half. ON CONFLICT DO NOTHING
@@ -273,52 +300,6 @@ ON CONFLICT (group_id, user_id) DO NOTHING;
 DELETE FROM user_group_members_projection
 WHERE group_id = $1
   AND user_id = $2;
-
--- name: IncrementUserGroupMemberCount :execrows
--- UserGroupMemberAdded handler — second half. Mirrors the PL/pgSQL
--- `member_count = member_count + 1` increment + updated_at /
--- projection_version stamp. Stale-replay guard via projection_version.
---
--- Unlike action_set's RecountActionSetMembers (which COUNT(*)s the live
--- table), this matches the PL/pgSQL projector's monotonic counter +/-1
--- shape verbatim — switching to a recount would change the convergence
--- behaviour for out-of-order replay (a recount converges to the
--- LIVE row count regardless of replay order; the +/-1 form requires
--- monotonic event order to converge correctly). Both shapes are correct
--- under monotonic replay; preserving the PL/pgSQL form keeps the
--- per-event semantics identical.
-UPDATE user_groups_projection
-SET member_count       = member_count + 1,
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3;
-
--- name: DecrementUserGroupMemberCount :execrows
--- UserGroupMemberRemoved handler — second half. Mirrors the PL/pgSQL
--- `member_count = GREATEST(member_count - 1, 0)` decrement (the
--- GREATEST clamp protects against drift from out-of-order replays of
--- Removed without a prior Added). Stale-replay guard via
--- projection_version.
-UPDATE user_groups_projection
-SET member_count       = GREATEST(member_count - 1, 0),
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3;
-
--- name: SetUserGroupMemberCount :execrows
--- UserGroupMembersRebuilt handler — second half. Sets member_count to
--- the rebuilt user_id list length (the PL/pgSQL projector used
--- `jsonb_array_length(event.data->'user_ids')`; the Go listener pre-
--- computes the length and passes it in). Stale-replay guard via
--- projection_version.
-UPDATE user_groups_projection
-SET member_count       = $2,
-    updated_at         = $3,
-    projection_version = $4
-WHERE id = $1
-  AND projection_version < $4;
 
 -- name: InsertUserGroupRole :exec
 -- UserGroupRoleAssigned handler. ON CONFLICT DO NOTHING preserves the

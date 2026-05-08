@@ -767,6 +767,110 @@ func TestUserGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	assert.Equal(t, 1, count, "stale UserGroupDeleted must NOT cascade-delete role assignments")
 }
 
+// TestUserGroupListener_StaleMemberAddedDoesNotRecreateMembership locks
+// the CR finding on PR #174: a stale UserGroupMemberAdded replayed
+// after a Removed must not reinsert the member row, even though the
+// INSERT itself is idempotent. The Claim guard runs FIRST so a stale
+// version short-circuits before the INSERT.
+func TestUserGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	groupID := testutil.CreateTestUserGroup(t, st, "u", "stale-add-grp")
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@x.com", "pass", "user")
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":" + userID, EventType: "UserGroupMemberAdded",
+		Data:      map[string]any{"group_id": groupID, "user_id": userID},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":" + userID, EventType: "UserGroupMemberRemoved",
+		Data:      map[string]any{"group_id": groupID, "user_id": userID},
+		ActorType: "user", ActorID: "u",
+	}))
+	live, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), live.MemberCount)
+
+	older := live.ProjectionVersion - 5
+	listener := projectors.UserGroupListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &older,
+		StreamType:  "user_group",
+		StreamID:    groupID + ":" + userID,
+		EventType:   "UserGroupMemberAdded",
+		Data:        jsonOrFail(t, map[string]any{"group_id": groupID, "user_id": userID}),
+		ActorType:   "user",
+		ActorID:     "u",
+		OccurredAt:  live.UpdatedAt,
+	})
+
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1 AND user_id = $2",
+		groupID, userID,
+	).Scan(&count))
+	assert.Equal(t, 0, count, "stale UserGroupMemberAdded must NOT recreate the membership row")
+
+	after, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), after.MemberCount, "member_count stays at 0 after stale replay")
+	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion, "projection_version unchanged")
+}
+
+// TestUserGroupListener_StaleMembersRebuiltDoesNotOverwrite locks the
+// second CR finding on PR #174: a stale UserGroupMembersRebuilt
+// replayed after later membership changes must not wipe the live
+// member set, even when the eventual count update affects 0 rows.
+// The Claim guard runs FIRST so a stale rebuild short-circuits
+// before the WIPE.
+func TestUserGroupListener_StaleMembersRebuiltDoesNotOverwrite(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	groupID := testutil.CreateTestUserGroup(t, st, "u", "stale-rebuilt-grp")
+	userA := testutil.CreateTestUser(t, st, testutil.NewID()+"@x.com", "pass", "user")
+	userB := testutil.CreateTestUser(t, st, testutil.NewID()+"@x.com", "pass", "user")
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":" + userA, EventType: "UserGroupMemberAdded",
+		Data:      map[string]any{"group_id": groupID, "user_id": userA},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_group", StreamID: groupID + ":" + userB, EventType: "UserGroupMemberAdded",
+		Data:      map[string]any{"group_id": groupID, "user_id": userB},
+		ActorType: "user", ActorID: "u",
+	}))
+	live, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), live.MemberCount)
+
+	older := live.ProjectionVersion - 5
+	listener := projectors.UserGroupListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &older,
+		StreamType:  "user_group",
+		StreamID:    groupID,
+		EventType:   "UserGroupMembersRebuilt",
+		Data:        jsonOrFail(t, map[string]any{"user_ids": []string{}}),
+		ActorType:   "system",
+		ActorID:     "s",
+		OccurredAt:  live.UpdatedAt,
+	})
+
+	memberIDs, err := st.Queries().ListUserGroupMemberIDs(ctx, groupID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{userA, userB}, memberIDs,
+		"stale UserGroupMembersRebuilt must NOT wipe live members")
+
+	after, err := st.Queries().GetUserGroupByID(ctx, groupID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), after.MemberCount, "member_count unchanged after stale replay")
+	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion)
+}
+
 // TestUserGroupListener_IgnoresWrongStreamType — defensive.
 func TestUserGroupListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)

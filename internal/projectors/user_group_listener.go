@@ -294,40 +294,37 @@ func applyUserGroupMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 		}
 		return err
 	}
-	// Mirrors the PL/pgSQL `IF NOT EXISTS (... is_dynamic = TRUE)`
-	// guard: the dynamic-query evaluator owns the member set for
-	// dynamic groups, so member-mutation events are no-ops there. A
-	// missing or soft-deleted parent group also short-circuits via
-	// the COALESCE-FALSE return on IsUserGroupDynamic — matches the
-	// PL/pgSQL NOT EXISTS branch (a non-existent group has no row
-	// with is_dynamic = TRUE, so the projector falls through to the
-	// INSERT; we tighten that to "skip if the group can't be confirmed
-	// static" to keep ghost-membership rows out of the projection).
-	dynamic, err := q.IsUserGroupDynamic(ctx, payload.GroupID)
+	// Atomic guard FIRST: the claim query bumps projection_version
+	// only when the parent group exists, is static, alive, and the
+	// event is newer. n==0 means one of those preconditions failed —
+	// skip the membership mutation entirely. Doing the version check
+	// AFTER the INSERT (the prior shape) let stale events recreate
+	// soft-deleted membership rows even when the parent guard
+	// rejected the bump (CR catch on PR #174).
+	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
+		ID:                payload.GroupID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
 	if err != nil {
 		return err
 	}
-	if dynamic {
+	if n == 0 {
 		return nil
 	}
-	addedAt := e.OccurredAt
 	if err := q.InsertUserGroupMember(ctx, db.InsertUserGroupMemberParams{
 		GroupID:           payload.GroupID,
 		UserID:            payload.UserID,
-		AddedAt:           addedAt,
+		AddedAt:           e.OccurredAt,
 		AddedBy:           e.ActorID,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
 		return err
 	}
-	if _, err := q.IncrementUserGroupMemberCount(ctx, db.IncrementUserGroupMemberCountParams{
-		ID:                payload.GroupID,
-		UpdatedAt:         addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		return err
-	}
-	return nil
+	// Recount after mutate (live COUNT(*)) so ON CONFLICT DO NOTHING
+	// idempotency does not drift the count: a duplicate Add is a
+	// no-op on the table AND on member_count.
+	return q.RecountUserGroupMembers(ctx, payload.GroupID)
 }
 
 func applyUserGroupMemberRemoved(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -338,11 +335,15 @@ func applyUserGroupMemberRemoved(ctx context.Context, q *store.Queries, e store.
 		}
 		return err
 	}
-	dynamic, err := q.IsUserGroupDynamic(ctx, payload.GroupID)
+	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
+		ID:                payload.GroupID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
 	if err != nil {
 		return err
 	}
-	if dynamic {
+	if n == 0 {
 		return nil
 	}
 	if err := q.DeleteUserGroupMember(ctx, db.DeleteUserGroupMemberParams{
@@ -351,12 +352,7 @@ func applyUserGroupMemberRemoved(ctx context.Context, q *store.Queries, e store.
 	}); err != nil {
 		return err
 	}
-	updatedAt := e.OccurredAt
-	if _, err := q.DecrementUserGroupMemberCount(ctx, db.DecrementUserGroupMemberCountParams{
-		ID:                payload.GroupID,
-		UpdatedAt:         updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
+	if err := q.RecountUserGroupMembers(ctx, payload.GroupID); err != nil {
 		return err
 	}
 	return nil
@@ -402,34 +398,36 @@ func applyUserGroupMembersRebuilt(ctx context.Context, q *store.Queries, e store
 		}
 		return err
 	}
-	// Wipe the existing member set, then bulk-insert the rebuilt list.
-	// The PL/pgSQL projector did this with a SELECT FROM
-	// jsonb_array_elements_text(...) inside the INSERT; the Go
-	// listener iterates the slice in Go since `pgx`'s batched insert
-	// for one-row-per-id is microsecond-scale at this scale (a rebuilt
-	// list is usually <100 users).
+	// Atomic guard FIRST: a stale Rebuilt replayed after later
+	// member edits must not nuke the live member set. The Claim
+	// query bumps projection_version + acts as the gate; n==0 means
+	// the parent is dynamic, soft-deleted, missing, or already at a
+	// newer version — skip the wipe-and-replace entirely (CR catch
+	// on PR #174).
+	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
+		ID:                payload.GroupID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
 	if err := q.WipeUserGroupMembers(ctx, payload.GroupID); err != nil {
 		return err
 	}
-	addedAt := e.OccurredAt
 	for _, userID := range payload.UserIDs {
 		if err := q.InsertUserGroupMember(ctx, db.InsertUserGroupMemberParams{
 			GroupID:           payload.GroupID,
 			UserID:            userID,
-			AddedAt:           addedAt,
+			AddedAt:           e.OccurredAt,
 			AddedBy:           "system",
 			ProjectionVersion: deref(e.SequenceNum),
 		}); err != nil {
 			return err
 		}
 	}
-	if _, err := q.SetUserGroupMemberCount(ctx, db.SetUserGroupMemberCountParams{
-		ID:                payload.GroupID,
-		MemberCount:       int32(len(payload.UserIDs)),
-		UpdatedAt:         addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		return err
-	}
-	return nil
+	return q.RecountUserGroupMembers(ctx, payload.GroupID)
 }
