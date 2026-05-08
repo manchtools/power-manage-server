@@ -129,18 +129,32 @@ SET description       = $2,
 WHERE id = $1
   AND projection_version < $3;
 
--- name: UpdateDeviceGroupQueryProjection :execrows
+-- name: UpdateDeviceGroupQueryProjection :one
 -- DeviceGroupQueryUpdated handler — first half. Persists the dynamic-
 -- query toggle + query string. Stale-replay guard via projection_version.
--- The listener follows up with WipeDeviceGroupMembers +
--- ResetDeviceGroupMemberCount + EnqueueDynamicDeviceGroupEvaluation when
--- the group flips to dynamic, gated by this UPDATE's :execrows count.
-UPDATE device_groups_projection
-SET is_dynamic        = $2,
-    dynamic_query     = $3,
-    projection_version = $4
-WHERE id = $1
-  AND projection_version < $4;
+-- Returns the previous is_dynamic value so the listener can tell a
+-- true static→dynamic flip from a steady-state dynamic-query edit.
+-- Only the flip should trigger the cascade (member wipe + count reset
+-- + re-enqueue); editing the query of an already-dynamic group must
+-- preserve the live evaluator-owned member set (sibling fix to the
+-- CR catch on the user_group port, PR #174).
+--
+-- A stale event (projection_version >= current) returns sql.ErrNoRows
+-- via pgx — the listener treats that as "skip cascade".
+WITH prev AS (
+    SELECT dg.id AS prev_id, dg.is_dynamic AS prev_is_dynamic
+    FROM device_groups_projection dg
+    WHERE dg.id = $1
+), bumped AS (
+    UPDATE device_groups_projection dg
+    SET is_dynamic         = $2,
+        dynamic_query      = $3,
+        projection_version = $4
+    WHERE dg.id = $1
+      AND dg.projection_version < $4
+    RETURNING dg.id AS bumped_id
+)
+SELECT prev.prev_is_dynamic FROM prev JOIN bumped ON bumped.bumped_id = prev.prev_id;
 
 -- name: UpdateDeviceGroupSyncIntervalProjection :execrows
 -- DeviceGroupSyncIntervalSet handler. The decoder defaults a missing

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -210,31 +212,28 @@ func applyDeviceGroupQueryUpdated(ctx context.Context, q *store.Queries, e store
 		}
 		return err
 	}
-	n, err := q.UpdateDeviceGroupQueryProjection(ctx, db.UpdateDeviceGroupQueryProjectionParams{
+	prevIsDynamic, err := q.UpdateDeviceGroupQueryProjection(ctx, db.UpdateDeviceGroupQueryProjectionParams{
 		ID:                payload.ID,
 		IsDynamic:         payload.IsDynamic,
 		DynamicQuery:      payload.DynamicQuery,
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 	if err != nil {
+		// pgx surfaces ErrNoRows when the inner UPDATE's version
+		// guard rejects a stale replay (the CTE join collapses to
+		// zero rows). Treat that as "skip cascade".
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		return err
 	}
-	if n == 0 {
-		// Stale DeviceGroupQueryUpdated replay against a row whose
-		// projection_version has moved past this event. Skipping the
-		// flip-to-dynamic cascade (member wipe + member_count reset +
-		// re-enqueue) is mandatory: otherwise an old QueryUpdated
-		// re-applied later would silently nuke the live group's
-		// members and re-enqueue a group whose query has already
-		// changed downstream.
+	// Cascade ONLY on a true static→dynamic flip. Editing the
+	// dynamic_query of an already-dynamic group must preserve the
+	// live evaluator-owned member set (sibling fix to the CR catch
+	// on the user_group port, PR #174).
+	if !payload.IsDynamic || prevIsDynamic {
 		return nil
 	}
-	if !payload.IsDynamic {
-		return nil
-	}
-	// Flip-to-dynamic cascade: wipe static members + zero member_count
-	// + (re-)enqueue for the evaluator. Mirrors the PL/pgSQL
-	// projector's order verbatim.
 	if err := q.WipeDeviceGroupMembers(ctx, payload.ID); err != nil {
 		return err
 	}

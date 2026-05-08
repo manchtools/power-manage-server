@@ -782,6 +782,41 @@ func TestDeviceGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testin
 	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion)
 }
 
+// TestDeviceGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers
+// is the device_group sibling of the user_group regression that
+// CR caught on PR #174: editing the dynamic_query of an already-
+// dynamic group must NOT trigger the cascade. The cascade (member
+// wipe + member_count zero + re-enqueue) is for the static→dynamic
+// transition only — the evaluator owns the member set in steady
+// state and re-evaluates on its own schedule.
+func TestDeviceGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	groupID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device_group", StreamID: groupID, EventType: "DeviceGroupCreated",
+		Data:      map[string]any{"name": "dyn", "is_dynamic": true, "dynamic_query": "(env equals \"prod\")"},
+		ActorType: "user", ActorID: "u",
+	}))
+	_, err := st.Pool().Exec(ctx, `
+		INSERT INTO device_group_members_projection (group_id, device_id, added_at, projection_version)
+		VALUES ($1, 'dev-evaluator-populated', now(), 0)`, groupID)
+	require.NoError(t, err)
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device_group", StreamID: groupID, EventType: "DeviceGroupQueryUpdated",
+		Data:      map[string]any{"is_dynamic": true, "dynamic_query": "(env equals \"staging\")"},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
+	).Scan(&count))
+	assert.Equal(t, 1, count, "steady-state dynamic-query edit must NOT wipe evaluator-populated members")
+}
+
 // TestDeviceGroupListener_IgnoresWrongStreamType — defensive.
 func TestDeviceGroupListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)
