@@ -10,6 +10,43 @@ import (
 	"time"
 )
 
+const claimCompliancePolicyForRuleMutation = `-- name: ClaimCompliancePolicyForRuleMutation :execrows
+UPDATE compliance_policies_projection
+SET projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+  AND is_deleted = FALSE
+`
+
+type ClaimCompliancePolicyForRuleMutationParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// Atomic guard for the three rule-mutation events
+// (CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved,
+// CompliancePolicyRuleUpdated). Bumps projection_version only when ALL of:
+//
+//  1. The policy exists (id matches).
+//  2. The policy is NOT soft-deleted (a rule event replayed after a
+//     Deleted must not bring rows back).
+//  3. The event is newer than the current projection_version
+//     (asymmetric-guard discipline; mirrors PR #174's CR catch).
+//
+// Returns n=1 when the listener may proceed with the rule-table
+// mutation, n=0 when the event must be skipped. Encoding all three
+// short-circuit reasons in one query keeps the listener side
+// branch-free and — crucially — makes the version check happen
+// BEFORE any child-row mutation, so a stale event cannot resurrect
+// a removed rule or rewind a fresher RuleUpdated.
+func (q *Queries) ClaimCompliancePolicyForRuleMutation(ctx context.Context, arg ClaimCompliancePolicyForRuleMutationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimCompliancePolicyForRuleMutation, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countCompliancePolicies = `-- name: CountCompliancePolicies :one
 SELECT COUNT(*) FROM compliance_policies_projection
 WHERE is_deleted = FALSE
@@ -20,6 +57,70 @@ func (q *Queries) CountCompliancePolicies(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteCompliancePolicyEvaluationsByPolicy = `-- name: DeleteCompliancePolicyEvaluationsByPolicy :exec
+DELETE FROM compliance_policy_evaluation_projection WHERE policy_id = $1
+`
+
+// CompliancePolicyDeleted handler — third half. Wipes every evaluation
+// row for the deleted policy so the device-status query no longer
+// joins through a deleted policy.
+func (q *Queries) DeleteCompliancePolicyEvaluationsByPolicy(ctx context.Context, policyID string) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyEvaluationsByPolicy, policyID)
+	return err
+}
+
+const deleteCompliancePolicyEvaluationsByRule = `-- name: DeleteCompliancePolicyEvaluationsByRule :exec
+DELETE FROM compliance_policy_evaluation_projection
+WHERE policy_id = $1
+  AND action_id = $2
+`
+
+type DeleteCompliancePolicyEvaluationsByRuleParams struct {
+	PolicyID string `json:"policy_id"`
+	ActionID string `json:"action_id"`
+}
+
+// CompliancePolicyRuleRemoved handler — third half. Wipes evaluation
+// rows for the removed (policy, action) pair so the device-status
+// query stops surfacing a stale verdict for a rule that no longer
+// exists. Other rules in the same policy keep their evaluations.
+func (q *Queries) DeleteCompliancePolicyEvaluationsByRule(ctx context.Context, arg DeleteCompliancePolicyEvaluationsByRuleParams) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyEvaluationsByRule, arg.PolicyID, arg.ActionID)
+	return err
+}
+
+const deleteCompliancePolicyRule = `-- name: DeleteCompliancePolicyRule :exec
+DELETE FROM compliance_policy_rules_projection
+WHERE policy_id = $1
+  AND action_id = $2
+`
+
+type DeleteCompliancePolicyRuleParams struct {
+	PolicyID string `json:"policy_id"`
+	ActionID string `json:"action_id"`
+}
+
+// CompliancePolicyRuleRemoved handler — second half. Plain DELETE
+// scoped to the (policy, action) pair — silently no-op on a miss
+// matches the PL/pgSQL projector's behaviour.
+func (q *Queries) DeleteCompliancePolicyRule(ctx context.Context, arg DeleteCompliancePolicyRuleParams) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyRule, arg.PolicyID, arg.ActionID)
+	return err
+}
+
+const deleteCompliancePolicyRulesByPolicy = `-- name: DeleteCompliancePolicyRulesByPolicy :exec
+DELETE FROM compliance_policy_rules_projection WHERE policy_id = $1
+`
+
+// CompliancePolicyDeleted handler — second half. Wipes every rule row
+// for the deleted policy. Wrapped with SoftDeleteCompliancePolicyProjection
+// + DeleteCompliancePolicyEvaluationsByPolicy + the reevaluate shim
+// inside store.WithTx for inter-write atomicity.
+func (q *Queries) DeleteCompliancePolicyRulesByPolicy(ctx context.Context, policyID string) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyRulesByPolicy, policyID)
+	return err
 }
 
 const getCompliancePolicyByID = `-- name: GetCompliancePolicyByID :one
@@ -134,6 +235,71 @@ func (q *Queries) GetDeviceCompliancePolicyEvaluations(ctx context.Context, devi
 	return items, nil
 }
 
+const insertCompliancePolicyProjection = `-- name: InsertCompliancePolicyProjection :exec
+
+INSERT INTO compliance_policies_projection (
+    id, name, description, rule_count,
+    created_at, created_by, projection_version
+) VALUES ($1, $2, $3, 0, $4, $5, $6)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertCompliancePolicyProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#136).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_compliance_policy_event(): every
+// event handler the projector dispatched on (CompliancePolicyCreated,
+// CompliancePolicyRenamed, CompliancePolicyDescriptionUpdated,
+// CompliancePolicyDeleted, CompliancePolicyRuleAdded,
+// CompliancePolicyRuleRemoved, CompliancePolicyRuleUpdated) gets a typed
+// sqlc query here so the listener can compose them in Go.
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE on
+// compliance_policies_projection carries an explicit
+// `WHERE projection_version < $N` guard and uses :execrows so the
+// listener can short-circuit cascades on stale-replay (asymmetric-
+// guard discipline; see action_set_listener / user_group_listener for
+// the canonical shape).
+//
+// Claim-first guard: the three rule-mutation events
+// (CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved,
+// CompliancePolicyRuleUpdated) all run ClaimCompliancePolicyForRuleMutation
+// BEFORE touching compliance_policy_rules_projection. The Claim guard
+// bumps the parent's projection_version only when the policy exists,
+// is alive, and the event is newer; the listener short-circuits on
+// n == 0. Doing the version check BEFORE the rule INSERT/DELETE/UPDATE
+// prevents stale replays from silently resurrecting removed rules or
+// rolling back fresher edits — the same hazard the user_group port
+// (PR #174) had to fix retroactively.
+// CompliancePolicyCreated handler. ON CONFLICT DO NOTHING for replay
+// safety — the unique constraint is the primary key (id), so a re-
+// application of CompliancePolicyCreated for the same stream lands as
+// a no-op. The PL/pgSQL projector raised on the second insert; we
+// soften that to the same replay-safe shape every other ported
+// projector uses. rule_count starts at 0 (matches the PL/pgSQL
+// INSERT's literal `0`).
+func (q *Queries) InsertCompliancePolicyProjection(ctx context.Context, arg InsertCompliancePolicyProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertCompliancePolicyProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.CreatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
 const listCompliancePolicies = `-- name: ListCompliancePolicies :many
 SELECT id, name, description, rule_count, created_at, created_by, is_deleted, projection_version FROM compliance_policies_projection
 WHERE is_deleted = FALSE
@@ -206,4 +372,187 @@ func (q *Queries) ListCompliancePolicyRules(ctx context.Context, policyID string
 		return nil, err
 	}
 	return items, nil
+}
+
+const recountCompliancePolicyRules = `-- name: RecountCompliancePolicyRules :exec
+UPDATE compliance_policies_projection
+SET rule_count = (
+    SELECT COUNT(*) FROM compliance_policy_rules_projection
+    WHERE policy_id = $1
+)
+WHERE id = $1
+`
+
+// CompliancePolicyRuleAdded / CompliancePolicyRuleRemoved handler —
+// second-stage write after the rule-table mutation lands. Recomputes
+// rule_count from the live row count, mirroring the PL/pgSQL
+// `(SELECT COUNT(*) ...)` subquery. No projection_version guard:
+// the Claim above already stamped the version, so a recount without
+// re-stamping cannot regress.
+func (q *Queries) RecountCompliancePolicyRules(ctx context.Context, policyID string) error {
+	_, err := q.db.Exec(ctx, recountCompliancePolicyRules, policyID)
+	return err
+}
+
+const reevaluateCompliancePolicyDevices = `-- name: ReevaluateCompliancePolicyDevices :exec
+SELECT reevaluate_compliance_policy_devices($1)
+`
+
+// CompliancePolicyDeleted / CompliancePolicyRuleRemoved handler —
+// final cascade step. Thin shim around the still-PL/pgSQL
+// reevaluate_compliance_policy_devices(p_policy_id) function defined
+// in migration 003. Per #136 the eval engine itself stays in PL/pgSQL
+// until a later phase; the listener just calls into it so the per-
+// device compliance status reflects the rule mutation.
+func (q *Queries) ReevaluateCompliancePolicyDevices(ctx context.Context, pPolicyID string) error {
+	_, err := q.db.Exec(ctx, reevaluateCompliancePolicyDevices, pPolicyID)
+	return err
+}
+
+const renameCompliancePolicyProjection = `-- name: RenameCompliancePolicyProjection :execrows
+UPDATE compliance_policies_projection
+SET name              = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type RenameCompliancePolicyProjectionParams struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// CompliancePolicyRenamed handler. Stale-replay guard via
+// projection_version. compliance_policies_projection has no
+// updated_at column (deliberate omission since 001_initial_tables.sql),
+// so the UPDATE only touches name + projection_version.
+func (q *Queries) RenameCompliancePolicyProjection(ctx context.Context, arg RenameCompliancePolicyProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameCompliancePolicyProjection, arg.ID, arg.Name, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteCompliancePolicyProjection = `-- name: SoftDeleteCompliancePolicyProjection :execrows
+UPDATE compliance_policies_projection
+SET is_deleted        = TRUE,
+    projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+`
+
+type SoftDeleteCompliancePolicyProjectionParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// CompliancePolicyDeleted handler — first half. Returns rows-affected
+// so the listener can SKIP the cascade (rule wipe, evaluation wipe,
+// reevaluate_compliance_policy_devices) when the projection_version
+// guard rejects a stale replay; otherwise an old CompliancePolicyDeleted
+// re-applied by the reconciler against a freshly-restored policy
+// would silently nuke its rules + evaluations and trigger a needless
+// device re-evaluation pass.
+func (q *Queries) SoftDeleteCompliancePolicyProjection(ctx context.Context, arg SoftDeleteCompliancePolicyProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteCompliancePolicyProjection, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateCompliancePolicyDescriptionProjection = `-- name: UpdateCompliancePolicyDescriptionProjection :execrows
+UPDATE compliance_policies_projection
+SET description       = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateCompliancePolicyDescriptionProjectionParams struct {
+	ID                string `json:"id"`
+	Description       string `json:"description"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// CompliancePolicyDescriptionUpdated handler. Empty-string description
+// is a valid value (matches the PL/pgSQL `COALESCE(payload, ”)` collapse
+// — the listener decoder substitutes ” when the payload key is missing).
+func (q *Queries) UpdateCompliancePolicyDescriptionProjection(ctx context.Context, arg UpdateCompliancePolicyDescriptionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCompliancePolicyDescriptionProjection, arg.ID, arg.Description, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateCompliancePolicyRuleGracePeriod = `-- name: UpdateCompliancePolicyRuleGracePeriod :exec
+UPDATE compliance_policy_rules_projection
+SET grace_period_hours = $3,
+    projection_version = $4
+WHERE policy_id = $1
+  AND action_id = $2
+`
+
+type UpdateCompliancePolicyRuleGracePeriodParams struct {
+	PolicyID          string `json:"policy_id"`
+	ActionID          string `json:"action_id"`
+	GracePeriodHours  int32  `json:"grace_period_hours"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// CompliancePolicyRuleUpdated handler — second half. Composite-PK
+// targeted UPDATE. No per-row projection_version guard here: the
+// Claim guard upstream already gated this call on parent-version
+// freshness, so a stale event cannot reach this statement. Mirrors
+// the PL/pgSQL projector's `UPDATE ... WHERE policy_id = X AND
+// action_id = Y` shape.
+func (q *Queries) UpdateCompliancePolicyRuleGracePeriod(ctx context.Context, arg UpdateCompliancePolicyRuleGracePeriodParams) error {
+	_, err := q.db.Exec(ctx, updateCompliancePolicyRuleGracePeriod,
+		arg.PolicyID,
+		arg.ActionID,
+		arg.GracePeriodHours,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const upsertCompliancePolicyRule = `-- name: UpsertCompliancePolicyRule :exec
+INSERT INTO compliance_policy_rules_projection (
+    policy_id, action_id, action_name, grace_period_hours,
+    added_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (policy_id, action_id) DO UPDATE SET
+    action_name        = EXCLUDED.action_name,
+    grace_period_hours = EXCLUDED.grace_period_hours,
+    projection_version = EXCLUDED.projection_version
+`
+
+type UpsertCompliancePolicyRuleParams struct {
+	PolicyID          string     `json:"policy_id"`
+	ActionID          string     `json:"action_id"`
+	ActionName        string     `json:"action_name"`
+	GracePeriodHours  int32      `json:"grace_period_hours"`
+	AddedAt           *time.Time `json:"added_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// CompliancePolicyRuleAdded handler — second half. Mirrors the PL/pgSQL
+// projector's `ON CONFLICT (policy_id, action_id) DO UPDATE SET
+// action_name = ..., grace_period_hours = ..., projection_version = ...`
+// so re-emitting RuleAdded for the same (policy, action) pair upgrades
+// the row in place rather than failing on the composite-PK conflict.
+// The Claim guard upstream gates this call on parent-version freshness.
+func (q *Queries) UpsertCompliancePolicyRule(ctx context.Context, arg UpsertCompliancePolicyRuleParams) error {
+	_, err := q.db.Exec(ctx, upsertCompliancePolicyRule,
+		arg.PolicyID,
+		arg.ActionID,
+		arg.ActionName,
+		arg.GracePeriodHours,
+		arg.AddedAt,
+		arg.ProjectionVersion,
+	)
+	return err
 }
