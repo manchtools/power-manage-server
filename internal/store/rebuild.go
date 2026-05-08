@@ -147,10 +147,15 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"action", "definition"},
 	},
 	{
+		// Ported to projectors.ApplyExecution via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by the migration is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'execution'` clause in the Phase 2 cleanup.
 		Name:        "executions",
 		Tables:      []string{"executions_projection"},
 		StreamTypes: []string{"execution"},
-		Function:    "project_execution_event",
 	},
 	{
 		// Ported to projectors.ApplyActionSet via projectors.WireAll
