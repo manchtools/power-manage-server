@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -50,7 +51,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 	// non-empty so a zero-value request can't bypass the projection's
 	// default-schedule fallback by emitting an empty `{}` blob.
 	if req.Msg.Schedule != nil {
-		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
 			data["schedule"] = schedule
 		}
 	}
@@ -191,7 +192,7 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 
 	data := map[string]any{}
 	if req.Msg.Schedule != nil {
-		if schedule := scheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
+		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
 			data["schedule"] = schedule
 		}
 	}
@@ -415,7 +416,7 @@ func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.Actio
 		Description: s.Description,
 		MemberCount: s.MemberCount,
 		CreatedBy:   s.CreatedBy,
-		Schedule:    scheduleFromJSON(s.Schedule),
+		Schedule:    actionparams.ScheduleFromJSON(s.Schedule),
 	}
 
 	if s.CreatedAt != nil {
