@@ -74,6 +74,85 @@ func (q *Queries) CountExecutionsForWarm(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const decrementActionSetMemberCountByAction = `-- name: DecrementActionSetMemberCountByAction :exec
+UPDATE action_sets_projection
+SET member_count = member_count - 1
+WHERE id IN (
+    SELECT set_id FROM action_set_members_projection WHERE action_id = $1
+)
+`
+
+// ActionDeleted handler — second half. Mirrors the PL/pgSQL subquery
+// `UPDATE action_sets_projection SET member_count = member_count - 1
+// WHERE id IN (SELECT set_id FROM action_set_members_projection WHERE
+// action_id = ...)`. Runs BEFORE DeleteActionSetMembersByAction —
+// once those member rows are gone the subquery returns empty and the
+// recount no-ops.
+func (q *Queries) DecrementActionSetMemberCountByAction(ctx context.Context, actionID string) error {
+	_, err := q.db.Exec(ctx, decrementActionSetMemberCountByAction, actionID)
+	return err
+}
+
+const decrementCompliancePolicyRuleCountByPolicies = `-- name: DecrementCompliancePolicyRuleCountByPolicies :exec
+UPDATE compliance_policies_projection
+SET rule_count = rule_count - 1
+WHERE id = ANY($1::TEXT[])
+`
+
+// ActionDeleted handler — fifth half. Decrements rule_count on every
+// policy whose rule set referenced the deleted action. Runs BEFORE
+// DeleteCompliancePolicyRulesByAction so the row count drops by
+// exactly one per matching rule (mirrors PL/pgSQL `UPDATE ... SET
+// rule_count = rule_count - 1 WHERE id = ANY(v_affected_policies)`).
+func (q *Queries) DecrementCompliancePolicyRuleCountByPolicies(ctx context.Context, dollar_1 []string) error {
+	_, err := q.db.Exec(ctx, decrementCompliancePolicyRuleCountByPolicies, dollar_1)
+	return err
+}
+
+const deleteActionSetMembersByAction = `-- name: DeleteActionSetMembersByAction :exec
+DELETE FROM action_set_members_projection WHERE action_id = $1
+`
+
+// ActionDeleted handler — third half. Removes every action_set member
+// row for the deleted action.
+func (q *Queries) DeleteActionSetMembersByAction(ctx context.Context, actionID string) error {
+	_, err := q.db.Exec(ctx, deleteActionSetMembersByAction, actionID)
+	return err
+}
+
+const deleteCompliancePolicyEvaluationsByAction = `-- name: DeleteCompliancePolicyEvaluationsByAction :exec
+DELETE FROM compliance_policy_evaluation_projection WHERE action_id = $1
+`
+
+// ActionDeleted handler — seventh half. Wipes every evaluation row
+// referencing the deleted action across every policy.
+func (q *Queries) DeleteCompliancePolicyEvaluationsByAction(ctx context.Context, actionID string) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyEvaluationsByAction, actionID)
+	return err
+}
+
+const deleteCompliancePolicyRulesByAction = `-- name: DeleteCompliancePolicyRulesByAction :exec
+DELETE FROM compliance_policy_rules_projection WHERE action_id = $1
+`
+
+// ActionDeleted handler — sixth half. Wipes every rule row referencing
+// the deleted action across every policy.
+func (q *Queries) DeleteCompliancePolicyRulesByAction(ctx context.Context, actionID string) error {
+	_, err := q.db.Exec(ctx, deleteCompliancePolicyRulesByAction, actionID)
+	return err
+}
+
+const deleteComplianceResultsByAction = `-- name: DeleteComplianceResultsByAction :exec
+DELETE FROM compliance_results_projection WHERE action_id = $1
+`
+
+// ActionDeleted handler — eighth half. Wipes every per-device
+// compliance result for the deleted action.
+func (q *Queries) DeleteComplianceResultsByAction(ctx context.Context, actionID string) error {
+	_, err := q.db.Exec(ctx, deleteComplianceResultsByAction, actionID)
+	return err
+}
+
 const getActionByID = `-- name: GetActionByID :one
 
 SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at, schedule FROM actions_projection
@@ -201,6 +280,120 @@ func (q *Queries) GetExecutionByID(ctx context.Context, id string) (ExecutionsPr
 	return i, err
 }
 
+const insertActionProjection = `-- name: InsertActionProjection :exec
+
+INSERT INTO actions_projection (
+    id, name, description, action_type, desired_state,
+    params, timeout_seconds, created_at, updated_at, created_by, projection_version,
+    is_system, schedule
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertActionProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+	IsSystem          bool       `json:"is_system"`
+	Schedule          []byte     `json:"schedule"`
+}
+
+// ============================================================================
+// Projector listener writes (manchtools/power-manage-server#136).
+// ============================================================================
+//
+// Mirrors the deleted PL/pgSQL project_action_event(). The projector
+// handled both action-stream events (ActionCreated, ActionRenamed,
+// ActionDescriptionUpdated, ActionParamsUpdated, ActionDeleted) AND
+// definition-stream events that synthesise actions_projection rows
+// (DefinitionCreated/Renamed/DescriptionUpdated/Deleted IFF the
+// payload carries `action_type` — compliance-policy bootstrap path).
+//
+// Tightening vs the PL/pgSQL projector: every UPDATE on
+// actions_projection carries an explicit `WHERE projection_version < $N`
+// guard and uses :execrows so the listener can short-circuit cascades
+// on stale-replay (asymmetric-guard discipline; see role_listener /
+// action_set_listener for the canonical shape).
+//
+// The ActionDeleted cascade is the most complex of any Phase 2 port:
+// the SoftDelete is :execrows and gates FOUR downstream writes
+// (action_set_member decrement, compliance_policy_rules delete with
+// per-policy rule_count decrement, compliance_policy_evaluation
+// delete, compliance_results delete) PLUS a per-affected-device
+// reevaluate loop. Skipping every step on n==0 is mandatory — see the
+// listener for the discipline narrative.
+// ActionCreated handler. ON CONFLICT DO NOTHING for replay safety.
+func (q *Queries) InsertActionProjection(ctx context.Context, arg InsertActionProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertActionProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.ActionType,
+		arg.DesiredState,
+		arg.Params,
+		arg.TimeoutSeconds,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+		arg.IsSystem,
+		arg.Schedule,
+	)
+	return err
+}
+
+const insertSynthesisedActionProjection = `-- name: InsertSynthesisedActionProjection :exec
+INSERT INTO actions_projection (
+    id, name, description, action_type, desired_state,
+    params, timeout_seconds, created_at, updated_at, created_by, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+ON CONFLICT (id) DO NOTHING
+`
+
+type InsertSynthesisedActionProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	CreatedBy         string     `json:"created_by"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// DefinitionCreated handler — actions_projection branch (compliance-
+// policy synthesised action). Mirrors the PL/pgSQL projector's
+// INSERT into actions_projection that omits is_system + schedule (those
+// columns are left at their column defaults: is_system=FALSE,
+// schedule=NULL). ON CONFLICT DO NOTHING for replay safety.
+func (q *Queries) InsertSynthesisedActionProjection(ctx context.Context, arg InsertSynthesisedActionProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertSynthesisedActionProjection,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.ActionType,
+		arg.DesiredState,
+		arg.Params,
+		arg.TimeoutSeconds,
+		arg.CreatedAt,
+		arg.UpdatedAt,
+		arg.CreatedBy,
+		arg.ProjectionVersion,
+	)
+	return err
+}
+
 const listActions = `-- name: ListActions :many
 SELECT id, name, description, action_type, params, timeout_seconds, created_at, created_by, is_deleted, projection_version, signature, params_canonical, desired_state, is_system, updated_at, schedule FROM actions_projection
 WHERE is_deleted = FALSE AND is_system = FALSE
@@ -254,6 +447,84 @@ func (q *Queries) ListActions(ctx context.Context, arg ListActionsParams) ([]Act
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCompliancePolicyIDsByAction = `-- name: ListCompliancePolicyIDsByAction :many
+SELECT DISTINCT policy_id
+FROM compliance_policy_rules_projection
+WHERE action_id = $1
+`
+
+// ActionDeleted handler — fourth half (preflight for the compliance
+// cascade). Mirrors the PL/pgSQL `SELECT ARRAY_AGG(DISTINCT policy_id)
+// ... INTO v_affected_policies FROM compliance_policy_rules_projection
+// WHERE action_id = ...`. Listener short-circuits the rest of the
+// cascade when this returns empty (matches the PL/pgSQL `IF
+// v_affected_policies IS NOT NULL THEN ... END IF;` guard).
+func (q *Queries) ListCompliancePolicyIDsByAction(ctx context.Context, actionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listCompliancePolicyIDsByAction, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var policy_id string
+		if err := rows.Scan(&policy_id); err != nil {
+			return nil, err
+		}
+		items = append(items, policy_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceIDsForCompliancePolicies = `-- name: ListDeviceIDsForCompliancePolicies :many
+SELECT DISTINCT a.target_id AS device_id
+FROM assignments_projection a
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = ANY($1::TEXT[])
+  AND a.target_type = 'device'
+  AND a.is_deleted = FALSE
+UNION
+SELECT DISTINCT dgm.device_id
+FROM assignments_projection a
+JOIN device_group_members_projection dgm ON dgm.group_id = a.target_id
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = ANY($1::TEXT[])
+  AND a.target_type = 'device_group'
+  AND a.is_deleted = FALSE
+`
+
+// ActionDeleted handler — final cascade preflight. Mirrors the
+// PL/pgSQL `FOR v_device_id IN SELECT DISTINCT a.target_id ... UNION
+// SELECT DISTINCT dgm.device_id ... LOOP PERFORM
+// evaluate_device_compliance_policies(v_device_id); END LOOP`. Returns
+// every device that was assigned at least one of the affected policies
+// either directly or through a device_group. The listener iterates
+// the returned ids and calls EvaluateDeviceCompliancePolicies (the
+// existing shim from assignments.sql) for each so device-level
+// compliance status reflects the action's deletion.
+func (q *Queries) ListDeviceIDsForCompliancePolicies(ctx context.Context, dollar_1 []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceIDsForCompliancePolicies, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -541,6 +812,172 @@ func (q *Queries) ListStaleExecutions(ctx context.Context) ([]ListStaleExecution
 		return nil, err
 	}
 	return items, nil
+}
+
+const renameActionProjection = `-- name: RenameActionProjection :execrows
+UPDATE actions_projection
+SET name              = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type RenameActionProjectionParams struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionRenamed handler — first half. Stale-replay guard via
+// projection_version. Returns rows-affected so the listener can
+// short-circuit the cross-stream rename cascade
+// (RenameComplianceRuleActionName) when the guard rejects a stale
+// replay.
+func (q *Queries) RenameActionProjection(ctx context.Context, arg RenameActionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, renameActionProjection,
+		arg.ID,
+		arg.Name,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const renameComplianceRuleActionName = `-- name: RenameComplianceRuleActionName :exec
+UPDATE compliance_policy_rules_projection
+SET action_name = $2
+WHERE action_id = $1
+`
+
+type RenameComplianceRuleActionNameParams struct {
+	ActionID   string `json:"action_id"`
+	ActionName string `json:"action_name"`
+}
+
+// ActionRenamed handler — second half. Cross-stream cascade into the
+// compliance_policy_rules_projection. Mirrors the PL/pgSQL projector's
+// `UPDATE compliance_policy_rules_projection SET action_name = ...
+// WHERE action_id = ...`. No projection_version guard here: the rules
+// table's projection_version is owned by the compliance_policy
+// projector, and this denormalised name column is updated unconditionally
+// by the action projector (legacy behaviour preserved). The cascade is
+// gated upstream by RenameActionProjection's :execrows short-circuit.
+func (q *Queries) RenameComplianceRuleActionName(ctx context.Context, arg RenameComplianceRuleActionNameParams) error {
+	_, err := q.db.Exec(ctx, renameComplianceRuleActionName, arg.ActionID, arg.ActionName)
+	return err
+}
+
+const softDeleteActionProjection = `-- name: SoftDeleteActionProjection :execrows
+UPDATE actions_projection
+SET is_deleted        = TRUE,
+    updated_at        = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteActionProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionDeleted handler — first half. Returns rows-affected so the
+// listener can SKIP the cascade (action_set_member decrement +
+// compliance_policy_rules delete + compliance_policy_evaluation delete
+// + compliance_results delete + per-device reevaluate loop) when the
+// projection_version guard rejects a stale replay; otherwise an old
+// ActionDeleted re-applied by the reconciler against a freshly-restored
+// action would silently nuke its compliance footprint and trigger a
+// needless device re-evaluation pass.
+func (q *Queries) SoftDeleteActionProjection(ctx context.Context, arg SoftDeleteActionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteActionProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateActionDescriptionProjection = `-- name: UpdateActionDescriptionProjection :execrows
+UPDATE actions_projection
+SET description       = $2,
+    updated_at        = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateActionDescriptionProjectionParams struct {
+	ID                string     `json:"id"`
+	Description       *string    `json:"description"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ActionDescriptionUpdated handler. NULL-able description column: the
+// PL/pgSQL projector wrote `event.data->>'description'` directly, so
+// absence becomes NULL and explicit empty string becomes "". The
+// listener decoder preserves that distinction via *string.
+func (q *Queries) UpdateActionDescriptionProjection(ctx context.Context, arg UpdateActionDescriptionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActionDescriptionProjection,
+		arg.ID,
+		arg.Description,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateActionParamsProjection = `-- name: UpdateActionParamsProjection :execrows
+UPDATE actions_projection
+SET params            = COALESCE($1::JSONB, params),
+    timeout_seconds   = COALESCE($2::INTEGER, timeout_seconds),
+    desired_state     = COALESCE($3::INTEGER, desired_state),
+    schedule          = COALESCE($4::JSONB, schedule),
+    updated_at        = $5,
+    projection_version = $6
+WHERE id = $7
+  AND projection_version < $6
+`
+
+type UpdateActionParamsProjectionParams struct {
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    *int32     `json:"timeout_seconds"`
+	DesiredState      *int32     `json:"desired_state"`
+	Schedule          []byte     `json:"schedule"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ID                string     `json:"id"`
+}
+
+// ActionParamsUpdated handler. Mirrors the PL/pgSQL projector's
+// `COALESCE(event.data->'params', params)` per-field preservation:
+// every NULL parameter preserves the existing column value via
+// COALESCE, every non-NULL parameter overwrites. The decoder surfaces
+// absence as NULL and presence as the new value, so this query is the
+// direct PL/pgSQL translation.
+func (q *Queries) UpdateActionParamsProjection(ctx context.Context, arg UpdateActionParamsProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateActionParamsProjection,
+		arg.Params,
+		arg.TimeoutSeconds,
+		arg.DesiredState,
+		arg.Schedule,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateActionSignature = `-- name: UpdateActionSignature :exec

@@ -96,12 +96,21 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "compliance_projector"),
 	))
+	st.RegisterEventListener(ActionListener(
+		st,
+		loggerFor(logger, "action_projector"),
+	))
 	// All 11 ports of tracker #107 are now wired here, plus the
 	// Phase 2 ports landed so far under tracker #136 (action_set,
 	// assignment, user_group, device_group, compliance_policy,
-	// compliance). Future Phase 2 ports of the remaining domain
-	// projectors (user, device, action, definition, execution) land
-	// here too.
+	// compliance, action+definition). One ActionListener handles
+	// both the action and definition stream types because
+	// DefinitionCreated dispatches across two projections —
+	// synthesise an actions_projection row (when payload carries
+	// `action_type`) OR insert a definitions_projection row
+	// (otherwise) — and splitting would race the two branches.
+	// Future Phase 2 ports of the remaining domain projectors (user,
+	// device, execution) land here too.
 
 	// Rebuild appliers (manchtools/power-manage-server#125). Only
 	// the ported projectors that own a rebuildTarget in
@@ -117,6 +126,14 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("assignments", ApplyAssignment)
 	st.RegisterRebuildApply("user_groups", ApplyUserGroup)
 	st.RegisterRebuildApply("device_groups", ApplyDeviceGroup)
+	// One Apply body, two rebuild targets: the "actions" target
+	// rebuilds actions_projection from BOTH action and definition
+	// streams (the synthesised-action path). The "definitions"
+	// target rebuilds definitions_projection from definition events
+	// only. The per-event StreamType gate inside ApplyAction makes
+	// the dual registration safe.
+	st.RegisterRebuildApply("actions", ApplyAction)
+	st.RegisterRebuildApply("definitions", ApplyDefinition)
 }
 
 // loggerFor returns a sub-logger tagged with the projector
