@@ -186,11 +186,20 @@ func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
 	// Snapshot under RLock so the dispatch loop runs without holding
 	// the mutex (listeners may take milliseconds; we don't want to
 	// block concurrent RegisterEventListener calls or other readers
-	// for that long). Slice header copy is safe because
-	// RegisterEventListener appends — never mutates an existing
-	// element. Logger is snapshotted under the same lock so a
-	// concurrent SetLogger doesn't race with the panic-recovery read
-	// inside the closure below.
+	// for that long).
+	//
+	// Slice-header copy of s.listeners is safe because
+	// RegisterEventListener uses append-only semantics: when it
+	// grows the backing array, Go allocates a NEW array and binds
+	// it to the new header, leaving the old array (which our
+	// snapshot still references) untouched. We never mutate an
+	// existing element in place. Concurrent writers can therefore
+	// continue to extend the canonical slice while this dispatch
+	// loop iterates the frozen snapshot. Audit F038.
+	//
+	// Logger is snapshotted under the same lock so a concurrent
+	// SetLogger doesn't race with the panic-recovery read inside
+	// the closure below.
 	s.listenersMu.RLock()
 	onEvent := s.OnEventAppended
 	listeners := s.listeners

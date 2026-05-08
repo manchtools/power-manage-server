@@ -2,7 +2,6 @@ package projectors_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -267,13 +266,4 @@ func TestLpsPasswordListener_IgnoresWrongStreamType(t *testing.T) {
 	current, err := st.Queries().GetCurrentLpsPasswords(ctx, deviceID)
 	require.NoError(t, err)
 	assert.Empty(t, current, "wrong-stream-type event must NOT create an lps_passwords_projection row")
-}
-
-// jsonOrFail marshals the map for the pure-function tests. Inline
-// helper to avoid bringing in a json import at every callsite.
-func jsonOrFail(t *testing.T, v map[string]any) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	require.NoError(t, err)
-	return b
 }

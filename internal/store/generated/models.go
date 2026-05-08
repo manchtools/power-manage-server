@@ -304,15 +304,16 @@ type LogQueryResult struct {
 }
 
 type LpsPasswordsProjection struct {
-	ID             uuid.UUID `json:"id"`
-	DeviceID       string    `json:"device_id"`
-	ActionID       string    `json:"action_id"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	RotatedAt      time.Time `json:"rotated_at"`
-	RotationReason string    `json:"rotation_reason"`
-	IsCurrent      bool      `json:"is_current"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID                uuid.UUID `json:"id"`
+	DeviceID          string    `json:"device_id"`
+	ActionID          string    `json:"action_id"`
+	Username          string    `json:"username"`
+	Password          string    `json:"password"`
+	RotatedAt         time.Time `json:"rotated_at"`
+	RotationReason    string    `json:"rotation_reason"`
+	IsCurrent         bool      `json:"is_current"`
+	CreatedAt         time.Time `json:"created_at"`
+	ProjectionVersion int64     `json:"projection_version"`
 }
 
 type LuksKeysProjection struct {

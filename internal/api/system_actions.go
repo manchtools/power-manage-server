@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -35,12 +36,12 @@ import (
 // land on every device for permission holders" property.
 type SystemActionManager struct {
 	store  *store.Store
-	signer ActionSigner
+	signer ca.ActionSigner
 	logger *slog.Logger
 }
 
 // NewSystemActionManager creates a new system action manager.
-func NewSystemActionManager(st *store.Store, signer ActionSigner, logger *slog.Logger) *SystemActionManager {
+func NewSystemActionManager(st *store.Store, signer ca.ActionSigner, logger *slog.Logger) *SystemActionManager {
 	return &SystemActionManager{
 		store:  st,
 		signer: signer,
