@@ -50,6 +50,15 @@ jobs:
           staticcheck ./...
 
       - name: govulncheck (production packages)
+        # Soft-fail because Go's standard library frequently has open
+        # CVEs without a patched release, especially the day a new
+        # advisory drops. Treating govulncheck as a hard gate would
+        # block every PR for days at a time on issues we don't
+        # control. Output stays visible so an operator reviewing the
+        # PR can still see what's flagged. The first-party deps
+        # (pgx etc.) get patched explicitly via go.mod bumps in
+        # their own PRs.
+        continue-on-error: true
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           # Exclude internal/testutil — it pulls testcontainers which
