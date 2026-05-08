@@ -189,6 +189,25 @@ func applyActionSetMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 		}
 		return err
 	}
+	// Atomic guard FIRST: bumps projection_version only when the
+	// parent set exists, is alive, and the event is newer. n==0
+	// means skip the membership mutation entirely. Doing the version
+	// check AFTER the INSERT (the prior shape) let stale events
+	// recreate deleted membership rows even when the recount guard
+	// rejected the bump (CR catch on user_group port PR #174;
+	// applied here as a follow-up sibling-sweep).
+	updatedAt := e.OccurredAt
+	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
+		ID:                payload.SetID,
+		UpdatedAt:         &updatedAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
 	addedAt := e.OccurredAt
 	if err := q.InsertActionSetMember(ctx, db.InsertActionSetMemberParams{
 		SetID:             payload.SetID,
@@ -199,15 +218,7 @@ func applyActionSetMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 	}); err != nil {
 		return err
 	}
-	updatedAt := e.OccurredAt
-	if _, err := q.RecountActionSetMembers(ctx, db.RecountActionSetMembersParams{
-		SetID:             payload.SetID,
-		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		return err
-	}
-	return nil
+	return q.RecountActionSetMembers(ctx, payload.SetID)
 }
 
 func applyActionSetMemberRemoved(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -218,21 +229,25 @@ func applyActionSetMemberRemoved(ctx context.Context, q *store.Queries, e store.
 		}
 		return err
 	}
+	updatedAt := e.OccurredAt
+	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
+		ID:                payload.SetID,
+		UpdatedAt:         &updatedAt,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
 	if err := q.DeleteActionSetMember(ctx, db.DeleteActionSetMemberParams{
 		SetID:    payload.SetID,
 		ActionID: payload.ActionID,
 	}); err != nil {
 		return err
 	}
-	updatedAt := e.OccurredAt
-	if _, err := q.RecountActionSetMembers(ctx, db.RecountActionSetMembersParams{
-		SetID:             payload.SetID,
-		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
-		return err
-	}
-	return nil
+	return q.RecountActionSetMembers(ctx, payload.SetID)
 }
 
 func applyActionSetMemberReordered(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -243,15 +258,12 @@ func applyActionSetMemberReordered(ctx context.Context, q *store.Queries, e stor
 		}
 		return err
 	}
-	// Per-member projection_version guard: a stale reorder must not
-	// roll a fresher position back. n == 0 short-circuits the parent
-	// updated_at bump too — there's no semantic change to surface, and
-	// the bump would otherwise advance the parent's projection_version
-	// to a value the cascade wasn't allowed to write.
-	n, err := q.UpdateActionSetMemberSortOrder(ctx, db.UpdateActionSetMemberSortOrderParams{
-		SetID:             payload.SetID,
-		ActionID:          payload.ActionID,
-		SortOrder:         payload.SortOrder,
+	// Claim the parent first so a stale reorder can't bump the
+	// per-member sort_order against a fresher parent projection_version.
+	updatedAt := e.OccurredAt
+	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
+		ID:                payload.SetID,
+		UpdatedAt:         &updatedAt,
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 	if err != nil {
@@ -260,10 +272,12 @@ func applyActionSetMemberReordered(ctx context.Context, q *store.Queries, e stor
 	if n == 0 {
 		return nil
 	}
-	updatedAt := e.OccurredAt
-	if _, err := q.TouchActionSetUpdatedAt(ctx, db.TouchActionSetUpdatedAtParams{
-		ID:                payload.SetID,
-		UpdatedAt:         &updatedAt,
+	// Per-member projection_version guard still runs to prevent
+	// reorders applied out of order from clobbering each other.
+	if _, err := q.UpdateActionSetMemberSortOrder(ctx, db.UpdateActionSetMemberSortOrderParams{
+		SetID:             payload.SetID,
+		ActionID:          payload.ActionID,
+		SortOrder:         payload.SortOrder,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
 		return err
