@@ -120,11 +120,24 @@ func applyComplianceResultRemoved(ctx context.Context, q *store.Queries, e store
 		}
 		return err
 	}
-	if err := q.DeleteComplianceResultProjection(ctx, db.DeleteComplianceResultProjectionParams{
-		DeviceID: payload.DeviceID,
-		ActionID: payload.ActionID,
-	}); err != nil {
+	// Stale-replay guard: the DELETE only removes a row whose
+	// projection_version is at-or-older than this event's
+	// SequenceNum. n == 0 means either the row is already gone
+	// (replayed Removed against an unrelated state) OR a newer
+	// Updated has stamped a higher projection_version on the
+	// (device, action) pair. In both cases, skipping the
+	// reevaluate cascade is correct: nothing changed, so device
+	// compliance doesn't need recomputing (CR catch on PR #179).
+	n, err := q.DeleteComplianceResultProjection(ctx, db.DeleteComplianceResultProjectionParams{
+		DeviceID:          payload.DeviceID,
+		ActionID:          payload.ActionID,
+		ProjectionVersion: deref(e.SequenceNum),
+	})
+	if err != nil {
 		return err
+	}
+	if n == 0 {
+		return nil
 	}
 	return q.EvaluateDeviceCompliancePolicies(ctx, payload.DeviceID)
 }

@@ -357,6 +357,76 @@ func TestComplianceListener_StaleUpdateRejected(t *testing.T) {
 		"stale ComplianceResultUpdated must NOT advance projection_version")
 }
 
+// TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow locks the
+// CR catch on PR #179: a stale ComplianceResultRemoved replayed AFTER
+// a newer ComplianceResultUpdated for the same (device, action) pair
+// must NOT delete the live row. Without the projection_version guard
+// on the DELETE, the older Removed would silently wipe the revived
+// result and the follow-up reevaluate would compound the drift.
+func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
+	st := setupComplianceResultStore(t)
+	ctx := context.Background()
+	deviceID := "dev-" + uuid.NewString()
+	actionID := "act-" + uuid.NewString()
+
+	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
+		"device_id":   deviceID,
+		"action_id":   actionID,
+		"action_name": "v1",
+		"compliant":   false,
+	})
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "compliance",
+		StreamID:   deviceID + "_" + actionID,
+		EventType:  "ComplianceResultRemoved",
+		Data:       map[string]any{"device_id": deviceID, "action_id": actionID},
+		ActorType:  "device", ActorID: deviceID,
+	}))
+	// Capture this Removed's sequence so we can replay it later.
+	var staleRemovedSeq int64
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		`SELECT sequence_num FROM events
+		 WHERE stream_type = 'compliance' AND stream_id = $1
+		   AND event_type = 'ComplianceResultRemoved'
+		 ORDER BY sequence_num DESC LIMIT 1`,
+		deviceID+"_"+actionID,
+	).Scan(&staleRemovedSeq))
+
+	// Newer Updated re-creates the row at a higher projection_version.
+	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
+		"device_id":   deviceID,
+		"action_id":   actionID,
+		"action_name": "v2-revived",
+		"compliant":   true,
+	})
+	revived, err := st.Queries().GetDeviceComplianceResults(ctx, deviceID)
+	require.NoError(t, err)
+	require.Len(t, revived, 1)
+	revivedVersion := revived[0].ProjectionVersion
+
+	// Drive the listener directly with the OLDER Removed sequence.
+	listener := projectors.ComplianceListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &staleRemovedSeq,
+		StreamType:  "compliance",
+		StreamID:    deviceID + "_" + actionID,
+		EventType:   "ComplianceResultRemoved",
+		Data:        jsonOrFail(t, map[string]any{"device_id": deviceID, "action_id": actionID}),
+		ActorType:   "device",
+		ActorID:     deviceID,
+		OccurredAt:  revived[0].CheckedAt,
+	})
+
+	survivors, err := st.Queries().GetDeviceComplianceResults(ctx, deviceID)
+	require.NoError(t, err)
+	require.Len(t, survivors, 1, "stale ComplianceResultRemoved must NOT wipe the revived row")
+	assert.Equal(t, "v2-revived", survivors[0].ActionName,
+		"the revived row's action_name must survive the stale Removed replay")
+	assert.Equal(t, revivedVersion, survivors[0].ProjectionVersion,
+		"the revived row's projection_version must be unchanged")
+}
+
 // TestComplianceListener_IgnoresWrongStreamType — defensive: an event
 // with the wrong stream_type must NOT touch the projection even when
 // the event_type matches.

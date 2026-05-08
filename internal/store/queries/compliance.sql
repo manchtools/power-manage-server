@@ -72,14 +72,18 @@ ON CONFLICT (device_id, action_id) DO UPDATE SET
     projection_version = EXCLUDED.projection_version
 WHERE compliance_results_projection.projection_version < EXCLUDED.projection_version;
 
--- name: DeleteComplianceResultProjection :exec
--- ComplianceResultRemoved handler. Plain DELETE scoped to the
--- composite PK — silently no-op on a miss matches the PL/pgSQL
--- projector's behaviour. No projection_version guard: the PL/pgSQL
--- projector unconditionally DELETEd the row on every Removed event,
--- and a stale Removed re-applied later is safe because the row is
--- already gone (the listener still calls the reevaluate shim, which
--- is idempotent on the device-policy state).
+-- name: DeleteComplianceResultProjection :execrows
+-- ComplianceResultRemoved handler. Stale-replay guard via
+-- projection_version: an older Removed replayed AFTER a newer
+-- Updated for the same (device_id, action_id) must NOT wipe the
+-- live row. Without this guard the follow-up reevaluate cascade
+-- would also recompute device compliance against the missing
+-- result, compounding the drift (CR catch on PR #179).
+--
+-- Returns rows-affected so the listener can decide whether to
+-- trigger the cascade — a stale Removed (n == 0 because the row's
+-- projection_version is already newer) skips the reevaluate.
 DELETE FROM compliance_results_projection
 WHERE device_id = $1
-  AND action_id = $2;
+  AND action_id = $2
+  AND projection_version <= $3;

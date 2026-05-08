@@ -10,27 +10,35 @@ import (
 	"time"
 )
 
-const deleteComplianceResultProjection = `-- name: DeleteComplianceResultProjection :exec
+const deleteComplianceResultProjection = `-- name: DeleteComplianceResultProjection :execrows
 DELETE FROM compliance_results_projection
 WHERE device_id = $1
   AND action_id = $2
+  AND projection_version <= $3
 `
 
 type DeleteComplianceResultProjectionParams struct {
-	DeviceID string `json:"device_id"`
-	ActionID string `json:"action_id"`
+	DeviceID          string `json:"device_id"`
+	ActionID          string `json:"action_id"`
+	ProjectionVersion int64  `json:"projection_version"`
 }
 
-// ComplianceResultRemoved handler. Plain DELETE scoped to the
-// composite PK — silently no-op on a miss matches the PL/pgSQL
-// projector's behaviour. No projection_version guard: the PL/pgSQL
-// projector unconditionally DELETEd the row on every Removed event,
-// and a stale Removed re-applied later is safe because the row is
-// already gone (the listener still calls the reevaluate shim, which
-// is idempotent on the device-policy state).
-func (q *Queries) DeleteComplianceResultProjection(ctx context.Context, arg DeleteComplianceResultProjectionParams) error {
-	_, err := q.db.Exec(ctx, deleteComplianceResultProjection, arg.DeviceID, arg.ActionID)
-	return err
+// ComplianceResultRemoved handler. Stale-replay guard via
+// projection_version: an older Removed replayed AFTER a newer
+// Updated for the same (device_id, action_id) must NOT wipe the
+// live row. Without this guard the follow-up reevaluate cascade
+// would also recompute device compliance against the missing
+// result, compounding the drift (CR catch on PR #179).
+//
+// Returns rows-affected so the listener can decide whether to
+// trigger the cascade — a stale Removed (n == 0 because the row's
+// projection_version is already newer) skips the reevaluate.
+func (q *Queries) DeleteComplianceResultProjection(ctx context.Context, arg DeleteComplianceResultProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteComplianceResultProjection, arg.DeviceID, arg.ActionID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getDeviceComplianceResults = `-- name: GetDeviceComplianceResults :many
