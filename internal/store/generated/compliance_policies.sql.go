@@ -525,7 +525,7 @@ INSERT INTO compliance_policy_rules_projection (
     added_at, projection_version
 ) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (policy_id, action_id) DO UPDATE SET
-    action_name        = EXCLUDED.action_name,
+    action_name        = COALESCE(NULLIF(EXCLUDED.action_name, ''), compliance_policy_rules_projection.action_name),
     grace_period_hours = EXCLUDED.grace_period_hours,
     projection_version = EXCLUDED.projection_version
 `
@@ -541,9 +541,18 @@ type UpsertCompliancePolicyRuleParams struct {
 
 // CompliancePolicyRuleAdded handler — second half. Mirrors the PL/pgSQL
 // projector's `ON CONFLICT (policy_id, action_id) DO UPDATE SET
-// action_name = ..., grace_period_hours = ..., projection_version = ...`
-// so re-emitting RuleAdded for the same (policy, action) pair upgrades
-// the row in place rather than failing on the composite-PK conflict.
+// action_name = COALESCE(payload->>'action_name', existing.action_name),
+// grace_period_hours = ..., projection_version = ...` so re-emitting
+// RuleAdded for the same (policy, action) pair upgrades the row in
+// place rather than failing on the composite-PK conflict.
+//
+// action_name preserves the existing value when EXCLUDED is empty:
+// the decoder collapses a missing/null action_name to "" (the column
+// is NOT NULL), so a duplicate RuleAdded that omits action_name
+// arrives here as EXCLUDED.action_name = ”. Without the
+// NULLIF/COALESCE pair below, the UPSERT would erase a previously-
+// set name. CR caught this on PR #178.
+//
 // The Claim guard upstream gates this call on parent-version freshness.
 func (q *Queries) UpsertCompliancePolicyRule(ctx context.Context, arg UpsertCompliancePolicyRuleParams) error {
 	_, err := q.db.Exec(ctx, upsertCompliancePolicyRule,

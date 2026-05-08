@@ -440,6 +440,43 @@ func TestCompliancePolicyListener_RuleAddedUpsertReplacesFields(t *testing.T) {
 	assert.Equal(t, int32(1), got.RuleCount, "rule_count counts distinct rules, not Added events")
 }
 
+// TestCompliancePolicyListener_RuleAddedPreservesActionNameOnEmptyReplay
+// locks the CR catch on PR #178: a duplicate CompliancePolicyRuleAdded
+// that omits action_name (decoder collapses missing → "") MUST NOT
+// erase a previously-set action_name. The PL/pgSQL projector did
+// `COALESCE(payload->>'action_name', existing.action_name)`; the Go
+// port preserves that semantic via NULLIF + COALESCE in the UPSERT.
+func TestCompliancePolicyListener_RuleAddedPreservesActionNameOnEmptyReplay(t *testing.T) {
+	st := setupComplianceTestStore(t)
+	ctx := context.Background()
+	policyID := createTestCompliancePolicy(t, st, "u", "preserve")
+	actionID := "act-" + uuid.NewString()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
+		Data: map[string]any{
+			"action_id": actionID, "action_name": "named-rule", "grace_period_hours": 6,
+		},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
+		Data: map[string]any{
+			"action_id": actionID, "grace_period_hours": 24,
+			// action_name intentionally omitted — should preserve "named-rule"
+		},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	rules, err := st.Queries().ListCompliancePolicyRules(ctx, policyID)
+	require.NoError(t, err)
+	require.Len(t, rules, 1)
+	assert.Equal(t, "named-rule", rules[0].ActionName,
+		"duplicate RuleAdded that omits action_name must preserve the existing name")
+	assert.Equal(t, int32(24), rules[0].GracePeriodHours,
+		"grace_period_hours always overwrites — the COALESCE is action_name-only")
+}
+
 // TestCompliancePolicyListener_DeleteCascadesRulesAndEvaluations
 // confirms CompliancePolicyDeleted soft-deletes the policy, wipes
 // every rule row, AND wipes every evaluation row pointing at it.
