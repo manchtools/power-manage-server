@@ -28,7 +28,7 @@ func setupComplianceTestStore(t *testing.T) *store.Store {
 // TestCompliancePolicyCreatedFromEvent_Pure pins the decoder defaults
 // that match the deleted PL/pgSQL projector: name is required (NOT NULL
 // column), missing description collapses to "" (matches PL/pgSQL
-// `COALESCE(payload, '')`).
+// `COALESCE(payload, "")`).
 func TestCompliancePolicyCreatedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with all fields", func(t *testing.T) {
 		got, err := projectors.CompliancePolicyCreatedFromEvent(store.PersistedEvent{
@@ -118,7 +118,7 @@ func TestCompliancePolicyRenamedFromEvent_Pure(t *testing.T) {
 
 // TestCompliancePolicyDescriptionUpdatedFromEvent_Pure — missing
 // description collapses to "" (matches PL/pgSQL
-// `COALESCE(event.data->>'description', '')`).
+// `COALESCE(event.data->>'description', "")`).
 func TestCompliancePolicyDescriptionUpdatedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		got, err := projectors.CompliancePolicyDescriptionUpdatedFromEvent(store.PersistedEvent{

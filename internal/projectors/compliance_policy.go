@@ -16,7 +16,7 @@ import (
 //     surface as a constraint violation, so we surface that as a
 //     decoder-level validation error one layer earlier).
 //   - description (defaults to "" to match the PL/pgSQL
-//     `COALESCE(event.data->>'description', '')` fallback).
+//     `COALESCE(event.data->>'description', "")` fallback).
 type CompliancePolicyCreatedPayload struct {
 	ID          string
 	Name        string
@@ -89,7 +89,7 @@ func CompliancePolicyRenamedFromEvent(e store.PersistedEvent) (CompliancePolicyR
 }
 
 // CompliancePolicyDescriptionUpdatedPayload mirrors the PL/pgSQL
-// projector's `COALESCE(event.data->>'description', '')` fallback —
+// projector's `COALESCE(event.data->>'description', "")` fallback —
 // missing or null description collapses to the empty string so the
 // underlying NOT NULL column gets a valid value.
 type CompliancePolicyDescriptionUpdatedPayload struct {
@@ -126,7 +126,7 @@ func CompliancePolicyDescriptionUpdatedFromEvent(e store.PersistedEvent) (Compli
 //
 //   - action_id (required, composite-PK column).
 //   - action_name (defaults to "" — matches PL/pgSQL
-//     `COALESCE(event.data->>'action_name', '')` for the NOT NULL column).
+//     `COALESCE(event.data->>'action_name', "")` for the NOT NULL column).
 //   - grace_period_hours (defaults to 0 — matches PL/pgSQL
 //     `COALESCE((event.data->>'grace_period_hours')::INTEGER, 0)`).
 //
