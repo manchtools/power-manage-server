@@ -138,3 +138,12 @@ SELECT user_id FROM device_assigned_users_projection WHERE device_id = $1;
 
 -- name: ListDeviceAssignedGroupIDs :many
 SELECT group_id FROM device_assigned_groups_projection WHERE device_id = $1;
+
+-- name: GetDeviceHostnamesByIDs :many
+-- Bulk-load hostname for a set of device IDs. Used by handler
+-- response loops (e.g. GetDeviceLpsPasswords / GetDeviceLuksKeys)
+-- that previously made one GetDeviceByID round-trip per row —
+-- audit F008 flagged the resulting N+1 (50 LUKS keys × 2 lookups
+-- ≈ 100 sequential round-trips per RPC).
+SELECT id, hostname FROM devices_projection
+WHERE id = ANY($1::TEXT[]) AND is_deleted = FALSE;

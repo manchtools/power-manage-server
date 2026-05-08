@@ -127,6 +127,41 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 	return i, err
 }
 
+const getDeviceHostnamesByIDs = `-- name: GetDeviceHostnamesByIDs :many
+SELECT id, hostname FROM devices_projection
+WHERE id = ANY($1::TEXT[]) AND is_deleted = FALSE
+`
+
+type GetDeviceHostnamesByIDsRow struct {
+	ID       string `json:"id"`
+	Hostname string `json:"hostname"`
+}
+
+// Bulk-load hostname for a set of device IDs. Used by handler
+// response loops (e.g. GetDeviceLpsPasswords / GetDeviceLuksKeys)
+// that previously made one GetDeviceByID round-trip per row —
+// audit F008 flagged the resulting N+1 (50 LUKS keys × 2 lookups
+// ≈ 100 sequential round-trips per RPC).
+func (q *Queries) GetDeviceHostnamesByIDs(ctx context.Context, dollar_1 []string) ([]GetDeviceHostnamesByIDsRow, error) {
+	rows, err := q.db.Query(ctx, getDeviceHostnamesByIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetDeviceHostnamesByIDsRow{}
+	for rows.Next() {
+		var i GetDeviceHostnamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Hostname); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getDeviceSyncInterval = `-- name: GetDeviceSyncInterval :one
 WITH device_override AS (
     SELECT CASE WHEN sync_interval_minutes > 0 THEN sync_interval_minutes END AS interval
