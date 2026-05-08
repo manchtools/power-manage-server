@@ -600,6 +600,66 @@ func TestActionSetListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 		"stale ActionSetDeleted must NOT decrement live definitions' member_count")
 }
 
+// TestActionSetListener_StaleMemberAddedDoesNotRecreateMembership locks
+// the Claim-first guard added as a sibling-sweep follow-up to the
+// CR catch on the user_group port (PR #174). A stale
+// ActionSetMemberAdded replayed after a Removed must NOT reinsert
+// the membership row, even though InsertActionSetMember is
+// idempotent (ON CONFLICT DO NOTHING): the version guard runs
+// BEFORE the INSERT.
+func TestActionSetListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	setID := testutil.NewID()
+	actionID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetCreated",
+		Data:      map[string]any{"name": "stale-add-set"},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data:      map[string]any{"set_id": setID, "action_id": actionID, "sort_order": 0},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberRemoved",
+		Data:      map[string]any{"set_id": setID, "action_id": actionID},
+		ActorType: "user", ActorID: "u",
+	}))
+	live, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), live.MemberCount)
+
+	older := live.ProjectionVersion - 5
+	staleAt := *live.UpdatedAt
+	listener := projectors.ActionSetListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID:          uuid.New(),
+		SequenceNum: &older,
+		StreamType:  "action_set",
+		StreamID:    setID,
+		EventType:   "ActionSetMemberAdded",
+		Data:        jsonOrFail(t, map[string]any{"set_id": setID, "action_id": actionID, "sort_order": 0}),
+		ActorType:   "user",
+		ActorID:     "u",
+		OccurredAt:  staleAt,
+	})
+
+	count := 0
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		"SELECT count(*) FROM action_set_members_projection WHERE set_id = $1 AND action_id = $2",
+		setID, actionID,
+	).Scan(&count))
+	assert.Equal(t, 0, count, "stale ActionSetMemberAdded must NOT recreate the membership row")
+
+	after, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), after.MemberCount)
+	assert.Equal(t, live.ProjectionVersion, after.ProjectionVersion)
+}
+
 // TestActionSetListener_IgnoresWrongStreamType — defensive.
 func TestActionSetListener_IgnoresWrongStreamType(t *testing.T) {
 	st := testutil.SetupPostgres(t)

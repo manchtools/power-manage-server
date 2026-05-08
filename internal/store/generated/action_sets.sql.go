@@ -10,6 +10,42 @@ import (
 	"time"
 )
 
+const claimActionSetForMembership = `-- name: ClaimActionSetForMembership :execrows
+UPDATE action_sets_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+`
+
+type ClaimActionSetForMembershipParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// Atomic guard for the three member-mutation events
+// (ActionSetMemberAdded, ActionSetMemberRemoved, ActionSetMemberReordered).
+// Bumps updated_at + projection_version only when the parent set
+// exists, is not soft-deleted, and the event is newer than the
+// current projection_version.
+//
+// Returns n=1 when the listener may proceed with the membership
+// mutation, n=0 when the event must be skipped. Doing the version
+// check BEFORE any child-row mutation prevents the stale-replay
+// holes CR caught on the user_group port (PR #174): without this
+// guard a stale ActionSetMemberAdded after a Removed would recreate
+// the deleted membership row, and a stale ActionSetMemberRemoved
+// would delete a live one.
+func (q *Queries) ClaimActionSetForMembership(ctx context.Context, arg ClaimActionSetForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimActionSetForMembership, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countActionSets = `-- name: CountActionSets :one
 SELECT COUNT(*) FROM action_sets_projection
 WHERE is_deleted = FALSE
@@ -60,8 +96,8 @@ type DeleteActionSetMemberParams struct {
 	ActionID string `json:"action_id"`
 }
 
-// ActionSetMemberRemoved handler — first half. Plain DELETE — silently
-// no-op on a miss matches the PL/pgSQL projector's behaviour.
+// ActionSetMemberRemoved handler — second half. Plain DELETE —
+// silently no-op on a miss matches the PL/pgSQL projector's behaviour.
 func (q *Queries) DeleteActionSetMember(ctx context.Context, arg DeleteActionSetMemberParams) error {
 	_, err := q.db.Exec(ctx, deleteActionSetMember, arg.SetID, arg.ActionID)
 	return err
@@ -180,7 +216,7 @@ type InsertActionSetMemberParams struct {
 	ProjectionVersion int64      `json:"projection_version"`
 }
 
-// ActionSetMemberAdded handler — first half. ON CONFLICT DO NOTHING
+// ActionSetMemberAdded handler — second half. ON CONFLICT DO NOTHING
 // preserves the PL/pgSQL projector's idempotency under reconciler
 // replays. The composite PK (set_id, action_id) makes this safe.
 func (q *Queries) InsertActionSetMember(ctx context.Context, arg InsertActionSetMemberParams) error {
@@ -378,31 +414,21 @@ func (q *Queries) ListActionsInSet(ctx context.Context, setID string) ([]Actions
 	return items, nil
 }
 
-const recountActionSetMembers = `-- name: RecountActionSetMembers :execrows
+const recountActionSetMembers = `-- name: RecountActionSetMembers :exec
 UPDATE action_sets_projection
-SET member_count      = (SELECT COUNT(*) FROM action_set_members_projection WHERE set_id = $1),
-    updated_at        = $2,
-    projection_version = $3
+SET member_count = (SELECT COUNT(*) FROM action_set_members_projection WHERE set_id = $1)
 WHERE id = $1
-  AND projection_version < $3
 `
 
-type RecountActionSetMembersParams struct {
-	SetID             string     `json:"set_id"`
-	UpdatedAt         *time.Time `json:"updated_at"`
-	ProjectionVersion int64      `json:"projection_version"`
-}
-
-// ActionSetMemberAdded / ActionSetMemberRemoved handler — second half.
-// Recomputes member_count from the live row count, mirroring the
-// PL/pgSQL `(SELECT COUNT(*) ...)` subquery. Guarded so a stale replay
-// doesn't roll member_count backwards or stamp an old version.
-func (q *Queries) RecountActionSetMembers(ctx context.Context, arg RecountActionSetMembersParams) (int64, error) {
-	result, err := q.db.Exec(ctx, recountActionSetMembers, arg.SetID, arg.UpdatedAt, arg.ProjectionVersion)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// ActionSetMemberAdded / ActionSetMemberRemoved handler — third half.
+// Recomputes member_count from the live row count after the listener
+// has applied a membership mutation. Run in the same transaction as
+// ClaimActionSetForMembership + the INSERT/DELETE so the parent row
+// is never observed with a stale count. No projection_version guard
+// here: the Claim above already stamped the version.
+func (q *Queries) RecountActionSetMembers(ctx context.Context, setID string) error {
+	_, err := q.db.Exec(ctx, recountActionSetMembers, setID)
+	return err
 }
 
 const renameActionSetProjection = `-- name: RenameActionSetProjection :execrows
@@ -464,31 +490,6 @@ func (q *Queries) SoftDeleteActionSetProjection(ctx context.Context, arg SoftDel
 	return result.RowsAffected(), nil
 }
 
-const touchActionSetUpdatedAt = `-- name: TouchActionSetUpdatedAt :execrows
-UPDATE action_sets_projection
-SET updated_at        = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3
-`
-
-type TouchActionSetUpdatedAtParams struct {
-	ID                string     `json:"id"`
-	UpdatedAt         *time.Time `json:"updated_at"`
-	ProjectionVersion int64      `json:"projection_version"`
-}
-
-// ActionSetMemberReordered handler — second half. Bumps updated_at +
-// projection_version on the parent set so listing/cache invalidation
-// sees the change. Guarded for stale-replay safety.
-func (q *Queries) TouchActionSetUpdatedAt(ctx context.Context, arg TouchActionSetUpdatedAtParams) (int64, error) {
-	result, err := q.db.Exec(ctx, touchActionSetUpdatedAt, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const updateActionSetDescriptionProjection = `-- name: UpdateActionSetDescriptionProjection :execrows
 UPDATE action_sets_projection
 SET description       = $2,
@@ -537,7 +538,7 @@ type UpdateActionSetMemberSortOrderParams struct {
 	ProjectionVersion int64  `json:"projection_version"`
 }
 
-// ActionSetMemberReordered handler — first half. Per-member
+// ActionSetMemberReordered handler — second half. Per-member
 // projection_version guards the row so a stale reorder cannot clobber
 // a fresher position.
 func (q *Queries) UpdateActionSetMemberSortOrder(ctx context.Context, arg UpdateActionSetMemberSortOrderParams) (int64, error) {
