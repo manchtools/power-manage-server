@@ -558,7 +558,7 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 			Username:  r.Username,
 			Password:  r.Password,
 			RotatedAt: r.RotatedAt,
-			Reason:    r.Reason,
+			Reason:    rotationReasonFromAgentString(r.Reason),
 		}
 	}
 	if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
@@ -776,4 +776,26 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 		"sync_interval_minutes", resp.SyncIntervalMinutes)
 
 	return connect.NewResponse(resp), nil
+}
+
+// rotationReasonFromAgentString maps the lowercase string the agent
+// puts into the lps.rotations metadata JSON ("initial" / "scheduled")
+// to the wire enum the gateway forwards to control. Unknown values
+// (including the empty string an older agent might emit) collapse to
+// UNSPECIFIED — the projector defaults UNSPECIFIED-equivalent rows to
+// "scheduled" downstream, matching the historical PL/pgSQL COALESCE
+// behaviour. Inverse of api.rotationReasonToString in
+// server/internal/api/internal_handler.go; kept here in handler so
+// the gateway package does not gain an api dependency.
+func rotationReasonFromAgentString(s string) pm.RotationReason {
+	switch s {
+	case "initial":
+		return pm.RotationReason_ROTATION_REASON_INITIAL
+	case "scheduled":
+		return pm.RotationReason_ROTATION_REASON_SCHEDULED
+	case "auth_grace":
+		return pm.RotationReason_ROTATION_REASON_AUTH_GRACE
+	default:
+		return pm.RotationReason_ROTATION_REASON_UNSPECIFIED
+	}
 }

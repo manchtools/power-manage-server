@@ -517,14 +517,23 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, op := range patch.Operations {
-		switch strings.ToLower(op.Op) {
-		case "add":
+		// Pre-validate per RFC 7644 §3.5.2 — `op` must be one of
+		// add | remove | replace. Reject up front so unknown verbs
+		// never silently fall through to a per-op switch default
+		// elsewhere in the codebase.
+		if !op.Op.IsValid() {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported patch op: %s", op.Op))
+			return
+		}
+		switch op.Op.Normalize() {
+		case SCIMPatchOpAdd:
 			h.handleGroupPatchAdd(ctx, provider, groupID, op)
-		case "remove":
+		case SCIMPatchOpRemove:
 			h.handleGroupPatchRemove(ctx, provider, groupID, op)
-		case "replace":
+		case SCIMPatchOpReplace:
 			h.handleGroupPatchReplace(ctx, provider, groupID, mapping, op)
 		default:
+			// Unreachable: IsValid above guards this switch.
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported patch op: %s", op.Op))
 			return
 		}

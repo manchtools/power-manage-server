@@ -189,7 +189,7 @@ func TestProxyStoreLuksKey(t *testing.T) {
 		ActionId:       testutil.NewID(),
 		DevicePath:     "/dev/sda1",
 		Passphrase:     "super-secret-key",
-		RotationReason: "initial",
+		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL,
 	}))
 	require.NoError(t, err)
 	assert.True(t, resp.Msg.Success)
@@ -246,7 +246,7 @@ func TestProxyStoreLpsPasswords(t *testing.T) {
 				Username:  "admin",
 				Password:  "new-pass-123",
 				RotatedAt: "2026-03-31T12:00:00Z",
-				Reason:    "scheduled",
+				Reason:    pm.RotationReason_ROTATION_REASON_SCHEDULED,
 			},
 		},
 	}))

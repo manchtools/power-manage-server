@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // SCIM schema URIs.
@@ -111,11 +112,50 @@ type SCIMMember struct {
 	Ref     string `json:"$ref,omitempty"`
 }
 
+// SCIMPatchOpType is the typed `op` value of a SCIM PATCH operation.
+// SCIM PATCH (RFC 7644 §3.5.2) defines exactly three verbs — add,
+// remove, replace — and identity providers occasionally vary case.
+// A typed alias plus the canonical-form constants below keep callers
+// off raw string literals while leaving the JSON wire format
+// unchanged (lowercase per the RFC).
+type SCIMPatchOpType string
+
+const (
+	// SCIMPatchOpAdd appends a value to a multi-valued attribute, or
+	// sets an attribute that has no current value.
+	SCIMPatchOpAdd SCIMPatchOpType = "add"
+	// SCIMPatchOpRemove deletes the addressed value(s) from the target
+	// attribute. Path is required (RFC 7644 §3.5.2.2).
+	SCIMPatchOpRemove SCIMPatchOpType = "remove"
+	// SCIMPatchOpReplace overwrites the target with the supplied value;
+	// behaves like add when no current value exists.
+	SCIMPatchOpReplace SCIMPatchOpType = "replace"
+)
+
+// IsValid reports whether the op is one of the three RFC 7644 verbs
+// after lowercasing. Used at the request boundary to reject unknown
+// ops with HTTP 400 instead of silently no-op-ing them inside the
+// per-op switch.
+func (o SCIMPatchOpType) IsValid() bool {
+	switch SCIMPatchOpType(strings.ToLower(string(o))) {
+	case SCIMPatchOpAdd, SCIMPatchOpRemove, SCIMPatchOpReplace:
+		return true
+	default:
+		return false
+	}
+}
+
+// Normalize returns the lowercase canonical form so callers can switch
+// on the constants without sprinkling strings.ToLower at every site.
+func (o SCIMPatchOpType) Normalize() SCIMPatchOpType {
+	return SCIMPatchOpType(strings.ToLower(string(o)))
+}
+
 // SCIMPatchOp represents a single SCIM PATCH operation.
 type SCIMPatchOp struct {
-	Op    string `json:"op"`
-	Path  string `json:"path,omitempty"`
-	Value any    `json:"value,omitempty"`
+	Op    SCIMPatchOpType `json:"op"`
+	Path  string          `json:"path,omitempty"`
+	Value any             `json:"value,omitempty"`
 }
 
 // SCIMPatchRequest represents a SCIM PATCH request body.
