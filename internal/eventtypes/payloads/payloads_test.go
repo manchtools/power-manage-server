@@ -482,3 +482,100 @@ func TestRoundtrip_CommandOutput(t *testing.T) {
 	assert.Contains(t, asMap, "stderr")
 	assert.Contains(t, asMap, "exit_code")
 }
+
+// TestRawCommandOutput_NilOmitted locks the contract used by
+// ExecutionTerminal / ExecutionTimedOut: a nil *CommandOutput
+// produces nil json.RawMessage so the surrounding payload's
+// omitempty tag drops the field from the wire entirely.
+func TestRawCommandOutput_NilOmitted(t *testing.T) {
+	assert.Nil(t, payloads.RawCommandOutput(nil),
+		"nil input must return nil so omitempty fires on the parent payload")
+}
+
+// TestRawCommandOutput_ProducesObject locks that the helper writes
+// a JSON object (not a quoted string), and exact legacy wire keys.
+// A regression where the helper started emitting a quoted JSON
+// string would silently break every consumer of historical
+// ExecutionCompleted/ExecutionFailed events.
+func TestRawCommandOutput_ProducesObject(t *testing.T) {
+	in := &payloads.CommandOutput{
+		Stdout:   "out\n",
+		Stderr:   "err\n",
+		ExitCode: 1,
+	}
+	raw := payloads.RawCommandOutput(in)
+	require.NotNil(t, raw)
+	require.Greater(t, len(raw), 0)
+	// First byte must be '{', NOT '"' — distinguishes a JSON object
+	// from a quoted JSON string.
+	assert.Equal(t, byte('{'), raw[0],
+		"output must be a JSON object, not a quoted string")
+
+	// Wire keys must be the exact legacy set.
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &asMap))
+	assert.Contains(t, asMap, "stdout")
+	assert.Contains(t, asMap, "stderr")
+	assert.Contains(t, asMap, "exit_code")
+
+	// Round-trip back through ExecutionTerminal so the test mirrors
+	// how the field actually rides on the wire.
+	completedAt := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	host := payloads.ExecutionTerminal{
+		CompletedAt: &completedAt,
+		Output:      raw,
+	}
+	wire, err := json.Marshal(host)
+	require.NoError(t, err)
+	var decoded payloads.ExecutionTerminal
+	require.NoError(t, json.Unmarshal(wire, &decoded))
+	assert.JSONEq(t, string(raw), string(decoded.Output))
+}
+
+// TestLpsPasswordRotated_LogValueMasksPassword locks the security
+// guarantee: routing the payload through slog must NEVER emit the
+// raw Password value, even if a future call site does
+// `slog.Warn("...", "payload", payload)` directly.
+func TestLpsPasswordRotated_LogValueMasksPassword(t *testing.T) {
+	const secret = "super-secret-cipher-bytes"
+	p := payloads.LpsPasswordRotated{
+		DeviceID:       "dev-1",
+		ActionID:       "act-1",
+		Username:       "alice",
+		Password:       secret,
+		RotatedAt:      time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+		RotationReason: "scheduled",
+	}
+	// Render the slog.Value into a string and grep for the secret.
+	v := p.LogValue()
+	rendered := v.String()
+	assert.NotContains(t, rendered, secret,
+		"LpsPasswordRotated.LogValue() must NOT contain the raw Password value")
+	assert.Contains(t, rendered, "[REDACTED]",
+		"LpsPasswordRotated.LogValue() must emit the explicit redaction marker")
+	// The non-secret context fields must still be present so logs
+	// remain actionable.
+	assert.Contains(t, rendered, "alice")
+	assert.Contains(t, rendered, "scheduled")
+}
+
+// TestLuksKeyRotated_LogValueMasksPassphrase — sibling to the LPS
+// test for LuksKeyRotated. Same security contract.
+func TestLuksKeyRotated_LogValueMasksPassphrase(t *testing.T) {
+	const secret = "wXr-luks-passphrase-blob"
+	p := payloads.LuksKeyRotated{
+		DeviceID:       "dev-1",
+		ActionID:       "act-1",
+		DevicePath:     "/dev/sda1",
+		Passphrase:     secret,
+		RotatedAt:      time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC),
+		RotationReason: "initial",
+	}
+	v := p.LogValue()
+	rendered := v.String()
+	assert.NotContains(t, rendered, secret,
+		"LuksKeyRotated.LogValue() must NOT contain the raw Passphrase value")
+	assert.Contains(t, rendered, "[REDACTED]",
+		"LuksKeyRotated.LogValue() must emit the explicit redaction marker")
+	assert.Contains(t, rendered, "/dev/sda1")
+}
