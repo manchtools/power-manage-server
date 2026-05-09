@@ -88,7 +88,7 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 			resp.Providers = append(resp.Providers, &pm.AuthMethodProvider{
 				Slug:         p.Slug,
 				Name:         p.Name,
-				ProviderType: p.ProviderType,
+				ProviderType: identityProviderTypeFromString(p.ProviderType),
 			})
 		}
 	} else {

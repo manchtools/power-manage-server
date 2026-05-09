@@ -71,7 +71,7 @@ func TestListAuthMethods_WithProviders(t *testing.T) {
 	require.Len(t, resp.Msg.Providers, 1)
 	assert.Equal(t, "google", resp.Msg.Providers[0].Slug)
 	assert.Equal(t, "Google", resp.Msg.Providers[0].Name)
-	assert.Equal(t, "oidc", resp.Msg.Providers[0].ProviderType)
+	assert.Equal(t, pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC, resp.Msg.Providers[0].ProviderType)
 }
 
 func TestListAuthMethods_WithEmailUserHasTOTP(t *testing.T) {

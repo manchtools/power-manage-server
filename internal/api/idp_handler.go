@@ -70,7 +70,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		Data: map[string]any{
 			"name":                        req.Msg.Name,
 			"slug":                        req.Msg.Slug,
-			"provider_type":               req.Msg.ProviderType,
+			"provider_type":               identityProviderTypeToString(req.Msg.ProviderType),
 			"client_id":                   req.Msg.ClientId,
 			"client_secret_encrypted":     encryptedSecret,
 			"issuer_url":                  req.Msg.IssuerUrl,
@@ -454,7 +454,7 @@ func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityPr
 		Id:                       p.ID,
 		Name:                     p.Name,
 		Slug:                     p.Slug,
-		ProviderType:             p.ProviderType,
+		ProviderType:             identityProviderTypeFromString(p.ProviderType),
 		Enabled:                  p.Enabled,
 		ClientId:                 p.ClientID,
 		IssuerUrl:                p.IssuerUrl,
@@ -482,4 +482,34 @@ func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityPr
 	provider.UpdatedAt = timestamppb.New(p.UpdatedAt)
 
 	return provider
+}
+
+// identityProviderTypeToString converts the wire enum to the
+// lowercase string used in event payloads and the projection
+// `provider_type` column ("oidc" today; "saml2", "ldap" reserved for
+// future protocols). UNSPECIFIED maps to the empty string so a
+// caller that forgot to set the field stores an empty value rather
+// than a fake protocol name — Validate() rejects empty earlier in
+// the request path.
+func identityProviderTypeToString(t pm.IdentityProviderType) string {
+	switch t {
+	case pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC:
+		return "oidc"
+	default:
+		return ""
+	}
+}
+
+// identityProviderTypeFromString is the inverse: it parses the
+// projection / event-payload string back into the wire enum.
+// Unknown / empty values map to UNSPECIFIED so a stale row never
+// crashes the handler — the caller surfaces UNSPECIFIED and the
+// client treats it as "unknown protocol".
+func identityProviderTypeFromString(s string) pm.IdentityProviderType {
+	switch s {
+	case "oidc":
+		return pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC
+	default:
+		return pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_UNSPECIFIED
+	}
 }

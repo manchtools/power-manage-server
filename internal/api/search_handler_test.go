@@ -234,7 +234,7 @@ func TestParseFTSearchResult_SingleResult(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.Equal(t, int32(1), count)
 	assert.Equal(t, "ABC123", results[0].Id)
-	assert.Equal(t, "actions", results[0].Scope)
+	assert.Equal(t, pm.SearchScope_SEARCH_SCOPE_ACTIONS, results[0].Scope)
 	assert.Equal(t, "My Action", results[0].Name)
 	assert.Equal(t, "A test action", results[0].Description)
 	assert.Equal(t, "My Action", results[0].Fields["name"])

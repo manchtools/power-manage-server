@@ -26,7 +26,7 @@ func TestCreateIdentityProvider_Success(t *testing.T) {
 	resp, err := h.CreateIdentityProvider(ctx, connect.NewRequest(&pm.CreateIdentityProviderRequest{
 		Name:         "Test Google",
 		Slug:         "google",
-		ProviderType: "oidc",
+		ProviderType: pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		ClientId:     "client-123",
 		ClientSecret: "secret-456",
 		IssuerUrl:    "https://accounts.google.com",
@@ -38,7 +38,7 @@ func TestCreateIdentityProvider_Success(t *testing.T) {
 	assert.NotEmpty(t, p.Id)
 	assert.Equal(t, "Test Google", p.Name)
 	assert.Equal(t, "google", p.Slug)
-	assert.Equal(t, "oidc", p.ProviderType)
+	assert.Equal(t, pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC, p.ProviderType)
 	assert.Equal(t, "client-123", p.ClientId)
 	assert.NotNil(t, p.CreatedAt)
 }
@@ -58,7 +58,7 @@ func TestCreateIdentityProvider_DuplicateSlug(t *testing.T) {
 	_, err := h.CreateIdentityProvider(ctx, connect.NewRequest(&pm.CreateIdentityProviderRequest{
 		Name:         "Another Google",
 		Slug:         "google",
-		ProviderType: "oidc",
+		ProviderType: pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		ClientId:     "client-other",
 		ClientSecret: "secret-other",
 		IssuerUrl:    "https://accounts.google.com",
@@ -239,7 +239,7 @@ func TestCreateIdentityProvider_WithGroupMapping(t *testing.T) {
 	resp, err := h.CreateIdentityProvider(ctx, connect.NewRequest(&pm.CreateIdentityProviderRequest{
 		Name:         "Okta",
 		Slug:         "okta",
-		ProviderType: "oidc",
+		ProviderType: pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
 		ClientId:     "client-okta",
 		ClientSecret: "secret-okta",
 		IssuerUrl:    "https://dev.okta.com",

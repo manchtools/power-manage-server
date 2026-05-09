@@ -100,13 +100,13 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	var devices []db.DevicesProjection
 
 	switch req.Msg.StatusFilter {
-	case "online":
+	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
 		devices, err = q.ListDevicesOnline(ctx, db.ListDevicesOnlineParams{
 			Limit:        pageSize,
 			Offset:       offset,
 			FilterUserID: filterUID,
 		})
-	case "offline":
+	case pm.DeviceStatus_DEVICE_STATUS_OFFLINE:
 		devices, err = q.ListDevicesOffline(ctx, db.ListDevicesOfflineParams{
 			Limit:        pageSize,
 			Offset:       offset,
@@ -126,9 +126,9 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	// Use the matching count query for the active status filter
 	var count int64
 	switch req.Msg.StatusFilter {
-	case "online":
+	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
 		count, err = q.CountDevicesOnline(ctx, filterUID)
-	case "offline":
+	case pm.DeviceStatus_DEVICE_STATUS_OFFLINE:
 		count, err = q.CountDevicesOffline(ctx, filterUID)
 	default:
 		count, err = q.CountDevices(ctx, filterUID)
@@ -587,12 +587,12 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, ass
 	if d.LastSeenAt != nil {
 		device.LastSeenAt = timestamppb.New(*d.LastSeenAt)
 		if time.Since(*d.LastSeenAt) < 5*time.Minute {
-			device.Status = "online"
+			device.Status = pm.DeviceStatus_DEVICE_STATUS_ONLINE
 		} else {
-			device.Status = "offline"
+			device.Status = pm.DeviceStatus_DEVICE_STATUS_OFFLINE
 		}
 	} else {
-		device.Status = "offline"
+		device.Status = pm.DeviceStatus_DEVICE_STATUS_OFFLINE
 	}
 
 	if d.RegisteredAt != nil {
