@@ -8,20 +8,40 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// UserCreatedPayload mirrors the fields the deleted PL/pgSQL
-// project_user_event() read out of a UserCreated event:
+// UserCreatedWithRolesPayload mirrors the user fields the deleted
+// PL/pgSQL project_user_event() read out of a UserCreated event,
+// extended with a role_ids array carrying the role assignments that
+// used to ship as separate UserRoleAssigned events.
 //
-//   - email (required, NOT NULL column).
-//   - password_hash (defaults to "" — matches PL/pgSQL
-//     `COALESCE(event.data->>"password_hash", "")`). Drives has_password.
-//   - role (defaults to "user" — matches PL/pgSQL
-//     `COALESCE(event.data->>"role", "user")`).
+// Issue #135 collapses the legacy two-step UserCreated +
+// N x UserRoleAssigned emission into one atomic compound event.
+// The projector arm wraps the user INSERT and the per-role inserts
+// in one transaction, so a partial-failure window between them is
+// no longer reachable. The downstream "react to user creation"
+// cases in system_actions_listener and search_listener key off
+// this event instead of the dropped UserCreated literal.
+//
+// Per-field semantics (PL/pgSQL parity preserved verbatim):
+//
+//   - email (required, NOT NULL column). Missing key -> decoder
+//     error. Explicit empty string -> round-trips as "".
+//   - password_hash (defaults to "" - matches PL/pgSQL
+//     COALESCE(event.data->>"password_hash", "")). Drives
+//     has_password.
+//   - role (defaults to "user" only when key is missing - matches
+//     PL/pgSQL COALESCE(event.data->>"role", "user")). An explicit
+//     empty string round-trips as "".
 //   - profile fields (display_name, given_name, family_name,
 //     preferred_username, picture, locale): each defaults to ""
-//     (matches PL/pgSQL `COALESCE(payload, "")`).
+//     (matches PL/pgSQL COALESCE(payload, "")).
 //   - linux_username (defaults to "").
 //   - linux_uid (defaults to 0).
-type UserCreatedPayload struct {
+//   - role_ids: array of role IDs to assign at creation time.
+//     Missing or empty -> empty slice (the listener simply skips
+//     the per-role INSERT loop). Each element becomes one
+//     user_roles_projection row inside the same transaction as
+//     the users_projection INSERT.
+type UserCreatedWithRolesPayload struct {
 	ID                string
 	Email             string
 	PasswordHash      string
@@ -34,35 +54,37 @@ type UserCreatedPayload struct {
 	Locale            string
 	LinuxUsername     string
 	LinuxUID          int32
+	RoleIDs           []string
 }
 
-type userCreatedRaw struct {
-	Email             *string `json:"email,omitempty"`
-	PasswordHash      *string `json:"password_hash,omitempty"`
-	Role              *string `json:"role,omitempty"`
-	DisplayName       *string `json:"display_name,omitempty"`
-	GivenName         *string `json:"given_name,omitempty"`
-	FamilyName        *string `json:"family_name,omitempty"`
-	PreferredUsername *string `json:"preferred_username,omitempty"`
-	Picture           *string `json:"picture,omitempty"`
-	Locale            *string `json:"locale,omitempty"`
-	LinuxUsername     *string `json:"linux_username,omitempty"`
-	LinuxUID          *int32  `json:"linux_uid,omitempty"`
+type userCreatedWithRolesRaw struct {
+	Email             *string  `json:"email,omitempty"`
+	PasswordHash      *string  `json:"password_hash,omitempty"`
+	Role              *string  `json:"role,omitempty"`
+	DisplayName       *string  `json:"display_name,omitempty"`
+	GivenName         *string  `json:"given_name,omitempty"`
+	FamilyName        *string  `json:"family_name,omitempty"`
+	PreferredUsername *string  `json:"preferred_username,omitempty"`
+	Picture           *string  `json:"picture,omitempty"`
+	Locale            *string  `json:"locale,omitempty"`
+	LinuxUsername     *string  `json:"linux_username,omitempty"`
+	LinuxUID          *int32   `json:"linux_uid,omitempty"`
+	RoleIDs           []string `json:"role_ids,omitempty"`
 }
 
-// UserCreatedFromEvent decodes UserCreated. Returns ErrIgnoredEvent
-// for any other (stream, event_type) so the listener wrapper can
-// silently no-op.
-func UserCreatedFromEvent(e store.PersistedEvent) (UserCreatedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserCreated" {
-		return UserCreatedPayload{}, ErrIgnoredEvent
+// UserCreatedWithRolesFromEvent decodes UserCreatedWithRoles. Returns
+// ErrIgnoredEvent for any other (stream, event_type) so the listener
+// wrapper can silently no-op.
+func UserCreatedWithRolesFromEvent(e store.PersistedEvent) (UserCreatedWithRolesPayload, error) {
+	if e.StreamType != "user" || e.EventType != "UserCreatedWithRoles" {
+		return UserCreatedWithRolesPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
-		return UserCreatedPayload{}, fmt.Errorf("projector: empty UserCreated payload")
+		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: empty UserCreatedWithRoles payload")
 	}
-	var raw userCreatedRaw
+	var raw userCreatedWithRolesRaw
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserCreatedPayload{}, fmt.Errorf("projector: invalid UserCreated payload: %w", err)
+		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: invalid UserCreatedWithRoles payload: %w", err)
 	}
 	// PL/pgSQL parity: a missing email key would have produced SQL
 	// NULL and crashed the NOT NULL constraint at INSERT time. Surface
@@ -70,15 +92,19 @@ func UserCreatedFromEvent(e store.PersistedEvent) (UserCreatedPayload, error) {
 	// is preserved verbatim — the PL/pgSQL projector would have
 	// written it through.
 	if raw.Email == nil {
-		return UserCreatedPayload{}, fmt.Errorf("projector: UserCreated requires email")
+		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: UserCreatedWithRoles requires email")
 	}
-	out := UserCreatedPayload{
+	out := UserCreatedWithRolesPayload{
 		ID:    e.StreamID,
 		Email: *raw.Email,
 		// Default role mirrors the PL/pgSQL COALESCE(...,'user'):
 		// it kicks in ONLY for a missing key, NOT for an explicit
 		// empty string. An emitted role:"" must round-trip as "".
-		Role: "user",
+		Role:    "user",
+		RoleIDs: raw.RoleIDs,
+	}
+	if out.RoleIDs == nil {
+		out.RoleIDs = []string{}
 	}
 	if raw.PasswordHash != nil {
 		out.PasswordHash = *raw.PasswordHash

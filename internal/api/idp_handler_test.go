@@ -196,10 +196,13 @@ func TestDeleteIdentityProvider_DeletesOrphanedPasswordlessUsers(t *testing.T) {
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   ssoUserID,
-		EventType:  "UserCreated",
-		Data:       map[string]any{"email": "sso@test.com"},
-		ActorType:  "scim",
-		ActorID:    providerID,
+		EventType:  "UserCreatedWithRoles",
+		Data: map[string]any{
+			"email":    "sso@test.com",
+			"role_ids": []string{},
+		},
+		ActorType: "scim",
+		ActorID:   providerID,
 	}))
 	testutil.CreateTestIdentityLink(t, st, ssoUserID, providerID, "ext-sso", "sso@test.com")
 

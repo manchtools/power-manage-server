@@ -73,24 +73,24 @@ func TestLinkOrCreate_AutoCreateUserIncludesLinuxFields(t *testing.T) {
 	require.NotNil(t, result)
 	assert.True(t, result.IsNew)
 
-	// Find the UserCreated event
+	// Find the UserCreatedWithRoles event
 	var userCreatedEvent *EventInput
 	for i, e := range appender.events {
-		if e.EventType == "UserCreated" {
+		if e.EventType == "UserCreatedWithRoles" {
 			userCreatedEvent = &appender.events[i]
 			break
 		}
 	}
-	require.NotNil(t, userCreatedEvent, "expected a UserCreated event to be emitted")
+	require.NotNil(t, userCreatedEvent, "expected a UserCreatedWithRoles event to be emitted")
 
 	// Verify linux_username is present and derived from preferred_username
 	linuxUsername, ok := userCreatedEvent.Data["linux_username"]
-	assert.True(t, ok, "UserCreated event data should include linux_username")
+	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_username")
 	assert.Equal(t, "johndoe", linuxUsername)
 
 	// Verify linux_uid is present and matches the mock return value
 	linuxUID, ok := userCreatedEvent.Data["linux_uid"]
-	assert.True(t, ok, "UserCreated event data should include linux_uid")
+	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_uid")
 	assert.Equal(t, int32(10001), linuxUID)
 
 	// Verify the event data can be marshaled (sanity check)
@@ -122,10 +122,10 @@ func TestLinkOrCreate_AutoCreateUserDeriveUsernameFromEmail(t *testing.T) {
 	require.NotNil(t, result)
 	assert.True(t, result.IsNew)
 
-	// Find the UserCreated event
+	// Find the UserCreatedWithRoles event
 	var userCreatedEvent *EventInput
 	for i, e := range appender.events {
-		if e.EventType == "UserCreated" {
+		if e.EventType == "UserCreatedWithRoles" {
 			userCreatedEvent = &appender.events[i]
 			break
 		}
@@ -134,10 +134,10 @@ func TestLinkOrCreate_AutoCreateUserDeriveUsernameFromEmail(t *testing.T) {
 
 	// When preferred_username is empty, linux_username should be derived from email
 	linuxUsername, ok := userCreatedEvent.Data["linux_username"]
-	assert.True(t, ok, "UserCreated event data should include linux_username")
+	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_username")
 	assert.Equal(t, "jane.doe", linuxUsername)
 
 	linuxUID, ok := userCreatedEvent.Data["linux_uid"]
-	assert.True(t, ok, "UserCreated event data should include linux_uid")
+	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_uid")
 	assert.Equal(t, int32(10002), linuxUID)
 }

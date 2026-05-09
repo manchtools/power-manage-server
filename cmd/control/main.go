@@ -924,39 +924,37 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	id := ulid.Make().String()
 
-	// Append UserCreated event - the trigger will handle projection
+	// Look up Admin role BEFORE emitting the user-creation event so
+	// the user INSERT and the role assignment land atomically inside
+	// one projector tx (issue #135). If the role lookup fails (no
+	// Admin role seeded yet?), log and proceed with no roles - the
+	// Go projector treats a missing role_ids key the same as an
+	// empty slice and skips the per-role INSERT loop.
+	var roleIDs []string
+	if adminRole, err := st.Queries().GetRoleByName(ctx, "Admin"); err == nil {
+		roleIDs = []string{adminRole.ID}
+	} else {
+		logger.Warn("failed to look up Admin role for bootstrap user; user will be created with no roles",
+			"user_id", id, "error", err)
+	}
+
+	// Append UserCreatedWithRoles compound event - the projector
+	// inserts the user row AND the per-role assignment row in one tx.
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":         email,
 			"password_hash": passwordHash,
 			"role":          "admin",
+			"role_ids":      roleIDs,
 		},
 		ActorType: "system",
 		ActorID:   "bootstrap",
 	})
 	if err != nil {
 		return fmt.Errorf("create user event: %w", err)
-	}
-
-	// Assign the Admin role to the bootstrap user
-	adminRole, err := st.Queries().GetRoleByName(ctx, "Admin")
-	if err == nil {
-		if err := st.AppendEvent(ctx, store.Event{
-			StreamType: "user_role",
-			StreamID:   id + ":" + adminRole.ID,
-			EventType:  "UserRoleAssigned",
-			Data: map[string]any{
-				"user_id": id,
-				"role_id": adminRole.ID,
-			},
-			ActorType: "system",
-			ActorID:   "bootstrap",
-		}); err != nil {
-			logger.Warn("failed to assign admin role to bootstrap user", "user_id", id, "error", err)
-		}
 	}
 
 	logger.Info("admin user created", "email", email, "id", id)

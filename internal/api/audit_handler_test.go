@@ -51,11 +51,11 @@ func TestListAuditEvents_FilterByEventType(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.ListAuditEvents(ctx, connect.NewRequest(&pm.ListAuditEventsRequest{
-		EventType: "UserCreated",
+		EventType: "UserCreatedWithRoles",
 	}))
 	require.NoError(t, err)
 	for _, e := range resp.Msg.Events {
-		assert.Equal(t, "UserCreated", e.EventType)
+		assert.Equal(t, "UserCreatedWithRoles", e.EventType)
 	}
 }
 

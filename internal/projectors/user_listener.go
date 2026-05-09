@@ -11,45 +11,47 @@ import (
 
 // UserListener returns a store.EventListener that applies every user
 // stream event the deleted PL/pgSQL project_user_event handled.
-// Sixteen event types — the largest projector under tracker #136 and
+// Sixteen event types - the largest projector under tracker #136 and
 // the LAST Phase 2 port. After this lands, the cleanup migration can
 // drop project_event() and the dispatcher trigger entirely.
 //
 // Event-type families:
-//   - User CRUD: Created (INSERT), ProfileUpdated (UPDATE),
-//     EmailChanged (UPDATE), PasswordChanged (UPDATE +
-//     session_version bump), RoleChanged (UPDATE),
-//     Deleted (soft + cascade DELETE on identity_links_projection).
+//   - User CRUD: CreatedWithRoles (INSERT user + N x INSERT user_role
+//     in one tx, issue #135), ProfileUpdated (UPDATE), EmailChanged
+//     (UPDATE), PasswordChanged (UPDATE + session_version bump),
+//     RoleChanged (UPDATE), Deleted (soft + cascade DELETE on
+//     identity_links_projection).
 //   - Session controls: SessionInvalidated, Disabled, Enabled,
-//     LoggedIn — single guarded UPDATEs.
+//     LoggedIn - single guarded UPDATEs.
 //   - SSH: SshKeyAdded (JSONB array append), SshKeyRemoved (JSONB
 //     filter), SshSettingsUpdated (COALESCE-preserve booleans).
 //   - Linux integration: LinuxUsernameChanged (UPDATE),
 //     SystemActionLinked (targeted CASE on three columns),
 //     ProvisioningSettingsUpdated (COALESCE-preserve boolean).
 //
-// Multi-write event (UserDeleted) wraps the SoftDelete +
-// identity-links cascade in store.WithTx so the cascade stays atomic
-// with itself; single-statement events run on the autocommit pool.
+// Multi-write events (UserCreatedWithRoles, UserDeleted) wrap their
+// fan-out in store.WithTx so the user INSERT + per-role INSERTs (or
+// the soft-delete + identity-links cascade) stay atomic with each
+// other; single-statement events run on the autocommit pool.
 //
 // Asymmetric-guard discipline (per the role + identity_provider +
 // action_set + assignment + user_group + device_group +
 // compliance_policy + compliance + action+definition + execution +
 // device ports): every UPDATE on users_projection carries a
 // `WHERE projection_version < $N` guard via :execrows, and the
-// listener short-circuits the UserDeleted cascade when n == 0 —
+// listener short-circuits the UserDeleted cascade when n == 0 -
 // otherwise a stale UserDeleted re-applied later would silently nuke
 // a freshly-restored user's identity links.
 //
 // Session-version monotonicity: PasswordChanged, SessionInvalidated,
 // and Disabled all bump session_version. The bump is paired with the
-// other column writes inside ONE guarded UPDATE — a stale Disable
+// other column writes inside ONE guarded UPDATE - a stale Disable
 // replayed after a re-Enable fails the projection_version guard
 // outright (n == 0), so neither disabled NOR session_version regress
 // to the stale value. session_version stays monotonic by construction.
 //
 // Wired in projectors.WireAll. Refs #136 (last Phase 2 port of
-// tracker #107).
+// tracker #107) and #135 (UserCreatedWithRoles compound event).
 func UserListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		return func(context.Context, store.PersistedEvent) {}
@@ -58,17 +60,22 @@ func UserListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		if e.StreamType != "user" {
 			return
 		}
-		// Multi-write event (UserDeleted) routes through ApplyUser
-		// via WithTx so the soft-delete + identity-links cascade
-		// stays atomic. Every other event is a single statement and
-		// runs on the autocommit pool. ApplyUser handles all event
-		// types when called with tx-bound queries (the rebuild path).
-		if e.EventType == "UserDeleted" {
+		// Multi-write events (UserCreatedWithRoles, UserDeleted)
+		// route through ApplyUser via WithTx so their fan-out writes
+		// land atomically. UserCreatedWithRoles inserts the user row
+		// AND its per-role assignment rows in one tx (#135), so the
+		// pre-#135 partial-write window between the user INSERT and
+		// its role INSERTs is no longer reachable. Every other event
+		// is a single statement and runs on the autocommit pool.
+		// ApplyUser handles all event types when called with
+		// tx-bound queries (the rebuild path).
+		if e.EventType == "UserCreatedWithRoles" || e.EventType == "UserDeleted" {
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyUser(ctx, q, e)
 			}); err != nil {
-				logger.Warn("user projector: failed to apply UserDeleted",
-					"event_id", e.ID, "user_id", e.StreamID, "error", err)
+				logger.Warn("user projector: failed to apply multi-write event",
+					"event_id", e.ID, "event_type", e.EventType,
+					"user_id", e.StreamID, "error", err)
 			}
 			return
 		}
@@ -90,8 +97,8 @@ func ApplyUser(ctx context.Context, q *store.Queries, e store.PersistedEvent) er
 		return nil
 	}
 	switch e.EventType {
-	case "UserCreated":
-		return applyUserCreated(ctx, q, e)
+	case "UserCreatedWithRoles":
+		return applyUserCreatedWithRoles(ctx, q, e)
 	case "UserProfileUpdated":
 		return applyUserProfileUpdated(ctx, q, e)
 	case "UserEmailChanged":
@@ -126,8 +133,17 @@ func ApplyUser(ctx context.Context, q *store.Queries, e store.PersistedEvent) er
 	return nil
 }
 
-func applyUserCreated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := UserCreatedFromEvent(e)
+// applyUserCreatedWithRoles inserts the user row AND every requested
+// user_role assignment. The listener wrapper invokes this inside
+// store.WithTx so all writes commit atomically (issue #135) - no
+// partial-write window between the user INSERT and its role INSERTs.
+//
+// The per-role INSERT uses ON CONFLICT (user_id, role_id) DO NOTHING
+// (the same idempotency the user_role projector relies on), so a
+// rebuild that re-applies the event against an existing role row
+// is a no-op rather than a constraint violation.
+func applyUserCreatedWithRoles(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	payload, err := UserCreatedWithRolesFromEvent(e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
@@ -138,11 +154,11 @@ func applyUserCreated(ctx context.Context, q *store.Queries, e store.PersistedEv
 	// password_hash column is nullable in the schema; the PL/pgSQL
 	// projector wrote `COALESCE(payload, '')` and computed
 	// has_password from the non-empty check. Mirror that:
-	// passwordHashPtr is nil only if we want SQL NULL — but the
+	// passwordHashPtr is nil only if we want SQL NULL - but the
 	// PL/pgSQL projector NEVER wrote NULL, it wrote "". Keep that.
 	passwordHash := payload.PasswordHash
 	hasPassword := payload.PasswordHash != ""
-	return q.InsertUserProjection(ctx, db.InsertUserProjectionParams{
+	if err := q.InsertUserProjection(ctx, db.InsertUserProjectionParams{
 		ID:                payload.ID,
 		Email:             payload.Email,
 		PasswordHash:      &passwordHash,
@@ -158,7 +174,24 @@ func applyUserCreated(ctx context.Context, q *store.Queries, e store.PersistedEv
 		Locale:            payload.Locale,
 		LinuxUsername:     payload.LinuxUsername,
 		LinuxUid:          payload.LinuxUID,
-	})
+	}); err != nil {
+		return err
+	}
+	for _, roleID := range payload.RoleIDs {
+		if roleID == "" {
+			continue
+		}
+		if err := q.InsertUserRoleProjection(ctx, db.InsertUserRoleProjectionParams{
+			UserID:            payload.ID,
+			RoleID:            roleID,
+			AssignedAt:        occurredAt,
+			AssignedBy:        e.ActorID,
+			ProjectionVersion: deref(e.SequenceNum),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

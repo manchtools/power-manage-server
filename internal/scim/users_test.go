@@ -82,11 +82,12 @@ func TestUserCreatedEvent_WithLinuxFields(t *testing.T) {
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":          "linux-event@test.com",
 			"linux_username": "linuxuser",
 			"linux_uid":      int32(5001),
+			"role_ids":       []string{},
 		},
 		ActorType: "system",
 		ActorID:   "test",
@@ -110,10 +111,11 @@ func TestUserCreatedEvent_WithoutLinuxFields(t *testing.T) {
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
-			"email": "no-linux@test.com",
-			"role":  "user",
+			"email":    "no-linux@test.com",
+			"role":     "user",
+			"role_ids": []string{},
 		},
 		ActorType: "system",
 		ActorID:   "test",

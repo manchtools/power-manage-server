@@ -42,7 +42,7 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 	// must be re-evaluated. The user_id source varies: for `user`
 	// stream events it's the StreamID; for `user_role` it's in the
 	// event Data payload.
-	case "UserCreated",
+	case "UserCreatedWithRoles",
 		"UserDisabled",
 		"UserEnabled",
 		"UserLinuxUsernameChanged",

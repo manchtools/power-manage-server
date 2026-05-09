@@ -108,11 +108,31 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		linuxUsername = "user_" + id[:8]
 	}
 
-	// Emit UserCreated event
+	// Resolve the role ID set BEFORE emitting the event so the user
+	// INSERT and the per-role INSERTs land atomically inside the
+	// projector's WithTx (issue #135). Empty role list -> look up
+	// the built-in "User" role; missing-role lookup is escalated to
+	// an Error log because shipping a user with zero permissions
+	// silently is the bug operators triage.
+	roleIDs := req.Msg.RoleIds
+	if len(roleIDs) == 0 {
+		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
+		if err == nil {
+			roleIDs = []string{userRole.ID}
+		} else {
+			h.logger.Error("failed to look up default User role; new user will be created with no roles",
+				"user_id", id, "error", err)
+		}
+	}
+
+	// Emit UserCreatedWithRoles compound event - one event, one
+	// projector tx. The pre-#135 partial-write window between the
+	// user row INSERT and the per-role INSERTs is no longer
+	// reachable: either both land or neither does.
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":              req.Msg.Email,
 			"password_hash":      passwordHash,
@@ -123,6 +143,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			"preferred_username": req.Msg.PreferredUsername,
 			"linux_username":     linuxUsername,
 			"linux_uid":          linuxUID,
+			"role_ids":           roleIDs,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -142,48 +163,8 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		// want a specific already-exists error code. For now,
 		// return a structured Internal error and log the actual
 		// cause so operators can triage.
-		h.logger.Error("failed to append UserCreated event", "user_id", id, "error", err)
+		h.logger.Error("failed to append UserCreatedWithRoles event", "user_id", id, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
-	}
-
-	// Auto-assign specified roles, or default User role if none specified
-	roleIDs := req.Msg.RoleIds
-	if len(roleIDs) == 0 {
-		// Assign the built-in User role
-		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
-		if err == nil {
-			roleIDs = []string{userRole.ID}
-		} else {
-			// The default-role lookup used to fail silently, leaving
-			// a freshly-created user with zero permissions. The user
-			// is already created so we can't fail the RPC, but at
-			// least surface this in operator logs so the gap can be
-			// triaged before a confused user files a ticket.
-			h.logger.Error("failed to look up default User role; new user created with no roles",
-				"user_id", id, "error", err)
-		}
-	}
-	for _, roleID := range roleIDs {
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "user_role",
-			StreamID:   id + ":" + roleID,
-			EventType:  "UserRoleAssigned",
-			Data: map[string]any{
-				"user_id": id,
-				"role_id": roleID,
-			},
-			ActorType: "user",
-			ActorID:   userCtx.ID,
-		}); err != nil {
-			// Escalated from Warn to Error: a UserRoleAssigned
-			// failure leaves the user with one fewer role than the
-			// caller asked for, silently. Operators triaging
-			// "user has no permissions despite being assigned the
-			// admin role" need this in journalctl ERROR output, not
-			// hidden in Warn.
-			h.logger.Error("failed to append UserRoleAssigned event; user will be missing this role",
-				"user_id", id, "role_id", roleID, "error", err)
-		}
 	}
 
 	// Auto-enable provisioning/SSH if global server settings are on

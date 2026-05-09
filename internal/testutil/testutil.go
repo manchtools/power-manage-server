@@ -141,11 +141,12 @@ func CreateTestUser(t *testing.T, st *store.Store, email, password, role string)
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":         email,
 			"password_hash": hash,
 			"role":          role,
+			"role_ids":      []string{},
 		},
 		ActorType: "system",
 		ActorID:   "test",
@@ -334,10 +335,11 @@ func SSOOnlyUserEvent(userID, email string) store.Event {
 	return store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
-			"email": email,
-			"role":  "user",
+			"email":    email,
+			"role":     "user",
+			"role_ids": []string{},
 		},
 		ActorType: "system",
 		ActorID:   "sso",

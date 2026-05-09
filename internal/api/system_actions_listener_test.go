@@ -31,11 +31,11 @@ func TestAffectedFromEvent(t *testing.T) {
 	}{
 		// Per-user events keyed by stream_id.
 		{
-			name: "UserCreated → sync user (stream_id)",
+			name: "UserCreatedWithRoles → sync user (stream_id)",
 			event: store.PersistedEvent{
 				StreamType: "user",
 				StreamID:   "user-1",
-				EventType:  "UserCreated",
+				EventType:  "UserCreatedWithRoles",
 			},
 			wantOp:    SyncOpSyncUser,
 			wantUsers: []string{"user-1"},
@@ -271,7 +271,7 @@ func TestAffectedFromEvent_PerLiteral(t *testing.T) {
 	// PersistedEvent with the literal as EventType + a fixed user id
 	// is enough — the classifier reads no other field for these.
 	syncUserStreamLiterals := []string{
-		"UserCreated",
+		"UserCreatedWithRoles",
 		"UserDisabled",
 		"UserEnabled",
 		"UserLinuxUsernameChanged",
