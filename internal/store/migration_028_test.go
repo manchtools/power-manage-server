@@ -43,16 +43,21 @@ func TestMigration028_DroppedStubsAreGone(t *testing.T) {
 	}
 }
 
-// TestMigration028_UnportedProjectorsRemain — the eleven still-PL/pgSQL
-// projectors must survive migration 028 untouched, otherwise the
-// dispatcher would trigger "function does not exist" errors for
-// every event of those stream types. Sibling-sweep coverage paired
-// with TestMigration028_DroppedStubsAreGone.
-func TestMigration028_UnportedProjectorsRemain(t *testing.T) {
+// TestMigration041_AllProjectorsAndDispatcherDropped — after the
+// final cleanup migration drops the project_event() dispatcher,
+// the event_projector trigger, and every Phase 2 no-op stub.
+// Re-introducing any of them would bring back the silent-no-op
+// footgun that motivated #136.
+//
+// (This test replaces the previous TestMigration028_UnportedProjectorsRemain
+// which asserted the eleven PL/pgSQL projectors still existed
+// after migration 028. They did at that point — but migration 041
+// drops them all. The schema is now Go-projector-only.)
+func TestMigration041_AllProjectorsAndDispatcherDropped(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 
-	keptProjectors := []string{
+	droppedAfter041 := []string{
 		"project_user_event",
 		"project_device_event",
 		"project_action_event",
@@ -66,12 +71,18 @@ func TestMigration028_UnportedProjectorsRemain(t *testing.T) {
 		"project_compliance_policy_event",
 		"project_event", // the dispatcher itself
 	}
-	for _, fn := range keptProjectors {
+	for _, fn := range droppedAfter041 {
 		var exists bool
 		err := st.Pool().QueryRow(ctx,
 			`SELECT EXISTS (SELECT 1 FROM pg_proc WHERE proname = $1)`, fn,
 		).Scan(&exists)
 		require.NoError(t, err)
-		assert.True(t, exists, "%s must survive migration 028 — its stream type is not yet ported to Go", fn)
+		assert.False(t, exists, "%s must be dropped by migration 041 — re-introducing it brings back the silent-no-op trigger overhead and the #125 footgun", fn)
 	}
+
+	var triggerExists bool
+	require.NoError(t, st.Pool().QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'event_projector')`,
+	).Scan(&triggerExists))
+	assert.False(t, triggerExists, "event_projector trigger must be dropped by migration 041")
 }
