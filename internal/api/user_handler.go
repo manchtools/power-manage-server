@@ -14,6 +14,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -132,7 +133,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreatedWithRoles",
+		EventType:  string(eventtypes.UserCreatedWithRoles),
 		Data: map[string]any{
 			"email":              req.Msg.Email,
 			"password_hash":      passwordHash,
@@ -173,7 +174,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   id,
-				EventType:  "UserProvisioningSettingsUpdated",
+				EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 				Data:       map[string]any{"user_provisioning_enabled": true},
 				ActorType:  "system",
 				ActorID:    "auto",
@@ -185,7 +186,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   id,
-				EventType:  "UserSshSettingsUpdated",
+				EventType:  string(eventtypes.UserSshSettingsUpdated),
 				Data: map[string]any{
 					"ssh_access_enabled": true,
 					"ssh_allow_pubkey":   true,
@@ -327,7 +328,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserEmailChanged",
+		EventType:  string(eventtypes.UserEmailChanged),
 		Data: map[string]any{
 			"email": req.Msg.Email,
 		},
@@ -392,7 +393,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserPasswordChanged",
+		EventType:  string(eventtypes.UserPasswordChanged),
 		Data: map[string]any{
 			"password_hash": passwordHash,
 		},
@@ -479,7 +480,7 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserDeleted",
+		EventType:  string(eventtypes.UserDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -521,7 +522,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserProfileUpdated",
+		EventType:  string(eventtypes.UserProfileUpdated),
 		Data: map[string]any{
 			"display_name":       req.Msg.DisplayName,
 			"given_name":         req.Msg.GivenName,
@@ -622,7 +623,7 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
-		EventType:  "UserProvisioningSettingsUpdated",
+		EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 		Data: map[string]any{
 			"user_provisioning_enabled": req.Msg.Enabled,
 		},
@@ -673,7 +674,7 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
-		EventType:  "UserLinuxUsernameChanged",
+		EventType:  string(eventtypes.UserLinuxUsernameChanged),
 		Data: map[string]any{
 			"linux_username": username,
 		},
@@ -719,7 +720,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
-		EventType:  "UserSshKeyAdded",
+		EventType:  string(eventtypes.UserSshKeyAdded),
 		Data: map[string]any{
 			"key_id":     keyID,
 			"public_key": req.Msg.PublicKey,
@@ -763,7 +764,7 @@ func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
-		EventType:  "UserSshKeyRemoved",
+		EventType:  string(eventtypes.UserSshKeyRemoved),
 		Data: map[string]any{
 			"key_id": req.Msg.KeyId,
 		},
@@ -797,7 +798,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
-		EventType:  "UserSshSettingsUpdated",
+		EventType:  string(eventtypes.UserSshSettingsUpdated),
 		Data: map[string]any{
 			"ssh_access_enabled": req.Msg.SshAccessEnabled,
 			"ssh_allow_pubkey":   req.Msg.SshAllowPubkey,

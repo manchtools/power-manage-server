@@ -13,6 +13,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -71,7 +72,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   id,
-		EventType:  "RoleCreated",
+		EventType:  string(eventtypes.RoleCreated),
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
@@ -187,7 +188,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   req.Msg.RoleId,
-		EventType:  "RoleUpdated",
+		EventType:  string(eventtypes.RoleUpdated),
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
@@ -251,7 +252,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "role",
 		StreamID:   req.Msg.Id,
-		EventType:  "RoleDeleted",
+		EventType:  string(eventtypes.RoleDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -317,7 +318,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_role",
 			StreamID:   streamID,
-			EventType:  "UserRoleAssigned",
+			EventType:  string(eventtypes.UserRoleAssigned),
 			Data: map[string]any{
 				"user_id": req.Msg.UserId,
 				"role_id": roleID,
@@ -384,7 +385,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_role",
 			StreamID:   streamID,
-			EventType:  "UserRoleRevoked",
+			EventType:  string(eventtypes.UserRoleRevoked),
 			Data: map[string]any{
 				"user_id": req.Msg.UserId,
 				"role_id": req.Msg.RoleId,
@@ -430,7 +431,7 @@ func (h *RoleHandler) bumpUserSessionVersion(ctx context.Context, userID, actorI
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserSessionInvalidated",
+		EventType:  string(eventtypes.UserSessionInvalidated),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    actorID,

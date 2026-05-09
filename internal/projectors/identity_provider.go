@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -129,7 +130,7 @@ type idpCreatedRaw struct {
 // IdentityProviderCreatedFromEvent decodes IdentityProviderCreated.
 // Returns ErrIgnoredEvent for any other (stream, event_type).
 func IdentityProviderCreatedFromEvent(e store.PersistedEvent) (IdentityProviderCreatedPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != "IdentityProviderCreated" {
+	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityProviderCreated) {
 		return IdentityProviderCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -222,7 +223,7 @@ type idpUpdatedRaw struct {
 // (client_id, client_secret_encrypted, issuer_url) to match the
 // PL/pgSQL projector's `COALESCE(NULLIF(payload, ""), existing)`.
 func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderUpdatedPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != "IdentityProviderUpdated" {
+	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityProviderUpdated) {
 		return IdentityProviderUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := IdentityProviderUpdatedPayload{ID: e.StreamID}
@@ -256,7 +257,7 @@ func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderU
 // IdentityLinkedFromEvent decodes IdentityLinked. user_id, provider_id
 // and external_id are required (composite key on the projection).
 func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != "IdentityLinked" {
+	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityLinked) {
 		return IdentityLinkPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -296,7 +297,7 @@ func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error
 // provider_id + external_id are the lookup key; external_email and
 // external_name are NULLIF-semantic (empty preserves existing).
 func IdentityLinkLoginUpdatedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != "IdentityLinkLoginUpdated" {
+	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityLinkLoginUpdated) {
 		return IdentityLinkPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

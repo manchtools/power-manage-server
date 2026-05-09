@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -28,11 +29,11 @@ func SCIMGroupMappingListener(st *store.Store, logger *slog.Logger) store.EventL
 			return
 		}
 		switch e.EventType {
-		case "SCIMGroupMapped":
+		case string(eventtypes.SCIMGroupMapped):
 			applySCIMGroupMapped(ctx, st, logger, e)
-		case "SCIMGroupUnmapped":
+		case string(eventtypes.SCIMGroupUnmapped):
 			applySCIMGroupUnmapped(ctx, st, logger, e)
-		case "SCIMGroupMappingUpdated":
+		case string(eventtypes.SCIMGroupMappingUpdated):
 			applySCIMGroupMappingUpdated(ctx, st, logger, e)
 		}
 	}

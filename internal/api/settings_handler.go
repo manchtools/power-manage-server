@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -48,7 +49,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "server_settings",
 		StreamID:   "global",
-		EventType:  "ServerSettingUpdated",
+		EventType:  string(eventtypes.ServerSettingUpdated),
 		Data: map[string]any{
 			"user_provisioning_enabled": req.Msg.UserProvisioningEnabled,
 			"ssh_access_for_all":        req.Msg.SshAccessForAll,
@@ -117,7 +118,7 @@ func (h *SettingsHandler) enableProvisioningForAllUsers(ctx context.Context) err
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   u.ID,
-			EventType:  "UserProvisioningSettingsUpdated",
+			EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 			Data:       map[string]any{"user_provisioning_enabled": true},
 			ActorType:  "system",
 			ActorID:    "system",
@@ -148,7 +149,7 @@ func (h *SettingsHandler) enableSshAccessForAllUsers(ctx context.Context) error 
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   u.ID,
-			EventType:  "UserSshSettingsUpdated",
+			EventType:  string(eventtypes.UserSshSettingsUpdated),
 			Data: map[string]any{
 				"ssh_access_enabled": true,
 				"ssh_allow_pubkey":   u.SshAllowPubkey,

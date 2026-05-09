@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -57,7 +58,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   id,
-		EventType:  "DefinitionCreated",
+		EventType:  string(eventtypes.DefinitionCreated),
 		Data:       data,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -154,7 +155,7 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
-		EventType:  "DefinitionRenamed",
+		EventType:  string(eventtypes.DefinitionRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -197,7 +198,7 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
-		EventType:  "DefinitionScheduleUpdated",
+		EventType:  string(eventtypes.DefinitionScheduleUpdated),
 		Data:       data,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -229,7 +230,7 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
-		EventType:  "DefinitionDescriptionUpdated",
+		EventType:  string(eventtypes.DefinitionDescriptionUpdated),
 		Data: map[string]any{
 			"description": req.Msg.Description,
 		},
@@ -263,7 +264,7 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
-		EventType:  "DefinitionDeleted",
+		EventType:  string(eventtypes.DefinitionDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -305,7 +306,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
-		EventType:  "DefinitionMemberAdded",
+		EventType:  string(eventtypes.DefinitionMemberAdded),
 		Data: map[string]any{
 			"action_set_id": req.Msg.ActionSetId,
 			"sort_order":    req.Msg.SortOrder,
@@ -346,7 +347,7 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
-		EventType:  "DefinitionMemberRemoved",
+		EventType:  string(eventtypes.DefinitionMemberRemoved),
 		Data: map[string]any{
 			"action_set_id": req.Msg.ActionSetId,
 		},
@@ -386,7 +387,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
-		EventType:  "DefinitionMemberReordered",
+		EventType:  string(eventtypes.DefinitionMemberReordered),
 		Data: map[string]any{
 			"action_set_id": req.Msg.ActionSetId,
 			"sort_order":    req.Msg.NewOrder,

@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -74,7 +75,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_selection",
 		StreamID:   id,
-		EventType:  "UserSelectionChanged",
+		EventType:  string(eventtypes.UserSelectionChanged),
 		Data: map[string]any{
 			"device_id":   req.Msg.DeviceId,
 			"source_type": sourceTypeStr,

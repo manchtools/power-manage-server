@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -33,7 +34,7 @@ type compliancePolicyCreatedRaw struct {
 // Returns ErrIgnoredEvent for any other (stream, event_type) so the
 // listener wrapper can silently no-op.
 func CompliancePolicyCreatedFromEvent(e store.PersistedEvent) (CompliancePolicyCreatedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyCreated" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyCreated) {
 		return CompliancePolicyCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -72,7 +73,7 @@ type compliancePolicyRenamedRaw struct {
 
 // CompliancePolicyRenamedFromEvent decodes CompliancePolicyRenamed.
 func CompliancePolicyRenamedFromEvent(e store.PersistedEvent) (CompliancePolicyRenamedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyRenamed" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRenamed) {
 		return CompliancePolicyRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -104,7 +105,7 @@ type compliancePolicyDescriptionUpdatedRaw struct {
 // CompliancePolicyDescriptionUpdatedFromEvent decodes
 // CompliancePolicyDescriptionUpdated.
 func CompliancePolicyDescriptionUpdatedFromEvent(e store.PersistedEvent) (CompliancePolicyDescriptionUpdatedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyDescriptionUpdated" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyDescriptionUpdated) {
 		return CompliancePolicyDescriptionUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := CompliancePolicyDescriptionUpdatedPayload{ID: e.StreamID}
@@ -147,7 +148,7 @@ type compliancePolicyRuleAddedRaw struct {
 
 // CompliancePolicyRuleAddedFromEvent decodes CompliancePolicyRuleAdded.
 func CompliancePolicyRuleAddedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleAddedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyRuleAdded" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleAdded) {
 		return CompliancePolicyRuleAddedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -187,7 +188,7 @@ type compliancePolicyRuleRemovedRaw struct {
 
 // CompliancePolicyRuleRemovedFromEvent decodes CompliancePolicyRuleRemoved.
 func CompliancePolicyRuleRemovedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleRemovedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyRuleRemoved" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleRemoved) {
 		return CompliancePolicyRuleRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -225,7 +226,7 @@ type compliancePolicyRuleUpdatedRaw struct {
 
 // CompliancePolicyRuleUpdatedFromEvent decodes CompliancePolicyRuleUpdated.
 func CompliancePolicyRuleUpdatedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleUpdatedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != "CompliancePolicyRuleUpdated" {
+	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleUpdated) {
 		return CompliancePolicyRuleUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

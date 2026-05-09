@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -66,10 +67,10 @@ func CompliancePolicyListener(st *store.Store, logger *slog.Logger) store.EventL
 		// we share its body here for the multi-write cases via WithTx
 		// and short-circuit the simple cases through the pool.
 		switch e.EventType {
-		case "CompliancePolicyDeleted",
-			"CompliancePolicyRuleAdded",
-			"CompliancePolicyRuleRemoved",
-			"CompliancePolicyRuleUpdated":
+		case string(eventtypes.CompliancePolicyDeleted),
+			string(eventtypes.CompliancePolicyRuleAdded),
+			string(eventtypes.CompliancePolicyRuleRemoved),
+			string(eventtypes.CompliancePolicyRuleUpdated):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyCompliancePolicy(ctx, q, e)
 			}); err != nil {
@@ -104,19 +105,19 @@ func ApplyCompliancePolicy(ctx context.Context, q *store.Queries, e store.Persis
 		return nil
 	}
 	switch e.EventType {
-	case "CompliancePolicyCreated":
+	case string(eventtypes.CompliancePolicyCreated):
 		return applyCompliancePolicyCreated(ctx, q, e)
-	case "CompliancePolicyRenamed":
+	case string(eventtypes.CompliancePolicyRenamed):
 		return applyCompliancePolicyRenamed(ctx, q, e)
-	case "CompliancePolicyDescriptionUpdated":
+	case string(eventtypes.CompliancePolicyDescriptionUpdated):
 		return applyCompliancePolicyDescriptionUpdated(ctx, q, e)
-	case "CompliancePolicyDeleted":
+	case string(eventtypes.CompliancePolicyDeleted):
 		return applyCompliancePolicyDeleted(ctx, q, e)
-	case "CompliancePolicyRuleAdded":
+	case string(eventtypes.CompliancePolicyRuleAdded):
 		return applyCompliancePolicyRuleAdded(ctx, q, e)
-	case "CompliancePolicyRuleRemoved":
+	case string(eventtypes.CompliancePolicyRuleRemoved):
 		return applyCompliancePolicyRuleRemoved(ctx, q, e)
-	case "CompliancePolicyRuleUpdated":
+	case string(eventtypes.CompliancePolicyRuleUpdated):
 		return applyCompliancePolicyRuleUpdated(ctx, q, e)
 	}
 	return nil

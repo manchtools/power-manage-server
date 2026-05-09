@@ -11,6 +11,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -506,7 +507,7 @@ func (m *SystemActionManager) createSystemAction(ctx context.Context, name strin
 	if err := m.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   id,
-		EventType:  "ActionCreated",
+		EventType:  string(eventtypes.ActionCreated),
 		Data: map[string]any{
 			"name":            name,
 			"description":     "System-managed action",
@@ -532,7 +533,7 @@ func (m *SystemActionManager) assignActionToUser(ctx context.Context, actionID, 
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",
 		StreamID:   assignmentID,
-		EventType:  "AssignmentCreated",
+		EventType:  string(eventtypes.AssignmentCreated),
 		Data: map[string]any{
 			"source_type": "action",
 			"source_id":   actionID,
@@ -556,7 +557,7 @@ func (m *SystemActionManager) updateSystemAction(ctx context.Context, actionID s
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   actionID,
-		EventType:  "ActionParamsUpdated",
+		EventType:  string(eventtypes.ActionParamsUpdated),
 		Data: map[string]any{
 			"params":        params,
 			"desired_state": desiredState,
@@ -571,7 +572,7 @@ func (m *SystemActionManager) deleteSystemAction(ctx context.Context, actionID s
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   actionID,
-		EventType:  "ActionDeleted",
+		EventType:  string(eventtypes.ActionDeleted),
 		Data:       map[string]any{},
 		ActorType:  "system",
 		ActorID:    "system",
@@ -584,7 +585,7 @@ func (m *SystemActionManager) linkSystemAction(ctx context.Context, userID, fiel
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserSystemActionLinked",
+		EventType:  string(eventtypes.UserSystemActionLinked),
 		Data: map[string]any{
 			"field":     field,
 			"action_id": actionID,

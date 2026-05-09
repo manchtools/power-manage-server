@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -86,12 +87,12 @@ func ActionListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		// short-circuit the simple cases through the pool.
 		needsTx := false
 		switch e.EventType {
-		case "ActionDeleted",
-			"DefinitionMemberAdded",
-			"DefinitionMemberRemoved",
-			"DefinitionMemberReordered":
+		case string(eventtypes.ActionDeleted),
+			string(eventtypes.DefinitionMemberAdded),
+			string(eventtypes.DefinitionMemberRemoved),
+			string(eventtypes.DefinitionMemberReordered):
 			needsTx = true
-		case "DefinitionCreated":
+		case string(eventtypes.DefinitionCreated):
 			// DefinitionCreated on the action stream that carries
 			// action_type is a single INSERT (no cascade). On the
 			// definition stream the same event is also a single INSERT
@@ -131,33 +132,33 @@ func ApplyAction(ctx context.Context, q *store.Queries, e store.PersistedEvent) 
 		return nil
 	}
 	switch {
-	case e.StreamType == "action" && e.EventType == "ActionCreated":
+	case e.StreamType == "action" && e.EventType == string(eventtypes.ActionCreated):
 		return applyActionCreated(ctx, q, e)
-	case e.StreamType == "action" && e.EventType == "ActionRenamed":
+	case e.StreamType == "action" && e.EventType == string(eventtypes.ActionRenamed):
 		return applyActionRenamed(ctx, q, e)
-	case e.StreamType == "action" && e.EventType == "ActionDescriptionUpdated":
+	case e.StreamType == "action" && e.EventType == string(eventtypes.ActionDescriptionUpdated):
 		return applyActionDescriptionUpdated(ctx, q, e)
-	case e.StreamType == "action" && e.EventType == "ActionParamsUpdated":
+	case e.StreamType == "action" && e.EventType == string(eventtypes.ActionParamsUpdated):
 		return applyActionParamsUpdated(ctx, q, e)
-	case e.StreamType == "action" && e.EventType == "ActionDeleted":
+	case e.StreamType == "action" && e.EventType == string(eventtypes.ActionDeleted):
 		return applyActionDeleted(ctx, q, e)
-	case e.EventType == "DefinitionCreated":
+	case e.EventType == string(eventtypes.DefinitionCreated):
 		// Both stream types route through the same handler; the
 		// payload's `action_type` presence picks the branch.
 		return applyDefinitionCreated(ctx, q, e)
-	case e.EventType == "DefinitionRenamed":
+	case e.EventType == string(eventtypes.DefinitionRenamed):
 		return applyDefinitionRenamed(ctx, q, e)
-	case e.EventType == "DefinitionDescriptionUpdated":
+	case e.EventType == string(eventtypes.DefinitionDescriptionUpdated):
 		return applyDefinitionDescriptionUpdated(ctx, q, e)
-	case e.EventType == "DefinitionDeleted":
+	case e.EventType == string(eventtypes.DefinitionDeleted):
 		return applyDefinitionDeleted(ctx, q, e)
-	case e.StreamType == "definition" && e.EventType == "DefinitionScheduleUpdated":
+	case e.StreamType == "definition" && e.EventType == string(eventtypes.DefinitionScheduleUpdated):
 		return applyDefinitionScheduleUpdated(ctx, q, e)
-	case e.StreamType == "definition" && e.EventType == "DefinitionMemberAdded":
+	case e.StreamType == "definition" && e.EventType == string(eventtypes.DefinitionMemberAdded):
 		return applyDefinitionMemberAdded(ctx, q, e)
-	case e.StreamType == "definition" && e.EventType == "DefinitionMemberRemoved":
+	case e.StreamType == "definition" && e.EventType == string(eventtypes.DefinitionMemberRemoved):
 		return applyDefinitionMemberRemoved(ctx, q, e)
-	case e.StreamType == "definition" && e.EventType == "DefinitionMemberReordered":
+	case e.StreamType == "definition" && e.EventType == string(eventtypes.DefinitionMemberReordered):
 		return applyDefinitionMemberReordered(ctx, q, e)
 	}
 	return nil

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -75,14 +76,14 @@ func UserGroupListener(st *store.Store, logger *slog.Logger) store.EventListener
 		// so we share its body here for the multi-write cases via
 		// WithTx and short-circuit the simple cases through the pool.
 		switch e.EventType {
-		case "UserGroupCreated",
-			"UserGroupQueryUpdated",
-			"UserGroupDeleted",
-			"UserGroupMemberAdded",
-			"UserGroupMemberRemoved",
-			"UserGroupMembersRebuilt",
-			"UserGroupRoleAssigned",
-			"UserGroupRoleRevoked":
+		case string(eventtypes.UserGroupCreated),
+			string(eventtypes.UserGroupQueryUpdated),
+			string(eventtypes.UserGroupDeleted),
+			string(eventtypes.UserGroupMemberAdded),
+			string(eventtypes.UserGroupMemberRemoved),
+			string(eventtypes.UserGroupMembersRebuilt),
+			string(eventtypes.UserGroupRoleAssigned),
+			string(eventtypes.UserGroupRoleRevoked):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyUserGroup(ctx, q, e)
 			}); err != nil {
@@ -116,25 +117,25 @@ func ApplyUserGroup(ctx context.Context, q *store.Queries, e store.PersistedEven
 		return nil
 	}
 	switch e.EventType {
-	case "UserGroupCreated":
+	case string(eventtypes.UserGroupCreated):
 		return applyUserGroupCreated(ctx, q, e)
-	case "UserGroupUpdated":
+	case string(eventtypes.UserGroupUpdated):
 		return applyUserGroupUpdated(ctx, q, e)
-	case "UserGroupQueryUpdated":
+	case string(eventtypes.UserGroupQueryUpdated):
 		return applyUserGroupQueryUpdated(ctx, q, e)
-	case "UserGroupMaintenanceWindowSet":
+	case string(eventtypes.UserGroupMaintenanceWindowSet):
 		return applyUserGroupMaintenanceWindowSet(ctx, q, e)
-	case "UserGroupDeleted":
+	case string(eventtypes.UserGroupDeleted):
 		return applyUserGroupDeleted(ctx, q, e)
-	case "UserGroupMemberAdded":
+	case string(eventtypes.UserGroupMemberAdded):
 		return applyUserGroupMemberAdded(ctx, q, e)
-	case "UserGroupMemberRemoved":
+	case string(eventtypes.UserGroupMemberRemoved):
 		return applyUserGroupMemberRemoved(ctx, q, e)
-	case "UserGroupRoleAssigned":
+	case string(eventtypes.UserGroupRoleAssigned):
 		return applyUserGroupRoleAssigned(ctx, q, e)
-	case "UserGroupRoleRevoked":
+	case string(eventtypes.UserGroupRoleRevoked):
 		return applyUserGroupRoleRevoked(ctx, q, e)
-	case "UserGroupMembersRebuilt":
+	case string(eventtypes.UserGroupMembersRebuilt):
 		return applyUserGroupMembersRebuilt(ctx, q, e)
 	}
 	return nil

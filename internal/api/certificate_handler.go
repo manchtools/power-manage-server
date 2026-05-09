@@ -11,6 +11,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -84,7 +85,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,
-		EventType:  "DeviceCertRenewed",
+		EventType:  string(eventtypes.DeviceCertRenewed),
 		Data: map[string]any{
 			"cert_fingerprint": newCert.Fingerprint,
 			"cert_not_after":   newCert.NotAfter.Format(time.RFC3339),

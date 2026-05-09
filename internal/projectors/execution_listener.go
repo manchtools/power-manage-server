@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -60,23 +61,23 @@ func ApplyExecution(ctx context.Context, q *store.Queries, e store.PersistedEven
 		return nil
 	}
 	switch e.EventType {
-	case "ExecutionCreated":
+	case string(eventtypes.ExecutionCreated):
 		return applyExecutionCreated(ctx, q, e)
-	case "ExecutionScheduled":
+	case string(eventtypes.ExecutionScheduled):
 		return applyExecutionScheduled(ctx, q, e)
-	case "ExecutionDispatched":
+	case string(eventtypes.ExecutionDispatched):
 		return applyExecutionDispatched(ctx, q, e)
-	case "ExecutionStarted":
+	case string(eventtypes.ExecutionStarted):
 		return applyExecutionStarted(ctx, q, e)
-	case "ExecutionCompleted":
+	case string(eventtypes.ExecutionCompleted):
 		return applyExecutionCompleted(ctx, q, e)
-	case "ExecutionFailed":
+	case string(eventtypes.ExecutionFailed):
 		return applyExecutionFailed(ctx, q, e)
-	case "ExecutionTimedOut":
+	case string(eventtypes.ExecutionTimedOut):
 		return applyExecutionTimedOut(ctx, q, e)
-	case "ExecutionSkipped":
+	case string(eventtypes.ExecutionSkipped):
 		return applyExecutionSkipped(ctx, q, e)
-	case "ExecutionCancelled":
+	case string(eventtypes.ExecutionCancelled):
 		return applyExecutionCancelled(ctx, q, e)
 	}
 	return nil

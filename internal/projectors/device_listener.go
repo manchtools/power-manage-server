@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -53,7 +54,7 @@ func DeviceListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		// autocommit pool. ApplyDevice handles all event types when
 		// called with tx-bound queries (the rebuild path).
 		switch e.EventType {
-		case "DeviceRegistered", "DeviceDeleted":
+		case string(eventtypes.DeviceRegistered), string(eventtypes.DeviceDeleted):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyDevice(ctx, q, e)
 			}); err != nil {
@@ -86,31 +87,31 @@ func ApplyDevice(ctx context.Context, q *store.Queries, e store.PersistedEvent) 
 		return nil
 	}
 	switch e.EventType {
-	case "DeviceRegistered":
+	case string(eventtypes.DeviceRegistered):
 		return applyDeviceRegistered(ctx, q, e)
-	case "DeviceSeen":
+	case string(eventtypes.DeviceSeen):
 		return applyDeviceSeen(ctx, q, e)
-	case "DeviceHeartbeat":
+	case string(eventtypes.DeviceHeartbeat):
 		return applyDeviceHeartbeat(ctx, q, e)
-	case "DeviceCertRenewed":
+	case string(eventtypes.DeviceCertRenewed):
 		return applyDeviceCertRenewed(ctx, q, e)
-	case "DeviceLabelsUpdated":
+	case string(eventtypes.DeviceLabelsUpdated):
 		return applyDeviceLabelsUpdated(ctx, q, e)
-	case "DeviceLabelSet":
+	case string(eventtypes.DeviceLabelSet):
 		return applyDeviceLabelSet(ctx, q, e)
-	case "DeviceLabelRemoved":
+	case string(eventtypes.DeviceLabelRemoved):
 		return applyDeviceLabelRemoved(ctx, q, e)
-	case "DeviceDeleted":
+	case string(eventtypes.DeviceDeleted):
 		return applyDeviceDeleted(ctx, q, e)
-	case "DeviceAssigned":
+	case string(eventtypes.DeviceAssigned):
 		return applyDeviceAssigned(ctx, q, e)
-	case "DeviceUnassigned":
+	case string(eventtypes.DeviceUnassigned):
 		return applyDeviceUnassigned(ctx, q, e)
-	case "DeviceGroupAssigned":
+	case string(eventtypes.DeviceGroupAssigned):
 		return applyDeviceGroupAssigned(ctx, q, e)
-	case "DeviceGroupUnassigned":
+	case string(eventtypes.DeviceGroupUnassigned):
 		return applyDeviceGroupUnassigned(ctx, q, e)
-	case "DeviceSyncIntervalSet":
+	case string(eventtypes.DeviceSyncIntervalSet):
 		return applyDeviceSyncIntervalSet(ctx, q, e)
 	}
 	return nil

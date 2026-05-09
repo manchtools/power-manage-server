@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
@@ -110,7 +111,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   user.ID,
-		EventType:  "UserLoggedIn",
+		EventType:  string(eventtypes.UserLoggedIn),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    user.ID,

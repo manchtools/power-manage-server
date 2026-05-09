@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -74,14 +75,14 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// user_handler.go). Other user events (SSH keys, password,
 	// session invalidation, system-action linking) don't surface
 	// in search results today, so they classify as SearchOpNone.
-	case "UserCreatedWithRoles",
-		"UserEmailChanged",
-		"UserProfileUpdated",
-		"UserLinuxUsernameChanged",
-		"UserDisabled":
+	case string(eventtypes.UserCreatedWithRoles),
+		string(eventtypes.UserEmailChanged),
+		string(eventtypes.UserProfileUpdated),
+		string(eventtypes.UserLinuxUsernameChanged),
+		string(eventtypes.UserDisabled):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUser, ID: e.StreamID}}
 
-	case "UserDeleted":
+	case string(eventtypes.UserDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUser, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
@@ -91,13 +92,13 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// denormalised fields per DeviceHandler.enqueueDeviceReindex.
 	// Cert renewal / assignment / unassignment do not change any
 	// of those fields → SearchOpNone.
-	case "DeviceRegistered",
-		"DeviceLabelSet",
-		"DeviceLabelRemoved",
-		"DeviceSyncIntervalSet":
+	case string(eventtypes.DeviceRegistered),
+		string(eventtypes.DeviceLabelSet),
+		string(eventtypes.DeviceLabelRemoved),
+		string(eventtypes.DeviceSyncIntervalSet):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDevice, ID: e.StreamID}}
 
-	case "DeviceDeleted":
+	case string(eventtypes.DeviceDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDevice, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
@@ -108,17 +109,17 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// per DeviceGroupHandler.enqueueDeviceGroupReindex. Member-add /
 	// member-remove events update member_count; the row reload picks
 	// that up.
-	case "DeviceGroupCreated",
-		"DeviceGroupRenamed",
-		"DeviceGroupDescriptionUpdated",
-		"DeviceGroupQueryUpdated",
-		"DeviceGroupSyncIntervalSet",
-		"DeviceGroupMaintenanceWindowSet",
-		"DeviceGroupMemberAdded",
-		"DeviceGroupMemberRemoved":
+	case string(eventtypes.DeviceGroupCreated),
+		string(eventtypes.DeviceGroupRenamed),
+		string(eventtypes.DeviceGroupDescriptionUpdated),
+		string(eventtypes.DeviceGroupQueryUpdated),
+		string(eventtypes.DeviceGroupSyncIntervalSet),
+		string(eventtypes.DeviceGroupMaintenanceWindowSet),
+		string(eventtypes.DeviceGroupMemberAdded),
+		string(eventtypes.DeviceGroupMemberRemoved):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
 
-	case "DeviceGroupDeleted":
+	case string(eventtypes.DeviceGroupDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
 
 	// DeviceAddedToGroup / DeviceRemovedFromGroup / DeviceGroupAssigned
@@ -133,13 +134,13 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// Group-stream events (Created, Updated, QueryUpdated,
 	// MaintenanceWindowSet) carry the group ID directly in StreamID
 	// — these reindex against e.StreamID.
-	case "UserGroupCreated",
-		"UserGroupUpdated",
-		"UserGroupQueryUpdated",
-		"UserGroupMaintenanceWindowSet":
+	case string(eventtypes.UserGroupCreated),
+		string(eventtypes.UserGroupUpdated),
+		string(eventtypes.UserGroupQueryUpdated),
+		string(eventtypes.UserGroupMaintenanceWindowSet):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: e.StreamID}}
 
-	case "UserGroupDeleted":
+	case string(eventtypes.UserGroupDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUserGroup, ID: e.StreamID}}
 
 	// Member / role events use a COMPOSITE StreamID:
@@ -150,10 +151,10 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// listener (#77) — the user_id / role_id suffixes are irrelevant
 	// to the search payload (member_count + role list are already
 	// denormalised on the projection row by the projector).
-	case "UserGroupMemberAdded",
-		"UserGroupMemberRemoved",
-		"UserGroupRoleAssigned",
-		"UserGroupRoleRevoked":
+	case string(eventtypes.UserGroupMemberAdded),
+		string(eventtypes.UserGroupMemberRemoved),
+		string(eventtypes.UserGroupRoleAssigned),
+		string(eventtypes.UserGroupRoleRevoked):
 		groupID, _, _ := strings.Cut(e.StreamID, ":")
 		if groupID == "" {
 			return nil
@@ -167,14 +168,14 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// flags all live in the search row per the DispatchAction
 	// handler's existing inline enqueue. Every execution lifecycle
 	// event mutates one of those fields, so each one reindexes.
-	case "ExecutionCreated",
-		"ExecutionScheduled",
-		"ExecutionDispatched",
-		"ExecutionStarted",
-		"ExecutionCompleted",
-		"ExecutionFailed",
-		"ExecutionCancelled",
-		"ExecutionTimedOut":
+	case string(eventtypes.ExecutionCreated),
+		string(eventtypes.ExecutionScheduled),
+		string(eventtypes.ExecutionDispatched),
+		string(eventtypes.ExecutionStarted),
+		string(eventtypes.ExecutionCompleted),
+		string(eventtypes.ExecutionFailed),
+		string(eventtypes.ExecutionCancelled),
+		string(eventtypes.ExecutionTimedOut):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeExecution, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
@@ -191,31 +192,31 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// follow-up PR) extends SearchAffected with member-edge variants
 	// and removes those calls. Splitting keeps this PR's diff small
 	// and CR-reviewable.
-	case "ActionSetCreated",
-		"ActionSetRenamed",
-		"ActionSetDescriptionUpdated",
-		"ActionSetScheduleUpdated",
-		"ActionSetMemberAdded",
-		"ActionSetMemberRemoved",
-		"ActionSetMemberReordered":
+	case string(eventtypes.ActionSetCreated),
+		string(eventtypes.ActionSetRenamed),
+		string(eventtypes.ActionSetDescriptionUpdated),
+		string(eventtypes.ActionSetScheduleUpdated),
+		string(eventtypes.ActionSetMemberAdded),
+		string(eventtypes.ActionSetMemberRemoved),
+		string(eventtypes.ActionSetMemberReordered):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeActionSet, ID: e.StreamID}}
 
-	case "ActionSetDeleted":
+	case string(eventtypes.ActionSetDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeActionSet, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
 	// Definition scope (same shape as ActionSet)
 	// ---------------------------------------------------------
-	case "DefinitionCreated",
-		"DefinitionRenamed",
-		"DefinitionDescriptionUpdated",
-		"DefinitionScheduleUpdated",
-		"DefinitionMemberAdded",
-		"DefinitionMemberRemoved",
-		"DefinitionMemberReordered":
+	case string(eventtypes.DefinitionCreated),
+		string(eventtypes.DefinitionRenamed),
+		string(eventtypes.DefinitionDescriptionUpdated),
+		string(eventtypes.DefinitionScheduleUpdated),
+		string(eventtypes.DefinitionMemberAdded),
+		string(eventtypes.DefinitionMemberRemoved),
+		string(eventtypes.DefinitionMemberReordered):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDefinition, ID: e.StreamID}}
 
-	case "DefinitionDeleted":
+	case string(eventtypes.DefinitionDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDefinition, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
@@ -225,13 +226,13 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// from action.params) all live on the search row. ParamsUpdated
 	// triggers a reindex because the isCompliance derivation can
 	// flip when params change.
-	case "ActionCreated",
-		"ActionRenamed",
-		"ActionDescriptionUpdated",
-		"ActionParamsUpdated":
+	case string(eventtypes.ActionCreated),
+		string(eventtypes.ActionRenamed),
+		string(eventtypes.ActionDescriptionUpdated),
+		string(eventtypes.ActionParamsUpdated):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeAction, ID: e.StreamID}}
 
-	case "ActionDeleted":
+	case string(eventtypes.ActionDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeAction, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
@@ -241,15 +242,15 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// contributes denormalised action names ("ActionNames" field) so
 	// a search hit ranks/highlights by the policy's referenced
 	// actions. Rule mutations therefore reindex the policy too.
-	case "CompliancePolicyCreated",
-		"CompliancePolicyRenamed",
-		"CompliancePolicyDescriptionUpdated",
-		"CompliancePolicyRuleAdded",
-		"CompliancePolicyRuleRemoved",
-		"CompliancePolicyRuleUpdated":
+	case string(eventtypes.CompliancePolicyCreated),
+		string(eventtypes.CompliancePolicyRenamed),
+		string(eventtypes.CompliancePolicyDescriptionUpdated),
+		string(eventtypes.CompliancePolicyRuleAdded),
+		string(eventtypes.CompliancePolicyRuleRemoved),
+		string(eventtypes.CompliancePolicyRuleUpdated):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
 
-	case "CompliancePolicyDeleted":
+	case string(eventtypes.CompliancePolicyDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
 	}
 

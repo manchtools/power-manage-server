@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -27,7 +28,7 @@ func ServerSettingsListener(st *store.Store, logger *slog.Logger) store.EventLis
 		if e.StreamType != "server_settings" {
 			return
 		}
-		if e.EventType != "ServerSettingUpdated" {
+		if e.EventType != string(eventtypes.ServerSettingUpdated) {
 			return
 		}
 

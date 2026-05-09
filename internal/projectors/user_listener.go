@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -69,7 +70,7 @@ func UserListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		// is a single statement and runs on the autocommit pool.
 		// ApplyUser handles all event types when called with
 		// tx-bound queries (the rebuild path).
-		if e.EventType == "UserCreatedWithRoles" || e.EventType == "UserDeleted" {
+		if e.EventType == string(eventtypes.UserCreatedWithRoles) || e.EventType == string(eventtypes.UserDeleted) {
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyUser(ctx, q, e)
 			}); err != nil {
@@ -97,37 +98,37 @@ func ApplyUser(ctx context.Context, q *store.Queries, e store.PersistedEvent) er
 		return nil
 	}
 	switch e.EventType {
-	case "UserCreatedWithRoles":
+	case string(eventtypes.UserCreatedWithRoles):
 		return applyUserCreatedWithRoles(ctx, q, e)
-	case "UserProfileUpdated":
+	case string(eventtypes.UserProfileUpdated):
 		return applyUserProfileUpdated(ctx, q, e)
-	case "UserEmailChanged":
+	case string(eventtypes.UserEmailChanged):
 		return applyUserEmailChanged(ctx, q, e)
-	case "UserPasswordChanged":
+	case string(eventtypes.UserPasswordChanged):
 		return applyUserPasswordChanged(ctx, q, e)
-	case "UserRoleChanged":
+	case string(eventtypes.UserRoleChanged):
 		return applyUserRoleChanged(ctx, q, e)
-	case "UserSessionInvalidated":
+	case string(eventtypes.UserSessionInvalidated):
 		return applyUserSessionInvalidated(ctx, q, e)
-	case "UserDisabled":
+	case string(eventtypes.UserDisabled):
 		return applyUserDisabled(ctx, q, e)
-	case "UserEnabled":
+	case string(eventtypes.UserEnabled):
 		return applyUserEnabled(ctx, q, e)
-	case "UserLoggedIn":
+	case string(eventtypes.UserLoggedIn):
 		return applyUserLoggedIn(ctx, q, e)
-	case "UserDeleted":
+	case string(eventtypes.UserDeleted):
 		return applyUserDeleted(ctx, q, e)
-	case "UserSshKeyAdded":
+	case string(eventtypes.UserSshKeyAdded):
 		return applyUserSshKeyAdded(ctx, q, e)
-	case "UserSshKeyRemoved":
+	case string(eventtypes.UserSshKeyRemoved):
 		return applyUserSshKeyRemoved(ctx, q, e)
-	case "UserSshSettingsUpdated":
+	case string(eventtypes.UserSshSettingsUpdated):
 		return applyUserSshSettingsUpdated(ctx, q, e)
-	case "UserLinuxUsernameChanged":
+	case string(eventtypes.UserLinuxUsernameChanged):
 		return applyUserLinuxUsernameChanged(ctx, q, e)
-	case "UserSystemActionLinked":
+	case string(eventtypes.UserSystemActionLinked):
 		return applyUserSystemActionLinked(ctx, q, e)
-	case "UserProvisioningSettingsUpdated":
+	case string(eventtypes.UserProvisioningSettingsUpdated):
 		return applyUserProvisioningSettingsUpdated(ctx, q, e)
 	}
 	return nil

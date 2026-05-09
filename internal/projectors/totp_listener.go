@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -55,7 +56,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		userID := e.StreamID
 
 		switch e.EventType {
-		case "TOTPSetupInitiated":
+		case string(eventtypes.TOTPSetupInitiated):
 			if err := q.UpsertTotpProjection(ctx, db.UpsertTotpProjectionParams{
 				UserID:            userID,
 				SecretEncrypted:   payload.SecretEncrypted,
@@ -67,7 +68,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 					"event_id", e.ID, "user_id", userID, "error", err)
 			}
 
-		case "TOTPVerified":
+		case string(eventtypes.TOTPVerified):
 			if err := q.VerifyTotpProjection(ctx, db.VerifyTotpProjectionParams{
 				UserID:            userID,
 				UpdatedAt:         updatedAt,
@@ -86,7 +87,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 					"event_id", e.ID, "user_id", userID, "error", err)
 			}
 
-		case "TOTPDisabled":
+		case string(eventtypes.TOTPDisabled):
 			if err := q.DeleteTotpProjection(ctx, userID); err != nil {
 				logger.Warn("totp projector: failed to delete totp_projection row",
 					"event_id", e.ID, "user_id", userID, "error", err)
@@ -101,7 +102,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 					"event_id", e.ID, "user_id", userID, "error", err)
 			}
 
-		case "TOTPBackupCodeUsed":
+		case string(eventtypes.TOTPBackupCodeUsed):
 			if payload.Index == nil {
 				logger.Warn("totp projector: TOTPBackupCodeUsed missing index field",
 					"event_id", e.ID, "user_id", userID)
@@ -120,7 +121,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 					"event_id", e.ID, "user_id", userID, "index", *payload.Index, "error", err)
 			}
 
-		case "TOTPBackupCodesRegenerated":
+		case string(eventtypes.TOTPBackupCodesRegenerated):
 			if err := q.RegenerateTotpBackupCodes(ctx, db.RegenerateTotpBackupCodesParams{
 				UserID:            userID,
 				BackupCodesHash:   payload.BackupCodesHash,

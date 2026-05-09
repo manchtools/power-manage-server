@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -63,7 +64,7 @@ type executionCreatedRaw struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func ExecutionCreatedFromEvent(e store.PersistedEvent) (ExecutionCreatedPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionCreated" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionCreated) {
 		return ExecutionCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -142,7 +143,7 @@ type executionScheduledRaw struct {
 // emitter that builds this event populates it unconditionally
 // (action_handler.go RunAt branch); a missing key is an emitter bug.
 func ExecutionScheduledFromEvent(e store.PersistedEvent) (ExecutionScheduledPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionScheduled" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionScheduled) {
 		return ExecutionScheduledPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -219,7 +220,7 @@ type executionTerminalRaw struct {
 
 // ExecutionCompletedFromEvent decodes ExecutionCompleted.
 func ExecutionCompletedFromEvent(e store.PersistedEvent) (ExecutionTerminalPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionCompleted" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionCompleted) {
 		return ExecutionTerminalPayload{}, ErrIgnoredEvent
 	}
 	return decodeTerminal(e, "ExecutionCompleted")
@@ -227,7 +228,7 @@ func ExecutionCompletedFromEvent(e store.PersistedEvent) (ExecutionTerminalPaylo
 
 // ExecutionFailedFromEvent decodes ExecutionFailed.
 func ExecutionFailedFromEvent(e store.PersistedEvent) (ExecutionTerminalPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionFailed" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionFailed) {
 		return ExecutionTerminalPayload{}, ErrIgnoredEvent
 	}
 	return decodeTerminal(e, "ExecutionFailed")
@@ -291,7 +292,7 @@ type executionTimedOutRaw struct {
 
 // ExecutionTimedOutFromEvent decodes ExecutionTimedOut.
 func ExecutionTimedOutFromEvent(e store.PersistedEvent) (ExecutionTimedOutPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionTimedOut" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionTimedOut) {
 		return ExecutionTimedOutPayload{}, ErrIgnoredEvent
 	}
 	out := ExecutionTimedOutPayload{
@@ -334,7 +335,7 @@ type executionReasonRaw struct {
 
 // ExecutionSkippedFromEvent decodes ExecutionSkipped.
 func ExecutionSkippedFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionSkipped" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionSkipped) {
 		return ExecutionReasonPayload{}, ErrIgnoredEvent
 	}
 	return decodeReason(e, "ExecutionSkipped")
@@ -342,7 +343,7 @@ func ExecutionSkippedFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, 
 
 // ExecutionCancelledFromEvent decodes ExecutionCancelled.
 func ExecutionCancelledFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, error) {
-	if e.StreamType != "execution" || e.EventType != "ExecutionCancelled" {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionCancelled) {
 		return ExecutionReasonPayload{}, ErrIgnoredEvent
 	}
 	return decodeReason(e, "ExecutionCancelled")

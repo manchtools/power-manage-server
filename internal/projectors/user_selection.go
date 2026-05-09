@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -28,7 +29,7 @@ type UserSelectionChangedPayload struct {
 
 // UserSelectionChangedFromEvent decodes UserSelectionChanged.
 func UserSelectionChangedFromEvent(e store.PersistedEvent) (UserSelectionChangedPayload, error) {
-	if e.StreamType != "user_selection" || e.EventType != "UserSelectionChanged" {
+	if e.StreamType != "user_selection" || e.EventType != string(eventtypes.UserSelectionChanged) {
 		return UserSelectionChangedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

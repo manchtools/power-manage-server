@@ -16,6 +16,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -236,7 +237,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,
-		EventType:  "DeviceRegistered",
+		EventType:  string(eventtypes.DeviceRegistered),
 		Data:       eventData,
 		ActorType:  "system",
 		ActorID:    "registration",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -49,7 +50,7 @@ func SecurityAlertListener(st *store.Store, logger *slog.Logger) store.EventList
 			return
 		}
 		switch e.EventType {
-		case "SecurityAlert":
+		case string(eventtypes.SecurityAlert):
 			params, err := SecurityAlertProjectionFromEvent(e)
 			if err != nil {
 				if errors.Is(err, ErrIgnoredEvent) {
@@ -64,7 +65,7 @@ func SecurityAlertListener(st *store.Store, logger *slog.Logger) store.EventList
 					"event_id", e.ID, "device_id", e.StreamID, "error", err)
 			}
 
-		case "SecurityAlertAcknowledged":
+		case string(eventtypes.SecurityAlertAcknowledged):
 			params, err := SecurityAlertAckParamsFromEvent(e)
 			if err != nil {
 				if errors.Is(err, ErrIgnoredEvent) {

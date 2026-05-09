@@ -14,6 +14,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -75,7 +76,7 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   id,
-		EventType:  "UserGroupCreated",
+		EventType:  string(eventtypes.UserGroupCreated),
 		Data: map[string]any{
 			"name":          req.Msg.Name,
 			"description":   req.Msg.Description,
@@ -191,7 +192,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.GroupId,
-		EventType:  "UserGroupUpdated",
+		EventType:  string(eventtypes.UserGroupUpdated),
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
@@ -242,7 +243,7 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserGroupMaintenanceWindowSet",
+		EventType:  string(eventtypes.UserGroupMaintenanceWindowSet),
 		Data: map[string]any{
 			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
 		},
@@ -289,7 +290,7 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserGroupDeleted",
+		EventType:  string(eventtypes.UserGroupDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -367,7 +368,7 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
-			EventType:  "UserGroupMemberAdded",
+			EventType:  string(eventtypes.UserGroupMemberAdded),
 			Data: map[string]any{
 				"group_id": req.Msg.GroupId,
 				"user_id":  userID,
@@ -429,7 +430,7 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   streamID,
-		EventType:  "UserGroupMemberRemoved",
+		EventType:  string(eventtypes.UserGroupMemberRemoved),
 		Data: map[string]any{
 			"group_id": req.Msg.GroupId,
 			"user_id":  req.Msg.UserId,
@@ -507,7 +508,7 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
-			EventType:  "UserGroupRoleAssigned",
+			EventType:  string(eventtypes.UserGroupRoleAssigned),
 			Data: map[string]any{
 				"group_id": req.Msg.GroupId,
 				"role_id":  roleID,
@@ -553,7 +554,7 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   streamID,
-		EventType:  "UserGroupRoleRevoked",
+		EventType:  string(eventtypes.UserGroupRoleRevoked),
 		Data: map[string]any{
 			"group_id": req.Msg.GroupId,
 			"role_id":  req.Msg.RoleId,
@@ -628,7 +629,7 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "UserGroupQueryUpdated",
+		EventType:  string(eventtypes.UserGroupQueryUpdated),
 		Data: map[string]any{
 			"is_dynamic":    req.Msg.IsDynamic,
 			"dynamic_query": req.Msg.DynamicQuery,
@@ -762,7 +763,7 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserSessionInvalidated",
+		EventType:  string(eventtypes.UserSessionInvalidated),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    actorID,

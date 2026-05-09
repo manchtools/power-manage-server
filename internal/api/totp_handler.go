@@ -13,6 +13,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -78,7 +79,7 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
-		EventType:  "TOTPSetupInitiated",
+		EventType:  string(eventtypes.TOTPSetupInitiated),
 		Data: map[string]any{
 			"secret_encrypted":  encryptedSecret,
 			"backup_codes_hash": hashes,
@@ -134,7 +135,7 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
-		EventType:  "TOTPVerified",
+		EventType:  string(eventtypes.TOTPVerified),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -178,7 +179,7 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
-		EventType:  "TOTPDisabled",
+		EventType:  string(eventtypes.TOTPDisabled),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -215,7 +216,7 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   targetUserID,
-		EventType:  "TOTPDisabled",
+		EventType:  string(eventtypes.TOTPDisabled),
 		Data:       map[string]any{"admin": true},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -288,7 +289,7 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
-		EventType:  "TOTPBackupCodesRegenerated",
+		EventType:  string(eventtypes.TOTPBackupCodesRegenerated),
 		Data: map[string]any{
 			"backup_codes_hash": hashes,
 		},
@@ -351,7 +352,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "totp",
 				StreamID:   claims.UserID,
-				EventType:  "TOTPBackupCodeUsed",
+				EventType:  string(eventtypes.TOTPBackupCodeUsed),
 				Data:       map[string]any{"index": idx},
 				ActorType:  "user",
 				ActorID:    claims.UserID,
@@ -407,7 +408,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   claims.UserID,
-		EventType:  "UserLoggedIn",
+		EventType:  string(eventtypes.UserLoggedIn),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    claims.UserID,

@@ -14,6 +14,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -310,7 +311,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
-		EventType:  "LuksKeyRotated",
+		EventType:  string(eventtypes.LuksKeyRotated),
 		Data: map[string]any{
 			"device_id":       req.Msg.DeviceId,
 			"action_id":       req.Msg.ActionId,
@@ -364,7 +365,7 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "lps_password",
 			StreamID:   lpsStreamID,
-			EventType:  "LpsPasswordRotated",
+			EventType:  string(eventtypes.LpsPasswordRotated),
 			Data: map[string]any{
 				"device_id":       req.Msg.DeviceId,
 				"action_id":       req.Msg.ActionId,

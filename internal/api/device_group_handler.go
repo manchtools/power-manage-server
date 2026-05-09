@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -62,7 +63,7 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   id,
-		EventType:  "DeviceGroupCreated",
+		EventType:  string(eventtypes.DeviceGroupCreated),
 		Data: map[string]any{
 			"name":          req.Msg.Name,
 			"description":   req.Msg.Description,
@@ -191,7 +192,7 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupRenamed",
+		EventType:  string(eventtypes.DeviceGroupRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -225,7 +226,7 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupDescriptionUpdated",
+		EventType:  string(eventtypes.DeviceGroupDescriptionUpdated),
 		Data: map[string]any{
 			"description": req.Msg.Description,
 		},
@@ -259,7 +260,7 @@ func (h *DeviceGroupHandler) DeleteDeviceGroup(ctx context.Context, req *connect
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupDeleted",
+		EventType:  string(eventtypes.DeviceGroupDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -322,7 +323,7 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device_group",
 			StreamID:   req.Msg.GroupId,
-			EventType:  "DeviceGroupMemberAdded",
+			EventType:  string(eventtypes.DeviceGroupMemberAdded),
 			Data: map[string]any{
 				"device_id": deviceID,
 			},
@@ -368,7 +369,7 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.GroupId,
-		EventType:  "DeviceGroupMemberRemoved",
+		EventType:  string(eventtypes.DeviceGroupMemberRemoved),
 		Data: map[string]any{
 			"device_id": req.Msg.DeviceId,
 		},
@@ -416,7 +417,7 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupQueryUpdated",
+		EventType:  string(eventtypes.DeviceGroupQueryUpdated),
 		Data: map[string]any{
 			"is_dynamic":    req.Msg.IsDynamic,
 			"dynamic_query": req.Msg.DynamicQuery,
@@ -539,7 +540,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupSyncIntervalSet",
+		EventType:  string(eventtypes.DeviceGroupSyncIntervalSet),
 		Data: map[string]any{
 			"sync_interval_minutes": req.Msg.SyncIntervalMinutes,
 		},
@@ -585,7 +586,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceGroupMaintenanceWindowSet",
+		EventType:  string(eventtypes.DeviceGroupMaintenanceWindowSet),
 		Data: map[string]any{
 			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
 		},

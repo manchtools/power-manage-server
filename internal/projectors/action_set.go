@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -40,7 +41,7 @@ type actionSetCreatedRaw struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func ActionSetCreatedFromEvent(e store.PersistedEvent) (ActionSetCreatedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetCreated" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetCreated) {
 		return ActionSetCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -88,7 +89,7 @@ type actionSetRenamedRaw struct {
 
 // ActionSetRenamedFromEvent decodes ActionSetRenamed.
 func ActionSetRenamedFromEvent(e store.PersistedEvent) (ActionSetRenamedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetRenamed" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetRenamed) {
 		return ActionSetRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -122,7 +123,7 @@ type actionSetDescriptionUpdatedRaw struct {
 // Description == "", matching the PL/pgSQL COALESCE-to-empty-string
 // behaviour.
 func ActionSetDescriptionUpdatedFromEvent(e store.PersistedEvent) (ActionSetDescriptionUpdatedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetDescriptionUpdated" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetDescriptionUpdated) {
 		return ActionSetDescriptionUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := ActionSetDescriptionUpdatedPayload{ID: e.StreamID}
@@ -153,7 +154,7 @@ type actionSetScheduleUpdatedRaw struct {
 
 // ActionSetScheduleUpdatedFromEvent decodes ActionSetScheduleUpdated.
 func ActionSetScheduleUpdatedFromEvent(e store.PersistedEvent) (ActionSetScheduleUpdatedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetScheduleUpdated" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetScheduleUpdated) {
 		return ActionSetScheduleUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := ActionSetScheduleUpdatedPayload{
@@ -189,7 +190,7 @@ type actionSetMemberRaw struct {
 
 // ActionSetMemberAddedFromEvent decodes ActionSetMemberAdded.
 func ActionSetMemberAddedFromEvent(e store.PersistedEvent) (ActionSetMemberAddedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetMemberAdded" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberAdded) {
 		return ActionSetMemberAddedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -222,7 +223,7 @@ type actionSetMemberRemovedRaw struct {
 
 // ActionSetMemberRemovedFromEvent decodes ActionSetMemberRemoved.
 func ActionSetMemberRemovedFromEvent(e store.PersistedEvent) (ActionSetMemberRemovedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetMemberRemoved" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberRemoved) {
 		return ActionSetMemberRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -246,7 +247,7 @@ type ActionSetMemberReorderedPayload = ActionSetMemberAddedPayload
 // Same field set as ActionSetMemberAdded plus the same default-zero
 // behaviour for sort_order.
 func ActionSetMemberReorderedFromEvent(e store.PersistedEvent) (ActionSetMemberReorderedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != "ActionSetMemberReordered" {
+	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberReordered) {
 		return ActionSetMemberReorderedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

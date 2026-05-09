@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -46,7 +47,7 @@ var ErrIgnoredEvent = errors.New("projector: event ignored")
 // wants to render the alert immediately while the listener writes
 // to the DB asynchronously.
 func SecurityAlertProjectionFromEvent(e store.PersistedEvent) (db.InsertSecurityAlertProjectionParams, error) {
-	if e.StreamType != "device" || e.EventType != "SecurityAlert" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.SecurityAlert) {
 		return db.InsertSecurityAlertProjectionParams{}, ErrIgnoredEvent
 	}
 
@@ -84,7 +85,7 @@ func SecurityAlertProjectionFromEvent(e store.PersistedEvent) (db.InsertSecurity
 // silently full-scanning and matching nothing — matches the deleted
 // PL/pgSQL projector's `(event.data->>'alert_id')::uuid` behaviour.
 func SecurityAlertAckParamsFromEvent(e store.PersistedEvent) (db.AcknowledgeSecurityAlertProjectionParams, error) {
-	if e.StreamType != "device" || e.EventType != "SecurityAlertAcknowledged" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.SecurityAlertAcknowledged) {
 		return db.AcknowledgeSecurityAlertProjectionParams{}, ErrIgnoredEvent
 	}
 

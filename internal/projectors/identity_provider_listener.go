@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -37,23 +38,23 @@ func IdentityProviderListener(st *store.Store, logger *slog.Logger) store.EventL
 			return
 		}
 		switch e.EventType {
-		case "IdentityProviderCreated":
+		case string(eventtypes.IdentityProviderCreated):
 			applyIdentityProviderCreated(ctx, st, logger, e)
-		case "IdentityProviderUpdated":
+		case string(eventtypes.IdentityProviderUpdated):
 			applyIdentityProviderUpdated(ctx, st, logger, e)
-		case "IdentityProviderDeleted":
+		case string(eventtypes.IdentityProviderDeleted):
 			applyIdentityProviderDeleted(ctx, st, logger, e)
-		case "IdentityProviderSCIMEnabled":
+		case string(eventtypes.IdentityProviderSCIMEnabled):
 			applyIdentityProviderSCIMEnabled(ctx, st, logger, e)
-		case "IdentityProviderSCIMDisabled":
+		case string(eventtypes.IdentityProviderSCIMDisabled):
 			applyIdentityProviderSCIMDisabled(ctx, st, logger, e)
-		case "IdentityProviderSCIMTokenRotated":
+		case string(eventtypes.IdentityProviderSCIMTokenRotated):
 			applyIdentityProviderSCIMTokenRotated(ctx, st, logger, e)
-		case "IdentityLinked":
+		case string(eventtypes.IdentityLinked):
 			applyIdentityLinked(ctx, st, logger, e)
-		case "IdentityLinkLoginUpdated":
+		case string(eventtypes.IdentityLinkLoginUpdated):
 			applyIdentityLinkLoginUpdated(ctx, st, logger, e)
-		case "IdentityUnlinked":
+		case string(eventtypes.IdentityUnlinked):
 			applyIdentityUnlinked(ctx, st, logger, e)
 		}
 	}

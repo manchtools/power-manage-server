@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -243,7 +244,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			err = h.store.AppendEvent(ctx, store.Event{
 				StreamType: "identity_provider",
 				StreamID:   linkID,
-				EventType:  "IdentityLinked",
+				EventType:  string(eventtypes.IdentityLinked),
 				Data: map[string]any{
 					"user_id":        existingUser.ID,
 					"provider_id":    provider.ID,
@@ -299,7 +300,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreatedWithRoles",
+		EventType:  string(eventtypes.UserCreatedWithRoles),
 		Data: map[string]any{
 			"email":          email,
 			"display_name":   formatExternalName(scimUser.Name),
@@ -323,7 +324,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   linkID,
-		EventType:  "IdentityLinked",
+		EventType:  string(eventtypes.IdentityLinked),
 		Data: map[string]any{
 			"user_id":        userID,
 			"provider_id":    provider.ID,
@@ -346,7 +347,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserProvisioningSettingsUpdated",
+				EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 				Data:       map[string]any{"user_provisioning_enabled": true},
 				ActorType:  "system",
 				ActorID:    "scim",
@@ -358,7 +359,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserSshSettingsUpdated",
+				EventType:  string(eventtypes.UserSshSettingsUpdated),
 				Data: map[string]any{
 					"ssh_access_enabled": true,
 					"ssh_allow_pubkey":   true,
@@ -485,7 +486,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserEmailChanged",
+			EventType:  string(eventtypes.UserEmailChanged),
 			Data: map[string]any{
 				"email": newEmail,
 			},
@@ -504,7 +505,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserDisabled",
+			EventType:  string(eventtypes.UserDisabled),
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -517,7 +518,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserEnabled",
+			EventType:  string(eventtypes.UserEnabled),
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -536,7 +537,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserProfileUpdated",
+			EventType:  string(eventtypes.UserProfileUpdated),
 			Data: map[string]any{
 				"display_name": newDisplayName,
 				"given_name":   newGivenName,
@@ -685,7 +686,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserDisabled",
+				EventType:  string(eventtypes.UserDisabled),
 				Data:       map[string]any{},
 				ActorType:  "scim",
 				ActorID:    provider.ID,
@@ -694,7 +695,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserEnabled",
+				EventType:  string(eventtypes.UserEnabled),
 				Data:       map[string]any{},
 				ActorType:  "scim",
 				ActorID:    provider.ID,
@@ -710,7 +711,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserEmailChanged",
+				EventType:  string(eventtypes.UserEmailChanged),
 				Data: map[string]any{
 					"email": email,
 				},
@@ -737,7 +738,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserEmailChanged",
+				EventType:  string(eventtypes.UserEmailChanged),
 				Data: map[string]any{
 					"email": email,
 				},
@@ -766,7 +767,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
-				EventType:  "UserProfileUpdated",
+				EventType:  string(eventtypes.UserProfileUpdated),
 				Data:       data,
 				ActorType:  "scim",
 				ActorID:    provider.ID,
@@ -829,7 +830,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
-		EventType:  "IdentityUnlinked",
+		EventType:  string(eventtypes.IdentityUnlinked),
 		Data:       map[string]any{},
 		ActorType:  "scim",
 		ActorID:    provider.ID,
@@ -862,7 +863,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserDeleted",
+			EventType:  string(eventtypes.UserDeleted),
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -1077,7 +1078,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserEmailChanged",
+			EventType:  string(eventtypes.UserEmailChanged),
 			Data:       map[string]any{"email": email},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -1090,7 +1091,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserDisabled",
+			EventType:  string(eventtypes.UserDisabled),
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -1099,7 +1100,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserEnabled",
+			EventType:  string(eventtypes.UserEnabled),
 			Data:       map[string]any{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
@@ -1114,7 +1115,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider db.IdentityProv
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserProfileUpdated",
+			EventType:  string(eventtypes.UserProfileUpdated),
 			Data: map[string]any{
 				"display_name": newDisplayName,
 				"given_name":   newGivenName,
@@ -1144,7 +1145,7 @@ func (h *Handler) syncIdentityLink(ctx context.Context, provider db.IdentityProv
 	h.appendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
-		EventType:  "IdentityLinkLoginUpdated",
+		EventType:  string(eventtypes.IdentityLinkLoginUpdated),
 		Data: map[string]any{
 			"provider_id":    provider.ID,
 			"external_id":    link.ExternalID,

@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -55,7 +56,7 @@ func AssignmentListener(st *store.Store, logger *slog.Logger) store.EventListene
 		// projection consistent if the function raises mid-cascade).
 		// Single-statement events go on the autocommit pool.
 		switch e.EventType {
-		case "AssignmentCreated", "AssignmentDeleted":
+		case string(eventtypes.AssignmentCreated), string(eventtypes.AssignmentDeleted):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyAssignment(ctx, q, e)
 			}); err != nil {
@@ -89,13 +90,13 @@ func ApplyAssignment(ctx context.Context, q *store.Queries, e store.PersistedEve
 		return nil
 	}
 	switch e.EventType {
-	case "AssignmentCreated":
+	case string(eventtypes.AssignmentCreated):
 		return applyAssignmentCreated(ctx, q, e)
-	case "AssignmentModeChanged":
+	case string(eventtypes.AssignmentModeChanged):
 		return applyAssignmentModeChanged(ctx, q, e)
-	case "AssignmentSortOrderChanged":
+	case string(eventtypes.AssignmentSortOrderChanged):
 		return applyAssignmentSortOrderChanged(ctx, q, e)
-	case "AssignmentDeleted":
+	case string(eventtypes.AssignmentDeleted):
 		return applyAssignmentDeleted(ctx, q, e)
 	}
 	return nil

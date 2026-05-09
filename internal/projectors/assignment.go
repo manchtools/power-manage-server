@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -47,7 +48,7 @@ type assignmentCreatedRaw struct {
 // failure surface in the listener log instead of producing a half-
 // applied row.
 func AssignmentCreatedFromEvent(e store.PersistedEvent) (AssignmentCreatedPayload, error) {
-	if e.StreamType != "assignment" || e.EventType != "AssignmentCreated" {
+	if e.StreamType != "assignment" || e.EventType != string(eventtypes.AssignmentCreated) {
 		return AssignmentCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -104,7 +105,7 @@ type assignmentModeChangedRaw struct {
 
 // AssignmentModeChangedFromEvent decodes AssignmentModeChanged.
 func AssignmentModeChangedFromEvent(e store.PersistedEvent) (AssignmentModeChangedPayload, error) {
-	if e.StreamType != "assignment" || e.EventType != "AssignmentModeChanged" {
+	if e.StreamType != "assignment" || e.EventType != string(eventtypes.AssignmentModeChanged) {
 		return AssignmentModeChangedPayload{}, ErrIgnoredEvent
 	}
 	out := AssignmentModeChangedPayload{ID: e.StreamID}
@@ -139,7 +140,7 @@ type assignmentSortOrderChangedRaw struct {
 // AssignmentSortOrderChangedFromEvent decodes
 // AssignmentSortOrderChanged.
 func AssignmentSortOrderChangedFromEvent(e store.PersistedEvent) (AssignmentSortOrderChangedPayload, error) {
-	if e.StreamType != "assignment" || e.EventType != "AssignmentSortOrderChanged" {
+	if e.StreamType != "assignment" || e.EventType != string(eventtypes.AssignmentSortOrderChanged) {
 		return AssignmentSortOrderChangedPayload{}, ErrIgnoredEvent
 	}
 	out := AssignmentSortOrderChangedPayload{ID: e.StreamID}

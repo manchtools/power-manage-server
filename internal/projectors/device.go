@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -53,7 +54,7 @@ type deviceRegisteredRaw struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceRegistered" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceRegistered) {
 		return DeviceRegisteredPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -108,7 +109,7 @@ type deviceSeenRaw struct {
 // DeviceSeenFromEvent decodes DeviceSeen. Empty payload is valid (a
 // pure heartbeat-style ping that only refreshes last_seen_at).
 func DeviceSeenFromEvent(e store.PersistedEvent) (DeviceSeenPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceSeen" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceSeen) {
 		return DeviceSeenPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceSeenPayload{ID: e.StreamID}
@@ -146,7 +147,7 @@ type deviceHeartbeatRaw struct {
 // DeviceHeartbeatFromEvent decodes DeviceHeartbeat. Empty payload is
 // a valid bare ping.
 func DeviceHeartbeatFromEvent(e store.PersistedEvent) (DeviceHeartbeatPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceHeartbeat" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceHeartbeat) {
 		return DeviceHeartbeatPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceHeartbeatPayload{ID: e.StreamID}
@@ -178,7 +179,7 @@ type deviceCertRenewedRaw struct {
 
 // DeviceCertRenewedFromEvent decodes DeviceCertRenewed.
 func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceCertRenewed" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceCertRenewed) {
 		return DeviceCertRenewedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -215,7 +216,7 @@ type deviceLabelsUpdatedRaw struct {
 // labels => nil byte slice; the SQL COALESCE will preserve the
 // existing row value.
 func DeviceLabelsUpdatedFromEvent(e store.PersistedEvent) (DeviceLabelsUpdatedPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceLabelsUpdated" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelsUpdated) {
 		return DeviceLabelsUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceLabelsUpdatedPayload{ID: e.StreamID}
@@ -248,7 +249,7 @@ type deviceLabelSetRaw struct {
 
 // DeviceLabelSetFromEvent decodes DeviceLabelSet.
 func DeviceLabelSetFromEvent(e store.PersistedEvent) (DeviceLabelSetPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceLabelSet" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelSet) {
 		return DeviceLabelSetPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -281,7 +282,7 @@ type deviceLabelRemovedRaw struct {
 
 // DeviceLabelRemovedFromEvent decodes DeviceLabelRemoved.
 func DeviceLabelRemovedFromEvent(e store.PersistedEvent) (DeviceLabelRemovedPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceLabelRemoved" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelRemoved) {
 		return DeviceLabelRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -314,7 +315,7 @@ type deviceUserAssignmentRaw struct {
 
 // DeviceAssignedFromEvent decodes DeviceAssigned.
 func DeviceAssignedFromEvent(e store.PersistedEvent) (DeviceUserAssignmentPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceAssigned" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceAssigned) {
 		return DeviceUserAssignmentPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceUserAssignment(e)
@@ -322,7 +323,7 @@ func DeviceAssignedFromEvent(e store.PersistedEvent) (DeviceUserAssignmentPayloa
 
 // DeviceUnassignedFromEvent decodes DeviceUnassigned.
 func DeviceUnassignedFromEvent(e store.PersistedEvent) (DeviceUserAssignmentPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceUnassigned" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceUnassigned) {
 		return DeviceUserAssignmentPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceUserAssignment(e)
@@ -356,7 +357,7 @@ type deviceGroupAssignmentRaw struct {
 
 // DeviceGroupAssignedFromEvent decodes DeviceGroupAssigned.
 func DeviceGroupAssignedFromEvent(e store.PersistedEvent) (DeviceGroupAssignmentPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceGroupAssigned" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceGroupAssigned) {
 		return DeviceGroupAssignmentPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceGroupAssignment(e)
@@ -364,7 +365,7 @@ func DeviceGroupAssignedFromEvent(e store.PersistedEvent) (DeviceGroupAssignment
 
 // DeviceGroupUnassignedFromEvent decodes DeviceGroupUnassigned.
 func DeviceGroupUnassignedFromEvent(e store.PersistedEvent) (DeviceGroupAssignmentPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceGroupUnassigned" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceGroupUnassigned) {
 		return DeviceGroupAssignmentPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceGroupAssignment(e)
@@ -398,7 +399,7 @@ type deviceSyncIntervalSetRaw struct {
 
 // DeviceSyncIntervalSetFromEvent decodes DeviceSyncIntervalSet.
 func DeviceSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceSyncIntervalSetPayload, error) {
-	if e.StreamType != "device" || e.EventType != "DeviceSyncIntervalSet" {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceSyncIntervalSet) {
 		return DeviceSyncIntervalSetPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceSyncIntervalSetPayload{ID: e.StreamID}
