@@ -12,6 +12,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -82,13 +83,15 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	}
 
 	// Emit DeviceCertRenewed event (projection handler already exists in migration 001)
+	fingerprint := newCert.Fingerprint
+	notAfterStr := newCert.NotAfter.Format(time.RFC3339)
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,
 		EventType:  string(eventtypes.DeviceCertRenewed),
-		Data: map[string]any{
-			"cert_fingerprint": newCert.Fingerprint,
-			"cert_not_after":   newCert.NotAfter.Format(time.RFC3339),
+		Data: payloads.DeviceCertRenewed{
+			CertFingerprint: &fingerprint,
+			CertNotAfter:    &notAfterStr,
 		},
 		ActorType: "device",
 		ActorID:   deviceID,

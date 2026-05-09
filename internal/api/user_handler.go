@@ -15,6 +15,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -130,21 +131,22 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// projector tx. The pre-#135 partial-write window between the
 	// user row INSERT and the per-role INSERTs is no longer
 	// reachable: either both land or neither does.
+	defaultRole := "user"
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
 		EventType:  string(eventtypes.UserCreatedWithRoles),
-		Data: map[string]any{
-			"email":              req.Msg.Email,
-			"password_hash":      passwordHash,
-			"role":               "user",
-			"display_name":       req.Msg.DisplayName,
-			"given_name":         req.Msg.GivenName,
-			"family_name":        req.Msg.FamilyName,
-			"preferred_username": req.Msg.PreferredUsername,
-			"linux_username":     linuxUsername,
-			"linux_uid":          linuxUID,
-			"role_ids":           roleIDs,
+		Data: payloads.UserCreatedWithRoles{
+			Email:             &req.Msg.Email,
+			PasswordHash:      &passwordHash,
+			Role:              &defaultRole,
+			DisplayName:       &req.Msg.DisplayName,
+			GivenName:         &req.Msg.GivenName,
+			FamilyName:        &req.Msg.FamilyName,
+			PreferredUsername: &req.Msg.PreferredUsername,
+			LinuxUsername:     &linuxUsername,
+			LinuxUID:          &linuxUID,
+			RoleIDs:           roleIDs,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -171,26 +173,30 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// Auto-enable provisioning/SSH if global server settings are on
 	if settings, err := h.store.Queries().GetServerSettings(ctx); err == nil {
 		if settings.UserProvisioningEnabled {
+			provisioningEnabled := true
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   id,
 				EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
-				Data:       map[string]any{"user_provisioning_enabled": true},
-				ActorType:  "system",
-				ActorID:    "auto",
+				Data: payloads.UserProvisioningSettingsUpdated{
+					UserProvisioningEnabled: &provisioningEnabled,
+				},
+				ActorType: "system",
+				ActorID:   "auto",
 			}); err != nil {
 				h.logger.Warn("failed to auto-enable provisioning for new user", "user_id", id, "error", err)
 			}
 		}
 		if settings.SshAccessForAll {
+			sshOn, sshAllow, sshPwOff := true, true, false
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   id,
 				EventType:  string(eventtypes.UserSshSettingsUpdated),
-				Data: map[string]any{
-					"ssh_access_enabled": true,
-					"ssh_allow_pubkey":   true,
-					"ssh_allow_password": false,
+				Data: payloads.UserSshSettingsUpdated{
+					SshAccessEnabled: &sshOn,
+					SshAllowPubkey:   &sshAllow,
+					SshAllowPassword: &sshPwOff,
 				},
 				ActorType: "system",
 				ActorID:   "auto",
@@ -329,8 +335,8 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.UserEmailChanged),
-		Data: map[string]any{
-			"email": req.Msg.Email,
+		Data: payloads.UserEmailChanged{
+			Email: &req.Msg.Email,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -394,8 +400,8 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.UserPasswordChanged),
-		Data: map[string]any{
-			"password_hash": passwordHash,
+		Data: payloads.UserPasswordChanged{
+			PasswordHash: &passwordHash,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -523,13 +529,13 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		StreamType: "user",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.UserProfileUpdated),
-		Data: map[string]any{
-			"display_name":       req.Msg.DisplayName,
-			"given_name":         req.Msg.GivenName,
-			"family_name":        req.Msg.FamilyName,
-			"preferred_username": req.Msg.PreferredUsername,
-			"picture":            req.Msg.Picture,
-			"locale":             req.Msg.Locale,
+		Data: payloads.UserProfileUpdated{
+			DisplayName:       &req.Msg.DisplayName,
+			GivenName:         &req.Msg.GivenName,
+			FamilyName:        &req.Msg.FamilyName,
+			PreferredUsername: &req.Msg.PreferredUsername,
+			Picture:           &req.Msg.Picture,
+			Locale:            &req.Msg.Locale,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -620,12 +626,13 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 		return nil, err
 	}
 
+	enabled := req.Msg.Enabled
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
-		Data: map[string]any{
-			"user_provisioning_enabled": req.Msg.Enabled,
+		Data: payloads.UserProvisioningSettingsUpdated{
+			UserProvisioningEnabled: &enabled,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -675,8 +682,8 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  string(eventtypes.UserLinuxUsernameChanged),
-		Data: map[string]any{
-			"linux_username": username,
+		Data: payloads.UserLinuxUsernameChanged{
+			LinuxUsername: &username,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -716,16 +723,17 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 
 	keyID := ulid.Make().String()
 	now := time.Now()
+	addedAt := now.Format(time.RFC3339)
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  string(eventtypes.UserSshKeyAdded),
-		Data: map[string]any{
-			"key_id":     keyID,
-			"public_key": req.Msg.PublicKey,
-			"comment":    req.Msg.Comment,
-			"added_at":   now.Format(time.RFC3339),
+		Data: payloads.UserSshKeyAdded{
+			KeyID:     &keyID,
+			PublicKey: &req.Msg.PublicKey,
+			Comment:   &req.Msg.Comment,
+			AddedAt:   &addedAt,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -765,8 +773,8 @@ func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  string(eventtypes.UserSshKeyRemoved),
-		Data: map[string]any{
-			"key_id": req.Msg.KeyId,
+		Data: payloads.UserSshKeyRemoved{
+			KeyID: &req.Msg.KeyId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -795,14 +803,17 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
+	sshAccess := req.Msg.SshAccessEnabled
+	sshPubkey := req.Msg.SshAllowPubkey
+	sshPassword := req.Msg.SshAllowPassword
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   req.Msg.UserId,
 		EventType:  string(eventtypes.UserSshSettingsUpdated),
-		Data: map[string]any{
-			"ssh_access_enabled": req.Msg.SshAccessEnabled,
-			"ssh_allow_pubkey":   req.Msg.SshAllowPubkey,
-			"ssh_allow_password": req.Msg.SshAllowPassword,
+		Data: payloads.UserSshSettingsUpdated{
+			SshAccessEnabled: &sshAccess,
+			SshAllowPubkey:   &sshPubkey,
+			SshAllowPassword: &sshPassword,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

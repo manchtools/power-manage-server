@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -28,15 +29,6 @@ type AssignmentCreatedPayload struct {
 	CreatedBy  string
 }
 
-type assignmentCreatedRaw struct {
-	SourceType string `json:"source_type"`
-	SourceID   string `json:"source_id"`
-	TargetType string `json:"target_type"`
-	TargetID   string `json:"target_id"`
-	SortOrder  *int32 `json:"sort_order,omitempty"`
-	Mode       *int32 `json:"mode,omitempty"`
-}
-
 // AssignmentCreatedFromEvent decodes AssignmentCreated. Returns
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
@@ -54,7 +46,7 @@ func AssignmentCreatedFromEvent(e store.PersistedEvent) (AssignmentCreatedPayloa
 	if len(e.Data) == 0 {
 		return AssignmentCreatedPayload{}, fmt.Errorf("projector: empty AssignmentCreated payload")
 	}
-	var raw assignmentCreatedRaw
+	var raw payloads.AssignmentCreated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return AssignmentCreatedPayload{}, fmt.Errorf("projector: invalid AssignmentCreated payload: %w", err)
 	}
@@ -99,10 +91,6 @@ type AssignmentModeChangedPayload struct {
 	Mode int32
 }
 
-type assignmentModeChangedRaw struct {
-	Mode *int32 `json:"mode,omitempty"`
-}
-
 // AssignmentModeChangedFromEvent decodes AssignmentModeChanged.
 func AssignmentModeChangedFromEvent(e store.PersistedEvent) (AssignmentModeChangedPayload, error) {
 	if e.StreamType != "assignment" || e.EventType != string(eventtypes.AssignmentModeChanged) {
@@ -112,7 +100,7 @@ func AssignmentModeChangedFromEvent(e store.PersistedEvent) (AssignmentModeChang
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw assignmentModeChangedRaw
+	var raw payloads.AssignmentModeChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return AssignmentModeChangedPayload{}, fmt.Errorf("projector: invalid AssignmentModeChanged payload: %w", err)
 	}
@@ -133,10 +121,6 @@ type AssignmentSortOrderChangedPayload struct {
 	SortOrder int32
 }
 
-type assignmentSortOrderChangedRaw struct {
-	SortOrder *int32 `json:"sort_order,omitempty"`
-}
-
 // AssignmentSortOrderChangedFromEvent decodes
 // AssignmentSortOrderChanged.
 func AssignmentSortOrderChangedFromEvent(e store.PersistedEvent) (AssignmentSortOrderChangedPayload, error) {
@@ -147,7 +131,7 @@ func AssignmentSortOrderChangedFromEvent(e store.PersistedEvent) (AssignmentSort
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw assignmentSortOrderChangedRaw
+	var raw payloads.AssignmentSortOrderChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return AssignmentSortOrderChangedPayload{}, fmt.Errorf("projector: invalid AssignmentSortOrderChanged payload: %w", err)
 	}

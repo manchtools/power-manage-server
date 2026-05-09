@@ -25,11 +25,18 @@ type Queries = generated.Queries
 type PersistedEvent = generated.Event
 
 // Event represents a domain event.
+//
+// Data accepts any JSON-marshalable value. Prefer a typed payload
+// struct from internal/eventtypes/payloads — sharing one struct between
+// the handler emit site and the projector decoder catches schema drift
+// at compile time. The legacy map[string]any literal remains supported
+// for not-yet-converted call sites; AppendEvent json.Marshals whatever
+// is passed, so the wire format is unchanged.
 type Event struct {
 	StreamType string
 	StreamID   string
 	EventType  string
-	Data       map[string]any
+	Data       any
 	Metadata   map[string]any
 	ActorType  string
 	ActorID    string

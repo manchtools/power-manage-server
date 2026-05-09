@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -41,15 +42,6 @@ type DeviceRegisteredPayload struct {
 	AssignedUserID      *string
 }
 
-type deviceRegisteredRaw struct {
-	Hostname            *string         `json:"hostname,omitempty"`
-	CertFingerprint     *string         `json:"cert_fingerprint,omitempty"`
-	CertNotAfter        *time.Time      `json:"cert_not_after,omitempty"`
-	RegistrationTokenID *string         `json:"registration_token_id,omitempty"`
-	Labels              json.RawMessage `json:"labels,omitempty"`
-	AssignedUserID      *string         `json:"assigned_user_id,omitempty"`
-}
-
 // DeviceRegisteredFromEvent decodes DeviceRegistered. Returns
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
@@ -60,18 +52,22 @@ func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload,
 	if len(e.Data) == 0 {
 		return DeviceRegisteredPayload{}, fmt.Errorf("projector: empty DeviceRegistered payload")
 	}
-	var raw deviceRegisteredRaw
+	var raw payloads.DeviceRegistered
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceRegisteredPayload{}, fmt.Errorf("projector: invalid DeviceRegistered payload: %w", err)
 	}
 	out := DeviceRegisteredPayload{
 		ID:                  e.StreamID,
 		CertFingerprint:     raw.CertFingerprint,
-		CertNotAfter:        raw.CertNotAfter,
 		RegistrationTokenID: raw.RegistrationTokenID,
 		AssignedUserID:      raw.AssignedUserID,
 		Labels:              defaultDeviceLabels,
 	}
+	notAfter, err := parseOptionalRFC3339(raw.CertNotAfter)
+	if err != nil {
+		return DeviceRegisteredPayload{}, fmt.Errorf("projector: invalid cert_not_after on DeviceRegistered: %w", err)
+	}
+	out.CertNotAfter = notAfter
 	if raw.Hostname != nil {
 		out.Hostname = *raw.Hostname
 	}
@@ -82,6 +78,28 @@ func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload,
 		out.Labels = []byte(raw.Labels)
 	}
 	return out, nil
+}
+
+// parseOptionalRFC3339 parses an RFC 3339 (or RFC 3339Nano) timestamp
+// string into a *time.Time, treating nil and empty as "absent" (returns
+// nil with no error). Centralised here because every cert-related
+// payload that emits as a string-formatted timestamp needs the same
+// dual-format tolerant parse on the way back into a column.
+func parseOptionalRFC3339(s *string) (*time.Time, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		// Fall back to RFC 3339Nano so an emitter that switches
+		// formatters in the future doesn't silently corrupt
+		// downstream time arithmetic.
+		t, err = time.Parse(time.RFC3339Nano, *s)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &t, nil
 }
 
 // DeviceSeenPayload mirrors the PL/pgSQL projector's COALESCE-on-
@@ -101,11 +119,6 @@ type DeviceSeenPayload struct {
 	Hostname     *string
 }
 
-type deviceSeenRaw struct {
-	AgentVersion *string `json:"agent_version,omitempty"`
-	Hostname     *string `json:"hostname,omitempty"`
-}
-
 // DeviceSeenFromEvent decodes DeviceSeen. Empty payload is valid (a
 // pure heartbeat-style ping that only refreshes last_seen_at).
 func DeviceSeenFromEvent(e store.PersistedEvent) (DeviceSeenPayload, error) {
@@ -116,7 +129,7 @@ func DeviceSeenFromEvent(e store.PersistedEvent) (DeviceSeenPayload, error) {
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw deviceSeenRaw
+	var raw payloads.DeviceSeen
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceSeenPayload{}, fmt.Errorf("projector: invalid DeviceSeen payload: %w", err)
 	}
@@ -140,10 +153,6 @@ type DeviceHeartbeatPayload struct {
 	AgentVersion *string
 }
 
-type deviceHeartbeatRaw struct {
-	AgentVersion *string `json:"agent_version,omitempty"`
-}
-
 // DeviceHeartbeatFromEvent decodes DeviceHeartbeat. Empty payload is
 // a valid bare ping.
 func DeviceHeartbeatFromEvent(e store.PersistedEvent) (DeviceHeartbeatPayload, error) {
@@ -154,7 +163,7 @@ func DeviceHeartbeatFromEvent(e store.PersistedEvent) (DeviceHeartbeatPayload, e
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw deviceHeartbeatRaw
+	var raw payloads.DeviceHeartbeat
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceHeartbeatPayload{}, fmt.Errorf("projector: invalid DeviceHeartbeat payload: %w", err)
 	}
@@ -172,11 +181,6 @@ type DeviceCertRenewedPayload struct {
 	CertNotAfter    *time.Time
 }
 
-type deviceCertRenewedRaw struct {
-	CertFingerprint *string    `json:"cert_fingerprint,omitempty"`
-	CertNotAfter    *time.Time `json:"cert_not_after,omitempty"`
-}
-
 // DeviceCertRenewedFromEvent decodes DeviceCertRenewed.
 func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayload, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceCertRenewed) {
@@ -185,17 +189,21 @@ func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayloa
 	if len(e.Data) == 0 {
 		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: empty DeviceCertRenewed payload")
 	}
-	var raw deviceCertRenewedRaw
+	var raw payloads.DeviceCertRenewed
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: invalid DeviceCertRenewed payload: %w", err)
 	}
 	if raw.CertFingerprint == nil || *raw.CertFingerprint == "" {
 		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: DeviceCertRenewed requires cert_fingerprint")
 	}
+	notAfter, err := parseOptionalRFC3339(raw.CertNotAfter)
+	if err != nil {
+		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: invalid cert_not_after on DeviceCertRenewed: %w", err)
+	}
 	return DeviceCertRenewedPayload{
 		ID:              e.StreamID,
 		CertFingerprint: *raw.CertFingerprint,
-		CertNotAfter:    raw.CertNotAfter,
+		CertNotAfter:    notAfter,
 	}, nil
 }
 
@@ -206,10 +214,6 @@ func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayloa
 type DeviceLabelsUpdatedPayload struct {
 	ID     string
 	Labels []byte
-}
-
-type deviceLabelsUpdatedRaw struct {
-	Labels json.RawMessage `json:"labels,omitempty"`
 }
 
 // DeviceLabelsUpdatedFromEvent decodes DeviceLabelsUpdated. Empty
@@ -223,7 +227,7 @@ func DeviceLabelsUpdatedFromEvent(e store.PersistedEvent) (DeviceLabelsUpdatedPa
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw deviceLabelsUpdatedRaw
+	var raw payloads.DeviceLabelsUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceLabelsUpdatedPayload{}, fmt.Errorf("projector: invalid DeviceLabelsUpdated payload: %w", err)
 	}
@@ -242,11 +246,6 @@ type DeviceLabelSetPayload struct {
 	Value string
 }
 
-type deviceLabelSetRaw struct {
-	Key   *string `json:"key,omitempty"`
-	Value *string `json:"value,omitempty"`
-}
-
 // DeviceLabelSetFromEvent decodes DeviceLabelSet.
 func DeviceLabelSetFromEvent(e store.PersistedEvent) (DeviceLabelSetPayload, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelSet) {
@@ -255,7 +254,7 @@ func DeviceLabelSetFromEvent(e store.PersistedEvent) (DeviceLabelSetPayload, err
 	if len(e.Data) == 0 {
 		return DeviceLabelSetPayload{}, fmt.Errorf("projector: empty DeviceLabelSet payload")
 	}
-	var raw deviceLabelSetRaw
+	var raw payloads.DeviceLabelSet
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceLabelSetPayload{}, fmt.Errorf("projector: invalid DeviceLabelSet payload: %w", err)
 	}
@@ -276,10 +275,6 @@ type DeviceLabelRemovedPayload struct {
 	Key string
 }
 
-type deviceLabelRemovedRaw struct {
-	Key *string `json:"key,omitempty"`
-}
-
 // DeviceLabelRemovedFromEvent decodes DeviceLabelRemoved.
 func DeviceLabelRemovedFromEvent(e store.PersistedEvent) (DeviceLabelRemovedPayload, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelRemoved) {
@@ -288,7 +283,7 @@ func DeviceLabelRemovedFromEvent(e store.PersistedEvent) (DeviceLabelRemovedPayl
 	if len(e.Data) == 0 {
 		return DeviceLabelRemovedPayload{}, fmt.Errorf("projector: empty DeviceLabelRemoved payload")
 	}
-	var raw deviceLabelRemovedRaw
+	var raw payloads.DeviceLabelRemoved
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceLabelRemovedPayload{}, fmt.Errorf("projector: invalid DeviceLabelRemoved payload: %w", err)
 	}
@@ -307,10 +302,6 @@ func DeviceLabelRemovedFromEvent(e store.PersistedEvent) (DeviceLabelRemovedPayl
 type DeviceUserAssignmentPayload struct {
 	DeviceID string
 	UserID   string
-}
-
-type deviceUserAssignmentRaw struct {
-	UserID *string `json:"user_id,omitempty"`
 }
 
 // DeviceAssignedFromEvent decodes DeviceAssigned.
@@ -333,7 +324,7 @@ func decodeDeviceUserAssignment(e store.PersistedEvent) (DeviceUserAssignmentPay
 	if len(e.Data) == 0 {
 		return DeviceUserAssignmentPayload{}, fmt.Errorf("projector: empty %s payload", e.EventType)
 	}
-	var raw deviceUserAssignmentRaw
+	var raw payloads.DeviceUserAssignment
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceUserAssignmentPayload{}, fmt.Errorf("projector: invalid %s payload: %w", e.EventType, err)
 	}
@@ -349,10 +340,6 @@ func decodeDeviceUserAssignment(e store.PersistedEvent) (DeviceUserAssignmentPay
 type DeviceGroupAssignmentPayload struct {
 	DeviceID string
 	GroupID  string
-}
-
-type deviceGroupAssignmentRaw struct {
-	GroupID *string `json:"group_id,omitempty"`
 }
 
 // DeviceGroupAssignedFromEvent decodes DeviceGroupAssigned.
@@ -375,7 +362,7 @@ func decodeDeviceGroupAssignment(e store.PersistedEvent) (DeviceGroupAssignmentP
 	if len(e.Data) == 0 {
 		return DeviceGroupAssignmentPayload{}, fmt.Errorf("projector: empty %s payload", e.EventType)
 	}
-	var raw deviceGroupAssignmentRaw
+	var raw payloads.DeviceGroupAssignment
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceGroupAssignmentPayload{}, fmt.Errorf("projector: invalid %s payload: %w", e.EventType, err)
 	}
@@ -393,10 +380,6 @@ type DeviceSyncIntervalSetPayload struct {
 	SyncIntervalMinutes int32
 }
 
-type deviceSyncIntervalSetRaw struct {
-	SyncIntervalMinutes *int32 `json:"sync_interval_minutes,omitempty"`
-}
-
 // DeviceSyncIntervalSetFromEvent decodes DeviceSyncIntervalSet.
 func DeviceSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceSyncIntervalSetPayload, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceSyncIntervalSet) {
@@ -406,7 +389,7 @@ func DeviceSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceSyncIntervalS
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw deviceSyncIntervalSetRaw
+	var raw payloads.DeviceSyncIntervalSet
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return DeviceSyncIntervalSetPayload{}, fmt.Errorf("projector: invalid DeviceSyncIntervalSet payload: %w", err)
 	}

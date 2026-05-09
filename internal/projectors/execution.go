@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -49,17 +50,6 @@ type ExecutionCreatedPayload struct {
 	CreatedByID    string
 }
 
-type executionCreatedRaw struct {
-	DeviceID       string          `json:"device_id"`
-	ActionID       *string         `json:"action_id,omitempty"`
-	DefinitionID   *string         `json:"definition_id,omitempty"`
-	ActionType     *int32          `json:"action_type,omitempty"`
-	DesiredState   *int32          `json:"desired_state,omitempty"`
-	Params         json.RawMessage `json:"params,omitempty"`
-	TimeoutSeconds *int32          `json:"timeout_seconds,omitempty"`
-	ExecutedAt     *string         `json:"executed_at,omitempty"`
-}
-
 // ExecutionCreatedFromEvent decodes ExecutionCreated. Returns
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
@@ -70,7 +60,7 @@ func ExecutionCreatedFromEvent(e store.PersistedEvent) (ExecutionCreatedPayload,
 	if len(e.Data) == 0 {
 		return ExecutionCreatedPayload{}, fmt.Errorf("projector: empty ExecutionCreated payload")
 	}
-	var raw executionCreatedRaw
+	var raw payloads.ExecutionCreated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ExecutionCreatedPayload{}, fmt.Errorf("projector: invalid ExecutionCreated payload: %w", err)
 	}
@@ -125,17 +115,6 @@ type ExecutionScheduledPayload struct {
 	CreatedByID    string
 }
 
-type executionScheduledRaw struct {
-	DeviceID       string          `json:"device_id"`
-	ActionID       *string         `json:"action_id,omitempty"`
-	DefinitionID   *string         `json:"definition_id,omitempty"`
-	ActionType     *int32          `json:"action_type,omitempty"`
-	DesiredState   *int32          `json:"desired_state,omitempty"`
-	Params         json.RawMessage `json:"params,omitempty"`
-	TimeoutSeconds *int32          `json:"timeout_seconds,omitempty"`
-	ScheduledFor   string          `json:"scheduled_for"`
-}
-
 // ExecutionScheduledFromEvent decodes ExecutionScheduled. scheduled_for
 // is REQUIRED — the PL/pgSQL projector cast it directly without a
 // COALESCE, so an absent key would have produced a NULL column write
@@ -149,7 +128,7 @@ func ExecutionScheduledFromEvent(e store.PersistedEvent) (ExecutionScheduledPayl
 	if len(e.Data) == 0 {
 		return ExecutionScheduledPayload{}, fmt.Errorf("projector: empty ExecutionScheduled payload")
 	}
-	var raw executionScheduledRaw
+	var raw payloads.ExecutionScheduled
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ExecutionScheduledPayload{}, fmt.Errorf("projector: invalid ExecutionScheduled payload: %w", err)
 	}
@@ -208,16 +187,6 @@ type ExecutionTerminalPayload struct {
 	DetectionOutput []byte
 }
 
-type executionTerminalRaw struct {
-	CompletedAt     *string         `json:"completed_at,omitempty"`
-	Error           *string         `json:"error,omitempty"`
-	Output          json.RawMessage `json:"output,omitempty"`
-	DurationMs      *int64          `json:"duration_ms,omitempty"`
-	Changed         *bool           `json:"changed,omitempty"`
-	Compliant       *bool           `json:"compliant,omitempty"`
-	DetectionOutput json.RawMessage `json:"detection_output,omitempty"`
-}
-
 // ExecutionCompletedFromEvent decodes ExecutionCompleted.
 func ExecutionCompletedFromEvent(e store.PersistedEvent) (ExecutionTerminalPayload, error) {
 	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionCompleted) {
@@ -246,7 +215,7 @@ func decodeTerminal(e store.PersistedEvent, label string) (ExecutionTerminalPayl
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw executionTerminalRaw
+	var raw payloads.ExecutionTerminal
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ExecutionTerminalPayload{}, fmt.Errorf("projector: invalid %s payload: %w", label, err)
 	}
@@ -283,13 +252,6 @@ type ExecutionTimedOutPayload struct {
 	DurationMs  *int64
 }
 
-type executionTimedOutRaw struct {
-	CompletedAt *string         `json:"completed_at,omitempty"`
-	Error       *string         `json:"error,omitempty"`
-	Output      json.RawMessage `json:"output,omitempty"`
-	DurationMs  *int64          `json:"duration_ms,omitempty"`
-}
-
 // ExecutionTimedOutFromEvent decodes ExecutionTimedOut.
 func ExecutionTimedOutFromEvent(e store.PersistedEvent) (ExecutionTimedOutPayload, error) {
 	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionTimedOut) {
@@ -302,7 +264,7 @@ func ExecutionTimedOutFromEvent(e store.PersistedEvent) (ExecutionTimedOutPayloa
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw executionTimedOutRaw
+	var raw payloads.ExecutionTimedOut
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ExecutionTimedOutPayload{}, fmt.Errorf("projector: invalid ExecutionTimedOut payload: %w", err)
 	}
@@ -329,10 +291,6 @@ type ExecutionReasonPayload struct {
 	Reason      *string
 }
 
-type executionReasonRaw struct {
-	Reason *string `json:"reason,omitempty"`
-}
-
 // ExecutionSkippedFromEvent decodes ExecutionSkipped.
 func ExecutionSkippedFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, error) {
 	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionSkipped) {
@@ -357,7 +315,7 @@ func decodeReason(e store.PersistedEvent, label string) (ExecutionReasonPayload,
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw executionReasonRaw
+	var raw payloads.ExecutionReason
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ExecutionReasonPayload{}, fmt.Errorf("projector: invalid %s payload: %w", label, err)
 	}

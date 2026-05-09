@@ -12,6 +12,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -529,18 +530,19 @@ func (m *SystemActionManager) createSystemAction(ctx context.Context, name strin
 // assignActionToUser emits an AssignmentCreated event.
 func (m *SystemActionManager) assignActionToUser(ctx context.Context, actionID, userID string) error {
 	assignmentID := newULID()
-
+	mode := int32(0) // REQUIRED
+	sortOrder := int32(0)
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",
 		StreamID:   assignmentID,
 		EventType:  string(eventtypes.AssignmentCreated),
-		Data: map[string]any{
-			"source_type": "action",
-			"source_id":   actionID,
-			"target_type": "user",
-			"target_id":   userID,
-			"mode":        0, // REQUIRED
-			"sort_order":  0,
+		Data: payloads.AssignmentCreated{
+			SourceType: "action",
+			SourceID:   actionID,
+			TargetType: "user",
+			TargetID:   userID,
+			Mode:       &mode,
+			SortOrder:  &sortOrder,
 		},
 		ActorType: "system",
 		ActorID:   "system",
@@ -586,9 +588,9 @@ func (m *SystemActionManager) linkSystemAction(ctx context.Context, userID, fiel
 		StreamType: "user",
 		StreamID:   userID,
 		EventType:  string(eventtypes.UserSystemActionLinked),
-		Data: map[string]any{
-			"field":     field,
-			"action_id": actionID,
+		Data: payloads.UserSystemActionLinked{
+			Field:    &field,
+			ActionID: &actionID,
 		},
 		ActorType: "system",
 		ActorID:   "system",

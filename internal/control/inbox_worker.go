@@ -17,6 +17,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -264,14 +265,19 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		}
 		cachedAction = &action
 
-		createdData := map[string]any{
-			"device_id":       deviceID,
-			"action_id":       actionID,
-			"action_type":     action.ActionType,
-			"desired_state":   0,
-			"params":          json.RawMessage(action.Params),
-			"timeout_seconds": action.TimeoutSeconds,
-			"executed_at":     executedAt.Format(time.RFC3339Nano),
+		actionIDCopy := actionID
+		actionType := action.ActionType
+		desiredState := int32(0)
+		timeoutSeconds := action.TimeoutSeconds
+		executedAtStr := executedAt.Format(time.RFC3339Nano)
+		createdData := payloads.ExecutionCreated{
+			DeviceID:       deviceID,
+			ActionID:       &actionIDCopy,
+			ActionType:     &actionType,
+			DesiredState:   &desiredState,
+			Params:         json.RawMessage(action.Params),
+			TimeoutSeconds: &timeoutSeconds,
+			ExecutedAt:     &executedAtStr,
 		}
 		if err := w.store.AppendEvent(ctx, store.Event{
 			StreamType: "execution",
@@ -285,31 +291,44 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		}
 	}
 
-	// Map proto status to event type
+	// Map proto status to event type. data holds whichever payloads.*
+	// struct matches — store.Event.Data accepts any JSON-marshalable
+	// value, so each branch picks the typed wire shape rather than
+	// dropping back to map[string]any.
 	var eventType string
-	var data map[string]any
+	var data any
+	completedAtStr := completedAt.Format(time.RFC3339Nano)
 
 	switch result.Status {
 	case pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS:
 		eventType = "ExecutionCompleted"
-		data = map[string]any{
-			"duration_ms":  result.DurationMs,
-			"completed_at": completedAt.Format(time.RFC3339Nano),
-			"changed":      result.Changed,
-			"compliant":    result.Compliant,
+		durationMs := result.DurationMs
+		changed := result.Changed
+		compliant := result.Compliant
+		data = payloads.ExecutionTerminal{
+			CompletedAt:     &completedAtStr,
+			DurationMs:      &durationMs,
+			Changed:         &changed,
+			Compliant:       &compliant,
+			Output:          payloads.RawCommandOutput(commandOutputPayload(result.Output)),
+			DetectionOutput: payloads.RawCommandOutput(commandOutputPayload(result.DetectionOutput)),
 		}
-		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_FAILED:
 		eventType = "ExecutionFailed"
-		data = map[string]any{
-			"error":        result.Error,
-			"duration_ms":  result.DurationMs,
-			"completed_at": completedAt.Format(time.RFC3339Nano),
-			"changed":      result.Changed,
-			"compliant":    result.Compliant,
+		errStr := result.Error
+		durationMs := result.DurationMs
+		changed := result.Changed
+		compliant := result.Compliant
+		data = payloads.ExecutionTerminal{
+			Error:           &errStr,
+			CompletedAt:     &completedAtStr,
+			DurationMs:      &durationMs,
+			Changed:         &changed,
+			Compliant:       &compliant,
+			Output:          payloads.RawCommandOutput(commandOutputPayload(result.Output)),
+			DetectionOutput: payloads.RawCommandOutput(commandOutputPayload(result.DetectionOutput)),
 		}
-		addCommandOutputs(data, &result)
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_RUNNING:
 		eventType = "ExecutionStarted"
@@ -317,20 +336,22 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_TIMEOUT:
 		eventType = "ExecutionTimedOut"
-		data = map[string]any{
-			"error":        result.Error,
-			"duration_ms":  result.DurationMs,
-			"completed_at": completedAt.Format(time.RFC3339Nano),
-		}
-		if m := commandOutputToMap(result.Output); m != nil {
-			data["output"] = m
+		errStr := result.Error
+		durationMs := result.DurationMs
+		data = payloads.ExecutionTimedOut{
+			Error:       &errStr,
+			CompletedAt: &completedAtStr,
+			DurationMs:  &durationMs,
+			Output:      payloads.RawCommandOutput(commandOutputPayload(result.Output)),
 		}
 
 	case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
 		eventType = "ExecutionSkipped"
-		data = map[string]any{}
 		if result.Error != "" {
-			data["reason"] = result.Error
+			reason := result.Error
+			data = payloads.ExecutionReason{Reason: &reason}
+		} else {
+			data = payloads.ExecutionReason{}
 		}
 
 	default:
@@ -769,8 +790,10 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 	return nil
 }
 
-// commandOutputToMap converts a CommandOutput proto to a map for event data.
-// Returns nil if the output is nil.
+// commandOutputToMap converts a CommandOutput proto to a map for event
+// data. Returns nil if the output is nil. Used by emit sites that
+// still construct payloads as map[string]any (the compliance event
+// shape, for now).
 func commandOutputToMap(o *pm.CommandOutput) map[string]any {
 	if o == nil {
 		return nil
@@ -782,13 +805,18 @@ func commandOutputToMap(o *pm.CommandOutput) map[string]any {
 	}
 }
 
-// addCommandOutputs adds output and detection_output fields to the event data map.
-func addCommandOutputs(data map[string]any, result *pm.ActionResult) {
-	if m := commandOutputToMap(result.Output); m != nil {
-		data["output"] = m
+// commandOutputPayload converts a CommandOutput proto into the typed
+// payloads.CommandOutput used by the execution-event payload structs.
+// Returns nil for nil input so payloads.RawCommandOutput drops the
+// field via omitempty.
+func commandOutputPayload(o *pm.CommandOutput) *payloads.CommandOutput {
+	if o == nil {
+		return nil
 	}
-	if m := commandOutputToMap(result.DetectionOutput); m != nil {
-		data["detection_output"] = m
+	return &payloads.CommandOutput{
+		Stdout:   o.Stdout,
+		Stderr:   o.Stderr,
+		ExitCode: o.ExitCode,
 	}
 }
 
