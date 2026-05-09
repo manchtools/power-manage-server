@@ -3,45 +3,17 @@ package projectors
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// LuksKeyRotatedPayload covers every field the luks_key projector
-// reads from the LuksKeyRotated event. Same shape as
-// LpsPasswordRotatedPayload but with `device_path` in the partition
-// key — LUKS rotates per (device, action, device_path) where LPS
-// rotates per (device, username).
-type LuksKeyRotatedPayload struct {
-	DeviceID       string    `json:"device_id"`
-	ActionID       string    `json:"action_id"`
-	DevicePath     string    `json:"device_path"`
-	Passphrase     string    `json:"passphrase"`
-	RotatedAt      time.Time `json:"rotated_at"`
-	RotationReason string    `json:"rotation_reason"`
-}
-
-// LogValue implements slog.LogValuer so the encrypted Passphrase is
-// never written verbatim by structured logs. Mirrors the
-// LpsPasswordRotatedPayload masking — the listener body already logs
-// only individual non-secret fields, but a future
-// `logger.Warn("…", "payload", payload)` or `fmt.Sprintf("%+v", p)`
-// routed through slog would otherwise leak the credential. Mask at
-// the type level so the safety holds regardless of caller
-// discipline.
-func (p LuksKeyRotatedPayload) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("device_id", p.DeviceID),
-		slog.String("action_id", p.ActionID),
-		slog.String("device_path", p.DevicePath),
-		slog.String("passphrase", "[REDACTED]"),
-		slog.Time("rotated_at", p.RotatedAt),
-		slog.String("rotation_reason", p.RotationReason),
-	)
-}
+// LuksKeyRotatedPayload aliases the shared wire struct so projector
+// callers keep their import + symbol; payloads.LuksKeyRotated is the
+// canonical handle for handler emit sites.
+type LuksKeyRotatedPayload = payloads.LuksKeyRotated
 
 // LuksRevocationPayload is the union shape for the three revocation
 // event types (Dispatched, Revoked, Failed). They all UPDATE the

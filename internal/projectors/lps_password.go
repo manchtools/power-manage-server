@@ -3,49 +3,17 @@ package projectors
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
-	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// LpsPasswordRotatedPayload covers every field the lps_password
-// projector reads from the LpsPasswordRotated event. The agent sends
-// rotated_at as an RFC 3339 string (see sdk/proto/pm/v1/internal.proto
-// LpsRotation.rotated_at), so json.Unmarshal into time.Time round-trips
-// natively.
-//
-// The deleted PL/pgSQL projector cast `(event.data->>'rotated_at')::TIMESTAMPTZ`
-// directly. Pre-parsing in Go preserves the same shape: a parse error
-// here is the analogue of a Postgres cast failure, which the PL/pgSQL
-// version would have surfaced via the plpgsql_projection_errors table.
-type LpsPasswordRotatedPayload struct {
-	DeviceID       string    `json:"device_id"`
-	ActionID       string    `json:"action_id"`
-	Username       string    `json:"username"`
-	Password       string    `json:"password"`
-	RotatedAt      time.Time `json:"rotated_at"`
-	RotationReason string    `json:"rotation_reason"`
-}
-
-// LogValue implements slog.LogValuer so the encrypted Password is
-// never written verbatim by structured logs. The listener body
-// already logs only individual non-secret fields, but a future
-// `logger.Warn("…", "payload", payload)` or `fmt.Sprintf("%+v", p)`
-// routed through slog would otherwise leak the credential. Mask at
-// the type level so the safety holds regardless of caller
-// discipline.
-func (p LpsPasswordRotatedPayload) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("device_id", p.DeviceID),
-		slog.String("action_id", p.ActionID),
-		slog.String("username", p.Username),
-		slog.String("password", "[REDACTED]"),
-		slog.Time("rotated_at", p.RotatedAt),
-		slog.String("rotation_reason", p.RotationReason),
-	)
-}
+// LpsPasswordRotatedPayload aliases the shared wire struct so existing
+// projector callers keep their import + symbol. The Payload-suffix name
+// stays for projector-side code; the bare payloads.LpsPasswordRotated
+// is the canonical handle for handler emit sites.
+type LpsPasswordRotatedPayload = payloads.LpsPasswordRotated
 
 // LpsPasswordRotatedFromEvent decodes the event payload into the
 // typed shape the listener writes. Returns ErrIgnoredEvent for any

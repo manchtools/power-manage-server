@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -48,17 +49,6 @@ type ActionCreatedPayload struct {
 	CreatedBy      string
 }
 
-type actionCreatedRaw struct {
-	Name           string          `json:"name"`
-	Description    *string         `json:"description,omitempty"`
-	ActionType     *int32          `json:"action_type,omitempty"`
-	DesiredState   *int32          `json:"desired_state,omitempty"`
-	Params         json.RawMessage `json:"params,omitempty"`
-	TimeoutSeconds *int32          `json:"timeout_seconds,omitempty"`
-	IsSystem       *bool           `json:"is_system,omitempty"`
-	Schedule       json.RawMessage `json:"schedule,omitempty"`
-}
-
 // ActionCreatedFromEvent decodes ActionCreated. Returns ErrIgnoredEvent
 // for any other (stream, event_type) so the listener wrapper can
 // silently no-op.
@@ -69,7 +59,7 @@ func ActionCreatedFromEvent(e store.PersistedEvent) (ActionCreatedPayload, error
 	if len(e.Data) == 0 {
 		return ActionCreatedPayload{}, fmt.Errorf("projector: empty ActionCreated payload")
 	}
-	var raw actionCreatedRaw
+	var raw payloads.ActionCreated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ActionCreatedPayload{}, fmt.Errorf("projector: invalid ActionCreated payload: %w", err)
 	}
@@ -116,10 +106,6 @@ type ActionRenamedPayload struct {
 	Name string
 }
 
-type actionRenamedRaw struct {
-	Name string `json:"name"`
-}
-
 // ActionRenamedFromEvent decodes ActionRenamed.
 func ActionRenamedFromEvent(e store.PersistedEvent) (ActionRenamedPayload, error) {
 	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionRenamed) {
@@ -128,7 +114,7 @@ func ActionRenamedFromEvent(e store.PersistedEvent) (ActionRenamedPayload, error
 	if len(e.Data) == 0 {
 		return ActionRenamedPayload{}, fmt.Errorf("projector: empty ActionRenamed payload")
 	}
-	var raw actionRenamedRaw
+	var raw payloads.ActionRenamed
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ActionRenamedPayload{}, fmt.Errorf("projector: invalid ActionRenamed payload: %w", err)
 	}
@@ -147,10 +133,6 @@ type ActionDescriptionUpdatedPayload struct {
 	Description *string
 }
 
-type actionDescriptionUpdatedRaw struct {
-	Description *string `json:"description,omitempty"`
-}
-
 // ActionDescriptionUpdatedFromEvent decodes ActionDescriptionUpdated.
 func ActionDescriptionUpdatedFromEvent(e store.PersistedEvent) (ActionDescriptionUpdatedPayload, error) {
 	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionDescriptionUpdated) {
@@ -160,7 +142,7 @@ func ActionDescriptionUpdatedFromEvent(e store.PersistedEvent) (ActionDescriptio
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw actionDescriptionUpdatedRaw
+	var raw payloads.ActionDescriptionUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ActionDescriptionUpdatedPayload{}, fmt.Errorf("projector: invalid ActionDescriptionUpdated payload: %w", err)
 	}
@@ -181,13 +163,6 @@ type ActionParamsUpdatedPayload struct {
 	Schedule       []byte
 }
 
-type actionParamsUpdatedRaw struct {
-	Params         json.RawMessage `json:"params,omitempty"`
-	TimeoutSeconds *int32          `json:"timeout_seconds,omitempty"`
-	DesiredState   *int32          `json:"desired_state,omitempty"`
-	Schedule       json.RawMessage `json:"schedule,omitempty"`
-}
-
 // ActionParamsUpdatedFromEvent decodes ActionParamsUpdated.
 func ActionParamsUpdatedFromEvent(e store.PersistedEvent) (ActionParamsUpdatedPayload, error) {
 	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionParamsUpdated) {
@@ -197,7 +172,7 @@ func ActionParamsUpdatedFromEvent(e store.PersistedEvent) (ActionParamsUpdatedPa
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw actionParamsUpdatedRaw
+	var raw payloads.ActionParamsUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return ActionParamsUpdatedPayload{}, fmt.Errorf("projector: invalid ActionParamsUpdated payload: %w", err)
 	}

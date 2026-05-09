@@ -22,6 +22,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -215,9 +216,9 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceLabelSet),
-		Data: map[string]any{
-			"key":   req.Msg.Key,
-			"value": req.Msg.Value,
+		Data: payloads.DeviceLabelSet{
+			Key:   &req.Msg.Key,
+			Value: &req.Msg.Value,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -260,8 +261,8 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceLabelRemoved),
-		Data: map[string]any{
-			"key": req.Msg.Key,
+		Data: payloads.DeviceLabelRemoved{
+			Key: &req.Msg.Key,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -375,12 +376,13 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 		}
 
+		uid := userID
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  string(eventtypes.DeviceAssigned),
-			Data: map[string]any{
-				"user_id": userID,
+			Data: payloads.DeviceUserAssignment{
+				UserID: &uid,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -403,12 +405,13 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 		}
 
+		gid := groupID
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  string(eventtypes.DeviceGroupAssigned),
-			Data: map[string]any{
-				"group_id": groupID,
+			Data: payloads.DeviceGroupAssignment{
+				GroupID: &gid,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -480,8 +483,8 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  string(eventtypes.DeviceUnassigned),
-			Data: map[string]any{
-				"user_id": req.Msg.UserId,
+			Data: payloads.DeviceUserAssignment{
+				UserID: &req.Msg.UserId,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -494,8 +497,8 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
 			EventType:  string(eventtypes.DeviceGroupUnassigned),
-			Data: map[string]any{
-				"group_id": req.Msg.GroupId,
+			Data: payloads.DeviceGroupAssignment{
+				GroupID: &req.Msg.GroupId,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -533,12 +536,13 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}
 
 	// Emit DeviceSyncIntervalSet event
+	syncInterval := req.Msg.SyncIntervalMinutes
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceSyncIntervalSet),
-		Data: map[string]any{
-			"sync_interval_minutes": req.Msg.SyncIntervalMinutes,
+		Data: payloads.DeviceSyncIntervalSet{
+			SyncIntervalMinutes: &syncInterval,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

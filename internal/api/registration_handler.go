@@ -17,6 +17,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -193,21 +194,36 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to issue certificate")
 	}
 
-	// Build event data for device registration
-	eventData := map[string]any{
-		"hostname":              req.Msg.Hostname,
-		"agent_version":         req.Msg.AgentVersion,
-		"cert_fingerprint":      cert.Fingerprint,
-		"cert_not_after":        cert.NotAfter.Format(time.RFC3339),
-		"registration_token_id": token.ID,
-		"cert_pem":              string(cert.CertPEM),
-		"ca_cert_pem":           string(h.ca.CACertPEM()),
+	// Build event data for device registration. CertPEM + CACertPEM
+	// ride along so future replays can recover the cert bytes from
+	// the event log; the projector ignores them.
+	hostname := req.Msg.Hostname
+	agentVersion := req.Msg.AgentVersion
+	certFingerprint := cert.Fingerprint
+	// Preserve the legacy RFC 3339-string serialisation (no
+	// sub-second precision) so wire bytes stay identical to the
+	// pre-typed-payload emission. The projector parses the string
+	// back into a time.Time via parseOptionalRFC3339, which accepts
+	// both RFC 3339 and RFC 3339Nano.
+	certNotAfterStr := cert.NotAfter.Format(time.RFC3339)
+	registrationTokenID := token.ID
+	certPEM := string(cert.CertPEM)
+	caCertPEM := string(h.ca.CACertPEM())
+	deviceData := payloads.DeviceRegistered{
+		Hostname:            &hostname,
+		AgentVersion:        &agentVersion,
+		CertFingerprint:     &certFingerprint,
+		CertNotAfter:        &certNotAfterStr,
+		RegistrationTokenID: &registrationTokenID,
+		CertPEM:             &certPEM,
+		CACertPEM:           &caCertPEM,
 	}
 
 	// Auto-assign device to token owner if the token has an owner
 	if token.OwnerID != nil && *token.OwnerID != "" {
-		eventData["assigned_user_id"] = *token.OwnerID
-		logger.Info("auto-assigning device to token owner", "owner_id", *token.OwnerID)
+		ownerID := *token.OwnerID
+		deviceData.AssignedUserID = &ownerID
+		logger.Info("auto-assigning device to token owner", "owner_id", ownerID)
 	}
 
 	// Consume the token FIRST to prevent race conditions with one-time tokens.
@@ -238,7 +254,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		StreamType: "device",
 		StreamID:   deviceID,
 		EventType:  string(eventtypes.DeviceRegistered),
-		Data:       eventData,
+		Data:       deviceData,
 		ActorType:  "system",
 		ActorID:    "registration",
 	}); err != nil {

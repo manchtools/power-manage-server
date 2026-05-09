@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -58,21 +59,6 @@ type UserCreatedWithRolesPayload struct {
 	RoleIDs           []string
 }
 
-type userCreatedWithRolesRaw struct {
-	Email             *string  `json:"email,omitempty"`
-	PasswordHash      *string  `json:"password_hash,omitempty"`
-	Role              *string  `json:"role,omitempty"`
-	DisplayName       *string  `json:"display_name,omitempty"`
-	GivenName         *string  `json:"given_name,omitempty"`
-	FamilyName        *string  `json:"family_name,omitempty"`
-	PreferredUsername *string  `json:"preferred_username,omitempty"`
-	Picture           *string  `json:"picture,omitempty"`
-	Locale            *string  `json:"locale,omitempty"`
-	LinuxUsername     *string  `json:"linux_username,omitempty"`
-	LinuxUID          *int32   `json:"linux_uid,omitempty"`
-	RoleIDs           []string `json:"role_ids,omitempty"`
-}
-
 // UserCreatedWithRolesFromEvent decodes UserCreatedWithRoles. Returns
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
@@ -83,7 +69,7 @@ func UserCreatedWithRolesFromEvent(e store.PersistedEvent) (UserCreatedWithRoles
 	if len(e.Data) == 0 {
 		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: empty UserCreatedWithRoles payload")
 	}
-	var raw userCreatedWithRolesRaw
+	var raw payloads.UserCreatedWithRoles
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: invalid UserCreatedWithRoles payload: %w", err)
 	}
@@ -153,15 +139,6 @@ type UserProfileUpdatedPayload struct {
 	Locale            string
 }
 
-type userProfileUpdatedRaw struct {
-	DisplayName       *string `json:"display_name,omitempty"`
-	GivenName         *string `json:"given_name,omitempty"`
-	FamilyName        *string `json:"family_name,omitempty"`
-	PreferredUsername *string `json:"preferred_username,omitempty"`
-	Picture           *string `json:"picture,omitempty"`
-	Locale            *string `json:"locale,omitempty"`
-}
-
 // UserProfileUpdatedFromEvent decodes UserProfileUpdated.
 func UserProfileUpdatedFromEvent(e store.PersistedEvent) (UserProfileUpdatedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserProfileUpdated) {
@@ -171,7 +148,7 @@ func UserProfileUpdatedFromEvent(e store.PersistedEvent) (UserProfileUpdatedPayl
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw userProfileUpdatedRaw
+	var raw payloads.UserProfileUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserProfileUpdatedPayload{}, fmt.Errorf("projector: invalid UserProfileUpdated payload: %w", err)
 	}
@@ -203,10 +180,6 @@ type UserEmailChangedPayload struct {
 	Email string
 }
 
-type userEmailChangedRaw struct {
-	Email *string `json:"email,omitempty"`
-}
-
 // UserEmailChangedFromEvent decodes UserEmailChanged. The PL/pgSQL
 // projector wrote `event.data->>"email"` directly — if the key was
 // missing the column would land as SQL NULL, but the column is
@@ -219,7 +192,7 @@ func UserEmailChangedFromEvent(e store.PersistedEvent) (UserEmailChangedPayload,
 	if len(e.Data) == 0 {
 		return UserEmailChangedPayload{}, fmt.Errorf("projector: empty UserEmailChanged payload")
 	}
-	var raw userEmailChangedRaw
+	var raw payloads.UserEmailChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserEmailChangedPayload{}, fmt.Errorf("projector: invalid UserEmailChanged payload: %w", err)
 	}
@@ -241,10 +214,6 @@ type UserPasswordChangedPayload struct {
 	PasswordHash string
 }
 
-type userPasswordChangedRaw struct {
-	PasswordHash *string `json:"password_hash,omitempty"`
-}
-
 // UserPasswordChangedFromEvent decodes UserPasswordChanged.
 func UserPasswordChangedFromEvent(e store.PersistedEvent) (UserPasswordChangedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserPasswordChanged) {
@@ -253,7 +222,7 @@ func UserPasswordChangedFromEvent(e store.PersistedEvent) (UserPasswordChangedPa
 	if len(e.Data) == 0 {
 		return UserPasswordChangedPayload{}, fmt.Errorf("projector: empty UserPasswordChanged payload")
 	}
-	var raw userPasswordChangedRaw
+	var raw payloads.UserPasswordChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserPasswordChangedPayload{}, fmt.Errorf("projector: invalid UserPasswordChanged payload: %w", err)
 	}
@@ -270,10 +239,6 @@ type UserRoleChangedPayload struct {
 	Role string
 }
 
-type userRoleChangedRaw struct {
-	Role *string `json:"role,omitempty"`
-}
-
 // UserRoleChangedFromEvent decodes UserRoleChanged.
 func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserRoleChanged) {
@@ -282,7 +247,7 @@ func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, e
 	if len(e.Data) == 0 {
 		return UserRoleChangedPayload{}, fmt.Errorf("projector: empty UserRoleChanged payload")
 	}
-	var raw userRoleChangedRaw
+	var raw payloads.UserRoleChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserRoleChangedPayload{}, fmt.Errorf("projector: invalid UserRoleChanged payload: %w", err)
 	}
@@ -311,12 +276,6 @@ type UserSshKeyAddedPayload struct {
 	AddedAt   time.Time
 }
 
-type userSshKeyAddedRaw struct {
-	KeyID     *string `json:"key_id,omitempty"`
-	PublicKey *string `json:"public_key,omitempty"`
-	Comment   *string `json:"comment,omitempty"`
-}
-
 // UserSshKeyAddedFromEvent decodes UserSshKeyAdded. key_id is
 // required because the JSONB element is the only addressable handle
 // for the matching UserSshKeyRemoved event. public_key + comment
@@ -329,7 +288,7 @@ func UserSshKeyAddedFromEvent(e store.PersistedEvent) (UserSshKeyAddedPayload, e
 	if len(e.Data) == 0 {
 		return UserSshKeyAddedPayload{}, fmt.Errorf("projector: empty UserSshKeyAdded payload")
 	}
-	var raw userSshKeyAddedRaw
+	var raw payloads.UserSshKeyAdded
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserSshKeyAddedPayload{}, fmt.Errorf("projector: invalid UserSshKeyAdded payload: %w", err)
 	}
@@ -355,10 +314,6 @@ type UserSshKeyRemovedPayload struct {
 	KeyID string
 }
 
-type userSshKeyRemovedRaw struct {
-	KeyID *string `json:"key_id,omitempty"`
-}
-
 // UserSshKeyRemovedFromEvent decodes UserSshKeyRemoved.
 func UserSshKeyRemovedFromEvent(e store.PersistedEvent) (UserSshKeyRemovedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshKeyRemoved) {
@@ -367,7 +322,7 @@ func UserSshKeyRemovedFromEvent(e store.PersistedEvent) (UserSshKeyRemovedPayloa
 	if len(e.Data) == 0 {
 		return UserSshKeyRemovedPayload{}, fmt.Errorf("projector: empty UserSshKeyRemoved payload")
 	}
-	var raw userSshKeyRemovedRaw
+	var raw payloads.UserSshKeyRemoved
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserSshKeyRemovedPayload{}, fmt.Errorf("projector: invalid UserSshKeyRemoved payload: %w", err)
 	}
@@ -389,12 +344,6 @@ type UserSshSettingsUpdatedPayload struct {
 	SshAllowPassword *bool
 }
 
-type userSshSettingsUpdatedRaw struct {
-	SshAccessEnabled *bool `json:"ssh_access_enabled,omitempty"`
-	SshAllowPubkey   *bool `json:"ssh_allow_pubkey,omitempty"`
-	SshAllowPassword *bool `json:"ssh_allow_password,omitempty"`
-}
-
 // UserSshSettingsUpdatedFromEvent decodes UserSshSettingsUpdated.
 // Empty payload is valid (a no-op event that only bumps
 // projection_version + updated_at, leaving every column as-is).
@@ -406,7 +355,7 @@ func UserSshSettingsUpdatedFromEvent(e store.PersistedEvent) (UserSshSettingsUpd
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw userSshSettingsUpdatedRaw
+	var raw payloads.UserSshSettingsUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserSshSettingsUpdatedPayload{}, fmt.Errorf("projector: invalid UserSshSettingsUpdated payload: %w", err)
 	}
@@ -425,10 +374,6 @@ type UserLinuxUsernameChangedPayload struct {
 	LinuxUsername string
 }
 
-type userLinuxUsernameChangedRaw struct {
-	LinuxUsername *string `json:"linux_username,omitempty"`
-}
-
 // UserLinuxUsernameChangedFromEvent decodes UserLinuxUsernameChanged.
 func UserLinuxUsernameChangedFromEvent(e store.PersistedEvent) (UserLinuxUsernameChangedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserLinuxUsernameChanged) {
@@ -437,7 +382,7 @@ func UserLinuxUsernameChangedFromEvent(e store.PersistedEvent) (UserLinuxUsernam
 	if len(e.Data) == 0 {
 		return UserLinuxUsernameChangedPayload{}, fmt.Errorf("projector: empty UserLinuxUsernameChanged payload")
 	}
-	var raw userLinuxUsernameChangedRaw
+	var raw payloads.UserLinuxUsernameChanged
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserLinuxUsernameChangedPayload{}, fmt.Errorf("projector: invalid UserLinuxUsernameChanged payload: %w", err)
 	}
@@ -456,11 +401,6 @@ type UserSystemActionLinkedPayload struct {
 	ID       string
 	Field    string
 	ActionID string
-}
-
-type userSystemActionLinkedRaw struct {
-	Field    *string `json:"field,omitempty"`
-	ActionID *string `json:"action_id,omitempty"`
 }
 
 // Allowed field names for UserSystemActionLinked. Mirrors the
@@ -484,7 +424,7 @@ func UserSystemActionLinkedFromEvent(e store.PersistedEvent) (UserSystemActionLi
 	if len(e.Data) == 0 {
 		return UserSystemActionLinkedPayload{}, fmt.Errorf("projector: empty UserSystemActionLinked payload")
 	}
-	var raw userSystemActionLinkedRaw
+	var raw payloads.UserSystemActionLinked
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserSystemActionLinkedPayload{}, fmt.Errorf("projector: invalid UserSystemActionLinked payload: %w", err)
 	}
@@ -510,10 +450,6 @@ type UserProvisioningSettingsUpdatedPayload struct {
 	UserProvisioningEnabled *bool
 }
 
-type userProvisioningSettingsUpdatedRaw struct {
-	UserProvisioningEnabled *bool `json:"user_provisioning_enabled,omitempty"`
-}
-
 // UserProvisioningSettingsUpdatedFromEvent decodes
 // UserProvisioningSettingsUpdated. Empty payload is valid (no-op
 // event that only bumps projection_version + updated_at).
@@ -525,7 +461,7 @@ func UserProvisioningSettingsUpdatedFromEvent(e store.PersistedEvent) (UserProvi
 	if len(e.Data) == 0 {
 		return out, nil
 	}
-	var raw userProvisioningSettingsUpdatedRaw
+	var raw payloads.UserProvisioningSettingsUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserProvisioningSettingsUpdatedPayload{}, fmt.Errorf("projector: invalid UserProvisioningSettingsUpdated payload: %w", err)
 	}
