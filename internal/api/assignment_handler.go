@@ -44,7 +44,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	// Validate source exists
 	switch req.Msg.SourceType {
-	case "action":
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
 		_, err := h.store.Queries().GetActionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -52,7 +52,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 		}
-	case "action_set":
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
 		_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -60,7 +60,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
 		}
-	case "definition":
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
 		_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -68,7 +68,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
 		}
-	case "compliance_policy":
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
 		_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.SourceId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -80,7 +80,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	// Validate target exists
 	switch req.Msg.TargetType {
-	case "device":
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE:
 		_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.TargetId})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -88,7 +88,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 		}
-	case "device_group":
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP:
 		_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -96,7 +96,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 		}
-	case "user":
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER:
 		_, err := h.store.Queries().GetUserByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -104,7 +104,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 		}
-	case "user_group":
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP:
 		_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -114,11 +114,18 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		}
 	}
 
+	// Translate the wire enums to the legacy lowercase strings used
+	// by the event payload, projection rows, and SQL filters. The
+	// enum is the contract; the strings are an internal storage
+	// detail that pre-dates the enum.
+	sourceTypeStr := assignmentSourceTypeToString(req.Msg.SourceType)
+	targetTypeStr := assignmentTargetTypeToString(req.Msg.TargetType)
+
 	// Check if an active assignment already exists
 	existingAssignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
-		SourceType: req.Msg.SourceType,
+		SourceType: sourceTypeStr,
 		SourceID:   req.Msg.SourceId,
-		TargetType: req.Msg.TargetType,
+		TargetType: targetTypeStr,
 		TargetID:   req.Msg.TargetId,
 	})
 	if err == nil {
@@ -137,9 +144,9 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		StreamID:   id,
 		EventType:  "AssignmentCreated",
 		Data: map[string]any{
-			"source_type": req.Msg.SourceType,
+			"source_type": sourceTypeStr,
 			"source_id":   req.Msg.SourceId,
-			"target_type": req.Msg.TargetType,
+			"target_type": targetTypeStr,
 			"target_id":   req.Msg.TargetId,
 			"mode":        int32(req.Msg.Mode),
 		},
@@ -152,9 +159,9 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
 	// may have updated an existing soft-deleted record with a different ID
 	assignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
-		SourceType: req.Msg.SourceType,
+		SourceType: sourceTypeStr,
 		SourceID:   req.Msg.SourceId,
-		TargetType: req.Msg.TargetType,
+		TargetType: targetTypeStr,
 		TargetID:   req.Msg.TargetId,
 	})
 	if err != nil {
@@ -204,10 +211,16 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
+	// Wire enums map back to the legacy lowercase strings stored in
+	// the projection. UNSPECIFIED becomes the empty string, which
+	// the SQL filter treats as "no filter".
+	sourceTypeStr := assignmentSourceTypeToString(req.Msg.SourceType)
+	targetTypeStr := assignmentTargetTypeToString(req.Msg.TargetType)
+
 	assignments, err := h.store.Queries().ListAssignments(ctx, db.ListAssignmentsParams{
-		Column1: req.Msg.SourceType,
+		Column1: sourceTypeStr,
 		Column2: req.Msg.SourceId,
-		Column3: req.Msg.TargetType,
+		Column3: targetTypeStr,
 		Column4: req.Msg.TargetId,
 		Limit:   pageSize,
 		Offset:  offset,
@@ -217,9 +230,9 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 	}
 
 	count, err := h.store.Queries().CountAssignments(ctx, db.CountAssignmentsParams{
-		Column1: req.Msg.SourceType,
+		Column1: sourceTypeStr,
 		Column2: req.Msg.SourceId,
-		Column3: req.Msg.TargetType,
+		Column3: targetTypeStr,
 		Column4: req.Msg.TargetId,
 	})
 	if err != nil {
@@ -232,9 +245,9 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 	for i, a := range assignments {
 		assignment := &pm.Assignment{
 			Id:         a.ID,
-			SourceType: a.SourceType,
+			SourceType: assignmentSourceTypeFromString(a.SourceType),
 			SourceId:   a.SourceID,
-			TargetType: a.TargetType,
+			TargetType: assignmentTargetTypeFromString(a.TargetType),
 			TargetId:   a.TargetID,
 			CreatedBy:  a.CreatedBy,
 			Mode:       pm.AssignmentMode(a.Mode),
@@ -452,9 +465,9 @@ func (h *AssignmentHandler) GetUserAssignments(ctx context.Context, req *connect
 func (h *AssignmentHandler) assignmentToProto(a db.AssignmentsProjection) *pm.Assignment {
 	assignment := &pm.Assignment{
 		Id:         a.ID,
-		SourceType: a.SourceType,
+		SourceType: assignmentSourceTypeFromString(a.SourceType),
 		SourceId:   a.SourceID,
-		TargetType: a.TargetType,
+		TargetType: assignmentTargetTypeFromString(a.TargetType),
 		TargetId:   a.TargetID,
 		CreatedBy:  a.CreatedBy,
 		Mode:       pm.AssignmentMode(a.Mode),
@@ -465,4 +478,82 @@ func (h *AssignmentHandler) assignmentToProto(a db.AssignmentsProjection) *pm.As
 	}
 
 	return assignment
+}
+
+// assignmentSourceTypeToString converts the wire enum to the legacy
+// lowercase string used in event payloads, projection rows, and
+// SQL-side string filtering. Returns the empty string for
+// UNSPECIFIED so callers can pass it straight into the optional
+// filter columns on List/Count queries (an empty string is the
+// stored signal for "no filter").
+func assignmentSourceTypeToString(t pm.AssignmentSourceType) string {
+	switch t {
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
+		return "action"
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
+		return "action_set"
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
+		return "definition"
+	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
+		return "compliance_policy"
+	default:
+		return ""
+	}
+}
+
+// assignmentSourceTypeFromString is the inverse: it parses the
+// projection / event-payload string back into the wire enum.
+// Unknown / empty values map to UNSPECIFIED so a stale row never
+// crashes the handler — the caller then surfaces UNSPECIFIED in the
+// response and the client treats it as "unknown source".
+func assignmentSourceTypeFromString(s string) pm.AssignmentSourceType {
+	switch s {
+	case "action":
+		return pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION
+	case "action_set":
+		return pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET
+	case "definition":
+		return pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION
+	case "compliance_policy":
+		return pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY
+	default:
+		return pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_UNSPECIFIED
+	}
+}
+
+// assignmentTargetTypeToString mirrors assignmentSourceTypeToString
+// for the four supported target kinds. Same UNSPECIFIED-as-empty
+// convention so the helper feeds the optional List/Count filter
+// columns directly.
+func assignmentTargetTypeToString(t pm.AssignmentTargetType) string {
+	switch t {
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE:
+		return "device"
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP:
+		return "device_group"
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER:
+		return "user"
+	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP:
+		return "user_group"
+	default:
+		return ""
+	}
+}
+
+// assignmentTargetTypeFromString parses the projection /
+// event-payload string back into the wire enum. Unknown / empty
+// values map to UNSPECIFIED, same rationale as the source helper.
+func assignmentTargetTypeFromString(s string) pm.AssignmentTargetType {
+	switch s {
+	case "device":
+		return pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE
+	case "device_group":
+		return pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP
+	case "user":
+		return pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER
+	case "user_group":
+		return pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP
+	default:
+		return pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_UNSPECIFIED
+	}
 }

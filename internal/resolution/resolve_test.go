@@ -313,9 +313,9 @@ func TestCreateAssignment_UserTargetViaHandler(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "user",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
 		TargetId:   userID,
 		Mode:       pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED,
 	}))
@@ -326,7 +326,7 @@ func TestCreateAssignment_UserTargetViaHandler(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Len(t, resp.Msg.Assignments, 1)
-	assert.Equal(t, "user", resp.Msg.Assignments[0].TargetType)
+	assert.Equal(t, pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER, resp.Msg.Assignments[0].TargetType)
 }
 
 // linkSystemTtyAction stamps users_projection.system_tty_action_id by

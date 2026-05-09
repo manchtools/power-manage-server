@@ -47,6 +47,11 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
 
+	// Translate the wire enum to the projection / event-payload
+	// string. The projection still stores the legacy lowercase form
+	// so existing rows replay unchanged.
+	sourceTypeStr := assignmentSourceTypeToString(req.Msg.SourceType)
+
 	// Verify an available-mode assignment exists for this source targeting this device
 	availableAssignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
@@ -55,7 +60,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 
 	found := false
 	for _, asn := range availableAssignments {
-		if asn.SourceType == req.Msg.SourceType && asn.SourceID == req.Msg.SourceId {
+		if asn.SourceType == sourceTypeStr && asn.SourceID == req.Msg.SourceId {
 			found = true
 			break
 		}
@@ -72,7 +77,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		EventType:  "UserSelectionChanged",
 		Data: map[string]any{
 			"device_id":   req.Msg.DeviceId,
-			"source_type": req.Msg.SourceType,
+			"source_type": sourceTypeStr,
 			"source_id":   req.Msg.SourceId,
 			"selected":    req.Msg.Selected,
 		},
@@ -84,7 +89,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 
 	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
 		DeviceID:   req.Msg.DeviceId,
-		SourceType: req.Msg.SourceType,
+		SourceType: sourceTypeStr,
 		SourceID:   req.Msg.SourceId,
 	})
 	if err != nil {
@@ -184,7 +189,7 @@ func userSelectionToProto(s db.UserSelectionsProjection) *pm.UserSelection {
 	sel := &pm.UserSelection{
 		Id:         s.ID,
 		DeviceId:   s.DeviceID,
-		SourceType: s.SourceType,
+		SourceType: assignmentSourceTypeFromString(s.SourceType),
 		SourceId:   s.SourceID,
 		Selected:   s.Selected,
 	}
