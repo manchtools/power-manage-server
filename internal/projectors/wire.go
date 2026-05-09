@@ -108,17 +108,21 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "device_projector"),
 	))
-	// All 11 ports of tracker #107 are now wired here, plus the
-	// Phase 2 ports landed so far under tracker #136 (action_set,
-	// assignment, user_group, device_group, compliance_policy,
-	// compliance, action+definition, execution, device). One
-	// ActionListener handles both the action and definition stream
+	st.RegisterEventListener(UserListener(
+		st,
+		loggerFor(logger, "user_projector"),
+	))
+	// All 11 ports of tracker #107 are now wired here, plus every
+	// Phase 2 port under tracker #136 (action_set, assignment,
+	// user_group, device_group, compliance_policy, compliance,
+	// action+definition, execution, device, user). With UserListener
+	// landed, every domain projector lives in Go — the cleanup
+	// migration can drop project_event() and the dispatcher trigger.
+	// One ActionListener handles both the action and definition stream
 	// types because DefinitionCreated dispatches across two
 	// projections — synthesise an actions_projection row (when
 	// payload carries `action_type`) OR insert a definitions_projection
 	// row (otherwise) — and splitting would race the two branches.
-	// Future Phase 2 ports of the remaining domain projector (user)
-	// land here too.
 
 	// Rebuild appliers (manchtools/power-manage-server#125). Only
 	// the ported projectors that own a rebuildTarget in
@@ -144,6 +148,7 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("definitions", ApplyDefinition)
 	st.RegisterRebuildApply("executions", ApplyExecution)
 	st.RegisterRebuildApply("devices", ApplyDevice)
+	st.RegisterRebuildApply("users", ApplyUser)
 }
 
 // loggerFor returns a sub-logger tagged with the projector

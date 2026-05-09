@@ -7,7 +7,51 @@ package generated
 
 import (
 	"context"
+	"time"
 )
+
+const appendUserSshKeyProjection = `-- name: AppendUserSshKeyProjection :execrows
+UPDATE users_projection
+SET ssh_public_keys = ssh_public_keys || jsonb_build_array(
+        jsonb_build_object(
+            'id', $1::TEXT,
+            'public_key', $2::TEXT,
+            'comment', $3::TEXT,
+            'added_at', $4::TIMESTAMPTZ
+        )
+    ),
+    updated_at         = $4::TIMESTAMPTZ,
+    projection_version = $5
+WHERE id = $6
+  AND projection_version < $5
+`
+
+type AppendUserSshKeyProjectionParams struct {
+	KeyID             string    `json:"key_id"`
+	PublicKey         string    `json:"public_key"`
+	Comment           string    `json:"comment"`
+	AddedAt           time.Time `json:"added_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+	ID                string    `json:"id"`
+}
+
+// UserSshKeyAdded handler. Mirrors the PL/pgSQL JSONB array-append
+// exactly: builds a single-element array and concatenates.
+// Stale-replay guard via projection_version.
+func (q *Queries) AppendUserSshKeyProjection(ctx context.Context, arg AppendUserSshKeyProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, appendUserSshKeyProjection,
+		arg.KeyID,
+		arg.PublicKey,
+		arg.Comment,
+		arg.AddedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users_projection
@@ -19,6 +63,73 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const deleteIdentityLinksByUser = `-- name: DeleteIdentityLinksByUser :exec
+DELETE FROM identity_links_projection WHERE user_id = $1
+`
+
+// UserDeleted handler — second half. Cascades the delete to
+// identity_links_projection. Wrapped with SoftDeleteUserProjection
+// in store.WithTx for inter-write atomicity.
+func (q *Queries) DeleteIdentityLinksByUser(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, deleteIdentityLinksByUser, userID)
+	return err
+}
+
+const disableUserProjection = `-- name: DisableUserProjection :execrows
+UPDATE users_projection
+SET disabled           = TRUE,
+    session_version    = session_version + 1,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type DisableUserProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserDisabled handler. The session_version + 1 increment is paired
+// with the disabled flag flip inside one guarded UPDATE — a stale
+// Disable replayed after a re-Enable fails the projection_version
+// guard outright (n == 0), so neither disabled NOR session_version
+// regress to the stale value.
+func (q *Queries) DisableUserProjection(ctx context.Context, arg DisableUserProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, disableUserProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enableUserProjection = `-- name: EnableUserProjection :execrows
+UPDATE users_projection
+SET disabled           = FALSE,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type EnableUserProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserEnabled handler. Note: no session_version bump on enable
+// (matches PL/pgSQL — only Disable, PasswordChanged, and
+// SessionInvalidated bump it).
+func (q *Queries) EnableUserProjection(ctx context.Context, arg EnableUserProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enableUserProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getNextLinuxUID = `-- name: GetNextLinuxUID :one
@@ -132,6 +243,138 @@ func (q *Queries) GetUserSessionInfo(ctx context.Context, id string) (GetUserSes
 	var i GetUserSessionInfoRow
 	err := row.Scan(&i.Disabled, &i.SessionVersion, &i.IsDeleted)
 	return i, err
+}
+
+const insertUserProjection = `-- name: InsertUserProjection :exec
+INSERT INTO users_projection (
+    id, email, password_hash, role,
+    created_at, updated_at, projection_version, session_version, has_password,
+    display_name, given_name, family_name, preferred_username, picture, locale,
+    linux_username, linux_uid
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $5, $6, 0, $7,
+    $8, $9, $10, $11, $12, $13,
+    $14, $15
+)
+`
+
+type InsertUserProjectionParams struct {
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	PasswordHash      *string    `json:"password_hash"`
+	Role              string     `json:"role"`
+	CreatedAt         *time.Time `json:"created_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	HasPassword       bool       `json:"has_password"`
+	DisplayName       string     `json:"display_name"`
+	GivenName         string     `json:"given_name"`
+	FamilyName        string     `json:"family_name"`
+	PreferredUsername string     `json:"preferred_username"`
+	Picture           string     `json:"picture"`
+	Locale            string     `json:"locale"`
+	LinuxUsername     string     `json:"linux_username"`
+	LinuxUid          int32      `json:"linux_uid"`
+}
+
+// UserCreated handler. Mirrors the PL/pgSQL projector's INSERT with
+// has_password derived from password_hash being non-empty. No
+// ON CONFLICT clause: a duplicate UserCreated must surface as an
+// error so the listener log catches the bug (the reconciler does not
+// replay UserCreated against an existing user).
+func (q *Queries) InsertUserProjection(ctx context.Context, arg InsertUserProjectionParams) error {
+	_, err := q.db.Exec(ctx, insertUserProjection,
+		arg.ID,
+		arg.Email,
+		arg.PasswordHash,
+		arg.Role,
+		arg.CreatedAt,
+		arg.ProjectionVersion,
+		arg.HasPassword,
+		arg.DisplayName,
+		arg.GivenName,
+		arg.FamilyName,
+		arg.PreferredUsername,
+		arg.Picture,
+		arg.Locale,
+		arg.LinuxUsername,
+		arg.LinuxUid,
+	)
+	return err
+}
+
+const invalidateUserSessionProjection = `-- name: InvalidateUserSessionProjection :execrows
+UPDATE users_projection
+SET session_version    = session_version + 1,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type InvalidateUserSessionProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserSessionInvalidated handler. Same monotonic-bump rationale as
+// UpdateUserPasswordProjection: the guarded UPDATE rejects a stale
+// replay outright so session_version stays monotonic.
+func (q *Queries) InvalidateUserSessionProjection(ctx context.Context, arg InvalidateUserSessionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, invalidateUserSessionProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const linkUserSystemActionProjection = `-- name: LinkUserSystemActionProjection :execrows
+UPDATE users_projection
+SET system_user_action_id = CASE
+        WHEN $1::TEXT = 'system_user_action_id' THEN $2::TEXT
+        ELSE system_user_action_id
+    END,
+    system_ssh_action_id = CASE
+        WHEN $1::TEXT = 'system_ssh_action_id' THEN $2::TEXT
+        ELSE system_ssh_action_id
+    END,
+    system_tty_action_id = CASE
+        WHEN $1::TEXT = 'system_tty_action_id' THEN $2::TEXT
+        ELSE system_tty_action_id
+    END,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $5
+  AND projection_version < $4
+`
+
+type LinkUserSystemActionProjectionParams struct {
+	Field             string     `json:"field"`
+	ActionID          string     `json:"action_id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ID                string     `json:"id"`
+}
+
+// UserSystemActionLinked handler. Mirrors the PL/pgSQL targeted CASE
+// exactly: only the column matching `field` gets the supplied
+// action_id; the other two columns are preserved. The CASE arms are
+// in SQL (not Go) so the column-write decision atomically lines up
+// with the projection_version guard.
+// Stale-replay guard via projection_version.
+func (q *Queries) LinkUserSystemActionProjection(ctx context.Context, arg LinkUserSystemActionProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, linkUserSystemActionProjection,
+		arg.Field,
+		arg.ActionID,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const listAllNonDeletedUsers = `-- name: ListAllNonDeletedUsers :many
@@ -311,4 +554,340 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersPr
 		return nil, err
 	}
 	return items, nil
+}
+
+const removeUserSshKeyProjection = `-- name: RemoveUserSshKeyProjection :execrows
+UPDATE users_projection
+SET ssh_public_keys = COALESCE((
+        SELECT jsonb_agg(e.value)
+        FROM jsonb_array_elements(ssh_public_keys) AS e(value)
+        WHERE e.value->>'id' != $4::TEXT
+    ), '[]'::JSONB),
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type RemoveUserSshKeyProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	KeyID             string     `json:"key_id"`
+}
+
+// UserSshKeyRemoved handler. Mirrors the PL/pgSQL JSONB filter-by-id
+// via subquery exactly — the array filter happens in SQL so we
+// don't read-modify-write the JSONB blob through Go.
+// Stale-replay guard via projection_version.
+func (q *Queries) RemoveUserSshKeyProjection(ctx context.Context, arg RemoveUserSshKeyProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeUserSshKeyProjection,
+		arg.ID,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.KeyID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const softDeleteUserProjection = `-- name: SoftDeleteUserProjection :execrows
+UPDATE users_projection
+SET is_deleted         = TRUE,
+    updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type SoftDeleteUserProjectionParams struct {
+	ID                string     `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserDeleted handler — first half. Returns rows-affected so the
+// listener can SHORT-CIRCUIT the cascade DELETE on
+// identity_links_projection when the projection_version guard
+// rejects a stale replay. Otherwise an old UserDeleted re-applied by
+// the reconciler would silently nuke a freshly-restored user's
+// identity links (multi-write asymmetric-guard discipline, CR catch
+// on PR #101 pattern).
+func (q *Queries) SoftDeleteUserProjection(ctx context.Context, arg SoftDeleteUserProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, softDeleteUserProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserEmailProjection = `-- name: UpdateUserEmailProjection :execrows
+UPDATE users_projection
+SET email              = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateUserEmailProjectionParams struct {
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserEmailChanged handler. Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserEmailProjection(ctx context.Context, arg UpdateUserEmailProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserEmailProjection,
+		arg.ID,
+		arg.Email,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserLinuxUsernameProjection = `-- name: UpdateUserLinuxUsernameProjection :execrows
+UPDATE users_projection
+SET linux_username     = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateUserLinuxUsernameProjectionParams struct {
+	ID                string     `json:"id"`
+	LinuxUsername     string     `json:"linux_username"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserLinuxUsernameChanged handler. Stale-replay guard via
+// projection_version.
+func (q *Queries) UpdateUserLinuxUsernameProjection(ctx context.Context, arg UpdateUserLinuxUsernameProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserLinuxUsernameProjection,
+		arg.ID,
+		arg.LinuxUsername,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserLoginProjection = `-- name: UpdateUserLoginProjection :execrows
+UPDATE users_projection
+SET last_login_at      = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateUserLoginProjectionParams struct {
+	ID                string     `json:"id"`
+	LastLoginAt       *time.Time `json:"last_login_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserLoggedIn handler. PL/pgSQL only stamped last_login_at and
+// projection_version (no updated_at touch). Preserve that exactly.
+func (q *Queries) UpdateUserLoginProjection(ctx context.Context, arg UpdateUserLoginProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserLoginProjection, arg.ID, arg.LastLoginAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserPasswordProjection = `-- name: UpdateUserPasswordProjection :execrows
+UPDATE users_projection
+SET password_hash      = $2,
+    has_password       = TRUE,
+    session_version    = session_version + 1,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateUserPasswordProjectionParams struct {
+	ID                string     `json:"id"`
+	PasswordHash      *string    `json:"password_hash"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserPasswordChanged handler. Bumps session_version monotonically as
+// part of the same guarded UPDATE so a stale replay (whose
+// projection_version fails the guard) cannot reset session_version
+// to a stale value — neither password_hash NOR session_version
+// changes when n == 0.
+func (q *Queries) UpdateUserPasswordProjection(ctx context.Context, arg UpdateUserPasswordProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserPasswordProjection,
+		arg.ID,
+		arg.PasswordHash,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserProfileProjection = `-- name: UpdateUserProfileProjection :execrows
+UPDATE users_projection
+SET display_name       = $2,
+    given_name         = $3,
+    family_name        = $4,
+    preferred_username = $5,
+    picture            = $6,
+    locale             = $7,
+    updated_at         = $8,
+    projection_version = $9
+WHERE id = $1
+  AND projection_version < $9
+`
+
+type UpdateUserProfileProjectionParams struct {
+	ID                string     `json:"id"`
+	DisplayName       string     `json:"display_name"`
+	GivenName         string     `json:"given_name"`
+	FamilyName        string     `json:"family_name"`
+	PreferredUsername string     `json:"preferred_username"`
+	Picture           string     `json:"picture"`
+	Locale            string     `json:"locale"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserProfileUpdated handler. Each profile field is a plain string —
+// the decoder expanded missing keys to "" already (matches PL/pgSQL
+// COALESCE-to-""). Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserProfileProjection(ctx context.Context, arg UpdateUserProfileProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserProfileProjection,
+		arg.ID,
+		arg.DisplayName,
+		arg.GivenName,
+		arg.FamilyName,
+		arg.PreferredUsername,
+		arg.Picture,
+		arg.Locale,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserProvisioningSettingsProjection = `-- name: UpdateUserProvisioningSettingsProjection :execrows
+UPDATE users_projection
+SET user_provisioning_enabled = COALESCE($1::BOOLEAN, user_provisioning_enabled),
+    updated_at                = $2,
+    projection_version        = $3
+WHERE id = $4
+  AND projection_version < $3
+`
+
+type UpdateUserProvisioningSettingsProjectionParams struct {
+	UserProvisioningEnabled *bool      `json:"user_provisioning_enabled"`
+	UpdatedAt               *time.Time `json:"updated_at"`
+	ProjectionVersion       int64      `json:"projection_version"`
+	ID                      string     `json:"id"`
+}
+
+// UserProvisioningSettingsUpdated handler. The single boolean is
+// COALESCE-preserved via sqlc.narg — nil pointer = SQL NULL =
+// preserve existing column. Stale-replay guard via
+// projection_version.
+func (q *Queries) UpdateUserProvisioningSettingsProjection(ctx context.Context, arg UpdateUserProvisioningSettingsProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserProvisioningSettingsProjection,
+		arg.UserProvisioningEnabled,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserRoleProjection = `-- name: UpdateUserRoleProjection :execrows
+UPDATE users_projection
+SET role               = $2,
+    updated_at         = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateUserRoleProjectionParams struct {
+	ID                string     `json:"id"`
+	Role              string     `json:"role"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// UserRoleChanged handler. Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserRoleProjection(ctx context.Context, arg UpdateUserRoleProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserRoleProjection,
+		arg.ID,
+		arg.Role,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateUserSshSettingsProjection = `-- name: UpdateUserSshSettingsProjection :execrows
+UPDATE users_projection
+SET ssh_access_enabled = COALESCE($1::BOOLEAN, ssh_access_enabled),
+    ssh_allow_pubkey   = COALESCE($2::BOOLEAN, ssh_allow_pubkey),
+    ssh_allow_password = COALESCE($3::BOOLEAN, ssh_allow_password),
+    updated_at         = $4,
+    projection_version = $5
+WHERE id = $6
+  AND projection_version < $5
+`
+
+type UpdateUserSshSettingsProjectionParams struct {
+	SshAccessEnabled  *bool      `json:"ssh_access_enabled"`
+	SshAllowPubkey    *bool      `json:"ssh_allow_pubkey"`
+	SshAllowPassword  *bool      `json:"ssh_allow_password"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ID                string     `json:"id"`
+}
+
+// UserSshSettingsUpdated handler. Each boolean is COALESCE-preserved
+// via sqlc.narg — nil pointer = SQL NULL = preserve existing column.
+// Stale-replay guard via projection_version.
+func (q *Queries) UpdateUserSshSettingsProjection(ctx context.Context, arg UpdateUserSshSettingsProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateUserSshSettingsProjection,
+		arg.SshAccessEnabled,
+		arg.SshAllowPubkey,
+		arg.SshAllowPassword,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
