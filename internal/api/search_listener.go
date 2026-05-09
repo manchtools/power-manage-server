@@ -74,7 +74,7 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// user_handler.go). Other user events (SSH keys, password,
 	// session invalidation, system-action linking) don't surface
 	// in search results today, so they classify as SearchOpNone.
-	case "UserCreated",
+	case "UserCreatedWithRoles",
 		"UserEmailChanged",
 		"UserProfileUpdated",
 		"UserLinuxUsernameChanged",

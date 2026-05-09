@@ -285,10 +285,21 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		linuxUsername = "user_" + userID[:8]
 	}
 
+	// Resolve the role ID set BEFORE emitting the event so the user
+	// INSERT and the per-role INSERT land atomically inside the
+	// projector's WithTx (issue #135). SCIM only ever assigns the
+	// provider's configured default role at creation time; if no
+	// default is configured the slice stays empty and the projector
+	// skips the per-role INSERT loop.
+	var roleIDs []string
+	if provider.DefaultRoleID != "" {
+		roleIDs = []string{provider.DefaultRoleID}
+	}
+
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreated",
+		EventType:  "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":          email,
 			"display_name":   formatExternalName(scimUser.Name),
@@ -296,6 +307,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			"family_name":    safeNameField(scimUser.Name, "family"),
 			"linux_username": linuxUsername,
 			"linux_uid":      linuxUID,
+			"role_ids":       roleIDs,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -326,23 +338,6 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to create identity link via SCIM", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to link user")
 		return
-	}
-
-	// Assign default role if configured
-	if provider.DefaultRoleID != "" {
-		if err := h.store.AppendEvent(ctx, store.Event{
-			StreamType: "user_role",
-			StreamID:   userID + ":" + provider.DefaultRoleID,
-			EventType:  "UserRoleAssigned",
-			Data: map[string]any{
-				"user_id": userID,
-				"role_id": provider.DefaultRoleID,
-			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
-		}); err != nil {
-			h.logger.Error("failed to assign default role via SCIM", "error", err)
-		}
 	}
 
 	// Auto-enable provisioning/SSH if global server settings are on

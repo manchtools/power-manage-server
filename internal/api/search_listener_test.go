@@ -23,8 +23,8 @@ func TestAffectedSearchOps(t *testing.T) {
 	}{
 		// User scope — reindex on field-changing events
 		{
-			"UserCreated reindexes user",
-			store.PersistedEvent{EventType: "UserCreated", StreamID: "USR1", StreamType: "user"},
+			"UserCreatedWithRoles reindexes user",
+			store.PersistedEvent{EventType: "UserCreatedWithRoles", StreamID: "USR1", StreamType: "user"},
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
 		},
 		{
@@ -429,5 +429,5 @@ func TestSearchListener_NilDepsAreSafe(t *testing.T) {
 		t.Fatal("SearchListener should never return nil — factory contract")
 	}
 	// Calling the no-op listener must not panic, even with junk data.
-	listener(nil, store.PersistedEvent{EventType: "UserCreated", StreamID: "X"})
+	listener(nil, store.PersistedEvent{EventType: "UserCreatedWithRoles", StreamID: "X"})
 }

@@ -20,14 +20,16 @@ import (
 // PL/pgSQL project_user_event() COALESCE / NULL semantics.
 // ============================================================================
 
-// TestUserCreatedFromEvent_Pure pins the decoder defaults: missing
-// password_hash → "" (drives has_password=false), missing role → "user"
-// (matches PL/pgSQL `COALESCE(role, "user")`), profile fields each
-// default to "", linux_uid → 0.
-func TestUserCreatedFromEvent_Pure(t *testing.T) {
-	t.Run("happy path with all fields", func(t *testing.T) {
-		got, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "user", StreamID: "u-1", EventType: "UserCreated", ActorID: "actor",
+// TestUserCreatedWithRolesFromEvent_Pure pins the decoder defaults
+// for the issue #135 compound event: missing password_hash -> ""
+// (drives has_password=false), missing role -> "user" (matches the
+// PL/pgSQL legacy `COALESCE(role, "user")`), profile fields each
+// default to "", linux_uid -> 0, role_ids defaults to an empty
+// slice when the key is missing.
+func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
+	t.Run("happy path with all fields and role_ids", func(t *testing.T) {
+		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-1", EventType: "UserCreatedWithRoles", ActorID: "actor",
 			Data: jsonOrFail(t, map[string]any{
 				"email":              "a@b.com",
 				"password_hash":      "hash-1",
@@ -40,6 +42,7 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 				"locale":             "en-US",
 				"linux_username":     "alice",
 				"linux_uid":          1001,
+				"role_ids":           []string{"r-1", "r-2"},
 			}),
 		})
 		require.NoError(t, err)
@@ -51,11 +54,12 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "alice", got.PreferredUsername)
 		assert.Equal(t, "alice", got.LinuxUsername)
 		assert.Equal(t, int32(1001), got.LinuxUID)
+		assert.Equal(t, []string{"r-1", "r-2"}, got.RoleIDs)
 	})
 
-	t.Run("defaults: missing password_hash → '', role → 'user', profile → '', linux_uid → 0", func(t *testing.T) {
-		got, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "user", StreamID: "u-2", EventType: "UserCreated",
+	t.Run("defaults: missing password_hash + role + profile + linux_uid + role_ids", func(t *testing.T) {
+		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-2", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{"email": "x@y.com"}),
 		})
 		require.NoError(t, err)
@@ -64,11 +68,25 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "", got.DisplayName)
 		assert.Equal(t, "", got.LinuxUsername)
 		assert.Equal(t, int32(0), got.LinuxUID)
+		assert.Equal(t, []string{}, got.RoleIDs, "missing role_ids must decode as an empty slice")
+		assert.NotNil(t, got.RoleIDs, "RoleIDs must never be nil so range-loops in the projector are safe")
+	})
+
+	t.Run("explicit empty role_ids -> empty slice", func(t *testing.T) {
+		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-empty-roles", EventType: "UserCreatedWithRoles",
+			Data: jsonOrFail(t, map[string]any{
+				"email":    "x@y.com",
+				"role_ids": []string{},
+			}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, []string{}, got.RoleIDs)
 	})
 
 	t.Run("missing email fails", func(t *testing.T) {
-		_, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "user", StreamID: "u-3", EventType: "UserCreated",
+		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-3", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
 		require.Error(t, err)
@@ -78,12 +96,12 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 
 	t.Run("explicit empty email + role round-trip verbatim (PL/pgSQL parity)", func(t *testing.T) {
 		// PL/pgSQL `event.data->>'role'` returns "" for an explicit
-		// empty string — COALESCE doesn't kick in (which only handles
-		// SQL NULL i.e. missing keys). Reject explicit "" would
+		// empty string - COALESCE doesn't kick in (which only handles
+		// SQL NULL i.e. missing keys). Rejecting explicit "" would
 		// silently rewrite historical replay events. Same for email
 		// (which would have been INSERTed as ""). CR catch on PR #183.
-		got, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "user", StreamID: "u-empty", EventType: "UserCreated",
+		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-empty", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{"email": "", "role": ""}),
 		})
 		require.NoError(t, err)
@@ -91,20 +109,20 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "", got.Role, "explicit empty role must round-trip as \"\" (default 'user' only kicks in for missing key)")
 	})
 
-	t.Run("wrong stream/event type → ErrIgnoredEvent", func(t *testing.T) {
-		_, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "device", EventType: "UserCreated",
+	t.Run("wrong stream/event type -> ErrIgnoredEvent", func(t *testing.T) {
+		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "device", EventType: "UserCreatedWithRoles",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
-		_, err = projectors.UserCreatedFromEvent(store.PersistedEvent{
+		_, err = projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
 			StreamType: "user", EventType: "UserDisabled",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
 	})
 
 	t.Run("malformed payload bytes is a validation error", func(t *testing.T) {
-		_, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
-			StreamType: "user", EventType: "UserCreated",
+		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+			StreamType: "user", EventType: "UserCreatedWithRoles",
 			Data: []byte("not json"),
 		})
 		require.Error(t, err)
@@ -143,9 +161,9 @@ func TestUserProfileUpdatedFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "", got.Locale)
 	})
 
-	t.Run("wrong event type → ErrIgnoredEvent", func(t *testing.T) {
+	t.Run("wrong event type -> ErrIgnoredEvent", func(t *testing.T) {
 		_, err := projectors.UserProfileUpdatedFromEvent(store.PersistedEvent{
-			StreamType: "user", EventType: "UserCreated",
+			StreamType: "user", EventType: "UserCreatedWithRoles",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
 	})
@@ -415,16 +433,21 @@ func TestUserProvisioningSettingsUpdatedFromEvent_Pure(t *testing.T) {
 // wires projectors.WireAll.
 // ============================================================================
 
-// createUserViaEvent emits a UserCreated event for the given user id
-// and returns nothing — the seed for every lifecycle test below.
+// createUserViaEvent emits a UserCreatedWithRoles event for the given
+// user id and returns nothing - the seed for every lifecycle test
+// below. Uses an empty role_ids slice so the listener takes the no-op
+// per-role INSERT path; tests that need role rows assert them via
+// AssignRoleToTestUser or by passing role_ids explicitly through their
+// own AppendEvent.
 func createUserViaEvent(t *testing.T, st *store.Store, ctx context.Context, userID, email string) {
 	t.Helper()
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
-		StreamType: "user", StreamID: userID, EventType: "UserCreated",
+		StreamType: "user", StreamID: userID, EventType: "UserCreatedWithRoles",
 		Data: map[string]any{
 			"email":         email,
 			"password_hash": "hash-seed",
 			"role":          "user",
+			"role_ids":      []string{},
 		},
 		ActorType: "system", ActorID: "test",
 	}))
@@ -820,4 +843,55 @@ func TestUserListener_IgnoresWrongStreamType(t *testing.T) {
 	listener(ctx, store.PersistedEvent{
 		StreamType: "device", StreamID: "d-1", EventType: "DeviceRegistered",
 	})
+}
+
+// TestUserListener_CreatedWithRolesAtomicity locks the issue #135
+// invariant: one UserCreatedWithRoles event with role_ids = [A, B]
+// lands the user row AND both user_roles_projection rows. The pre-#135
+// emission shape (UserCreated + 2x UserRoleAssigned) had a window
+// between the user INSERT and the role INSERTs where a partial
+// failure left the user with fewer roles than the caller asked for;
+// the compound event closes that window because the projector arm
+// wraps both writes in store.WithTx.
+func TestUserListener_CreatedWithRolesAtomicity(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	userID := testutil.NewID()
+
+	// Two real role rows so the user_roles_projection rows have
+	// matching role IDs an operator could correlate. The user_roles
+	// table itself has no FK on role_id, but using real role IDs
+	// keeps the test honest about the production shape.
+	adminID := testutil.CreateTestUser(t, st, "atom-admin@e.com", "pass", "admin")
+	roleA := testutil.CreateTestRole(t, st, adminID, "role-A-"+userID, []string{"perm.x"})
+	roleB := testutil.CreateTestRole(t, st, adminID, "role-B-"+userID, []string{"perm.y"})
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user", StreamID: userID, EventType: "UserCreatedWithRoles",
+		Data: map[string]any{
+			"email":         "atomic@e.com",
+			"password_hash": "h",
+			"role":          "user",
+			"role_ids":      []string{roleA, roleB},
+		},
+		ActorType: "user", ActorID: adminID,
+	}))
+
+	// User row landed.
+	got, err := st.Queries().GetUserByID(ctx, userID)
+	require.NoError(t, err)
+	assert.Equal(t, "atomic@e.com", got.Email)
+	assert.True(t, got.HasPassword, "non-empty password_hash must set has_password=true")
+
+	// Both user_role rows landed inside the same tx as the user
+	// INSERT — composite PK matches (user_id, role_id).
+	roles, err := st.Queries().GetUserRoles(ctx, userID)
+	require.NoError(t, err)
+	roleIDs := make(map[string]bool, len(roles))
+	for _, r := range roles {
+		roleIDs[r.ID] = true
+	}
+	assert.True(t, roleIDs[roleA], "role A must be assigned to the user via the compound event")
+	assert.True(t, roleIDs[roleB], "role B must be assigned to the user via the compound event")
+	assert.Equal(t, 2, len(roles), "exactly the two requested roles must be assigned")
 }

@@ -193,11 +193,23 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			linuxUsername = "user_" + userID[:8]
 		}
 
-		// Create user without password
+		// Resolve the role ID set BEFORE emitting the event so the
+		// user INSERT and the per-role INSERT land atomically inside
+		// the projector's WithTx (issue #135). SSO only ever assigns
+		// the provider's configured default role on auto-create; if
+		// no default is configured the slice stays empty and the
+		// projector skips the per-role INSERT loop.
+		var roleIDs []string
+		if provider.DefaultRoleID != "" {
+			roleIDs = []string{provider.DefaultRoleID}
+		}
+
+		// Create user without password (compound event lands the
+		// user row AND its role assignments in one tx).
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserCreated",
+			EventType:  "UserCreatedWithRoles",
 			Data: map[string]any{
 				"email":              claims.Email,
 				"role":               "user",
@@ -209,29 +221,13 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				"locale":             claims.Locale,
 				"linux_username":     linuxUsername,
 				"linux_uid":          linuxUID,
+				"role_ids":           roleIDs,
 			},
 			ActorType: "system",
 			ActorID:   "sso",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create user: %w", err)
-		}
-
-		// Assign default role if configured
-		if provider.DefaultRoleID != "" {
-			if err := l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "user_role",
-				StreamID:   userID + ":" + provider.DefaultRoleID,
-				EventType:  "UserRoleAssigned",
-				Data: map[string]any{
-					"user_id": userID,
-					"role_id": provider.DefaultRoleID,
-				},
-				ActorType: "system",
-				ActorID:   "sso",
-			}); err != nil {
-				slog.Warn("failed to assign default role to SSO user", "user_id", userID, "role_id", provider.DefaultRoleID, "error", err)
-			}
 		}
 
 		// Auto-enable provisioning/SSH if global server settings are on
