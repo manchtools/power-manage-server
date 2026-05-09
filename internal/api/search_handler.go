@@ -42,6 +42,70 @@ func scopeSortField(scope string) string {
 	return ""
 }
 
+// searchScopeToString converts the wire enum to the lowercase string
+// form used by the RediSearch index names (idx:<scope>) and the
+// document key prefixes (search:<scope>:<id>). Returns the empty
+// string for UNSPECIFIED so the caller can treat it as the legacy
+// "all scopes" sentinel.
+func searchScopeToString(s pm.SearchScope) string {
+	switch s {
+	case pm.SearchScope_SEARCH_SCOPE_ACTIONS:
+		return "actions"
+	case pm.SearchScope_SEARCH_SCOPE_ACTION_SETS:
+		return "action_sets"
+	case pm.SearchScope_SEARCH_SCOPE_DEFINITIONS:
+		return "definitions"
+	case pm.SearchScope_SEARCH_SCOPE_COMPLIANCE_POLICIES:
+		return "compliance_policies"
+	case pm.SearchScope_SEARCH_SCOPE_DEVICES:
+		return "devices"
+	case pm.SearchScope_SEARCH_SCOPE_USERS:
+		return "users"
+	case pm.SearchScope_SEARCH_SCOPE_DEVICE_GROUPS:
+		return "device_groups"
+	case pm.SearchScope_SEARCH_SCOPE_USER_GROUPS:
+		return "user_groups"
+	case pm.SearchScope_SEARCH_SCOPE_EXECUTIONS:
+		return "executions"
+	case pm.SearchScope_SEARCH_SCOPE_AUDIT_EVENTS:
+		return "audit_events"
+	default:
+		return ""
+	}
+}
+
+// searchScopeFromString is the inverse: it maps the lowercase string
+// (as embedded in RediSearch keys) back to the wire enum. Unknown /
+// empty values map to UNSPECIFIED so a stale or unknown index entry
+// never crashes the response — the caller surfaces UNSPECIFIED and
+// the client treats it as "unknown scope".
+func searchScopeFromString(s string) pm.SearchScope {
+	switch s {
+	case "actions":
+		return pm.SearchScope_SEARCH_SCOPE_ACTIONS
+	case "action_sets":
+		return pm.SearchScope_SEARCH_SCOPE_ACTION_SETS
+	case "definitions":
+		return pm.SearchScope_SEARCH_SCOPE_DEFINITIONS
+	case "compliance_policies":
+		return pm.SearchScope_SEARCH_SCOPE_COMPLIANCE_POLICIES
+	case "devices":
+		return pm.SearchScope_SEARCH_SCOPE_DEVICES
+	case "users":
+		return pm.SearchScope_SEARCH_SCOPE_USERS
+	case "device_groups":
+		return pm.SearchScope_SEARCH_SCOPE_DEVICE_GROUPS
+	case "user_groups":
+		return pm.SearchScope_SEARCH_SCOPE_USER_GROUPS
+	case "executions":
+		return pm.SearchScope_SEARCH_SCOPE_EXECUTIONS
+	case "audit_events":
+		return pm.SearchScope_SEARCH_SCOPE_AUDIT_EVENTS
+	default:
+		return pm.SearchScope_SEARCH_SCOPE_UNSPECIFIED
+	}
+}
+
 func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
 	if h.searchIdx == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, nil)
@@ -49,9 +113,11 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 
 	query := strings.TrimSpace(req.Msg.Query)
 	hasFilters := len(req.Msg.DateFilters) > 0 || len(req.Msg.TagFilters) > 0
+	scopeStr := searchScopeToString(req.Msg.Scope)
 
-	// Allow empty query when filters or scope are provided.
-	if query == "" && !hasFilters && req.Msg.Scope == "" {
+	// Allow empty query when filters or a specific scope are provided.
+	// scopeStr == "" matches the legacy "all scopes" sentinel.
+	if query == "" && !hasFilters && scopeStr == "" {
 		return connect.NewResponse(&pm.SearchResponse{}), nil
 	}
 
@@ -74,8 +140,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	}
 
 	// Determine which scopes to search.
-	scopes := []string{req.Msg.Scope}
-	if req.Msg.Scope == "" {
+	scopes := []string{scopeStr}
+	if scopeStr == "" {
 		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users", "device_groups", "user_groups"}
 	}
 
@@ -258,7 +324,7 @@ func parseFTSearchResult(raw any, scope string) ([]*pm.SearchResult, int32) {
 
 		result := &pm.SearchResult{
 			Id:     id,
-			Scope:  scope,
+			Scope:  searchScopeFromString(scope),
 			Fields: make(map[string]string),
 		}
 
