@@ -76,6 +76,21 @@ func TestUserCreatedFromEvent_Pure(t *testing.T) {
 		assert.Contains(t, err.Error(), "email")
 	})
 
+	t.Run("explicit empty email + role round-trip verbatim (PL/pgSQL parity)", func(t *testing.T) {
+		// PL/pgSQL `event.data->>'role'` returns "" for an explicit
+		// empty string — COALESCE doesn't kick in (which only handles
+		// SQL NULL i.e. missing keys). Reject explicit "" would
+		// silently rewrite historical replay events. Same for email
+		// (which would have been INSERTed as ""). CR catch on PR #183.
+		got, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-empty", EventType: "UserCreated",
+			Data: jsonOrFail(t, map[string]any{"email": "", "role": ""}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", got.Email, "explicit empty email must round-trip as \"\"")
+		assert.Equal(t, "", got.Role, "explicit empty role must round-trip as \"\" (default 'user' only kicks in for missing key)")
+	})
+
 	t.Run("wrong stream/event type → ErrIgnoredEvent", func(t *testing.T) {
 		_, err := projectors.UserCreatedFromEvent(store.PersistedEvent{
 			StreamType: "device", EventType: "UserCreated",
@@ -155,6 +170,15 @@ func TestUserEmailChangedFromEvent_Pure(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "email")
 	})
+
+	t.Run("explicit empty email round-trips (PL/pgSQL parity)", func(t *testing.T) {
+		got, err := projectors.UserEmailChangedFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-1", EventType: "UserEmailChanged",
+			Data: jsonOrFail(t, map[string]any{"email": ""}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", got.Email, "explicit empty email must round-trip — PL/pgSQL would have written it through")
+	})
 }
 
 // TestUserPasswordChangedFromEvent_Pure — password_hash required.
@@ -197,6 +221,15 @@ func TestUserRoleChangedFromEvent_Pure(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "role")
 	})
+
+	t.Run("explicit empty role round-trips (PL/pgSQL parity)", func(t *testing.T) {
+		got, err := projectors.UserRoleChangedFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-1", EventType: "UserRoleChanged",
+			Data: jsonOrFail(t, map[string]any{"role": ""}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "", got.Role, "explicit empty role must round-trip")
+	})
 }
 
 // TestUserSshKeyAddedFromEvent_Pure — key_id required.
@@ -212,8 +245,21 @@ func TestUserSshKeyAddedFromEvent_Pure(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "k-1", got.KeyID)
-		assert.Equal(t, "ssh-rsa AAA", got.PublicKey)
-		assert.Equal(t, "laptop", got.Comment)
+		require.NotNil(t, got.PublicKey)
+		assert.Equal(t, "ssh-rsa AAA", *got.PublicKey)
+		require.NotNil(t, got.Comment)
+		assert.Equal(t, "laptop", *got.Comment)
+	})
+
+	t.Run("missing public_key + comment stay nil", func(t *testing.T) {
+		got, err := projectors.UserSshKeyAddedFromEvent(store.PersistedEvent{
+			StreamType: "user", StreamID: "u-1", EventType: "UserSshKeyAdded",
+			Data: jsonOrFail(t, map[string]any{"key_id": "k-only"}),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "k-only", got.KeyID)
+		assert.Nil(t, got.PublicKey, "missing public_key must stay nil so JSONB element gets a JSON null (PL/pgSQL parity)")
+		assert.Nil(t, got.Comment, "missing comment must stay nil so JSONB element gets a JSON null (PL/pgSQL parity)")
 	})
 
 	t.Run("missing key_id fails", func(t *testing.T) {

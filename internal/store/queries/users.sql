@@ -169,20 +169,24 @@ DELETE FROM identity_links_projection WHERE user_id = $1;
 -- name: AppendUserSshKeyProjection :execrows
 -- UserSshKeyAdded handler. Mirrors the PL/pgSQL JSONB array-append
 -- exactly: builds a single-element array and concatenates.
+-- public_key + comment use sqlc.narg so an omitted-key payload
+-- writes JSON null into the JSONB element (PL/pgSQL parity:
+-- `event.data->>'public_key'` returned NULL for missing keys, and
+-- jsonb_build_object preserves NULL as a JSON null entry).
 -- Stale-replay guard via projection_version.
 UPDATE users_projection
 SET ssh_public_keys = ssh_public_keys || jsonb_build_array(
         jsonb_build_object(
-            'id', @key_id::TEXT,
-            'public_key', @public_key::TEXT,
-            'comment', @comment::TEXT,
-            'added_at', @added_at::TIMESTAMPTZ
+            'id', sqlc.arg(key_id)::TEXT,
+            'public_key', sqlc.narg(public_key)::TEXT,
+            'comment', sqlc.narg(comment)::TEXT,
+            'added_at', sqlc.arg(added_at)::TIMESTAMPTZ
         )
     ),
-    updated_at         = @added_at::TIMESTAMPTZ,
-    projection_version = @projection_version
-WHERE id = @id
-  AND projection_version < @projection_version;
+    updated_at         = sqlc.arg(added_at)::TIMESTAMPTZ,
+    projection_version = sqlc.arg(projection_version)
+WHERE id = sqlc.arg(id)
+  AND projection_version < sqlc.arg(projection_version);
 
 -- name: RemoveUserSshKeyProjection :execrows
 -- UserSshKeyRemoved handler. Mirrors the PL/pgSQL JSONB filter-by-id

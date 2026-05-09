@@ -37,7 +37,7 @@ type UserCreatedPayload struct {
 }
 
 type userCreatedRaw struct {
-	Email             string  `json:"email"`
+	Email             *string `json:"email,omitempty"`
 	PasswordHash      *string `json:"password_hash,omitempty"`
 	Role              *string `json:"role,omitempty"`
 	DisplayName       *string `json:"display_name,omitempty"`
@@ -64,19 +64,26 @@ func UserCreatedFromEvent(e store.PersistedEvent) (UserCreatedPayload, error) {
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserCreatedPayload{}, fmt.Errorf("projector: invalid UserCreated payload: %w", err)
 	}
-	if raw.Email == "" {
+	// PL/pgSQL parity: a missing email key would have produced SQL
+	// NULL and crashed the NOT NULL constraint at INSERT time. Surface
+	// that earlier as a decoder error. An explicitly-empty email ("")
+	// is preserved verbatim — the PL/pgSQL projector would have
+	// written it through.
+	if raw.Email == nil {
 		return UserCreatedPayload{}, fmt.Errorf("projector: UserCreated requires email")
 	}
 	out := UserCreatedPayload{
 		ID:    e.StreamID,
-		Email: raw.Email,
-		// Default role mirrors the PL/pgSQL COALESCE-to-"user".
+		Email: *raw.Email,
+		// Default role mirrors the PL/pgSQL COALESCE(...,'user'):
+		// it kicks in ONLY for a missing key, NOT for an explicit
+		// empty string. An emitted role:"" must round-trip as "".
 		Role: "user",
 	}
 	if raw.PasswordHash != nil {
 		out.PasswordHash = *raw.PasswordHash
 	}
-	if raw.Role != nil && *raw.Role != "" {
+	if raw.Role != nil {
 		out.Role = *raw.Role
 	}
 	if raw.DisplayName != nil {
@@ -189,7 +196,10 @@ func UserEmailChangedFromEvent(e store.PersistedEvent) (UserEmailChangedPayload,
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserEmailChangedPayload{}, fmt.Errorf("projector: invalid UserEmailChanged payload: %w", err)
 	}
-	if raw.Email == nil || *raw.Email == "" {
+	// PL/pgSQL parity: missing key → SQL NULL → NOT NULL violation
+	// at UPDATE time. Surface earlier here. Explicit "" is preserved
+	// verbatim — the PL/pgSQL projector would have written it through.
+	if raw.Email == nil {
 		return UserEmailChangedPayload{}, fmt.Errorf("projector: UserEmailChanged requires email")
 	}
 	return UserEmailChangedPayload{ID: e.StreamID, Email: *raw.Email}, nil
@@ -249,7 +259,9 @@ func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, e
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserRoleChangedPayload{}, fmt.Errorf("projector: invalid UserRoleChanged payload: %w", err)
 	}
-	if raw.Role == nil || *raw.Role == "" {
+	// PL/pgSQL parity: missing key → SQL NULL → NOT NULL violation.
+	// Explicit "" is preserved verbatim.
+	if raw.Role == nil {
 		return UserRoleChangedPayload{}, fmt.Errorf("projector: UserRoleChanged requires role")
 	}
 	return UserRoleChangedPayload{ID: e.StreamID, Role: *raw.Role}, nil
@@ -258,11 +270,17 @@ func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, e
 // UserSshKeyAddedPayload mirrors the JSONB array-append the PL/pgSQL
 // projector did on UserSshKeyAdded. AddedAt is the event's
 // occurred_at timestamp (matches PL/pgSQL `event.occurred_at`).
+//
+// PublicKey + Comment are pointers so the SQL builder can write a
+// JSON null for an omitted key rather than an empty string —
+// PL/pgSQL fed `event.data->>'public_key'` straight into
+// `jsonb_build_object`, so missing keys became JSON null. Replay
+// of historical sparse events must produce the same JSONB shape.
 type UserSshKeyAddedPayload struct {
 	ID        string
 	KeyID     string
-	PublicKey string
-	Comment   string
+	PublicKey *string
+	Comment   *string
 	AddedAt   time.Time
 }
 
@@ -296,12 +314,10 @@ func UserSshKeyAddedFromEvent(e store.PersistedEvent) (UserSshKeyAddedPayload, e
 		KeyID:   *raw.KeyID,
 		AddedAt: e.OccurredAt,
 	}
-	if raw.PublicKey != nil {
-		out.PublicKey = *raw.PublicKey
-	}
-	if raw.Comment != nil {
-		out.Comment = *raw.Comment
-	}
+	// Keep the pointer-presence distinction so the SQL builder
+	// can emit JSON null vs explicit value (PL/pgSQL parity).
+	out.PublicKey = raw.PublicKey
+	out.Comment = raw.Comment
 	return out, nil
 }
 

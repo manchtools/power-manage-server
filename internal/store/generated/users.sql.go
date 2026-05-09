@@ -28,8 +28,8 @@ WHERE id = $6
 
 type AppendUserSshKeyProjectionParams struct {
 	KeyID             string    `json:"key_id"`
-	PublicKey         string    `json:"public_key"`
-	Comment           string    `json:"comment"`
+	PublicKey         *string   `json:"public_key"`
+	Comment           *string   `json:"comment"`
 	AddedAt           time.Time `json:"added_at"`
 	ProjectionVersion int64     `json:"projection_version"`
 	ID                string    `json:"id"`
@@ -37,6 +37,10 @@ type AppendUserSshKeyProjectionParams struct {
 
 // UserSshKeyAdded handler. Mirrors the PL/pgSQL JSONB array-append
 // exactly: builds a single-element array and concatenates.
+// public_key + comment use sqlc.narg so an omitted-key payload
+// writes JSON null into the JSONB element (PL/pgSQL parity:
+// `event.data->>'public_key'` returned NULL for missing keys, and
+// jsonb_build_object preserves NULL as a JSON null entry).
 // Stale-replay guard via projection_version.
 func (q *Queries) AppendUserSshKeyProjection(ctx context.Context, arg AppendUserSshKeyProjectionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, appendUserSshKeyProjection,
