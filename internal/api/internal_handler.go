@@ -317,7 +317,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 			"device_path":     req.Msg.DevicePath,
 			"passphrase":      encPassphrase,
 			"rotated_at":      time.Now().Format(time.RFC3339),
-			"rotation_reason": req.Msg.RotationReason,
+			"rotation_reason": rotationReasonToString(req.Msg.RotationReason),
 		},
 		ActorType: "device",
 		ActorID:   req.Msg.DeviceId,
@@ -371,7 +371,7 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 				"username":        r.Username,
 				"password":        encPassword,
 				"rotated_at":      r.RotatedAt,
-				"rotation_reason": r.Reason,
+				"rotation_reason": rotationReasonToString(r.Reason),
 			},
 			ActorType: "device",
 			ActorID:   req.Msg.DeviceId,
@@ -522,4 +522,32 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 	}
 
 	return action
+}
+
+// rotationReasonToString converts the wire enum into the lowercase
+// string the events table and projection columns have always stored
+// ("initial" / "scheduled"). Mirrors the PR-A/B boundary-helper
+// pattern: keep the JSONB shape stable for backward replay while
+// callers move to the typed enum on the wire. UNSPECIFIED maps to the
+// empty string so the projector defaulting logic
+// (LpsPasswordRotatedFromEvent and LuksKeyRotatedFromEvent) sees the
+// same shape an older agent would have produced.
+//
+// No FromString counterpart is exported here because nothing in the
+// api package currently lifts a stored rotation reason back onto the
+// wire — the surface is write-only at this boundary. The gateway's
+// agent-side mirror (rotationReasonFromAgentString in
+// internal/handler/agent.go) covers the other direction at the only
+// site that needs it.
+func rotationReasonToString(r pm.RotationReason) string {
+	switch r {
+	case pm.RotationReason_ROTATION_REASON_INITIAL:
+		return "initial"
+	case pm.RotationReason_ROTATION_REASON_SCHEDULED:
+		return "scheduled"
+	case pm.RotationReason_ROTATION_REASON_AUTH_GRACE:
+		return "auth_grace"
+	default:
+		return ""
+	}
 }

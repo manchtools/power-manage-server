@@ -623,8 +623,18 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, op := range patch.Operations {
-		switch strings.ToLower(op.Op) {
-		case "replace":
+		// Pre-validate per RFC 7644 §3.5.2 so the user patch path
+		// rejects unknown verbs with a 400 even though add/remove
+		// fall through to the catch-all default below — they are
+		// not implemented for users today, but they ARE valid SCIM
+		// ops, and a 400 with the precise error is the right
+		// response (vs. a 501 for the implementation gap).
+		if !op.Op.IsValid() {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported patch op: %s", op.Op))
+			return
+		}
+		switch op.Op.Normalize() {
+		case SCIMPatchOpReplace:
 			if err := h.handleUserPatchReplace(ctx, provider, userID, existingUser, op); err != nil {
 				h.logger.Error("failed to apply SCIM patch op", "op", op.Op, "path", op.Path, "error", err)
 				writeError(w, http.StatusInternalServerError, "failed to apply patch operation")
@@ -775,7 +785,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.Identi
 		}
 		for key, val := range valueMap {
 			subOp := SCIMPatchOp{
-				Op:    "replace",
+				Op:    SCIMPatchOpReplace,
 				Path:  key,
 				Value: val,
 			}
@@ -1153,7 +1163,7 @@ func extractNameFromPatchOps(ops []SCIMPatchOp) *SCIMName {
 	found := false
 
 	for _, op := range ops {
-		if strings.ToLower(op.Op) != "replace" {
+		if op.Op.Normalize() != SCIMPatchOpReplace {
 			continue
 		}
 		path := strings.ToLower(op.Path)

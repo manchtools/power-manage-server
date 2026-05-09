@@ -67,7 +67,7 @@ func (p *ControlProxy) GetLuksKey(ctx context.Context, deviceID, actionID string
 }
 
 // StoreLuksKey encrypts and stores a new LUKS key via the control server.
-func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, devicePath, passphrase, reason string) (*pm.StoreLuksKeyResponse, error) {
+func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, devicePath, passphrase string, reason pm.RotationReason) (*pm.StoreLuksKeyResponse, error) {
 	resp, err := p.client.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
 		DeviceId:       deviceID,
 		ActionId:       actionID,
