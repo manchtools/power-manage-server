@@ -474,13 +474,14 @@ func TestRoundtrip_CommandOutput(t *testing.T) {
 	var out payloads.CommandOutput
 	require.NoError(t, json.Unmarshal(raw, &out))
 	assert.Equal(t, in, out)
-	// Wire-shape sanity: keys must be exactly the legacy ones so a
-	// historical event payload still decodes here.
+	// Wire-shape sanity: keys must be EXACTLY the legacy ones so an
+	// extra key would break historical decoders (CR catch on PR #192).
 	var asMap map[string]any
 	require.NoError(t, json.Unmarshal(raw, &asMap))
 	assert.Contains(t, asMap, "stdout")
 	assert.Contains(t, asMap, "stderr")
 	assert.Contains(t, asMap, "exit_code")
+	assert.Len(t, asMap, 3, "wire shape must keep the exact legacy key set")
 }
 
 // TestRawCommandOutput_NilOmitted locks the contract used by
@@ -490,6 +491,23 @@ func TestRoundtrip_CommandOutput(t *testing.T) {
 func TestRawCommandOutput_NilOmitted(t *testing.T) {
 	assert.Nil(t, payloads.RawCommandOutput(nil),
 		"nil input must return nil so omitempty fires on the parent payload")
+
+	// End-to-end omitempty contract: marshalling the parent payload
+	// with nil Output must NOT include the `output` key in the wire
+	// JSON. Without this assertion the helper could regress (e.g.
+	// to []byte("null")) and we'd only catch it via downstream
+	// projector failures (CR catch on PR #192).
+	completedAt := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	host := payloads.ExecutionTerminal{
+		CompletedAt: &completedAt,
+		Output:      payloads.RawCommandOutput(nil),
+	}
+	wire, err := json.Marshal(host)
+	require.NoError(t, err)
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(wire, &asMap))
+	assert.NotContains(t, asMap, "output", "omitempty contract must omit output when nil")
+	assert.NotContains(t, asMap, "detection_output", "omitempty must also drop detection_output when nil")
 }
 
 // TestRawCommandOutput_ProducesObject locks that the helper writes
@@ -511,12 +529,14 @@ func TestRawCommandOutput_ProducesObject(t *testing.T) {
 	assert.Equal(t, byte('{'), raw[0],
 		"output must be a JSON object, not a quoted string")
 
-	// Wire keys must be the exact legacy set.
+	// Wire keys must be EXACTLY the legacy set — extra keys would
+	// break historical decoders (CR catch on PR #192).
 	var asMap map[string]any
 	require.NoError(t, json.Unmarshal(raw, &asMap))
 	assert.Contains(t, asMap, "stdout")
 	assert.Contains(t, asMap, "stderr")
 	assert.Contains(t, asMap, "exit_code")
+	assert.Len(t, asMap, 3, "wire shape must keep the exact legacy key set")
 
 	// Round-trip back through ExecutionTerminal so the test mirrors
 	// how the field actually rides on the wire.
