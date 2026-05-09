@@ -108,11 +108,17 @@ type rebuildTarget struct {
 // stay stale.
 var AllRebuildTargets = []rebuildTarget{
 	{
+		// Ported to projectors.ApplyUser via projectors.WireAll
+		// (manchtools/power-manage-server#136). RebuildAll dispatches
+		// through the Go applier; the no-op PL/pgSQL stub left behind
+		// by migration 040 is retained so the live trigger pipeline in
+		// project_event() stays quiet until the dispatcher itself drops
+		// its `WHEN 'user'` clause in the Phase 2 cleanup. This was the
+		// LAST domain projector still on PL/pgSQL.
 		Name:        "users",
 		Tables:      []string{"users_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"user"},
-		Function:    "project_user_event",
 	},
 	{
 		// Ported to projectors.ApplyToken via projectors.WireAll.
