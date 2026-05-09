@@ -26,16 +26,16 @@ func TestCreateAssignment_ActionToDevice(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "device",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 		TargetId:   deviceID,
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Assignment.Id)
-	assert.Equal(t, "action", resp.Msg.Assignment.SourceType)
+	assert.Equal(t, pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, resp.Msg.Assignment.SourceType)
 	assert.Equal(t, actionID, resp.Msg.Assignment.SourceId)
-	assert.Equal(t, "device", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE, resp.Msg.Assignment.TargetType)
 	assert.Equal(t, deviceID, resp.Msg.Assignment.TargetId)
 }
 
@@ -50,14 +50,14 @@ func TestCreateAssignment_SetToGroup(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action_set",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET,
 		SourceId:   setID,
-		TargetType: "device_group",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP,
 		TargetId:   groupID,
 	}))
 	require.NoError(t, err)
-	assert.Equal(t, "action_set", resp.Msg.Assignment.SourceType)
-	assert.Equal(t, "device_group", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET, resp.Msg.Assignment.SourceType)
+	assert.Equal(t, pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP, resp.Msg.Assignment.TargetType)
 }
 
 func TestCreateAssignment_UninstallMode(t *testing.T) {
@@ -71,9 +71,9 @@ func TestCreateAssignment_UninstallMode(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "device",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 		TargetId:   deviceID,
 		Mode:       pm.AssignmentMode(uninstallAssignmentMode),
 	}))
@@ -92,9 +92,9 @@ func TestCreateAssignment_Idempotent(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	req := &pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "device",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 		TargetId:   deviceID,
 	}
 
@@ -119,9 +119,9 @@ func TestDeleteAssignment(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	createResp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "device",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 		TargetId:   deviceID,
 	}))
 	require.NoError(t, err)
@@ -144,9 +144,9 @@ func TestListAssignments(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		actionID := testutil.CreateTestAction(t, st, adminID, testutil.NewID(), int(pm.ActionType_ACTION_TYPE_SHELL))
 		_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-			SourceType: "action",
+			SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 			SourceId:   actionID,
-			TargetType: "device",
+			TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 			TargetId:   deviceID,
 		}))
 		require.NoError(t, err)
@@ -168,14 +168,14 @@ func TestCreateAssignment_ActionToUser(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "user",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
 		TargetId:   targetUserID,
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Assignment.Id)
-	assert.Equal(t, "user", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER, resp.Msg.Assignment.TargetType)
 	assert.Equal(t, targetUserID, resp.Msg.Assignment.TargetId)
 }
 
@@ -190,14 +190,14 @@ func TestCreateAssignment_ActionToUserGroup(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	resp, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "user_group",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP,
 		TargetId:   groupID,
 	}))
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.Assignment.Id)
-	assert.Equal(t, "user_group", resp.Msg.Assignment.TargetType)
+	assert.Equal(t, pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP, resp.Msg.Assignment.TargetType)
 	assert.Equal(t, groupID, resp.Msg.Assignment.TargetId)
 }
 
@@ -211,9 +211,9 @@ func TestCreateAssignment_UserNotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "user",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
 		TargetId:   testutil.NewID(),
 	}))
 	require.Error(t, err)
@@ -234,9 +234,9 @@ func TestGetUserAssignments(t *testing.T) {
 	// Create direct user assignment
 	actionID1 := testutil.CreateTestAction(t, st, adminID, "UA Direct", int(pm.ActionType_ACTION_TYPE_SHELL))
 	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID1,
-		TargetType: "user",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
 		TargetId:   userID,
 	}))
 	require.NoError(t, err)
@@ -244,9 +244,9 @@ func TestGetUserAssignments(t *testing.T) {
 	// Create user group assignment
 	actionID2 := testutil.CreateTestAction(t, st, adminID, "UA Group", int(pm.ActionType_ACTION_TYPE_SHELL))
 	_, err = h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID2,
-		TargetType: "user_group",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP,
 		TargetId:   groupID,
 	}))
 	require.NoError(t, err)
@@ -269,9 +269,9 @@ func TestGetDeviceAssignments(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.CreateAssignment(ctx, connect.NewRequest(&pm.CreateAssignmentRequest{
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
-		TargetType: "device",
+		TargetType: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
 		TargetId:   deviceID,
 	}))
 	require.NoError(t, err)

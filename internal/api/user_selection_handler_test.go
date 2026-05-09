@@ -28,14 +28,14 @@ func TestSetUserSelection_Success(t *testing.T) {
 
 	resp, err := h.SetUserSelection(ctx, connect.NewRequest(&pm.SetUserSelectionRequest{
 		DeviceId:   deviceID,
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
 		Selected:   true,
 	}))
 	require.NoError(t, err)
 	assert.NotNil(t, resp.Msg.Selection)
 	assert.Equal(t, deviceID, resp.Msg.Selection.DeviceId)
-	assert.Equal(t, "action", resp.Msg.Selection.SourceType)
+	assert.Equal(t, pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, resp.Msg.Selection.SourceType)
 	assert.Equal(t, actionID, resp.Msg.Selection.SourceId)
 	assert.True(t, resp.Msg.Selection.Selected)
 }
@@ -53,7 +53,7 @@ func TestSetUserSelection_NoAssignment(t *testing.T) {
 	// No assignment created — selecting should fail
 	_, err := h.SetUserSelection(ctx, connect.NewRequest(&pm.SetUserSelectionRequest{
 		DeviceId:   deviceID,
-		SourceType: "action",
+		SourceType: pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
 		SourceId:   actionID,
 		Selected:   true,
 	}))
