@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -103,7 +104,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
-				EventType:  "IdentityUnlinked",
+				EventType:  string(eventtypes.IdentityUnlinked),
 				Data:       map[string]any{},
 				ActorType:  "system",
 				ActorID:    "sso",
@@ -118,7 +119,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			err = l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
-				EventType:  "IdentityLinkLoginUpdated",
+				EventType:  string(eventtypes.IdentityLinkLoginUpdated),
 				Data: map[string]any{
 					"provider_id":    provider.ID,
 					"external_id":    claims.Subject,
@@ -153,7 +154,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			err = l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "identity_provider",
 				StreamID:   linkID,
-				EventType:  "IdentityLinked",
+				EventType:  string(eventtypes.IdentityLinked),
 				Data: map[string]any{
 					"user_id":        user.ID,
 					"provider_id":    provider.ID,
@@ -209,7 +210,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "user",
 			StreamID:   userID,
-			EventType:  "UserCreatedWithRoles",
+			EventType:  string(eventtypes.UserCreatedWithRoles),
 			Data: map[string]any{
 				"email":              claims.Email,
 				"role":               "user",
@@ -236,7 +237,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				if err := l.appender.AppendEvent(ctx, EventInput{
 					StreamType: "user",
 					StreamID:   userID,
-					EventType:  "UserProvisioningSettingsUpdated",
+					EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 					Data:       map[string]any{"user_provisioning_enabled": true},
 					ActorType:  "system",
 					ActorID:    "sso",
@@ -248,7 +249,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				if err := l.appender.AppendEvent(ctx, EventInput{
 					StreamType: "user",
 					StreamID:   userID,
-					EventType:  "UserSshSettingsUpdated",
+					EventType:  string(eventtypes.UserSshSettingsUpdated),
 					Data: map[string]any{
 						"ssh_access_enabled": true,
 						"ssh_allow_pubkey":   true,
@@ -269,7 +270,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "identity_provider",
 			StreamID:   linkID,
-			EventType:  "IdentityLinked",
+			EventType:  string(eventtypes.IdentityLinked),
 			Data: map[string]any{
 				"user_id":        userID,
 				"provider_id":    provider.ID,
@@ -323,7 +324,7 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "user_group",
 				StreamID:   groupID,
-				EventType:  "UserGroupMemberAdded",
+				EventType:  string(eventtypes.UserGroupMemberAdded),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,
@@ -338,7 +339,7 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 			if err := l.appender.AppendEvent(ctx, EventInput{
 				StreamType: "user_group",
 				StreamID:   groupID,
-				EventType:  "UserGroupMemberRemoved",
+				EventType:  string(eventtypes.UserGroupMemberRemoved),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,

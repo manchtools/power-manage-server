@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -48,7 +49,7 @@ type deviceGroupCreatedRaw struct {
 // otherwise fail the INSERT, surfacing as a Postgres constraint
 // violation rather than a projector-level validation error.
 func DeviceGroupCreatedFromEvent(e store.PersistedEvent) (DeviceGroupCreatedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupCreated" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupCreated) {
 		return DeviceGroupCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -93,7 +94,7 @@ type deviceGroupRenamedRaw struct {
 
 // DeviceGroupRenamedFromEvent decodes DeviceGroupRenamed.
 func DeviceGroupRenamedFromEvent(e store.PersistedEvent) (DeviceGroupRenamedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupRenamed" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupRenamed) {
 		return DeviceGroupRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -127,7 +128,7 @@ type deviceGroupDescriptionUpdatedRaw struct {
 // Description == "", matching the PL/pgSQL COALESCE-to-empty-string
 // behaviour.
 func DeviceGroupDescriptionUpdatedFromEvent(e store.PersistedEvent) (DeviceGroupDescriptionUpdatedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupDescriptionUpdated" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupDescriptionUpdated) {
 		return DeviceGroupDescriptionUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceGroupDescriptionUpdatedPayload{ID: e.StreamID}
@@ -161,7 +162,7 @@ type deviceGroupQueryUpdatedRaw struct {
 
 // DeviceGroupQueryUpdatedFromEvent decodes DeviceGroupQueryUpdated.
 func DeviceGroupQueryUpdatedFromEvent(e store.PersistedEvent) (DeviceGroupQueryUpdatedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupQueryUpdated" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupQueryUpdated) {
 		return DeviceGroupQueryUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceGroupQueryUpdatedPayload{ID: e.StreamID}
@@ -193,7 +194,7 @@ type deviceGroupSyncIntervalSetRaw struct {
 
 // DeviceGroupSyncIntervalSetFromEvent decodes DeviceGroupSyncIntervalSet.
 func DeviceGroupSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceGroupSyncIntervalSetPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupSyncIntervalSet" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupSyncIntervalSet) {
 		return DeviceGroupSyncIntervalSetPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceGroupSyncIntervalSetPayload{ID: e.StreamID}
@@ -227,7 +228,7 @@ type deviceGroupMaintenanceWindowSetRaw struct {
 // DeviceGroupMaintenanceWindowSetFromEvent decodes
 // DeviceGroupMaintenanceWindowSet.
 func DeviceGroupMaintenanceWindowSetFromEvent(e store.PersistedEvent) (DeviceGroupMaintenanceWindowSetPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != "DeviceGroupMaintenanceWindowSet" {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupMaintenanceWindowSet) {
 		return DeviceGroupMaintenanceWindowSetPayload{}, ErrIgnoredEvent
 	}
 	out := DeviceGroupMaintenanceWindowSetPayload{
@@ -276,7 +277,7 @@ func DeviceGroupMemberAddedFromEvent(e store.PersistedEvent) (DeviceGroupMemberP
 	if e.StreamType != "device_group" {
 		return DeviceGroupMemberPayload{}, ErrIgnoredEvent
 	}
-	if e.EventType != "DeviceGroupMemberAdded" && e.EventType != "DeviceAddedToGroup" {
+	if e.EventType != string(eventtypes.DeviceGroupMemberAdded) && e.EventType != string(eventtypes.DeviceAddedToGroup) {
 		return DeviceGroupMemberPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceGroupMember(e)
@@ -289,7 +290,7 @@ func DeviceGroupMemberRemovedFromEvent(e store.PersistedEvent) (DeviceGroupMembe
 	if e.StreamType != "device_group" {
 		return DeviceGroupMemberPayload{}, ErrIgnoredEvent
 	}
-	if e.EventType != "DeviceGroupMemberRemoved" && e.EventType != "DeviceRemovedFromGroup" {
+	if e.EventType != string(eventtypes.DeviceGroupMemberRemoved) && e.EventType != string(eventtypes.DeviceRemovedFromGroup) {
 		return DeviceGroupMemberPayload{}, ErrIgnoredEvent
 	}
 	return decodeDeviceGroupMember(e)

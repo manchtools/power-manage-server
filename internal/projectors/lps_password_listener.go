@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -43,7 +44,7 @@ func LpsPasswordListener(st *store.Store, logger *slog.Logger) store.EventListen
 		if e.StreamType != "lps_password" {
 			return
 		}
-		if e.EventType != "LpsPasswordRotated" {
+		if e.EventType != string(eventtypes.LpsPasswordRotated) {
 			return
 		}
 

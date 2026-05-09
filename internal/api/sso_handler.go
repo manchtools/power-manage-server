@@ -13,6 +13,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/idp"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -296,7 +297,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   linkResult.UserID,
-		EventType:  "UserProfileUpdated",
+		EventType:  string(eventtypes.UserProfileUpdated),
 		Data: map[string]any{
 			"display_name":       claims.Name,
 			"given_name":         claims.GivenName,
@@ -342,7 +343,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   user.ID,
-		EventType:  "UserLoggedIn",
+		EventType:  string(eventtypes.UserLoggedIn),
 		Data: map[string]any{
 			"provider": provider.Slug,
 		},

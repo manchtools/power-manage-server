@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -48,7 +49,7 @@ type userGroupCreatedRaw struct {
 // otherwise fail the INSERT, surfacing as a Postgres constraint
 // violation rather than a projector-level validation error.
 func UserGroupCreatedFromEvent(e store.PersistedEvent) (UserGroupCreatedPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupCreated" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupCreated) {
 		return UserGroupCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -101,7 +102,7 @@ type userGroupUpdatedRaw struct {
 // Description signals "update" vs "preserve": non-nil = update with
 // the value (incl. empty string); nil = preserve.
 func UserGroupUpdatedFromEvent(e store.PersistedEvent) (UserGroupUpdatedPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupUpdated" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupUpdated) {
 		return UserGroupUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -138,7 +139,7 @@ type userGroupQueryUpdatedRaw struct {
 
 // UserGroupQueryUpdatedFromEvent decodes UserGroupQueryUpdated.
 func UserGroupQueryUpdatedFromEvent(e store.PersistedEvent) (UserGroupQueryUpdatedPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupQueryUpdated" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupQueryUpdated) {
 		return UserGroupQueryUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := UserGroupQueryUpdatedPayload{ID: e.StreamID}
@@ -173,7 +174,7 @@ type userGroupMaintenanceWindowSetRaw struct {
 // UserGroupMaintenanceWindowSetFromEvent decodes
 // UserGroupMaintenanceWindowSet.
 func UserGroupMaintenanceWindowSetFromEvent(e store.PersistedEvent) (UserGroupMaintenanceWindowSetPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupMaintenanceWindowSet" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupMaintenanceWindowSet) {
 		return UserGroupMaintenanceWindowSetPayload{}, ErrIgnoredEvent
 	}
 	out := UserGroupMaintenanceWindowSetPayload{
@@ -217,7 +218,7 @@ type userGroupMemberRaw struct {
 
 // UserGroupMemberAddedFromEvent decodes UserGroupMemberAdded.
 func UserGroupMemberAddedFromEvent(e store.PersistedEvent) (UserGroupMemberPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupMemberAdded" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupMemberAdded) {
 		return UserGroupMemberPayload{}, ErrIgnoredEvent
 	}
 	return decodeUserGroupMember(e, "UserGroupMemberAdded")
@@ -225,7 +226,7 @@ func UserGroupMemberAddedFromEvent(e store.PersistedEvent) (UserGroupMemberPaylo
 
 // UserGroupMemberRemovedFromEvent decodes UserGroupMemberRemoved.
 func UserGroupMemberRemovedFromEvent(e store.PersistedEvent) (UserGroupMemberPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupMemberRemoved" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupMemberRemoved) {
 		return UserGroupMemberPayload{}, ErrIgnoredEvent
 	}
 	return decodeUserGroupMember(e, "UserGroupMemberRemoved")
@@ -264,7 +265,7 @@ type userGroupRoleRaw struct {
 
 // UserGroupRoleAssignedFromEvent decodes UserGroupRoleAssigned.
 func UserGroupRoleAssignedFromEvent(e store.PersistedEvent) (UserGroupRolePayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupRoleAssigned" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupRoleAssigned) {
 		return UserGroupRolePayload{}, ErrIgnoredEvent
 	}
 	return decodeUserGroupRole(e, "UserGroupRoleAssigned")
@@ -272,7 +273,7 @@ func UserGroupRoleAssignedFromEvent(e store.PersistedEvent) (UserGroupRolePayloa
 
 // UserGroupRoleRevokedFromEvent decodes UserGroupRoleRevoked.
 func UserGroupRoleRevokedFromEvent(e store.PersistedEvent) (UserGroupRolePayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupRoleRevoked" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupRoleRevoked) {
 		return UserGroupRolePayload{}, ErrIgnoredEvent
 	}
 	return decodeUserGroupRole(e, "UserGroupRoleRevoked")
@@ -314,7 +315,7 @@ type userGroupMembersRebuiltRaw struct {
 
 // UserGroupMembersRebuiltFromEvent decodes UserGroupMembersRebuilt.
 func UserGroupMembersRebuiltFromEvent(e store.PersistedEvent) (UserGroupMembersRebuiltPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != "UserGroupMembersRebuilt" {
+	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupMembersRebuilt) {
 		return UserGroupMembersRebuiltPayload{}, ErrIgnoredEvent
 	}
 	out := UserGroupMembersRebuiltPayload{GroupID: e.StreamID, UserIDs: []string{}}

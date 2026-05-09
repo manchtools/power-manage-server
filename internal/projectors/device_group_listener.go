@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -74,13 +75,13 @@ func DeviceGroupListener(st *store.Store, logger *slog.Logger) store.EventListen
 		// so we share its body here for the multi-write cases via
 		// WithTx and short-circuit the simple cases through the pool.
 		switch e.EventType {
-		case "DeviceGroupCreated",
-			"DeviceGroupQueryUpdated",
-			"DeviceGroupDeleted",
-			"DeviceGroupMemberAdded",
-			"DeviceAddedToGroup",
-			"DeviceGroupMemberRemoved",
-			"DeviceRemovedFromGroup":
+		case string(eventtypes.DeviceGroupCreated),
+			string(eventtypes.DeviceGroupQueryUpdated),
+			string(eventtypes.DeviceGroupDeleted),
+			string(eventtypes.DeviceGroupMemberAdded),
+			string(eventtypes.DeviceAddedToGroup),
+			string(eventtypes.DeviceGroupMemberRemoved),
+			string(eventtypes.DeviceRemovedFromGroup):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyDeviceGroup(ctx, q, e)
 			}); err != nil {
@@ -113,23 +114,23 @@ func ApplyDeviceGroup(ctx context.Context, q *store.Queries, e store.PersistedEv
 		return nil
 	}
 	switch e.EventType {
-	case "DeviceGroupCreated":
+	case string(eventtypes.DeviceGroupCreated):
 		return applyDeviceGroupCreated(ctx, q, e)
-	case "DeviceGroupRenamed":
+	case string(eventtypes.DeviceGroupRenamed):
 		return applyDeviceGroupRenamed(ctx, q, e)
-	case "DeviceGroupDescriptionUpdated":
+	case string(eventtypes.DeviceGroupDescriptionUpdated):
 		return applyDeviceGroupDescriptionUpdated(ctx, q, e)
-	case "DeviceGroupQueryUpdated":
+	case string(eventtypes.DeviceGroupQueryUpdated):
 		return applyDeviceGroupQueryUpdated(ctx, q, e)
-	case "DeviceGroupSyncIntervalSet":
+	case string(eventtypes.DeviceGroupSyncIntervalSet):
 		return applyDeviceGroupSyncIntervalSet(ctx, q, e)
-	case "DeviceGroupMaintenanceWindowSet":
+	case string(eventtypes.DeviceGroupMaintenanceWindowSet):
 		return applyDeviceGroupMaintenanceWindowSet(ctx, q, e)
-	case "DeviceGroupMemberAdded", "DeviceAddedToGroup":
+	case string(eventtypes.DeviceGroupMemberAdded), string(eventtypes.DeviceAddedToGroup):
 		return applyDeviceGroupMemberAdded(ctx, q, e)
-	case "DeviceGroupMemberRemoved", "DeviceRemovedFromGroup":
+	case string(eventtypes.DeviceGroupMemberRemoved), string(eventtypes.DeviceRemovedFromGroup):
 		return applyDeviceGroupMemberRemoved(ctx, q, e)
-	case "DeviceGroupDeleted":
+	case string(eventtypes.DeviceGroupDeleted):
 		return applyDeviceGroupDeleted(ctx, q, e)
 	}
 	return nil

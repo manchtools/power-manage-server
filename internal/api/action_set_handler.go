@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -58,7 +59,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   id,
-		EventType:  "ActionSetCreated",
+		EventType:  string(eventtypes.ActionSetCreated),
 		Data:       data,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -157,7 +158,7 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionSetRenamed",
+		EventType:  string(eventtypes.ActionSetRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -199,7 +200,7 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionSetScheduleUpdated",
+		EventType:  string(eventtypes.ActionSetScheduleUpdated),
 		Data:       data,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -231,7 +232,7 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionSetDescriptionUpdated",
+		EventType:  string(eventtypes.ActionSetDescriptionUpdated),
 		Data: map[string]any{
 			"description": req.Msg.Description,
 		},
@@ -265,7 +266,7 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionSetDeleted",
+		EventType:  string(eventtypes.ActionSetDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -307,7 +308,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
-		EventType:  "ActionSetMemberAdded",
+		EventType:  string(eventtypes.ActionSetMemberAdded),
 		Data: map[string]any{
 			"action_id":  req.Msg.ActionId,
 			"sort_order": req.Msg.SortOrder,
@@ -348,7 +349,7 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
-		EventType:  "ActionSetMemberRemoved",
+		EventType:  string(eventtypes.ActionSetMemberRemoved),
 		Data: map[string]any{
 			"action_id": req.Msg.ActionId,
 		},
@@ -388,7 +389,7 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
-		EventType:  "ActionSetMemberReordered",
+		EventType:  string(eventtypes.ActionSetMemberReordered),
 		Data: map[string]any{
 			"action_id":  req.Msg.ActionId,
 			"sort_order": req.Msg.NewOrder,

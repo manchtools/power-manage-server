@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -27,7 +28,7 @@ type UserRoleRevokedPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func UserRoleAssignedFromEvent(e store.PersistedEvent) (UserRoleAssignedPayload, error) {
-	if e.StreamType != "user_role" || e.EventType != "UserRoleAssigned" {
+	if e.StreamType != "user_role" || e.EventType != string(eventtypes.UserRoleAssigned) {
 		return UserRoleAssignedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -50,7 +51,7 @@ func UserRoleAssignedFromEvent(e store.PersistedEvent) (UserRoleAssignedPayload,
 // UserRoleRevokedFromEvent decodes UserRoleRevoked. Same validation
 // shape as UserRoleAssigned — both composite-key fields required.
 func UserRoleRevokedFromEvent(e store.PersistedEvent) (UserRoleRevokedPayload, error) {
-	if e.StreamType != "user_role" || e.EventType != "UserRoleRevoked" {
+	if e.StreamType != "user_role" || e.EventType != string(eventtypes.UserRoleRevoked) {
 		return UserRoleRevokedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

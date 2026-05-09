@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -76,7 +77,7 @@ type userCreatedWithRolesRaw struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func UserCreatedWithRolesFromEvent(e store.PersistedEvent) (UserCreatedWithRolesPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserCreatedWithRoles" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserCreatedWithRoles) {
 		return UserCreatedWithRolesPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -163,7 +164,7 @@ type userProfileUpdatedRaw struct {
 
 // UserProfileUpdatedFromEvent decodes UserProfileUpdated.
 func UserProfileUpdatedFromEvent(e store.PersistedEvent) (UserProfileUpdatedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserProfileUpdated" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserProfileUpdated) {
 		return UserProfileUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := UserProfileUpdatedPayload{ID: e.StreamID}
@@ -212,7 +213,7 @@ type userEmailChangedRaw struct {
 // NOT NULL, so the original projector relied on the emitter always
 // supplying a non-empty value. Keep that contract here.
 func UserEmailChangedFromEvent(e store.PersistedEvent) (UserEmailChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserEmailChanged" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserEmailChanged) {
 		return UserEmailChangedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -246,7 +247,7 @@ type userPasswordChangedRaw struct {
 
 // UserPasswordChangedFromEvent decodes UserPasswordChanged.
 func UserPasswordChangedFromEvent(e store.PersistedEvent) (UserPasswordChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserPasswordChanged" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserPasswordChanged) {
 		return UserPasswordChangedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -275,7 +276,7 @@ type userRoleChangedRaw struct {
 
 // UserRoleChangedFromEvent decodes UserRoleChanged.
 func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserRoleChanged" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserRoleChanged) {
 		return UserRoleChangedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -322,7 +323,7 @@ type userSshKeyAddedRaw struct {
 // default to "" so callers that omit them still produce a valid
 // element shape in the JSONB array.
 func UserSshKeyAddedFromEvent(e store.PersistedEvent) (UserSshKeyAddedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserSshKeyAdded" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshKeyAdded) {
 		return UserSshKeyAddedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -360,7 +361,7 @@ type userSshKeyRemovedRaw struct {
 
 // UserSshKeyRemovedFromEvent decodes UserSshKeyRemoved.
 func UserSshKeyRemovedFromEvent(e store.PersistedEvent) (UserSshKeyRemovedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserSshKeyRemoved" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshKeyRemoved) {
 		return UserSshKeyRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -398,7 +399,7 @@ type userSshSettingsUpdatedRaw struct {
 // Empty payload is valid (a no-op event that only bumps
 // projection_version + updated_at, leaving every column as-is).
 func UserSshSettingsUpdatedFromEvent(e store.PersistedEvent) (UserSshSettingsUpdatedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserSshSettingsUpdated" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshSettingsUpdated) {
 		return UserSshSettingsUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := UserSshSettingsUpdatedPayload{ID: e.StreamID}
@@ -430,7 +431,7 @@ type userLinuxUsernameChangedRaw struct {
 
 // UserLinuxUsernameChangedFromEvent decodes UserLinuxUsernameChanged.
 func UserLinuxUsernameChangedFromEvent(e store.PersistedEvent) (UserLinuxUsernameChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserLinuxUsernameChanged" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserLinuxUsernameChanged) {
 		return UserLinuxUsernameChangedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -477,7 +478,7 @@ const (
 // action_id defaults to "" so an explicit "unlink" can still flow
 // through (matches PL/pgSQL `COALESCE(event.data->>"action_id", "")`).
 func UserSystemActionLinkedFromEvent(e store.PersistedEvent) (UserSystemActionLinkedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserSystemActionLinked" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSystemActionLinked) {
 		return UserSystemActionLinkedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -517,7 +518,7 @@ type userProvisioningSettingsUpdatedRaw struct {
 // UserProvisioningSettingsUpdated. Empty payload is valid (no-op
 // event that only bumps projection_version + updated_at).
 func UserProvisioningSettingsUpdatedFromEvent(e store.PersistedEvent) (UserProvisioningSettingsUpdatedPayload, error) {
-	if e.StreamType != "user" || e.EventType != "UserProvisioningSettingsUpdated" {
+	if e.StreamType != "user" || e.EventType != string(eventtypes.UserProvisioningSettingsUpdated) {
 		return UserProvisioningSettingsUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := UserProvisioningSettingsUpdatedPayload{ID: e.StreamID}

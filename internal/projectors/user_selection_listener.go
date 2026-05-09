@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -41,7 +42,7 @@ func ApplyUserSelection(ctx context.Context, q *store.Queries, e store.Persisted
 	if e.StreamType != "user_selection" {
 		return nil
 	}
-	if e.EventType != "UserSelectionChanged" {
+	if e.EventType != string(eventtypes.UserSelectionChanged) {
 		return nil
 	}
 	payload, err := UserSelectionChangedFromEvent(e)

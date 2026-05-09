@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -48,23 +49,23 @@ func ApplyToken(ctx context.Context, q *store.Queries, e store.PersistedEvent) e
 	}
 	ver := deref(e.SequenceNum)
 	switch e.EventType {
-	case "TokenCreated":
+	case string(eventtypes.TokenCreated):
 		return applyTokenCreated(ctx, q, e)
-	case "TokenRenamed":
+	case string(eventtypes.TokenRenamed):
 		return applyTokenRenamed(ctx, q, e)
-	case "TokenUsed":
+	case string(eventtypes.TokenUsed):
 		return q.IncrementTokenUseProjection(ctx, db.IncrementTokenUseProjectionParams{
 			ID: e.StreamID, ProjectionVersion: ver,
 		})
-	case "TokenDisabled":
+	case string(eventtypes.TokenDisabled):
 		return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
 			ID: e.StreamID, Disabled: true, ProjectionVersion: ver,
 		})
-	case "TokenEnabled":
+	case string(eventtypes.TokenEnabled):
 		return q.SetTokenDisabledProjection(ctx, db.SetTokenDisabledProjectionParams{
 			ID: e.StreamID, Disabled: false, ProjectionVersion: ver,
 		})
-	case "TokenDeleted":
+	case string(eventtypes.TokenDeleted):
 		return q.SoftDeleteTokenProjection(ctx, db.SoftDeleteTokenProjectionParams{
 			ID: e.StreamID, ProjectionVersion: ver,
 		})

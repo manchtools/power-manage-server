@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -62,7 +63,7 @@ type actionCreatedRaw struct {
 // for any other (stream, event_type) so the listener wrapper can
 // silently no-op.
 func ActionCreatedFromEvent(e store.PersistedEvent) (ActionCreatedPayload, error) {
-	if e.StreamType != "action" || e.EventType != "ActionCreated" {
+	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionCreated) {
 		return ActionCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -121,7 +122,7 @@ type actionRenamedRaw struct {
 
 // ActionRenamedFromEvent decodes ActionRenamed.
 func ActionRenamedFromEvent(e store.PersistedEvent) (ActionRenamedPayload, error) {
-	if e.StreamType != "action" || e.EventType != "ActionRenamed" {
+	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionRenamed) {
 		return ActionRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -152,7 +153,7 @@ type actionDescriptionUpdatedRaw struct {
 
 // ActionDescriptionUpdatedFromEvent decodes ActionDescriptionUpdated.
 func ActionDescriptionUpdatedFromEvent(e store.PersistedEvent) (ActionDescriptionUpdatedPayload, error) {
-	if e.StreamType != "action" || e.EventType != "ActionDescriptionUpdated" {
+	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionDescriptionUpdated) {
 		return ActionDescriptionUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := ActionDescriptionUpdatedPayload{ID: e.StreamID}
@@ -189,7 +190,7 @@ type actionParamsUpdatedRaw struct {
 
 // ActionParamsUpdatedFromEvent decodes ActionParamsUpdated.
 func ActionParamsUpdatedFromEvent(e store.PersistedEvent) (ActionParamsUpdatedPayload, error) {
-	if e.StreamType != "action" || e.EventType != "ActionParamsUpdated" {
+	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionParamsUpdated) {
 		return ActionParamsUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := ActionParamsUpdatedPayload{ID: e.StreamID}
@@ -216,7 +217,7 @@ func ActionParamsUpdatedFromEvent(e store.PersistedEvent) (ActionParamsUpdatedPa
 // the stream id and the projection's own state — so this is a stream/
 // event-type validator only.
 func ActionDeletedFromEvent(e store.PersistedEvent) (string, error) {
-	if e.StreamType != "action" || e.EventType != "ActionDeleted" {
+	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionDeleted) {
 		return "", ErrIgnoredEvent
 	}
 	return e.StreamID, nil

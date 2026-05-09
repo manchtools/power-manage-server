@@ -15,6 +15,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -95,7 +96,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "token",
 		StreamID:   id,
-		EventType:  "TokenCreated",
+		EventType:  string(eventtypes.TokenCreated),
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -187,7 +188,7 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "token",
 		StreamID:   req.Msg.Id,
-		EventType:  "TokenRenamed",
+		EventType:  string(eventtypes.TokenRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -262,7 +263,7 @@ func (h *TokenHandler) DeleteToken(ctx context.Context, req *connect.Request[pm.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "token",
 		StreamID:   req.Msg.Id,
-		EventType:  "TokenDeleted",
+		EventType:  string(eventtypes.TokenDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,

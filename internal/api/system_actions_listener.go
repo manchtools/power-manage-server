@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -42,20 +43,20 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 	// must be re-evaluated. The user_id source varies: for `user`
 	// stream events it's the StreamID; for `user_role` it's in the
 	// event Data payload.
-	case "UserCreatedWithRoles",
-		"UserDisabled",
-		"UserEnabled",
-		"UserLinuxUsernameChanged",
-		"UserProvisioningSettingsUpdated",
-		"UserSshSettingsUpdated",
-		"UserProfileUpdated",
-		"UserSshKeyAdded",
-		"UserSshKeyRemoved",
-		"UserEmailChanged":
+	case string(eventtypes.UserCreatedWithRoles),
+		string(eventtypes.UserDisabled),
+		string(eventtypes.UserEnabled),
+		string(eventtypes.UserLinuxUsernameChanged),
+		string(eventtypes.UserProvisioningSettingsUpdated),
+		string(eventtypes.UserSshSettingsUpdated),
+		string(eventtypes.UserProfileUpdated),
+		string(eventtypes.UserSshKeyAdded),
+		string(eventtypes.UserSshKeyRemoved),
+		string(eventtypes.UserEmailChanged):
 		// stream_type=user, stream_id=user_id
 		return SyncOpSyncUser, []string{e.StreamID}
 
-	case "UserRoleAssigned", "UserRoleRevoked":
+	case string(eventtypes.UserRoleAssigned), string(eventtypes.UserRoleRevoked):
 		// stream_type=user_role, stream_id=user_id:role_id; user_id
 		// also lives in event.data["user_id"] for clarity. Prefer the
 		// data payload (cleaner contract); fall back to splitting the
@@ -72,7 +73,7 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 		}
 		return SyncOpNone, nil
 
-	case "UserGroupMemberAdded", "UserGroupMemberRemoved":
+	case string(eventtypes.UserGroupMemberAdded), string(eventtypes.UserGroupMemberRemoved):
 		// stream_type=user_group; event.data carries user_id of the
 		// added/removed member. StreamID format is mixed across
 		// emitters: SCIM (internal/scim/groups.go), the API user-
@@ -104,13 +105,13 @@ func AffectedFromEvent(e store.PersistedEvent) (SyncOp, []string) {
 
 	// Fan-out events — affect every holder / member / user. Route to
 	// the full sweep instead of materialising the affected set.
-	case "RoleUpdated",
-		"RoleDeleted",
-		"UserGroupRoleAssigned",
-		"UserGroupRoleRevoked",
-		"UserGroupDeleted",
-		"UserGroupQueryUpdated",
-		"ServerSettingUpdated":
+	case string(eventtypes.RoleUpdated),
+		string(eventtypes.RoleDeleted),
+		string(eventtypes.UserGroupRoleAssigned),
+		string(eventtypes.UserGroupRoleRevoked),
+		string(eventtypes.UserGroupDeleted),
+		string(eventtypes.UserGroupQueryUpdated),
+		string(eventtypes.ServerSettingUpdated):
 		return SyncOpSyncAll, nil
 
 	default:

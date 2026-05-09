@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -41,7 +42,7 @@ type ServerSettingsUpdate struct {
 // would have applied `COALESCE(NULL, existing)` to every field,
 // which is a no-op UPDATE. We preserve that behavior.
 func ServerSettingsUpdatedFromEvent(e store.PersistedEvent) (ServerSettingsUpdatedPayload, error) {
-	if e.StreamType != "server_settings" || e.EventType != "ServerSettingUpdated" {
+	if e.StreamType != "server_settings" || e.EventType != string(eventtypes.ServerSettingUpdated) {
 		return ServerSettingsUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -27,9 +28,9 @@ func UserRoleListener(st *store.Store, logger *slog.Logger) store.EventListener 
 			return
 		}
 		switch e.EventType {
-		case "UserRoleAssigned":
+		case string(eventtypes.UserRoleAssigned):
 			applyUserRoleAssigned(ctx, st, logger, e)
-		case "UserRoleRevoked":
+		case string(eventtypes.UserRoleRevoked):
 			applyUserRoleRevoked(ctx, st, logger, e)
 		}
 	}

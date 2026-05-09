@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -39,13 +40,13 @@ func LuksKeyListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		}
 
 		switch e.EventType {
-		case "LuksKeyRotated":
+		case string(eventtypes.LuksKeyRotated):
 			applyLuksKeyRotated(ctx, st, logger, e)
-		case "LuksDeviceKeyRevocationDispatched":
+		case string(eventtypes.LuksDeviceKeyRevocationDispatched):
 			applyLuksRevocation(ctx, st, logger, e, LuksRevocationDispatchedFromEvent)
-		case "LuksDeviceKeyRevoked":
+		case string(eventtypes.LuksDeviceKeyRevoked):
 			applyLuksRevocation(ctx, st, logger, e, LuksRevokedFromEvent)
-		case "LuksDeviceKeyRevocationFailed":
+		case string(eventtypes.LuksDeviceKeyRevocationFailed):
 			applyLuksRevocation(ctx, st, logger, e, LuksRevocationFailedFromEvent)
 		}
 		// Every other event_type (incl. LuksDeviceKeyRevocationRequested)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -43,7 +44,7 @@ type tokenCreatedRaw struct {
 // missing max_uses → 0; missing expires_at → nil (stays NULL); missing
 // owner_id → nil. value_hash is required (UNIQUE NOT NULL).
 func TokenCreatedFromEvent(e store.PersistedEvent) (TokenCreatedPayload, error) {
-	if e.StreamType != "token" || e.EventType != "TokenCreated" {
+	if e.StreamType != "token" || e.EventType != string(eventtypes.TokenCreated) {
 		return TokenCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -88,7 +89,7 @@ func TokenCreatedFromEvent(e store.PersistedEvent) (TokenCreatedPayload, error) 
 // the rename handler always supplies it; an empty payload would be
 // a programmer error.
 func TokenRenamedFromEvent(e store.PersistedEvent) (TokenRenamedPayload, error) {
-	if e.StreamType != "token" || e.EventType != "TokenRenamed" {
+	if e.StreamType != "token" || e.EventType != string(eventtypes.TokenRenamed) {
 		return TokenRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

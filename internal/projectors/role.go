@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -59,7 +60,7 @@ type roleCreatedRaw struct {
 // Defaults match the PL/pgSQL projector: missing description → "";
 // missing permissions → empty slice; missing is_system → false.
 func RoleCreatedFromEvent(e store.PersistedEvent) (RoleCreatedPayload, error) {
-	if e.StreamType != "role" || e.EventType != "RoleCreated" {
+	if e.StreamType != "role" || e.EventType != string(eventtypes.RoleCreated) {
 		return RoleCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -109,7 +110,7 @@ type roleUpdatedRaw struct {
 // PL/pgSQL `NULLIF(name, "")` semantics — a UI that sends "" for
 // the name field doesn't blank the role.
 func RoleUpdatedFromEvent(e store.PersistedEvent) (RoleUpdatedPayload, error) {
-	if e.StreamType != "role" || e.EventType != "RoleUpdated" {
+	if e.StreamType != "role" || e.EventType != string(eventtypes.RoleUpdated) {
 		return RoleUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

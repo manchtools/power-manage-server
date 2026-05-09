@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -75,9 +76,9 @@ func ApplyCompliance(ctx context.Context, q *store.Queries, e store.PersistedEve
 		return nil
 	}
 	switch e.EventType {
-	case "ComplianceResultUpdated":
+	case string(eventtypes.ComplianceResultUpdated):
 		return applyComplianceResultUpdated(ctx, q, e)
-	case "ComplianceResultRemoved":
+	case string(eventtypes.ComplianceResultRemoved):
 		return applyComplianceResultRemoved(ctx, q, e)
 	}
 	return nil

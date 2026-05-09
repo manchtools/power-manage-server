@@ -21,6 +21,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -213,7 +214,7 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceLabelSet",
+		EventType:  string(eventtypes.DeviceLabelSet),
 		Data: map[string]any{
 			"key":   req.Msg.Key,
 			"value": req.Msg.Value,
@@ -258,7 +259,7 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceLabelRemoved",
+		EventType:  string(eventtypes.DeviceLabelRemoved),
 		Data: map[string]any{
 			"key": req.Msg.Key,
 		},
@@ -296,7 +297,7 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceDeleted",
+		EventType:  string(eventtypes.DeviceDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -377,7 +378,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
-			EventType:  "DeviceAssigned",
+			EventType:  string(eventtypes.DeviceAssigned),
 			Data: map[string]any{
 				"user_id": userID,
 			},
@@ -405,7 +406,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
-			EventType:  "DeviceGroupAssigned",
+			EventType:  string(eventtypes.DeviceGroupAssigned),
 			Data: map[string]any{
 				"group_id": groupID,
 			},
@@ -478,7 +479,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
-			EventType:  "DeviceUnassigned",
+			EventType:  string(eventtypes.DeviceUnassigned),
 			Data: map[string]any{
 				"user_id": req.Msg.UserId,
 			},
@@ -492,7 +493,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "device",
 			StreamID:   req.Msg.DeviceId,
-			EventType:  "DeviceGroupUnassigned",
+			EventType:  string(eventtypes.DeviceGroupUnassigned),
 			Data: map[string]any{
 				"group_id": req.Msg.GroupId,
 			},
@@ -535,7 +536,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
 		StreamID:   req.Msg.Id,
-		EventType:  "DeviceSyncIntervalSet",
+		EventType:  string(eventtypes.DeviceSyncIntervalSet),
 		Data: map[string]any{
 			"sync_interval_minutes": req.Msg.SyncIntervalMinutes,
 		},
@@ -983,7 +984,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
-		EventType:  "LuksDeviceKeyRevocationRequested",
+		EventType:  string(eventtypes.LuksDeviceKeyRevocationRequested),
 		Data: map[string]any{
 			"device_id":    req.Msg.DeviceId,
 			"action_id":    req.Msg.ActionId,
@@ -1009,7 +1010,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		if failErr := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",
 			StreamID:   luksStreamID,
-			EventType:  "LuksDeviceKeyRevocationFailed",
+			EventType:  string(eventtypes.LuksDeviceKeyRevocationFailed),
 			Data: map[string]any{
 				"device_id": req.Msg.DeviceId,
 				"action_id": req.Msg.ActionId,
@@ -1034,7 +1035,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
-		EventType:  "LuksDeviceKeyRevocationDispatched",
+		EventType:  string(eventtypes.LuksDeviceKeyRevocationDispatched),
 		Data: map[string]any{
 			"device_id":     req.Msg.DeviceId,
 			"action_id":     req.Msg.ActionId,

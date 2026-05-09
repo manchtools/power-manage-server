@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -35,7 +36,7 @@ type SCIMGroupMappingUpdatedPayload struct {
 
 // SCIMGroupMappedFromEvent decodes SCIMGroupMapped.
 func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != "SCIMGroupMapped" {
+	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupMapped) {
 		return SCIMGroupMappedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -72,7 +73,7 @@ func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, e
 
 // SCIMGroupUnmappedFromEvent decodes SCIMGroupUnmapped.
 func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != "SCIMGroupUnmapped" {
+	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupUnmapped) {
 		return SCIMGroupUnmappedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -98,7 +99,7 @@ func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayloa
 // Only scim_display_name is updatable; pointer field preserves
 // "missing → no update" via COALESCE.
 func SCIMGroupMappingUpdatedFromEvent(e store.PersistedEvent) (SCIMGroupMappingUpdatedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != "SCIMGroupMappingUpdated" {
+	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupMappingUpdated) {
 		return SCIMGroupMappingUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

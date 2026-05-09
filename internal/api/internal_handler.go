@@ -14,6 +14,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -298,19 +299,20 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 // ProxyStoreLuksKey encrypts and stores a new LUKS key.
 func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Request[pm.InternalStoreLuksKeyRequest]) (*connect.Response[pm.StoreLuksKeyResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || req.Msg.Passphrase == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id, action_id, and passphrase are required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and passphrase are required")
 	}
 
 	encPassphrase, err := h.encryptor.Encrypt(req.Msg.Passphrase)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to encrypt passphrase"))
+		h.logger.Error("failed to encrypt LUKS passphrase", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt passphrase")
 	}
 
 	luksStreamID := ulid.Make().String()
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
-		EventType:  "LuksKeyRotated",
+		EventType:  string(eventtypes.LuksKeyRotated),
 		Data: map[string]any{
 			"device_id":       req.Msg.DeviceId,
 			"action_id":       req.Msg.ActionId,
@@ -322,7 +324,8 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 		ActorType: "device",
 		ActorID:   req.Msg.DeviceId,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to store LUKS key: %w", err))
+		h.logger.Error("failed to store LUKS key event", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store LUKS key")
 	}
 
 	return connect.NewResponse(&pm.StoreLuksKeyResponse{
@@ -333,7 +336,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 // ProxyStoreLpsPasswords encrypts and stores LPS password rotation entries.
 func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *connect.Request[pm.InternalStoreLpsPasswordsRequest]) (*connect.Response[pm.InternalStoreLpsPasswordsResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and action_id are required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
 
 	// Persistence MUST fail-closed. LPS rotation is irreversible:
@@ -356,15 +359,15 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	for _, r := range req.Msg.Rotations {
 		encPassword, err := h.encryptor.Encrypt(r.Password)
 		if err != nil {
-			h.logger.Error("failed to encrypt LPS password", "error", err)
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to encrypt password for user %s", r.Username))
+			h.logger.Error("failed to encrypt LPS password", "error", err, "username", r.Username)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")
 		}
 
 		lpsStreamID := ulid.Make().String()
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "lps_password",
 			StreamID:   lpsStreamID,
-			EventType:  "LpsPasswordRotated",
+			EventType:  string(eventtypes.LpsPasswordRotated),
 			Data: map[string]any{
 				"device_id":       req.Msg.DeviceId,
 				"action_id":       req.Msg.ActionId,

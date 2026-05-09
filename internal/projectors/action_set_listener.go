@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -46,10 +47,10 @@ func ActionSetListener(st *store.Store, logger *slog.Logger) store.EventListener
 		// so we share its body here for the multi-write cases via
 		// WithTx and short-circuit the simple cases through the pool.
 		switch e.EventType {
-		case "ActionSetMemberAdded",
-			"ActionSetMemberRemoved",
-			"ActionSetMemberReordered",
-			"ActionSetDeleted":
+		case string(eventtypes.ActionSetMemberAdded),
+			string(eventtypes.ActionSetMemberRemoved),
+			string(eventtypes.ActionSetMemberReordered),
+			string(eventtypes.ActionSetDeleted):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyActionSet(ctx, q, e)
 			}); err != nil {
@@ -82,21 +83,21 @@ func ApplyActionSet(ctx context.Context, q *store.Queries, e store.PersistedEven
 		return nil
 	}
 	switch e.EventType {
-	case "ActionSetCreated":
+	case string(eventtypes.ActionSetCreated):
 		return applyActionSetCreated(ctx, q, e)
-	case "ActionSetRenamed":
+	case string(eventtypes.ActionSetRenamed):
 		return applyActionSetRenamed(ctx, q, e)
-	case "ActionSetDescriptionUpdated":
+	case string(eventtypes.ActionSetDescriptionUpdated):
 		return applyActionSetDescriptionUpdated(ctx, q, e)
-	case "ActionSetScheduleUpdated":
+	case string(eventtypes.ActionSetScheduleUpdated):
 		return applyActionSetScheduleUpdated(ctx, q, e)
-	case "ActionSetMemberAdded":
+	case string(eventtypes.ActionSetMemberAdded):
 		return applyActionSetMemberAdded(ctx, q, e)
-	case "ActionSetMemberRemoved":
+	case string(eventtypes.ActionSetMemberRemoved):
 		return applyActionSetMemberRemoved(ctx, q, e)
-	case "ActionSetMemberReordered":
+	case string(eventtypes.ActionSetMemberReordered):
 		return applyActionSetMemberReordered(ctx, q, e)
-	case "ActionSetDeleted":
+	case string(eventtypes.ActionSetDeleted):
 		return applyActionSetDeleted(ctx, q, e)
 	}
 	return nil

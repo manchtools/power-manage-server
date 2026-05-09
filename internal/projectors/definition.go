@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -68,7 +69,7 @@ type definitionCreatedRaw struct {
 //     omitted the schedule column entirely, leaving it at the column
 //     default (NULL since the actions schedule column is nullable).
 func DefinitionCreatedFromEvent(e store.PersistedEvent) (DefinitionCreatedPayload, error) {
-	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != "DefinitionCreated" {
+	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != string(eventtypes.DefinitionCreated) {
 		return DefinitionCreatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -137,7 +138,7 @@ type definitionRenamedRaw struct {
 // streams (action-stream synthesised-action rename + definition-stream
 // rename).
 func DefinitionRenamedFromEvent(e store.PersistedEvent) (DefinitionRenamedPayload, error) {
-	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != "DefinitionRenamed" {
+	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != string(eventtypes.DefinitionRenamed) {
 		return DefinitionRenamedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -184,7 +185,7 @@ type definitionDescriptionUpdatedRaw struct {
 // The decoder accepts both stream types because the PL/pgSQL pair
 // shared the event-name with different write semantics.
 func DefinitionDescriptionUpdatedFromEvent(e store.PersistedEvent) (DefinitionDescriptionUpdatedPayload, error) {
-	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != "DefinitionDescriptionUpdated" {
+	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != string(eventtypes.DefinitionDescriptionUpdated) {
 		return DefinitionDescriptionUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := DefinitionDescriptionUpdatedPayload{ID: e.StreamID}
@@ -216,7 +217,7 @@ type definitionScheduleUpdatedRaw struct {
 
 // DefinitionScheduleUpdatedFromEvent decodes DefinitionScheduleUpdated.
 func DefinitionScheduleUpdatedFromEvent(e store.PersistedEvent) (DefinitionScheduleUpdatedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != "DefinitionScheduleUpdated" {
+	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionScheduleUpdated) {
 		return DefinitionScheduleUpdatedPayload{}, ErrIgnoredEvent
 	}
 	out := DefinitionScheduleUpdatedPayload{
@@ -251,7 +252,7 @@ type definitionMemberRaw struct {
 
 // DefinitionMemberAddedFromEvent decodes DefinitionMemberAdded.
 func DefinitionMemberAddedFromEvent(e store.PersistedEvent) (DefinitionMemberAddedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != "DefinitionMemberAdded" {
+	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberAdded) {
 		return DefinitionMemberAddedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -284,7 +285,7 @@ type definitionMemberRemovedRaw struct {
 
 // DefinitionMemberRemovedFromEvent decodes DefinitionMemberRemoved.
 func DefinitionMemberRemovedFromEvent(e store.PersistedEvent) (DefinitionMemberRemovedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != "DefinitionMemberRemoved" {
+	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberRemoved) {
 		return DefinitionMemberRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -305,7 +306,7 @@ type DefinitionMemberReorderedPayload = DefinitionMemberAddedPayload
 
 // DefinitionMemberReorderedFromEvent decodes DefinitionMemberReordered.
 func DefinitionMemberReorderedFromEvent(e store.PersistedEvent) (DefinitionMemberReorderedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != "DefinitionMemberReordered" {
+	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberReordered) {
 		return DefinitionMemberReorderedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -332,7 +333,7 @@ func DefinitionMemberReorderedFromEvent(e store.PersistedEvent) (DefinitionMembe
 // actions_projection while the definition-stream invocation soft-
 // deletes the definitions_projection row.
 func DefinitionDeletedFromEvent(e store.PersistedEvent) (string, error) {
-	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != "DefinitionDeleted" {
+	if (e.StreamType != "definition" && e.StreamType != "action") || e.EventType != string(eventtypes.DefinitionDeleted) {
 		return "", ErrIgnoredEvent
 	}
 	return e.StreamID, nil

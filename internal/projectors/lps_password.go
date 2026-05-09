@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -55,7 +56,7 @@ func (p LpsPasswordRotatedPayload) LogValue() slog.Value {
 // Reuse from a handler that wants to mirror the projection state in
 // memory while the listener writes to the DB.
 func LpsPasswordRotatedFromEvent(e store.PersistedEvent) (LpsPasswordRotatedPayload, error) {
-	if e.StreamType != "lps_password" || e.EventType != "LpsPasswordRotated" {
+	if e.StreamType != "lps_password" || e.EventType != string(eventtypes.LpsPasswordRotated) {
 		return LpsPasswordRotatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

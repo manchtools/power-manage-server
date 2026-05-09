@@ -18,6 +18,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -141,7 +142,7 @@ func CreateTestUser(t *testing.T, st *store.Store, email, password, role string)
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreatedWithRoles",
+		EventType:  string(eventtypes.UserCreatedWithRoles),
 		Data: map[string]any{
 			"email":         email,
 			"password_hash": hash,
@@ -166,7 +167,7 @@ func CreateTestDevice(t *testing.T, st *store.Store, hostname string) string {
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   id,
-		EventType:  "DeviceRegistered",
+		EventType:  string(eventtypes.DeviceRegistered),
 		Data: map[string]any{
 			"hostname":      hostname,
 			"agent_version": "1.0.0",
@@ -196,7 +197,7 @@ func CreateTestActionWithDesiredState(t *testing.T, st *store.Store, actorID, na
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   id,
-		EventType:  "ActionCreated",
+		EventType:  string(eventtypes.ActionCreated),
 		Data: map[string]any{
 			"name":            name,
 			"action_type":     actionType,
@@ -223,7 +224,7 @@ func CreateTestActionSet(t *testing.T, st *store.Store, actorID, name string) st
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "action_set",
 		StreamID:   id,
-		EventType:  "ActionSetCreated",
+		EventType:  string(eventtypes.ActionSetCreated),
 		Data: map[string]any{
 			"name": name,
 		},
@@ -246,7 +247,7 @@ func CreateTestDefinition(t *testing.T, st *store.Store, actorID, name string) s
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "definition",
 		StreamID:   id,
-		EventType:  "DefinitionCreated",
+		EventType:  string(eventtypes.DefinitionCreated),
 		Data: map[string]any{
 			"name": name,
 		},
@@ -269,7 +270,7 @@ func CreateTestDeviceGroup(t *testing.T, st *store.Store, actorID, name string) 
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "device_group",
 		StreamID:   id,
-		EventType:  "DeviceGroupCreated",
+		EventType:  string(eventtypes.DeviceGroupCreated),
 		Data: map[string]any{
 			"name":       name,
 			"is_dynamic": false,
@@ -293,7 +294,7 @@ func CreateTestToken(t *testing.T, st *store.Store, actorID, name, valueHash str
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "token",
 		StreamID:   id,
-		EventType:  "TokenCreated",
+		EventType:  string(eventtypes.TokenCreated),
 		Data: map[string]any{
 			"name":       name,
 			"value_hash": valueHash,
@@ -335,7 +336,7 @@ func SSOOnlyUserEvent(userID, email string) store.Event {
 	return store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserCreatedWithRoles",
+		EventType:  string(eventtypes.UserCreatedWithRoles),
 		Data: map[string]any{
 			"email":    email,
 			"role":     "user",
@@ -351,7 +352,7 @@ func DisableEvent(userID string) store.Event {
 	return store.Event{
 		StreamType: "user",
 		StreamID:   userID,
-		EventType:  "UserDisabled",
+		EventType:  string(eventtypes.UserDisabled),
 		Data:       map[string]any{},
 		ActorType:  "system",
 		ActorID:    "test",
@@ -377,7 +378,7 @@ func CreateTestRole(t *testing.T, st *store.Store, actorID, name string, permiss
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "role",
 		StreamID:   id,
-		EventType:  "RoleCreated",
+		EventType:  string(eventtypes.RoleCreated),
 		Data: map[string]any{
 			"name":        name,
 			"description": "",
@@ -403,7 +404,7 @@ func CreateTestUserGroup(t *testing.T, st *store.Store, actorID, name string) st
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   id,
-		EventType:  "UserGroupCreated",
+		EventType:  string(eventtypes.UserGroupCreated),
 		Data: map[string]any{
 			"name":        name,
 			"description": "",
@@ -427,7 +428,7 @@ func AddUserToTestGroup(t *testing.T, st *store.Store, actorID, groupID, userID 
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   streamID,
-		EventType:  "UserGroupMemberAdded",
+		EventType:  string(eventtypes.UserGroupMemberAdded),
 		Data: map[string]any{
 			"group_id": groupID,
 			"user_id":  userID,
@@ -449,7 +450,7 @@ func AssignRoleToTestGroup(t *testing.T, st *store.Store, actorID, groupID, role
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   streamID,
-		EventType:  "UserGroupRoleAssigned",
+		EventType:  string(eventtypes.UserGroupRoleAssigned),
 		Data: map[string]any{
 			"group_id": groupID,
 			"role_id":  roleID,
@@ -471,7 +472,7 @@ func AssignRoleToTestUser(t *testing.T, st *store.Store, actorID, userID, roleID
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user_role",
 		StreamID:   streamID,
-		EventType:  "UserRoleAssigned",
+		EventType:  string(eventtypes.UserRoleAssigned),
 		Data: map[string]any{
 			"user_id": userID,
 			"role_id": roleID,
@@ -492,7 +493,7 @@ func AssignDeviceToUser(t *testing.T, st *store.Store, actorID, deviceID, userID
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,
-		EventType:  "DeviceAssigned",
+		EventType:  string(eventtypes.DeviceAssigned),
 		Data: map[string]any{
 			"user_id": userID,
 		},
@@ -512,7 +513,7 @@ func AddDeviceToTestGroup(t *testing.T, st *store.Store, actorID, groupID, devic
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "device_group",
 		StreamID:   groupID,
-		EventType:  "DeviceGroupMemberAdded",
+		EventType:  string(eventtypes.DeviceGroupMemberAdded),
 		Data: map[string]any{
 			"device_id": deviceID,
 		},
@@ -533,7 +534,7 @@ func CreateTestAssignment(t *testing.T, st *store.Store, actorID, sourceType, so
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "assignment",
 		StreamID:   id,
-		EventType:  "AssignmentCreated",
+		EventType:  string(eventtypes.AssignmentCreated),
 		Data: map[string]any{
 			"source_type": sourceType,
 			"source_id":   sourceID,
@@ -559,7 +560,7 @@ func AddActionToTestSet(t *testing.T, st *store.Store, actorID, setID, actionID 
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "action_set",
 		StreamID:   setID,
-		EventType:  "ActionSetMemberAdded",
+		EventType:  string(eventtypes.ActionSetMemberAdded),
 		Data: map[string]any{
 			"action_id":  actionID,
 			"sort_order": sortOrder,
@@ -580,7 +581,7 @@ func AddActionSetToTestDefinition(t *testing.T, st *store.Store, actorID, defini
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "definition",
 		StreamID:   definitionID,
-		EventType:  "DefinitionMemberAdded",
+		EventType:  string(eventtypes.DefinitionMemberAdded),
 		Data: map[string]any{
 			"action_set_id": actionSetID,
 			"sort_order":    sortOrder,
@@ -629,7 +630,7 @@ func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, ema
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "totp",
 		StreamID:   userID,
-		EventType:  "TOTPSetupInitiated",
+		EventType:  string(eventtypes.TOTPSetupInitiated),
 		Data: map[string]any{
 			"secret_encrypted":  encryptedSecret,
 			"backup_codes_hash": hashes,
@@ -643,7 +644,7 @@ func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, ema
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "totp",
 		StreamID:   userID,
-		EventType:  "TOTPVerified",
+		EventType:  string(eventtypes.TOTPVerified),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userID,
@@ -668,7 +669,7 @@ func CreateTestIdentityProvider(t *testing.T, st *store.Store, enc *crypto.Encry
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   id,
-		EventType:  "IdentityProviderCreated",
+		EventType:  string(eventtypes.IdentityProviderCreated),
 		Data: map[string]any{
 			"name":                    name,
 			"slug":                    slug,
@@ -699,7 +700,7 @@ func CreateTestIdentityLink(t *testing.T, st *store.Store, userID, providerID, e
 	err := st.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   id,
-		EventType:  "IdentityLinked",
+		EventType:  string(eventtypes.IdentityLinked),
 		Data: map[string]any{
 			"user_id":        userID,
 			"provider_id":    providerID,
@@ -731,7 +732,7 @@ func EnableSCIMForProvider(t *testing.T, st *store.Store, actorID, providerID st
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   providerID,
-		EventType:  "IdentityProviderSCIMEnabled",
+		EventType:  string(eventtypes.IdentityProviderSCIMEnabled),
 		Data: map[string]any{
 			"scim_token_hash": string(hash),
 		},

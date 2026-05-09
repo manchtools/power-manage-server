@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -142,7 +143,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "assignment",
 		StreamID:   id,
-		EventType:  "AssignmentCreated",
+		EventType:  string(eventtypes.AssignmentCreated),
 		Data: map[string]any{
 			"source_type": sourceTypeStr,
 			"source_id":   req.Msg.SourceId,
@@ -193,7 +194,7 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "assignment",
 		StreamID:   req.Msg.Id,
-		EventType:  "AssignmentDeleted",
+		EventType:  string(eventtypes.AssignmentDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,

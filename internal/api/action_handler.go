@@ -18,6 +18,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -452,7 +453,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   id,
-		EventType:  "ActionCreated",
+		EventType:  string(eventtypes.ActionCreated),
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -562,7 +563,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionRenamed",
+		EventType:  string(eventtypes.ActionRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -604,7 +605,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionDescriptionUpdated",
+		EventType:  string(eventtypes.ActionDescriptionUpdated),
 		Data: map[string]any{
 			"description": req.Msg.Description,
 		},
@@ -691,7 +692,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionParamsUpdated",
+		EventType:  string(eventtypes.ActionParamsUpdated),
 		Data:       eventData,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -777,7 +778,7 @@ func (h *ActionHandler) rollbackUnsignedCreate(ctx context.Context, userID, acti
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   actionID,
-		EventType:  "ActionDeleted",
+		EventType:  string(eventtypes.ActionDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userID,
@@ -801,7 +802,7 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
-		EventType:  "ActionDeleted",
+		EventType:  string(eventtypes.ActionDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -994,9 +995,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// the caller asked for a deferred dispatch. The two events are
 	// projected to status='scheduled' / status='pending' respectively
 	// and the row only diverges from there on the dispatch's outcome.
-	initialEventType := "ExecutionCreated"
+	initialEventType := string(eventtypes.ExecutionCreated)
 	if dispatchDelay > 0 {
-		initialEventType = "ExecutionScheduled"
+		initialEventType = string(eventtypes.ExecutionScheduled)
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
@@ -1044,7 +1045,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "execution",
 			StreamID:   id,
-			EventType:  "ExecutionFailed",
+			EventType:  string(eventtypes.ExecutionFailed),
 			Data: map[string]any{
 				"error":        fmt.Sprintf("dispatch enqueue failed: %v", err),
 				"completed_at": nil, // projector falls back to event.occurred_at
@@ -1478,9 +1479,9 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "instant dispatch unavailable: task queue not configured")
 	}
 
-	initialEventType := "ExecutionCreated"
+	initialEventType := string(eventtypes.ExecutionCreated)
 	if dispatchDelay > 0 {
-		initialEventType = "ExecutionScheduled"
+		initialEventType = string(eventtypes.ExecutionScheduled)
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
@@ -1515,7 +1516,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "execution",
 			StreamID:   id,
-			EventType:  "ExecutionFailed",
+			EventType:  string(eventtypes.ExecutionFailed),
 			Data: map[string]any{
 				"error":        fmt.Sprintf("instant dispatch enqueue failed: %v", err),
 				"completed_at": nil,
@@ -1591,7 +1592,7 @@ func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Reques
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
 		StreamID:   exec.ID,
-		EventType:  "ExecutionCancelled",
+		EventType:  string(eventtypes.ExecutionCancelled),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,

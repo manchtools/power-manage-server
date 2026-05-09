@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -61,7 +62,7 @@ type LuksRevocationPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func LuksKeyRotatedFromEvent(e store.PersistedEvent) (LuksKeyRotatedPayload, error) {
-	if e.StreamType != "luks_key" || e.EventType != "LuksKeyRotated" {
+	if e.StreamType != "luks_key" || e.EventType != string(eventtypes.LuksKeyRotated) {
 		return LuksKeyRotatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -95,7 +96,7 @@ func LuksKeyRotatedFromEvent(e store.PersistedEvent) (LuksKeyRotatedPayload, err
 // payload. Status is hardcoded "dispatched" so the listener doesn't
 // need a per-event mapping table.
 func LuksRevocationDispatchedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
-	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevocationDispatched" {
+	if e.StreamType != "luks_key" || e.EventType != string(eventtypes.LuksDeviceKeyRevocationDispatched) {
 		return LuksRevocationPayload{}, ErrIgnoredEvent
 	}
 	return decodeLuksRevocation(e, "dispatched", "dispatched_at", false)
@@ -105,7 +106,7 @@ func LuksRevocationDispatchedFromEvent(e store.PersistedEvent) (LuksRevocationPa
 // "success" — note the event type vs column-value mismatch is
 // intentional and matches the PL/pgSQL projector verbatim.
 func LuksRevokedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
-	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevoked" {
+	if e.StreamType != "luks_key" || e.EventType != string(eventtypes.LuksDeviceKeyRevoked) {
 		return LuksRevocationPayload{}, ErrIgnoredEvent
 	}
 	return decodeLuksRevocation(e, "success", "revoked_at", false)
@@ -114,7 +115,7 @@ func LuksRevokedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error)
 // LuksRevocationFailedFromEvent decodes LuksDeviceKeyRevocationFailed
 // — only this variant requires an error string in the payload.
 func LuksRevocationFailedFromEvent(e store.PersistedEvent) (LuksRevocationPayload, error) {
-	if e.StreamType != "luks_key" || e.EventType != "LuksDeviceKeyRevocationFailed" {
+	if e.StreamType != "luks_key" || e.EventType != string(eventtypes.LuksDeviceKeyRevocationFailed) {
 		return LuksRevocationPayload{}, ErrIgnoredEvent
 	}
 	return decodeLuksRevocation(e, "failed", "failed_at", true)

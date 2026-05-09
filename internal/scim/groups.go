@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -187,7 +188,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			h.appendEvent(ctx, store.Event{
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
-				EventType:  "SCIMGroupMappingUpdated",
+				EventType:  string(eventtypes.SCIMGroupMappingUpdated),
 				Data: map[string]any{
 					"provider_id":       provider.ID,
 					"scim_group_id":     scimGroupID,
@@ -199,7 +200,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   existing.UserGroupID,
-				EventType:  "UserGroupUpdated",
+				EventType:  string(eventtypes.UserGroupUpdated),
 				Data: map[string]any{
 					"name": scimGroup.DisplayName,
 				},
@@ -225,7 +226,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			h.appendEvent(ctx, store.Event{
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
-				EventType:  "SCIMGroupUnmapped",
+				EventType:  string(eventtypes.SCIMGroupUnmapped),
 				Data: map[string]any{
 					"provider_id":   provider.ID,
 					"scim_group_id": existing.ScimGroupID,
@@ -251,7 +252,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   userGroupID,
-		EventType:  "UserGroupCreated",
+		EventType:  string(eventtypes.UserGroupCreated),
 		Data: map[string]any{
 			"name":        scimGroup.DisplayName,
 			"description": fmt.Sprintf("SCIM-provisioned group from %s", provider.Name),
@@ -270,7 +271,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   mappingID,
-		EventType:  "SCIMGroupMapped",
+		EventType:  string(eventtypes.SCIMGroupMapped),
 		Data: map[string]any{
 			"provider_id":       provider.ID,
 			"scim_group_id":     scimGroupID,
@@ -295,7 +296,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
-			EventType:  "UserGroupMemberAdded",
+			EventType:  string(eventtypes.UserGroupMemberAdded),
 			Data: map[string]any{
 				"group_id": userGroupID,
 				"user_id":  member.Value,
@@ -427,7 +428,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
-			EventType:  "SCIMGroupMappingUpdated",
+			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
 			Data: map[string]any{
 				"provider_id":       provider.ID,
 				"scim_group_id":     mapping.ScimGroupID,
@@ -440,7 +441,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   groupID,
-			EventType:  "UserGroupUpdated",
+			EventType:  string(eventtypes.UserGroupUpdated),
 			Data: map[string]any{
 				"name": scimGroup.DisplayName,
 			},
@@ -571,7 +572,7 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider db.IdentityP
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
-			EventType:  "UserGroupMemberAdded",
+			EventType:  string(eventtypes.UserGroupMemberAdded),
 			Data: map[string]any{
 				"group_id": groupID,
 				"user_id":  userID,
@@ -595,7 +596,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.Identi
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
-				EventType:  "UserGroupMemberRemoved",
+				EventType:  string(eventtypes.UserGroupMemberRemoved),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,
@@ -615,7 +616,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.Identi
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
-				EventType:  "UserGroupMemberRemoved",
+				EventType:  string(eventtypes.UserGroupMemberRemoved),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,
@@ -641,7 +642,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		h.appendEvent(ctx, store.Event{
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
-			EventType:  "SCIMGroupMappingUpdated",
+			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
 			Data: map[string]any{
 				"provider_id":       provider.ID,
 				"scim_group_id":     mapping.ScimGroupID,
@@ -654,7 +655,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   groupID,
-			EventType:  "UserGroupUpdated",
+			EventType:  string(eventtypes.UserGroupUpdated),
 			Data: map[string]any{
 				"name": name,
 			},
@@ -689,7 +690,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
-					EventType:  "UserGroupMemberAdded",
+					EventType:  string(eventtypes.UserGroupMemberAdded),
 					Data: map[string]any{
 						"group_id": groupID,
 						"user_id":  userID,
@@ -708,7 +709,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.Ident
 				h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
-					EventType:  "UserGroupMemberRemoved",
+					EventType:  string(eventtypes.UserGroupMemberRemoved),
 					Data: map[string]any{
 						"group_id": groupID,
 						"user_id":  userID,
@@ -757,7 +758,7 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   mapping.ID,
-		EventType:  "SCIMGroupUnmapped",
+		EventType:  string(eventtypes.SCIMGroupUnmapped),
 		Data: map[string]any{
 			"provider_id":   provider.ID,
 			"scim_group_id": mapping.ScimGroupID,
@@ -805,7 +806,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
-				EventType:  "UserGroupMemberAdded",
+				EventType:  string(eventtypes.UserGroupMemberAdded),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,
@@ -824,7 +825,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 			h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
-				EventType:  "UserGroupMemberRemoved",
+				EventType:  string(eventtypes.UserGroupMemberRemoved),
 				Data: map[string]any{
 					"group_id": groupID,
 					"user_id":  userID,
@@ -899,7 +900,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user_group",
 		StreamID:   newGroupID,
-		EventType:  "UserGroupCreated",
+		EventType:  string(eventtypes.UserGroupCreated),
 		Data: map[string]any{
 			"name":        m.ScimDisplayName,
 			"description": "SCIM-provisioned group (restored)",
@@ -914,7 +915,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 	h.appendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   m.ID,
-		EventType:  "SCIMGroupUnmapped",
+		EventType:  string(eventtypes.SCIMGroupUnmapped),
 		Data: map[string]any{
 			"provider_id":   providerID,
 			"scim_group_id": m.ScimGroupID,
@@ -928,7 +929,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   newMappingID,
-		EventType:  "SCIMGroupMapped",
+		EventType:  string(eventtypes.SCIMGroupMapped),
 		Data: map[string]any{
 			"provider_id":       providerID,
 			"scim_group_id":     m.ScimGroupID,

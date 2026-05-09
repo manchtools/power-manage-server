@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -46,7 +47,7 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   id,
-		EventType:  "CompliancePolicyCreated",
+		EventType:  string(eventtypes.CompliancePolicyCreated),
 		Data: map[string]any{
 			"name":        req.Msg.Name,
 			"description": req.Msg.Description,
@@ -142,7 +143,7 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
-		EventType:  "CompliancePolicyRenamed",
+		EventType:  string(eventtypes.CompliancePolicyRenamed),
 		Data: map[string]any{
 			"name": req.Msg.Name,
 		},
@@ -182,7 +183,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
-		EventType:  "CompliancePolicyDescriptionUpdated",
+		EventType:  string(eventtypes.CompliancePolicyDescriptionUpdated),
 		Data: map[string]any{
 			"description": req.Msg.Description,
 		},
@@ -222,7 +223,7 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
-		EventType:  "CompliancePolicyDeleted",
+		EventType:  string(eventtypes.CompliancePolicyDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -277,7 +278,7 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
-		EventType:  "CompliancePolicyRuleAdded",
+		EventType:  string(eventtypes.CompliancePolicyRuleAdded),
 		Data: map[string]any{
 			"action_id":          req.Msg.ActionId,
 			"action_name":        action.Name,
@@ -324,7 +325,7 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
-		EventType:  "CompliancePolicyRuleRemoved",
+		EventType:  string(eventtypes.CompliancePolicyRuleRemoved),
 		Data: map[string]any{
 			"action_id": req.Msg.ActionId,
 		},
@@ -369,7 +370,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
-		EventType:  "CompliancePolicyRuleUpdated",
+		EventType:  string(eventtypes.CompliancePolicyRuleUpdated),
 		Data: map[string]any{
 			"action_id":          req.Msg.ActionId,
 			"grace_period_hours": req.Msg.GracePeriodHours,

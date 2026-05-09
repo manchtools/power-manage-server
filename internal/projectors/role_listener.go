@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -38,7 +39,7 @@ func RoleListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		// tx-bound queries (the rebuild path), so we share its body
 		// for RoleDeleted via WithTx and short-circuit the simple
 		// cases through the pool.
-		if e.EventType == "RoleDeleted" {
+		if e.EventType == string(eventtypes.RoleDeleted) {
 			err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyRole(ctx, q, e)
 			})
@@ -71,11 +72,11 @@ func ApplyRole(ctx context.Context, q *store.Queries, e store.PersistedEvent) er
 		return nil
 	}
 	switch e.EventType {
-	case "RoleCreated":
+	case string(eventtypes.RoleCreated):
 		return applyRoleCreated(ctx, q, e)
-	case "RoleUpdated":
+	case string(eventtypes.RoleUpdated):
 		return applyRoleUpdated(ctx, q, e)
-	case "RoleDeleted":
+	case string(eventtypes.RoleDeleted):
 		return applyRoleDeleted(ctx, q, e)
 	}
 	return nil

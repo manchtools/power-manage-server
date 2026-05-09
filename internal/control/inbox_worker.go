@@ -16,6 +16,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -105,7 +106,7 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	if err := w.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
-		EventType:  "DeviceHeartbeat",
+		EventType:  string(eventtypes.DeviceHeartbeat),
 		Data: map[string]any{
 			"agent_version": payload.AgentVersion,
 			"hostname":      payload.Hostname,
@@ -166,7 +167,7 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
-		EventType:  "DeviceHeartbeat",
+		EventType:  string(eventtypes.DeviceHeartbeat),
 		Data:       data,
 		ActorType:  "device",
 		ActorID:    payload.DeviceID,
@@ -275,7 +276,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		if err := w.store.AppendEvent(ctx, store.Event{
 			StreamType: "execution",
 			StreamID:   executionID,
-			EventType:  "ExecutionCreated",
+			EventType:  string(eventtypes.ExecutionCreated),
 			Data:       createdData,
 			ActorType:  "device",
 			ActorID:    deviceID,
@@ -374,7 +375,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 				if err := w.store.AppendEvent(ctx, store.Event{
 					StreamType: "compliance",
 					StreamID:   deviceID + "_" + actionID,
-					EventType:  "ComplianceResultUpdated",
+					EventType:  string(eventtypes.ComplianceResultUpdated),
 					Data:       complianceData,
 					ActorType:  "device",
 					ActorID:    deviceID,
@@ -398,7 +399,7 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "execution",
 		StreamID:   payload.ExecutionID,
-		EventType:  "OutputChunk",
+		EventType:  string(eventtypes.OutputChunk),
 		Data: map[string]any{
 			"stream":   payload.Stream,
 			"data":     payload.Data,
@@ -506,7 +507,7 @@ func (w *InboxWorker) handleSecurityAlert(ctx context.Context, t *asynq.Task) er
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
-		EventType:  "SecurityAlert",
+		EventType:  string(eventtypes.SecurityAlert),
 		Data: map[string]any{
 			"alert_type": payload.AlertType,
 			"message":    payload.Message,
@@ -583,7 +584,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		return w.store.AppendEvent(ctx, store.Event{
 			StreamType: "luks_key",
 			StreamID:   luksStreamID,
-			EventType:  "LuksDeviceKeyRevoked",
+			EventType:  string(eventtypes.LuksDeviceKeyRevoked),
 			Data: map[string]any{
 				"device_id":  payload.DeviceID,
 				"action_id":  payload.ActionID,
@@ -597,7 +598,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
-		EventType:  "LuksDeviceKeyRevocationFailed",
+		EventType:  string(eventtypes.LuksDeviceKeyRevocationFailed),
 		Data: map[string]any{
 			"device_id": payload.DeviceID,
 			"action_id": payload.ActionID,
@@ -663,7 +664,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 						if appendErr := w.store.AppendEvent(ctx, store.Event{
 							StreamType: "execution",
 							StreamID:   exec.ID,
-							EventType:  "ExecutionFailed",
+							EventType:  string(eventtypes.ExecutionFailed),
 							Data: map[string]any{
 								"error":        "action was deleted before the device came online",
 								"duration_ms":  int64(0),
@@ -726,7 +727,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		dispatchEvt := store.Event{
 			StreamType: "execution",
 			StreamID:   exec.ID,
-			EventType:  "ExecutionDispatched",
+			EventType:  string(eventtypes.ExecutionDispatched),
 			Data: map[string]any{
 				"device_id": deviceID,
 			},

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -46,7 +47,7 @@ type complianceResultUpdatedRaw struct {
 // Returns ErrIgnoredEvent for any other (stream, event_type) so the
 // listener wrapper can silently no-op.
 func ComplianceResultUpdatedFromEvent(e store.PersistedEvent) (ComplianceResultUpdatedPayload, error) {
-	if e.StreamType != "compliance" || e.EventType != "ComplianceResultUpdated" {
+	if e.StreamType != "compliance" || e.EventType != string(eventtypes.ComplianceResultUpdated) {
 		return ComplianceResultUpdatedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {
@@ -94,7 +95,7 @@ type complianceResultRemovedRaw struct {
 
 // ComplianceResultRemovedFromEvent decodes ComplianceResultRemoved.
 func ComplianceResultRemovedFromEvent(e store.PersistedEvent) (ComplianceResultRemovedPayload, error) {
-	if e.StreamType != "compliance" || e.EventType != "ComplianceResultRemoved" {
+	if e.StreamType != "compliance" || e.EventType != string(eventtypes.ComplianceResultRemoved) {
 		return ComplianceResultRemovedPayload{}, ErrIgnoredEvent
 	}
 	if len(e.Data) == 0 {

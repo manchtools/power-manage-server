@@ -16,6 +16,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -66,7 +67,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   id,
-		EventType:  "IdentityProviderCreated",
+		EventType:  string(eventtypes.IdentityProviderCreated),
 		Data: map[string]any{
 			"name":                        req.Msg.Name,
 			"slug":                        req.Msg.Slug,
@@ -208,7 +209,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
-		EventType:  "IdentityProviderUpdated",
+		EventType:  string(eventtypes.IdentityProviderUpdated),
 		Data:       data,
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -249,7 +250,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   providerID,
-		EventType:  "IdentityProviderDeleted",
+		EventType:  string(eventtypes.IdentityProviderDeleted),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -262,7 +263,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "identity_provider",
 			StreamID:   link.ID,
-			EventType:  "IdentityUnlinked",
+			EventType:  string(eventtypes.IdentityUnlinked),
 			Data:       map[string]any{},
 			ActorType:  "user",
 			ActorID:    userCtx.ID,
@@ -290,7 +291,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 			if err := h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   link.UserID,
-				EventType:  "UserDeleted",
+				EventType:  string(eventtypes.UserDeleted),
 				Data:       map[string]any{},
 				ActorType:  "user",
 				ActorID:    userCtx.ID,
@@ -345,7 +346,7 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
-		EventType:  "IdentityProviderSCIMEnabled",
+		EventType:  string(eventtypes.IdentityProviderSCIMEnabled),
 		Data: map[string]any{
 			"scim_token_hash": hashStr,
 		},
@@ -386,7 +387,7 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
-		EventType:  "IdentityProviderSCIMDisabled",
+		EventType:  string(eventtypes.IdentityProviderSCIMDisabled),
 		Data:       map[string]any{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
@@ -432,7 +433,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
-		EventType:  "IdentityProviderSCIMTokenRotated",
+		EventType:  string(eventtypes.IdentityProviderSCIMTokenRotated),
 		Data: map[string]any{
 			"scim_token_hash": hashStr,
 		},
