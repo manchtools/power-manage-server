@@ -143,7 +143,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		selected, hasSelection := selectionMap[key]
 
 		item := &pm.AvailableItem{
-			SourceType: asn.SourceType,
+			SourceType: assignmentSourceTypeFromString(asn.SourceType),
 			SourceId:   asn.SourceID,
 			Selected:   hasSelection && selected,
 		}

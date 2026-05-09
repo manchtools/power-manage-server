@@ -79,7 +79,7 @@ func TestListAvailableActions_Success(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	require.Len(t, resp.Msg.Items, 1)
-	assert.Equal(t, "action", resp.Msg.Items[0].SourceType)
+	assert.Equal(t, pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, resp.Msg.Items[0].SourceType)
 	assert.Equal(t, actionID, resp.Msg.Items[0].SourceId)
 	assert.Equal(t, "Available Action", resp.Msg.Items[0].SourceName)
 	assert.False(t, resp.Msg.Items[0].Selected) // no selection yet
