@@ -1,6 +1,6 @@
 module github.com/manchtools/power-manage/server
 
-go 1.25.0
+go 1.25.10
 
 require (
 	connectrpc.com/connect v1.18.1
@@ -106,4 +106,4 @@ require (
 // whatever happens to be in a local ../sdk checkout. Developers who
 // want to iterate against a local SDK override this with a per-dev
 // go.work at their workspace root — see server/README.md for setup.
-replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.4.1-0.20260509173202-5328510c8d82
+replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.4.1-0.20260510104607-3bfd7be9fb42
