@@ -290,41 +290,72 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+// dispatchTask is a single fan-out element consumed by dispatchEach:
+// the wire request to issue and the structured log fields that
+// identify it on the failure path. Extracted to deduplicate the
+// "load list → loop → DispatchAction → log on err → append on
+// success" skeleton shared by 4 fan-out RPCs (audit F024).
+type dispatchTask struct {
+	req     *pm.DispatchActionRequest
+	logArgs []any
+}
+
+// dispatchEach runs a slice of dispatch tasks, log-and-continues on
+// per-element error, and returns the successful executions.
+// `rpc` is the calling RPC name — included in every failure log so
+// the operator can correlate a degraded fan-out result back to its
+// origin RPC. The slice is preallocated to len(tasks) since most
+// fan-outs succeed end-to-end.
+func (h *ActionHandler) dispatchEach(ctx context.Context, rpc string, tasks []dispatchTask) []*pm.ActionExecution {
+	out := make([]*pm.ActionExecution, 0, len(tasks))
+	for _, t := range tasks {
+		resp, err := h.DispatchAction(ctx, connect.NewRequest(t.req))
+		if err != nil {
+			args := make([]any, 0, len(t.logArgs)+4)
+			args = append(args, "rpc", rpc, "error", err)
+			args = append(args, t.logArgs...)
+			h.logger.Warn("dispatch failed", args...)
+			continue
+		}
+		out = append(out, resp.Msg.Execution)
+	}
+	return out
+}
+
 // DispatchToMultiple dispatches an action to multiple devices.
 func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Request[pm.DispatchToMultipleRequest]) (*connect.Response[pm.DispatchToMultipleResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
-	executions := make([]*pm.ActionExecution, 0, len(req.Msg.DeviceIds))
-
+	tasks := make([]dispatchTask, 0, len(req.Msg.DeviceIds))
 	for _, deviceID := range req.Msg.DeviceIds {
+		// The oneof's interface is package-private, so we build the
+		// concrete DispatchActionRequest in each branch instead of
+		// hoisting a typed local variable.
 		var dispatchReq *pm.DispatchActionRequest
-		switch source := req.Msg.ActionSource.(type) {
+		switch s := req.Msg.ActionSource.(type) {
 		case *pm.DispatchToMultipleRequest_ActionId:
 			dispatchReq = &pm.DispatchActionRequest{
 				DeviceId:     deviceID,
-				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: source.ActionId},
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: s.ActionId},
 			}
 		case *pm.DispatchToMultipleRequest_InlineAction:
 			dispatchReq = &pm.DispatchActionRequest{
 				DeviceId:     deviceID,
-				ActionSource: &pm.DispatchActionRequest_InlineAction{InlineAction: source.InlineAction},
+				ActionSource: &pm.DispatchActionRequest_InlineAction{InlineAction: s.InlineAction},
 			}
 		default:
 			continue
 		}
-
-		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
-		if err != nil {
-			h.logger.Warn("dispatch to device failed", "device_id", deviceID, "error", err)
-			continue
-		}
-		executions = append(executions, resp.Msg.Execution)
+		tasks = append(tasks, dispatchTask{
+			req:     dispatchReq,
+			logArgs: []any{"device_id", deviceID},
+		})
 	}
 
 	return connect.NewResponse(&pm.DispatchToMultipleResponse{
-		Executions: executions,
+		Executions: h.dispatchEach(ctx, "DispatchToMultiple", tasks),
 	}), nil
 }
 
@@ -339,23 +370,19 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assigned actions")
 	}
 
-	executions := make([]*pm.ActionExecution, 0, len(actions))
+	tasks := make([]dispatchTask, 0, len(actions))
 	for _, action := range actions {
-		dispatchReq := &pm.DispatchActionRequest{
-			DeviceId:     req.Msg.DeviceId,
-			ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
-		}
-		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
-		if err != nil {
-			h.logger.Warn("dispatch failed", "rpc", "DispatchAssignedActions",
-				"device_id", req.Msg.DeviceId, "action_id", action.ID, "error", err)
-			continue
-		}
-		executions = append(executions, resp.Msg.Execution)
+		tasks = append(tasks, dispatchTask{
+			req: &pm.DispatchActionRequest{
+				DeviceId:     req.Msg.DeviceId,
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+			},
+			logArgs: []any{"device_id", req.Msg.DeviceId, "action_id", action.ID},
+		})
 	}
 
 	return connect.NewResponse(&pm.DispatchAssignedActionsResponse{
-		Executions: executions,
+		Executions: h.dispatchEach(ctx, "DispatchAssignedActions", tasks),
 	}), nil
 }
 
@@ -370,24 +397,23 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get actions in set")
 	}
 
-	executions := make([]*pm.ActionExecution, 0, len(actions))
+	tasks := make([]dispatchTask, 0, len(actions))
 	for _, action := range actions {
-		dispatchReq := &pm.DispatchActionRequest{
-			DeviceId:     req.Msg.DeviceId,
-			ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
-		}
-		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
-		if err != nil {
-			h.logger.Warn("dispatch failed", "rpc", "DispatchActionSet",
-				"device_id", req.Msg.DeviceId, "action_set_id", req.Msg.ActionSetId,
-				"action_id", action.ID, "error", err)
-			continue
-		}
-		executions = append(executions, resp.Msg.Execution)
+		tasks = append(tasks, dispatchTask{
+			req: &pm.DispatchActionRequest{
+				DeviceId:     req.Msg.DeviceId,
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+			},
+			logArgs: []any{
+				"device_id", req.Msg.DeviceId,
+				"action_set_id", req.Msg.ActionSetId,
+				"action_id", action.ID,
+			},
+		})
 	}
 
 	return connect.NewResponse(&pm.DispatchActionSetResponse{
-		Executions: executions,
+		Executions: h.dispatchEach(ctx, "DispatchActionSet", tasks),
 	}), nil
 }
 
@@ -402,7 +428,7 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action sets in definition")
 	}
 
-	executions := make([]*pm.ActionExecution, 0)
+	var tasks []dispatchTask
 	for _, set := range actionSets {
 		actions, err := h.store.Queries().ListActionsInSet(ctx, set.ID)
 		if err != nil {
@@ -413,23 +439,23 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 			continue
 		}
 		for _, action := range actions {
-			dispatchReq := &pm.DispatchActionRequest{
-				DeviceId:     req.Msg.DeviceId,
-				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
-			}
-			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
-			if err != nil {
-				h.logger.Warn("dispatch failed", "rpc", "DispatchDefinition",
-					"device_id", req.Msg.DeviceId, "definition_id", req.Msg.DefinitionId,
-					"action_set_id", set.ID, "action_id", action.ID, "error", err)
-				continue
-			}
-			executions = append(executions, resp.Msg.Execution)
+			tasks = append(tasks, dispatchTask{
+				req: &pm.DispatchActionRequest{
+					DeviceId:     req.Msg.DeviceId,
+					ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+				},
+				logArgs: []any{
+					"device_id", req.Msg.DeviceId,
+					"definition_id", req.Msg.DefinitionId,
+					"action_set_id", set.ID,
+					"action_id", action.ID,
+				},
+			})
 		}
 	}
 
 	return connect.NewResponse(&pm.DispatchDefinitionResponse{
-		Executions: executions,
+		Executions: h.dispatchEach(ctx, "DispatchDefinition", tasks),
 	}), nil
 }
 
