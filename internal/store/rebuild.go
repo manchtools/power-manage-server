@@ -198,13 +198,38 @@ var AllRebuildTargets = []rebuildTarget{
 		// user_groups_projection — user_group_members_projection,
 		// user_group_roles_projection,
 		// dynamic_user_group_evaluation_queue, AND
-		// scim_group_mapping_projection. "user-group rebuild also wipes
-		// SCIM mappings" is the historical operator contract; preserve
-		// the quirk here until a future port revisits it.
+		// scim_group_mapping_projection.
+		//
+		// The scim_group_mapping_projection wipe used to be terminal:
+		// only user_group events were replayed, so SCIM mappings
+		// stayed empty after the rebuild. The follow-up
+		// scim_group_mappings target (declared immediately below)
+		// re-replays them. Order matters — scim_group_mappings runs
+		// AFTER user_groups so the FK references it depends on are
+		// restored first. See manchtools/power-manage-server#175.
 		Name:        "user_groups",
 		Tables:      []string{"user_groups_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"user_group"},
+	},
+	{
+		// Applied by projectors.ApplySCIMGroupMapping via
+		// projectors.WireAll. user_groups' TRUNCATE CASCADE wipes
+		// scim_group_mapping_projection (FK reference); this target
+		// replays the scim_group_mapping stream so the table is
+		// non-empty again after the rebuild. Listed after user_groups
+		// in declaration order — RebuildAll runs targets in slice
+		// order when called with the default (full) set, so the FK
+		// references the scim_group_mapping upserts need are present
+		// by the time this target runs.
+		//
+		// Operators rebuilding a single target via
+		// RebuildAll("scim_group_mappings", ...) get the right
+		// behaviour too: the TRUNCATE clears the table, the replay
+		// re-derives every row from events.
+		Name:        "scim_group_mappings",
+		Tables:      []string{"scim_group_mapping_projection"},
+		StreamTypes: []string{"scim_group_mapping"},
 	},
 }
 

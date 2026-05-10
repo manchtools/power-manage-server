@@ -325,3 +325,84 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 func TestRebuildAll_TransactionalAtomicity(t *testing.T) {
 	t.Skip("follow-up: inject a malformed event to force projector failure mid-replay")
 }
+
+// TestRebuildAll_UserGroupsRebuildPreservesSCIMMappings pins the
+// fix for manchtools/power-manage-server#175. Before the fix,
+// `RebuildAll(ctx)` ran the user_groups target whose
+// `TRUNCATE user_groups_projection CASCADE` walked the FK graph and
+// wiped scim_group_mapping_projection — but the rebuild only
+// replayed user_group events, so SCIM mappings stayed empty
+// afterwards. The fix adds a scim_group_mappings rebuild target
+// (declared after user_groups so the FK is restored first) that
+// re-replays the scim_group_mapping stream.
+func TestRebuildAll_UserGroupsRebuildPreservesSCIMMappings(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	actor := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	groupID := testutil.CreateTestUserGroup(t, st, actor, "scim-managed-group")
+
+	// Seed an identity provider so the scim_group_mapping FK is
+	// satisfied. The minimal IdentityProviderCreated event the
+	// projector accepts.
+	providerID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "identity_provider", StreamID: providerID,
+		EventType: "IdentityProviderCreated",
+		Data: map[string]any{
+			"name":          "Test IdP",
+			"slug":          "test-idp-" + providerID[:8],
+			"provider_type": "oidc",
+			"client_id":     "test-client",
+			"issuer_url":    "https://idp.test/realms/test",
+			"scim_enabled":  true,
+		},
+		ActorType: "user", ActorID: actor,
+	}))
+
+	// Seed the SCIM mapping: maps SCIM group "sg-eng" on this
+	// provider to our user group.
+	mappingID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "scim_group_mapping", StreamID: mappingID,
+		EventType: "SCIMGroupMapped",
+		Data: map[string]any{
+			"provider_id":       providerID,
+			"scim_group_id":     "sg-eng",
+			"scim_display_name": "Engineering",
+			"user_group_id":     groupID,
+		},
+		ActorType: "user", ActorID: actor,
+	}))
+
+	// Pre-condition: live pipeline projected the mapping.
+	beforeCount, err := st.Queries().CountSCIMGroupMappings(ctx, providerID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), beforeCount, "live projector must have written the mapping before rebuild")
+
+	// Run the full RebuildAll. user_groups' TRUNCATE CASCADE wipes
+	// scim_group_mapping_projection; the new scim_group_mappings
+	// target (declared AFTER user_groups in AllRebuildTargets) must
+	// then replay the SCIMGroupMapped event and restore the row.
+	res, err := st.RebuildAll(ctx)
+	require.NoError(t, err)
+
+	// Verify the scim_group_mappings target ran and replayed at
+	// least our seeded mapping.
+	var scimTarget *store.TargetResult
+	for i := range res.Targets {
+		if res.Targets[i].Name == "scim_group_mappings" {
+			scimTarget = &res.Targets[i]
+			break
+		}
+	}
+	require.NotNil(t, scimTarget, "scim_group_mappings target must be present in the result; the WireAll registration is what proves #175 is fixed")
+	assert.Greater(t, scimTarget.EventsApplied, int64(0),
+		"scim_group_mappings rebuild must have replayed at least the SCIMGroupMapped event we seeded")
+
+	// Post-condition: the mapping survived the rebuild.
+	afterCount, err := st.Queries().CountSCIMGroupMappings(ctx, providerID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), afterCount,
+		"#175 regression: user_groups rebuild wiped the SCIM mapping but the new scim_group_mappings target should have re-replayed it")
+}
