@@ -284,7 +284,7 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 		ActionID: req.Msg.ActionId,
 	})
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeNotFound, "no LUKS key found for this action")
+		return nil, apiErrorCtx(ctx, ErrLuksKeyNotFound, connect.CodeNotFound, "no LUKS key found for this action")
 	}
 
 	passphrase, err := h.encryptor.Decrypt(key.Passphrase)

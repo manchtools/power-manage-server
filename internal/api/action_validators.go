@@ -341,10 +341,10 @@ func validateAgentUpdateParams(ctx context.Context, p *pm.AgentUpdateParams) err
 		if arch == nil {
 			continue
 		}
-		if !strings.HasPrefix(arch.BinaryUrl, "https://") {
+		if !strings.HasPrefix(strings.ToLower(arch.BinaryUrl), "https://") {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "binary_url must use HTTPS")
 		}
-		if !strings.HasPrefix(arch.ChecksumUrl, "https://") {
+		if !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "checksum_url must use HTTPS")
 		}
 	}
