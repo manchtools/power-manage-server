@@ -48,11 +48,44 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
-	var actionType pm.ActionType
-	var desiredState pm.DesiredState
-	var params any // Use any to store either parsed JSON object or raw JSON
-	var timeoutSeconds int32
-	var actionID *string
+	// dispatchInputs collects the values either branch of the
+	// ActionSource oneof produces — the stored-action branch loads
+	// them from the projection row, the inline-action branch lifts
+	// them from the request payload. Downstream code (signing,
+	// taskqueue payload, event data) reads from this struct so the
+	// "where did this value come from" question has one answer.
+	//
+	// signature + paramsCanonical stay separate because they're
+	// computed downstream by the re-sign step, not extracted from
+	// either source branch. See manchtools/power-manage-server#165.
+	type dispatchInputs struct {
+		// actionType is the proto ActionType the agent dispatch
+		// payload + ExecutionCreated event carry. Stored-action
+		// branch reads from action.ActionType; inline branch reads
+		// from action.Type.
+		actionType pm.ActionType
+		// desiredState defaults to PRESENT on the stored branch
+		// (ad-hoc dispatch always asks for "make it so") and
+		// follows the inline action's explicit desired_state on the
+		// inline branch.
+		desiredState pm.DesiredState
+		// params is dual-shaped on purpose: map[string]any when we
+		// could decode the stored JSON cleanly, or the raw string
+		// fallback for malformed-but-still-dispatchable rows. Both
+		// shapes round-trip through json.Marshal at the sign site.
+		params any
+		// timeoutSeconds is clamped to a 300s default on the inline
+		// branch when the request omits it; the stored branch trusts
+		// whatever was persisted at create time.
+		timeoutSeconds int32
+		// actionID is non-nil only on the stored-action branch (the
+		// projection row's primary key). The inline branch leaves
+		// it nil so the dispatch event's `action_id` field is
+		// omitted — there's no stored action to reference.
+		actionID *string
+	}
+
+	var inputs dispatchInputs
 	var signature []byte
 	var paramsCanonical []byte
 
@@ -65,17 +98,17 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 		}
-		actionType = pm.ActionType(action.ActionType)
-		desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
+		inputs.actionType = pm.ActionType(action.ActionType)
+		inputs.desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
 		// Parse params JSON to avoid double-encoding when storing the event
 		var parsedParams map[string]any
 		if err := json.Unmarshal(action.Params, &parsedParams); err == nil {
-			params = parsedParams
+			inputs.params = parsedParams
 		} else {
-			params = string(action.Params) // Fallback to string if parsing fails
+			inputs.params = string(action.Params) // Fallback to string if parsing fails
 		}
-		timeoutSeconds = action.TimeoutSeconds
-		actionID = &source.ActionId
+		inputs.timeoutSeconds = action.TimeoutSeconds
+		inputs.actionID = &source.ActionId
 		// NOTE: action.Signature and action.ParamsCanonical are
 		// loaded from the stored row in the original PR-1 shape but
 		// were unconditionally overwritten by the re-sign call below.
@@ -97,15 +130,16 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		if err := validateInlineAction(ctx, action); err != nil {
 			return nil, err
 		}
-		actionType = action.Type
-		desiredState = action.DesiredState
-		params, err = serializeProtoParams(extractActionParamsMsg(action))
+		inputs.actionType = action.Type
+		inputs.desiredState = action.DesiredState
+		serialized, err := serializeProtoParams(extractActionParamsMsg(action))
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("failed to serialize inline action params: %v", err))
 		}
-		timeoutSeconds = action.TimeoutSeconds
-		if timeoutSeconds <= 0 {
-			timeoutSeconds = 300
+		inputs.params = serialized
+		inputs.timeoutSeconds = action.TimeoutSeconds
+		if inputs.timeoutSeconds <= 0 {
+			inputs.timeoutSeconds = 300
 		}
 
 	default:
@@ -129,13 +163,13 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	eventData := map[string]any{
 		"device_id":       req.Msg.DeviceId,
-		"action_type":     int32(actionType),
-		"desired_state":   int32(desiredState),
-		"params":          params,
-		"timeout_seconds": timeoutSeconds,
+		"action_type":     int32(inputs.actionType),
+		"desired_state":   int32(inputs.desiredState),
+		"params":          inputs.params,
+		"timeout_seconds": inputs.timeoutSeconds,
 	}
-	if actionID != nil {
-		eventData["action_id"] = *actionID
+	if inputs.actionID != nil {
+		eventData["action_id"] = *inputs.actionID
 	}
 	if dispatchDelay > 0 {
 		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
@@ -182,7 +216,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
-	paramsJSON, marshalErr := json.Marshal(params)
+	paramsJSON, marshalErr := json.Marshal(inputs.params)
 	if marshalErr != nil {
 		// `params` is either a map[string]any from extractActionParamsMsg
 		// (proto → map via protojson) or a raw JSON string — both should
@@ -194,7 +228,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			"execution_id", id, "error", marshalErr)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal dispatch params")
 	}
-	sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+	sig, signErr := h.signer.Sign(id, int32(inputs.actionType), paramsJSON)
 	if signErr != nil {
 		h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
@@ -239,10 +273,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
 		ExecutionID:     id,
-		ActionType:      int32(actionType),
-		DesiredState:    int32(desiredState),
+		ActionType:      int32(inputs.actionType),
+		DesiredState:    int32(inputs.desiredState),
 		Params:          paramsJSON,
-		TimeoutSeconds:  timeoutSeconds,
+		TimeoutSeconds:  inputs.timeoutSeconds,
 		Signature:       signature,
 		ParamsCanonical: paramsCanonical,
 	}, enqueueOpts...); err != nil {
@@ -282,7 +316,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	h.logger.Info("action dispatched",
 		"execution_id", id,
 		"device_id", req.Msg.DeviceId,
-		"action_type", actionType.String(),
+		"action_type", inputs.actionType.String(),
 	)
 
 	return connect.NewResponse(&pm.DispatchActionResponse{
