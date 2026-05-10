@@ -116,6 +116,18 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 		// `passphrase` at the top level.
 		"LuksKeyRotated": {paths: []string{"passphrase"}},
 	},
+	"device_group_variable": {
+		// Group-scoped variables (#59). The non-secret variants
+		// (GroupVariableSet / Deleted) carry no secret-bearing fields
+		// and need no redaction; the secret variants always carry the
+		// AES-GCM ciphertext under "ciphertext", scrubbed here so the
+		// audit log never reveals it. Same trust shape as
+		// LpsPasswordRotated / LuksKeyRotated.
+		string(eventtypes.GroupSecretVariableSet): {paths: []string{"ciphertext"}},
+	},
+	"user_group_variable": {
+		string(eventtypes.GroupSecretVariableSet): {paths: []string{"ciphertext"}},
+	},
 }
 
 // actionRedactionSchemas maps an action's `params.type` value to the

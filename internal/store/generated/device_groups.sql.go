@@ -167,7 +167,7 @@ func (q *Queries) EvaluateQueuedDynamicGroups(ctx context.Context) (int32, error
 
 const getDeviceGroupByID = `-- name: GetDeviceGroupByID :one
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, variables FROM device_groups_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -188,12 +188,13 @@ func (q *Queries) GetDeviceGroupByID(ctx context.Context, id string) (DeviceGrou
 		&i.DynamicQuery,
 		&i.SyncIntervalMinutes,
 		&i.MaintenanceWindow,
+		&i.Variables,
 	)
 	return i, err
 }
 
 const getDeviceGroupByName = `-- name: GetDeviceGroupByName :one
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, variables FROM device_groups_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -213,6 +214,7 @@ func (q *Queries) GetDeviceGroupByName(ctx context.Context, name string) (Device
 		&i.DynamicQuery,
 		&i.SyncIntervalMinutes,
 		&i.MaintenanceWindow,
+		&i.Variables,
 	)
 	return i, err
 }
@@ -240,7 +242,7 @@ func (q *Queries) GetDeviceGroupMember(ctx context.Context, arg GetDeviceGroupMe
 }
 
 const getDynamicGroupsNeedingEvaluation = `-- name: GetDynamicGroupsNeedingEvaluation :many
-SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window FROM device_groups_projection g
+SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window, g.variables FROM device_groups_projection g
 JOIN dynamic_group_evaluation_queue q ON g.id = q.group_id
 WHERE g.is_deleted = FALSE
 ORDER BY q.queued_at ASC
@@ -269,6 +271,7 @@ func (q *Queries) GetDynamicGroupsNeedingEvaluation(ctx context.Context, limit i
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
@@ -420,7 +423,7 @@ func (q *Queries) ListDeviceGroupMembers(ctx context.Context, groupID string) ([
 }
 
 const listDeviceGroups = `-- name: ListDeviceGroups :many
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, variables FROM device_groups_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -453,6 +456,7 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
@@ -510,7 +514,7 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 
 const listDynamicDeviceGroups = `-- name: ListDynamicDeviceGroups :many
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, variables FROM device_groups_projection
 WHERE is_dynamic = TRUE AND is_deleted = FALSE
 ORDER BY created_at DESC
 `
@@ -538,6 +542,7 @@ func (q *Queries) ListDynamicDeviceGroups(ctx context.Context) ([]DeviceGroupsPr
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
@@ -550,7 +555,7 @@ func (q *Queries) ListDynamicDeviceGroups(ctx context.Context) ([]DeviceGroupsPr
 }
 
 const listGroupsForDevice = `-- name: ListGroupsForDevice :many
-SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window FROM device_groups_projection g
+SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window, g.variables FROM device_groups_projection g
 JOIN device_group_members_projection m ON g.id = m.group_id
 WHERE m.device_id = $1 AND g.is_deleted = FALSE
 ORDER BY g.name ASC
@@ -578,6 +583,7 @@ func (q *Queries) ListGroupsForDevice(ctx context.Context, deviceID string) ([]D
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
