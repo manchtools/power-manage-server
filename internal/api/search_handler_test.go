@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -335,4 +337,93 @@ func TestParseFTSearchResult_InvalidDocPair(t *testing.T) {
 	results, count := parseFTSearchResult(raw, "actions")
 	assert.Empty(t, results)
 	assert.Equal(t, int32(1), count)
+}
+
+// =============================================================================
+// validateFiltersForScopes — manchtools/power-manage-server#158
+// =============================================================================
+
+func TestValidateFiltersForScopes_NoFilters_OK(t *testing.T) {
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"actions"}, nil, nil))
+}
+
+func TestValidateFiltersForScopes_FieldSupportedByAllScopes_OK(t *testing.T) {
+	// Restrict the plan to scopes that all declare created_at —
+	// some scopes (compliance_policies, devices, audit_events) use a
+	// different timestamp attribute or none at all, and would fail
+	// the per-scope check if included.
+	scopes := []string{"actions", "users", "device_groups"}
+	dateFilters := []*pm.SearchDateFilter{{Field: "created_at", Start: 1000, End: 2000}}
+	require.NoError(t, validateFiltersForScopes(context.Background(), scopes, dateFilters, nil))
+}
+
+func TestValidateFiltersForScopes_ExecutionFieldUnscoped_RejectsWithSupportedByList(t *testing.T) {
+	// The exact regression from #158: unscoped query with `status`
+	// filter previously fanned out to every index; idx:action_sets
+	// rejected the query as a SYNTAX error which surfaced as opaque
+	// CodeInternal. Now: InvalidArgument naming the scope that DOES
+	// accept `status`.
+	allScopes := []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users", "device_groups", "user_groups"}
+	tagFilters := map[string]string{"status": "pending"}
+
+	err := validateFiltersForScopes(context.Background(), allScopes, nil, tagFilters)
+	require.Error(t, err)
+
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	assert.Contains(t, connectErr.Message(), `"status"`)
+	assert.Contains(t, connectErr.Message(), "executions")
+}
+
+func TestValidateFiltersForScopes_ExecutionFieldScopedToExecutions_OK(t *testing.T) {
+	// Same filter, but the operator scoped explicitly. The query plan
+	// is single-scope and `status` is supported there.
+	tagFilters := map[string]string{"status": "pending"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"executions"}, nil, tagFilters))
+}
+
+func TestValidateFiltersForScopes_UnknownField_RejectsAsUnsupported(t *testing.T) {
+	tagFilters := map[string]string{"injected_field": "x"}
+	err := validateFiltersForScopes(context.Background(), []string{"actions"}, nil, tagFilters)
+	require.Error(t, err)
+
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	assert.Contains(t, connectErr.Message(), "not supported by any search scope")
+}
+
+func TestValidateFiltersForScopes_EmptyFieldOrValue_Skipped(t *testing.T) {
+	// Empty field names + empty values must NOT trip validation —
+	// they're silently dropped further down in buildFTQuery.
+	dateFilters := []*pm.SearchDateFilter{{Field: "", Start: 1, End: 2}}
+	tagFilters := map[string]string{"status": "", "": "x"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"actions"}, dateFilters, tagFilters))
+}
+
+func TestValidateFiltersForScopes_DateFilterFromAuditUnscoped_Rejected(t *testing.T) {
+	// occurred_at is audit_events-only. Unscoped → reject.
+	allScopes := []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users", "device_groups", "user_groups"}
+	dateFilters := []*pm.SearchDateFilter{{Field: "occurred_at", Start: 1, End: 2}}
+	err := validateFiltersForScopes(context.Background(), allScopes, dateFilters, nil)
+	require.Error(t, err)
+
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	assert.Contains(t, connectErr.Message(), "audit_events")
+}
+
+func TestAllowedSearchFields_DerivedFromScopeFilterFields(t *testing.T) {
+	// Guards against drift between the per-scope map and the derived
+	// global. Every per-scope field MUST be reachable through the
+	// global, otherwise buildFTQuery's defensive check would silently
+	// drop a field that validateFiltersForScopes accepted.
+	for scope, fields := range scopeFilterFields {
+		for f := range fields {
+			assert.Truef(t, allowedSearchFields[f],
+				"field %q from scope %q must be in derived allowedSearchFields", f, scope)
+		}
+	}
 }

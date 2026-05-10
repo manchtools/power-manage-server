@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -145,6 +146,14 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		scopes = []string{"actions", "action_sets", "definitions", "compliance_policies", "devices", "users", "device_groups", "user_groups"}
 	}
 
+	// Reject filter fields that aren't supported by every scope in the
+	// query plan. Without this check, an unscoped `@status:{pending}`
+	// would propagate to e.g. idx:action_sets, which RediSearch rejects
+	// with a SYNTAX error surfaced as opaque CodeInternal. See #158.
+	if err := validateFiltersForScopes(ctx, scopes, req.Msg.DateFilters, req.Msg.TagFilters); err != nil {
+		return nil, err
+	}
+
 	scopeToIndex := map[string]string{
 		"actions":             "idx:actions",
 		"action_sets":         "idx:action_sets",
@@ -218,30 +227,96 @@ func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&pm.RebuildSearchIndexResponse{}), nil
 }
 
-// allowedSearchFields is the set of field names that can be used in search
-// date and tag filters. This prevents query injection via crafted field names.
-var allowedSearchFields = map[string]bool{
-	// NUMERIC fields (date filters)
-	"created_at":  true,
-	"updated_at":  true,
-	"occurred_at": true,
-	// TAG fields (tag filters)
-	"type":              true,
-	"is_compliance":     true,
-	"status":            true,
-	"action_type":       true,
-	"device_id":         true,
-	"stream_type":       true,
-	"actor_type":        true,
-	"actor_id":          true,
-	"disabled":          true,
-	"compliance_status": true,
-	"agent_version":     true,
-	"os_arch":           true,
-	"is_dynamic":        true,
-	"member_count":      true,
-	"registered_at":     true,
-	"last_seen_at":      true,
+// scopeFilterFields enumerates the indexed filter fields per scope.
+// Mirrors the FT.CREATE schemas in internal/search/index.go: a field
+// only appears here if its scope's RediSearch schema declares a NUMERIC
+// or TAG attribute for it. Sending @status:{pending} to an index that
+// doesn't declare a `status` attribute makes RediSearch reject the
+// query with a SYNTAX error — see manchtools/power-manage-server#158.
+//
+// The map drives two checks:
+//
+//  1. Up-front validation in Search: if the request's filters
+//     reference a field that isn't supported by every scope in the
+//     query plan, return InvalidArgument naming the scopes that DO
+//     support the field. Operators learn quickly; broken queries no
+//     longer surface as opaque CodeInternal.
+//
+//  2. The derived allowedSearchFields set below feeds buildFTQuery's
+//     defensive silent-drop check (defence in depth — the up-front
+//     validator already rejects unknown fields).
+var scopeFilterFields = map[string]map[string]bool{
+	"actions":             {"type": true, "is_compliance": true, "created_at": true, "updated_at": true},
+	"action_sets":         {"member_count": true, "created_at": true, "updated_at": true},
+	"definitions":         {"member_count": true, "created_at": true, "updated_at": true},
+	"compliance_policies": {},
+	"devices":             {"agent_version": true, "os_arch": true, "compliance_status": true, "registered_at": true, "last_seen_at": true},
+	"users":               {"disabled": true, "created_at": true},
+	"device_groups":       {"is_dynamic": true, "member_count": true, "created_at": true},
+	"user_groups":         {"is_dynamic": true, "member_count": true, "created_at": true},
+	"executions":          {"status": true, "action_type": true, "device_id": true, "created_at": true},
+	"audit_events":        {"stream_type": true, "actor_type": true, "actor_id": true, "occurred_at": true},
+}
+
+// allowedSearchFields is the union of every per-scope filter field.
+// Derived from scopeFilterFields so the two never drift. Used by
+// buildFTQuery as a final injection-prevention sieve; the up-front
+// validateFiltersForScopes call is the operator-facing check.
+var allowedSearchFields = func() map[string]bool {
+	out := map[string]bool{}
+	for _, fields := range scopeFilterFields {
+		for f := range fields {
+			out[f] = true
+		}
+	}
+	return out
+}()
+
+// validateFiltersForScopes returns InvalidArgument when the request's
+// filter fields reference attributes that aren't declared by every
+// index in the query plan. The error message names the scopes that
+// DO accept the field so the operator can re-issue with an explicit
+// scope.
+//
+// Same-name attributes across scopes (e.g. created_at on actions +
+// devices) pass when the query plan stays inside scopes that all
+// declare them.
+func validateFiltersForScopes(ctx context.Context, scopes []string, dateFilters []*pm.SearchDateFilter, tagFilters map[string]string) error {
+	used := map[string]bool{}
+	for _, df := range dateFilters {
+		if df.Field != "" {
+			used[df.Field] = true
+		}
+	}
+	for f, v := range tagFilters {
+		if f != "" && v != "" {
+			used[f] = true
+		}
+	}
+	for field := range used {
+		acceptedByAll := true
+		for _, sc := range scopes {
+			if !scopeFilterFields[sc][field] {
+				acceptedByAll = false
+				break
+			}
+		}
+		if acceptedByAll {
+			continue
+		}
+		var supportedBy []string
+		for sc, fields := range scopeFilterFields {
+			if fields[field] {
+				supportedBy = append(supportedBy, sc)
+			}
+		}
+		sort.Strings(supportedBy)
+		if len(supportedBy) == 0 {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is not supported by any search scope", field))
+		}
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is only valid for scope=%s", field, strings.Join(supportedBy, ",")))
+	}
+	return nil
 }
 
 // buildFTQuery constructs a RediSearch query string from text, date filters, and tag filters.
