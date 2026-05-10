@@ -11,13 +11,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -193,40 +193,17 @@ func parseFlags() *Config {
 
 	flag.Parse()
 
-	// Environment variable overrides
-	if v := os.Getenv("INDEXER_DATABASE_URL"); v != "" {
-		cfg.DatabaseURL = v
-	}
-	if v := os.Getenv("INDEXER_VALKEY_ADDR"); v != "" {
-		cfg.ValkeyAddr = v
-	}
-	if v := os.Getenv("INDEXER_VALKEY_PASSWORD"); v != "" {
-		cfg.ValkeyPassword = v
-	}
-	if v := os.Getenv("INDEXER_VALKEY_DB"); v != "" {
-		if db, err := strconv.Atoi(v); err == nil {
-			cfg.ValkeyDB = db
-		}
-	}
-	if v := os.Getenv("INDEXER_LOG_LEVEL"); v != "" {
-		cfg.LogLevel = v
-	}
-	if v := os.Getenv("INDEXER_LOG_FORMAT"); v != "" {
-		cfg.LogFormat = v
-	}
-	if v := os.Getenv("INDEXER_RECONCILE_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.ReconcileInterval = d
-		}
-	}
-	if v := os.Getenv("INDEXER_CONCURRENCY"); v != "" {
-		if c, err := strconv.Atoi(v); err == nil && c > 0 {
-			cfg.Concurrency = c
-		}
-	}
-	if v := os.Getenv("INDEXER_HEALTH_ADDR"); v != "" {
-		cfg.HealthAddr = v
-	}
+	// Environment variable overrides via the shared config helpers
+	// (audit F017 + N029 — moved out of inline open-code).
+	config.EnvString(&cfg.DatabaseURL, "INDEXER_DATABASE_URL")
+	config.EnvString(&cfg.ValkeyAddr, "INDEXER_VALKEY_ADDR")
+	config.EnvString(&cfg.ValkeyPassword, "INDEXER_VALKEY_PASSWORD")
+	config.EnvInt(&cfg.ValkeyDB, "INDEXER_VALKEY_DB")
+	config.EnvString(&cfg.LogLevel, "INDEXER_LOG_LEVEL")
+	config.EnvString(&cfg.LogFormat, "INDEXER_LOG_FORMAT")
+	config.EnvDuration(&cfg.ReconcileInterval, "INDEXER_RECONCILE_INTERVAL")
+	config.EnvInt(&cfg.Concurrency, "INDEXER_CONCURRENCY")
+	config.EnvString(&cfg.HealthAddr, "INDEXER_HEALTH_ADDR")
 
 	if cfg.DatabaseURL == "" {
 		fmt.Fprintln(os.Stderr, "FATAL: INDEXER_DATABASE_URL (or -database-url) is required")

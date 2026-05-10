@@ -15,6 +15,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -47,12 +48,15 @@ type EventAppender interface {
 	AppendEvent(ctx context.Context, event EventInput) error
 }
 
-// EventInput is a simplified event structure for the linker.
+// EventInput is a simplified event structure for the linker. Data is
+// typed as `any` so callers can pass either a typed payload struct
+// (preferred — see internal/eventtypes/payloads) or the legacy
+// map[string]any literal during transitional emit-site migrations.
 type EventInput struct {
 	StreamType string
 	StreamID   string
 	EventType  string
-	Data       map[string]any
+	Data       any
 	ActorType  string
 	ActorID    string
 }
@@ -120,11 +124,11 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
 				EventType:  string(eventtypes.IdentityLinkLoginUpdated),
-				Data: map[string]any{
-					"provider_id":    provider.ID,
-					"external_id":    claims.Subject,
-					"external_email": claims.Email,
-					"external_name":  claims.Name,
+				Data: payloads.IdentityLinkLoginUpdated{
+					ProviderID:    provider.ID,
+					ExternalID:    claims.Subject,
+					ExternalEmail: claims.Email,
+					ExternalName:  claims.Name,
 				},
 				ActorType: "system",
 				ActorID:   "sso",
@@ -155,12 +159,12 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				StreamType: "identity_provider",
 				StreamID:   linkID,
 				EventType:  string(eventtypes.IdentityLinked),
-				Data: map[string]any{
-					"user_id":        user.ID,
-					"provider_id":    provider.ID,
-					"external_id":    claims.Subject,
-					"external_email": claims.Email,
-					"external_name":  claims.Name,
+				Data: payloads.IdentityLinked{
+					UserID:        user.ID,
+					ProviderID:    provider.ID,
+					ExternalID:    claims.Subject,
+					ExternalEmail: claims.Email,
+					ExternalName:  claims.Name,
 				},
 				ActorType: "system",
 				ActorID:   "sso",
@@ -207,22 +211,23 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 
 		// Create user without password (compound event lands the
 		// user row AND its role assignments in one tx).
+		role := "user"
 		err = l.appender.AppendEvent(ctx, EventInput{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserCreatedWithRoles),
-			Data: map[string]any{
-				"email":              claims.Email,
-				"role":               "user",
-				"display_name":       claims.Name,
-				"given_name":         claims.GivenName,
-				"family_name":        claims.FamilyName,
-				"preferred_username": claims.PreferredUsername,
-				"picture":            claims.Picture,
-				"locale":             claims.Locale,
-				"linux_username":     linuxUsername,
-				"linux_uid":          linuxUID,
-				"role_ids":           roleIDs,
+			Data: payloads.UserCreatedWithRoles{
+				Email:             ptrStr(claims.Email),
+				Role:              &role,
+				DisplayName:       ptrStr(claims.Name),
+				GivenName:         ptrStr(claims.GivenName),
+				FamilyName:        ptrStr(claims.FamilyName),
+				PreferredUsername: ptrStr(claims.PreferredUsername),
+				Picture:           ptrStr(claims.Picture),
+				Locale:            ptrStr(claims.Locale),
+				LinuxUsername:     ptrStr(linuxUsername),
+				LinuxUID:          &linuxUID,
+				RoleIDs:           roleIDs,
 			},
 			ActorType: "system",
 			ActorID:   "sso",
@@ -234,11 +239,12 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 		// Auto-enable provisioning/SSH if global server settings are on
 		if settings, err := l.queries.GetServerSettings(ctx); err == nil {
 			if settings.UserProvisioningEnabled {
+				enabled := true
 				if err := l.appender.AppendEvent(ctx, EventInput{
 					StreamType: "user",
 					StreamID:   userID,
 					EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
-					Data:       map[string]any{"user_provisioning_enabled": true},
+					Data:       payloads.UserProvisioningSettingsUpdated{UserProvisioningEnabled: &enabled},
 					ActorType:  "system",
 					ActorID:    "sso",
 				}); err != nil {
@@ -246,14 +252,16 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 				}
 			}
 			if settings.SshAccessForAll {
+				yes := true
+				no := false
 				if err := l.appender.AppendEvent(ctx, EventInput{
 					StreamType: "user",
 					StreamID:   userID,
 					EventType:  string(eventtypes.UserSshSettingsUpdated),
-					Data: map[string]any{
-						"ssh_access_enabled": true,
-						"ssh_allow_pubkey":   true,
-						"ssh_allow_password": false,
+					Data: payloads.UserSshSettingsUpdated{
+						SshAccessEnabled: &yes,
+						SshAllowPubkey:   &yes,
+						SshAllowPassword: &no,
 					},
 					ActorType: "system",
 					ActorID:   "sso",
@@ -271,12 +279,12 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			StreamType: "identity_provider",
 			StreamID:   linkID,
 			EventType:  string(eventtypes.IdentityLinked),
-			Data: map[string]any{
-				"user_id":        userID,
-				"provider_id":    provider.ID,
-				"external_id":    claims.Subject,
-				"external_email": claims.Email,
-				"external_name":  claims.Name,
+			Data: payloads.IdentityLinked{
+				UserID:        userID,
+				ProviderID:    provider.ID,
+				ExternalID:    claims.Subject,
+				ExternalEmail: claims.Email,
+				ExternalName:  claims.Name,
 			},
 			ActorType: "system",
 			ActorID:   "sso",
@@ -325,9 +333,9 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 				StreamType: "user_group",
 				StreamID:   groupID,
 				EventType:  string(eventtypes.UserGroupMemberAdded),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberAdded{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "system",
 				ActorID:   "sso",
@@ -340,9 +348,9 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 				StreamType: "user_group",
 				StreamID:   groupID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberRemoved{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "system",
 				ActorID:   "sso",
@@ -391,4 +399,11 @@ func deriveLinuxUsernameFromEmail(email, preferredUsername string) string {
 		username = username[:32]
 	}
 	return username
+}
+
+// ptrStr returns a *string for the value. Used by the typed-payload
+// emit sites that take pointer fields with omitempty — wrapping the
+// claim/computed value here keeps the call site readable.
+func ptrStr(s string) *string {
+	return &s
 }

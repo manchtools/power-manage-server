@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -144,12 +145,12 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		StreamType: "assignment",
 		StreamID:   id,
 		EventType:  string(eventtypes.AssignmentCreated),
-		Data: map[string]any{
-			"source_type": sourceTypeStr,
-			"source_id":   req.Msg.SourceId,
-			"target_type": targetTypeStr,
-			"target_id":   req.Msg.TargetId,
-			"mode":        int32(req.Msg.Mode),
+		Data: payloads.AssignmentCreated{
+			SourceType: sourceTypeStr,
+			SourceID:   req.Msg.SourceId,
+			TargetType: targetTypeStr,
+			TargetID:   req.Msg.TargetId,
+			Mode:       func() *int32 { m := int32(req.Msg.Mode); return &m }(),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

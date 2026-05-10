@@ -12,6 +12,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -48,9 +49,9 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		StreamType: "compliance_policy",
 		StreamID:   id,
 		EventType:  string(eventtypes.CompliancePolicyCreated),
-		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
+		Data: payloads.CompliancePolicyCreated{
+			Name:        req.Msg.Name,
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -144,8 +145,8 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.CompliancePolicyRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.CompliancePolicyRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -184,8 +185,8 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.CompliancePolicyDescriptionUpdated),
-		Data: map[string]any{
-			"description": req.Msg.Description,
+		Data: payloads.CompliancePolicyDescriptionUpdated{
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -279,10 +280,10 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  string(eventtypes.CompliancePolicyRuleAdded),
-		Data: map[string]any{
-			"action_id":          req.Msg.ActionId,
-			"action_name":        action.Name,
-			"grace_period_hours": req.Msg.GracePeriodHours,
+		Data: payloads.CompliancePolicyRuleAdded{
+			ActionID:         req.Msg.ActionId,
+			ActionName:       action.Name,
+			GracePeriodHours: req.Msg.GracePeriodHours,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -326,8 +327,8 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  string(eventtypes.CompliancePolicyRuleRemoved),
-		Data: map[string]any{
-			"action_id": req.Msg.ActionId,
+		Data: payloads.CompliancePolicyRuleRemoved{
+			ActionID: req.Msg.ActionId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -371,9 +372,9 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		StreamType: "compliance_policy",
 		StreamID:   req.Msg.PolicyId,
 		EventType:  string(eventtypes.CompliancePolicyRuleUpdated),
-		Data: map[string]any{
-			"action_id":          req.Msg.ActionId,
-			"grace_period_hours": req.Msg.GracePeriodHours,
+		Data: payloads.CompliancePolicyRuleUpdated{
+			ActionID:         req.Msg.ActionId,
+			GracePeriodHours: req.Msg.GracePeriodHours,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

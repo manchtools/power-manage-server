@@ -11,6 +11,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -159,8 +160,8 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.ActionSetRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.ActionSetRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -233,8 +234,8 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.ActionSetDescriptionUpdated),
-		Data: map[string]any{
-			"description": req.Msg.Description,
+		Data: payloads.ActionSetDescriptionUpdated{
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -309,9 +310,9 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
 		EventType:  string(eventtypes.ActionSetMemberAdded),
-		Data: map[string]any{
-			"action_id":  req.Msg.ActionId,
-			"sort_order": req.Msg.SortOrder,
+		Data: payloads.ActionSetMemberAdded{
+			ActionID:  req.Msg.ActionId,
+			SortOrder: req.Msg.SortOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -350,8 +351,8 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
 		EventType:  string(eventtypes.ActionSetMemberRemoved),
-		Data: map[string]any{
-			"action_id": req.Msg.ActionId,
+		Data: payloads.ActionSetMemberRemoved{
+			ActionID: req.Msg.ActionId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -390,9 +391,9 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
 		EventType:  string(eventtypes.ActionSetMemberReordered),
-		Data: map[string]any{
-			"action_id":  req.Msg.ActionId,
-			"sort_order": req.Msg.NewOrder,
+		Data: payloads.ActionSetMemberReordered{
+			ActionID:  req.Msg.ActionId,
+			SortOrder: req.Msg.NewOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

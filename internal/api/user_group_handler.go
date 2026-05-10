@@ -15,6 +15,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -77,11 +78,11 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		StreamType: "user_group",
 		StreamID:   id,
 		EventType:  string(eventtypes.UserGroupCreated),
-		Data: map[string]any{
-			"name":          req.Msg.Name,
-			"description":   req.Msg.Description,
-			"is_dynamic":    req.Msg.IsDynamic,
-			"dynamic_query": req.Msg.DynamicQuery,
+		Data: payloads.UserGroupCreated{
+			Name:         req.Msg.Name,
+			Description:  req.Msg.Description,
+			IsDynamic:    req.Msg.IsDynamic,
+			DynamicQuery: req.Msg.DynamicQuery,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -193,9 +194,9 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		StreamType: "user_group",
 		StreamID:   req.Msg.GroupId,
 		EventType:  string(eventtypes.UserGroupUpdated),
-		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
+		Data: payloads.UserGroupUpdated{
+			Name:        req.Msg.Name,
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -244,8 +245,8 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.UserGroupMaintenanceWindowSet),
-		Data: map[string]any{
-			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
+		Data: payloads.UserGroupMaintenanceWindowSet{
+			MaintenanceWindow: maintenanceWindowToMap(req.Msg.MaintenanceWindow),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -369,9 +370,9 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupMemberAdded),
-			Data: map[string]any{
-				"group_id": req.Msg.GroupId,
-				"user_id":  userID,
+			Data: payloads.UserGroupMemberAdded{
+				GroupID: req.Msg.GroupId,
+				UserID:  userID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -431,9 +432,9 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		StreamType: "user_group",
 		StreamID:   streamID,
 		EventType:  string(eventtypes.UserGroupMemberRemoved),
-		Data: map[string]any{
-			"group_id": req.Msg.GroupId,
-			"user_id":  req.Msg.UserId,
+		Data: payloads.UserGroupMemberRemoved{
+			GroupID: req.Msg.GroupId,
+			UserID:  req.Msg.UserId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -509,9 +510,9 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupRoleAssigned),
-			Data: map[string]any{
-				"group_id": req.Msg.GroupId,
-				"role_id":  roleID,
+			Data: payloads.UserGroupRoleAssigned{
+				GroupID: req.Msg.GroupId,
+				RoleID:  roleID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -555,9 +556,9 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 		StreamType: "user_group",
 		StreamID:   streamID,
 		EventType:  string(eventtypes.UserGroupRoleRevoked),
-		Data: map[string]any{
-			"group_id": req.Msg.GroupId,
-			"role_id":  req.Msg.RoleId,
+		Data: payloads.UserGroupRoleRevoked{
+			GroupID: req.Msg.GroupId,
+			RoleID:  req.Msg.RoleId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -630,9 +631,9 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		StreamType: "user_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.UserGroupQueryUpdated),
-		Data: map[string]any{
-			"is_dynamic":    req.Msg.IsDynamic,
-			"dynamic_query": req.Msg.DynamicQuery,
+		Data: payloads.UserGroupQueryUpdated{
+			IsDynamic:    req.Msg.IsDynamic,
+			DynamicQuery: req.Msg.DynamicQuery,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

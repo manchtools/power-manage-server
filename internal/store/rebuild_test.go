@@ -295,7 +295,7 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 
 	_, err = st.RebuildAll(ctx, "roles")
 	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
-	assert.Contains(t, err.Error(), "no PL/pgSQL Function and no Go applier registered",
+	assert.Contains(t, err.Error(), "no Go applier registered",
 		"error must name the missing-applier failure mode so operators can wire WireAll")
 	assert.Contains(t, err.Error(), "roles",
 		"error must name the offending target")

@@ -24,7 +24,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -33,7 +32,6 @@ import (
 // DeviceHandler handles device management RPCs.
 type DeviceHandler struct {
 	taskQueueHolder
-	searchIndexHolder
 	store     *store.Store
 	logger    *slog.Logger
 	encryptor *crypto.Encryptor
@@ -42,42 +40,6 @@ type DeviceHandler struct {
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
 	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
-}
-
-// enqueueDeviceReindex enqueues a search index update for a device.
-func (h *DeviceHandler) enqueueDeviceReindex(ctx context.Context, d db.DevicesProjection) {
-	if h.searchIdx == nil {
-		return
-	}
-	labels := search.FlattenLabels(d.Labels)
-	var registeredAt, lastSeenAt int64
-	if d.RegisteredAt != nil {
-		registeredAt = d.RegisteredAt.Unix()
-	}
-	if d.LastSeenAt != nil {
-		lastSeenAt = d.LastSeenAt.Unix()
-	}
-	data := &taskqueue.SearchEntityData{
-		Hostname:         d.Hostname,
-		AgentVersion:     d.AgentVersion,
-		Labels:           labels,
-		ComplianceStatus: d.ComplianceStatus,
-		RegisteredAt:     registeredAt,
-		LastSeenAt:       lastSeenAt,
-	}
-	// Enrich with inventory data (best-effort).
-	inv, err := h.store.Queries().GetDeviceInventoryByTables(ctx, db.GetDeviceInventoryByTablesParams{
-		DeviceID: d.ID,
-		Column2:  []string{"os_version", "kernel_info"},
-	})
-	if err == nil {
-		for _, t := range inv {
-			search.EnrichDeviceInventory(data, t.TableName, t.Rows)
-		}
-	} else {
-		logEnrichmentErr("GetDeviceInventoryByTables", "device_id", d.ID, err)
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeDevice, d.ID, data)
 }
 
 // ListDevices returns a paginated list of devices.
@@ -232,8 +194,6 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
-	h.enqueueDeviceReindex(ctx, device)
-
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
 		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
@@ -276,8 +236,6 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
 
-	h.enqueueDeviceReindex(ctx, device)
-
 	return connect.NewResponse(&pm.UpdateDeviceResponse{
 		Device: h.deviceToProtoCtx(ctx, device),
 	}), nil
@@ -306,11 +264,8 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	if h.searchIdx != nil {
-		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeDevice, req.Msg.Id, nil); err != nil {
-			h.logger.Warn("failed to enqueue search index remove", "scope", "device", "error", err)
-		}
-	}
+	// Search-index removal is handled by api.SearchListener (post-commit
+	// dispatch on DeviceDeleted) — handler-side enqueue removed in N005.
 
 	return connect.NewResponse(&pm.DeleteDeviceResponse{}), nil
 }
@@ -741,7 +696,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			ActionName:     actionNames[p.ActionID],
 			Username:       p.Username,
 			Password:       decPassword,
-			RotationReason: p.RotationReason,
+			RotationReason: rotationReasonFromString(p.RotationReason),
 		}
 		entry.RotatedAt = timestamppb.New(p.RotatedAt)
 		resp.Current = append(resp.Current, entry)
@@ -760,7 +715,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			ActionName:     actionNames[p.ActionID],
 			Username:       p.Username,
 			Password:       decPassword,
-			RotationReason: p.RotationReason,
+			RotationReason: rotationReasonFromString(p.RotationReason),
 		}
 		entry.RotatedAt = timestamppb.New(p.RotatedAt)
 		resp.History = append(resp.History, entry)
@@ -816,11 +771,11 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			ActionName:     actionNames[k.ActionID],
 			DevicePath:     k.DevicePath,
 			Passphrase:     decPassphrase,
-			RotationReason: k.RotationReason,
+			RotationReason: rotationReasonFromString(k.RotationReason),
 		}
 		entry.RotatedAt = timestamppb.New(k.RotatedAt)
 		if k.RevocationStatus != nil {
-			entry.RevocationStatus = *k.RevocationStatus
+			entry.RevocationStatus = luksRevocationStatusFromString(*k.RevocationStatus)
 		}
 		if k.RevocationError != nil {
 			entry.RevocationError = *k.RevocationError
@@ -844,7 +799,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 			ActionName:     actionNames[k.ActionID],
 			DevicePath:     k.DevicePath,
 			Passphrase:     decPassphrase,
-			RotationReason: k.RotationReason,
+			RotationReason: rotationReasonFromString(k.RotationReason),
 		}
 		entry.RotatedAt = timestamppb.New(k.RotatedAt)
 		resp.History = append(resp.History, entry)
@@ -984,15 +939,15 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	// projector already does that, but the audit log loses the
 	// "these three rows are one revocation attempt" invariant.
 	luksStreamID := newULID()
-	reqAt := time.Now().Format(time.RFC3339)
+	reqAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
 		EventType:  string(eventtypes.LuksDeviceKeyRevocationRequested),
-		Data: map[string]any{
-			"device_id":    req.Msg.DeviceId,
-			"action_id":    req.Msg.ActionId,
-			"requested_at": reqAt,
+		Data: payloads.LuksDeviceKeyRevocationRequested{
+			DeviceID:    req.Msg.DeviceId,
+			ActionID:    req.Msg.ActionId,
+			RequestedAt: reqAt,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -1015,11 +970,11 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 			StreamType: "luks_key",
 			StreamID:   luksStreamID,
 			EventType:  string(eventtypes.LuksDeviceKeyRevocationFailed),
-			Data: map[string]any{
-				"device_id": req.Msg.DeviceId,
-				"action_id": req.Msg.ActionId,
-				"error":     fmt.Sprintf("dispatch enqueue failed: %v", enqErr),
-				"failed_at": time.Now().Format(time.RFC3339),
+			Data: payloads.LuksDeviceKeyRevocationFailed{
+				DeviceID: req.Msg.DeviceId,
+				ActionID: req.Msg.ActionId,
+				Error:    fmt.Sprintf("dispatch enqueue failed: %v", enqErr),
+				FailedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			},
 			ActorType: "system",
 			ActorID:   "system",
@@ -1040,10 +995,10 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
 		EventType:  string(eventtypes.LuksDeviceKeyRevocationDispatched),
-		Data: map[string]any{
-			"device_id":     req.Msg.DeviceId,
-			"action_id":     req.Msg.ActionId,
-			"dispatched_at": time.Now().Format(time.RFC3339),
+		Data: payloads.LuksDeviceKeyRevocationDispatched{
+			DeviceID:     req.Msg.DeviceId,
+			ActionID:     req.Msg.ActionId,
+			DispatchedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -1085,7 +1040,7 @@ func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Re
 	for _, u := range users {
 		assignees = append(assignees, &pm.DeviceAssignee{
 			Id:   u.UserID,
-			Type: "user",
+			Type: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
 			Name: u.UserEmail,
 		})
 	}
@@ -1098,7 +1053,7 @@ func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Re
 	for _, g := range groups {
 		assignees = append(assignees, &pm.DeviceAssignee{
 			Id:   g.GroupID,
-			Type: "user_group",
+			Type: pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP,
 			Name: g.GroupName,
 		})
 	}

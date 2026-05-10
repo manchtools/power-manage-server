@@ -130,12 +130,15 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 
 ### Actions (7 RPCs)
 
-Manages action definitions. Supports 16 action types:
+Manages action definitions. Supports the action types declared in
+`sdk/proto/pm/v1/actions.proto` (canonical list — keep that file as
+the source of truth):
 
 **Package management**: `PACKAGE`, `UPDATE`, `REPOSITORY`, `APP_IMAGE`, `DEB`, `RPM`, `FLATPAK`
-**System**: `SHELL`, `SYSTEMD`, `FILE`, `DIRECTORY`
-**Identity**: `USER`, `GROUP`, `SSH`, `SSHD`, `SUDO`, `LPS`
-**Security**: `LUKS`
+**System**: `SHELL`, `SYSTEMD` (`SERVICE`), `FILE`, `DIRECTORY`
+**Identity**: `USER`, `GROUP`, `SSH`, `SSHD`, `ADMIN_POLICY` (sudoers/doas), `LPS`
+**Security**: `ENCRYPTION` (LUKS / GELI)
+**Lifecycle (DispatchInstantAction only)**: `REBOOT`, `SYNC`
 
 | Method | Description |
 |--------|-------------|
@@ -485,6 +488,20 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cm
 
 > **rc3 migration:** the previously unprefixed `VALKEY_ADDR` / `VALKEY_PASSWORD` / `VALKEY_DB` / `LOG_LEVEL` are now `GATEWAY_*`-prefixed. The old names are no longer read — rename them in your `.env` before upgrading.
 
+### Indexer Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `INDEXER_DATABASE_URL` | PostgreSQL DSN (read-only role recommended) |
+| `INDEXER_VALKEY_ADDR` | Valkey address, e.g. `localhost:6379` |
+| `INDEXER_VALKEY_PASSWORD` | Valkey password |
+| `INDEXER_VALKEY_DB` | Valkey DB number (default `0`) |
+| `INDEXER_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` (default `info`) |
+| `INDEXER_LOG_FORMAT` | Log format: `text` or `json` (default `json`) |
+| `INDEXER_RECONCILE_INTERVAL` | Periodic reconciliation cadence (Go duration, default `1h`) |
+| `INDEXER_CONCURRENCY` | Asynq worker concurrency (default `4`) |
+| `INDEXER_HEALTH_ADDR` | HTTP listen address for `/healthz` and `/readyz` (default `:8090`) |
+
 ## Running Locally
 
 Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](../docs/self-hosting.md) for Docker/Podman Compose deployment.
@@ -554,7 +571,7 @@ Rename it to `go.work.off` or delete it when you want `go build` to use the pinn
 
 ## Testing
 
-The server has ~328 tests across 29 files covering auth, connection management, event store projections, all API handlers, SCIM provisioning, and gateway message handling.
+The server test surface lives across `internal/api/`, `internal/auth/`, `internal/projectors/`, `internal/store/`, `internal/control/`, `internal/handler/`, `internal/scim/`, `internal/middleware/`, `internal/eventtypes/` and the rest of `internal/`. Run `find . -name '*_test.go' | wc -l` for an up-to-date count; numeric claims drift quickly so the canonical reference is the file system.
 
 ### Running Tests
 

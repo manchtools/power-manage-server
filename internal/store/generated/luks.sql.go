@@ -57,7 +57,7 @@ func (q *Queries) DeleteLuksKeysByAction(ctx context.Context, actionID string) e
 }
 
 const getCurrentLuksKeyForAction = `-- name: GetCurrentLuksKeyForAction :one
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at, projection_version FROM luks_keys_projection
 WHERE device_id = $1 AND action_id = $2 AND is_current = TRUE
 ORDER BY rotated_at DESC
 LIMIT 1
@@ -84,12 +84,13 @@ func (q *Queries) GetCurrentLuksKeyForAction(ctx context.Context, arg GetCurrent
 		&i.RevocationStatus,
 		&i.RevocationError,
 		&i.RevocationAt,
+		&i.ProjectionVersion,
 	)
 	return i, err
 }
 
 const getCurrentLuksKeys = `-- name: GetCurrentLuksKeys :many
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at, projection_version FROM luks_keys_projection
 WHERE device_id = $1 AND is_current = TRUE
 ORDER BY rotated_at DESC
 `
@@ -116,6 +117,7 @@ func (q *Queries) GetCurrentLuksKeys(ctx context.Context, deviceID string) ([]Lu
 			&i.RevocationStatus,
 			&i.RevocationError,
 			&i.RevocationAt,
+			&i.ProjectionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -128,7 +130,7 @@ func (q *Queries) GetCurrentLuksKeys(ctx context.Context, deviceID string) ([]Lu
 }
 
 const getLuksKeyHistory = `-- name: GetLuksKeyHistory :many
-SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at FROM luks_keys_projection
+SELECT id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, is_current, created_at, revocation_status, revocation_error, revocation_at, projection_version FROM luks_keys_projection
 WHERE device_id = $1 AND is_current = FALSE
 ORDER BY rotated_at DESC
 LIMIT 20
@@ -156,6 +158,7 @@ func (q *Queries) GetLuksKeyHistory(ctx context.Context, deviceID string) ([]Luk
 			&i.RevocationStatus,
 			&i.RevocationError,
 			&i.RevocationAt,
+			&i.ProjectionVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -199,21 +202,26 @@ func (q *Queries) GetLuksRevocationStreamID(ctx context.Context, arg GetLuksRevo
 
 const insertLuksKey = `-- name: InsertLuksKey :exec
 INSERT INTO luks_keys_projection
-    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason)
-VALUES ($1, $2, $3, $4, $5, $6)
+    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertLuksKeyParams struct {
-	DeviceID       string    `json:"device_id"`
-	ActionID       string    `json:"action_id"`
-	DevicePath     string    `json:"device_path"`
-	Passphrase     string    `json:"passphrase"`
-	RotatedAt      time.Time `json:"rotated_at"`
-	RotationReason string    `json:"rotation_reason"`
+	DeviceID          string    `json:"device_id"`
+	ActionID          string    `json:"action_id"`
+	DevicePath        string    `json:"device_path"`
+	Passphrase        string    `json:"passphrase"`
+	RotatedAt         time.Time `json:"rotated_at"`
+	RotationReason    string    `json:"rotation_reason"`
+	ProjectionVersion int64     `json:"projection_version"`
 }
 
-// Step 2 of LuksKeyRotated projection. Always inserts a new row;
-// step 3's trim keeps only the latest 3 by rotated_at.
+// Step 2 of LuksKeyRotated projection. Inserts the new row only when
+// the listener confirmed via MarkLuksKeysNotCurrent's :execrows that
+// this is NOT a stale replay. The listener short-circuits when n==0
+// and a sibling row already exists, so this insert never runs against
+// a stale event. projection_version on the new row is the same
+// sequence_num that just guarded step 1.
 func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) error {
 	_, err := q.db.Exec(ctx, insertLuksKey,
 		arg.DeviceID,
@@ -222,23 +230,56 @@ func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) er
 		arg.Passphrase,
 		arg.RotatedAt,
 		arg.RotationReason,
+		arg.ProjectionVersion,
 	)
 	return err
 }
 
-const markLuksKeysNotCurrent = `-- name: MarkLuksKeysNotCurrent :exec
+const luksKeyExistsForDeviceActionPath = `-- name: LuksKeyExistsForDeviceActionPath :one
+SELECT EXISTS (
+    SELECT 1 FROM luks_keys_projection
+    WHERE device_id = $1
+      AND action_id = $2
+      AND device_path = $3
+)
+`
+
+type LuksKeyExistsForDeviceActionPathParams struct {
+	DeviceID   string `json:"device_id"`
+	ActionID   string `json:"action_id"`
+	DevicePath string `json:"device_path"`
+}
+
+// Companion to the asymmetric stale-replay guard in
+// MarkLuksKeysNotCurrent. Used by the listener to disambiguate the
+// n==0 case: 0 rows-affected means EITHER "stale replay" (rows exist
+// with projection_version >= the replaying event's sequence_num) OR
+// "first rotation for this (device, action, path)" (no rows at all).
+// The listener proceeds to insert when no rows exist, and short-
+// circuits when rows exist (= the stale-replay case).
+func (q *Queries) LuksKeyExistsForDeviceActionPath(ctx context.Context, arg LuksKeyExistsForDeviceActionPathParams) (bool, error) {
+	row := q.db.QueryRow(ctx, luksKeyExistsForDeviceActionPath, arg.DeviceID, arg.ActionID, arg.DevicePath)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const markLuksKeysNotCurrent = `-- name: MarkLuksKeysNotCurrent :execrows
 UPDATE luks_keys_projection
-SET is_current = FALSE
+SET is_current = FALSE,
+    projection_version = $4
 WHERE device_id = $1
   AND action_id = $2
   AND device_path = $3
   AND is_current = TRUE
+  AND projection_version < $4
 `
 
 type MarkLuksKeysNotCurrentParams struct {
-	DeviceID   string `json:"device_id"`
-	ActionID   string `json:"action_id"`
-	DevicePath string `json:"device_path"`
+	DeviceID          string `json:"device_id"`
+	ActionID          string `json:"action_id"`
+	DevicePath        string `json:"device_path"`
+	ProjectionVersion int64  `json:"projection_version"`
 }
 
 // Step 1 of LuksKeyRotated projection. Flip the current row for the
@@ -247,9 +288,26 @@ type MarkLuksKeysNotCurrentParams struct {
 // `is_current = TRUE` predicate keeps the result identical (rows
 // already FALSE stay FALSE) but skips a write per historical row,
 // reducing write amplification on the hot path.
-func (q *Queries) MarkLuksKeysNotCurrent(ctx context.Context, arg MarkLuksKeysNotCurrentParams) error {
-	_, err := q.db.Exec(ctx, markLuksKeysNotCurrent, arg.DeviceID, arg.ActionID, arg.DevicePath)
-	return err
+//
+// The projection_version guard rejects stale-replay re-deliveries:
+// a re-fired old event whose sequence_num is <= the last applied
+// version for any matching row gets 0 rows-affected, and the
+// listener short-circuits the cascade insert + trim. Without the
+// guard, a reconciler-driven re-delivery of an old LuksKeyRotated
+// would re-mark the latest (real-current) row as not_current and
+// insert a stale duplicate underneath it. Audit N007 (mirrors
+// LPS audit F020/F021).
+func (q *Queries) MarkLuksKeysNotCurrent(ctx context.Context, arg MarkLuksKeysNotCurrentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markLuksKeysNotCurrent,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.DevicePath,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const trimLuksKeysToLast3 = `-- name: TrimLuksKeysToLast3 :exec

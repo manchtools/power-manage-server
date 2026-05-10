@@ -14,6 +14,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -73,11 +74,11 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		StreamType: "role",
 		StreamID:   id,
 		EventType:  string(eventtypes.RoleCreated),
-		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
-			"permissions": perms,
-			"is_system":   false,
+		Data: payloads.RoleCreated{
+			Name:        req.Msg.Name,
+			Description: req.Msg.Description,
+			Permissions: perms,
+			IsSystem:    false,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -189,10 +190,10 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		StreamType: "role",
 		StreamID:   req.Msg.RoleId,
 		EventType:  string(eventtypes.RoleUpdated),
-		Data: map[string]any{
-			"name":        req.Msg.Name,
-			"description": req.Msg.Description,
-			"permissions": perms,
+		Data: payloads.RoleUpdated{
+			Name:        req.Msg.Name,
+			Description: req.Msg.Description,
+			Permissions: perms,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -319,9 +320,9 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 			StreamType: "user_role",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserRoleAssigned),
-			Data: map[string]any{
-				"user_id": req.Msg.UserId,
-				"role_id": roleID,
+			Data: payloads.UserRoleAssigned{
+				UserID: req.Msg.UserId,
+				RoleID: roleID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -386,9 +387,9 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 			StreamType: "user_role",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserRoleRevoked),
-			Data: map[string]any{
-				"user_id": req.Msg.UserId,
-				"role_id": req.Msg.RoleId,
+			Data: payloads.UserRoleRevoked{
+				UserID: req.Msg.UserId,
+				RoleID: req.Msg.RoleId,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,

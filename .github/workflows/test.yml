@@ -34,8 +34,15 @@ jobs:
       # directive, so unit tests build against exactly that SDK state.
       # Bumping the pin is an explicit commit, not something that
       # happens silently when SDK main advances.
+      #
+      # Audit N020: the per-package list is intentionally explicit; the
+      # split between unit and integration jobs is load-bearing because
+      # integration tests bring up testcontainers (Postgres, Valkey) and
+      # take 5–20× longer. When you add a new internal/<pkg>, drop it
+      # in the right list. eventtypes/... is pure-Go (no DB, no network)
+      # so it lives here.
       - name: Run unit tests
-        run: go test -count=1 ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/...
+        run: go test -count=1 ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/... ./internal/eventtypes/...
 
   integration:
     name: Integration Tests
@@ -47,5 +54,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # projectors/... is integration-tier because each listener test
+      # spins up a Postgres testcontainer to wire the store + the
+      # listener factory; covered here so the 23 listener files +
+      # 14 sibling test files get exercised on every push.
       - name: Run integration tests
-        run: go test -count=1 -timeout 20m ./internal/store/... ./internal/api/... ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/...
+        run: go test -count=1 -timeout 20m ./internal/store/... ./internal/api/... ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/... ./internal/projectors/...

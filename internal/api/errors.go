@@ -99,6 +99,11 @@ const (
 	ErrActionNotCompliance        = "action_not_compliance"
 )
 
+// LUKS key error codes.
+const (
+	ErrLuksKeyNotFound = "luks_key_not_found"
+)
+
 // Validation error codes.
 const (
 	ErrValidationFailed = "validation_failed"

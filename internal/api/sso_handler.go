@@ -14,6 +14,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/idp"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -298,13 +299,13 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		StreamType: "user",
 		StreamID:   linkResult.UserID,
 		EventType:  string(eventtypes.UserProfileUpdated),
-		Data: map[string]any{
-			"display_name":       claims.Name,
-			"given_name":         claims.GivenName,
-			"family_name":        claims.FamilyName,
-			"preferred_username": claims.PreferredUsername,
-			"picture":            claims.Picture,
-			"locale":             claims.Locale,
+		Data: payloads.UserProfileUpdated{
+			DisplayName:       ptrStr(claims.Name),
+			GivenName:         ptrStr(claims.GivenName),
+			FamilyName:        ptrStr(claims.FamilyName),
+			PreferredUsername: ptrStr(claims.PreferredUsername),
+			Picture:           ptrStr(claims.Picture),
+			Locale:            ptrStr(claims.Locale),
 		},
 		ActorType: "system",
 		ActorID:   "sso",
@@ -344,8 +345,8 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		StreamType: "user",
 		StreamID:   user.ID,
 		EventType:  string(eventtypes.UserLoggedIn),
-		Data: map[string]any{
-			"provider": provider.Slug,
+		Data: payloads.UserLoggedIn{
+			Provider: provider.Slug,
 		},
 		ActorType: "user",
 		ActorID:   user.ID,

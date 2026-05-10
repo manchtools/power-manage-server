@@ -17,6 +17,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -68,23 +69,23 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		StreamType: "identity_provider",
 		StreamID:   id,
 		EventType:  string(eventtypes.IdentityProviderCreated),
-		Data: map[string]any{
-			"name":                        req.Msg.Name,
-			"slug":                        req.Msg.Slug,
-			"provider_type":               identityProviderTypeToString(req.Msg.ProviderType),
-			"client_id":                   req.Msg.ClientId,
-			"client_secret_encrypted":     encryptedSecret,
-			"issuer_url":                  req.Msg.IssuerUrl,
-			"authorization_url":           req.Msg.AuthorizationUrl,
-			"token_url":                   req.Msg.TokenUrl,
-			"userinfo_url":                req.Msg.UserinfoUrl,
-			"scopes":                      req.Msg.Scopes,
-			"auto_create_users":           req.Msg.AutoCreateUsers,
-			"auto_link_by_email":          req.Msg.AutoLinkByEmail,
-			"default_role_id":             req.Msg.DefaultRoleId,
-			"disable_password_for_linked": req.Msg.DisablePasswordForLinked,
-			"group_claim":                 req.Msg.GroupClaim,
-			"group_mapping":               json.RawMessage(groupMappingJSON),
+		Data: payloads.IdentityProviderCreated{
+			Name:                     req.Msg.Name,
+			Slug:                     req.Msg.Slug,
+			ProviderType:             identityProviderTypeToString(req.Msg.ProviderType),
+			ClientID:                 req.Msg.ClientId,
+			ClientSecretEncrypted:    encryptedSecret,
+			IssuerURL:                req.Msg.IssuerUrl,
+			AuthorizationURL:         req.Msg.AuthorizationUrl,
+			TokenURL:                 req.Msg.TokenUrl,
+			UserinfoURL:              req.Msg.UserinfoUrl,
+			Scopes:                   req.Msg.Scopes,
+			AutoCreateUsers:          req.Msg.AutoCreateUsers,
+			AutoLinkByEmail:          req.Msg.AutoLinkByEmail,
+			DefaultRoleID:            req.Msg.DefaultRoleId,
+			DisablePasswordForLinked: req.Msg.DisablePasswordForLinked,
+			GroupClaim:               req.Msg.GroupClaim,
+			GroupMapping:             json.RawMessage(groupMappingJSON),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -347,8 +348,8 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.IdentityProviderSCIMEnabled),
-		Data: map[string]any{
-			"scim_token_hash": hashStr,
+		Data: payloads.IdentityProviderSCIMEnabled{
+			ScimTokenHash: hashStr,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -434,8 +435,8 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.IdentityProviderSCIMTokenRotated),
-		Data: map[string]any{
-			"scim_token_hash": hashStr,
+		Data: payloads.IdentityProviderSCIMTokenRotated{
+			ScimTokenHash: hashStr,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

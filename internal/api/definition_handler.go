@@ -11,6 +11,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -156,8 +157,8 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DefinitionRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.DefinitionRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -231,8 +232,8 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DefinitionDescriptionUpdated),
-		Data: map[string]any{
-			"description": req.Msg.Description,
+		Data: payloads.DefinitionDescriptionUpdated{
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -307,9 +308,9 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
 		EventType:  string(eventtypes.DefinitionMemberAdded),
-		Data: map[string]any{
-			"action_set_id": req.Msg.ActionSetId,
-			"sort_order":    req.Msg.SortOrder,
+		Data: payloads.DefinitionMemberAdded{
+			ActionSetID: req.Msg.ActionSetId,
+			SortOrder:   req.Msg.SortOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -348,8 +349,8 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
 		EventType:  string(eventtypes.DefinitionMemberRemoved),
-		Data: map[string]any{
-			"action_set_id": req.Msg.ActionSetId,
+		Data: payloads.DefinitionMemberRemoved{
+			ActionSetID: req.Msg.ActionSetId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -388,9 +389,9 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
 		EventType:  string(eventtypes.DefinitionMemberReordered),
-		Data: map[string]any{
-			"action_set_id": req.Msg.ActionSetId,
-			"sort_order":    req.Msg.NewOrder,
+		Data: payloads.DefinitionMemberReordered{
+			ActionSetID: req.Msg.ActionSetId,
+			SortOrder:   req.Msg.NewOrder,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

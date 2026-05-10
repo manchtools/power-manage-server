@@ -20,6 +20,7 @@ import (
 	sdkterminal "github.com/manchtools/power-manage/sdk/go/sys/terminal"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
@@ -159,11 +160,11 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		StreamType: "device",
 		StreamID:   req.Msg.DeviceId,
 		EventType:  string(eventtypes.TerminalSessionStarted),
-		Data: map[string]any{
-			"session_id": sessionID,
-			"tty_user":   ttyUser,
-			"cols":       cols,
-			"rows":       rows,
+		Data: payloads.TerminalSessionStarted{
+			SessionID: sessionID,
+			TtyUser:   ttyUser,
+			Cols:      cols,
+			Rows:      rows,
 		},
 		ActorType: "user",
 		ActorID:   user.ID,
@@ -403,9 +404,9 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		StreamType: "device",
 		StreamID:   session.DeviceID,
 		EventType:  string(eventtypes.TerminalSessionStopped),
-		Data: map[string]any{
-			"session_id": session.SessionID,
-			"reason":     "user_stopped",
+		Data: payloads.TerminalSessionStopped{
+			SessionID: session.SessionID,
+			Reason:    "user_stopped",
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -605,9 +606,9 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		StreamType: "device",
 		StreamID:   session.DeviceID,
 		EventType:  string(eventtypes.TerminalSessionTerminated),
-		Data: map[string]any{
-			"session_id": session.SessionID,
-			"reason":     req.Msg.Reason,
+		Data: payloads.TerminalSessionTerminated{
+			SessionID: session.SessionID,
+			Reason:    req.Msg.Reason,
 		},
 		ActorType: "user",
 		ActorID:   actorID,

@@ -253,11 +253,14 @@ func BootstrapRedirectMiddleware(next http.Handler, bootstrapHost, assignedHost 
 
 // Stream handles the bidirectional stream between agent and server.
 func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm.AgentMessage, pm.ServerMessage]) (err error) {
-	// Recover from panics to prevent server crashes
+	// Recover from panics to prevent server crashes. The wire-side
+	// error message is intentionally bland — the panic value is
+	// recorded in the operator log via h.logger.Error so it doesn't
+	// leak across the agent connection (audit N018).
 	defer func() {
 		if r := recover(); r != nil {
 			h.logger.Error("panic in stream handler", "panic", r)
-			err = connect.NewError(connect.CodeInternal, fmt.Errorf("internal error: %v", r))
+			err = connect.NewError(connect.CodeInternal, errors.New("internal error"))
 		}
 	}()
 
@@ -408,17 +411,17 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, msg *pm.AgentMessage) error {
 	switch p := msg.Payload.(type) {
 	case *pm.AgentMessage_Heartbeat:
-		return h.handleHeartbeat(deviceID, p.Heartbeat)
+		return h.handleHeartbeat(ctx, deviceID, p.Heartbeat)
 	case *pm.AgentMessage_ActionResult:
 		return h.handleActionResult(ctx, deviceID, p.ActionResult)
 	case *pm.AgentMessage_OutputChunk:
-		return h.handleOutputChunk(deviceID, p.OutputChunk)
+		return h.handleOutputChunk(ctx, deviceID, p.OutputChunk)
 	case *pm.AgentMessage_QueryResult:
 		return h.handleQueryResult(deviceID, p.QueryResult)
 	case *pm.AgentMessage_Inventory:
 		return h.handleInventory(deviceID, p.Inventory)
 	case *pm.AgentMessage_SecurityAlert:
-		return h.handleSecurityAlert(deviceID, p.SecurityAlert)
+		return h.handleSecurityAlert(ctx, deviceID, p.SecurityAlert)
 	case *pm.AgentMessage_GetLuksKey:
 		return h.handleGetLuksKey(ctx, deviceID, msg.Id, p.GetLuksKey)
 	case *pm.AgentMessage_StoreLuksKey:
@@ -465,26 +468,22 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 	}
 }
 
-func (h *AgentHandler) handleHeartbeat(deviceID string, hb *pm.Heartbeat) error {
+func (h *AgentHandler) handleHeartbeat(ctx context.Context, deviceID string, hb *pm.Heartbeat) error {
+	// hb.Uptime / CpuPercent / MemoryPercent / DiskPercent are
+	// intentionally NOT propagated downstream (audit N008): the inbox
+	// worker terminus only writes the payload's AgentVersion into
+	// devices_projection; the four metrics fields had no consumer and
+	// were dead writes into the event store. Live metrics will need a
+	// dedicated DeviceMetricsPayload + projection if we ever want them.
+	_ = hb
 	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID}
-	if hb.Uptime != nil {
-		payload.UptimeSeconds = hb.Uptime.Seconds
-	}
-	if hb.CpuPercent > 0 {
-		payload.CpuPercent = hb.CpuPercent
-	}
-	if hb.MemoryPercent > 0 {
-		payload.MemoryPercent = hb.MemoryPercent
-	}
-	if hb.DiskPercent > 0 {
-		payload.DiskPercent = hb.DiskPercent
-	}
 	// Refresh the device→gateway TTL on every heartbeat. Best-effort:
 	// a Valkey failure here is logged but does not refuse the
 	// heartbeat — the existing UpdateLastSeen path is the source of
-	// truth for connection liveness.
+	// truth for connection liveness. Inherits the bidi-stream ctx so
+	// the refresh aborts when the agent stream tears down (audit N006).
 	if h.registry != nil {
-		if err := h.registry.RefreshDevice(context.Background(), deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
+		if err := h.registry.RefreshDevice(ctx, deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
 			h.logger.Warn("failed to refresh device→gateway mapping",
 				"device_id", deviceID, "error", err)
 		}
@@ -568,7 +567,7 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 	return nil
 }
 
-func (h *AgentHandler) handleOutputChunk(deviceID string, chunk *pm.OutputChunk) error {
+func (h *AgentHandler) handleOutputChunk(ctx context.Context, deviceID string, chunk *pm.OutputChunk) error {
 	if chunk.ExecutionId == "" {
 		return fmt.Errorf("output chunk missing execution ID")
 	}
@@ -641,7 +640,7 @@ func (h *AgentHandler) handleInventory(deviceID string, inventory *pm.DeviceInve
 	})
 }
 
-func (h *AgentHandler) handleSecurityAlert(deviceID string, alert *pm.SecurityAlert) error {
+func (h *AgentHandler) handleSecurityAlert(ctx context.Context, deviceID string, alert *pm.SecurityAlert) error {
 	h.logger.Warn("received security alert from device",
 		"device_id", deviceID,
 		"alert_type", alert.Type.String(),

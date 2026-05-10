@@ -108,9 +108,9 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
 		EventType:  string(eventtypes.DeviceHeartbeat),
-		Data: map[string]any{
-			"agent_version": payload.AgentVersion,
-			"hostname":      payload.Hostname,
+		Data: payloads.DeviceHeartbeat{
+			AgentVersion: optStrEmpty(payload.AgentVersion),
+			Hostname:     optStrEmpty(payload.Hostname),
 		},
 		ActorType: "device",
 		ActorID:   payload.DeviceID,
@@ -148,30 +148,19 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 		return nil
 	}
 
-	data := map[string]any{}
-	if payload.AgentVersion != "" {
-		data["agent_version"] = payload.AgentVersion
-	}
-	if payload.UptimeSeconds > 0 {
-		data["uptime_seconds"] = payload.UptimeSeconds
-	}
-	if payload.CpuPercent > 0 {
-		data["cpu_percent"] = payload.CpuPercent
-	}
-	if payload.MemoryPercent > 0 {
-		data["memory_percent"] = payload.MemoryPercent
-	}
-	if payload.DiskPercent > 0 {
-		data["disk_percent"] = payload.DiskPercent
-	}
-
+	// Audit N008: only the AgentVersion field is projected today;
+	// uptime / cpu / memory / disk percentages from the taskqueue
+	// payload are dropped here because no projector consumes them.
+	// Re-enable once a device_metrics_projection is added.
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
 		EventType:  string(eventtypes.DeviceHeartbeat),
-		Data:       data,
-		ActorType:  "device",
-		ActorID:    payload.DeviceID,
+		Data: payloads.DeviceHeartbeat{
+			AgentVersion: optStrEmpty(payload.AgentVersion),
+		},
+		ActorType: "device",
+		ActorID:   payload.DeviceID,
 	})
 }
 
@@ -421,10 +410,10 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 		StreamType: "execution",
 		StreamID:   payload.ExecutionID,
 		EventType:  string(eventtypes.OutputChunk),
-		Data: map[string]any{
-			"stream":   payload.Stream,
-			"data":     payload.Data,
-			"sequence": payload.Sequence,
+		Data: payloads.OutputChunk{
+			Stream:   payload.Stream,
+			Data:     payload.Data,
+			Sequence: payload.Sequence,
 		},
 		ActorType: "device",
 		ActorID:   payload.DeviceID,
@@ -529,10 +518,10 @@ func (w *InboxWorker) handleSecurityAlert(ctx context.Context, t *asynq.Task) er
 		StreamType: "device",
 		StreamID:   payload.DeviceID,
 		EventType:  string(eventtypes.SecurityAlert),
-		Data: map[string]any{
-			"alert_type": payload.AlertType,
-			"message":    payload.Message,
-			"details":    payload.Details,
+		Data: payloads.SecurityAlert{
+			AlertType: payload.AlertType,
+			Message:   payload.Message,
+			Details:   payload.Details,
 		},
 		ActorType: "device",
 		ActorID:   payload.DeviceID,
@@ -606,10 +595,10 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 			StreamType: "luks_key",
 			StreamID:   luksStreamID,
 			EventType:  string(eventtypes.LuksDeviceKeyRevoked),
-			Data: map[string]any{
-				"device_id":  payload.DeviceID,
-				"action_id":  payload.ActionID,
-				"revoked_at": time.Now().Format(time.RFC3339),
+			Data: payloads.LuksDeviceKeyRevoked{
+				DeviceID:  payload.DeviceID,
+				ActionID:  payload.ActionID,
+				RevokedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			},
 			ActorType: "device",
 			ActorID:   payload.DeviceID,
@@ -620,11 +609,11 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
 		EventType:  string(eventtypes.LuksDeviceKeyRevocationFailed),
-		Data: map[string]any{
-			"device_id": payload.DeviceID,
-			"action_id": payload.ActionID,
-			"error":     payload.Error,
-			"failed_at": time.Now().Format(time.RFC3339),
+		Data: payloads.LuksDeviceKeyRevocationFailed{
+			DeviceID: payload.DeviceID,
+			ActionID: payload.ActionID,
+			Error:    payload.Error,
+			FailedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		},
 		ActorType: "device",
 		ActorID:   payload.DeviceID,
@@ -686,10 +675,10 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 							StreamType: "execution",
 							StreamID:   exec.ID,
 							EventType:  string(eventtypes.ExecutionFailed),
-							Data: map[string]any{
-								"error":        "action was deleted before the device came online",
-								"duration_ms":  int64(0),
-								"completed_at": time.Now().UTC().Format(time.RFC3339Nano),
+							Data: payloads.ExecutionFailedReason{
+								Error:       "action was deleted before the device came online",
+								DurationMs:  0,
+								CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
 							},
 							ActorType: "system",
 							ActorID:   "dispatcher",
@@ -749,8 +738,8 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			StreamType: "execution",
 			StreamID:   exec.ID,
 			EventType:  string(eventtypes.ExecutionDispatched),
-			Data: map[string]any{
-				"device_id": deviceID,
+			Data: payloads.ExecutionDispatched{
+				DeviceID: deviceID,
 			},
 			ActorType: "system",
 			ActorID:   "dispatcher",
@@ -828,6 +817,17 @@ func commandOutputPayload(o *pm.CommandOutput) *payloads.CommandOutput {
 // Returns a valid ULID constructed from the first 16 bytes of a SHA-256 hash.
 // The timestamp portion is not meaningful, but the result is deterministic and
 // passes ULID validation everywhere IDs are checked.
+// optStrEmpty returns nil for an empty string and a pointer to s
+// otherwise. Used by emit sites that want JSON `omitempty` semantics
+// on payload struct fields without sprinkling `if s != "" { ... }`
+// guards into every callsite.
+func optStrEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 func stableExecutionID(deviceID, actionID, completedAt string) string {
 	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
 	var id ulid.ULID

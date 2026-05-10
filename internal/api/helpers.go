@@ -11,9 +11,7 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/middleware"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // maxDynamicQueryLength caps the size of user-supplied dynamic-group
@@ -82,17 +80,6 @@ func buildNextPageToken(resultCount int32, offset int32, pageSize int32, totalCo
 	return ""
 }
 
-// enqueueSearchReindex enqueues a search reindex if the index is available.
-// Logs a warning on failure but does not return an error (best-effort).
-func enqueueSearchReindex(ctx context.Context, idx *search.Index, logger *slog.Logger, scope, id string, data *taskqueue.SearchEntityData) {
-	if idx == nil {
-		return
-	}
-	if err := idx.EnqueueReindex(ctx, scope, id, data); err != nil {
-		logger.Warn("failed to enqueue search reindex", "scope", scope, "id", id, "error", err)
-	}
-}
-
 // logEnrichmentErr logs an enrichment-lookup failure with consistent
 // shape. Used by handler response-building loops where the lookup
 // degrades the response (missing field) but doesn't fail the RPC.
@@ -107,3 +94,14 @@ func logEnrichmentErr(operation, idKey, idValue string, err error) {
 		idKey, idValue,
 		"error", err)
 }
+
+// ptrBool returns a *bool for the value. Used by typed-payload emit
+// sites that take pointer-bool fields with omitempty so the projector
+// can distinguish "absent" (nil) from "set to false" (non-nil pointer
+// to false).
+func ptrBool(b bool) *bool { return &b }
+
+// ptrStr returns a *string for the value. Same shape as ptrBool —
+// pointer fields with omitempty distinguish absent from explicit on
+// the wire.
+func ptrStr(s string) *string { return &s }

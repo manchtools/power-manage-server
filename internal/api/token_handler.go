@@ -16,6 +16,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -189,8 +190,8 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 		StreamType: "token",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.TokenRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.TokenRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

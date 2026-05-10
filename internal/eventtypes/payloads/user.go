@@ -81,6 +81,14 @@ type UserLinuxUsernameChanged struct {
 	LinuxUsername *string `json:"linux_username,omitempty"`
 }
 
+// UserLoggedIn is the wire shape for the UserLoggedIn audit event the
+// SSO callback handler appends after a successful authentication. The
+// projector reads only `provider` to denormalise "what IdP did this
+// user last authenticate via" onto users_projection.
+type UserLoggedIn struct {
+	Provider string `json:"provider"`
+}
+
 // UserSystemActionLinked is the wire shape for UserSystemActionLinked.
 // Field selects which of the three system_*_action_id columns gets
 // the supplied action_id (see SystemActionField* constants in the

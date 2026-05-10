@@ -1,0 +1,833 @@
+// Package api file action_dispatch.go — Dispatch* / execution-state
+// RPCs extracted from action_handler.go (audit F005). Owns the
+// dispatch fan-outs (DispatchAction, DispatchToMultiple,
+// DispatchAssignedActions, DispatchActionSet, DispatchDefinition,
+// DispatchToGroup, DispatchInstantAction), the in-flight execution
+// reads (GetExecution, ListExecutions), and the cancel + queue-side
+// taskqueue payload construction. Single-action CRUD lives in
+// action_crud.go.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
+	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
+
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
+)
+
+// DispatchAction dispatches an action to a device.
+func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request[pm.DispatchActionRequest]) (*connect.Response[pm.DispatchActionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Existence check — the row itself is now only consumed by the
+	// post-commit search listener, which reloads it fresh. We keep the
+	// load here to fail fast with NotFound before touching anything
+	// heavier downstream.
+	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
+	}
+
+	var actionType pm.ActionType
+	var desiredState pm.DesiredState
+	var params any // Use any to store either parsed JSON object or raw JSON
+	var timeoutSeconds int32
+	var actionID *string
+	var signature []byte
+	var paramsCanonical []byte
+
+	switch source := req.Msg.ActionSource.(type) {
+	case *pm.DispatchActionRequest_ActionId:
+		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
+			}
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		}
+		actionType = pm.ActionType(action.ActionType)
+		desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
+		// Parse params JSON to avoid double-encoding when storing the event
+		var parsedParams map[string]any
+		if err := json.Unmarshal(action.Params, &parsedParams); err == nil {
+			params = parsedParams
+		} else {
+			params = string(action.Params) // Fallback to string if parsing fails
+		}
+		timeoutSeconds = action.TimeoutSeconds
+		actionID = &source.ActionId
+		// NOTE: action.Signature and action.ParamsCanonical are
+		// loaded from the stored row in the original PR-1 shape but
+		// were unconditionally overwritten by the re-sign call below.
+		// The contract decision (re-sign every dispatch vs. respect
+		// stored signature) is tracked in #137. Until that lands,
+		// drop the dead loads — keeping them only as //lint:ignore
+		// stubs trips ineffassign in golangci-lint and adds noise
+		// without addressing the underlying ambiguity. The comment
+		// stays here so a future contributor sees why these fields
+		// are conspicuously absent on the stored-action branch.
+
+	case *pm.DispatchActionRequest_InlineAction:
+		action := source.InlineAction
+		// Run the same per-oneof validation Create applies, plus
+		// the outer Action invariants (Type non-unspecified, timeout
+		// bounds, schedule, params-match-type). validateInlineAction
+		// also rejects nil — important, otherwise extractActionParamsMsg
+		// below would panic on the typed-nil inner message.
+		if err := validateInlineAction(ctx, action); err != nil {
+			return nil, err
+		}
+		actionType = action.Type
+		desiredState = action.DesiredState
+		params, err = serializeProtoParams(extractActionParamsMsg(action))
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("failed to serialize inline action params: %v", err))
+		}
+		timeoutSeconds = action.TimeoutSeconds
+		if timeoutSeconds <= 0 {
+			timeoutSeconds = 300
+		}
+
+	default:
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "either action_id or inline_action is required")
+	}
+
+	id := ulid.Make().String()
+
+	// Compute the deferred-dispatch delay. RunAt is optional; when set
+	// it must be strictly in the future at scheduling time per the
+	// proto contract (a past timestamp would race the deferred-vs-
+	// immediate decision below).
+	var dispatchDelay time.Duration
+	if req.Msg.RunAt != nil {
+		dispatchAt := req.Msg.RunAt.AsTime()
+		dispatchDelay = time.Until(dispatchAt)
+		if dispatchDelay <= 0 {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "run_at must be in the future")
+		}
+	}
+
+	eventData := map[string]any{
+		"device_id":       req.Msg.DeviceId,
+		"action_type":     int32(actionType),
+		"desired_state":   int32(desiredState),
+		"params":          params,
+		"timeout_seconds": timeoutSeconds,
+	}
+	if actionID != nil {
+		eventData["action_id"] = *actionID
+	}
+	if dispatchDelay > 0 {
+		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	// Note: req.Msg.RespectMaintenanceWindow used to be persisted on the
+	// dispatch event under the comment "reserved for #58", but #58
+	// (per-group maintenance windows) shipped via a separate enforcement
+	// path and no execution projector ever read this field. Dropped in
+	// audit N009 to stop writing dead bytes into the event store. The
+	// proto field stays so existing API clients keep building; it now
+	// has no server-side effect.
+
+	// Fail fast when no task queue is configured. Without this
+	// guard the handler used to silently write an ExecutionCreated
+	// event, skip signing, and return success — leaving the row in
+	// `pending` forever because no agent task was ever delivered.
+	// Self-hosted deployments that forget to set CONTROL_VALKEY_ADDR
+	// would have looked like dispatch worked. CodeFailedPrecondition
+	// is the correct shape: it tells the client to fix their
+	// deployment configuration rather than retry the call.
+	//
+	// Positioned here (after Validate + auth + device lookup + inline
+	// validation) so body-level errors still surface with their own
+	// code — a malformed request should see InvalidArgument, not get
+	// shadowed by an infrastructure precondition.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "dispatch unavailable: task queue not configured")
+	}
+
+	// Sign the dispatch BEFORE writing the ExecutionCreated event.
+	//
+	// Previously the sequence was:  appendEvent → sign → enqueue.
+	// Any failure after the event-write (sign fail, enqueue fail)
+	// left an execution row in the DB that no agent task would ever
+	// deliver — a zombie "pending forever" the operator had to cancel
+	// by hand. Signing doesn't depend on the row existing (it hashes
+	// `id`, `actionType`, `paramsJSON`), so we can fail fast here
+	// before touching the DB.
+	//
+	// Nil signer is a wiring bug (main.go passes the real internal/ca
+	// signer; tests pass NoOpSigner). Fail-closed to avoid silently
+	// enqueueing unsigned tasks the agent would drop on receipt.
+	if h.signer == nil {
+		h.logger.Error("dispatch: nil signer — wiring bug", "execution_id", id)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
+	}
+	paramsJSON, marshalErr := json.Marshal(params)
+	if marshalErr != nil {
+		// `params` is either a map[string]any from extractActionParamsMsg
+		// (proto → map via protojson) or a raw JSON string — both should
+		// be safe to remarshal, but a json.Marshal error here MUST fail
+		// closed. Silently enqueueing with nil paramsJSON would produce
+		// an unverifiable signature and an empty-params task the agent
+		// rejects on receipt.
+		h.logger.Error("dispatch: failed to marshal params for signing",
+			"execution_id", id, "error", marshalErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal dispatch params")
+	}
+	sig, signErr := h.signer.Sign(id, int32(actionType), paramsJSON)
+	if signErr != nil {
+		h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
+	}
+	signature = sig
+	paramsCanonical = paramsJSON
+
+	// Choose ExecutionScheduled vs ExecutionCreated based on whether
+	// the caller asked for a deferred dispatch. The two events are
+	// projected to status='scheduled' / status='pending' respectively
+	// and the row only diverges from there on the dispatch's outcome.
+	initialEventType := string(eventtypes.ExecutionCreated)
+	if dispatchDelay > 0 {
+		initialEventType = string(eventtypes.ExecutionScheduled)
+	}
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "execution",
+		StreamID:   id,
+		EventType:  initialEventType,
+		Data:       eventData,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	}, "failed to create execution"); err != nil {
+		return nil, err
+	}
+
+	// Dispatch action to device via Asynq task queue. The row exists
+	// now; if the enqueue fails we MUST transition it to a terminal
+	// state so the projection reflects reality. Silently returning
+	// success used to leave the row as `pending` indefinitely.
+	//
+	// For deferred dispatches the asynq.TaskID is set to the execution
+	// id so CancelExecution can prune the scheduled task by that id.
+	// asynq.ProcessIn schedules the worker to pick the task up after
+	// dispatchDelay rather than immediately.
+	//
+	// h.aqClient is guaranteed non-nil here — the precondition check
+	// at the top of DispatchAction rejects the call otherwise.
+	enqueueOpts := []asynq.Option{asynq.MaxRetry(5)}
+	if dispatchDelay > 0 {
+		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
+	}
+	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+		ExecutionID:     id,
+		ActionType:      int32(actionType),
+		DesiredState:    int32(desiredState),
+		Params:          paramsJSON,
+		TimeoutSeconds:  timeoutSeconds,
+		Signature:       signature,
+		ParamsCanonical: paramsCanonical,
+	}, enqueueOpts...); err != nil {
+		h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
+			"error", err, "execution_id", id)
+		// Append a compensating ExecutionFailed event so the row
+		// moves to a terminal state the operator can act on.
+		// Best-effort: a failure here is logged but we still return
+		// the enqueue error to the caller so they know the dispatch
+		// did not reach the device.
+		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "execution",
+			StreamID:   id,
+			EventType:  string(eventtypes.ExecutionFailed),
+			Data: payloads.ExecutionFailedCompensating{
+				Error: fmt.Sprintf("dispatch enqueue failed: %v", err),
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}, "failed to append ExecutionFailed compensating event"); failErr != nil {
+			h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
+				"execution_id", id, "error", failErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue action dispatch")
+	}
+
+	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
+	if err != nil {
+		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
+	}
+
+	// Execution search reindex is handled by api.SearchListener: the
+	// listener fires on every Execution* event type and reloads the
+	// projection through loadSearchEntityData.
+
+	h.logger.Info("action dispatched",
+		"execution_id", id,
+		"device_id", req.Msg.DeviceId,
+		"action_type", actionType.String(),
+	)
+
+	return connect.NewResponse(&pm.DispatchActionResponse{
+		Execution: h.executionToProto(exec),
+	}), nil
+}
+
+// DispatchToMultiple dispatches an action to multiple devices.
+func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Request[pm.DispatchToMultipleRequest]) (*connect.Response[pm.DispatchToMultipleResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	executions := make([]*pm.ActionExecution, 0, len(req.Msg.DeviceIds))
+
+	for _, deviceID := range req.Msg.DeviceIds {
+		var dispatchReq *pm.DispatchActionRequest
+		switch source := req.Msg.ActionSource.(type) {
+		case *pm.DispatchToMultipleRequest_ActionId:
+			dispatchReq = &pm.DispatchActionRequest{
+				DeviceId:     deviceID,
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: source.ActionId},
+			}
+		case *pm.DispatchToMultipleRequest_InlineAction:
+			dispatchReq = &pm.DispatchActionRequest{
+				DeviceId:     deviceID,
+				ActionSource: &pm.DispatchActionRequest_InlineAction{InlineAction: source.InlineAction},
+			}
+		default:
+			continue
+		}
+
+		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+		if err != nil {
+			h.logger.Warn("dispatch to device failed", "device_id", deviceID, "error", err)
+			continue
+		}
+		executions = append(executions, resp.Msg.Execution)
+	}
+
+	return connect.NewResponse(&pm.DispatchToMultipleResponse{
+		Executions: executions,
+	}), nil
+}
+
+// DispatchAssignedActions dispatches all actions assigned to a device.
+func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connect.Request[pm.DispatchAssignedActionsRequest]) (*connect.Response[pm.DispatchAssignedActionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assigned actions")
+	}
+
+	executions := make([]*pm.ActionExecution, 0, len(actions))
+	for _, action := range actions {
+		dispatchReq := &pm.DispatchActionRequest{
+			DeviceId:     req.Msg.DeviceId,
+			ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+		}
+		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchAssignedActions",
+				"device_id", req.Msg.DeviceId, "action_id", action.ID, "error", err)
+			continue
+		}
+		executions = append(executions, resp.Msg.Execution)
+	}
+
+	return connect.NewResponse(&pm.DispatchAssignedActionsResponse{
+		Executions: executions,
+	}), nil
+}
+
+// DispatchActionSet dispatches all actions from an action set to a device.
+func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Request[pm.DispatchActionSetRequest]) (*connect.Response[pm.DispatchActionSetResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get actions in set")
+	}
+
+	executions := make([]*pm.ActionExecution, 0, len(actions))
+	for _, action := range actions {
+		dispatchReq := &pm.DispatchActionRequest{
+			DeviceId:     req.Msg.DeviceId,
+			ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+		}
+		resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchActionSet",
+				"device_id", req.Msg.DeviceId, "action_set_id", req.Msg.ActionSetId,
+				"action_id", action.ID, "error", err)
+			continue
+		}
+		executions = append(executions, resp.Msg.Execution)
+	}
+
+	return connect.NewResponse(&pm.DispatchActionSetResponse{
+		Executions: executions,
+	}), nil
+}
+
+// DispatchDefinition dispatches all actions from a definition to a device.
+func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Request[pm.DispatchDefinitionRequest]) (*connect.Response[pm.DispatchDefinitionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	actionSets, err := h.store.Queries().ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action sets in definition")
+	}
+
+	executions := make([]*pm.ActionExecution, 0)
+	for _, set := range actionSets {
+		actions, err := h.store.Queries().ListActionsInSet(ctx, set.ID)
+		if err != nil {
+			h.logger.Warn("dispatch failed", "rpc", "DispatchDefinition",
+				"reason", "list actions in set",
+				"device_id", req.Msg.DeviceId, "definition_id", req.Msg.DefinitionId,
+				"action_set_id", set.ID, "error", err)
+			continue
+		}
+		for _, action := range actions {
+			dispatchReq := &pm.DispatchActionRequest{
+				DeviceId:     req.Msg.DeviceId,
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: action.ID},
+			}
+			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+			if err != nil {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchDefinition",
+					"device_id", req.Msg.DeviceId, "definition_id", req.Msg.DefinitionId,
+					"action_set_id", set.ID, "action_id", action.ID, "error", err)
+				continue
+			}
+			executions = append(executions, resp.Msg.Execution)
+		}
+	}
+
+	return connect.NewResponse(&pm.DispatchDefinitionResponse{
+		Executions: executions,
+	}), nil
+}
+
+// DispatchToGroup dispatches an action/set/definition to all devices in a group.
+func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Request[pm.DispatchToGroupRequest]) (*connect.Response[pm.DispatchToGroupResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	devices, err := h.store.Queries().ListDevicesInGroup(ctx, req.Msg.GroupId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get devices in group")
+	}
+
+	executions := make([]*pm.ActionExecution, 0)
+
+	for _, device := range devices {
+		switch source := req.Msg.ActionSource.(type) {
+		case *pm.DispatchToGroupRequest_ActionId:
+			dispatchReq := &pm.DispatchActionRequest{
+				DeviceId:     device.ID,
+				ActionSource: &pm.DispatchActionRequest_ActionId{ActionId: source.ActionId},
+			}
+			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+			if err == nil {
+				executions = append(executions, resp.Msg.Execution)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "action", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "action_id", source.ActionId, "error", err)
+			}
+
+		case *pm.DispatchToGroupRequest_ActionSetId:
+			setReq := &pm.DispatchActionSetRequest{
+				DeviceId:    device.ID,
+				ActionSetId: source.ActionSetId,
+			}
+			resp, err := h.DispatchActionSet(ctx, connect.NewRequest(setReq))
+			if err == nil {
+				executions = append(executions, resp.Msg.Executions...)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "action_set", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "action_set_id", source.ActionSetId, "error", err)
+			}
+
+		case *pm.DispatchToGroupRequest_DefinitionId:
+			defReq := &pm.DispatchDefinitionRequest{
+				DeviceId:     device.ID,
+				DefinitionId: source.DefinitionId,
+			}
+			resp, err := h.DispatchDefinition(ctx, connect.NewRequest(defReq))
+			if err == nil {
+				executions = append(executions, resp.Msg.Executions...)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "definition", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "definition_id", source.DefinitionId, "error", err)
+			}
+
+		case *pm.DispatchToGroupRequest_InlineAction:
+			dispatchReq := &pm.DispatchActionRequest{
+				DeviceId:     device.ID,
+				ActionSource: &pm.DispatchActionRequest_InlineAction{InlineAction: source.InlineAction},
+			}
+			resp, err := h.DispatchAction(ctx, connect.NewRequest(dispatchReq))
+			if err == nil {
+				executions = append(executions, resp.Msg.Execution)
+			} else {
+				h.logger.Warn("dispatch failed", "rpc", "DispatchToGroup",
+					"source", "inline_action", "group_id", req.Msg.GroupId,
+					"device_id", device.ID, "error", err)
+			}
+		}
+	}
+
+	return connect.NewResponse(&pm.DispatchToGroupResponse{
+		Executions: executions,
+	}), nil
+}
+
+// GetExecution returns an execution by ID.
+func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[pm.GetExecutionRequest]) (*connect.Response[pm.GetExecutionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
+	}
+
+	protoExec := h.executionToProto(exec)
+
+	// Fetch action name
+	if exec.ActionID != nil {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, []string{*exec.ActionID})
+		if err == nil && len(rows) > 0 {
+			protoExec.ActionName = rows[0].Name
+		} else if err != nil {
+			logEnrichmentErr("GetActionNamesByIDs", "action_id", *exec.ActionID, err)
+		}
+	}
+
+	// Load live output from output chunks
+	liveOutput := h.loadLiveOutput(ctx, req.Msg.Id)
+	if liveOutput != nil {
+		protoExec.LiveOutput = liveOutput
+	}
+
+	return connect.NewResponse(&pm.GetExecutionResponse{
+		Execution: protoExec,
+	}), nil
+}
+
+// ListExecutions returns a paginated list of executions.
+func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request[pm.ListExecutionsRequest]) (*connect.Response[pm.ListExecutionsResponse], error) {
+	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
+	if err != nil {
+		return nil, err
+	}
+
+	statusFilter := ""
+	if req.Msg.StatusFilter != pm.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED {
+		statusFilter = statusToString(req.Msg.StatusFilter)
+	}
+
+	typeFilter := int32(req.Msg.TypeFilter)
+	searchQuery := strings.TrimSpace(req.Msg.Search)
+
+	execs, err := h.store.Queries().ListExecutions(ctx, db.ListExecutionsParams{
+		Column1: req.Msg.DeviceId,
+		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
+		Limit:   pageSize,
+		Offset:  offset,
+	})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list executions")
+	}
+
+	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
+		Column1: req.Msg.DeviceId,
+		Column2: statusFilter,
+		Column3: typeFilter,
+		Column4: searchQuery,
+	})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count executions")
+	}
+
+	nextPageToken := buildNextPageToken(int32(len(execs)), offset, pageSize, count)
+
+	protoExecs := make([]*pm.ActionExecution, len(execs))
+	for i, e := range execs {
+		protoExecs[i] = h.executionToProto(e)
+	}
+
+	// Batch-fetch action names to avoid N+1 queries on the client
+	actionIDs := make([]string, 0, len(execs))
+	for _, e := range execs {
+		if e.ActionID != nil {
+			actionIDs = append(actionIDs, *e.ActionID)
+		}
+	}
+	if len(actionIDs) > 0 {
+		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, actionIDs)
+		if err != nil {
+			h.logger.Warn("GetActionNamesByIDs bulk enrichment failed",
+				"action_id_count", len(actionIDs), "error", err)
+		} else {
+			nameMap := make(map[string]string, len(rows))
+			for _, row := range rows {
+				nameMap[row.ID] = row.Name
+			}
+			for i, e := range execs {
+				if e.ActionID != nil {
+					protoExecs[i].ActionName = nameMap[*e.ActionID]
+				}
+			}
+		}
+	}
+
+	return connect.NewResponse(&pm.ListExecutionsResponse{
+		Executions:    protoExecs,
+		NextPageToken: nextPageToken,
+		TotalCount:    int32(count),
+	}), nil
+}
+
+// isInstantActionType returns true if the action type is an instant action (agent-builtin, no parameters).
+func isInstantActionType(t pm.ActionType) bool {
+	return t == pm.ActionType_ACTION_TYPE_REBOOT || t == pm.ActionType_ACTION_TYPE_SYNC
+}
+
+// DispatchInstantAction dispatches an instant action (reboot, sync) to a device.
+// Instant actions are agent-builtin and require no parameters.
+func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.Request[pm.DispatchInstantActionRequest]) (*connect.Response[pm.DispatchInstantActionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if !isInstantActionType(req.Msg.InstantAction) {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
+	}
+
+	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
+	}
+
+	var timeoutSeconds int32
+	switch req.Msg.InstantAction {
+	case pm.ActionType_ACTION_TYPE_REBOOT:
+		timeoutSeconds = 600
+	case pm.ActionType_ACTION_TYPE_SYNC:
+		timeoutSeconds = 60
+	}
+
+	id := ulid.Make().String()
+
+	// Same deferred-dispatch handling as DispatchAction: optional
+	// future RunAt switches the path from immediate to scheduled.
+	var dispatchDelay time.Duration
+	if req.Msg.RunAt != nil {
+		dispatchDelay = time.Until(req.Msg.RunAt.AsTime())
+		if dispatchDelay <= 0 {
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "run_at must be in the future")
+		}
+	}
+
+	eventData := map[string]any{
+		"device_id":       req.Msg.DeviceId,
+		"action_type":     int32(req.Msg.InstantAction),
+		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		"params":          map[string]any{},
+		"timeout_seconds": timeoutSeconds,
+	}
+	if dispatchDelay > 0 {
+		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
+	}
+	// Note: req.Msg.RespectMaintenanceWindow is intentionally not
+	// persisted — see DispatchAction above for the audit-N009 reasoning.
+
+	// Fail fast when no task queue is configured — same fail-closed
+	// contract as DispatchAction. Positioned after validation/auth/
+	// device-lookup so body-level errors surface with their own codes.
+	if h.aqClient == nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "instant dispatch unavailable: task queue not configured")
+	}
+
+	initialEventType := string(eventtypes.ExecutionCreated)
+	if dispatchDelay > 0 {
+		initialEventType = string(eventtypes.ExecutionScheduled)
+	}
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "execution",
+		StreamID:   id,
+		EventType:  initialEventType,
+		Data:       eventData,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	}, "failed to create execution"); err != nil {
+		return nil, err
+	}
+
+	// Dispatch instant action. Same contract as DispatchAction: an
+	// enqueue failure after the ExecutionCreated write MUST emit a
+	// compensating ExecutionFailed event so the row moves to a
+	// terminal `failed` state — otherwise the projection sits in
+	// `pending` forever and the operator has no idea why the
+	// reboot/sync never happened.
+	enqueueOpts := []asynq.Option{asynq.MaxRetry(3)}
+	if dispatchDelay > 0 {
+		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
+	}
+	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
+		ExecutionID:    id,
+		ActionType:     int32(req.Msg.InstantAction),
+		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		Params:         json.RawMessage("{}"),
+		TimeoutSeconds: timeoutSeconds,
+	}, enqueueOpts...); err != nil {
+		h.logger.Error("failed to enqueue instant action dispatch; emitting ExecutionFailed",
+			"error", err, "execution_id", id)
+		if failErr := appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "execution",
+			StreamID:   id,
+			EventType:  string(eventtypes.ExecutionFailed),
+			Data: payloads.ExecutionFailedCompensating{
+				Error: fmt.Sprintf("instant dispatch enqueue failed: %v", err),
+				// CompletedAt nil so the projector falls back to event.occurred_at.
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}, "failed to append ExecutionFailed compensating event"); failErr != nil {
+			h.logger.Error("compensating ExecutionFailed event failed; execution row is stuck in pending",
+				"execution_id", id, "error", failErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue instant action dispatch")
+	}
+
+	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
+	if err != nil {
+		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
+	}
+
+	h.logger.Info("instant action dispatched",
+		"execution_id", id,
+		"device_id", req.Msg.DeviceId,
+		"action_type", req.Msg.InstantAction.String(),
+	)
+
+	return connect.NewResponse(&pm.DispatchInstantActionResponse{
+		Execution: h.executionToProto(exec),
+	}), nil
+}
+
+// CancelExecution prunes a scheduled or pending dispatch before it
+// fires. Idempotent: an execution that already left the SCHEDULED /
+// PENDING window is returned as-is (the projection's WHEN-clause on
+// ExecutionCancelled also guards against overwriting a real outcome
+// after the dispatch has run). See manchtools/power-manage-server#57.
+func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Request[pm.CancelExecutionRequest]) (*connect.Response[pm.CancelExecutionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
+	}
+
+	// Cancel only acts on rows that haven't dispatched yet. Past that
+	// point the execution either is running on the agent or has
+	// already reached a terminal state — both of which the cancel
+	// must NOT overwrite. Return the row as-is so the caller can
+	// observe the actual status and decide what to do.
+	if exec.Status != "scheduled" && exec.Status != "pending" {
+		return connect.NewResponse(&pm.CancelExecutionResponse{
+			Execution: h.executionToProto(exec),
+		}), nil
+	}
+
+	// Best-effort prune of the deferred Asynq task. A miss is fine —
+	// the projection's WHEN-clause guards the cancel event against
+	// double-application, so an in-flight dispatch that beat the
+	// inspector here will still surface its real outcome.
+	if h.aqClient != nil {
+		if delErr := h.aqClient.DeleteScheduledDeviceTask(exec.DeviceID, exec.ID); delErr != nil {
+			h.logger.Warn("CancelExecution: asynq prune failed; emitting ExecutionCancelled anyway",
+				"execution_id", exec.ID, "device_id", exec.DeviceID, "error", delErr)
+		}
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "execution",
+		StreamID:   exec.ID,
+		EventType:  string(eventtypes.ExecutionCancelled),
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	}, "failed to cancel execution"); err != nil {
+		return nil, err
+	}
+
+	exec, err = h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	if err != nil {
+		h.logger.Error("CancelExecution: failed to refetch execution after cancel", "execution_id", req.Msg.ExecutionId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read execution after cancel")
+	}
+
+	h.logger.Info("execution cancelled",
+		"execution_id", exec.ID,
+		"device_id", exec.DeviceID,
+		"actor_id", userCtx.ID,
+	)
+
+	return connect.NewResponse(&pm.CancelExecutionResponse{
+		Execution: h.executionToProto(exec),
+	}), nil
+}
+
+// serializeProtoParams marshals an action params proto to the
+// map[string]any shape that's stored in the event's Data field.
+// Delegates to actionparams.MarshalActionParams so the wire format
+// is identical for user-created and system-managed actions — both
+// use EmitUnpopulated so proto3 scalar zero values cross the wire
+// rather than being silently dropped. See that helper for the full

@@ -500,23 +500,28 @@ func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.User
 func (m *SystemActionManager) createSystemAction(ctx context.Context, name string, actionType, desiredState int32, paramsJSON []byte) (string, error) {
 	id := newULID()
 
-	var params map[string]any
-	if err := json.Unmarshal(paramsJSON, &params); err != nil {
-		return "", fmt.Errorf("unmarshal params: %w", err)
+	// Validate the params byte slice is well-formed JSON before
+	// embedding it as RawMessage in the typed payload — silently
+	// emitting malformed JSONB would only surface at projector time.
+	if !json.Valid(paramsJSON) {
+		return "", fmt.Errorf("createSystemAction: paramsJSON is not valid JSON")
 	}
 
+	desc := "System-managed action"
+	timeoutSec := int32(300)
+	isSystem := true
 	if err := m.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   id,
 		EventType:  string(eventtypes.ActionCreated),
-		Data: map[string]any{
-			"name":            name,
-			"description":     "System-managed action",
-			"action_type":     actionType,
-			"desired_state":   desiredState,
-			"params":          params,
-			"timeout_seconds": 300,
-			"is_system":       true,
+		Data: payloads.ActionCreated{
+			Name:           name,
+			Description:    &desc,
+			ActionType:     &actionType,
+			DesiredState:   &desiredState,
+			Params:         paramsJSON,
+			TimeoutSeconds: &timeoutSec,
+			IsSystem:       &isSystem,
 		},
 		ActorType: "system",
 		ActorID:   "system",
@@ -551,18 +556,17 @@ func (m *SystemActionManager) assignActionToUser(ctx context.Context, actionID, 
 
 // updateSystemAction emits an ActionParamsUpdated event.
 func (m *SystemActionManager) updateSystemAction(ctx context.Context, actionID string, desiredState int32, paramsJSON []byte) error {
-	var params map[string]any
-	if err := json.Unmarshal(paramsJSON, &params); err != nil {
-		return fmt.Errorf("unmarshal params: %w", err)
+	if !json.Valid(paramsJSON) {
+		return fmt.Errorf("updateSystemAction: paramsJSON is not valid JSON")
 	}
 
 	return m.store.AppendEvent(ctx, store.Event{
 		StreamType: "action",
 		StreamID:   actionID,
 		EventType:  string(eventtypes.ActionParamsUpdated),
-		Data: map[string]any{
-			"params":        params,
-			"desired_state": desiredState,
+		Data: payloads.ActionParamsUpdated{
+			Params:       paramsJSON,
+			DesiredState: &desiredState,
 		},
 		ActorType: "system",
 		ActorID:   "system",

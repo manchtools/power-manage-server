@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -50,9 +51,9 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		StreamType: "server_settings",
 		StreamID:   "global",
 		EventType:  string(eventtypes.ServerSettingUpdated),
-		Data: map[string]any{
-			"user_provisioning_enabled": req.Msg.UserProvisioningEnabled,
-			"ssh_access_for_all":        req.Msg.SshAccessForAll,
+		Data: payloads.ServerSettingUpdated{
+			UserProvisioningEnabled: &req.Msg.UserProvisioningEnabled,
+			SshAccessForAll:         &req.Msg.SshAccessForAll,
 		},
 		ActorType: "system",
 		ActorID:   "system",
@@ -150,10 +151,10 @@ func (h *SettingsHandler) enableSshAccessForAllUsers(ctx context.Context) error 
 			StreamType: "user",
 			StreamID:   u.ID,
 			EventType:  string(eventtypes.UserSshSettingsUpdated),
-			Data: map[string]any{
-				"ssh_access_enabled": true,
-				"ssh_allow_pubkey":   u.SshAllowPubkey,
-				"ssh_allow_password": u.SshAllowPassword,
+			Data: payloads.UserSshSettingsUpdated{
+				SshAccessEnabled: ptrBool(true),
+				SshAllowPubkey:   ptrBool(u.SshAllowPubkey),
+				SshAllowPassword: ptrBool(u.SshAllowPassword),
 			},
 			ActorType: "system",
 			ActorID:   "system",

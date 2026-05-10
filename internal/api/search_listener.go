@@ -71,15 +71,15 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// User scope
 	// ---------------------------------------------------------
 	// Email / display name / Linux username / disabled flag are
-	// the indexed fields per UserHandler.enqueueUserReindex (in
-	// user_handler.go). Other user events (SSH keys, password,
+	// the indexed fields. Other user events (SSH keys, password,
 	// session invalidation, system-action linking) don't surface
 	// in search results today, so they classify as SearchOpNone.
 	case string(eventtypes.UserCreatedWithRoles),
 		string(eventtypes.UserEmailChanged),
 		string(eventtypes.UserProfileUpdated),
 		string(eventtypes.UserLinuxUsernameChanged),
-		string(eventtypes.UserDisabled):
+		string(eventtypes.UserDisabled),
+		string(eventtypes.UserEnabled):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUser, ID: e.StreamID}}
 
 	case string(eventtypes.UserDeleted):
@@ -89,9 +89,8 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// Device scope
 	// ---------------------------------------------------------
 	// Hostname, agent version, labels, and sync interval are the
-	// denormalised fields per DeviceHandler.enqueueDeviceReindex.
-	// Cert renewal / assignment / unassignment do not change any
-	// of those fields → SearchOpNone.
+	// denormalised fields. Cert renewal / assignment / unassignment
+	// do not change any of those fields → SearchOpNone.
 	case string(eventtypes.DeviceRegistered),
 		string(eventtypes.DeviceLabelSet),
 		string(eventtypes.DeviceLabelRemoved),

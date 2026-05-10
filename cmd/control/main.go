@@ -12,11 +12,8 @@ import (
 	urlpkg "net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
-
-	"strconv"
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
@@ -30,8 +27,11 @@ import (
 	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -180,38 +180,32 @@ func main() {
 		}
 	}, false)
 
-	// Start periodic evaluation of queued dynamic groups.
-	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
-	evaluateDynamicGroups := func() {
+	// drainDynamicQueue runs the same drain loop shape against either
+	// dynamic-group queue. label drives the log lines, evalFn returns
+	// the per-batch count, and batchSize is the loop's "queue is empty"
+	// short-circuit threshold. Extracted to deduplicate
+	// evaluateDynamicGroups + evaluateDynamicUserGroups (audit N021).
+	drainDynamicQueue := func(label string, batchSize int32, evalFn func(context.Context) (int32, error)) {
 		for {
-			count, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
+			count, err := evalFn(ctx)
 			if err != nil {
-				logger.Error("failed to evaluate queued dynamic groups", "error", err)
+				logger.Error("failed to evaluate queued "+label, "error", err)
 				return
 			}
 			if count > 0 {
-				logger.Info("evaluated queued dynamic groups", "count", count)
+				logger.Info("evaluated queued "+label, "count", count)
 			}
-			if count < 1000 {
+			if count < batchSize {
 				return // queue is drained
 			}
 		}
 	}
 
+	evaluateDynamicGroups := func() {
+		drainDynamicQueue("dynamic groups", 1000, st.Queries().EvaluateQueuedDynamicGroups)
+	}
 	evaluateDynamicUserGroups := func() {
-		for {
-			count, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
-			if err != nil {
-				logger.Error("failed to evaluate queued dynamic user groups", "error", err)
-				return
-			}
-			if count > 0 {
-				logger.Info("evaluated queued dynamic user groups", "count", count)
-			}
-			if count < 100 {
-				return // queue is drained
-			}
-		}
+		drainDynamicQueue("dynamic user groups", 100, st.Queries().EvaluateQueuedDynamicUserGroups)
 	}
 
 	if cfg.DynamicGroupEvalInterval > 0 {
@@ -261,13 +255,14 @@ func main() {
 				}
 				for _, exec := range stale {
 					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
+					completedAt := time.Now().UTC().Format(time.RFC3339Nano)
 					if err := st.AppendEvent(ctx, store.Event{
 						StreamType: "execution",
 						StreamID:   exec.ID,
-						EventType:  "ExecutionTimedOut",
-						Data: map[string]any{
-							"error":        errMsg,
-							"completed_at": time.Now().Format(time.RFC3339Nano),
+						EventType:  string(eventtypes.ExecutionTimedOut),
+						Data: payloads.ExecutionTimedOut{
+							Error:       &errMsg,
+							CompletedAt: &completedAt,
 						},
 						ActorType: "system",
 						ActorID:   "expiry",
@@ -334,11 +329,15 @@ func main() {
 			if err := st.AppendEvent(ctx, store.Event{
 				StreamType: "server_settings",
 				StreamID:   "global",
-				EventType:  "ServerSettingUpdated",
-				Data: map[string]any{
-					"user_provisioning_enabled": settings.UserProvisioningEnabled,
-					"ssh_access_for_all":        true,
-				},
+				EventType:  string(eventtypes.ServerSettingUpdated),
+				Data: func() payloads.ServerSettingUpdated {
+					provisioning := settings.UserProvisioningEnabled
+					sshAll := true
+					return payloads.ServerSettingUpdated{
+						UserProvisioningEnabled: &provisioning,
+						SshAccessForAll:         &sshAll,
+					}
+				}(),
 				ActorType: "system",
 				ActorID:   "system",
 			}); err != nil {
@@ -446,16 +445,14 @@ func main() {
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
-		// Phase 1 of #81: register the store-side search listener so
-		// every event that affects the search index funnels through
-		// one classifier (api.AffectedSearchOps) instead of ~48
-		// scattered handler-side enqueueXxxReindex calls.
-		//
-		// During Phase 1 the listener and the existing handler-side
-		// enqueues both fire — the Asynq worker dedupes on
-		// (scope, id) so functional behaviour is unchanged. Phase 2
-		// (separate PR) removes the handler-side calls once we've
-		// validated the listener catches everything in production.
+		// Register the store-side search listener so every event that
+		// affects the search index funnels through one classifier
+		// (api.AffectedSearchOps) instead of scattered handler-side
+		// enqueueXxxReindex calls. The handler-side dual-writes for
+		// devices and users were removed in audit N005; remaining
+		// per-handler enqueues exist only for member-level operations
+		// (action_set / definition members) where the source-of-truth
+		// is on a relationship table the listener does not classify.
 		st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
 
 		// Wire the remote terminal session token store. Tokens live in
@@ -940,15 +937,18 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	// Append UserCreatedWithRoles compound event - the projector
 	// inserts the user row AND the per-role assignment row in one tx.
+	emailCopy := email
+	passwordHashCopy := passwordHash
+	role := "admin"
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreatedWithRoles",
-		Data: map[string]any{
-			"email":         email,
-			"password_hash": passwordHash,
-			"role":          "admin",
-			"role_ids":      roleIDs,
+		EventType:  string(eventtypes.UserCreatedWithRoles),
+		Data: payloads.UserCreatedWithRoles{
+			Email:        &emailCopy,
+			PasswordHash: &passwordHashCopy,
+			Role:         &role,
+			RoleIDs:      roleIDs,
 		},
 		ActorType: "system",
 		ActorID:   "bootstrap",
@@ -961,114 +961,24 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	return nil
 }
 
-// clampInterval clamps a duration into [minDur, maxDur]. A zero
-// value means "feature disabled" and is preserved unchanged — the
-// callers that consume the duration treat 0 specially (the dynamic-
-// group eval and system-action reconcile paths short-circuit at 0).
-// A negative value is normalised to 0 so a misconfigured -1
-// can't accidentally enable the feature with a tiny clamp value
-// downstream. Audit F041 — consolidates three open-coded clamps
-// in parseFlags.
+// Local trampolines into internal/config so the call sites in
+// parseFlags stay readable without prefixing every line with
+// `config.`. Audit F017 — promoted the helpers themselves to
+// internal/config so cmd/control, cmd/gateway, and cmd/indexer
+// share one parsing contract.
 func clampInterval(target *time.Duration, minDur, maxDur time.Duration) {
-	if *target < 0 {
-		*target = 0
-		return
-	}
-	if *target == 0 {
-		return
-	}
-	if *target < minDur {
-		*target = minDur
-	} else if *target > maxDur {
-		*target = maxDur
-	}
+	config.ClampInterval(target, minDur, maxDur)
 }
-
-// clampDurationFloor enforces a minimum on a duration, falling back
-// to a default when the input is non-positive. Used for fields where
-// "no value" (zero or negative) should NOT mean "feature disabled"
-// but instead "use the default" — the system-action reconcile
-// timeout is the canonical case (zero would silently break the
-// safety net via context.WithTimeout returning an already-cancelled
-// context).
 func clampDurationFloor(target *time.Duration, def, minDur time.Duration) {
-	if *target <= 0 {
-		*target = def
-		return
-	}
-	if *target < minDur {
-		*target = minDur
-	}
+	config.ClampDurationFloor(target, def, minDur)
 }
-
-// envString overrides target with the environment variable value if set.
-func envString(target *string, key string) {
-	if v := os.Getenv(key); v != "" {
-		*target = v
-	}
-}
-
-// envBool sets target based on the environment variable matching true or false values.
-// Logs a warning if the value is set but doesn't match any recognized value.
+func envString(target *string, key string) { config.EnvString(target, key) }
 func envBool(target *bool, key string, trueValues, falseValues []string) {
-	v := os.Getenv(key)
-	if v == "" {
-		return
-	}
-	for _, tv := range trueValues {
-		if v == tv {
-			*target = true
-			return
-		}
-	}
-	for _, fv := range falseValues {
-		if v == fv {
-			*target = false
-			return
-		}
-	}
-	slog.Warn("unrecognized boolean env var value, keeping default", "key", key, "value", v)
+	config.EnvBool(target, key, trueValues, falseValues)
 }
-
-// envDuration overrides target with the parsed duration if the environment variable is set.
-func envDuration(target *time.Duration, key string) {
-	if v := os.Getenv(key); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			slog.Warn("invalid duration for env var, keeping default", "key", key, "value", v, "error", err)
-			return
-		}
-		*target = d
-	}
-}
-
-// envCSV overrides target with a comma-separated environment variable, trimming whitespace
-// and filtering empty entries.
-func envCSV(target *[]string, key string) {
-	if v := os.Getenv(key); v != "" {
-		parts := strings.Split(v, ",")
-		var filtered []string
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				filtered = append(filtered, p)
-			}
-		}
-		*target = filtered
-	}
-}
-
-// envInt overrides target with the parsed integer if the environment variable is set.
-func envInt(target *int, key string) {
-	if v := os.Getenv(key); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			slog.Warn("invalid integer for env var, keeping default", "key", key, "value", v, "error", err)
-			return
-		}
-		*target = n
-	}
-}
+func envDuration(target *time.Duration, key string) { config.EnvDuration(target, key) }
+func envCSV(target *[]string, key string)           { config.EnvCSV(target, key) }
+func envInt(target *int, key string)                { config.EnvInt(target, key) }
 
 // runPeriodic calls fn on every tick until ctx is cancelled.
 // If runImmediately is true, fn is called once before the first tick.
