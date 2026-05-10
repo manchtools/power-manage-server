@@ -49,22 +49,56 @@ jobs:
           go install honnef.co/go/tools/cmd/staticcheck@latest
           staticcheck ./...
 
-      - name: govulncheck (production packages)
-        # Soft-fail because Go's standard library frequently has open
-        # CVEs without a patched release, especially the day a new
-        # advisory drops. Treating govulncheck as a hard gate would
-        # block every PR for days at a time on issues we don't
-        # control. Output stays visible so an operator reviewing the
-        # PR can still see what's flagged. The first-party deps
-        # (pgx etc.) get patched explicitly via go.mod bumps in
-        # their own PRs.
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck (production packages — full report)
+        # Soft-fail. govulncheck reports stdlib + third-party + first-
+        # party findings in one pass; a stdlib CVE without an upstream
+        # patch (e.g. GO-2026-4986 from 2026-05) would otherwise block
+        # every PR for days on issues outside our control. The split
+        # below re-runs govulncheck in JSON mode and hard-fails ONLY
+        # on findings that touch a first-party (github.com/manchtools/*)
+        # module — the things we can actually patch via a go.mod bump.
+        # Exclude internal/testutil per the docker/docker GO-2026-4887
+        # / GO-2026-4883 carve-out: test fixtures aren't reachable from
+        # any production binary.
         continue-on-error: true
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          # Exclude internal/testutil — it pulls testcontainers which
-          # transitively imports github.com/docker/docker, currently
-          # affected by GO-2026-4887 + GO-2026-4883 with no upstream
-          # fix available. Test fixtures aren't reachable from any
-          # production binary.
           PKGS=$(go list ./... | grep -v 'internal/testutil')
           govulncheck $PKGS
+
+      - name: govulncheck (first-party hard-fail)
+        # Re-run in JSON mode and fail the workflow if any finding's
+        # call trace touches a first-party module. The CVE may live
+        # in a transitive dep, but if the call graph reaches it from
+        # our code, it's actionable: bump the dep, work around the
+        # call site, or document the carve-out. Stdlib + third-party
+        # findings remain soft-fail above.
+        #
+        # Output shape: govulncheck -json emits newline-delimited
+        # records of various types. "finding" records carry the
+        # call trace; trace[].module is the module path. We grep for
+        # any module path under github.com/manchtools/ and fail if
+        # found.
+        run: |
+          PKGS=$(go list ./... | grep -v 'internal/testutil')
+          govulncheck -json $PKGS > govuln.json || true
+          if jq -e '
+            select(.finding != null)
+            | .finding.trace[]?
+            | select(.module // "" | startswith("github.com/manchtools/"))
+          ' govuln.json > /dev/null; then
+            echo ""
+            echo "::error::govulncheck found a vulnerability whose call trace reaches a first-party module."
+            echo "These findings must be fixed (bump the offending dep or document the carve-out) before merge."
+            echo ""
+            jq -r '
+              select(.finding != null) as $f
+              | $f.finding.trace[]?
+              | select(.module // "" | startswith("github.com/manchtools/"))
+              | "  - \($f.finding.osv) reaches \(.module)/\(.package // "?")\(if .function then "." + .function else "" end)"
+            ' govuln.json | sort -u
+            exit 1
+          fi
+          echo "govulncheck: no first-party findings (stdlib / third-party shown in the soft-fail step above)"
