@@ -165,4 +165,3 @@ func extractActionParamsMsg(action *pm.Action) proto.Message {
 		return nil
 	}
 }
-

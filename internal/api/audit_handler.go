@@ -136,12 +136,12 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 // (PACKAGE, UPDATE, REBOOT, SYNC, USER, GROUP, SSH, SSHD,
 // SYSTEMD/SERVICE, DIRECTORY, APP_IMAGE, DEB, RPM, FLATPAK).
 var actionRedactionSchemas = map[string]redactionSchema{
-	"ACTION_TYPE_SHELL":      {paths: []string{"params.script"}},
-	"ACTION_TYPE_FILE":       {paths: []string{"params.content"}},
+	"ACTION_TYPE_SHELL":        {paths: []string{"params.script"}},
+	"ACTION_TYPE_FILE":         {paths: []string{"params.content"}},
 	"ACTION_TYPE_ADMIN_POLICY": {paths: []string{"params.unit_content"}},
-	"ACTION_TYPE_REPOSITORY": {paths: []string{"params.gpg_key"}},
-	"ACTION_TYPE_LPS":        {paths: []string{"params.password", "params.preshared_key"}},
-	"ACTION_TYPE_ENCRYPTION": {paths: []string{"params.passphrase", "params.preshared_key"}},
+	"ACTION_TYPE_REPOSITORY":   {paths: []string{"params.gpg_key"}},
+	"ACTION_TYPE_LPS":          {paths: []string{"params.password", "params.preshared_key"}},
+	"ACTION_TYPE_ENCRYPTION":   {paths: []string{"params.passphrase", "params.preshared_key"}},
 }
 
 // redactEventData removes sensitive fields from a serialized event

@@ -3,29 +3,29 @@
 // files (audit F005):
 //
 //   - action_crud.go        — Create / Get / List / Rename /
-//                              UpdateDescription / UpdateParams /
-//                              Delete + the signature lifecycle
-//                              (computeActionSignature,
-//                              persistActionSignature,
-//                              rollbackUnsignedCreate)
+//     UpdateDescription / UpdateParams /
+//     Delete + the signature lifecycle
+//     (computeActionSignature,
+//     persistActionSignature,
+//     rollbackUnsignedCreate)
 //   - action_dispatch.go    — DispatchAction / DispatchToMultiple /
-//                              DispatchAssignedActions /
-//                              DispatchActionSet /
-//                              DispatchDefinition /
-//                              DispatchToGroup /
-//                              DispatchInstantAction /
-//                              GetExecution / ListExecutions /
-//                              CancelExecution + isInstantActionType
+//     DispatchAssignedActions /
+//     DispatchActionSet /
+//     DispatchDefinition /
+//     DispatchToGroup /
+//     DispatchInstantAction /
+//     GetExecution / ListExecutions /
+//     CancelExecution + isInstantActionType
 //   - action_validators.go  — validateCreateActionParams /
-//                              validateUpdateActionParams /
-//                              validateInlineAction /
-//                              validateShellScriptChoice /
-//                              validateAgentUpdateParams /
-//                              actionParamsMatchType
+//     validateUpdateActionParams /
+//     validateInlineAction /
+//     validateShellScriptChoice /
+//     validateAgentUpdateParams /
+//     actionParamsMatchType
 //   - action_params.go      — serializeProtoParams /
-//                              extractCreateActionParamsMsg /
-//                              extractUpdateActionParamsMsg /
-//                              extractActionParamsMsg
+//     extractCreateActionParamsMsg /
+//     extractUpdateActionParamsMsg /
+//     extractActionParamsMsg
 //   - action_schedule.go    — scheduleToMap / scheduleFromJSON
 //
 // This file owns the type, the constructor, and the read-side proto
@@ -33,7 +33,6 @@
 // loadLiveOutput) that don't fit either the CRUD or the dispatch
 // section cleanly.
 package api
-
 
 import (
 	"context"
@@ -239,4 +238,3 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 		Stderr: stderr.String(),
 	}
 }
-

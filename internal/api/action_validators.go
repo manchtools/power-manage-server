@@ -350,4 +350,3 @@ func validateAgentUpdateParams(ctx context.Context, p *pm.AgentUpdateParams) err
 	}
 	return nil
 }
-

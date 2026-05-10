@@ -453,4 +453,3 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
 }
-
