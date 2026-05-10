@@ -15,6 +15,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -61,13 +62,13 @@ func (h *InternalHandler) SetTerminalTokenStore(s *terminal.TokenStore) {
 func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request[pm.VerifyDeviceRequest]) (*connect.Response[pm.VerifyDeviceResponse], error) {
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
 
 	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
 	if err != nil {
 		h.logger.Warn("device verification failed", "device_id", deviceID, "error", err)
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found or deleted"))
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
 	}
 
 	return connect.NewResponse(&pm.VerifyDeviceResponse{}), nil
@@ -77,13 +78,13 @@ func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request
 func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Request[pm.InternalSyncActionsRequest]) (*connect.Response[pm.SyncActionsResponse], error) {
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
 
 	// Verify the device exists and is not deleted.
 	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID}); err != nil {
 		h.logger.Warn("sync actions for unknown/deleted device", "device_id", deviceID)
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found or deleted"))
+		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
 	}
 
 	h.logger.Debug("proxy sync actions", "device_id", deviceID)
@@ -105,7 +106,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	dbActions, err := resolution.ResolveActionsForDevice(ctx, h.store.Queries(), deviceID)
 	if err != nil {
 		h.logger.Error("failed to resolve actions", "device_id", deviceID, "error", err)
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to resolve actions"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve actions")
 	}
 
 	syncInterval, err := h.store.Queries().GetDeviceSyncInterval(ctx, deviceID)
@@ -241,7 +242,7 @@ func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
 // ProxyValidateLuksToken validates and consumes a one-time LUKS token.
 func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *connect.Request[pm.InternalValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and token are required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and token are required")
 	}
 
 	token, err := h.store.Queries().ValidateAndConsumeLuksToken(ctx, db.ValidateAndConsumeLuksTokenParams{
@@ -250,7 +251,7 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 	})
 	if err != nil {
 		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or has expired"))
+		return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token is invalid or has expired")
 	}
 
 	devicePath := ""
@@ -275,7 +276,7 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 // ProxyGetLuksKey retrieves and decrypts the current LUKS key for a device+action.
 func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Request[pm.InternalGetLuksKeyRequest]) (*connect.Response[pm.GetLuksKeyResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and action_id are required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
 
 	key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
@@ -283,12 +284,12 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 		ActionID: req.Msg.ActionId,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("no LUKS key found for this action"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeNotFound, "no LUKS key found for this action")
 	}
 
 	passphrase, err := h.encryptor.Decrypt(key.Passphrase)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to decrypt passphrase"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt passphrase")
 	}
 
 	return connect.NewResponse(&pm.GetLuksKeyResponse{
@@ -313,13 +314,13 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
 		EventType:  string(eventtypes.LuksKeyRotated),
-		Data: map[string]any{
-			"device_id":       req.Msg.DeviceId,
-			"action_id":       req.Msg.ActionId,
-			"device_path":     req.Msg.DevicePath,
-			"passphrase":      encPassphrase,
-			"rotated_at":      time.Now().Format(time.RFC3339),
-			"rotation_reason": rotationReasonToString(req.Msg.RotationReason),
+		Data: payloads.LuksKeyRotated{
+			DeviceID:       req.Msg.DeviceId,
+			ActionID:       req.Msg.ActionId,
+			DevicePath:     req.Msg.DevicePath,
+			Passphrase:     encPassphrase,
+			RotatedAt:      time.Now().UTC(),
+			RotationReason: rotationReasonToString(req.Msg.RotationReason),
 		},
 		ActorType: "device",
 		ActorID:   req.Msg.DeviceId,
@@ -363,18 +364,31 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")
 		}
 
+		// r.RotatedAt rides the wire as an RFC 3339 string in the
+		// proto LpsPasswordRotation; parse it back to time.Time so
+		// the typed payload matches the projector decoder shape.
+		// Fall back to "now" if the agent shipped an unparseable
+		// timestamp — the projector requires a non-zero rotated_at.
+		rotatedAt, err := time.Parse(time.RFC3339Nano, r.RotatedAt)
+		if err != nil {
+			if rotatedAt, err = time.Parse(time.RFC3339, r.RotatedAt); err != nil {
+				h.logger.Warn("LpsPasswordRotation rotated_at unparseable; falling back to now",
+					"raw", r.RotatedAt, "error", err)
+				rotatedAt = time.Now().UTC()
+			}
+		}
 		lpsStreamID := ulid.Make().String()
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "lps_password",
 			StreamID:   lpsStreamID,
 			EventType:  string(eventtypes.LpsPasswordRotated),
-			Data: map[string]any{
-				"device_id":       req.Msg.DeviceId,
-				"action_id":       req.Msg.ActionId,
-				"username":        r.Username,
-				"password":        encPassword,
-				"rotated_at":      r.RotatedAt,
-				"rotation_reason": rotationReasonToString(r.Reason),
+			Data: payloads.LpsPasswordRotated{
+				DeviceID:       req.Msg.DeviceId,
+				ActionID:       req.Msg.ActionId,
+				Username:       r.Username,
+				Password:       encPassword,
+				RotatedAt:      rotatedAt,
+				RotationReason: rotationReasonToString(r.Reason),
 			},
 			ActorType: "device",
 			ActorID:   req.Msg.DeviceId,
@@ -456,15 +470,15 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 // not a client bug.
 func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *connect.Request[pm.InternalValidateTerminalTokenRequest]) (*connect.Response[pm.InternalValidateTerminalTokenResponse], error) {
 	if h.terminalTokenStore == nil {
-		return nil, connect.NewError(connect.CodeUnavailable,
-			errors.New("remote terminal sessions are not configured on this control instance"))
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
 	}
 
 	sessionID := req.Msg.SessionId
 	bearer := req.Msg.Token
 	if sessionID == "" || bearer == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("session_id and token are required"))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			"session_id and token are required")
 	}
 
 	session, err := h.terminalTokenStore.Validate(ctx, sessionID, bearer)
@@ -482,11 +496,11 @@ func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *c
 		default:
 			h.logger.Error("terminal token validation failed",
 				"session_id", sessionID, "error", err)
-			return nil, connect.NewError(connect.CodeInternal,
-				errors.New("failed to validate session token"))
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+				"failed to validate session token")
 		}
-		return nil, connect.NewError(connect.CodeUnauthenticated,
-			errors.New("invalid or expired session token"))
+		return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeUnauthenticated,
+			"invalid or expired session token")
 	}
 
 	h.logger.Debug("terminal token validated",
@@ -552,5 +566,41 @@ func rotationReasonToString(r pm.RotationReason) string {
 		return "auth_grace"
 	default:
 		return ""
+	}
+}
+
+// rotationReasonFromString is the inverse of rotationReasonToString.
+// Used by read paths that decode the string-typed `rotation_reason`
+// column from the lps/luks projections back into the wire enum.
+// Unknown values (including the empty string from older rows that
+// pre-date the enum migration) collapse to UNSPECIFIED.
+func rotationReasonFromString(s string) pm.RotationReason {
+	switch s {
+	case "initial":
+		return pm.RotationReason_ROTATION_REASON_INITIAL
+	case "scheduled":
+		return pm.RotationReason_ROTATION_REASON_SCHEDULED
+	case "auth_grace":
+		return pm.RotationReason_ROTATION_REASON_AUTH_GRACE
+	default:
+		return pm.RotationReason_ROTATION_REASON_UNSPECIFIED
+	}
+}
+
+// luksRevocationStatusFromString decodes the string-typed
+// `revocation_status` column from the luks_keys_projection back into
+// the wire enum. Unknown values collapse to UNSPECIFIED.
+func luksRevocationStatusFromString(s string) pm.LuksRevocationStatus {
+	switch s {
+	case "none":
+		return pm.LuksRevocationStatus_LUKS_REVOCATION_STATUS_NONE
+	case "dispatched":
+		return pm.LuksRevocationStatus_LUKS_REVOCATION_STATUS_DISPATCHED
+	case "success":
+		return pm.LuksRevocationStatus_LUKS_REVOCATION_STATUS_SUCCESS
+	case "failed":
+		return pm.LuksRevocationStatus_LUKS_REVOCATION_STATUS_FAILED
+	default:
+		return pm.LuksRevocationStatus_LUKS_REVOCATION_STATUS_UNSPECIFIED
 	}
 }
