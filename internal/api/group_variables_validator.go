@@ -193,6 +193,16 @@ func validatePathValue(value string) error {
 	if strings.ContainsAny(value, pathShellMetaChars) {
 		return fmt.Errorf("variable.value must not contain shell metacharacters ($, `, ;, |, &, parens, <>, backslash, newline, NUL) for VARIABLE_TYPE_PATH")
 	}
+	// Reject whitespace separately. With the renderer substituting
+	// values literally (no shell-quoting at render time), whitespace
+	// in a path would split the rendered token into multiple shell
+	// arguments — argument-injection-style behaviour even without any
+	// metacharacter present. CR finding on PR #197.
+	for _, r := range value {
+		if unicode.IsSpace(r) {
+			return fmt.Errorf("variable.value must not contain whitespace for VARIABLE_TYPE_PATH")
+		}
+	}
 	return nil
 }
 

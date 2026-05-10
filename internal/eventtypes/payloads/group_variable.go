@@ -37,6 +37,14 @@ type GroupVariableDeleted struct {
 // produced by internal/crypto.Encrypt; the audit redactor scrubs it
 // before the event reaches ListAuditEvents (see the
 // eventRedactionSchemas map in audit_handler.go).
+//
+// No Type / IntMin / IntMax / ChoiceValues fields by design — secret
+// variables are always plain strings (their type is implicitly
+// VARIABLE_TYPE_SECRET as conveyed by the event-type constant
+// GroupSecretVariableSet itself), and the per-type metadata that
+// makes sense for INT / CHOICE doesn't apply. Consumers that need to
+// surface "this row is a secret" can rely on the event-type discriminator
+// rather than reading Type from the payload.
 type GroupSecretVariableSet struct {
 	GroupType   string `json:"group_type"`
 	GroupID     string `json:"group_id"`

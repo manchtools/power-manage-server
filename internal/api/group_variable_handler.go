@@ -380,7 +380,11 @@ func (h *GroupVariableHandler) loadDeviceGroupVariables(ctx context.Context, id 
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
-	return decodeStored(raw)
+	stored, err := decodeStored(raw)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("failed to decode device-group variables: %v", err))
+	}
+	return stored, nil
 }
 
 func (h *GroupVariableHandler) loadUserGroupVariables(ctx context.Context, id string) ([]storedVariable, error) {
@@ -388,7 +392,11 @@ func (h *GroupVariableHandler) loadUserGroupVariables(ctx context.Context, id st
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
-	return decodeStored(raw)
+	stored, err := decodeStored(raw)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("failed to decode user-group variables: %v", err))
+	}
+	return stored, nil
 }
 
 func (h *GroupVariableHandler) upsertDeviceGroupVariable(ctx context.Context, groupID string, stored storedVariable, varType pm.VariableType, actorID string) error {
