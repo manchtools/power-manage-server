@@ -857,55 +857,55 @@ func parseFlags() *Config {
 	flag.Parse()
 
 	// Environment variable overrides
-	envString(&cfg.ListenAddr, "CONTROL_LISTEN_ADDR")
-	envString(&cfg.DatabaseURL, "CONTROL_DATABASE_URL")
-	envString(&cfg.JWTSecret, "CONTROL_JWT_SECRET")
-	envString(&cfg.CACertPath, "CONTROL_CA_CERT")
-	envString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
-	envString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
-	envBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, []string{"false", "0"})
-	envString(&cfg.TLSCert, "CONTROL_TLS_CERT")
-	envString(&cfg.TLSKey, "CONTROL_TLS_KEY")
-	envString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
-	envString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
-	envString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
-	envString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
-	envString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
-	envString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
-	envString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
-	envString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
-	envString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
-	envCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
-	envDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
-	envDuration(&cfg.SystemActionReconcileInterval, "CONTROL_SYSTEM_ACTION_RECONCILE_INTERVAL")
-	envDuration(&cfg.SystemActionReconcileTimeout, "CONTROL_SYSTEM_ACTION_RECONCILE_TIMEOUT")
+	config.EnvString(&cfg.ListenAddr, "CONTROL_LISTEN_ADDR")
+	config.EnvString(&cfg.DatabaseURL, "CONTROL_DATABASE_URL")
+	config.EnvString(&cfg.JWTSecret, "CONTROL_JWT_SECRET")
+	config.EnvString(&cfg.CACertPath, "CONTROL_CA_CERT")
+	config.EnvString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
+	config.EnvString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
+	config.EnvBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, []string{"false", "0"})
+	config.EnvString(&cfg.TLSCert, "CONTROL_TLS_CERT")
+	config.EnvString(&cfg.TLSKey, "CONTROL_TLS_KEY")
+	config.EnvString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
+	config.EnvString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
+	config.EnvString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
+	config.EnvString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
+	config.EnvString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
+	config.EnvString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
+	config.EnvString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
+	config.EnvString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
+	config.EnvString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
+	config.EnvCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
+	config.EnvDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
+	config.EnvDuration(&cfg.SystemActionReconcileInterval, "CONTROL_SYSTEM_ACTION_RECONCILE_INTERVAL")
+	config.EnvDuration(&cfg.SystemActionReconcileTimeout, "CONTROL_SYSTEM_ACTION_RECONCILE_TIMEOUT")
 
 	// SSO / Identity Provider configuration
 	cfg.PasswordAuthEnabled = true // default enabled
-	envBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", []string{"true", "1"}, []string{"false", "0"})
-	envString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
+	config.EnvBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", []string{"true", "1"}, []string{"false", "0"})
+	config.EnvString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
 	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
 		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
 	}
-	envString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
-	envCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
-	envBool(&cfg.CORSAllowAll, "CONTROL_CORS_ALLOW_ALL", []string{"true", "1"}, []string{"false", "0"})
+	config.EnvString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
+	config.EnvCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
+	config.EnvBool(&cfg.CORSAllowAll, "CONTROL_CORS_ALLOW_ALL", []string{"true", "1"}, []string{"false", "0"})
 
 	// Valkey (Asynq task queue) configuration
-	envString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
-	envString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
-	envInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
+	config.EnvString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
+	config.EnvString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
+	config.EnvInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
 
 	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
-	clampInterval(&cfg.DynamicGroupEvalInterval, 30*time.Minute, 8*time.Hour)
+	config.ClampInterval(&cfg.DynamicGroupEvalInterval, 30*time.Minute, 8*time.Hour)
 
 	// Clamp system-action reconcile flags. The interval treats 0 as
 	// "disabled, matching StartReconciliation"; the timeout's 0 case
 	// would silently break the durability safety net via
 	// context.WithTimeout returning an already-cancelled context, so
 	// it falls back to the 5min default rather than disabling.
-	clampInterval(&cfg.SystemActionReconcileInterval, 10*time.Second, 8*time.Hour)
-	clampDurationFloor(&cfg.SystemActionReconcileTimeout, 5*time.Minute, 0)
+	config.ClampInterval(&cfg.SystemActionReconcileInterval, 10*time.Second, 8*time.Hour)
+	config.ClampDurationFloor(&cfg.SystemActionReconcileTimeout, 5*time.Minute, 0)
 
 	if cfg.JWTSecret == "" {
 		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
@@ -980,24 +980,12 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	return nil
 }
 
-// Local trampolines into internal/config so the call sites in
-// parseFlags stay readable without prefixing every line with
-// `config.`. Audit F017 — promoted the helpers themselves to
-// internal/config so cmd/control, cmd/gateway, and cmd/indexer
-// share one parsing contract.
-func clampInterval(target *time.Duration, minDur, maxDur time.Duration) {
-	config.ClampInterval(target, minDur, maxDur)
-}
-func clampDurationFloor(target *time.Duration, def, minDur time.Duration) {
-	config.ClampDurationFloor(target, def, minDur)
-}
-func envString(target *string, key string) { config.EnvString(target, key) }
-func envBool(target *bool, key string, trueValues, falseValues []string) {
-	config.EnvBool(target, key, trueValues, falseValues)
-}
-func envDuration(target *time.Duration, key string) { config.EnvDuration(target, key) }
-func envCSV(target *[]string, key string)           { config.EnvCSV(target, key) }
-func envInt(target *int, key string)                { config.EnvInt(target, key) }
+// Note: env / clamp helpers used by parseFlags live in
+// internal/config (FromEnv + Validate + bounded clamps). The
+// previous local trampolines were inlined to drop a layer of
+// indirection — call sites now reference config.EnvString,
+// config.ClampInterval, etc. directly. See manchtools/power-
+// manage-server#152 (audit F017+F018).
 
 // runPeriodic calls fn on every tick until ctx is cancelled.
 // If runImmediately is true, fn is called once before the first tick.
