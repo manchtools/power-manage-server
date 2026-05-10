@@ -155,14 +155,23 @@ func (q *Queries) EvaluateDynamicGroup(ctx context.Context, groupIDParam string)
 }
 
 const evaluateQueuedDynamicGroups = `-- name: EvaluateQueuedDynamicGroups :one
-SELECT evaluate_queued_dynamic_groups() AS evaluated_count
+SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
+FROM evaluate_queued_dynamic_groups()
 `
 
-func (q *Queries) EvaluateQueuedDynamicGroups(ctx context.Context) (int32, error) {
+type EvaluateQueuedDynamicGroupsRow struct {
+	EvaluatedCount int32 `json:"evaluated_count"`
+	More           bool  `json:"more"`
+}
+
+// Returns (evaluated_count, more) so the drain loop in cmd/control
+// terminates on `more = false` instead of inferring queue-empty
+// from "count < batch_limit". See migration 044 + #168.
+func (q *Queries) EvaluateQueuedDynamicGroups(ctx context.Context) (EvaluateQueuedDynamicGroupsRow, error) {
 	row := q.db.QueryRow(ctx, evaluateQueuedDynamicGroups)
-	var evaluated_count int32
-	err := row.Scan(&evaluated_count)
-	return evaluated_count, err
+	var i EvaluateQueuedDynamicGroupsRow
+	err := row.Scan(&i.EvaluatedCount, &i.More)
+	return i, err
 }
 
 const getDeviceGroupByID = `-- name: GetDeviceGroupByID :one
