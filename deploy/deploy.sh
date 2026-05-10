@@ -17,7 +17,10 @@
 #   ./deploy.sh --build-only
 #
 # Prerequisites:
-#   - Go 1.25+ installed locally
+#   - Go 1.25.10+ installed locally (matches go.mod's pinned go directive,
+#     which carries the stdlib patches for GO-2026-4986 / 4977 / 4971 /
+#     4918; older 1.25.x patches will still compile but ship a binary
+#     with the unpatched stdlib)
 #   - Podman installed locally
 #   - SSH access to the remote server
 #   - Docker + Docker Compose on the remote server
