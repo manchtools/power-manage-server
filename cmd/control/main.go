@@ -182,31 +182,43 @@ func main() {
 	}, false)
 
 	// drainDynamicQueue runs the same drain loop shape against either
-	// dynamic-group queue. label drives the log lines, evalFn returns
-	// the per-batch count, and batchSize is the loop's "queue is empty"
-	// short-circuit threshold. Extracted to deduplicate
-	// evaluateDynamicGroups + evaluateDynamicUserGroups (audit N021).
-	drainDynamicQueue := func(label string, batchSize int32, evalFn func(context.Context) (int32, error)) {
+	// dynamic-group queue. evalFn evaluates one batch and reports
+	// (count, more) where `more` is true iff the queue still has
+	// rows after the batch. Closes audit F035 / #168: the prior
+	// shape inferred queue-empty from `count < batchSize` and fired
+	// one wasted iteration on a batch that processed exactly the
+	// limit; the explicit `more` flag avoids that.
+	type batchResult struct {
+		count int32
+		more  bool
+	}
+	drainDynamicQueue := func(label string, evalFn func(context.Context) (batchResult, error)) {
 		for {
-			count, err := evalFn(ctx)
+			res, err := evalFn(ctx)
 			if err != nil {
 				logger.Error("failed to evaluate queued "+label, "error", err)
 				return
 			}
-			if count > 0 {
-				logger.Info("evaluated queued "+label, "count", count)
+			if res.count > 0 {
+				logger.Info("evaluated queued "+label, "count", res.count)
 			}
-			if count < batchSize {
-				return // queue is drained
+			if !res.more {
+				return // queue is drained — explicit signal from the SQL function
 			}
 		}
 	}
 
 	evaluateDynamicGroups := func() {
-		drainDynamicQueue("dynamic groups", 1000, st.Queries().EvaluateQueuedDynamicGroups)
+		drainDynamicQueue("dynamic groups", func(ctx context.Context) (batchResult, error) {
+			r, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
+			return batchResult{count: r.EvaluatedCount, more: r.More}, err
+		})
 	}
 	evaluateDynamicUserGroups := func() {
-		drainDynamicQueue("dynamic user groups", 100, st.Queries().EvaluateQueuedDynamicUserGroups)
+		drainDynamicQueue("dynamic user groups", func(ctx context.Context) (batchResult, error) {
+			r, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
+			return batchResult{count: r.EvaluatedCount, more: r.More}, err
+		})
 	}
 
 	if cfg.DynamicGroupEvalInterval > 0 {

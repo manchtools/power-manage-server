@@ -65,7 +65,11 @@ SELECT COALESCE(validate_dynamic_query($1), '')::TEXT AS error_message;
 SELECT evaluate_dynamic_group($1);
 
 -- name: EvaluateQueuedDynamicGroups :one
-SELECT evaluate_queued_dynamic_groups() AS evaluated_count;
+-- Returns (evaluated_count, more) so the drain loop in cmd/control
+-- terminates on `more = false` instead of inferring queue-empty
+-- from "count < batch_limit". See migration 044 + #168.
+SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
+FROM evaluate_queued_dynamic_groups();
 
 -- name: QueueAllDynamicGroups :exec
 SELECT queue_all_dynamic_groups();

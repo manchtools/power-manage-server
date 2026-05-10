@@ -89,7 +89,10 @@ SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message;
 SELECT evaluate_dynamic_user_group($1);
 
 -- name: EvaluateQueuedDynamicUserGroups :one
-SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count;
+-- Returns (evaluated_count, more) so the drain loop in cmd/control
+-- terminates on `more = false`. See migration 044 + #168.
+SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
+FROM evaluate_queued_dynamic_user_groups();
 
 -- name: CountMatchingUsersForQuery :one
 SELECT COUNT(*) FROM users_projection

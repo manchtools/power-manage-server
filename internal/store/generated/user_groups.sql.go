@@ -245,14 +245,22 @@ func (q *Queries) EvaluateDynamicUserGroup(ctx context.Context, groupIDParam str
 }
 
 const evaluateQueuedDynamicUserGroups = `-- name: EvaluateQueuedDynamicUserGroups :one
-SELECT evaluate_queued_dynamic_user_groups() AS evaluated_count
+SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
+FROM evaluate_queued_dynamic_user_groups()
 `
 
-func (q *Queries) EvaluateQueuedDynamicUserGroups(ctx context.Context) (int32, error) {
+type EvaluateQueuedDynamicUserGroupsRow struct {
+	EvaluatedCount int32 `json:"evaluated_count"`
+	More           bool  `json:"more"`
+}
+
+// Returns (evaluated_count, more) so the drain loop in cmd/control
+// terminates on `more = false`. See migration 044 + #168.
+func (q *Queries) EvaluateQueuedDynamicUserGroups(ctx context.Context) (EvaluateQueuedDynamicUserGroupsRow, error) {
 	row := q.db.QueryRow(ctx, evaluateQueuedDynamicUserGroups)
-	var evaluated_count int32
-	err := row.Scan(&evaluated_count)
-	return evaluated_count, err
+	var i EvaluateQueuedDynamicUserGroupsRow
+	err := row.Scan(&i.EvaluatedCount, &i.More)
+	return i, err
 }
 
 const getUserGroupByID = `-- name: GetUserGroupByID :one
