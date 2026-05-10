@@ -109,7 +109,7 @@ func searchScopeFromString(s string) pm.SearchScope {
 
 func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
 	if h.searchIdx == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, nil)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "search index is not configured on this control instance")
 	}
 
 	query := strings.TrimSpace(req.Msg.Query)
@@ -135,7 +135,7 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	if req.Msg.PageToken != "" {
 		v, err := strconv.Atoi(req.Msg.PageToken)
 		if err != nil || v < 0 || v > maxSearchOffset {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid page token"))
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = v
 	}
@@ -194,7 +194,7 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 			if strings.Contains(errMsg, "Unknown index") || strings.Contains(errMsg, "Unknown Index") || strings.Contains(errMsg, "not found") {
 				continue
 			}
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("search index query failed for scope %s: %v", scope, err))
 		}
 
 		parsed, count := parseFTSearchResult(raw, scope)
@@ -217,11 +217,11 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 
 func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Request[pm.RebuildSearchIndexRequest]) (*connect.Response[pm.RebuildSearchIndexResponse], error) {
 	if h.searchIdx == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, nil)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "search index is not configured on this control instance")
 	}
 
 	if err := h.searchIdx.Rebuild(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("search index rebuild failed: %v", err))
 	}
 
 	return connect.NewResponse(&pm.RebuildSearchIndexResponse{}), nil
