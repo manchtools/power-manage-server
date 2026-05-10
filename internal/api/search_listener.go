@@ -17,6 +17,24 @@ import (
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
+// SearchIndex is the narrow surface SearchListener consumes from
+// the *search.Index concrete. Defined as an interface here so tests
+// can swap in a recording fake without bringing up Asynq + Valkey
+// — the production wiring still passes the concrete (it implicitly
+// satisfies this interface).
+//
+// Three methods, in order of how often they fire from this listener:
+//
+//   - EnqueueReindex — every reindex op
+//   - EnqueueRemove  — every delete op
+//   - GetReverseMembers — only on remove for scopes with cascading
+//     parent rebuilds (action / action_set / definition)
+type SearchIndex interface {
+	EnqueueReindex(ctx context.Context, scope, id string, data *taskqueue.SearchEntityData) error
+	EnqueueRemove(ctx context.Context, scope, id string, cascadeIDs []string) error
+	GetReverseMembers(ctx context.Context, scope, id string) []string
+}
+
 // SearchOp is the action a search-index listener should take in
 // response to a single event. Mirrors the SyncOp pattern from #77's
 // system-action listener but scoped to search-index updates: the
@@ -273,7 +291,7 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 // heavier work (e.g. cascade-ID lookups via GetReverseMembers can
 // add a second Valkey roundtrip), revisit and consider goroutine
 // dispatch like the system-action listener does.
-func SearchListener(st *store.Store, idx *search.Index, logger *slog.Logger) store.EventListener {
+func SearchListener(st *store.Store, idx SearchIndex, logger *slog.Logger) store.EventListener {
 	if st == nil || idx == nil {
 		// Guard: missing deps shouldn't crash AppendEvent. Return a
 		// no-op listener that logs once at registration time elsewhere.
@@ -612,7 +630,7 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 // will see an empty cascade list. The periodic indexer reconciler
 // catches the resulting drift within ~1h. Single-remove flows have
 // no race.
-func cascadeIDsForRemove(ctx context.Context, idx *search.Index, scope, id string) []string {
+func cascadeIDsForRemove(ctx context.Context, idx SearchIndex, scope, id string) []string {
 	switch scope {
 	case search.ScopeAction, search.ScopeActionSet, search.ScopeDefinition:
 		return idx.GetReverseMembers(ctx, scope, id)
