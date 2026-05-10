@@ -12,11 +12,8 @@ import (
 	urlpkg "net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
-
-	"strconv"
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
@@ -30,6 +27,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -963,114 +961,24 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	return nil
 }
 
-// clampInterval clamps a duration into [minDur, maxDur]. A zero
-// value means "feature disabled" and is preserved unchanged — the
-// callers that consume the duration treat 0 specially (the dynamic-
-// group eval and system-action reconcile paths short-circuit at 0).
-// A negative value is normalised to 0 so a misconfigured -1
-// can't accidentally enable the feature with a tiny clamp value
-// downstream. Audit F041 — consolidates three open-coded clamps
-// in parseFlags.
+// Local trampolines into internal/config so the call sites in
+// parseFlags stay readable without prefixing every line with
+// `config.`. Audit F017 — promoted the helpers themselves to
+// internal/config so cmd/control, cmd/gateway, and cmd/indexer
+// share one parsing contract.
 func clampInterval(target *time.Duration, minDur, maxDur time.Duration) {
-	if *target < 0 {
-		*target = 0
-		return
-	}
-	if *target == 0 {
-		return
-	}
-	if *target < minDur {
-		*target = minDur
-	} else if *target > maxDur {
-		*target = maxDur
-	}
+	config.ClampInterval(target, minDur, maxDur)
 }
-
-// clampDurationFloor enforces a minimum on a duration, falling back
-// to a default when the input is non-positive. Used for fields where
-// "no value" (zero or negative) should NOT mean "feature disabled"
-// but instead "use the default" — the system-action reconcile
-// timeout is the canonical case (zero would silently break the
-// safety net via context.WithTimeout returning an already-cancelled
-// context).
 func clampDurationFloor(target *time.Duration, def, minDur time.Duration) {
-	if *target <= 0 {
-		*target = def
-		return
-	}
-	if *target < minDur {
-		*target = minDur
-	}
+	config.ClampDurationFloor(target, def, minDur)
 }
-
-// envString overrides target with the environment variable value if set.
-func envString(target *string, key string) {
-	if v := os.Getenv(key); v != "" {
-		*target = v
-	}
-}
-
-// envBool sets target based on the environment variable matching true or false values.
-// Logs a warning if the value is set but doesn't match any recognized value.
+func envString(target *string, key string) { config.EnvString(target, key) }
 func envBool(target *bool, key string, trueValues, falseValues []string) {
-	v := os.Getenv(key)
-	if v == "" {
-		return
-	}
-	for _, tv := range trueValues {
-		if v == tv {
-			*target = true
-			return
-		}
-	}
-	for _, fv := range falseValues {
-		if v == fv {
-			*target = false
-			return
-		}
-	}
-	slog.Warn("unrecognized boolean env var value, keeping default", "key", key, "value", v)
+	config.EnvBool(target, key, trueValues, falseValues)
 }
-
-// envDuration overrides target with the parsed duration if the environment variable is set.
-func envDuration(target *time.Duration, key string) {
-	if v := os.Getenv(key); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil {
-			slog.Warn("invalid duration for env var, keeping default", "key", key, "value", v, "error", err)
-			return
-		}
-		*target = d
-	}
-}
-
-// envCSV overrides target with a comma-separated environment variable, trimming whitespace
-// and filtering empty entries.
-func envCSV(target *[]string, key string) {
-	if v := os.Getenv(key); v != "" {
-		parts := strings.Split(v, ",")
-		var filtered []string
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				filtered = append(filtered, p)
-			}
-		}
-		*target = filtered
-	}
-}
-
-// envInt overrides target with the parsed integer if the environment variable is set.
-func envInt(target *int, key string) {
-	if v := os.Getenv(key); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			slog.Warn("invalid integer for env var, keeping default", "key", key, "value", v, "error", err)
-			return
-		}
-		*target = n
-	}
-}
+func envDuration(target *time.Duration, key string) { config.EnvDuration(target, key) }
+func envCSV(target *[]string, key string)           { config.EnvCSV(target, key) }
+func envInt(target *int, key string)                { config.EnvInt(target, key) }
 
 // runPeriodic calls fn on every tick until ctx is cancelled.
 // If runImmediately is true, fn is called once before the first tick.
