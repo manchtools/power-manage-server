@@ -55,13 +55,19 @@ type DeviceHelloPayload struct {
 }
 
 // DeviceHeartbeatPayload is the payload for TypeDeviceHeartbeat tasks.
+//
+// Audit N008: prior versions of this struct also carried
+// UptimeSeconds, CpuPercent, MemoryPercent, DiskPercent, but the
+// inbox-worker terminus only ever wrote them into the event store —
+// nothing read them. There is no device_metrics_projection.
+// Dropped from the wire to stop transporting bytes that have no
+// consumer; agent handlers stopped reading them off the proto
+// Heartbeat at the same time. If a future feature wants live
+// metrics, design a dedicated DeviceMetricsPayload + projection
+// rather than reanimating these.
 type DeviceHeartbeatPayload struct {
-	DeviceID      string  `json:"device_id"`
-	AgentVersion  string  `json:"agent_version,omitempty"`
-	UptimeSeconds int64   `json:"uptime_seconds,omitempty"`
-	CpuPercent    float32 `json:"cpu_percent,omitempty"`
-	MemoryPercent float32 `json:"memory_percent,omitempty"`
-	DiskPercent   float32 `json:"disk_percent,omitempty"`
+	DeviceID     string `json:"device_id"`
+	AgentVersion string `json:"agent_version,omitempty"`
 }
 
 // ExecutionResultPayload is the payload for TypeExecutionResult tasks.

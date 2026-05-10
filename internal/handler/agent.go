@@ -469,19 +469,14 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 }
 
 func (h *AgentHandler) handleHeartbeat(ctx context.Context, deviceID string, hb *pm.Heartbeat) error {
+	// hb.Uptime / CpuPercent / MemoryPercent / DiskPercent are
+	// intentionally NOT propagated downstream (audit N008): the inbox
+	// worker terminus only writes the payload's AgentVersion into
+	// devices_projection; the four metrics fields had no consumer and
+	// were dead writes into the event store. Live metrics will need a
+	// dedicated DeviceMetricsPayload + projection if we ever want them.
+	_ = hb
 	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID}
-	if hb.Uptime != nil {
-		payload.UptimeSeconds = hb.Uptime.Seconds
-	}
-	if hb.CpuPercent > 0 {
-		payload.CpuPercent = hb.CpuPercent
-	}
-	if hb.MemoryPercent > 0 {
-		payload.MemoryPercent = hb.MemoryPercent
-	}
-	if hb.DiskPercent > 0 {
-		payload.DiskPercent = hb.DiskPercent
-	}
 	// Refresh the device→gateway TTL on every heartbeat. Best-effort:
 	// a Valkey failure here is logged but does not refuse the
 	// heartbeat — the existing UpdateLastSeen path is the source of

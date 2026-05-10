@@ -925,13 +925,13 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	if dispatchDelay > 0 {
 		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
 	}
-	// respect_maintenance_window is reserved for #58; persist it so the
-	// dispatch path picks the right behaviour once the window
-	// enforcement layer ships, even on event replay of records written
-	// before #58 lands.
-	if req.Msg.RespectMaintenanceWindow {
-		eventData["respect_maintenance_window"] = true
-	}
+	// Note: req.Msg.RespectMaintenanceWindow used to be persisted on the
+	// dispatch event under the comment "reserved for #58", but #58
+	// (per-group maintenance windows) shipped via a separate enforcement
+	// path and no execution projector ever read this field. Dropped in
+	// audit N009 to stop writing dead bytes into the event store. The
+	// proto field stays so existing API clients keep building; it now
+	// has no server-side effect.
 
 	// Fail fast when no task queue is configured. Without this
 	// guard the handler used to silently write an ExecutionCreated
@@ -1462,9 +1462,8 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	if dispatchDelay > 0 {
 		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
 	}
-	if req.Msg.RespectMaintenanceWindow {
-		eventData["respect_maintenance_window"] = true
-	}
+	// Note: req.Msg.RespectMaintenanceWindow is intentionally not
+	// persisted — see DispatchAction above for the audit-N009 reasoning.
 
 	// Fail fast when no task queue is configured — same fail-closed
 	// contract as DispatchAction. Positioned after validation/auth/

@@ -68,12 +68,8 @@ func TestHandleDeviceHeartbeat(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "heartbeat-host")
 
 	task := newTask(t, taskqueue.TypeDeviceHeartbeat, taskqueue.DeviceHeartbeatPayload{
-		DeviceID:      deviceID,
-		AgentVersion:  "2.0.0",
-		UptimeSeconds: 3600,
-		CpuPercent:    25.5,
-		MemoryPercent: 50.0,
-		DiskPercent:   70.0,
+		DeviceID:     deviceID,
+		AgentVersion: "2.0.0",
 	})
 
 	err := mux.ProcessTask(context.Background(), task)
