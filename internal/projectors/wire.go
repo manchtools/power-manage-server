@@ -138,6 +138,13 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("assignments", ApplyAssignment)
 	st.RegisterRebuildApply("user_groups", ApplyUserGroup)
 	st.RegisterRebuildApply("device_groups", ApplyDeviceGroup)
+	// scim_group_mappings rebuild — runs AFTER user_groups (target
+	// order in AllRebuildTargets) so the FK reference to
+	// user_groups_projection is restored before the upserts. Plugs
+	// the gap where user_groups' TRUNCATE CASCADE wiped the SCIM
+	// mappings but never replayed them. See manchtools/power-manage-
+	// server#175.
+	st.RegisterRebuildApply("scim_group_mappings", ApplySCIMGroupMapping)
 	// One Apply body, two rebuild targets: the "actions" target
 	// rebuilds actions_projection from BOTH action and definition
 	// streams (the synthesised-action path). The "definitions"

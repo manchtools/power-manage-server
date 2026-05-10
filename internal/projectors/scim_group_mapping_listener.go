@@ -3,6 +3,7 @@ package projectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -20,6 +21,10 @@ import (
 //   - SCIMGroupMappingUpdated: UPDATE display_name with NULLIF/COALESCE
 //
 // Wired in projectors.WireAll. Refs #105, tracker #107.
+//
+// Listener body delegates to ApplySCIMGroupMapping so the rebuild
+// path (RebuildAll) and the post-commit listener path share one
+// codepath. Any new event type only needs to be added in one place.
 func SCIMGroupMappingListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		return func(context.Context, store.PersistedEvent) {}
@@ -28,28 +33,44 @@ func SCIMGroupMappingListener(st *store.Store, logger *slog.Logger) store.EventL
 		if e.StreamType != "scim_group_mapping" {
 			return
 		}
-		switch e.EventType {
-		case string(eventtypes.SCIMGroupMapped):
-			applySCIMGroupMapped(ctx, st, logger, e)
-		case string(eventtypes.SCIMGroupUnmapped):
-			applySCIMGroupUnmapped(ctx, st, logger, e)
-		case string(eventtypes.SCIMGroupMappingUpdated):
-			applySCIMGroupMappingUpdated(ctx, st, logger, e)
+		if err := ApplySCIMGroupMapping(ctx, st.Queries(), e); err != nil {
+			if errors.Is(err, ErrIgnoredEvent) {
+				return
+			}
+			logger.Warn("scim_group_mapping projector: apply failed",
+				"event_id", e.ID, "event_type", e.EventType, "error", err)
 		}
 	}
 }
 
-func applySCIMGroupMapped(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+// ApplySCIMGroupMapping is the rebuild-applier-shape entry point.
+// Dispatches to the per-event-type helpers (each a single SQL
+// statement). RebuildAll registers this via
+// projectors.WireAll → Store.RegisterRebuildApply("scim_group_mappings", ApplySCIMGroupMapping)
+// so the new "scim_group_mappings" rebuild target replays the
+// stream after the user_groups target has restored the FK references.
+// See manchtools/power-manage-server#175.
+func ApplySCIMGroupMapping(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "scim_group_mapping" {
+		return nil
+	}
+	switch e.EventType {
+	case string(eventtypes.SCIMGroupMapped):
+		return applySCIMGroupMapped(ctx, q, e)
+	case string(eventtypes.SCIMGroupUnmapped):
+		return applySCIMGroupUnmapped(ctx, q, e)
+	case string(eventtypes.SCIMGroupMappingUpdated):
+		return applySCIMGroupMappingUpdated(ctx, q, e)
+	}
+	return nil
+}
+
+func applySCIMGroupMapped(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := SCIMGroupMappedFromEvent(e)
 	if err != nil {
-		if errors.Is(err, ErrIgnoredEvent) {
-			return
-		}
-		logger.Warn("scim_group_mapping projector: invalid SCIMGroupMapped payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
-	if err := st.Queries().UpsertSCIMGroupMapping(ctx, db.UpsertSCIMGroupMappingParams{
+	if err := q.UpsertSCIMGroupMapping(ctx, db.UpsertSCIMGroupMappingParams{
 		ID:                payload.ID,
 		ProviderID:        payload.ProviderID,
 		ScimGroupID:       payload.SCIMGroupID,
@@ -58,53 +79,39 @@ func applySCIMGroupMapped(ctx context.Context, st *store.Store, logger *slog.Log
 		CreatedAt:         e.OccurredAt,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
-		logger.Warn("scim_group_mapping projector: failed to upsert SCIMGroupMapped",
-			"event_id", e.ID, "mapping_id", payload.ID, "error", err)
+		return fmt.Errorf("upsert scim_group_mapping (mapping_id %s): %w", payload.ID, err)
 	}
+	return nil
 }
 
-func applySCIMGroupUnmapped(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+func applySCIMGroupUnmapped(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := SCIMGroupUnmappedFromEvent(e)
 	if err != nil {
-		if errors.Is(err, ErrIgnoredEvent) {
-			return
-		}
-		logger.Warn("scim_group_mapping projector: invalid SCIMGroupUnmapped payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
-	if err := st.Queries().DeleteSCIMGroupMappingByCompositeKey(ctx, db.DeleteSCIMGroupMappingByCompositeKeyParams{
+	if err := q.DeleteSCIMGroupMappingByCompositeKey(ctx, db.DeleteSCIMGroupMappingByCompositeKeyParams{
 		ProviderID:  payload.ProviderID,
 		ScimGroupID: payload.SCIMGroupID,
 	}); err != nil {
-		logger.Warn("scim_group_mapping projector: failed to delete SCIMGroupUnmapped",
-			"event_id", e.ID,
-			"provider_id", payload.ProviderID,
-			"scim_group_id", payload.SCIMGroupID,
-			"error", err)
+		return fmt.Errorf("delete scim_group_mapping (provider_id %s, scim_group_id %s): %w",
+			payload.ProviderID, payload.SCIMGroupID, err)
 	}
+	return nil
 }
 
-func applySCIMGroupMappingUpdated(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+func applySCIMGroupMappingUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := SCIMGroupMappingUpdatedFromEvent(e)
 	if err != nil {
-		if errors.Is(err, ErrIgnoredEvent) {
-			return
-		}
-		logger.Warn("scim_group_mapping projector: invalid SCIMGroupMappingUpdated payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
-	if err := st.Queries().UpdateSCIMGroupMappingDisplayName(ctx, db.UpdateSCIMGroupMappingDisplayNameParams{
+	if err := q.UpdateSCIMGroupMappingDisplayName(ctx, db.UpdateSCIMGroupMappingDisplayNameParams{
 		ProviderID:        payload.ProviderID,
 		ScimGroupID:       payload.SCIMGroupID,
 		ScimDisplayName:   payload.SCIMDisplayName,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
-		logger.Warn("scim_group_mapping projector: failed to apply SCIMGroupMappingUpdated",
-			"event_id", e.ID,
-			"provider_id", payload.ProviderID,
-			"scim_group_id", payload.SCIMGroupID,
-			"error", err)
+		return fmt.Errorf("update scim_group_mapping display_name (provider_id %s, scim_group_id %s): %w",
+			payload.ProviderID, payload.SCIMGroupID, err)
 	}
+	return nil
 }
