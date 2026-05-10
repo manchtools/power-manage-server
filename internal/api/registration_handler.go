@@ -239,8 +239,8 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		StreamType: "token",
 		StreamID:   token.ID,
 		EventType:  eventType,
-		Data: map[string]any{
-			"device_id": deviceID,
+		Data: payloads.RegistrationTokenConsumed{
+			DeviceID: deviceID,
 		},
 		ActorType: "system",
 		ActorID:   "registration",

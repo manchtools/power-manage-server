@@ -16,37 +16,15 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // UserHandler handles user management RPCs.
 type UserHandler struct {
-	searchIndexHolder
 	store         *store.Store
 	logger        *slog.Logger
 	systemActions *SystemActionManager
-}
-
-// enqueueUserReindex enqueues a search index update for a user.
-func (h *UserHandler) enqueueUserReindex(ctx context.Context, u db.UsersProjection) {
-	disabled := "false"
-	if u.Disabled {
-		disabled = "true"
-	}
-	var createdAt int64
-	if u.CreatedAt != nil {
-		createdAt = u.CreatedAt.Unix()
-	}
-	enqueueSearchReindex(ctx, h.searchIdx, h.logger, search.ScopeUser, u.ID, &taskqueue.SearchEntityData{
-		Email:         u.Email,
-		DisplayName:   u.DisplayName,
-		LinuxUsername: u.LinuxUsername,
-		Disabled:      disabled,
-		CreatedAt:     createdAt,
-	})
 }
 
 // NewUserHandler creates a new user handler.
@@ -214,8 +192,6 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
-	h.enqueueUserReindex(ctx, user)
-
 	// System-action sync runs from the post-commit listener
 	// registered on the store (see api.SystemActionListener) — handler-
 	// side calls were removed in rc11 #77 to keep the derived-model
@@ -351,8 +327,6 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
-	h.enqueueUserReindex(ctx, user)
-
 	return connect.NewResponse(&pm.UpdateUserResponse{
 		User: userToProto(user),
 	}), nil
@@ -433,9 +407,9 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	}
 
 	// Emit appropriate event
-	eventType := "UserEnabled"
+	eventType := string(eventtypes.UserEnabled)
 	if req.Msg.Disabled {
-		eventType = "UserDisabled"
+		eventType = string(eventtypes.UserDisabled)
 	}
 
 	err = h.store.AppendEvent(ctx, store.Event{
@@ -455,8 +429,6 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
-
-	h.enqueueUserReindex(ctx, user)
 
 	// System-action sync runs from the post-commit listener (rc11 #77).
 
@@ -495,11 +467,8 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user")
 	}
 
-	if h.searchIdx != nil {
-		if err := h.searchIdx.EnqueueRemove(ctx, search.ScopeUser, req.Msg.Id, nil); err != nil {
-			h.logger.Warn("failed to enqueue search index remove", "scope", "user", "error", err)
-		}
-	}
+	// Search-index removal is handled by api.SearchListener (post-commit
+	// dispatch on UserDeleted) — handler-side enqueue removed in N005.
 
 	// Clean up system actions
 	if err := h.systemActions.CleanupDeletedUserActions(ctx, user); err != nil {
@@ -549,8 +518,6 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
-
-	h.enqueueUserReindex(ctx, user)
 
 	// System-action sync runs from the post-commit listener (rc11 #77).
 
@@ -696,8 +663,6 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
-
-	h.enqueueUserReindex(ctx, user)
 
 	// System-action sync runs from the post-commit listener (rc11 #77).
 

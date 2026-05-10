@@ -10,6 +10,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -91,9 +92,9 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
 		EventType:  string(eventtypes.IdentityUnlinked),
-		Data: map[string]any{
-			"user_id":     link.UserID,
-			"provider_id": link.ProviderID,
+		Data: payloads.IdentityUnlinked{
+			UserID:     link.UserID,
+			ProviderID: link.ProviderID,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

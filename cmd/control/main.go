@@ -32,6 +32,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -180,38 +182,32 @@ func main() {
 		}
 	}, false)
 
-	// Start periodic evaluation of queued dynamic groups.
-	// evaluateDynamicGroups drains the queue in batches of 1000 until empty.
-	evaluateDynamicGroups := func() {
+	// drainDynamicQueue runs the same drain loop shape against either
+	// dynamic-group queue. label drives the log lines, evalFn returns
+	// the per-batch count, and batchSize is the loop's "queue is empty"
+	// short-circuit threshold. Extracted to deduplicate
+	// evaluateDynamicGroups + evaluateDynamicUserGroups (audit N021).
+	drainDynamicQueue := func(label string, batchSize int32, evalFn func(context.Context) (int32, error)) {
 		for {
-			count, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
+			count, err := evalFn(ctx)
 			if err != nil {
-				logger.Error("failed to evaluate queued dynamic groups", "error", err)
+				logger.Error("failed to evaluate queued "+label, "error", err)
 				return
 			}
 			if count > 0 {
-				logger.Info("evaluated queued dynamic groups", "count", count)
+				logger.Info("evaluated queued "+label, "count", count)
 			}
-			if count < 1000 {
+			if count < batchSize {
 				return // queue is drained
 			}
 		}
 	}
 
+	evaluateDynamicGroups := func() {
+		drainDynamicQueue("dynamic groups", 1000, st.Queries().EvaluateQueuedDynamicGroups)
+	}
 	evaluateDynamicUserGroups := func() {
-		for {
-			count, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
-			if err != nil {
-				logger.Error("failed to evaluate queued dynamic user groups", "error", err)
-				return
-			}
-			if count > 0 {
-				logger.Info("evaluated queued dynamic user groups", "count", count)
-			}
-			if count < 100 {
-				return // queue is drained
-			}
-		}
+		drainDynamicQueue("dynamic user groups", 100, st.Queries().EvaluateQueuedDynamicUserGroups)
 	}
 
 	if cfg.DynamicGroupEvalInterval > 0 {
@@ -261,13 +257,14 @@ func main() {
 				}
 				for _, exec := range stale {
 					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
+					completedAt := time.Now().UTC().Format(time.RFC3339Nano)
 					if err := st.AppendEvent(ctx, store.Event{
 						StreamType: "execution",
 						StreamID:   exec.ID,
-						EventType:  "ExecutionTimedOut",
-						Data: map[string]any{
-							"error":        errMsg,
-							"completed_at": time.Now().Format(time.RFC3339Nano),
+						EventType:  string(eventtypes.ExecutionTimedOut),
+						Data: payloads.ExecutionTimedOut{
+							Error:       &errMsg,
+							CompletedAt: &completedAt,
 						},
 						ActorType: "system",
 						ActorID:   "expiry",
@@ -334,11 +331,15 @@ func main() {
 			if err := st.AppendEvent(ctx, store.Event{
 				StreamType: "server_settings",
 				StreamID:   "global",
-				EventType:  "ServerSettingUpdated",
-				Data: map[string]any{
-					"user_provisioning_enabled": settings.UserProvisioningEnabled,
-					"ssh_access_for_all":        true,
-				},
+				EventType:  string(eventtypes.ServerSettingUpdated),
+				Data: func() payloads.ServerSettingUpdated {
+					provisioning := settings.UserProvisioningEnabled
+					sshAll := true
+					return payloads.ServerSettingUpdated{
+						UserProvisioningEnabled: &provisioning,
+						SshAccessForAll:         &sshAll,
+					}
+				}(),
 				ActorType: "system",
 				ActorID:   "system",
 			}); err != nil {
@@ -446,16 +447,14 @@ func main() {
 		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
 		svc.SetSearchIndex(searchIdx)
 
-		// Phase 1 of #81: register the store-side search listener so
-		// every event that affects the search index funnels through
-		// one classifier (api.AffectedSearchOps) instead of ~48
-		// scattered handler-side enqueueXxxReindex calls.
-		//
-		// During Phase 1 the listener and the existing handler-side
-		// enqueues both fire — the Asynq worker dedupes on
-		// (scope, id) so functional behaviour is unchanged. Phase 2
-		// (separate PR) removes the handler-side calls once we've
-		// validated the listener catches everything in production.
+		// Register the store-side search listener so every event that
+		// affects the search index funnels through one classifier
+		// (api.AffectedSearchOps) instead of scattered handler-side
+		// enqueueXxxReindex calls. The handler-side dual-writes for
+		// devices and users were removed in audit N005; remaining
+		// per-handler enqueues exist only for member-level operations
+		// (action_set / definition members) where the source-of-truth
+		// is on a relationship table the listener does not classify.
 		st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
 
 		// Wire the remote terminal session token store. Tokens live in
@@ -940,15 +939,18 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	// Append UserCreatedWithRoles compound event - the projector
 	// inserts the user row AND the per-role assignment row in one tx.
+	emailCopy := email
+	passwordHashCopy := passwordHash
+	role := "admin"
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
-		EventType:  "UserCreatedWithRoles",
-		Data: map[string]any{
-			"email":         email,
-			"password_hash": passwordHash,
-			"role":          "admin",
-			"role_ids":      roleIDs,
+		EventType:  string(eventtypes.UserCreatedWithRoles),
+		Data: payloads.UserCreatedWithRoles{
+			Email:        &emailCopy,
+			PasswordHash: &passwordHashCopy,
+			Role:         &role,
+			RoleIDs:      roleIDs,
 		},
 		ActorType: "system",
 		ActorID:   "bootstrap",

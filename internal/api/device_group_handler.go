@@ -13,6 +13,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -64,11 +65,11 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		StreamType: "device_group",
 		StreamID:   id,
 		EventType:  string(eventtypes.DeviceGroupCreated),
-		Data: map[string]any{
-			"name":          req.Msg.Name,
-			"description":   req.Msg.Description,
-			"is_dynamic":    req.Msg.IsDynamic,
-			"dynamic_query": req.Msg.DynamicQuery,
+		Data: payloads.DeviceGroupCreated{
+			Name:         req.Msg.Name,
+			Description:  req.Msg.Description,
+			IsDynamic:    req.Msg.IsDynamic,
+			DynamicQuery: req.Msg.DynamicQuery,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -193,8 +194,8 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceGroupRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.DeviceGroupRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -227,8 +228,8 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceGroupDescriptionUpdated),
-		Data: map[string]any{
-			"description": req.Msg.Description,
+		Data: payloads.DeviceGroupDescriptionUpdated{
+			Description: req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -324,8 +325,8 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 			StreamType: "device_group",
 			StreamID:   req.Msg.GroupId,
 			EventType:  string(eventtypes.DeviceGroupMemberAdded),
-			Data: map[string]any{
-				"device_id": deviceID,
+			Data: payloads.DeviceGroupMemberAdded{
+				DeviceID: deviceID,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -370,8 +371,8 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 		StreamType: "device_group",
 		StreamID:   req.Msg.GroupId,
 		EventType:  string(eventtypes.DeviceGroupMemberRemoved),
-		Data: map[string]any{
-			"device_id": req.Msg.DeviceId,
+		Data: payloads.DeviceGroupMemberRemoved{
+			DeviceID: req.Msg.DeviceId,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -418,9 +419,9 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceGroupQueryUpdated),
-		Data: map[string]any{
-			"is_dynamic":    req.Msg.IsDynamic,
-			"dynamic_query": req.Msg.DynamicQuery,
+		Data: payloads.DeviceGroupQueryUpdated{
+			IsDynamic:    req.Msg.IsDynamic,
+			DynamicQuery: req.Msg.DynamicQuery,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -541,8 +542,8 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceGroupSyncIntervalSet),
-		Data: map[string]any{
-			"sync_interval_minutes": req.Msg.SyncIntervalMinutes,
+		Data: payloads.DeviceGroupSyncIntervalSet{
+			SyncIntervalMinutes: req.Msg.SyncIntervalMinutes,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -587,8 +588,8 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.DeviceGroupMaintenanceWindowSet),
-		Data: map[string]any{
-			"maintenance_window": maintenanceWindowToMap(req.Msg.MaintenanceWindow),
+		Data: payloads.DeviceGroupMaintenanceWindowSet{
+			MaintenanceWindow: maintenanceWindowToMap(req.Msg.MaintenanceWindow),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

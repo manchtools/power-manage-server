@@ -599,3 +599,248 @@ func TestLuksKeyRotated_LogValueMasksPassphrase(t *testing.T) {
 		"LuksKeyRotated.LogValue() must emit the explicit redaction marker")
 	assert.Contains(t, rendered, "/dev/sda1")
 }
+
+func TestRoundtrip_LuksDeviceKeyRevocationRequested(t *testing.T) {
+	in := payloads.LuksDeviceKeyRevocationRequested{
+		DeviceID:    "dev-1",
+		ActionID:    "act-1",
+		RequestedAt: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.LuksDeviceKeyRevocationRequested
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_LuksDeviceKeyRevocationFailed(t *testing.T) {
+	in := payloads.LuksDeviceKeyRevocationFailed{
+		DeviceID: "dev-1",
+		ActionID: "act-1",
+		Error:    "dispatch enqueue failed: deadline exceeded",
+		FailedAt: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.LuksDeviceKeyRevocationFailed
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_LuksDeviceKeyRevocationDispatched(t *testing.T) {
+	in := payloads.LuksDeviceKeyRevocationDispatched{
+		DeviceID:     "dev-1",
+		ActionID:     "act-1",
+		DispatchedAt: time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.LuksDeviceKeyRevocationDispatched
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_RoleCreated(t *testing.T) {
+	in := payloads.RoleCreated{
+		Name:        "ops",
+		Description: "operations team",
+		Permissions: []string{"devices:read", "actions:dispatch"},
+		IsSystem:    false,
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.RoleCreated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_RoleUpdated(t *testing.T) {
+	in := payloads.RoleUpdated{
+		Name:        "ops",
+		Description: "operations team (updated)",
+		Permissions: []string{"devices:read"},
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.RoleUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserRoleAssigned(t *testing.T) {
+	in := payloads.UserRoleAssigned{
+		UserID: "user-1",
+		RoleID: "role-1",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserRoleAssigned
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserRoleRevoked(t *testing.T) {
+	in := payloads.UserRoleRevoked{
+		UserID: "user-1",
+		RoleID: "role-1",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserRoleRevoked
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserGroupCreated(t *testing.T) {
+	in := payloads.UserGroupCreated{
+		Name:         "ops",
+		Description:  "operations",
+		IsDynamic:    true,
+		DynamicQuery: "(user.email contains \"@example.com\")",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupCreated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserGroupUpdated(t *testing.T) {
+	in := payloads.UserGroupUpdated{Name: "ops", Description: "ops team"}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserGroupMaintenanceWindowSet(t *testing.T) {
+	in := payloads.UserGroupMaintenanceWindowSet{
+		MaintenanceWindow: map[string]any{
+			"schedule": []any{
+				map[string]any{"days": []any{"mon", "tue"}, "allow": "always"},
+			},
+		},
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupMaintenanceWindowSet
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserGroupMemberAddedRemoved(t *testing.T) {
+	added := payloads.UserGroupMemberAdded{GroupID: "g-1", UserID: "u-1"}
+	rawA, err := json.Marshal(added)
+	require.NoError(t, err)
+	var outA payloads.UserGroupMemberAdded
+	require.NoError(t, json.Unmarshal(rawA, &outA))
+	assert.Equal(t, added, outA)
+
+	removed := payloads.UserGroupMemberRemoved{GroupID: "g-1", UserID: "u-1"}
+	rawR, err := json.Marshal(removed)
+	require.NoError(t, err)
+	var outR payloads.UserGroupMemberRemoved
+	require.NoError(t, json.Unmarshal(rawR, &outR))
+	assert.Equal(t, removed, outR)
+}
+
+func TestRoundtrip_UserGroupRoleAssignedRevoked(t *testing.T) {
+	a := payloads.UserGroupRoleAssigned{GroupID: "g-1", RoleID: "r-1"}
+	rawA, err := json.Marshal(a)
+	require.NoError(t, err)
+	var outA payloads.UserGroupRoleAssigned
+	require.NoError(t, json.Unmarshal(rawA, &outA))
+	assert.Equal(t, a, outA)
+
+	r := payloads.UserGroupRoleRevoked{GroupID: "g-1", RoleID: "r-1"}
+	rawR, err := json.Marshal(r)
+	require.NoError(t, err)
+	var outR payloads.UserGroupRoleRevoked
+	require.NoError(t, json.Unmarshal(rawR, &outR))
+	assert.Equal(t, r, outR)
+}
+
+func TestRoundtrip_UserGroupQueryUpdated(t *testing.T) {
+	in := payloads.UserGroupQueryUpdated{IsDynamic: false, DynamicQuery: ""}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupQueryUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_DeviceGroupCreated(t *testing.T) {
+	in := payloads.DeviceGroupCreated{
+		Name:         "prod",
+		Description:  "production fleet",
+		IsDynamic:    true,
+		DynamicQuery: "(device.labels.env equals \"prod\")",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.DeviceGroupCreated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_DeviceGroupRenamedDescUpdated(t *testing.T) {
+	r := payloads.DeviceGroupRenamed{Name: "prod-2"}
+	rawR, err := json.Marshal(r)
+	require.NoError(t, err)
+	var outR payloads.DeviceGroupRenamed
+	require.NoError(t, json.Unmarshal(rawR, &outR))
+	assert.Equal(t, r, outR)
+
+	d := payloads.DeviceGroupDescriptionUpdated{Description: "new desc"}
+	rawD, err := json.Marshal(d)
+	require.NoError(t, err)
+	var outD payloads.DeviceGroupDescriptionUpdated
+	require.NoError(t, json.Unmarshal(rawD, &outD))
+	assert.Equal(t, d, outD)
+}
+
+func TestRoundtrip_DeviceGroupMemberAddedRemoved(t *testing.T) {
+	a := payloads.DeviceGroupMemberAdded{DeviceID: "dev-1"}
+	rawA, err := json.Marshal(a)
+	require.NoError(t, err)
+	var outA payloads.DeviceGroupMemberAdded
+	require.NoError(t, json.Unmarshal(rawA, &outA))
+	assert.Equal(t, a, outA)
+
+	r := payloads.DeviceGroupMemberRemoved{DeviceID: "dev-1"}
+	rawR, err := json.Marshal(r)
+	require.NoError(t, err)
+	var outR payloads.DeviceGroupMemberRemoved
+	require.NoError(t, json.Unmarshal(rawR, &outR))
+	assert.Equal(t, r, outR)
+}
+
+func TestRoundtrip_DeviceGroupQueryUpdated(t *testing.T) {
+	in := payloads.DeviceGroupQueryUpdated{IsDynamic: true, DynamicQuery: "(true)"}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.DeviceGroupQueryUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_DeviceGroupSyncIntervalSet(t *testing.T) {
+	in := payloads.DeviceGroupSyncIntervalSet{SyncIntervalMinutes: 60}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.DeviceGroupSyncIntervalSet
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_DeviceGroupMaintenanceWindowSet(t *testing.T) {
+	in := payloads.DeviceGroupMaintenanceWindowSet{
+		MaintenanceWindow: map[string]any{},
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.DeviceGroupMaintenanceWindowSet
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}

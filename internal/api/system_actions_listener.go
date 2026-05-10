@@ -22,10 +22,9 @@ import (
 type SyncOp int
 
 const (
-	SyncOpNone        SyncOp = iota // event does not affect system actions
-	SyncOpSyncUser                  // SyncUserSystemActions(userID)
-	SyncOpCleanupUser               // CleanupDeletedUserActions(userProjection)
-	SyncOpSyncAll                   // SyncAllUsersSystemActions — fan-out events
+	SyncOpNone     SyncOp = iota // event does not affect system actions
+	SyncOpSyncUser               // SyncUserSystemActions(userID)
+	SyncOpSyncAll                // SyncAllUsersSystemActions — fan-out events
 )
 
 // AffectedFromEvent classifies an event into the system-action sync
@@ -252,14 +251,6 @@ func SystemActionListener(mgr *SystemActionManager, logger *slog.Logger, syncTim
 							"user_id", uid, "event_type", e.EventType, "event_id", e.ID, "error", err)
 					}
 				}
-
-			case SyncOpCleanupUser:
-				// AffectedFromEvent never returns this op currently —
-				// see the comment on the UserDeleted case in the
-				// classifier. Kept as a tagged enum for future events
-				// that don't have the load-before-emit ordering issue.
-				logger.Warn("system-action listener: SyncOpCleanupUser invoked but not implemented; handler-side cleanup is canonical",
-					"event_type", e.EventType, "event_id", e.ID)
 
 			case SyncOpSyncAll:
 				if err := mgr.SyncAllUsersSystemActions(ctx); err != nil {

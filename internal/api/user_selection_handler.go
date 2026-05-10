@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -76,11 +77,11 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		StreamType: "user_selection",
 		StreamID:   id,
 		EventType:  string(eventtypes.UserSelectionChanged),
-		Data: map[string]any{
-			"device_id":   req.Msg.DeviceId,
-			"source_type": sourceTypeStr,
-			"source_id":   req.Msg.SourceId,
-			"selected":    req.Msg.Selected,
+		Data: payloads.UserSelectionChanged{
+			DeviceID:   req.Msg.DeviceId,
+			SourceType: sourceTypeStr,
+			SourceID:   req.Msg.SourceId,
+			Selected:   req.Msg.Selected,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

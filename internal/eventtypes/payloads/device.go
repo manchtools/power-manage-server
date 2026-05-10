@@ -33,9 +33,15 @@ type DeviceSeen struct {
 	Hostname     *string `json:"hostname,omitempty"`
 }
 
-// DeviceHeartbeat is the wire shape for DeviceHeartbeat.
+// DeviceHeartbeat is the wire shape for DeviceHeartbeat. The projector
+// reads only AgentVersion (and uses Hostname as a soft refresh of the
+// devices_projection.hostname column when present); the four
+// uptime/cpu/memory/disk fields the agent ships in its taskqueue
+// payload are intentionally NOT projected today (audit N008 — they
+// would belong on a future device_metrics_projection).
 type DeviceHeartbeat struct {
 	AgentVersion *string `json:"agent_version,omitempty"`
+	Hostname     *string `json:"hostname,omitempty"`
 }
 
 // DeviceCertRenewed is the wire shape for DeviceCertRenewed.

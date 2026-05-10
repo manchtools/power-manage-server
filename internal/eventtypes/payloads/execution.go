@@ -91,3 +91,49 @@ func RawCommandOutput(o *CommandOutput) json.RawMessage {
 type ExecutionReason struct {
 	Reason *string `json:"reason,omitempty"`
 }
+
+// ExecutionDispatched is the wire shape for ExecutionDispatched. The
+// projector flips the execution row's status to "dispatched" using
+// device_id to denormalise the originating device on the projection.
+type ExecutionDispatched struct {
+	DeviceID string `json:"device_id"`
+}
+
+// ExecutionFailedReason is the wire shape for the inbox-worker emit
+// path that marks an execution failed because the action was deleted
+// before the device came back online (orphaned execution case). Same
+// JSON keys as the corresponding existing emit but in a typed shape.
+type ExecutionFailedReason struct {
+	Error       string `json:"error"`
+	DurationMs  int64  `json:"duration_ms"`
+	CompletedAt string `json:"completed_at"`
+}
+
+// ExecutionFailedCompensating is the wire shape for the
+// dispatch-failure compensating ExecutionFailed event the action
+// handler appends when the Asynq enqueue fails. completed_at is
+// intentionally absent (pointer + omitempty) so the projector falls
+// back to event.occurred_at.
+type ExecutionFailedCompensating struct {
+	Error       string  `json:"error"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+}
+
+// OutputChunk is the wire shape for the per-stream output chunks the
+// agent pushes back through the gateway → control inbox. Fields mirror
+// the historical map[string]any{} shape; the projector appends them
+// to the per-execution output_chunks projection.
+type OutputChunk struct {
+	Stream   string `json:"stream"`
+	Data     string `json:"data"`
+	Sequence int64  `json:"sequence"`
+}
+
+// SecurityAlert is the wire shape for the SecurityAlert event the
+// inbox worker emits when an agent reports a security_alert message.
+// Details is a free-form string map per the protobuf definition.
+type SecurityAlert struct {
+	AlertType string            `json:"alert_type"`
+	Message   string            `json:"message"`
+	Details   map[string]string `json:"details,omitempty"`
+}

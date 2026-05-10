@@ -14,6 +14,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth/totp"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -80,9 +81,9 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
 		EventType:  string(eventtypes.TOTPSetupInitiated),
-		Data: map[string]any{
-			"secret_encrypted":  encryptedSecret,
-			"backup_codes_hash": hashes,
+		Data: payloads.TOTPSetupInitiated{
+			SecretEncrypted: encryptedSecret,
+			BackupCodesHash: hashes,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -290,8 +291,8 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
 		EventType:  string(eventtypes.TOTPBackupCodesRegenerated),
-		Data: map[string]any{
-			"backup_codes_hash": hashes,
+		Data: payloads.TOTPBackupCodesRegenerated{
+			BackupCodesHash: hashes,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

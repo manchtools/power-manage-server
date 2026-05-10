@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -83,15 +84,16 @@ func TestLinkOrCreate_AutoCreateUserIncludesLinuxFields(t *testing.T) {
 	}
 	require.NotNil(t, userCreatedEvent, "expected a UserCreatedWithRoles event to be emitted")
 
-	// Verify linux_username is present and derived from preferred_username
-	linuxUsername, ok := userCreatedEvent.Data["linux_username"]
-	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_username")
-	assert.Equal(t, "johndoe", linuxUsername)
-
-	// Verify linux_uid is present and matches the mock return value
-	linuxUID, ok := userCreatedEvent.Data["linux_uid"]
-	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_uid")
-	assert.Equal(t, int32(10001), linuxUID)
+	// Linker emits a typed payloads.UserCreatedWithRoles after the
+	// PR-F sweep — assert the typed shape directly. Pointer fields
+	// preserve absent-vs-explicit distinction; require.NotNil before
+	// dereferencing so a regression to nil pointers fails loudly.
+	created, ok := userCreatedEvent.Data.(payloads.UserCreatedWithRoles)
+	require.True(t, ok, "UserCreatedWithRoles event Data should be a typed payloads.UserCreatedWithRoles")
+	require.NotNil(t, created.LinuxUsername, "linux_username pointer must be set")
+	assert.Equal(t, "johndoe", *created.LinuxUsername)
+	require.NotNil(t, created.LinuxUID, "linux_uid pointer must be set")
+	assert.Equal(t, int32(10001), *created.LinuxUID)
 
 	// Verify the event data can be marshaled (sanity check)
 	_, err = json.Marshal(userCreatedEvent.Data)
@@ -132,12 +134,10 @@ func TestLinkOrCreate_AutoCreateUserDeriveUsernameFromEmail(t *testing.T) {
 	}
 	require.NotNil(t, userCreatedEvent)
 
-	// When preferred_username is empty, linux_username should be derived from email
-	linuxUsername, ok := userCreatedEvent.Data["linux_username"]
-	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_username")
-	assert.Equal(t, "jane.doe", linuxUsername)
-
-	linuxUID, ok := userCreatedEvent.Data["linux_uid"]
-	assert.True(t, ok, "UserCreatedWithRoles event data should include linux_uid")
-	assert.Equal(t, int32(10002), linuxUID)
+	created, ok := userCreatedEvent.Data.(payloads.UserCreatedWithRoles)
+	require.True(t, ok, "UserCreatedWithRoles event Data should be a typed payloads.UserCreatedWithRoles")
+	require.NotNil(t, created.LinuxUsername)
+	assert.Equal(t, "jane.doe", *created.LinuxUsername)
+	require.NotNil(t, created.LinuxUID)
+	assert.Equal(t, int32(10002), *created.LinuxUID)
 }

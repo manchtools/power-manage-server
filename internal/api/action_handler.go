@@ -18,16 +18,13 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
-
-// ActionSigner signs action payloads. Nil means signing is disabled.
-type ActionSigner interface {
-	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
-}
 
 // ActionHandler handles action (single executable) and execution RPCs.
 type ActionHandler struct {
@@ -35,11 +32,11 @@ type ActionHandler struct {
 	searchIndexHolder
 	store  *store.Store
 	logger *slog.Logger
-	signer ActionSigner
+	signer ca.ActionSigner
 }
 
 // NewActionHandler creates a new action handler.
-func NewActionHandler(st *store.Store, logger *slog.Logger, signer ActionSigner) *ActionHandler {
+func NewActionHandler(st *store.Store, logger *slog.Logger, signer ca.ActionSigner) *ActionHandler {
 	return &ActionHandler{
 		store:  st,
 		logger: logger,
@@ -564,8 +561,8 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.ActionRenamed),
-		Data: map[string]any{
-			"name": req.Msg.Name,
+		Data: payloads.ActionRenamed{
+			Name: req.Msg.Name,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -606,8 +603,8 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		StreamType: "action",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.ActionDescriptionUpdated),
-		Data: map[string]any{
-			"description": req.Msg.Description,
+		Data: payloads.ActionDescriptionUpdated{
+			Description: &req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
@@ -811,9 +808,8 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	}
 
 	// Search index removal + cascade-rebuild of parent action_sets
-	// is handled by api.SearchListener (Phase 2d of #81): the
-	// listener calls GetReverseMembers + EnqueueRemove on
-	// ActionDeleted.
+	// is handled by api.SearchListener: the listener calls
+	// GetReverseMembers + EnqueueRemove on ActionDeleted.
 
 	return connect.NewResponse(&pm.DeleteActionResponse{}), nil
 }
@@ -830,9 +826,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}
 
 	// Existence check — the row itself is now only consumed by the
-	// post-commit search listener (Phase 2 of #81), which reloads it
-	// fresh. We keep the load here to fail fast with NotFound before
-	// touching anything heavier downstream.
+	// post-commit search listener, which reloads it fresh. We keep the
+	// load here to fail fast with NotFound before touching anything
+	// heavier downstream.
 	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -1046,9 +1042,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			StreamType: "execution",
 			StreamID:   id,
 			EventType:  string(eventtypes.ExecutionFailed),
-			Data: map[string]any{
-				"error":        fmt.Sprintf("dispatch enqueue failed: %v", err),
-				"completed_at": nil, // projector falls back to event.occurred_at
+			Data: payloads.ExecutionFailedCompensating{
+				Error: fmt.Sprintf("dispatch enqueue failed: %v", err),
 			},
 			ActorType: "system",
 			ActorID:   "system",
@@ -1065,10 +1060,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
 	}
 
-	// Enqueue execution for search indexing using already-fetched data.
-	// Execution search reindex is handled by api.SearchListener
-	// (Phase 2 of #81): the listener fires on every Execution* event
-	// type and reloads the projection through loadSearchEntityData.
+	// Execution search reindex is handled by api.SearchListener: the
+	// listener fires on every Execution* event type and reloads the
+	// projection through loadSearchEntityData.
 
 	h.logger.Info("action dispatched",
 		"execution_id", id,
@@ -1517,9 +1511,9 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 			StreamType: "execution",
 			StreamID:   id,
 			EventType:  string(eventtypes.ExecutionFailed),
-			Data: map[string]any{
-				"error":        fmt.Sprintf("instant dispatch enqueue failed: %v", err),
-				"completed_at": nil,
+			Data: payloads.ExecutionFailedCompensating{
+				Error: fmt.Sprintf("instant dispatch enqueue failed: %v", err),
+				// CompletedAt nil so the projector falls back to event.occurred_at.
 			},
 			ActorType: "system",
 			ActorID:   "system",
