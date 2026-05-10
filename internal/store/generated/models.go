@@ -317,18 +317,19 @@ type LpsPasswordsProjection struct {
 }
 
 type LuksKeysProjection struct {
-	ID               uuid.UUID  `json:"id"`
-	DeviceID         string     `json:"device_id"`
-	ActionID         string     `json:"action_id"`
-	DevicePath       string     `json:"device_path"`
-	Passphrase       string     `json:"passphrase"`
-	RotatedAt        time.Time  `json:"rotated_at"`
-	RotationReason   string     `json:"rotation_reason"`
-	IsCurrent        bool       `json:"is_current"`
-	CreatedAt        time.Time  `json:"created_at"`
-	RevocationStatus *string    `json:"revocation_status"`
-	RevocationError  *string    `json:"revocation_error"`
-	RevocationAt     *time.Time `json:"revocation_at"`
+	ID                uuid.UUID  `json:"id"`
+	DeviceID          string     `json:"device_id"`
+	ActionID          string     `json:"action_id"`
+	DevicePath        string     `json:"device_path"`
+	Passphrase        string     `json:"passphrase"`
+	RotatedAt         time.Time  `json:"rotated_at"`
+	RotationReason    string     `json:"rotation_reason"`
+	IsCurrent         bool       `json:"is_current"`
+	CreatedAt         time.Time  `json:"created_at"`
+	RevocationStatus  *string    `json:"revocation_status"`
+	RevocationError   *string    `json:"revocation_error"`
+	RevocationAt      *time.Time `json:"revocation_at"`
+	ProjectionVersion int64      `json:"projection_version"`
 }
 
 type LuksToken struct {

@@ -18,26 +18,56 @@ LIMIT 20;
 -- name: DeleteLuksKeysByAction :exec
 DELETE FROM luks_keys_projection WHERE action_id = $1;
 
--- name: MarkLuksKeysNotCurrent :exec
+-- name: MarkLuksKeysNotCurrent :execrows
 -- Step 1 of LuksKeyRotated projection. Flip the current row for the
 -- (device_id, action_id, device_path) triple so the new key
 -- (inserted by step 2) is the only is_current=TRUE row. The
 -- `is_current = TRUE` predicate keeps the result identical (rows
 -- already FALSE stay FALSE) but skips a write per historical row,
 -- reducing write amplification on the hot path.
+--
+-- The projection_version guard rejects stale-replay re-deliveries:
+-- a re-fired old event whose sequence_num is <= the last applied
+-- version for any matching row gets 0 rows-affected, and the
+-- listener short-circuits the cascade insert + trim. Without the
+-- guard, a reconciler-driven re-delivery of an old LuksKeyRotated
+-- would re-mark the latest (real-current) row as not_current and
+-- insert a stale duplicate underneath it. Audit N007 (mirrors
+-- LPS audit F020/F021).
 UPDATE luks_keys_projection
-SET is_current = FALSE
+SET is_current = FALSE,
+    projection_version = sqlc.arg('projection_version')
 WHERE device_id = $1
   AND action_id = $2
   AND device_path = $3
-  AND is_current = TRUE;
+  AND is_current = TRUE
+  AND projection_version < sqlc.arg('projection_version');
 
 -- name: InsertLuksKey :exec
--- Step 2 of LuksKeyRotated projection. Always inserts a new row;
--- step 3's trim keeps only the latest 3 by rotated_at.
+-- Step 2 of LuksKeyRotated projection. Inserts the new row only when
+-- the listener confirmed via MarkLuksKeysNotCurrent's :execrows that
+-- this is NOT a stale replay. The listener short-circuits when n==0
+-- and a sibling row already exists, so this insert never runs against
+-- a stale event. projection_version on the new row is the same
+-- sequence_num that just guarded step 1.
 INSERT INTO luks_keys_projection
-    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason)
-VALUES ($1, $2, $3, $4, $5, $6);
+    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: LuksKeyExistsForDeviceActionPath :one
+-- Companion to the asymmetric stale-replay guard in
+-- MarkLuksKeysNotCurrent. Used by the listener to disambiguate the
+-- n==0 case: 0 rows-affected means EITHER "stale replay" (rows exist
+-- with projection_version >= the replaying event's sequence_num) OR
+-- "first rotation for this (device, action, path)" (no rows at all).
+-- The listener proceeds to insert when no rows exist, and short-
+-- circuits when rows exist (= the stale-replay case).
+SELECT EXISTS (
+    SELECT 1 FROM luks_keys_projection
+    WHERE device_id = $1
+      AND action_id = $2
+      AND device_path = $3
+);
 
 -- name: TrimLuksKeysToLast3 :exec
 -- Step 3 of LuksKeyRotated projection. Keep only the latest 3 keys

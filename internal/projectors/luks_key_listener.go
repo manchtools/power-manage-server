@@ -11,8 +11,7 @@ import (
 )
 
 // LuksKeyListener returns a store.EventListener that applies every
-// LUKS-key event the deleted PL/pgSQL project_luks_key_event handled.
-// Replaces the four-case dispatcher with one switch in Go:
+// LUKS-key event:
 //
 //   - LuksKeyRotated: 3 writes (mark previous not-current, insert
 //     new, trim to last 3) wrapped in store.WithTx so the projection
@@ -20,16 +19,25 @@ import (
 //   - LuksDeviceKeyRevocationDispatched: UPDATE current row's
 //     revocation_status='dispatched' + revocation_at, clear error.
 //   - LuksDeviceKeyRevoked: UPDATE current row's revocation_status='success'
-//     (note column-value vs event-name mismatch — matches PL/pgSQL).
+//     (note column-value vs event-name mismatch retained for backward compat).
 //   - LuksDeviceKeyRevocationFailed: UPDATE revocation_status='failed'
-//   - revocation_error captured.
+//     and capture revocation_error.
 //
-// LuksDeviceKeyRevocationRequested is intentionally a no-op (the
-// PL/pgSQL projector also lacked a case for it). The Requested event
-// is a marker the dispatcher handler appends before enqueueing; the
-// projection only changes once Dispatched / Revoked / Failed lands.
+// LuksDeviceKeyRevocationRequested is intentionally a no-op. The
+// Requested event is a marker the dispatcher handler appends before
+// enqueueing; the projection only changes once Dispatched / Revoked /
+// Failed lands.
 //
-// Wired in projectors.WireAll. Refs #99, tracker #107.
+// Asymmetric stale-replay guard (audit N007, mirrors LPS audit
+// F020/F021): the guarded MarkLuksKeysNotCurrent UPDATE returns
+// rows-affected. If a re-fired old event would otherwise re-mark the
+// latest real-current row as not_current, the projection_version filter
+// rejects it (n == 0) and the listener short-circuits the cascade
+// insert + trim. Without this guard a reconciler-driven re-delivery of
+// an old LuksKeyRotated would corrupt is_current and insert a stale
+// duplicate underneath the real key.
+//
+// Wired in projectors.WireAll. Refs #99, tracker #107, audit N007.
 func LuksKeyListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		return func(context.Context, store.PersistedEvent) {}
@@ -65,21 +73,50 @@ func applyLuksKeyRotated(ctx context.Context, st *store.Store, logger *slog.Logg
 			"event_id", e.ID, "error", err)
 		return
 	}
+	projVer := deref(e.SequenceNum)
+
 	if err := st.WithTx(ctx, func(q *store.Queries) error {
-		if err := q.MarkLuksKeysNotCurrent(ctx, db.MarkLuksKeysNotCurrentParams{
-			DeviceID:   payload.DeviceID,
-			ActionID:   payload.ActionID,
-			DevicePath: payload.DevicePath,
-		}); err != nil {
+		n, err := q.MarkLuksKeysNotCurrent(ctx, db.MarkLuksKeysNotCurrentParams{
+			DeviceID:          payload.DeviceID,
+			ActionID:          payload.ActionID,
+			DevicePath:        payload.DevicePath,
+			ProjectionVersion: projVer,
+		})
+		if err != nil {
 			return err
 		}
+		// n==0 has TWO causes that the rest of the code path
+		// handles oppositely (audit N007, mirrors LPS F020/F021):
+		//   1. Stale replay: rows exist for (device, action, path)
+		//      but their projection_version is >= the replaying
+		//      event's sequence_num. The rotation has already been
+		//      projected — skip the insert.
+		//   2. First rotation for this triple: no rows exist at
+		//      all. The UPDATE matched nothing because there was
+		//      nothing to flip. Proceed to insert.
+		// Disambiguate via an existence check; only the stale case
+		// skips.
+		if n == 0 {
+			exists, err := q.LuksKeyExistsForDeviceActionPath(ctx, db.LuksKeyExistsForDeviceActionPathParams{
+				DeviceID:   payload.DeviceID,
+				ActionID:   payload.ActionID,
+				DevicePath: payload.DevicePath,
+			})
+			if err != nil {
+				return err
+			}
+			if exists {
+				return nil
+			}
+		}
 		if err := q.InsertLuksKey(ctx, db.InsertLuksKeyParams{
-			DeviceID:       payload.DeviceID,
-			ActionID:       payload.ActionID,
-			DevicePath:     payload.DevicePath,
-			Passphrase:     payload.Passphrase,
-			RotatedAt:      payload.RotatedAt,
-			RotationReason: payload.RotationReason,
+			DeviceID:          payload.DeviceID,
+			ActionID:          payload.ActionID,
+			DevicePath:        payload.DevicePath,
+			Passphrase:        payload.Passphrase,
+			RotatedAt:         payload.RotatedAt,
+			RotationReason:    payload.RotationReason,
+			ProjectionVersion: projVer,
 		}); err != nil {
 			return err
 		}
