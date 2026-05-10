@@ -55,9 +55,10 @@ func NewGroupVariableHandler(st *store.Store, enc *crypto.Encryptor, logger *slo
 // ciphertext in Value; non-secret types store the raw value as the
 // per-type validator accepted it.
 //
-// Kept in this package rather than a shared types one because the
-// renderer (#196) reads its own decoded view; the only writers are
-// the four handler entry points in this file.
+// Mirrored (intentionally duplicated) by the unexported storedVariable
+// in internal/api/template/resolver.go — the renderer can't import
+// this package without a cycle. Any field changes must land in both
+// places or the renderer will silently drop the new field on read.
 type storedVariable struct {
 	Name         string   `json:"name"`
 	Type         string   `json:"type"`
