@@ -3,8 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -16,29 +14,21 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
-	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/api/template"
-	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/config"
-	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/scim"
-	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
-	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
 // version is set at build time via -ldflags.
@@ -233,251 +223,20 @@ func main() {
 
 	configureTrustedProxies(cfg, logger)
 
-	// terminalTokenStore is populated below in the Valkey block when
-	// remote terminal sessions are configured. Hoisted to the outer
-	// scope so the InternalHandler — constructed further down — can
-	// share the same store and validate tokens minted by the
-	// ControlService.StartTerminal handler.
-	var terminalTokenStore *terminal.TokenStore
-
-	// Initialize Asynq task queue (Valkey) if configured
-	if cfg.ValkeyAddr != "" {
-		aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
-		defer aqClient.Close()
-
-		// Propagate Asynq client to API handlers for dispatch
-		svc.SetTaskQueueClient(aqClient)
-
-		// Initialize go-redis client for RediSearch.
-		// Force RESP2 protocol: go-redis v9 auto-negotiates RESP3 with Redis 7+,
-		// but RediSearch returns FT.SEARCH results in a different format under
-		// RESP3 (map vs array), which breaks our result parser.
-		rdb := redis.NewClient(&redis.Options{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
-			Protocol: 2,
-		})
-		defer rdb.Close()
-
-		// Initialize search index (RediSearch backed).
-		// The indexer binary handles warm/rebuild/reconciliation and search task processing.
-		// The control server only enqueues search tasks and runs FT.SEARCH queries.
-		searchIdx := search.New(rdb, st, aqClient, logger.With("component", "search"))
-		svc.SetSearchIndex(searchIdx)
-
-		// Register the store-side search listener so every event that
-		// affects the search index funnels through one classifier
-		// (api.AffectedSearchOps) instead of scattered handler-side
-		// enqueueXxxReindex calls. The handler-side dual-writes for
-		// devices and users were removed in audit N005; remaining
-		// per-handler enqueues exist only for member-level operations
-		// (action_set / definition members) where the source-of-truth
-		// is on a relationship table the listener does not classify.
-		st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
-
-		// Wire the remote terminal session token store. Tokens live in
-		// Valkey under pm:terminal:session:* with a short TTL; minted
-		// by ControlService.StartTerminal and consumed by the gateway
-		// when the web client opens its WebSocket.
-		//
-		// In multi-gateway HA, the URL returned to the client must
-		// point at the *specific* gateway hosting the device (any
-		// other gateway has no way to bridge the WebSocket to the
-		// agent). The internal/gateway/registry package looks the
-		// device→gateway mapping up in Valkey: each gateway publishes
-		// pm:device:gateway:<device_id> on agent connect. The
-		// TerminalHandler queries the same registry at mint time.
-		//
-		// CONTROL_TERMINAL_GATEWAY_URL is retained as a fallback for
-		// single-gateway dev deployments where the operator hasn't
-		// run the registry-publishing gateway changes yet. In a real
-		// multi-gateway deployment, leave it unset.
-		//
-		// The same TokenStore is also handed to the InternalHandler
-		// further down so InternalService.ProxyValidateTerminalToken
-		// can validate bearer tokens minted by this same instance.
-		// Always create the token store when Valkey is available, even
-		// if this node doesn't mint sessions (TerminalGatewayURL empty).
-		// The gateway calls ProxyValidateTerminalToken on whichever
-		// control replica it reaches, so every node that has Valkey
-		// must be able to validate tokens minted by other replicas.
-		terminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(rdb))
-		gatewayReg := registry.New(registry.NewValkeyBackend(rdb), logger.With("component", "gateway_registry"))
-		termHandler := api.NewTerminalHandler(
-			st,
-			terminalTokenStore,
-			gatewayReg,
-			api.GatewayBaseURL(cfg.TerminalGatewayURL),
-			logger.With("component", "terminal_handler"),
-		)
-		// Build an mTLS HTTP client for gateway admin fan-out. The
-		// control uses its own cert as the client cert and the CA
-		// cert to verify the gateway's server cert — same trust
-		// model as the gateway→control direction.
-		if cfg.InternalTLSCert != "" && cfg.CACertPath != "" {
-			gwCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
-			if err != nil {
-				logger.Warn("terminal admin fan-out disabled: failed to load internal TLS key pair",
-					"cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey, "error", err)
-			} else {
-				caCert, err := os.ReadFile(cfg.CACertPath)
-				if err != nil {
-					logger.Warn("terminal admin fan-out disabled: failed to read CA certificate",
-						"path", cfg.CACertPath, "error", err)
-				} else {
-					caPool := x509.NewCertPool()
-					if !caPool.AppendCertsFromPEM(caCert) {
-						logger.Warn("terminal admin fan-out disabled: CA certificate file contained no valid PEM certificates",
-							"path", cfg.CACertPath)
-					} else {
-						gwTransport := &http.Transport{
-							TLSClientConfig: &tls.Config{
-								Certificates: []tls.Certificate{gwCert},
-								RootCAs:      caPool,
-								MinVersion:   tls.VersionTLS13,
-							},
-						}
-						termHandler.SetInternalHTTPClient(&http.Client{Transport: gwTransport})
-						logger.Info("terminal admin fan-out enabled (mTLS client configured)")
-					}
-				}
-			}
-		}
-		svc.SetTerminalHandler(termHandler)
-		if cfg.TerminalGatewayURL != "" {
-			logger.Info("remote terminal sessions enabled",
-				"fallback_gateway_url", cfg.TerminalGatewayURL,
-				"registry_enabled", true,
-			)
-		} else {
-			logger.Warn("CONTROL_TERMINAL_GATEWAY_URL is empty: this node can validate terminal tokens via registry but will not mint sessions with a static fallback URL")
-		}
-
-		// Index audit events on insertion — the hook fires after every AppendEvent
-		// and enqueues the persisted row directly (no DB lookup in the search worker).
-		// Registered via RegisterEventListener so it shares the listener-slice
-		// mutex + panic-recovery wrapper with every other consumer.
-		//
-		// The EnqueueReindex call itself is dispatched in a goroutine so a slow
-		// or unreachable Valkey cannot stall AppendEvent — fireListeners
-		// dispatches synchronously, so a blocking listener body would extend
-		// every state-changing RPC's tail latency by the Valkey RTT. The work
-		// is best-effort (already only logs Warn on failure), so detaching is
-		// safe; the goroutine has its own recover so a panic inside the
-		// taskqueue client can't crash the server. Round-5 review fix.
-		st.RegisterEventListener(func(ctx context.Context, ev store.PersistedEvent) {
-			id := ulid.ULID(ev.ID).String()
-			data := &taskqueue.SearchEntityData{
-				EventType:  ev.EventType,
-				StreamType: ev.StreamType,
-				ActorType:  ev.ActorType,
-				ActorID:    ev.ActorID,
-				StreamID:   ev.StreamID,
-				OccurredAt: ev.OccurredAt.Unix(),
-			}
-			// Detach from the AppendEvent ctx — the RPC may already have
-			// returned by the time the enqueue runs; cancellation would
-			// drop best-effort work that the search worker can otherwise
-			// still pick up. Background ctx is correct here because the
-			// taskqueue client has its own per-call timeouts.
-			go func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Error("audit-index listener: panicked", "id", id, "panic", r)
-					}
-				}()
-				if err := searchIdx.EnqueueReindex(context.Background(), search.ScopeAuditEvent, id, data); err != nil {
-					logger.Warn("failed to enqueue audit event reindex", "id", id, "error", err)
-				}
-			}()
-		})
-
-		// Ensure indexes exist (idempotent, needed for FT.SEARCH queries).
-		if err := searchIdx.EnsureIndexes(ctx); err != nil {
-			logger.Warn("failed to ensure search indexes", "error", err)
-		}
-
-		// Build Asynq mux with inbox worker only (search worker runs in indexer binary)
-		inboxWorker := control.NewInboxWorker(st, aqClient, actionSigner, logger.With("component", "inbox_worker"))
-		mux := inboxWorker.NewMux()
-
-		// Start Asynq server consuming control:inbox queue only
-		aqLogger := logger.With("component", "asynq_server")
-		aqServer := asynq.NewServer(
-			asynq.RedisClientOpt{
-				Addr:     cfg.ValkeyAddr,
-				Password: cfg.ValkeyPassword,
-				DB:       cfg.ValkeyDB,
-			},
-			asynq.Config{
-				Concurrency: 10,
-				Queues: map[string]int{
-					taskqueue.ControlInboxQueue: 2,
-				},
-				Logger: asynqutil.NewLogger(aqLogger),
-				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
-					retried, _ := asynq.GetRetryCount(ctx)
-					maxRetry, _ := asynq.GetMaxRetry(ctx)
-					aqLogger.Error("task handler failed",
-						"task_type", task.Type(),
-						"error", err,
-						"retry", retried,
-						"max_retry", maxRetry,
-					)
-				}),
-			},
-		)
-		if err := aqServer.Start(mux); err != nil {
-			logger.Error("failed to start Asynq server", "error", err)
-			os.Exit(1)
-		}
-		defer aqServer.Shutdown()
-
-		// rc7: dedicated Asynq server for terminal audit chunks.
-		// Concurrency=1 so per-session chunks commit to
-		// terminal_sessions.input strictly in sequence order — the
-		// AppendTerminalSessionChunk query's last_sequence guard
-		// prevents duplicate redeliveries but not two workers racing
-		// on different sequences, which would drop the loser's bytes.
-		// See taskqueue.ControlTerminalAuditQueue for the full
-		// rationale.
-		terminalAuditServer := asynq.NewServer(
-			asynq.RedisClientOpt{
-				Addr:     cfg.ValkeyAddr,
-				Password: cfg.ValkeyPassword,
-				DB:       cfg.ValkeyDB,
-			},
-			asynq.Config{
-				Concurrency: 1,
-				Queues: map[string]int{
-					taskqueue.ControlTerminalAuditQueue: 1,
-				},
-				Logger: asynqutil.NewLogger(aqLogger.With("queue", "terminal_audit")),
-				ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
-					retried, _ := asynq.GetRetryCount(ctx)
-					maxRetry, _ := asynq.GetMaxRetry(ctx)
-					aqLogger.Error("terminal audit task handler failed",
-						"task_type", task.Type(),
-						"error", err,
-						"retry", retried,
-						"max_retry", maxRetry,
-					)
-				}),
-			},
-		)
-		if err := terminalAuditServer.Start(inboxWorker.NewTerminalAuditMux()); err != nil {
-			logger.Error("failed to start terminal audit Asynq server", "error", err)
-			os.Exit(1)
-		}
-		defer terminalAuditServer.Shutdown()
-
-		logger.Info("Asynq task queue initialized",
-			"valkey_addr", cfg.ValkeyAddr,
-			"search_enabled", true,
-			"terminal_audit_queue", taskqueue.ControlTerminalAuditQueue,
-		)
+	// Valkey-backed subsystem: taskqueue.Client + RediSearch index +
+	// terminal token store + two Asynq servers. nil when the operator
+	// hasn't configured CONTROL_VALKEY_ADDR. See valkey.go for the
+	// component map.
+	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, logger)
+	if err != nil {
+		// valkey may be partially-initialised on error — Close is
+		// nil-safe and only cleans up the components that did
+		// construct, so it's still safe to invoke before exiting.
+		valkey.Close()
+		logger.Error("failed to initialize Valkey subsystem", "error", err)
+		os.Exit(1)
 	}
+	defer valkey.Close()
 
 	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
 	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
@@ -519,11 +278,11 @@ func main() {
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
 	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
-	if terminalTokenStore != nil {
+	if valkey != nil && valkey.TerminalTokenStore != nil {
 		// Shared with the ControlService.StartTerminal handler so the
 		// gateway can validate tokens minted on this instance via
 		// ProxyValidateTerminalToken.
-		internalHandler.SetTerminalTokenStore(terminalTokenStore)
+		internalHandler.SetTerminalTokenStore(valkey.TerminalTokenStore)
 	}
 	// Server-side `{{ var.NAME }}` substitution for action params.
 	// The renderer's StoreResolver reads device labels + group
