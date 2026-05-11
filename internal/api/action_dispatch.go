@@ -22,6 +22,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/api/template"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -144,6 +145,35 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	default:
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "either action_id or inline_action is required")
+	}
+
+	// Templated-params gate: ad-hoc DispatchAction has no group context
+	// to resolve `{{ var.NAME }}` from (variables are exclusively a
+	// group concept; the renderer only runs on the SyncActions path
+	// where the agent's device → group memberships supply the values).
+	// Refuse here rather than enqueueing literal `{{ ... }}` markers
+	// the agent would consume verbatim.
+	//
+	// Marshals to JSON once for the scan, regardless of params shape
+	// (map[string]any from the stored branch, []byte from the inline
+	// branch, or the rare string fallback). The marshal happens again
+	// downstream for signing — a one-extra-allocation cost in exchange
+	// for one shared scan path. Marshal failure here MUST be fail-
+	// closed: a params shape we can't serialise can't be scanned for
+	// templates either, and silently bypassing the gate would let
+	// templated content through that we couldn't see. The downstream
+	// signing step would also fail on the same params, but failing
+	// here is more honest about which gate is rejecting the call.
+	paramsJSONForScan, err := json.Marshal(inputs.params)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			fmt.Sprintf("failed to marshal action params for template scan: %v", err))
+	}
+	if template.HasReference(string(paramsJSONForScan)) {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeFailedPrecondition,
+			"this action contains templated parameters ({{ var.NAME }}) and cannot be dispatched ad-hoc to a single device. "+
+				"Variables are resolved from device-group / user-group memberships at agent sync time. "+
+				"Assign the action to a device-group or user-group instead of running it directly.")
 	}
 
 	id := ulid.Make().String()

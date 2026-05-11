@@ -178,6 +178,43 @@ func TestDispatchAction_PreconditionNoTaskQueue(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
+// TestDispatchAction_TemplatedParamsRefused pins the templated-params
+// gate added for #196 scope correction. Variables resolve only via
+// device-group / user-group memberships at agent SyncActions time; an
+// ad-hoc DispatchAction has no group context so the renderer can't
+// resolve `{{ var.NAME }}` references. The gate refuses with
+// CodeFailedPrecondition rather than enqueueing literal `{{ ... }}`
+// markers the agent would consume verbatim.
+func TestDispatchAction_TemplatedParamsRefused(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "templated-host")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DispatchAction(ctx, connect.NewRequest(&pm.DispatchActionRequest{
+		DeviceId: deviceID,
+		ActionSource: &pm.DispatchActionRequest_InlineAction{
+			InlineAction: &pm.Action{
+				Id:           &pm.ActionId{Value: testutil.NewID()},
+				Type:         pm.ActionType_ACTION_TYPE_SHELL,
+				DesiredState: pm.DesiredState_DESIRED_STATE_PRESENT,
+				Params: &pm.Action_Shell{
+					Shell: &pm.ShellParams{
+						Script: "echo {{ var.greeting }}",
+					},
+				},
+			},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"templated params on ad-hoc dispatch MUST surface FailedPrecondition — anything else lets literal {{ var.X }} reach the agent verbatim")
+	assert.Contains(t, err.Error(), "templated parameters",
+		"error message must explain that variables are group-only and the action should be assigned to a group instead")
+}
+
 // TestDispatchInstantAction_PreconditionNoTaskQueue pins the
 // matching fail-closed behaviour for the instant-action path.
 func TestDispatchInstantAction_PreconditionNoTaskQueue(t *testing.T) {

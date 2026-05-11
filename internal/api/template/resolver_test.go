@@ -58,47 +58,11 @@ func TestStoreResolver_EmptyDevice_EmptyVariables(t *testing.T) {
 	assert.Empty(t, vars)
 }
 
-func TestStoreResolver_DeviceLabels_Surface(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	defer st.Close()
-
-	deviceID := testutil.CreateTestDevice(t, st, "host-labels")
-	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
-		StreamType: "device", StreamID: deviceID, EventType: "DeviceLabelSet",
-		Data:      map[string]any{"key": "env", "value": "prod"},
-		ActorType: "user", ActorID: "u",
-	}))
-
-	r := template.NewStoreResolver(st, testutil.NewEncryptor(t), slog.Default())
-	vars, err := r.Resolve(context.Background(), deviceID)
-	require.NoError(t, err)
-	require.Contains(t, vars, "env")
-	assert.Equal(t, "prod", vars["env"].Plaintext)
-	assert.Equal(t, pmv1.VariableType_VARIABLE_TYPE_STRING, vars["env"].Type)
-}
-
-func TestStoreResolver_PrecedenceLabelOverridesDeviceGroup(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	defer st.Close()
-
-	deviceID := testutil.CreateTestDevice(t, st, "host-prec")
-	groupID := testutil.CreateTestDeviceGroup(t, st, "u", "g1")
-	testutil.AddDeviceToTestGroup(t, st, "u", groupID, deviceID)
-
-	setDeviceGroupVars(t, st, groupID, []storedShape{
-		{Name: "env", Type: "string", Value: "from-group"},
-	})
-	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
-		StreamType: "device", StreamID: deviceID, EventType: "DeviceLabelSet",
-		Data:      map[string]any{"key": "env", "value": "from-label"},
-		ActorType: "user", ActorID: "u",
-	}))
-
-	r := template.NewStoreResolver(st, testutil.NewEncryptor(t), slog.Default())
-	vars, err := r.Resolve(context.Background(), deviceID)
-	require.NoError(t, err)
-	assert.Equal(t, "from-label", vars["env"].Plaintext, "device label must shadow device-group variable")
-}
+// (Removed: TestStoreResolver_DeviceLabels_Surface +
+// TestStoreResolver_PrecedenceLabelOverridesDeviceGroup. Device labels
+// do NOT participate in variable resolution any more — variables are
+// exclusively a group concept. See manchtools/power-manage-server#196
+// scope correction.)
 
 func TestStoreResolver_PrecedenceDeviceGroupOverridesUserGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)

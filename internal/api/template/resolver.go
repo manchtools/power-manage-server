@@ -2,14 +2,18 @@
 // renderer talks to this through the Resolver interface in render.go;
 // tests substitute a static map.
 //
-// Three precedence layers (highest → lowest): device labels →
-// device-group variables → user-group variables. Higher layers
-// shadow lower layers silently because operators routinely override
-// a group default with a device-specific value. Duplicate names
-// WITHIN the same layer (two device groups defining the same name)
-// return an error — the operator can't have intended both at once
-// and silently picking one would be a footgun at action-dispatch
-// time. See manchtools/power-manage-server#196.
+// Two precedence layers (highest → lowest): device-group variables →
+// user-group variables. Higher layers shadow lower layers silently
+// because operators routinely override a user-group default with a
+// device-group-specific value. Duplicate names WITHIN the same layer
+// (two device groups defining the same name) return an error — the
+// operator can't have intended both at once and silently picking one
+// would be a footgun at action-dispatch time.
+//
+// Variables are EXCLUSIVELY a group concept: device labels do NOT
+// participate in resolution. Labels are a separate concept (group-
+// membership filter / dynamic-group eval), not a variable source.
+// See manchtools/power-manage-server#196.
 package template
 
 import (
@@ -21,7 +25,6 @@ import (
 	pmv1 "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // StoreResolver implements Resolver against the production store.
@@ -39,7 +42,8 @@ func NewStoreResolver(st *store.Store, enc *crypto.Encryptor, logger *slog.Logge
 	return &StoreResolver{store: st, encryptor: enc, logger: logger}
 }
 
-// Resolve walks the three precedence layers for deviceID. Returns a
+// Resolve walks the two precedence layers for deviceID (user-group
+// variables first, then device-group variables on top). Returns a
 // flat name → Value map with higher layers having already overwritten
 // lower ones.
 func (r *StoreResolver) Resolve(ctx context.Context, deviceID string) (Variables, error) {
@@ -49,9 +53,6 @@ func (r *StoreResolver) Resolve(ctx context.Context, deviceID string) (Variables
 		return nil, err
 	}
 	if err := r.collectDeviceGroupVars(ctx, deviceID, out); err != nil {
-		return nil, err
-	}
-	if err := r.collectDeviceLabels(ctx, deviceID, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -110,34 +111,6 @@ func (r *StoreResolver) collectDeviceGroupVars(ctx context.Context, deviceID str
 			seen[name] = g.ID
 			v.DefinedIn = []string{"device_group:" + g.ID}
 			out[name] = v
-		}
-	}
-	return nil
-}
-
-// collectDeviceLabels adds the device's labels as STRING-typed
-// variables. Highest precedence layer — labels override any
-// same-named group variable. Label values are always stringified;
-// labels with names that don't match the variable grammar
-// (`[a-z][a-z0-9_]*`) are still added to the map but are
-// unreachable via the substitution regex.
-func (r *StoreResolver) collectDeviceLabels(ctx context.Context, deviceID string, out Variables) error {
-	dev, err := r.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
-	if err != nil {
-		return fmt.Errorf("read device %s: %w", deviceID, err)
-	}
-	if len(dev.Labels) == 0 {
-		return nil
-	}
-	var labels map[string]string
-	if err := json.Unmarshal(dev.Labels, &labels); err != nil {
-		return fmt.Errorf("decode labels for device %s: %w", deviceID, err)
-	}
-	for name, val := range labels {
-		out[name] = Value{
-			Type:      pmv1.VariableType_VARIABLE_TYPE_STRING,
-			Plaintext: val,
-			DefinedIn: []string{"device"},
 		}
 	}
 	return nil
