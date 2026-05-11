@@ -19,7 +19,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/net/http2"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
@@ -594,28 +593,10 @@ func main() {
 	corsHandler := middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
 
-	server := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           securedHandler,
-		IdleTimeout:       120 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-
-	// Configure TLS for public listener if enabled
-	if cfg.TLSEnabled {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
-		if err != nil {
-			logger.Error("failed to load public TLS certificate", "error", err)
-			os.Exit(1)
-		}
-		server.TLSConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS13,
-		}
-		if err := http2.ConfigureServer(server, &http2.Server{}); err != nil {
-			logger.Error("failed to configure HTTP/2 for public server", "error", err)
-			os.Exit(1)
-		}
+	server, err := buildPublicServer(cfg, securedHandler)
+	if err != nil {
+		logger.Error("failed to build public server", "error", err)
+		os.Exit(1)
 	}
 
 	// Add health check endpoint.
@@ -654,30 +635,9 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	internalTLSCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
+	internalServer, err := buildInternalServer(cfg, certAuth, internalMux)
 	if err != nil {
-		logger.Error("failed to load internal TLS certificate", "error", err, "cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey)
-		os.Exit(1)
-	}
-
-	internalCAPool := certAuth.TrustPool()
-
-	internalTLSConfig := &tls.Config{
-		Certificates: []tls.Certificate{internalTLSCert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    internalCAPool,
-		MinVersion:   tls.VersionTLS13,
-	}
-
-	internalServer := &http.Server{
-		Addr:              cfg.InternalListenAddr,
-		Handler:           internalMux,
-		TLSConfig:         internalTLSConfig,
-		IdleTimeout:       120 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	if err := http2.ConfigureServer(internalServer, &http2.Server{}); err != nil {
-		logger.Error("failed to configure HTTP/2 for internal server", "error", err)
+		logger.Error("failed to build internal mTLS server", "error", err)
 		os.Exit(1)
 	}
 
