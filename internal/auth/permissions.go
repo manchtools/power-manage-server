@@ -199,7 +199,7 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteUserGroupVariable", "User Groups", "Remove a non-secret variable from a user group"},
 		{"DeleteUserGroupVariable:secret", "User Groups", "Remove a secret-typed variable from a user group"},
 		{"GetUserGroupVariables", "User Groups", "List variables on a user group (secret values redacted)"},
-		{"ListAvailableVariables", "User Groups", "List variables resolvable for a device (autocomplete; no values)"},
+		{"ListAvailableVariables", "User Groups", "List variables defined on the named device-groups + user-groups (autocomplete; no values)"},
 		// Identity Providers
 		{"CreateIdentityProvider", "Identity Providers", "Create identity providers"},
 		{"GetIdentityProvider", "Identity Providers", "View identity providers"},
