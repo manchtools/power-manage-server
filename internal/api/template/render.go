@@ -38,8 +38,10 @@ func New(resolver Resolver) *Renderer {
 
 // Resolver supplies the variable map for a given device. The
 // production implementation lives in internal/api/template/resolver.go
-// and reads device labels + device-group + user-group variables; tests
-// substitute a static map.
+// and reads variables from the device's device-group + user-group
+// memberships (variables are exclusively a group concept; device
+// labels do NOT participate in resolution); tests substitute a
+// static map.
 type Resolver interface {
 	Resolve(ctx context.Context, deviceID string) (Variables, error)
 }
@@ -105,6 +107,18 @@ func (r *Renderer) RenderWithVars(_ context.Context, action *pmv1.Action, vars V
 // the inner name. Name grammar matches the SET-time validator in
 // internal/api/group_variables_validator.go.
 var varRefRE = regexp.MustCompile(`\{\{\s*var\.([a-z][a-z0-9_]*)\s*\}\}`)
+
+// HasReference reports whether s contains at least one `{{ var.NAME }}`
+// reference. Callers use it to gate paths that can't render templates
+// (e.g. ad-hoc one-off DispatchAction, where there is no group context
+// to resolve from). Cheap — regex with a string anchor; no allocation
+// when s contains no `{{` at all.
+func HasReference(s string) bool {
+	if !strings.Contains(s, "{{") {
+		return false
+	}
+	return varRefRE.MatchString(s)
+}
 
 // ErrUnresolvedReference is the sentinel returned when a `{{ var.X }}`
 // reference can't be matched against a variable known on the target
