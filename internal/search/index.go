@@ -280,20 +280,27 @@ func (idx *Index) Warm(ctx context.Context) error {
 	idx.logger.Info("warming search index from database")
 	start := time.Now()
 
-	// 1. Index all actions.
-	actionCount, err := idx.warmActions(ctx)
+	// 1. Index all actions. Returns the action_id → name map so the
+	// downstream warm passes (action sets + definitions) can build
+	// their denormalised action_names field via in-memory join
+	// instead of one Valkey HGet per member. See manchtools/power-
+	// manage-server#153 (audit F025).
+	actionCount, actionNames, err := idx.warmActions(ctx)
 	if err != nil {
 		return fmt.Errorf("warm actions: %w", err)
 	}
 
 	// 2. Index all action sets + their memberships.
-	setCount, err := idx.warmActionSets(ctx)
+	setCount, setNames, setMembers, err := idx.warmActionSets(ctx, actionNames)
 	if err != nil {
 		return fmt.Errorf("warm action sets: %w", err)
 	}
 
-	// 3. Index all definitions + their memberships.
-	defCount, err := idx.warmDefinitions(ctx)
+	// 3. Index all definitions + their memberships. Uses both the
+	// setName + setMembers maps from step 2 (and the actionName map
+	// from step 1) for the in-memory join — definitions denormalise
+	// both set names and the action names of those sets.
+	defCount, err := idx.warmDefinitions(ctx, actionNames, setNames, setMembers)
 	if err != nil {
 		return fmt.Errorf("warm definitions: %w", err)
 	}
@@ -356,10 +363,15 @@ func (idx *Index) Warm(ctx context.Context) error {
 	return nil
 }
 
-func (idx *Index) warmActions(ctx context.Context) (int, error) {
+// warmActions writes the indexed action HSETs and ALSO returns the
+// action_id → name map. Downstream warm passes (sets + definitions)
+// use the map for in-memory joins instead of issuing one Valkey
+// HGet per member. See manchtools/power-manage-server#153.
+func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, error) {
 	const pageSize int32 = 500
 	var offset int32
 	var total int
+	actionNames := map[string]string{}
 
 	for {
 		actions, err := idx.store.Queries().ListActions(ctx, db.ListActionsParams{
@@ -368,7 +380,7 @@ func (idx *Index) warmActions(ctx context.Context) (int, error) {
 			Offset:  offset,
 		})
 		if err != nil {
-			return total, err
+			return total, actionNames, err
 		}
 		if len(actions) == 0 {
 			break
@@ -400,9 +412,10 @@ func (idx *Index) warmActions(ctx context.Context) (int, error) {
 				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Unix(), 10)
 			}
 			pipe.HSet(ctx, prefixAction+a.ID, fields)
+			actionNames[a.ID] = a.Name
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
-			return total, fmt.Errorf("pipeline exec: %w", err)
+			return total, actionNames, fmt.Errorf("pipeline exec: %w", err)
 		}
 
 		total += len(actions)
@@ -411,13 +424,20 @@ func (idx *Index) warmActions(ctx context.Context) (int, error) {
 		}
 		offset += pageSize
 	}
-	return total, nil
+	return total, actionNames, nil
 }
 
-func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
+// warmActionSets writes the indexed set HSETs + member sets, using
+// the actionNames map produced by warmActions for the in-memory
+// join. Returns the set_id → name map AND the set_id → []action_id
+// map so warmDefinitions can do the same join trick one level up.
+// See manchtools/power-manage-server#153.
+func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]string) (int, map[string]string, map[string][]string, error) {
 	const pageSize int32 = 500
 	var offset int32
 	var total int
+	setNames := map[string]string{}
+	setMembers := map[string][]string{}
 
 	for {
 		sets, err := idx.store.Queries().ListActionSets(ctx, db.ListActionSetsParams{
@@ -425,7 +445,7 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 			Offset: offset,
 		})
 		if err != nil {
-			return total, err
+			return total, setNames, setMembers, err
 		}
 		if len(sets) == 0 {
 			break
@@ -441,16 +461,17 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 
 			pipe := idx.rdb.Pipeline()
 
-			// Build action names + forward/reverse sets.
-			var actionNames []string
+			// Build action names + forward/reverse sets. Names come
+			// from the in-memory map populated by warmActions —
+			// no per-member Valkey round-trip.
+			var memberActionIDs []string
+			var memberActionNames []string
 			for _, m := range members {
 				pipe.SAdd(ctx, prefixMembersActionSet+s.ID, m.ActionID)
 				pipe.SAdd(ctx, prefixReverseAction+m.ActionID, s.ID)
-
-				// Read action name from Valkey (already warmed in step 1).
-				name, err := idx.rdb.HGet(ctx, prefixAction+m.ActionID, "name").Result()
-				if err == nil {
-					actionNames = append(actionNames, name)
+				memberActionIDs = append(memberActionIDs, m.ActionID)
+				if name, ok := actionNames[m.ActionID]; ok {
+					memberActionNames = append(memberActionNames, name)
 				}
 			}
 
@@ -458,7 +479,7 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 				"name":         s.Name,
 				"description":  s.Description,
 				"member_count": strconv.Itoa(int(s.MemberCount)),
-				"action_names": strings.Join(actionNames, " "),
+				"action_names": strings.Join(memberActionNames, " "),
 			}
 			if s.CreatedAt != nil {
 				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Unix(), 10)
@@ -471,6 +492,9 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 			if _, err := pipe.Exec(ctx); err != nil {
 				idx.logger.Warn("failed to warm action set", "set_id", s.ID, "error", err)
 			}
+
+			setNames[s.ID] = s.Name
+			setMembers[s.ID] = memberActionIDs
 		}
 
 		total += len(sets)
@@ -479,10 +503,15 @@ func (idx *Index) warmActionSets(ctx context.Context) (int, error) {
 		}
 		offset += pageSize
 	}
-	return total, nil
+	return total, setNames, setMembers, nil
 }
 
-func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
+// warmDefinitions writes the indexed definition HSETs + member sets,
+// using the actionNames + setNames + setMembers maps produced by
+// the prior warm passes for the in-memory joins. Replaces ~3
+// Valkey round-trips per definition member with zero — the lookups
+// are now O(1) map reads. See manchtools/power-manage-server#153.
+func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map[string]string, setMembers map[string][]string) (int, error) {
 	const pageSize int32 = 500
 	var offset int32
 	var total int
@@ -509,26 +538,18 @@ func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
 
 			pipe := idx.rdb.Pipeline()
 
-			var setNames []string
+			var memberSetNames []string
 			var allActionNames []string
 			for _, m := range members {
 				pipe.SAdd(ctx, prefixMembersDefinition+d.ID, m.ActionSetID)
 				pipe.SAdd(ctx, prefixReverseActionSet+m.ActionSetID, d.ID)
 
-				// Read set name from Valkey.
-				name, err := idx.rdb.HGet(ctx, prefixActionSet+m.ActionSetID, "name").Result()
-				if err == nil {
-					setNames = append(setNames, name)
+				if name, ok := setNames[m.ActionSetID]; ok {
+					memberSetNames = append(memberSetNames, name)
 				}
-
-				// Read action names from the set's membership.
-				actionIDs, err := idx.rdb.SMembers(ctx, prefixMembersActionSet+m.ActionSetID).Result()
-				if err == nil {
-					for _, aid := range actionIDs {
-						aName, err := idx.rdb.HGet(ctx, prefixAction+aid, "name").Result()
-						if err == nil {
-							allActionNames = append(allActionNames, aName)
-						}
+				for _, aid := range setMembers[m.ActionSetID] {
+					if aName, ok := actionNames[aid]; ok {
+						allActionNames = append(allActionNames, aName)
 					}
 				}
 			}
@@ -537,7 +558,7 @@ func (idx *Index) warmDefinitions(ctx context.Context) (int, error) {
 				"name":         d.Name,
 				"description":  d.Description,
 				"member_count": strconv.Itoa(int(d.MemberCount)),
-				"set_names":    strings.Join(setNames, " "),
+				"set_names":    strings.Join(memberSetNames, " "),
 				"action_names": strings.Join(allActionNames, " "),
 			}
 			if d.CreatedAt != nil {
