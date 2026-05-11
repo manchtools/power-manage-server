@@ -181,115 +181,14 @@ func main() {
 		}
 	}, false)
 
-	// drainDynamicQueue runs the same drain loop shape against either
-	// dynamic-group queue. evalFn evaluates one batch and reports
-	// (count, more) where `more` is true iff the queue still has
-	// rows after the batch. Closes audit F035 / #168: the prior
-	// shape inferred queue-empty from `count < batchSize` and fired
-	// one wasted iteration on a batch that processed exactly the
-	// limit; the explicit `more` flag avoids that.
-	type batchResult struct {
-		count int32
-		more  bool
-	}
-	drainDynamicQueue := func(label string, evalFn func(context.Context) (batchResult, error)) {
-		for {
-			res, err := evalFn(ctx)
-			if err != nil {
-				logger.Error("failed to evaluate queued "+label, "error", err)
-				return
-			}
-			if res.count > 0 {
-				logger.Info("evaluated queued "+label, "count", res.count)
-			}
-			if !res.more {
-				return // queue is drained — explicit signal from the SQL function
-			}
-		}
-	}
-
-	evaluateDynamicGroups := func() {
-		drainDynamicQueue("dynamic groups", func(ctx context.Context) (batchResult, error) {
-			r, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
-			return batchResult{count: r.EvaluatedCount, more: r.More}, err
-		})
-	}
-	evaluateDynamicUserGroups := func() {
-		drainDynamicQueue("dynamic user groups", func(ctx context.Context) (batchResult, error) {
-			r, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
-			return batchResult{count: r.EvaluatedCount, more: r.More}, err
-		})
-	}
-
 	if cfg.DynamicGroupEvalInterval > 0 {
 		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
-		go func() {
-			// Run immediately on startup to process any groups queued during downtime
-			evaluateDynamicGroups()
-			evaluateDynamicUserGroups()
-
-			ticker := time.NewTicker(cfg.DynamicGroupEvalInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					evaluateDynamicGroups()
-					evaluateDynamicUserGroups()
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-
-		// Periodic full re-evaluation as a safety net (every 24h).
-		// Queues all dynamic groups for evaluation; the worker above drains them.
-		go runPeriodic(ctx, 24*time.Hour, func() {
-			if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
-				logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
-			} else {
-				logger.Info("queued full dynamic group re-evaluation")
-			}
-		}, false)
+		startDynamicGroupWorker(ctx, st, cfg.DynamicGroupEvalInterval, logger)
 	} else {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
 
-	// Start periodic expiry of stale executions (pending/dispatched too long)
-	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				stale, err := st.Queries().ListStaleExecutions(ctx)
-				if err != nil {
-					logger.Error("failed to list stale executions", "error", err)
-					continue
-				}
-				for _, exec := range stale {
-					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
-					completedAt := time.Now().UTC().Format(time.RFC3339Nano)
-					if err := st.AppendEvent(ctx, store.Event{
-						StreamType: "execution",
-						StreamID:   exec.ID,
-						EventType:  string(eventtypes.ExecutionTimedOut),
-						Data: payloads.ExecutionTimedOut{
-							Error:       &errMsg,
-							CompletedAt: &completedAt,
-						},
-						ActorType: "system",
-						ActorID:   "expiry",
-					}); err != nil {
-						logger.Error("failed to expire stale execution", "error", err, "execution_id", exec.ID)
-					} else {
-						logger.Info("expired stale execution", "execution_id", exec.ID, "status", exec.Status, "device_id", exec.DeviceID)
-					}
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	startStaleExecutionExpiry(ctx, st, logger)
 
 	// Start periodic cleanup of stale OSQuery results
 	go runPeriodic(ctx, 5*time.Minute, func() {
@@ -986,24 +885,6 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 // indirection — call sites now reference config.EnvString,
 // config.ClampInterval, etc. directly. See manchtools/power-
 // manage-server#152 (audit F017+F018).
-
-// runPeriodic calls fn on every tick until ctx is cancelled.
-// If runImmediately is true, fn is called once before the first tick.
-func runPeriodic(ctx context.Context, interval time.Duration, fn func(), runImmediately bool) {
-	if runImmediately {
-		fn()
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			fn()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
 
 // maskDatabaseURL masks the password in a database URL for logging.
 // Uses net/url parsing so URL-encoded credentials (e.g. passwords that
