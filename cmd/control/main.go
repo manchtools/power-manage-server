@@ -29,13 +29,11 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/control"
-	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
-	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -196,7 +194,7 @@ func main() {
 		}
 	}, false)
 
-	// Initialize secret encryptor
+	// Initialize secret encryptor.
 	//
 	// rc3 note: previously read unprefixed PM_ENCRYPTION_KEY /
 	// PM_ENCRYPTION_KEY_REQUIRED. Now namespaced as
@@ -204,23 +202,10 @@ func main() {
 	// control-server knobs live under one prefix. Operators upgrading
 	// from rc2 must rename their .env entries — the old names are no
 	// longer read.
-	encryptor, err := crypto.NewEncryptor(os.Getenv("CONTROL_ENCRYPTION_KEY"))
+	encryptor, err := initEncryptor(logger)
 	if err != nil {
 		logger.Error("failed to initialize encryptor", "error", err)
 		os.Exit(1)
-	}
-	if encryptor == nil {
-		// Fail closed: IdP client secrets, LUKS keys, and other
-		// secrets-at-rest rely on this encryptor. Running without a
-		// key would silently degrade security in production. Operators
-		// who truly want unencrypted storage can set
-		// CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt in explicitly.
-		if os.Getenv("CONTROL_ENCRYPTION_KEY_REQUIRED") == "false" {
-			logger.Warn("CONTROL_ENCRYPTION_KEY not set and CONTROL_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
-		} else {
-			logger.Error("CONTROL_ENCRYPTION_KEY is required (set CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt out)")
-			os.Exit(1)
-		}
 	}
 
 	// Initialize action signer (signs actions so agents can verify authenticity)
@@ -233,95 +218,20 @@ func main() {
 		SCIMBaseURL:         cfg.SCIMBaseURL,
 	})
 
-	// Seed SSH access for all from env var (one-time: only sets if DB value is still false)
-	if v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL"); v == "true" || v == "1" {
-		settings, err := st.Queries().GetServerSettings(ctx)
-		if err == nil && !settings.SshAccessForAll {
-			if err := st.AppendEvent(ctx, store.Event{
-				StreamType: "server_settings",
-				StreamID:   "global",
-				EventType:  string(eventtypes.ServerSettingUpdated),
-				Data: func() payloads.ServerSettingUpdated {
-					provisioning := settings.UserProvisioningEnabled
-					sshAll := true
-					return payloads.ServerSettingUpdated{
-						UserProvisioningEnabled: &provisioning,
-						SshAccessForAll:         &sshAll,
-					}
-				}(),
-				ActorType: "system",
-				ActorID:   "system",
-			}); err != nil {
-				logger.Error("failed to seed SSH access for all from env var", "error", err)
-			} else {
-				logger.Info("seeded SSH access for all from CONTROL_SSH_ACCESS_FOR_ALL env var")
-			}
-		}
-	}
+	// One-shot env-driven seed of the global SSH-access-for-all flag.
+	seedSSHAccessForAll(ctx, st, logger)
 
 	// Reconcile system roles (Admin/User) with current permission definitions
 	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
 		logger.Error("failed to reconcile system roles", "error", err)
 	}
 
-	// rc11 #77: derived-projection wiring for system actions.
-	//
-	// 1) One-shot startup sweep — guarantees idempotent convergence
-	//    on every boot, deploy, or upgrade. Logged at Info because it
-	//    runs once.
-	// 2) Post-commit event listener — fires SyncUserSystemActions
-	//    (or SyncAllUsersSystemActions for fan-out events) on every
-	//    permission-shaping event, so handler tests don't need to
-	//    know about system actions.
-	// 3) Periodic reconciler — durability safety net for the listener,
-	//    catches any event whose effect on system actions the
-	//    listener doesn't yet know about. Default 1m.
-	// Wire every Go-side projector listener in one place. The
-	// projectors package owns the list so test fixtures (testutil)
-	// and production boot stay in lockstep — adding a new ported
-	// projector in #98–#106 only touches projectors.WireAll.
-	//
-	// Listeners fire synchronously inside Store.AppendEvent (after
-	// the event commit, before AppendEvent returns), so handlers
-	// see read-your-writes the same as they did under the deleted
-	// PL/pgSQL triggers. See WireAll's docstring for the
-	// atomicity caveat.
-	projectors.WireAll(st, logger)
+	// rc11 #77: derived-projection wiring for system actions —
+	// projectors.WireAll + startup sweep + post-commit listener +
+	// periodic reconciler. See setup.go for the full rationale.
+	wireSystemActions(ctx, st, svc, cfg, logger)
 
-	if svc.SystemActions() != nil {
-		// (1) Startup sweep — keeps the existing Info line so
-		// operators see the one-shot convergence in boot logs.
-		if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
-			logger.Error("failed to sync system actions at startup", "error", err)
-		} else {
-			logger.Info("system actions synced for all users (startup)")
-		}
-
-		// (2) Listener — registered post-commit on the store. Logged
-		// errors are swallowed; the periodic reconciler is the
-		// durability safety net. Reuse the same per-sweep timeout
-		// as the reconciler so a wedged DB / signer can't leak a
-		// goroutine indefinitely (#77 review round 2).
-		st.RegisterEventListener(api.SystemActionListener(
-			svc.SystemActions(),
-			logger.With("component", "system_action_listener"),
-			cfg.SystemActionReconcileTimeout,
-		))
-
-		// (3) Periodic reconciler — interval and per-sweep timeout
-		// from config (defaults set in parseFlags).
-		svc.SystemActions().StartReconciliation(ctx,
-			cfg.SystemActionReconcileInterval,
-			cfg.SystemActionReconcileTimeout)
-		logger.Info("system-action reconciliation started",
-			"interval", cfg.SystemActionReconcileInterval,
-			"sweep_timeout", cfg.SystemActionReconcileTimeout)
-	}
-	// Configure trusted proxies for X-Forwarded-For header validation
-	if len(cfg.TrustedProxies) > 0 {
-		auth.SetTrustedProxies(cfg.TrustedProxies)
-		logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
-	}
+	configureTrustedProxies(cfg, logger)
 
 	// terminalTokenStore is populated below in the Valkey block when
 	// remote terminal sessions are configured. Hoisted to the outer

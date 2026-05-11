@@ -1,0 +1,154 @@
+// Boot-time setup helpers extracted from main.go (audit F043 / #157,
+// slice 3). The encryptor init, SSH-access seed, and system-action
+// wiring previously inlined ~80 LOC of boot wiring in main(); the
+// helpers here own that wiring so main() reads as "build → wire →
+// listen" rather than "build + 12 inline conditionals + wire + listen".
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+
+	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/projectors"
+	"github.com/manchtools/power-manage/server/internal/store"
+)
+
+// errEncryptionKeyRequired is the boot-time fatal returned when
+// CONTROL_ENCRYPTION_KEY is unset and the operator did not opt out
+// via CONTROL_ENCRYPTION_KEY_REQUIRED=false. The error type is the
+// only signal main() needs to log+exit; the helper handles the
+// "opt out" warn-and-continue case internally.
+var errEncryptionKeyRequired = errors.New("CONTROL_ENCRYPTION_KEY is required (set CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt out)")
+
+// initEncryptor reads CONTROL_ENCRYPTION_KEY (and its REQUIRED opt-out)
+// from the environment and returns the constructed Encryptor.
+//
+// Returns (nil, nil) only when the operator explicitly opted out via
+// CONTROL_ENCRYPTION_KEY_REQUIRED=false; a Warn line is logged on that
+// path so the unencrypted-secrets state is visible in boot logs.
+//
+// Returns (nil, errEncryptionKeyRequired) when the key is unset and
+// the operator did NOT opt out — main() must log+exit.
+//
+// Returns (nil, err) for malformed-key errors from crypto.NewEncryptor.
+//
+// Why "fail closed": IdP client secrets, LUKS keys, and other
+// secrets-at-rest rely on this encryptor. Running without a key
+// would silently degrade security in production. The opt-out is
+// kept available for dev / single-tenant deployments that genuinely
+// store no secrets.
+func initEncryptor(logger *slog.Logger) (*crypto.Encryptor, error) {
+	enc, err := crypto.NewEncryptor(os.Getenv("CONTROL_ENCRYPTION_KEY"))
+	if err != nil {
+		return nil, err
+	}
+	if enc == nil {
+		if os.Getenv("CONTROL_ENCRYPTION_KEY_REQUIRED") == "false" {
+			logger.Warn("CONTROL_ENCRYPTION_KEY not set and CONTROL_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
+			return nil, nil
+		}
+		return nil, errEncryptionKeyRequired
+	}
+	return enc, nil
+}
+
+// seedSSHAccessForAll honours the CONTROL_SSH_ACCESS_FOR_ALL env-var
+// by emitting a one-shot ServerSettingUpdated event when the DB value
+// is still false. Idempotent across boots — the second-and-subsequent
+// runs early-return because GetServerSettings reports the seed already
+// happened.
+//
+// Errors are logged (not returned) because this is a best-effort
+// boot-time convenience for fresh deploys; a stuck seed shouldn't
+// block the server from starting.
+func seedSSHAccessForAll(ctx context.Context, st *store.Store, logger *slog.Logger) {
+	v := os.Getenv("CONTROL_SSH_ACCESS_FOR_ALL")
+	if v != "true" && v != "1" {
+		return
+	}
+	settings, err := st.Queries().GetServerSettings(ctx)
+	if err != nil || settings.SshAccessForAll {
+		return
+	}
+	provisioning := settings.UserProvisioningEnabled
+	sshAll := true
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "server_settings",
+		StreamID:   "global",
+		EventType:  string(eventtypes.ServerSettingUpdated),
+		Data: payloads.ServerSettingUpdated{
+			UserProvisioningEnabled: &provisioning,
+			SshAccessForAll:         &sshAll,
+		},
+		ActorType: "system",
+		ActorID:   "system",
+	}); err != nil {
+		logger.Error("failed to seed SSH access for all from env var", "error", err)
+		return
+	}
+	logger.Info("seeded SSH access for all from CONTROL_SSH_ACCESS_FOR_ALL env var")
+}
+
+// wireSystemActions runs the three-step system-action setup:
+// (1) projectors.WireAll registers every Go-side projector listener,
+// (2) one-shot startup sweep for idempotent convergence, and
+// (3) post-commit listener + periodic reconciler durability safety net.
+//
+// projectors.WireAll runs unconditionally so a deployment without
+// system actions still gets every other projector registered. The
+// system-action triplet runs only when svc.SystemActions() is non-nil
+// (cfg-disabled deploys skip it).
+func wireSystemActions(ctx context.Context, st *store.Store, svc *api.ControlService, cfg *Config, logger *slog.Logger) {
+	projectors.WireAll(st, logger)
+
+	if svc.SystemActions() == nil {
+		return
+	}
+
+	// (1) Startup sweep — keeps the existing Info line so operators
+	// see the one-shot convergence in boot logs.
+	if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
+		logger.Error("failed to sync system actions at startup", "error", err)
+	} else {
+		logger.Info("system actions synced for all users (startup)")
+	}
+
+	// (2) Listener — registered post-commit on the store. Logged
+	// errors are swallowed; the periodic reconciler is the
+	// durability safety net. Reuse the same per-sweep timeout as
+	// the reconciler so a wedged DB / signer can't leak a
+	// goroutine indefinitely (#77 review round 2).
+	st.RegisterEventListener(api.SystemActionListener(
+		svc.SystemActions(),
+		logger.With("component", "system_action_listener"),
+		cfg.SystemActionReconcileTimeout,
+	))
+
+	// (3) Periodic reconciler — interval and per-sweep timeout from
+	// config (defaults set in parseFlags).
+	svc.SystemActions().StartReconciliation(ctx,
+		cfg.SystemActionReconcileInterval,
+		cfg.SystemActionReconcileTimeout)
+	logger.Info("system-action reconciliation started",
+		"interval", cfg.SystemActionReconcileInterval,
+		"sweep_timeout", cfg.SystemActionReconcileTimeout)
+}
+
+// configureTrustedProxies pushes the operator's trusted-proxy CIDR
+// list into the auth package's package-global allowlist used by the
+// X-Forwarded-For validator. No-op when the list is empty (the
+// validator falls back to RemoteAddr in that case).
+func configureTrustedProxies(cfg *Config, logger *slog.Logger) {
+	if len(cfg.TrustedProxies) == 0 {
+		return
+	}
+	auth.SetTrustedProxies(cfg.TrustedProxies)
+	logger.Info("trusted proxies configured", "proxies", cfg.TrustedProxies)
+}
