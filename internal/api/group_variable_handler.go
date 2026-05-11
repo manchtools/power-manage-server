@@ -260,12 +260,15 @@ func (h *GroupVariableHandler) GetUserGroupVariables(ctx context.Context, req *c
 // ListAvailableVariables (for web autocomplete)
 // =============================================================================
 
-// ListAvailableVariables returns the union of variables resolvable
-// for a given device — the device's group memberships' variables.
-// Values are intentionally omitted; the picker only needs name +
-// type + description. Permission gate is GetDevice (if the operator
-// can read the device, they can see what variables a templated
-// action would have access to on it).
+// ListAvailableVariables returns the union of variables defined on
+// the named device-groups + user-groups. Variables are exclusively a
+// group concept (device labels do NOT participate in resolution), so
+// the picker queries by groups directly. Values are intentionally
+// omitted; the picker only needs name + type + description.
+//
+// At least one of device_group_ids / user_group_ids MUST be provided.
+// Per-group access is gated by GetDeviceGroup / GetUserGroup so an
+// operator can't enumerate variables on groups they can't see.
 func (h *GroupVariableHandler) ListAvailableVariables(ctx context.Context, req *connect.Request[pm.ListAvailableVariablesRequest]) (*connect.Response[pm.ListAvailableVariablesResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -273,43 +276,80 @@ func (h *GroupVariableHandler) ListAvailableVariables(ctx context.Context, req *
 	if _, err := requireAuth(ctx); err != nil {
 		return nil, err
 	}
-	// In addition to the interceptor-enforced ListAvailableVariables
-	// permission, require GetDevice (or its :assigned scope) so an
-	// operator who can list variables can also see the device they're
-	// listing for. Otherwise this RPC would leak group-membership
-	// structure for arbitrary device IDs.
-	if !auth.HasPermission(ctx, "GetDevice") && !auth.HasPermission(ctx, "GetDevice:assigned") {
-		return nil, apiErrorCtx(ctx, "permission_denied", connect.CodePermissionDenied, "permission denied: GetDevice or GetDevice:assigned required")
-	}
-	groups, err := h.store.Queries().ListGroupsForDevice(ctx, req.Msg.DeviceId)
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("failed to list device groups: %v", err))
+	if len(req.Msg.DeviceGroupIds) == 0 && len(req.Msg.UserGroupIds) == 0 {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "at least one of device_group_ids or user_group_ids is required")
 	}
 
-	// Map name → AvailableVariable, accumulating defining group ids.
 	available := map[string]*pm.AvailableVariable{}
-	for _, g := range groups {
-		raw, err := h.store.Queries().GetDeviceGroupVariables(ctx, g.ID)
-		if err != nil {
-			h.logger.Warn("failed to load device-group variables for autocomplete", "group_id", g.ID, "error", err)
-			continue
+
+	// Device groups: gate on the unscoped GetDeviceGroup permission.
+	// We deliberately do NOT accept GetDeviceGroup:assigned here —
+	// per-group membership enforcement helpers don't exist in the
+	// codebase yet, and accepting the assigned scope without per-group
+	// checks would let an operator with :assigned-only access read
+	// variables on arbitrary group IDs they pass in. Autocomplete is
+	// an operator-facing tool that's typically used by users with
+	// unrestricted group visibility anyway. If/when the autocomplete
+	// is opened up to :assigned operators, add a per-group membership
+	// check inside the loop.
+	if len(req.Msg.DeviceGroupIds) > 0 {
+		if !auth.HasPermission(ctx, "GetDeviceGroup") {
+			return nil, apiErrorCtx(ctx, "permission_denied", connect.CodePermissionDenied, "permission denied: GetDeviceGroup required to list device-group variables")
 		}
-		stored, err := decodeStored(raw)
-		if err != nil {
-			h.logger.Warn("failed to decode device-group variables", "group_id", g.ID, "error", err)
-			continue
-		}
-		for _, v := range stored {
-			entry, ok := available[v.Name]
-			if !ok {
-				entry = &pm.AvailableVariable{
-					Name:        v.Name,
-					Type:        parseVariableType(v.Type),
-					Description: v.Description,
-				}
-				available[v.Name] = entry
+		for _, groupID := range req.Msg.DeviceGroupIds {
+			raw, err := h.store.Queries().GetDeviceGroupVariables(ctx, groupID)
+			if err != nil {
+				h.logger.Warn("failed to load device-group variables for autocomplete", "group_id", groupID, "error", err)
+				continue
 			}
-			entry.DefinedInGroupIds = append(entry.DefinedInGroupIds, g.ID)
+			stored, err := decodeStored(raw)
+			if err != nil {
+				h.logger.Warn("failed to decode device-group variables", "group_id", groupID, "error", err)
+				continue
+			}
+			for _, v := range stored {
+				entry, ok := available[v.Name]
+				if !ok {
+					entry = &pm.AvailableVariable{
+						Name:        v.Name,
+						Type:        parseVariableType(v.Type),
+						Description: v.Description,
+					}
+					available[v.Name] = entry
+				}
+				entry.DefinedInGroupIds = append(entry.DefinedInGroupIds, groupID)
+			}
+		}
+	}
+
+	// User groups: same rationale as the device-group block above.
+	if len(req.Msg.UserGroupIds) > 0 {
+		if !auth.HasPermission(ctx, "GetUserGroup") {
+			return nil, apiErrorCtx(ctx, "permission_denied", connect.CodePermissionDenied, "permission denied: GetUserGroup required to list user-group variables")
+		}
+		for _, groupID := range req.Msg.UserGroupIds {
+			raw, err := h.store.Queries().GetUserGroupVariables(ctx, groupID)
+			if err != nil {
+				h.logger.Warn("failed to load user-group variables for autocomplete", "group_id", groupID, "error", err)
+				continue
+			}
+			stored, err := decodeStored(raw)
+			if err != nil {
+				h.logger.Warn("failed to decode user-group variables", "group_id", groupID, "error", err)
+				continue
+			}
+			for _, v := range stored {
+				entry, ok := available[v.Name]
+				if !ok {
+					entry = &pm.AvailableVariable{
+						Name:        v.Name,
+						Type:        parseVariableType(v.Type),
+						Description: v.Description,
+					}
+					available[v.Name] = entry
+				}
+				entry.DefinedInGroupIds = append(entry.DefinedInGroupIds, groupID)
+			}
 		}
 	}
 
