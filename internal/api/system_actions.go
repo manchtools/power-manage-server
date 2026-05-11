@@ -11,8 +11,6 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/eventtypes"
-	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -37,17 +35,19 @@ import (
 // SSH pattern and ride assignments unless they share TTY's "must
 // land on every device for permission holders" property.
 type SystemActionManager struct {
-	store  *store.Store
-	signer ca.ActionSigner
-	logger *slog.Logger
+	store   *store.Store
+	signer  ca.ActionSigner
+	logger  *slog.Logger
+	actions *systemActionStore
 }
 
 // NewSystemActionManager creates a new system action manager.
 func NewSystemActionManager(st *store.Store, signer ca.ActionSigner, logger *slog.Logger) *SystemActionManager {
 	return &SystemActionManager{
-		store:  st,
-		signer: signer,
-		logger: logger.With("component", "system_actions"),
+		store:   st,
+		signer:  signer,
+		logger:  logger.With("component", "system_actions"),
+		actions: newSystemActionStore(st, signer),
 	}
 }
 
@@ -229,26 +229,26 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 // Must be called with the user projection loaded BEFORE the delete event.
 func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, user db.UsersProjection) error {
 	if user.SystemUserActionID != "" {
-		if err := m.deleteSystemAction(ctx, user.SystemUserActionID); err != nil {
+		if err := m.actions.DeleteAction(ctx, user.SystemUserActionID); err != nil {
 			m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
 		}
-		if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
 			m.logger.Error("failed to unlink system user action", "user_id", user.ID, "error", err)
 		}
 	}
 	if user.SystemSshActionID != "" {
-		if err := m.deleteSystemAction(ctx, user.SystemSshActionID); err != nil {
+		if err := m.actions.DeleteAction(ctx, user.SystemSshActionID); err != nil {
 			m.logger.Error("failed to delete system ssh action", "action_id", user.SystemSshActionID, "error", err)
 		}
-		if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
 			m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
 		}
 	}
 	if user.SystemTtyActionID != "" {
-		if err := m.deleteSystemAction(ctx, user.SystemTtyActionID); err != nil {
+		if err := m.actions.DeleteAction(ctx, user.SystemTtyActionID); err != nil {
 			m.logger.Error("failed to delete system tty action", "action_id", user.SystemTtyActionID, "error", err)
 		}
-		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
 			m.logger.Error("failed to unlink system tty action", "user_id", user.ID, "error", err)
 		}
 	}
@@ -286,29 +286,29 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 
 	if user.SystemUserActionID == "" {
 		// Create new system action
-		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
+		actionID, err := m.actions.CreateAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create user provision action: %w", err)
 		}
 
-		if err := m.assignActionToUser(ctx, actionID, user.ID); err != nil {
+		if err := m.actions.AssignActionToUser(ctx, actionID, user.ID); err != nil {
 			return fmt.Errorf("assign user provision action: %w", err)
 		}
 
-		if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", actionID); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_user_action_id", actionID); err != nil {
 			return fmt.Errorf("link user provision action: %w", err)
 		}
 
-		if err := m.signActionByID(ctx, actionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, actionID); err != nil {
 			return fmt.Errorf("sign newly created user provision action: %w", err)
 		}
 		m.logger.Info("created system user provision action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action if params changed
-		if err := m.updateSystemAction(ctx, user.SystemUserActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
+		if err := m.actions.UpdateAction(ctx, user.SystemUserActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update user provision action: %w", err)
 		}
-		if err := m.signActionByID(ctx, user.SystemUserActionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, user.SystemUserActionID); err != nil {
 			return fmt.Errorf("re-sign updated user provision action: %w", err)
 		}
 	}
@@ -333,29 +333,29 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 
 	if user.SystemSshActionID == "" {
 		// Create new system action
-		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_SSH), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
+		actionID, err := m.actions.CreateAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_SSH), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create ssh access action: %w", err)
 		}
 
-		if err := m.assignActionToUser(ctx, actionID, user.ID); err != nil {
+		if err := m.actions.AssignActionToUser(ctx, actionID, user.ID); err != nil {
 			return fmt.Errorf("assign ssh access action: %w", err)
 		}
 
-		if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", actionID); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_ssh_action_id", actionID); err != nil {
 			return fmt.Errorf("link ssh access action: %w", err)
 		}
 
-		if err := m.signActionByID(ctx, actionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, actionID); err != nil {
 			return fmt.Errorf("sign newly created ssh access action: %w", err)
 		}
 		m.logger.Info("created system ssh access action", "user_id", user.ID, "action_id", actionID)
 	} else {
 		// Update existing action
-		if err := m.updateSystemAction(ctx, user.SystemSshActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
+		if err := m.actions.UpdateAction(ctx, user.SystemSshActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update ssh access action: %w", err)
 		}
-		if err := m.signActionByID(ctx, user.SystemSshActionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, user.SystemSshActionID); err != nil {
 			return fmt.Errorf("re-sign updated ssh access action: %w", err)
 		}
 	}
@@ -367,10 +367,10 @@ func (m *SystemActionManager) cleanupUserAction(ctx context.Context, user db.Use
 	if user.SystemUserActionID == "" {
 		return nil
 	}
-	if err := m.deleteSystemAction(ctx, user.SystemUserActionID); err != nil {
+	if err := m.actions.DeleteAction(ctx, user.SystemUserActionID); err != nil {
 		m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
 	}
-	if err := m.linkSystemAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
+	if err := m.actions.LinkAction(ctx, user.ID, "system_user_action_id", ""); err != nil {
 		m.logger.Error("failed to unlink system user action", "user_id", user.ID, "error", err)
 	}
 	m.logger.Info("cleaned up system user provision action", "user_id", user.ID)
@@ -381,10 +381,10 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 	if user.SystemSshActionID == "" {
 		return nil
 	}
-	if err := m.deleteSystemAction(ctx, user.SystemSshActionID); err != nil {
+	if err := m.actions.DeleteAction(ctx, user.SystemSshActionID); err != nil {
 		m.logger.Error("failed to delete system ssh action", "action_id", user.SystemSshActionID, "error", err)
 	}
-	if err := m.linkSystemAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
+	if err := m.actions.LinkAction(ctx, user.ID, "system_ssh_action_id", ""); err != nil {
 		m.logger.Error("failed to unlink system ssh action", "user_id", user.ID, "error", err)
 	}
 	m.logger.Info("cleaned up system ssh access action", "user_id", user.ID)
@@ -440,26 +440,26 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 		// Coupling delivery to a per-user assignment was the original
 		// bug: admins manage the fleet without being assigned to any
 		// individual device, so their TTY accounts never landed.
-		actionID, err := m.createSystemAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
+		actionID, err := m.actions.CreateAction(ctx, actionName, int32(pm.ActionType_ACTION_TYPE_USER), int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON)
 		if err != nil {
 			return fmt.Errorf("create tty user action: %w", err)
 		}
 
-		if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", actionID); err != nil {
+		if err := m.actions.LinkAction(ctx, user.ID, "system_tty_action_id", actionID); err != nil {
 			return fmt.Errorf("link tty user action: %w", err)
 		}
 
-		if err := m.signActionByID(ctx, actionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, actionID); err != nil {
 			return fmt.Errorf("sign newly created tty user action: %w", err)
 		}
 		m.logger.Info("created system tty user action",
 			"user_id", user.ID, "action_id", actionID, "tty_user", params.Username)
 	} else {
 		// Update existing action if params changed
-		if err := m.updateSystemAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
+		if err := m.actions.UpdateAction(ctx, user.SystemTtyActionID, int32(pm.DesiredState_DESIRED_STATE_PRESENT), paramsJSON); err != nil {
 			return fmt.Errorf("update tty user action: %w", err)
 		}
-		if err := m.signActionByID(ctx, user.SystemTtyActionID); err != nil {
+		if err := m.actions.SignActionByID(ctx, user.SystemTtyActionID); err != nil {
 			return fmt.Errorf("re-sign updated tty user action: %w", err)
 		}
 	}
@@ -486,161 +486,13 @@ func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.User
 	if user.SystemTtyActionID == "" {
 		return nil
 	}
-	if err := m.deleteSystemAction(ctx, user.SystemTtyActionID); err != nil {
+	if err := m.actions.DeleteAction(ctx, user.SystemTtyActionID); err != nil {
 		m.logger.Error("failed to delete system tty action", "action_id", user.SystemTtyActionID, "error", err)
 	}
-	if err := m.linkSystemAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
+	if err := m.actions.LinkAction(ctx, user.ID, "system_tty_action_id", ""); err != nil {
 		m.logger.Error("failed to unlink system tty action", "user_id", user.ID, "error", err)
 	}
 	m.logger.Info("cleaned up system tty user action", "user_id", user.ID)
-	return nil
-}
-
-// createSystemAction emits an ActionCreated event with is_system=true.
-func (m *SystemActionManager) createSystemAction(ctx context.Context, name string, actionType, desiredState int32, paramsJSON []byte) (string, error) {
-	id := newULID()
-
-	// Validate the params byte slice is well-formed JSON before
-	// embedding it as RawMessage in the typed payload — silently
-	// emitting malformed JSONB would only surface at projector time.
-	if !json.Valid(paramsJSON) {
-		return "", fmt.Errorf("createSystemAction: paramsJSON is not valid JSON")
-	}
-
-	desc := "System-managed action"
-	timeoutSec := int32(300)
-	isSystem := true
-	if err := m.store.AppendEvent(ctx, store.Event{
-		StreamType: "action",
-		StreamID:   id,
-		EventType:  string(eventtypes.ActionCreated),
-		Data: payloads.ActionCreated{
-			Name:           name,
-			Description:    &desc,
-			ActionType:     &actionType,
-			DesiredState:   &desiredState,
-			Params:         paramsJSON,
-			TimeoutSeconds: &timeoutSec,
-			IsSystem:       &isSystem,
-		},
-		ActorType: "system",
-		ActorID:   "system",
-	}); err != nil {
-		return "", fmt.Errorf("append ActionCreated: %w", err)
-	}
-
-	return id, nil
-}
-
-// assignActionToUser emits an AssignmentCreated event.
-func (m *SystemActionManager) assignActionToUser(ctx context.Context, actionID, userID string) error {
-	assignmentID := newULID()
-	mode := int32(0) // REQUIRED
-	sortOrder := int32(0)
-	return m.store.AppendEvent(ctx, store.Event{
-		StreamType: "assignment",
-		StreamID:   assignmentID,
-		EventType:  string(eventtypes.AssignmentCreated),
-		Data: payloads.AssignmentCreated{
-			SourceType: "action",
-			SourceID:   actionID,
-			TargetType: "user",
-			TargetID:   userID,
-			Mode:       &mode,
-			SortOrder:  &sortOrder,
-		},
-		ActorType: "system",
-		ActorID:   "system",
-	})
-}
-
-// updateSystemAction emits an ActionParamsUpdated event.
-func (m *SystemActionManager) updateSystemAction(ctx context.Context, actionID string, desiredState int32, paramsJSON []byte) error {
-	if !json.Valid(paramsJSON) {
-		return fmt.Errorf("updateSystemAction: paramsJSON is not valid JSON")
-	}
-
-	return m.store.AppendEvent(ctx, store.Event{
-		StreamType: "action",
-		StreamID:   actionID,
-		EventType:  string(eventtypes.ActionParamsUpdated),
-		Data: payloads.ActionParamsUpdated{
-			Params:       paramsJSON,
-			DesiredState: &desiredState,
-		},
-		ActorType: "system",
-		ActorID:   "system",
-	})
-}
-
-// deleteSystemAction emits an ActionDeleted event.
-func (m *SystemActionManager) deleteSystemAction(ctx context.Context, actionID string) error {
-	return m.store.AppendEvent(ctx, store.Event{
-		StreamType: "action",
-		StreamID:   actionID,
-		EventType:  string(eventtypes.ActionDeleted),
-		Data:       map[string]any{},
-		ActorType:  "system",
-		ActorID:    "system",
-	})
-}
-
-// linkSystemAction emits a UserSystemActionLinked event to record the
-// system action ID on the user projection.
-func (m *SystemActionManager) linkSystemAction(ctx context.Context, userID, field, actionID string) error {
-	return m.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   userID,
-		EventType:  string(eventtypes.UserSystemActionLinked),
-		Data: payloads.UserSystemActionLinked{
-			Field:    &field,
-			ActionID: &actionID,
-		},
-		ActorType: "system",
-		ActorID:   "system",
-	})
-}
-
-// signActionByID loads an action from the DB and signs it.
-//
-// Fail-closed: every outcome other than "signed and stored" returns
-// an error so the caller (syncUserProvisionAction, syncSshAccessAction,
-// syncTtyUserAction) surfaces it as a sync failure. A missing signer
-// is a wiring mistake, not a soft condition — letting an unsigned
-// system-managed action land in the DB means the agent silently
-// drops it on dispatch and the operator has no projection state to
-// debug from. Turning nil-signer into a hard error here forces main.go
-// to construct SystemActionManager with a real signer (or a
-// deterministic NoOpSigner in tests) instead of accidentally
-// producing silent no-ops.
-func (m *SystemActionManager) signActionByID(ctx context.Context, actionID string) error {
-	if m.signer == nil {
-		return fmt.Errorf("sign system action %s: signer not configured", actionID)
-	}
-
-	action, err := m.store.Queries().GetActionByID(ctx, actionID)
-	if err != nil {
-		return fmt.Errorf("load system action %s for signing: %w", actionID, err)
-	}
-
-	paramsJSON := action.Params
-	if paramsJSON == nil {
-		paramsJSON = []byte("{}")
-	}
-
-	sig, err := m.signer.Sign(action.ID, action.ActionType, paramsJSON)
-	if err != nil {
-		return fmt.Errorf("sign system action %s: %w", actionID, err)
-	}
-
-	if err := m.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
-		ID:              action.ID,
-		Signature:       sig,
-		ParamsCanonical: paramsJSON,
-	}); err != nil {
-		return fmt.Errorf("store system action %s signature: %w", actionID, err)
-	}
-
 	return nil
 }
 
