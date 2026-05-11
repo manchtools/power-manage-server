@@ -36,8 +36,12 @@ const (
 type AgentHandler struct {
 	pmv1connect.UnimplementedAgentServiceHandler
 
-	manager           *connection.Manager
-	aqClient          *taskqueue.Client
+	manager *connection.Manager
+	// aqClient is the taskqueue.Enqueuer interface so tests can swap in
+	// a recording fake without standing up Asynq + Valkey. Production
+	// wiring still passes the concrete *taskqueue.Client which
+	// implements the interface.
+	aqClient          taskqueue.Enqueuer
 	controlProxy      *ControlProxy
 	workerMgr         *gateway.DeviceWorkerManager
 	logger            *slog.Logger
@@ -64,7 +68,7 @@ type AgentHandler struct {
 // NewAgentHandler creates a new agent handler.
 func NewAgentHandler(
 	manager *connection.Manager,
-	aqClient *taskqueue.Client,
+	aqClient taskqueue.Enqueuer,
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
 	serverVersion string,
@@ -86,7 +90,7 @@ func NewAgentHandler(
 // NewAgentHandlerWithTLS creates a new agent handler that requires mTLS.
 func NewAgentHandlerWithTLS(
 	manager *connection.Manager,
-	aqClient *taskqueue.Client,
+	aqClient taskqueue.Enqueuer,
 	controlProxy *ControlProxy,
 	workerMgr *gateway.DeviceWorkerManager,
 	serverVersion string,
