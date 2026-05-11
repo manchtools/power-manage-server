@@ -3,18 +3,15 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
-	urlpkg "net/url"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
@@ -22,9 +19,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/api/template"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/config"
-	"github.com/manchtools/power-manage/server/internal/eventtypes"
-	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/scim"
@@ -353,180 +347,6 @@ func main() {
 	logger.Info("control server stopped")
 }
 
-func parseFlags() *Config {
-	cfg := &Config{}
-
-	flag.StringVar(&cfg.ListenAddr, "listen", ":8081", "Listen address")
-	flag.StringVar(&cfg.DatabaseURL, "database-url", "", "PostgreSQL connection URL")
-	flag.StringVar(&cfg.JWTSecret, "jwt-secret", "", "JWT secret key")
-	flag.StringVar(&cfg.CACertPath, "ca-cert", "/certs/ca.crt", "CA certificate path")
-	flag.StringVar(&cfg.CAKeyPath, "ca-key", "/certs/ca.key", "CA private key path")
-	flag.DurationVar(&cfg.CertValidity, "cert-validity", 8760*time.Hour, "Certificate validity duration")
-	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
-	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log format (text, json)")
-	flag.StringVar(&cfg.AdminEmail, "admin-email", "", "Initial admin user email")
-	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
-	flag.StringVar(&cfg.GatewayURL, "gateway-url", "", "Gateway URL returned to agents during registration")
-	flag.StringVar(&cfg.TerminalGatewayURL, "terminal-gateway-url", "", "Public WebSocket URL of the gateway terminal endpoint (e.g. wss://gw.example.com/terminal). When empty, ControlService.StartTerminal returns CodeUnavailable.")
-	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
-	// rc11 #77 — system-action reconciliation defaults: 1m interval keeps drift bounded for an
-	// operator-visible UX path (role grant → terminal works), 5m sweep timeout is plenty for
-	// even a 10k-user fleet because the sync is read-heavy and short-circuits on no-op users.
-	flag.DurationVar(&cfg.SystemActionReconcileInterval, "system-action-reconcile-interval", time.Minute, "Period between full SyncAllUsersSystemActions sweeps; 0 disables periodic reconciliation")
-	flag.DurationVar(&cfg.SystemActionReconcileTimeout, "system-action-reconcile-timeout", 5*time.Minute, "Per-sweep context deadline for the periodic reconciler")
-	flag.StringVar(&cfg.CATrustBundlePath, "ca-trust-bundle", "", "PEM file with trusted CA certificates for verification (supports CA rotation)")
-	flag.BoolVar(&cfg.TLSEnabled, "tls", false, "Enable TLS on public listener")
-	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "TLS certificate for public listener")
-	flag.StringVar(&cfg.TLSKey, "tls-key", "", "TLS private key for public listener")
-	flag.StringVar(&cfg.InternalListenAddr, "internal-listen", ":8082", "Internal mTLS listen address for gateway communication")
-	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
-	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
-
-	flag.Parse()
-
-	// Environment variable overrides
-	config.EnvString(&cfg.ListenAddr, "CONTROL_LISTEN_ADDR")
-	config.EnvString(&cfg.DatabaseURL, "CONTROL_DATABASE_URL")
-	config.EnvString(&cfg.JWTSecret, "CONTROL_JWT_SECRET")
-	config.EnvString(&cfg.CACertPath, "CONTROL_CA_CERT")
-	config.EnvString(&cfg.CAKeyPath, "CONTROL_CA_KEY")
-	config.EnvString(&cfg.CATrustBundlePath, "CONTROL_CA_TRUST_BUNDLE")
-	config.EnvBool(&cfg.TLSEnabled, "CONTROL_TLS_ENABLED", []string{"true", "1"}, []string{"false", "0"})
-	config.EnvString(&cfg.TLSCert, "CONTROL_TLS_CERT")
-	config.EnvString(&cfg.TLSKey, "CONTROL_TLS_KEY")
-	config.EnvString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
-	config.EnvString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
-	config.EnvString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
-	config.EnvString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
-	config.EnvString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
-	config.EnvString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
-	config.EnvString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
-	config.EnvString(&cfg.GatewayURL, "CONTROL_GATEWAY_URL")
-	config.EnvString(&cfg.TerminalGatewayURL, "CONTROL_TERMINAL_GATEWAY_URL")
-	config.EnvCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
-	config.EnvDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")
-	config.EnvDuration(&cfg.SystemActionReconcileInterval, "CONTROL_SYSTEM_ACTION_RECONCILE_INTERVAL")
-	config.EnvDuration(&cfg.SystemActionReconcileTimeout, "CONTROL_SYSTEM_ACTION_RECONCILE_TIMEOUT")
-
-	// SSO / Identity Provider configuration
-	cfg.PasswordAuthEnabled = true // default enabled
-	config.EnvBool(&cfg.PasswordAuthEnabled, "CONTROL_PASSWORD_AUTH_ENABLED", []string{"true", "1"}, []string{"false", "0"})
-	config.EnvString(&cfg.SSOCallbackBaseURL, "CONTROL_SSO_CALLBACK_BASE_URL")
-	if cfg.SSOCallbackBaseURL == "" && len(cfg.CORSOrigins) > 0 {
-		cfg.SSOCallbackBaseURL = cfg.CORSOrigins[0]
-	}
-	config.EnvString(&cfg.SCIMBaseURL, "CONTROL_SCIM_BASE_URL")
-	config.EnvCSV(&cfg.TrustedProxies, "CONTROL_TRUSTED_PROXIES")
-	config.EnvBool(&cfg.CORSAllowAll, "CONTROL_CORS_ALLOW_ALL", []string{"true", "1"}, []string{"false", "0"})
-
-	// Valkey (Asynq task queue) configuration
-	config.EnvString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
-	config.EnvString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
-	config.EnvInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
-
-	// Validate dynamic group evaluation interval (0 to disable, min 30m, max 8h)
-	config.ClampInterval(&cfg.DynamicGroupEvalInterval, 30*time.Minute, 8*time.Hour)
-
-	// Clamp system-action reconcile flags. The interval treats 0 as
-	// "disabled, matching StartReconciliation"; the timeout's 0 case
-	// would silently break the durability safety net via
-	// context.WithTimeout returning an already-cancelled context, so
-	// it falls back to the 5min default rather than disabling.
-	config.ClampInterval(&cfg.SystemActionReconcileInterval, 10*time.Second, 8*time.Hour)
-	config.ClampDurationFloor(&cfg.SystemActionReconcileTimeout, 5*time.Minute, 0)
-
-	if cfg.JWTSecret == "" {
-		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
-		os.Exit(1)
-	}
-	if len(cfg.JWTSecret) < 32 {
-		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET must be at least 32 characters")
-		os.Exit(1)
-	}
-
-	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
-		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert and -tls-key are required when TLS is enabled")
-		os.Exit(1)
-	}
-
-	return cfg
-}
-
-func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
-	// Check if user exists via the projection
-	_, err := st.Queries().GetUserByEmail(ctx, email)
-	if err == nil {
-		logger.Info("admin user already exists", "email", email)
-		return nil
-	}
-
-	// Create admin user via event sourcing
-	passwordHash, err := auth.HashPassword(password)
-	if err != nil {
-		return fmt.Errorf("hash password: %w", err)
-	}
-
-	id := ulid.Make().String()
-
-	// Look up Admin role BEFORE emitting the user-creation event so
-	// the user INSERT and the role assignment land atomically inside
-	// one projector tx (issue #135). If the role lookup fails (no
-	// Admin role seeded yet?), log and proceed with no roles - the
-	// Go projector treats a missing role_ids key the same as an
-	// empty slice and skips the per-role INSERT loop.
-	var roleIDs []string
-	if adminRole, err := st.Queries().GetRoleByName(ctx, "Admin"); err == nil {
-		roleIDs = []string{adminRole.ID}
-	} else {
-		logger.Warn("failed to look up Admin role for bootstrap user; user will be created with no roles",
-			"user_id", id, "error", err)
-	}
-
-	// Append UserCreatedWithRoles compound event - the projector
-	// inserts the user row AND the per-role assignment row in one tx.
-	emailCopy := email
-	passwordHashCopy := passwordHash
-	role := "admin"
-	err = st.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   id,
-		EventType:  string(eventtypes.UserCreatedWithRoles),
-		Data: payloads.UserCreatedWithRoles{
-			Email:        &emailCopy,
-			PasswordHash: &passwordHashCopy,
-			Role:         &role,
-			RoleIDs:      roleIDs,
-		},
-		ActorType: "system",
-		ActorID:   "bootstrap",
-	})
-	if err != nil {
-		return fmt.Errorf("create user event: %w", err)
-	}
-
-	logger.Info("admin user created", "email", email, "id", id)
-	return nil
-}
-
-// Note: env / clamp helpers used by parseFlags live in
-// internal/config (FromEnv + Validate + bounded clamps). The
-// previous local trampolines were inlined to drop a layer of
-// indirection — call sites now reference config.EnvString,
-// config.ClampInterval, etc. directly. See manchtools/power-
-// manage-server#152 (audit F017+F018).
-
-// maskDatabaseURL masks the password in a database URL for logging.
-// Uses net/url parsing so URL-encoded credentials (e.g. passwords that
-// contain ':' or '@') are handled correctly; the hand-rolled scan we
-// had before could mangle those edge cases.
-func maskDatabaseURL(raw string) string {
-	u, err := urlpkg.Parse(raw)
-	if err != nil || u.User == nil {
-		return raw
-	}
-	if _, hasPassword := u.User.Password(); !hasPassword {
-		return raw
-	}
-	u.User = urlpkg.UserPassword(u.User.Username(), "***")
-	return u.String()
-}
+// Note: parseFlags / applyEnvOverrides / clampDurations /
+// mustValidateConfig live in flags.go.
+// ensureAdminUser / maskDatabaseURL live in admin_user.go.
