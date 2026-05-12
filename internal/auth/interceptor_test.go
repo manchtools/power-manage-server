@@ -189,7 +189,11 @@ func TestAuthInterceptor_MissingHeader(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing authentication credentials")
 }
 
-// TestAuthInterceptor_InvalidToken verifies that an invalid JWT is rejected.
+// TestAuthInterceptor_InvalidToken verifies that a malformed JWT is
+// rejected with the "invalid token" message — distinct from the
+// "token expired" wording covered by TestAuthInterceptor_ExpiredToken.
+// The split (#139) lets the web client choose refresh-and-retry vs
+// forced-relogin instead of reflexively retrying on every 401.
 func TestAuthInterceptor_InvalidToken(t *testing.T) {
 	serverURL, _ := setupInterceptorTest(t)
 
@@ -203,7 +207,9 @@ func TestAuthInterceptor_InvalidToken(t *testing.T) {
 	_, err := client.CallUnary(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "invalid or expired token")
+	assert.Contains(t, err.Error(), "invalid token")
+	assert.NotContains(t, err.Error(), "expired",
+		"malformed-token failures must not surface as 'expired' — keeps the web error-mapping branches disjoint")
 }
 
 // TestAuthInterceptor_CookieNoLongerAccepted verifies that cookie-based auth
@@ -297,6 +303,11 @@ func TestAuthInterceptor_ExpiredToken(t *testing.T) {
 	_, err = client.CallUnary(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	// #139: expired tokens specifically must surface the "token
+	// expired" wording so the web client can pick refresh-and-retry.
+	// Malformed-token failures use "invalid token" instead — see
+	// TestAuthInterceptor_InvalidToken.
+	assert.Contains(t, err.Error(), "token expired")
 }
 
 // TestAuthInterceptor_WrongSecret verifies that a token signed with a different
@@ -321,6 +332,10 @@ func TestAuthInterceptor_WrongSecret(t *testing.T) {
 	_, err = client.CallUnary(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	// #139: signature-invalid is a hard "invalid", not an expiry —
+	// the web client must NOT treat this as a refreshable failure.
+	assert.Contains(t, err.Error(), "invalid token")
+	assert.NotContains(t, err.Error(), "expired")
 }
 
 // setupRateLimitedInterceptorTest stands up an httptest server that
