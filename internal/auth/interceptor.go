@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/golang-jwt/jwt/v5"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -223,10 +224,18 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
 		}
 
-		// Validate token
+		// Validate token. Distinguish "expired" from "malformed /
+		// signature-invalid / wrong-type" so the web client can show
+		// the right UX (silent refresh vs forced re-login). Falls back
+		// to errNotAuthenticated for non-expiry failures so the web
+		// error mapping doesn't trigger refresh-and-retry on a token
+		// that can never become valid (#139, audit Bundle A).
 		claims, err := i.jwtManager.ValidateToken(tokenString, TokenTypeAccess)
 		if err != nil {
-			return nil, authErrorCtx(ctx, errTokenExpired, connect.CodeUnauthenticated, "invalid or expired token")
+			if errors.Is(err, jwt.ErrTokenExpired) {
+				return nil, authErrorCtx(ctx, errTokenExpired, connect.CodeUnauthenticated, "token expired")
+			}
+			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid token")
 		}
 
 		// Add user context with permissions from JWT

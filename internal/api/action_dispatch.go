@@ -109,16 +109,23 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		inputs.timeoutSeconds = action.TimeoutSeconds
 		inputs.actionID = &source.ActionId
-		// NOTE: action.Signature and action.ParamsCanonical are
-		// loaded from the stored row in the original PR-1 shape but
-		// were unconditionally overwritten by the re-sign call below.
-		// The contract decision (re-sign every dispatch vs. respect
-		// stored signature) is tracked in #137. Until that lands,
-		// drop the dead loads — keeping them only as //lint:ignore
-		// stubs trips ineffassign in golangci-lint and adds noise
-		// without addressing the underlying ambiguity. The comment
-		// stays here so a future contributor sees why these fields
-		// are conspicuously absent on the stored-action branch.
+		// Contract (closes #137 audit F002): always re-sign every
+		// dispatch. action.Signature + action.ParamsCanonical on the
+		// stored row are NOT consumed here — the re-sign step below
+		// overwrites both with a fresh signature against the current
+		// signing key. Reasons:
+		//   1. The signing key may have rotated since the action was
+		//      originally created. A stored signature would become
+		//      unverifiable against the current public key the agent
+		//      has cached.
+		//   2. The agent's verification path doesn't accept "old"
+		//      signatures — it always checks against whatever the
+		//      current control-cert chain says.
+		//   3. The cost of re-signing is one HMAC, dwarfed by the
+		//      Asynq enqueue and the bidi-stream RTT.
+		// The columns stay on the row as audit-history (the original
+		// signature at create-time) but never round-trip into a
+		// dispatch.
 
 	case *pm.DispatchActionRequest_InlineAction:
 		action := source.InlineAction

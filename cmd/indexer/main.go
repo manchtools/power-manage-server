@@ -189,7 +189,11 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.DurationVar(&cfg.ReconcileInterval, "reconcile-interval", time.Hour, "Interval for periodic full rebuild (0 to disable)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 5, "Number of concurrent Asynq workers")
-	flag.StringVar(&cfg.HealthAddr, "health-addr", ":8082", "Health check endpoint address")
+	// :8090 was previously :8082, which collided with the control
+	// server's InternalListenAddr default on single-host dev setups
+	// (#138). Operators on multi-host deploys can still pin either
+	// via CONTROL_INTERNAL_LISTEN_ADDR + INDEXER_HEALTH_ADDR.
+	flag.StringVar(&cfg.HealthAddr, "health-addr", ":8090", "Health check endpoint address")
 
 	flag.Parse()
 
