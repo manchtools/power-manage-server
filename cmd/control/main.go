@@ -231,13 +231,24 @@ func main() {
 	}
 	defer valkey.Close()
 
-	loginLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
-	refreshLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
-	registerLimiter := auth.NewRateLimiter(1000, 1*time.Minute)
+	// Per-procedure rate limits (audit F036 / #145 / #142). Shared
+	// limiters keyed by client IP; a determined attacker behind many
+	// IPs can rotate sources but the per-procedure ceiling is tight
+	// enough that any single IP is locked out of credential-spray
+	// patterns within seconds. Login + VerifyLoginTOTP + SSOCallback
+	// share one limiter — they're all auth-attempt vectors that a
+	// defender treats as one logical "attempt" per IP.
+	rateLimiters := auth.RateLimiters{
+		Login:     auth.NewRateLimiter(10, 1*time.Minute), // credential-spray defense
+		Refresh:   auth.NewRateLimiter(60, 1*time.Minute), // legitimate refreshes are frequent
+		Register:  auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
+		Logout:    auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
+		RenewCert: auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
+	}
 
 	interceptors := connect.WithInterceptors(
 		api.NewLoggingInterceptor(logger),
-		auth.NewAuthInterceptor(logger, jwtManager, loginLimiter, refreshLimiter, registerLimiter),
+		auth.NewAuthInterceptor(logger, jwtManager, rateLimiters),
 		auth.NewAuthzInterceptor(),
 	)
 

@@ -113,18 +113,36 @@ func clientIP(req connect.AnyRequest) string {
 	return peerIP
 }
 
+// RateLimiters bundles the per-procedure-family rate limiters the
+// AuthInterceptor consults. nil fields disable the corresponding gate.
+// The split lets each family carry a different ceiling: Login is a
+// credential-spray vector and gets the tightest budget; RefreshToken
+// has the loosest because legitimate clients refresh frequently.
+//
+// Procedure → field mapping (see WrapUnary):
+//   - Login / VerifyLoginTOTP / SSOCallback → Login
+//   - RefreshToken                          → Refresh
+//   - Register                              → Register
+//   - Logout                                → Logout
+//   - RenewCertificate                      → RenewCert
+type RateLimiters struct {
+	Login     *RateLimiter
+	Refresh   *RateLimiter
+	Register  *RateLimiter
+	Logout    *RateLimiter
+	RenewCert *RateLimiter
+}
+
 // AuthInterceptor provides Connect-RPC authentication interceptor.
 type AuthInterceptor struct {
-	logger          *slog.Logger
-	jwtManager      *JWTManager
-	loginLimiter    *RateLimiter
-	refreshLimiter  *RateLimiter
-	registerLimiter *RateLimiter
+	logger     *slog.Logger
+	jwtManager *JWTManager
+	limiters   RateLimiters
 }
 
 // NewAuthInterceptor creates a new authentication interceptor.
-func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, loginLimiter, refreshLimiter, registerLimiter *RateLimiter) *AuthInterceptor {
-	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, loginLimiter: loginLimiter, refreshLimiter: refreshLimiter, registerLimiter: registerLimiter}
+func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, limiters RateLimiters) *AuthInterceptor {
+	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, limiters: limiters}
 }
 
 // WrapUnary implements connect.Interceptor.
@@ -132,30 +150,57 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
 
-		// Rate limit login attempts by client IP
-		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.loginLimiter != nil {
+		// Rate limit login attempts by client IP. Login + VerifyLoginTOTP +
+		// SSOCallback share one budget — they're all credential-spray
+		// vectors that a defender treats as one logical "auth attempt"
+		// regardless of which RPC the attacker pokes.
+		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.limiters.Login != nil {
 			ip := clientIP(req)
-			if !i.loginLimiter.Allow(ip) {
+			if !i.limiters.Login.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
 			}
 		}
 
 		// Rate limit token refresh attempts by client IP
-		if procedure == "/pm.v1.ControlService/RefreshToken" && i.refreshLimiter != nil {
+		if procedure == "/pm.v1.ControlService/RefreshToken" && i.limiters.Refresh != nil {
 			ip := clientIP(req)
-			if !i.refreshLimiter.Allow(ip) {
+			if !i.limiters.Refresh.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
 			}
 		}
 
 		// Rate limit registration attempts by client IP
-		if procedure == "/pm.v1.ControlService/Register" && i.registerLimiter != nil {
+		if procedure == "/pm.v1.ControlService/Register" && i.limiters.Register != nil {
 			ip := clientIP(req)
-			if !i.registerLimiter.Allow(ip) {
+			if !i.limiters.Register.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
+			}
+		}
+
+		// Rate limit Logout — public procedure (#142). Without a limiter,
+		// an attacker who learned a session token (XSS, log leak, shared
+		// browser) could invalidate that user's sessions arbitrarily often:
+		// each call is a single DB write with no backoff.
+		if procedure == "/pm.v1.ControlService/Logout" && i.limiters.Logout != nil {
+			ip := clientIP(req)
+			if !i.limiters.Logout.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "logout", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many logout attempts, try again later")
+			}
+		}
+
+		// Rate limit RenewCertificate — public procedure (#142). Each
+		// call exercises the CA signing path + a DB write; concurrent
+		// floods could exhaust signer throughput. Cert rotation happens
+		// once per cert-lifetime so the legitimate ceiling is very low.
+		if procedure == "/pm.v1.ControlService/RenewCertificate" && i.limiters.RenewCert != nil {
+			ip := clientIP(req)
+			if !i.limiters.RenewCert.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "renew_cert", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many certificate renewal attempts, try again later")
 			}
 		}
 

@@ -417,13 +417,17 @@ The full permission catalog lives in `internal/auth/permissions.go`; the interce
 
 ### Rate Limiting (`internal/auth/ratelimit.go`)
 
-Sliding-window rate limiter keyed by IP address. Current configured limits in `cmd/control/main.go`:
+Sliding-window rate limiter keyed by IP address. Current per-procedure-family limits in `cmd/control/main.go` (audit F036 — closes [#142](https://github.com/manchtools/power-manage-server/issues/142) + [#145](https://github.com/manchtools/power-manage-server/issues/145)):
 
-- Login: 1000 attempts per minute
-- RefreshToken: 1000 attempts per minute
-- Register: 1000 attempts per minute
+| Limiter | Procedures gated | Limit | Rationale |
+|---|---|---|---|
+| `Login` | `Login`, `VerifyLoginTOTP`, `SSOCallback` | 10 / min / IP | credential-spray defense; all three RPCs share one budget — they're all auth-attempt vectors |
+| `Refresh` | `RefreshToken` | 60 / min / IP | legitimate refreshes are frequent; budget large enough for normal use |
+| `Register` | `Register` | 5 / min / IP | registration spam protection |
+| `Logout` | `Logout` | 30 / min / IP | legitimate ceiling for multi-session logout (a real user might log out of several sessions sequentially) |
+| `RenewCert` | `RenewCertificate` | 5 / min / IP | cert rotation happens at 80% of cert lifetime, not in a tight loop; CA signing is the limiting resource |
 
-These values are deliberately loose (operator-friendly defaults that stop pathological retry loops without rejecting legitimate clients). Tightening to credential-spray-resistant values is tracked separately — see [#142](https://github.com/manchtools/power-manage-server/issues/142) (rate-limit gaps on Logout / RenewCertificate) and [#145](https://github.com/manchtools/power-manage-server/issues/145) (Login / Register tightening, audit F036).
+`PublicProcedures` lists `Logout` + `RenewCertificate` alongside the auth flows — both bypass the access-token check, so the rate-limiter is the only spray defense in front of them.
 
 Background goroutine cleans up stale entries every 5 minutes.
 
