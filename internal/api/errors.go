@@ -109,15 +109,6 @@ const (
 	ErrValidationFailed = "validation_failed"
 	ErrInvalidPageToken = "invalid_page_token"
 	ErrInvalidQuery     = "invalid_query"
-
-	// ErrTemplatedDispatchRefused is returned when an operator tries to
-	// dispatch an action whose params contain `{{ var.NAME }}` references
-	// directly to a single device (DispatchAction / DispatchToMultiple /
-	// DispatchActionSet / etc.). Variables resolve only via device-group
-	// or user-group memberships at agent SyncActions time; the ad-hoc
-	// dispatch path has no group context. Web maps this code to a
-	// "assign to a group instead" UI message. See #196.
-	ErrTemplatedDispatchRefused = "templated_dispatch_refused"
 )
 
 // Internal error code (generic).

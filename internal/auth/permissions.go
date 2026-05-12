@@ -97,18 +97,6 @@ func AllPermissions() []PermissionInfo {
 		{"EvaluateDynamicGroup", "Device Groups", "Evaluate dynamic groups"},
 		{"SetDeviceGroupSyncInterval", "Device Groups", "Set device group sync interval"},
 		{"SetDeviceGroupMaintenanceWindow", "Device Groups", "Set device group maintenance window"},
-		// Device-group variables (#59 group-based variables design).
-		// Split per-RPC AND per-secret-vs-non-secret. The secret
-		// variant uses the `:secret` scope suffix so the parity test
-		// (which strips :scope before matching) still binds it to
-		// the same RPC as the non-secret base. The handler dispatches
-		// on req.Variable.Type and additionally consults the :secret
-		// permission via auth.HasPermission.
-		{"SetDeviceGroupVariable", "Device Groups", "Set or update a non-secret variable on a device group"},
-		{"SetDeviceGroupVariable:secret", "Device Groups", "Set or update a secret-typed variable on a device group"},
-		{"DeleteDeviceGroupVariable", "Device Groups", "Remove a non-secret variable from a device group"},
-		{"DeleteDeviceGroupVariable:secret", "Device Groups", "Remove a secret-typed variable from a device group"},
-		{"GetDeviceGroupVariables", "Device Groups", "List variables on a device group (secret values redacted)"},
 		// Assignments
 		{"CreateAssignment", "Assignments", "Create assignments"},
 		{"DeleteAssignment", "Assignments", "Delete assignments"},
@@ -192,14 +180,6 @@ func AllPermissions() []PermissionInfo {
 		{"ValidateUserGroupQuery", "User Groups", "Validate user group queries"},
 		{"EvaluateDynamicUserGroup", "User Groups", "Evaluate dynamic user groups"},
 		{"SetUserGroupMaintenanceWindow", "User Groups", "Set user group maintenance window"},
-		// User-group variables (#59 group-based variables design).
-		// Mirrors the device-group split — see comments above.
-		{"SetUserGroupVariable", "User Groups", "Set or update a non-secret variable on a user group"},
-		{"SetUserGroupVariable:secret", "User Groups", "Set or update a secret-typed variable on a user group"},
-		{"DeleteUserGroupVariable", "User Groups", "Remove a non-secret variable from a user group"},
-		{"DeleteUserGroupVariable:secret", "User Groups", "Remove a secret-typed variable from a user group"},
-		{"GetUserGroupVariables", "User Groups", "List variables on a user group (secret values redacted)"},
-		{"ListAvailableVariables", "User Groups", "List variables defined on the named device-groups + user-groups (autocomplete; no values)"},
 		// Identity Providers
 		{"CreateIdentityProvider", "Identity Providers", "Create identity providers"},
 		{"GetIdentityProvider", "Identity Providers", "View identity providers"},

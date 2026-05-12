@@ -13,7 +13,6 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
-	"github.com/manchtools/power-manage/server/internal/api/template"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
@@ -39,13 +38,6 @@ type InternalHandler struct {
 	// gateway gets a clean error rather than the InternalService
 	// default 'method not implemented'.
 	terminalTokenStore *terminal.TokenStore
-
-	// renderer substitutes `{{ var.NAME }}` references on every
-	// templateable string field of an Action proto before it leaves
-	// the server. Set via SetRenderer in main.go. nil disables the
-	// substitution pass — actions then ship verbatim, which is the
-	// pre-#196 behaviour and what test fixtures default to.
-	renderer *template.Renderer
 }
 
 // NewInternalHandler creates a new internal service handler.
@@ -63,13 +55,6 @@ func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Log
 // ControlService.SetTerminalHandler so the two paths share one store.
 func (h *InternalHandler) SetTerminalTokenStore(s *terminal.TokenStore) {
 	h.terminalTokenStore = s
-}
-
-// SetRenderer wires the template renderer used by ProxySyncActions to
-// substitute `{{ var.NAME }}` references on Action wire messages.
-// Called from main.go after the encryptor + store are available.
-func (h *InternalHandler) SetRenderer(r *template.Renderer) {
-	h.renderer = r
 }
 
 // VerifyDevice checks that a device exists and is not deleted.
@@ -197,34 +182,6 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 			Schedule:    actionparams.ScheduleFromJSON(g.Schedule),
 			Actions:     groupActions,
 		})
-	}
-
-	// Server-side `{{ var.NAME }}` substitution pass. Resolves once
-	// per device and applies to every Action — both standalone and
-	// inside groups. A render error fails the whole sync rather than
-	// shipping a half-rendered template; the agent handles the error
-	// by retrying after the operator fixes the variable definition.
-	// See manchtools/power-manage-server#196.
-	if h.renderer != nil {
-		vars, err := h.renderer.Resolve(ctx, deviceID)
-		if err != nil {
-			h.logger.Error("template variable resolve failed", "device_id", deviceID, "error", err)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("failed to resolve template variables: %v", err))
-		}
-		for _, a := range standalone {
-			if err := h.renderer.RenderWithVars(ctx, a, vars); err != nil {
-				h.logger.Error("template render failed", "device_id", deviceID, "action_id", a.GetId().GetValue(), "error", err)
-				return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeFailedPrecondition, fmt.Sprintf("failed to render templates: %v", err))
-			}
-		}
-		for _, g := range groups {
-			for _, a := range g.Actions {
-				if err := h.renderer.RenderWithVars(ctx, a, vars); err != nil {
-					h.logger.Error("template render failed", "device_id", deviceID, "action_id", a.GetId().GetValue(), "error", err)
-					return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeFailedPrecondition, fmt.Sprintf("failed to render templates: %v", err))
-				}
-			}
-		}
 	}
 
 	// Resolved maintenance window across every group reaching the

@@ -43,7 +43,7 @@ func TestAllPermissions_ScopeFormat(t *testing.T) {
 		parts := strings.SplitN(p.Key, ":", 2)
 		if len(parts) == 2 {
 			scope := parts[1]
-			assert.Contains(t, []string{"self", "assigned", "secret"}, scope,
+			assert.Contains(t, []string{"self", "assigned"}, scope,
 				"invalid scope suffix in permission %s", p.Key)
 		}
 	}

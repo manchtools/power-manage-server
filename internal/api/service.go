@@ -28,7 +28,6 @@ type ControlService struct {
 	actionSet        *ActionSetHandler
 	definition       *DefinitionHandler
 	deviceGroup      *DeviceGroupHandler
-	groupVariable    *GroupVariableHandler
 	assignment       *AssignmentHandler
 	userSelection    *UserSelectionHandler
 	audit            *AuditHandler
@@ -71,7 +70,6 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ca.A
 		actionSet:        NewActionSetHandler(st, logger.With("component", "action_set_handler")),
 		definition:       NewDefinitionHandler(st, logger.With("component", "definition_handler")),
 		deviceGroup:      NewDeviceGroupHandler(st, logger.With("component", "device_group_handler")),
-		groupVariable:    NewGroupVariableHandler(st, enc, logger.With("component", "group_variable_handler")),
 		assignment:       NewAssignmentHandler(st, logger.With("component", "assignment_handler"), actionHandler),
 		userSelection:    NewUserSelectionHandler(st, logger.With("component", "user_selection_handler")),
 		audit:            NewAuditHandler(st, logger.With("component", "audit_handler")),
@@ -461,35 +459,6 @@ func (s *ControlService) SetDeviceGroupSyncInterval(ctx context.Context, req *co
 
 func (s *ControlService) SetDeviceGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetDeviceGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
 	return s.deviceGroup.SetDeviceGroupMaintenanceWindow(ctx, req)
-}
-
-// Group variables (#59 design — see GroupVariableHandler).
-func (s *ControlService) SetDeviceGroupVariable(ctx context.Context, req *connect.Request[pm.SetDeviceGroupVariableRequest]) (*connect.Response[pm.SetDeviceGroupVariableResponse], error) {
-	return s.groupVariable.SetDeviceGroupVariable(ctx, req)
-}
-
-func (s *ControlService) DeleteDeviceGroupVariable(ctx context.Context, req *connect.Request[pm.DeleteDeviceGroupVariableRequest]) (*connect.Response[pm.DeleteDeviceGroupVariableResponse], error) {
-	return s.groupVariable.DeleteDeviceGroupVariable(ctx, req)
-}
-
-func (s *ControlService) GetDeviceGroupVariables(ctx context.Context, req *connect.Request[pm.GetDeviceGroupVariablesRequest]) (*connect.Response[pm.GetDeviceGroupVariablesResponse], error) {
-	return s.groupVariable.GetDeviceGroupVariables(ctx, req)
-}
-
-func (s *ControlService) SetUserGroupVariable(ctx context.Context, req *connect.Request[pm.SetUserGroupVariableRequest]) (*connect.Response[pm.SetUserGroupVariableResponse], error) {
-	return s.groupVariable.SetUserGroupVariable(ctx, req)
-}
-
-func (s *ControlService) DeleteUserGroupVariable(ctx context.Context, req *connect.Request[pm.DeleteUserGroupVariableRequest]) (*connect.Response[pm.DeleteUserGroupVariableResponse], error) {
-	return s.groupVariable.DeleteUserGroupVariable(ctx, req)
-}
-
-func (s *ControlService) GetUserGroupVariables(ctx context.Context, req *connect.Request[pm.GetUserGroupVariablesRequest]) (*connect.Response[pm.GetUserGroupVariablesResponse], error) {
-	return s.groupVariable.GetUserGroupVariables(ctx, req)
-}
-
-func (s *ControlService) ListAvailableVariables(ctx context.Context, req *connect.Request[pm.ListAvailableVariablesRequest]) (*connect.Response[pm.ListAvailableVariablesResponse], error) {
-	return s.groupVariable.ListAvailableVariables(ctx, req)
 }
 
 // Assignments

@@ -92,15 +92,6 @@ const (
 	DeviceGroupMemberAdded          EventType = "DeviceGroupMemberAdded"
 	DeviceGroupMemberRemoved        EventType = "DeviceGroupMemberRemoved"
 	DeviceGroupDeleted              EventType = "DeviceGroupDeleted"
-	// Group-scoped variables (#59 design). Two event types per
-	// operation so the schema-aware audit redactor can scrub the
-	// secret variant's value field without inspecting payload contents.
-	// Same shape on both sides; the type split is purely for redaction
-	// and permission-check dispatch.
-	GroupVariableSet           EventType = "GroupVariableSet"
-	GroupVariableDeleted       EventType = "GroupVariableDeleted"
-	GroupSecretVariableSet     EventType = "GroupSecretVariableSet"
-	GroupSecretVariableDeleted EventType = "GroupSecretVariableDeleted"
 	// Legacy device-group membership aliases — emitted by older versions
 	// before the *MemberAdded / *MemberRemoved naming. The device_group
 	// listener still recognises them so historical events replay
@@ -238,7 +229,6 @@ func All() []EventType {
 		DeviceGroupCreated, DeviceGroupRenamed, DeviceGroupDescriptionUpdated, DeviceGroupQueryUpdated,
 		DeviceGroupSyncIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
 		DeviceGroupMemberRemoved, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
-		GroupVariableSet, GroupVariableDeleted, GroupSecretVariableSet, GroupSecretVariableDeleted,
 		ExecutionCreated, ExecutionScheduled, ExecutionDispatched, ExecutionStarted, ExecutionCompleted,
 		ExecutionFailed, ExecutionTimedOut, ExecutionSkipped, ExecutionCancelled, OutputChunk,
 		IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled,
