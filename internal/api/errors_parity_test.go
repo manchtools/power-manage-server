@@ -118,12 +118,21 @@ func extractSDKCodes(t *testing.T) []string {
 		return nil
 	}
 
+	// Strip comments before matching so a commented-out export (left
+	// as a TODO or for documentation) doesn't get counted as live and
+	// skew the parity check (#143). Removes:
+	//   - `// ...` line comments (until end-of-line)
+	//   - `/* ... */` block comments (single-line; multi-line block
+	//     comments containing export lines are rare in this file but
+	//     handled with the non-greedy `(?s)` form below)
+	src := stripTSComments(string(data))
+
 	// Accept single, double, or backtick-quoted string literals plus
 	// an optional `: string` type annotation so a future refactor to
 	// `export const ErrFoo: string = "…"` or a template literal
 	// doesn't silently hide the code from the parity check.
 	re := regexp.MustCompile(`export\s+const\s+Err\w+(?:\s*:\s*string)?\s*=\s*['"` + "`" + `]([a-z][a-z0-9_]*)['"` + "`" + `]`)
-	matches := re.FindAllStringSubmatch(string(data), -1)
+	matches := re.FindAllStringSubmatch(src, -1)
 	seen := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
 		seen[m[1]] = struct{}{}
@@ -134,6 +143,21 @@ func extractSDKCodes(t *testing.T) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// stripTSComments removes `// ...` line comments and `/* ... */`
+// block comments from a TypeScript source string before regex
+// matching. Without this, a commented-out export (left as a TODO or
+// for documentation) would be counted as a live export by the
+// parity check (#143). Imperfect — a `//` inside a string literal
+// would also be eaten — but the parity-check input is the SDK's
+// curated errors.ts file, which doesn't carry such literals.
+func stripTSComments(src string) string {
+	// Block comments first (greedy across newlines via (?s) inline flag).
+	src = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(src, "")
+	// Then line comments (until end of line).
+	src = regexp.MustCompile(`//[^\n]*`).ReplaceAllString(src, "")
+	return src
 }
 
 // diff returns elements in a that are not in b, sorted.

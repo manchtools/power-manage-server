@@ -55,7 +55,7 @@ func TestValidate_InvalidULID(t *testing.T) {
 		ID:    "not-a-ulid",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "i_d must be a valid ULID")
+	assert.Contains(t, err.Error(), "id must be a valid ULID")
 }
 
 func TestValidate_ValidULID(t *testing.T) {
@@ -89,13 +89,23 @@ func TestValidate_Optional_TooShort(t *testing.T) {
 }
 
 func TestToSnakeCase(t *testing.T) {
+	// Acronym handling pinned by #140 — the previous shape split
+	// contiguous uppercase letters one at a time (`UserID` →
+	// `user_i_d`), which leaked nonsense into operator-facing
+	// validation error messages. New rule: `_` is inserted before an
+	// uppercase letter only at word boundaries (lowercase→upper or
+	// end-of-acronym), so acronyms ride together.
 	tests := map[string]string{
 		"Name":           "name",
-		"UserID":         "user_i_d",
-		"ActionSetID":    "action_set_i_d",
+		"UserID":         "user_id",
+		"ActionSetID":    "action_set_id",
 		"createdAt":      "created_at",
 		"simple":         "simple",
-		"HTTPStatusCode": "h_t_t_p_status_code",
+		"HTTPStatusCode": "http_status_code",
+		"IDOnly":         "id_only", // acronym at start
+		"ID":             "id",      // pure acronym
+		"a":              "a",       // single lowercase
+		"":               "",        // empty
 	}
 	for input, expected := range tests {
 		assert.Equal(t, expected, sdkvalidate.ToSnakeCase(input), "ToSnakeCase(%q)", input)
