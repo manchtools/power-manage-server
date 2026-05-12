@@ -16,7 +16,6 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
-	"github.com/manchtools/power-manage/server/internal/api/template"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -278,12 +277,6 @@ func main() {
 		// ProxyValidateTerminalToken.
 		internalHandler.SetTerminalTokenStore(valkey.TerminalTokenStore)
 	}
-	// Server-side `{{ var.NAME }}` substitution for action params.
-	// The renderer's StoreResolver reads device labels + group
-	// variables from the projection and decrypts SECRET-typed values
-	// via the same encryptor that wrote them. See manchtools/power-
-	// manage-server#196 (group-based variables, design #59).
-	internalHandler.SetRenderer(template.New(template.NewStoreResolver(st, encryptor, logger.With("component", "template"))))
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
 
 	// Peer-class gate: InternalService handles credential-bearing

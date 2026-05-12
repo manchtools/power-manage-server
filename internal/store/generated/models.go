@@ -172,7 +172,6 @@ type DeviceGroupsProjection struct {
 	DynamicQuery        *string    `json:"dynamic_query"`
 	SyncIntervalMinutes int32      `json:"sync_interval_minutes"`
 	MaintenanceWindow   []byte     `json:"maintenance_window"`
-	Variables           []byte     `json:"variables"`
 }
 
 type DeviceInventory struct {
@@ -492,7 +491,6 @@ type UserGroupsProjection struct {
 	IsDynamic         bool      `json:"is_dynamic"`
 	DynamicQuery      *string   `json:"dynamic_query"`
 	MaintenanceWindow []byte    `json:"maintenance_window"`
-	Variables         []byte    `json:"variables"`
 }
 
 type UserRolesProjection struct {

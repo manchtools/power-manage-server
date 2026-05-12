@@ -264,7 +264,7 @@ func (q *Queries) EvaluateQueuedDynamicUserGroups(ctx context.Context) (Evaluate
 }
 
 const getUserGroupByID = `-- name: GetUserGroupByID :one
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window, variables FROM user_groups_projection WHERE id = $1 AND is_deleted = FALSE
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window FROM user_groups_projection WHERE id = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUserGroupByID(ctx context.Context, id string) (UserGroupsProjection, error) {
@@ -283,13 +283,12 @@ func (q *Queries) GetUserGroupByID(ctx context.Context, id string) (UserGroupsPr
 		&i.IsDynamic,
 		&i.DynamicQuery,
 		&i.MaintenanceWindow,
-		&i.Variables,
 	)
 	return i, err
 }
 
 const getUserGroupByName = `-- name: GetUserGroupByName :one
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window, variables FROM user_groups_projection WHERE name = $1 AND is_deleted = FALSE
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window FROM user_groups_projection WHERE name = $1 AND is_deleted = FALSE
 `
 
 func (q *Queries) GetUserGroupByName(ctx context.Context, name string) (UserGroupsProjection, error) {
@@ -308,7 +307,6 @@ func (q *Queries) GetUserGroupByName(ctx context.Context, name string) (UserGrou
 		&i.IsDynamic,
 		&i.DynamicQuery,
 		&i.MaintenanceWindow,
-		&i.Variables,
 	)
 	return i, err
 }
@@ -634,7 +632,7 @@ func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]L
 }
 
 const listUserGroups = `-- name: ListUserGroups :many
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window, variables FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
 `
 
 type ListUserGroupsParams struct {
@@ -664,7 +662,6 @@ func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) 
 			&i.IsDynamic,
 			&i.DynamicQuery,
 			&i.MaintenanceWindow,
-			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
@@ -677,7 +674,7 @@ func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) 
 }
 
 const listUserGroupsForUser = `-- name: ListUserGroupsForUser :many
-SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version, ug.is_dynamic, ug.dynamic_query, ug.maintenance_window, ug.variables FROM user_groups_projection ug
+SELECT ug.id, ug.name, ug.description, ug.member_count, ug.created_at, ug.created_by, ug.updated_at, ug.is_deleted, ug.projection_version, ug.is_dynamic, ug.dynamic_query, ug.maintenance_window FROM user_groups_projection ug
 JOIN user_group_members_projection ugm ON ugm.group_id = ug.id
 WHERE ugm.user_id = $1 AND ug.is_deleted = FALSE
 ORDER BY ug.name
@@ -705,7 +702,6 @@ func (q *Queries) ListUserGroupsForUser(ctx context.Context, userID string) ([]U
 			&i.IsDynamic,
 			&i.DynamicQuery,
 			&i.MaintenanceWindow,
-			&i.Variables,
 		); err != nil {
 			return nil, err
 		}
