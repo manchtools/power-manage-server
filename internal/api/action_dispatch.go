@@ -170,7 +170,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			fmt.Sprintf("failed to marshal action params for template scan: %v", err))
 	}
 	if template.HasReference(string(paramsJSONForScan)) {
-		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeFailedPrecondition,
+		return nil, apiErrorCtx(ctx, ErrTemplatedDispatchRefused, connect.CodeFailedPrecondition,
 			"this action contains templated parameters ({{ var.NAME }}) and cannot be dispatched ad-hoc to a single device. "+
 				"Variables are resolved from device-group / user-group memberships at agent sync time. "+
 				"Assign the action to a device-group or user-group instead of running it directly.")

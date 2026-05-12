@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -213,6 +214,22 @@ func TestDispatchAction_TemplatedParamsRefused(t *testing.T) {
 		"templated params on ad-hoc dispatch MUST surface FailedPrecondition — anything else lets literal {{ var.X }} reach the agent verbatim")
 	assert.Contains(t, err.Error(), "templated parameters",
 		"error message must explain that variables are group-only and the action should be assigned to a group instead")
+
+	// The web client reads the structured ErrorDetail code (not the
+	// human-readable message) to map the failure to a localized
+	// "assign to a group instead" UI message. Pin the code here so a
+	// future refactor that drops the structured detail breaks the test
+	// instead of silently breaking the web error mapping.
+	var connectErr *connect.Error
+	require.True(t, errors.As(err, &connectErr))
+	details := connectErr.Details()
+	require.NotEmpty(t, details, "templated-dispatch refusal MUST carry the structured ErrorDetail — the web client maps by code, not by message")
+	val, vErr := details[0].Value()
+	require.NoError(t, vErr)
+	detail, ok := val.(*pm.ErrorDetail)
+	require.True(t, ok, "first detail must be ErrorDetail; got %T", val)
+	assert.Equal(t, api.ErrTemplatedDispatchRefused, detail.Code,
+		"error code MUST be templated_dispatch_refused — the web client switches on this exact string")
 }
 
 // TestDispatchInstantAction_PreconditionNoTaskQueue pins the
