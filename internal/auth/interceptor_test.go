@@ -18,21 +18,27 @@ var testLogger = slog.Default()
 
 func TestAuthInterceptor_Creation(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
-	loginLimiter := NewRateLimiter(10, time.Minute)
-	refreshLimiter := NewRateLimiter(20, time.Minute)
-	registerLimiter := NewRateLimiter(5, time.Minute)
+	limiters := RateLimiters{
+		Login:     NewRateLimiter(10, time.Minute),
+		Refresh:   NewRateLimiter(60, time.Minute),
+		Register:  NewRateLimiter(5, time.Minute),
+		Logout:    NewRateLimiter(30, time.Minute),
+		RenewCert: NewRateLimiter(5, time.Minute),
+	}
 
-	interceptor := NewAuthInterceptor(testLogger, jwtMgr, loginLimiter, refreshLimiter, registerLimiter)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, limiters)
 	assert.NotNil(t, interceptor)
 	assert.NotNil(t, interceptor.jwtManager)
-	assert.NotNil(t, interceptor.loginLimiter)
-	assert.NotNil(t, interceptor.refreshLimiter)
-	assert.NotNil(t, interceptor.registerLimiter)
+	assert.NotNil(t, interceptor.limiters.Login)
+	assert.NotNil(t, interceptor.limiters.Refresh)
+	assert.NotNil(t, interceptor.limiters.Register)
+	assert.NotNil(t, interceptor.limiters.Logout)
+	assert.NotNil(t, interceptor.limiters.RenewCert)
 }
 
 func TestAuthInterceptor_NilLimiters(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
-	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
 	assert.NotNil(t, interceptor)
 }
 
@@ -64,7 +70,7 @@ func TestAuthzInterceptor_Creation(t *testing.T) {
 
 func TestAuthInterceptor_StreamingPassthrough(t *testing.T) {
 	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test")})
-	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
 
 	clientFunc := func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
 		return nil
@@ -104,7 +110,7 @@ func setupInterceptorTest(t *testing.T) (string, *JWTManager) {
 		Secret:            []byte("test-secret-for-interceptor-test"),
 		AccessTokenExpiry: 15 * time.Minute,
 	})
-	interceptor := NewAuthInterceptor(testLogger, jwtMgr, nil, nil, nil)
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
 
 	mux := http.NewServeMux()
 
@@ -315,4 +321,85 @@ func TestAuthInterceptor_WrongSecret(t *testing.T) {
 	_, err = client.CallUnary(context.Background(), req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+}
+
+// setupRateLimitedInterceptorTest stands up an httptest server that
+// mounts a single connect handler under the named procedure with the
+// AuthInterceptor's rate limiters fully configured. Returns the URL.
+func setupRateLimitedInterceptorTest(t *testing.T, procedure string, limiters RateLimiters) string {
+	t.Helper()
+	jwtMgr := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-for-ratelimit-test"),
+		AccessTokenExpiry: 15 * time.Minute,
+	})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, limiters)
+
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(_ context.Context, _ *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// TestAuthInterceptor_LogoutRateLimit pins the #142 fix: Logout was
+// listed in PublicProcedures but had no rate limiter. An attacker who
+// learned a session token (XSS, log leak, shared browser) could
+// invalidate that user's sessions arbitrarily often. The new Logout
+// limiter caps the call rate per IP.
+func TestAuthInterceptor_LogoutRateLimit(t *testing.T) {
+	procedure := "/pm.v1.ControlService/Logout"
+	url := setupRateLimitedInterceptorTest(t, procedure, RateLimiters{
+		Logout: NewRateLimiter(2, time.Minute),
+	})
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+procedure)
+
+	for i := 0; i < 2; i++ {
+		_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+		require.NoError(t, err, "call %d should succeed within the 2/min budget", i+1)
+	}
+	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	require.Error(t, err, "call 3 MUST be rate-limited — Logout was previously unrate-limited (issue #142)")
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many logout attempts")
+}
+
+// TestAuthInterceptor_RenewCertificateRateLimit pins the #142 fix for
+// the second Public-but-unrate-limited procedure. Each RenewCertificate
+// call exercises the CA signing path; concurrent floods could exhaust
+// signer throughput.
+func TestAuthInterceptor_RenewCertificateRateLimit(t *testing.T) {
+	procedure := "/pm.v1.ControlService/RenewCertificate"
+	url := setupRateLimitedInterceptorTest(t, procedure, RateLimiters{
+		RenewCert: NewRateLimiter(1, time.Minute),
+	})
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+procedure)
+
+	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	require.NoError(t, err)
+
+	_, err = client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	require.Error(t, err, "RenewCertificate MUST be rate-limited — was previously unrate-limited (issue #142)")
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many certificate renewal attempts")
+}
+
+// TestAuthInterceptor_LogoutWithoutLimiter_PassesThrough verifies the
+// nil-limiter contract: when RateLimiters.Logout is nil, the gate is
+// a no-op and the call falls through. Mirrors the long-standing
+// behaviour for the other limiters.
+func TestAuthInterceptor_LogoutWithoutLimiter_PassesThrough(t *testing.T) {
+	procedure := "/pm.v1.ControlService/Logout"
+	url := setupRateLimitedInterceptorTest(t, procedure, RateLimiters{})
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, url+procedure)
+
+	for i := 0; i < 5; i++ {
+		_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+		require.NoError(t, err, "with no Logout limiter configured, every call must pass through")
+	}
 }
