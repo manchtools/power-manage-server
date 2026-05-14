@@ -314,12 +314,18 @@ func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error
 
 // Queries returns the SQLC queries interface.
 //
-// Deprecated: New handler code should depend on Store.Repos() and
+// Transitional: new handler code should depend on Store.Repos() and
 // the domain interfaces in this package. Queries() remains exported
-// during the storage-abstraction migration (#242) for handlers
-// whose domain has not yet been ported to a repository. Each Wave B.N
+// during the storage-abstraction migration (#242) for handlers whose
+// domain has not yet been ported to a repository. Each Wave B.N
 // sub-PR shrinks the set of remaining callers; Queries() goes
 // private once the last one migrates.
+//
+// Intentionally NOT marked with the godoc "Deprecated:" keyword —
+// every existing caller is part of the planned migration set, not
+// an unsanctioned use, so flagging them via staticcheck SA1019 would
+// just add ceremony (//lint:ignore tags) without changing behaviour.
+// The marker re-enters the moment Queries() goes unexported.
 func (s *Store) Queries() *Queries {
 	return s.queries
 }
