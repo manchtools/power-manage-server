@@ -30,12 +30,12 @@ func NewComplianceHandler(st *store.Store, logger *slog.Logger) *ComplianceHandl
 func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connect.Request[pm.GetDeviceComplianceRequest]) (*connect.Response[pm.GetDeviceComplianceResponse], error) {
 	deviceID := req.Msg.DeviceId
 
-	results, err := h.store.Queries().GetDeviceComplianceResults(ctx, deviceID)
+	results, err := h.store.Repos().Compliance.DeviceResults(ctx, deviceID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance results")
 	}
 
-	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, deviceID)
+	summary, err := h.store.Repos().Compliance.DeviceSummary(ctx, deviceID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance summary")
 	}
@@ -66,7 +66,7 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 	}
 
 	return connect.NewResponse(&pm.GetDeviceComplianceResponse{
-		Status: pm.ComplianceStatus(summary.ComplianceStatus),
+		Status: pm.ComplianceStatus(summary.Status),
 		Checks: checks,
 	}), nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/store/postgres"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -66,6 +67,7 @@ func main() {
 	}
 	defer st.Close()
 	st.SetLogger(logger)
+	st.SetRepos(postgres.NewRepos(st.Queries()))
 	logger.Info("database initialized")
 
 	// Initialize go-redis client for RediSearch.

@@ -22,6 +22,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/store/postgres"
 )
 
 // version is set at build time via -ldflags.
@@ -119,6 +120,7 @@ func main() {
 	}
 	defer st.Close()
 	st.SetLogger(logger)
+	st.SetRepos(postgres.NewRepos(st.Queries()))
 	logger.Info("database initialized", "url", maskDatabaseURL(cfg.DatabaseURL))
 
 	// Create admin user if specified and not exists
