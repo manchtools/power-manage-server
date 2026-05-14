@@ -32,7 +32,7 @@ func NewSettingsHandler(st *store.Store, logger *slog.Logger, systemActions *Sys
 
 // GetServerSettings returns the current server settings.
 func (h *SettingsHandler) GetServerSettings(ctx context.Context, req *connect.Request[pm.GetServerSettingsRequest]) (*connect.Response[pm.GetServerSettingsResponse], error) {
-	settings, err := h.store.Queries().GetServerSettings(ctx)
+	settings, err := h.store.Repos().Settings.GetServer(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get server settings")
 	}
@@ -62,7 +62,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 	}
 
 	// Read back from projection
-	settings, err := h.store.Queries().GetServerSettings(ctx)
+	settings, err := h.store.Repos().Settings.GetServer(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read server settings")
 	}

@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // IdentityLinkHandler handles self-service identity linking RPCs.
@@ -33,7 +32,7 @@ func (h *IdentityLinkHandler) ListIdentityLinks(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	links, err := h.store.Queries().ListIdentityLinksForUser(ctx, userCtx.ID)
+	links, err := h.store.Repos().IdentityLink.ListForUser(ctx, userCtx.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list identity links")
 	}
@@ -60,7 +59,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 	}
 
 	// Get the link to verify ownership
-	link, err := h.store.Queries().GetIdentityLinkByID(ctx, req.Msg.LinkId)
+	link, err := h.store.Repos().IdentityLink.Get(ctx, req.Msg.LinkId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrIdentityLinkNotFound, "identity link not found")
 	}
@@ -78,7 +77,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
 
-	linkCount, err := h.store.Queries().CountIdentityLinksForUser(ctx, targetUserID)
+	linkCount, err := h.store.Repos().IdentityLink.CountForUser(ctx, targetUserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count identity links")
 	}
@@ -106,7 +105,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 }
 
 // identityLinkRowToProto converts a joined identity link row to a proto message.
-func identityLinkRowToProto(link db.ListIdentityLinksForUserRow) *pm.IdentityLink {
+func identityLinkRowToProto(link store.IdentityLinkWithProvider) *pm.IdentityLink {
 	protoLink := &pm.IdentityLink{
 		Id:            link.ID,
 		UserId:        link.UserID,

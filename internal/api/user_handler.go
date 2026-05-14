@@ -799,7 +799,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 
 // populateUserIdentityLinks loads identity links for a user and attaches them to the proto User.
 func (h *UserHandler) populateUserIdentityLinks(ctx context.Context, user *pm.User) {
-	links, err := h.store.Queries().ListIdentityLinksForUser(ctx, user.Id)
+	links, err := h.store.Repos().IdentityLink.ListForUser(ctx, user.Id)
 	if err != nil {
 		return
 	}
