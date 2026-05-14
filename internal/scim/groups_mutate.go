@@ -6,12 +6,9 @@ package scim
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -49,7 +46,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		UserGroupID: groupID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}
@@ -143,7 +140,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 		UserGroupID: groupID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}

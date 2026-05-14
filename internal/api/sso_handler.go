@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -74,7 +73,7 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 					h.logger.Warn("sso: GetLinkedProvidersDisablingPassword failed", "error", err)
 				}
 			}
-		} else if !errors.Is(err, pgx.ErrNoRows) {
+		} else if !store.IsNotFound(err) {
 			// Pre-auth path; the email is in req.Msg but logging
 			// it would correlate the failure to a specific user.
 			// Stay anonymous — surface the operation + the err.
@@ -197,7 +196,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 
 	authState, err := h.store.Queries().ConsumeAuthState(ctx, req.Msg.State)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			h.logger.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
 			return nil, apiErrorCtx(ctx, ErrSSOStateExpired, connect.CodeUnauthenticated, "invalid or expired state")
 		}
@@ -278,7 +277,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Get and validate user before proceeding
 	user, err := h.store.Queries().GetUserByID(ctx, linkResult.UserID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			h.logger.Error("SSO user not found after link resolved — user may be soft-deleted",
 				"user_id", linkResult.UserID,
 				"is_new", linkResult.IsNew,

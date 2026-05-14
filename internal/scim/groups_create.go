@@ -8,11 +8,8 @@ package scim
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -117,7 +114,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if !errors.Is(err, pgx.ErrNoRows) && err != nil {
+	if !store.IsNotFound(err) && err != nil {
 		h.logger.Error("failed to check existing SCIM group mapping", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return

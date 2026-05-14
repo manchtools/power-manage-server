@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -89,7 +88,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 
 	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up user")
@@ -117,7 +116,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		ID:           req.Msg.DeviceId,
 		FilterUserID: filterUserID,
 	}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")

@@ -5,12 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
 
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -52,7 +50,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrProviderSlugExists, connect.CodeAlreadyExists, "provider with this slug already exists")
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !store.IsNotFound(err) {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check slug")
 	}
 

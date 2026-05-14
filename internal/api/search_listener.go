@@ -3,12 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/search"
@@ -308,7 +305,7 @@ func SearchListener(st *store.Store, idx SearchIndex, logger *slog.Logger) store
 			case SearchOpReindex:
 				data, err := loadSearchEntityData(ctx, st, logger, op.Scope, op.ID)
 				if err != nil {
-					if errors.Is(err, pgx.ErrNoRows) {
+					if store.IsNotFound(err) {
 						logger.Debug("search listener: entity gone before reindex (likely deleted in same tx batch); skipping",
 							"scope", op.Scope, "id", op.ID, "event_type", e.EventType)
 						continue

@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -315,7 +313,7 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		// Verify device exists
 		_, err = q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")

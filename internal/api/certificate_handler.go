@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -52,7 +51,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 		ID: deviceID,
 	})
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")

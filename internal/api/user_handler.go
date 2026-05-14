@@ -3,12 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -61,7 +59,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// concurrent CreateUser calls slip past this check.
 	//
 	// Distinguish three branches: row found → AlreadyExists;
-	// pgx.ErrNoRows → proceed (the email is free); any other
+	// store.IsNotFound(err) → proceed (the email is free); any other
 	// error → surface as Internal so a transient DB problem
 	// doesn't get silently mistaken for "free to create" and
 	// then re-surface as the generic Internal from AppendEvent
@@ -69,7 +67,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// auth_handler.go:59 and sso_handler.go:179.
 	if _, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email); err == nil {
 		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	} else if !store.IsNotFound(err) {
 		// Don't log raw email (PII). At this point the user doesn't
 		// exist yet (we're checking IF they should), so there's no
 		// user_id either. Operators triaging this can correlate

@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -49,7 +47,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
 		_, err := h.store.Queries().GetActionByID(ctx, req.Msg.SourceId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
@@ -57,7 +55,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
 		_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SourceId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
@@ -65,7 +63,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
 		_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.SourceId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
@@ -73,7 +71,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
 		_, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.SourceId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrCompliancePolicyNotFound, connect.CodeNotFound, "compliance policy not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
@@ -85,7 +83,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE:
 		_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.TargetId})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
@@ -93,7 +91,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP:
 		_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
@@ -101,7 +99,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER:
 		_, err := h.store.Queries().GetUserByID(ctx, req.Msg.TargetId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
@@ -109,7 +107,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP:
 		_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.TargetId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
@@ -135,7 +133,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 		return connect.NewResponse(&pm.CreateAssignmentResponse{
 			Assignment: h.assignmentToProto(existingAssignment),
 		}), nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
+	} else if !store.IsNotFound(err) {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check existing assignment")
 	}
 

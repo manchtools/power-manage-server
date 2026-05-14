@@ -15,10 +15,7 @@ package scim
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -77,7 +74,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !store.IsNotFound(err) {
 			h.logger.Error("failed to check existing SCIM user", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
@@ -131,7 +128,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusCreated, userToSCIM(existingUser, externalID, baseURL))
 			return
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !store.IsNotFound(err) {
 			h.logger.Error("failed to look up user by email", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return

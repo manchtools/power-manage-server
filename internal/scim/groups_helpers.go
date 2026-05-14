@@ -6,12 +6,9 @@ package scim
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -87,7 +84,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.Identit
 // the user group and updates the mapping to restore consistency.
 func (h *Handler) buildGroupResource(ctx context.Context, providerID string, mapping db.ScimGroupMappingProjection, baseURL string) (SCIMGroup, error) {
 	group, err := h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if store.IsNotFound(err) {
 		// User group was deleted but SCIM mapping still exists — restore it.
 		mapping, err = h.restoreOrphanedGroup(ctx, providerID, mapping)
 		if err != nil {

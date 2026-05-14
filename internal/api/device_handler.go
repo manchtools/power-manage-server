@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -14,7 +13,6 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -325,7 +323,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		// Verify user exists
 		_, err = q.GetUserByID(ctx, userID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
@@ -354,7 +352,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		// Verify user group exists
 		_, err = q.GetUserGroupByID(ctx, groupID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")

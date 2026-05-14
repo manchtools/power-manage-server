@@ -2,12 +2,10 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"math"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -30,9 +28,12 @@ func requireAuth(ctx context.Context) (*auth.UserContext, error) {
 	return userCtx, nil
 }
 
-// handleGetError returns a NotFound error for pgx.ErrNoRows, or an Internal error otherwise.
+// handleGetError returns a NotFound error when err signals a missing
+// row from any supported storage backend, or an Internal error
+// otherwise. Backend recognition is centralized in store.IsNotFound;
+// see tracker #242 for the abstraction motivation.
 func handleGetError(ctx context.Context, err error, notFoundCode, notFoundMsg string) error {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if store.IsNotFound(err) {
 		return apiErrorCtx(ctx, notFoundCode, connect.CodeNotFound, notFoundMsg)
 	}
 	return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get resource")

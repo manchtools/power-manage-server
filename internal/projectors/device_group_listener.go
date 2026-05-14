@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -223,7 +221,7 @@ func applyDeviceGroupQueryUpdated(ctx context.Context, q *store.Queries, e store
 		// pgx surfaces ErrNoRows when the inner UPDATE's version
 		// guard rejects a stale replay (the CTE join collapses to
 		// zero rows). Treat that as "skip cascade".
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil
 		}
 		return err
