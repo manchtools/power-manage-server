@@ -14,7 +14,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // CompliancePolicyHandler handles compliance policy RPCs.
@@ -59,7 +58,7 @@ func (h *CompliancePolicyHandler) CreateCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, id)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
@@ -75,12 +74,12 @@ func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
-	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.Id)
+	rules, err := h.store.Repos().Compliance.ListPolicyRules(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
@@ -97,7 +96,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 		return nil, err
 	}
 
-	policies, err := h.store.Queries().ListCompliancePolicies(ctx, db.ListCompliancePoliciesParams{
+	policies, err := h.store.Repos().Compliance.ListPolicies(ctx, store.ListCompliancePoliciesFilter{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -105,7 +104,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list compliance policies")
 	}
 
-	count, err := h.store.Queries().CountCompliancePolicies(ctx)
+	count, err := h.store.Repos().Compliance.CountPolicies(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count compliance policies")
 	}
@@ -136,7 +135,7 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 	}
 
 	// Verify policy exists before emitting event
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -154,7 +153,7 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
@@ -176,7 +175,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 	}
 
 	// Verify policy exists before emitting event
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -194,7 +193,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
@@ -216,7 +215,7 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 	}
 
 	// Verify policy exists before emitting delete event
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -250,7 +249,7 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 	}
 
 	// Verify policy exists
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -291,12 +290,12 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
+	rules, err := h.store.Repos().Compliance.ListPolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
@@ -318,7 +317,7 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 	}
 
 	// Verify policy exists before emitting event
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -336,12 +335,12 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
+	rules, err := h.store.Repos().Compliance.ListPolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
@@ -363,7 +362,7 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 	}
 
 	// Verify policy exists before emitting event
-	_, err = h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
@@ -382,12 +381,12 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 		return nil, err
 	}
 
-	policy, err := h.store.Queries().GetCompliancePolicyByID(ctx, req.Msg.PolicyId)
+	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy")
 	}
 
-	rules, err := h.store.Queries().ListCompliancePolicyRules(ctx, req.Msg.PolicyId)
+	rules, err := h.store.Repos().Compliance.ListPolicyRules(ctx, req.Msg.PolicyId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance policy rules")
 	}
@@ -403,7 +402,7 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 		return nil, err
 	}
 
-	evals, err := h.store.Queries().GetDeviceCompliancePolicyEvaluations(ctx, req.Msg.DeviceId)
+	evals, err := h.store.Repos().Compliance.ListDeviceEvaluations(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance evaluations")
 	}
@@ -496,7 +495,7 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 	}), nil
 }
 
-func (h *CompliancePolicyHandler) policyToProto(p db.CompliancePoliciesProjection, rules []db.CompliancePolicyRulesProjection) *pm.CompliancePolicy {
+func (h *CompliancePolicyHandler) policyToProto(p store.CompliancePolicy, rules []store.CompliancePolicyRule) *pm.CompliancePolicy {
 	policy := &pm.CompliancePolicy{
 		Id:          p.ID,
 		Name:        p.Name,
