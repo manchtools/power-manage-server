@@ -108,7 +108,7 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 	}
 
 	// Get pending TOTP setup
-	totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, userCtx.ID)
+	totpRecord, err := h.store.Repos().Totp.GetByUserID(ctx, userCtx.ID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrTOTPNotSetUp, connect.CodeFailedPrecondition, "TOTP not set up, call SetupTOTP first")
@@ -233,7 +233,7 @@ func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm
 		return nil, err
 	}
 
-	status, err := h.store.Queries().GetTOTPStatus(ctx, userCtx.ID)
+	status, err := h.store.Repos().Totp.GetStatus(ctx, userCtx.ID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			return connect.NewResponse(&pm.GetTOTPStatusResponse{
@@ -316,7 +316,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Get TOTP record
-	totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, claims.UserID)
+	totpRecord, err := h.store.Repos().Totp.GetByUserID(ctx, claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get TOTP data")
 	}

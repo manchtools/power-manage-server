@@ -13,8 +13,11 @@ package store
 // device.go for DeviceRepo), implement it under internal/store/postgres,
 // add a field here, populate it in postgres.NewRepos.
 type Repos struct {
-	Compliance   ComplianceRepo
-	IdentityLink IdentityLinkRepo
-	Logs         LogsRepo
-	Settings     SettingsRepo
+	Compliance      ComplianceRepo
+	IdentityLink    IdentityLinkRepo
+	Logs            LogsRepo
+	OSQuery         OSQueryRepo
+	Settings        SettingsRepo
+	TerminalSession TerminalSessionRepo
+	Totp            TotpRepo
 }
