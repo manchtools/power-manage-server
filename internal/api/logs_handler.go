@@ -56,10 +56,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 	queryID := ulid.Make().String()
 
 	// Create pending result row
-	if err := h.store.Queries().CreateLogQueryResult(ctx, generated.CreateLogQueryResultParams{
-		QueryID:  queryID,
-		DeviceID: msg.DeviceId,
-	}); err != nil {
+	if err := h.store.Repos().Logs.CreateQueryResult(ctx, queryID, msg.DeviceId); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create log query result")
 	}
 
@@ -83,10 +80,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 	); err != nil {
 		h.logger.Error("log query enqueue failed; marking result expired",
 			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
-		if expireErr := h.store.Queries().ExpirePendingLogQueryResult(ctx, generated.ExpirePendingLogQueryResultParams{
-			QueryID: queryID,
-			Error:   fmt.Sprintf("dispatch enqueue failed: %v", err),
-		}); expireErr != nil {
+		if expireErr := h.store.Repos().Logs.ExpirePendingQueryResult(ctx, queryID, fmt.Sprintf("dispatch enqueue failed: %v", err)); expireErr != nil {
 			h.logger.Error("failed to mark enqueue-failed log query result as expired",
 				"query_id", queryID, "error", expireErr)
 		}
@@ -104,7 +98,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 
 // GetDeviceLogResult polls for the result of a dispatched log query.
 func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Request[pm.GetDeviceLogResultRequest]) (*connect.Response[pm.GetDeviceLogResultResponse], error) {
-	result, err := h.store.Queries().GetLogQueryResult(ctx, req.Msg.QueryId)
+	result, err := h.store.Repos().Logs.GetQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
 	}
@@ -112,10 +106,7 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && time.Since(result.CreatedAt) > logQueryResultTimeout {
 		timeoutErr := "log query timed out: device did not respond within 5 minutes"
-		if err := h.store.Queries().ExpirePendingLogQueryResult(ctx, generated.ExpirePendingLogQueryResultParams{
-			QueryID: result.QueryID,
-			Error:   timeoutErr,
-		}); err != nil {
+		if err := h.store.Repos().Logs.ExpirePendingQueryResult(ctx, result.QueryID, timeoutErr); err != nil {
 			h.logger.Warn("failed to expire pending log query result", "query_id", result.QueryID, "error", err)
 		}
 		result.Completed = true
