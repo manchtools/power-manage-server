@@ -21,6 +21,7 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
+	pgrepo "github.com/manchtools/power-manage/server/internal/store/postgres"
 )
 
 // setupPostgresContainer is the shared bootstrap used by both public
@@ -68,6 +69,7 @@ func setupPostgresContainer(t *testing.T) *store.Store {
 		t.Fatalf("create store: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
+	st.SetRepos(pgrepo.NewRepos(st.Queries()))
 	return st
 }
 

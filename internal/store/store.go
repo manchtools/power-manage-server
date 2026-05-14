@@ -120,6 +120,18 @@ type Store struct {
 	// a Store directly don't require log plumbing. Set via SetLogger
 	// from cmd/{control,indexer}/main.go after construction.
 	logger *slog.Logger
+
+	// repos is the domain repository registry. Wired via SetRepos
+	// from boot code (cmd/control, cmd/indexer, test fixture) AFTER
+	// store.New returns and BEFORE any handler runs. Guarded by
+	// listenersMu — same boot-once-then-read posture as listeners +
+	// rebuildAppliers + logger. Read via Store.Repos(), which panics
+	// if SetRepos was never called so misconfiguration fails loudly
+	// instead of nil-derefing deep inside a handler.
+	//
+	// Part of the storage-abstraction tracker (#242). Domains move
+	// from Store.Queries() into Repos fields one wave at a time.
+	repos *Repos
 }
 
 // SetLogger plumbs a slog.Logger for fireListeners' panic-recovery
@@ -301,8 +313,54 @@ func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error
 }
 
 // Queries returns the SQLC queries interface.
+//
+// Transitional: new handler code should depend on Store.Repos() and
+// the domain interfaces in this package. Queries() remains exported
+// during the storage-abstraction migration (#242) for handlers whose
+// domain has not yet been ported to a repository. Each Wave B.N
+// sub-PR shrinks the set of remaining callers; Queries() goes
+// private once the last one migrates.
+//
+// Intentionally NOT marked with the godoc "Deprecated:" keyword —
+// every existing caller is part of the planned migration set, not
+// an unsanctioned use, so flagging them via staticcheck SA1019 would
+// just add ceremony (//lint:ignore tags) without changing behaviour.
+// The marker re-enters the moment Queries() goes unexported.
 func (s *Store) Queries() *Queries {
 	return s.queries
+}
+
+// SetRepos wires the domain repository registry. Called once after
+// store.New / NewWithoutMigrations by boot code in cmd/control,
+// cmd/indexer, or the test fixture (internal/testutil). Handlers
+// reach the registry via Store.Repos().
+//
+// Boot code typically calls:
+//
+//	st, _ := store.New(ctx, dsn)
+//	st.SetRepos(postgres.NewRepos(st.Queries()))
+//
+// Splitting this out of store.New keeps the store package free of
+// any backend-specific import — postgres is wired by the binary,
+// not by the abstraction it implements.
+func (s *Store) SetRepos(r *Repos) {
+	s.listenersMu.Lock()
+	s.repos = r
+	s.listenersMu.Unlock()
+}
+
+// Repos returns the domain repository registry. Panics if SetRepos
+// was never called — every Store construction site MUST wire repos
+// before handlers start serving traffic, so a missing wire is a
+// boot-time misconfiguration that should fail loudly.
+func (s *Store) Repos() *Repos {
+	s.listenersMu.RLock()
+	r := s.repos
+	s.listenersMu.RUnlock()
+	if r == nil {
+		panic("store: Repos accessed before SetRepos — wire postgres.NewRepos in your boot code (see #242)")
+	}
+	return r
 }
 
 // Pool returns the underlying connection pool.

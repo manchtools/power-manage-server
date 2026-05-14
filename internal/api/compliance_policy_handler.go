@@ -409,17 +409,17 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 	}
 
 	// Also get compliance results for detection output
-	results, err := h.store.Queries().GetDeviceComplianceResults(ctx, req.Msg.DeviceId)
+	results, err := h.store.Repos().Compliance.DeviceResults(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance results")
 	}
-	resultMap := make(map[string]db.ComplianceResultsProjection)
+	resultMap := make(map[string]store.ComplianceCheckResult)
 	for _, r := range results {
 		resultMap[r.ActionID] = r
 	}
 
 	// Get device compliance summary
-	summary, err := h.store.Queries().GetDeviceComplianceSummary(ctx, req.Msg.DeviceId)
+	summary, err := h.store.Repos().Compliance.DeviceSummary(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -491,7 +491,7 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 	}
 
 	return connect.NewResponse(&pm.GetDeviceCompliancePolicyStatusResponse{
-		OverallStatus: pm.ComplianceStatus(summary.ComplianceStatus),
+		OverallStatus: pm.ComplianceStatus(summary.Status),
 		Policies:      policies,
 	}), nil
 }
