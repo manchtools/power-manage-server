@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -19,15 +19,15 @@ type mockQuerier struct {
 }
 
 func (m *mockQuerier) GetIdentityLinkByProviderAndExternalID(_ context.Context, _ db.GetIdentityLinkByProviderAndExternalIDParams) (db.IdentityLinksProjection, error) {
-	return db.IdentityLinksProjection{}, pgx.ErrNoRows
+	return db.IdentityLinksProjection{}, store.ErrNotFound
 }
 
 func (m *mockQuerier) GetUserByEmail(_ context.Context, _ string) (db.UsersProjection, error) {
-	return db.UsersProjection{}, pgx.ErrNoRows
+	return db.UsersProjection{}, store.ErrNotFound
 }
 
 func (m *mockQuerier) GetUserByID(_ context.Context, _ string) (db.UsersProjection, error) {
-	return db.UsersProjection{}, pgx.ErrNoRows
+	return db.UsersProjection{}, store.ErrNotFound
 }
 
 func (m *mockQuerier) GetServerSettings(_ context.Context) (db.ServerSettingsProjection, error) {

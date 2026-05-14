@@ -2,12 +2,10 @@ package api
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -54,7 +52,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrRoleNameExists, connect.CodeAlreadyExists, "role name already exists")
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !store.IsNotFound(err) {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role name uniqueness")
 	}
 
@@ -297,7 +295,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		// Verify role exists
 		_, err = q.GetRoleByID(ctx, roleID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")

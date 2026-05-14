@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -211,12 +209,13 @@ func applyUserGroupQueryUpdated(ctx context.Context, q *store.Queries, e store.P
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 	if err != nil {
-		// pgx surfaces sql.ErrNoRows / pgx.ErrNoRows when the inner
-		// UPDATE's :execrows guard rejects a stale replay (the
-		// CTE join collapses to zero rows). That MUST be treated as
-		// "skip cascade" — propagating the error would roll back the
-		// listener TX and surface a hot loop on every reconciler pass.
-		if errors.Is(err, pgx.ErrNoRows) {
+		// The inner UPDATE's :execrows guard reports not-found when
+		// it rejects a stale replay (the CTE join collapses to zero
+		// rows). That MUST be treated as "skip cascade" — propagating
+		// the error would roll back the listener TX and surface a hot
+		// loop on every reconciler pass. store.IsNotFound bridges
+		// whichever backend sentinel surfaces.
+		if store.IsNotFound(err) {
 			return nil
 		}
 		return err

@@ -1,12 +1,9 @@
 package scim
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -103,7 +100,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 			ScimGroupID: f.Value,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				resources = []any{}
 			} else {
 				h.logger.Error("failed to find SCIM group mapping", "error", err)
@@ -163,7 +160,7 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 		UserGroupID: groupID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}
@@ -205,7 +202,7 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		UserGroupID: groupID,
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}

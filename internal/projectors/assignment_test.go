@@ -429,7 +429,7 @@ func TestAssignmentListener_StaleModeReplayRejected(t *testing.T) {
 // TestAssignmentListener_StaleDeleteReplayDoesNotCascade is a
 // regression lock for the asymmetric-guard discipline on
 // AssignmentDeleted: when the version-guarded SoftDelete affects zero
-// rows (RETURNING produces no rows → pgx.ErrNoRows), the compliance
+// rows (RETURNING produces no rows → store.IsNotFound), the compliance
 // cascade MUST be skipped. Otherwise an old AssignmentDeleted
 // re-applied later by the reconciler against a freshly-restored
 // assignment would silently drop compliance evaluations and

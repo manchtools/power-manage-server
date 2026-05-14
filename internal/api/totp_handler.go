@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -112,7 +110,7 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 	// Get pending TOTP setup
 	totpRecord, err := h.store.Queries().GetTOTPByUserID(ctx, userCtx.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrTOTPNotSetUp, connect.CodeFailedPrecondition, "TOTP not set up, call SetupTOTP first")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get TOTP status")
@@ -237,7 +235,7 @@ func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm
 
 	status, err := h.store.Queries().GetTOTPStatus(ctx, userCtx.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return connect.NewResponse(&pm.GetTOTPStatusResponse{
 				Enabled:              false,
 				BackupCodesRemaining: 0,

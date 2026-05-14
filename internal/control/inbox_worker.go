@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -89,7 +88,7 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	// Skip processing for deleted or unknown devices.
 	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			logger.Debug("ignoring hello from unknown device")
 			return nil
 		}
@@ -136,7 +135,7 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 	// Skip processing for deleted or unknown devices.
 	deleted, err := w.store.Queries().IsDeviceDeleted(ctx, payload.DeviceID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			w.logger.Debug("ignoring heartbeat from unknown device", "device_id", payload.DeviceID)
 			return nil
 		}
@@ -200,7 +199,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			actionID = *existingExec.ActionID
 		}
 		needsCreate = false
-	} else if errors.Is(err, pgx.ErrNoRows) {
+	} else if store.IsNotFound(err) {
 		// Not an execution ID — treat as action ID (agent-scheduled action).
 		// Derive a stable execution ID from device+action+completedAt so
 		// retries of the same result don't create duplicates, but separate
@@ -218,7 +217,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		_, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID)
 		if checkErr == nil {
 			needsCreate = false
-		} else if errors.Is(checkErr, pgx.ErrNoRows) {
+		} else if store.IsNotFound(checkErr) {
 			needsCreate = true
 		} else {
 			return fmt.Errorf("check derived execution %s: %w", executionID, checkErr)
@@ -245,7 +244,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	if needsCreate {
 		action, err := w.store.Queries().GetActionByID(ctx, actionID)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				// Action was deleted while agent was offline — skip, don't retry.
 				logger.Warn("action not found, skipping execution creation", "action_id", actionID)
 				return nil
@@ -575,7 +574,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	switch {
 	case err == nil:
 		// Happy path — stream ID recovered.
-	case errors.Is(err, pgx.ErrNoRows):
+	case store.IsNotFound(err):
 		// Genuinely absent: the Requested event never landed
 		// (original RPC crashed before append). Fall back to a
 		// fresh ULID so we still record the terminal outcome —
@@ -668,7 +667,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			if !ok {
 				action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
 				if err != nil {
-					if errors.Is(err, pgx.ErrNoRows) {
+					if store.IsNotFound(err) {
 						// Action was deleted after the execution was created.
 						// Mark the execution failed so it leaves the "pending"
 						// state — otherwise every reconnect retries dispatch

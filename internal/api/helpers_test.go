@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // TestRequireAuth_Success returns the embedded user context unchanged.
@@ -33,16 +34,27 @@ func TestRequireAuth_NoUser(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, cerr.Code())
 }
 
-// TestHandleGetError_NotFound maps pgx.ErrNoRows to the supplied
-// not-found code with CodeNotFound. Any other error collapses to
-// CodeInternal so a database hiccup never leaks "row not found"
-// to the client when the row actually exists but the read failed.
+// TestHandleGetError_NotFound maps a store-layer not-found error to
+// the supplied code with CodeNotFound. Any other error collapses to
+// CodeInternal so a database hiccup never leaks "row not found" to
+// the client when the row actually exists but the read failed. Both
+// pgx.ErrNoRows (the current backend's native sentinel) and
+// store.ErrNotFound (the abstract sentinel) must be recognized —
+// store.IsNotFound is the bridge.
 func TestHandleGetError_NotFound(t *testing.T) {
-	err := handleGetError(context.Background(), pgx.ErrNoRows, ErrUserNotFound, "user not found")
-	require.Error(t, err)
-	cerr := new(connect.Error)
-	require.True(t, errors.As(err, &cerr))
-	assert.Equal(t, connect.CodeNotFound, cerr.Code())
+	cases := map[string]error{
+		"pgx_native":  pgx.ErrNoRows,
+		"store_abstr": store.ErrNotFound,
+	}
+	for name, in := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := handleGetError(context.Background(), in, ErrUserNotFound, "user not found")
+			require.Error(t, err)
+			cerr := new(connect.Error)
+			require.True(t, errors.As(err, &cerr))
+			assert.Equal(t, connect.CodeNotFound, cerr.Code())
+		})
+	}
 }
 
 func TestHandleGetError_Other(t *testing.T) {

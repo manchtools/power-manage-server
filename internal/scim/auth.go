@@ -2,13 +2,12 @@ package scim
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -59,7 +58,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		// Look up provider by slug with SCIM enabled
 		provider, err := h.store.Queries().GetIdentityProviderBySlugForSCIM(r.Context(), slug)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				h.logger.Warn("SCIM auth failed: unknown provider or SCIM not enabled", "slug", slug)
 				writeError(w, http.StatusUnauthorized, "unknown provider or SCIM not enabled")
 				return

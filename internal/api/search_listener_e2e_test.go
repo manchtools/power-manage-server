@@ -15,7 +15,7 @@ package api_test
 // listener enqueued exactly the expected (op, scope, id, payload)
 // triple. The cascade test exercises the GetReverseMembers →
 // EnqueueRemove path; the not-found test exercises the silent skip
-// when loadSearchEntityData returns pgx.ErrNoRows; the panic test
+// when loadSearchEntityData reports not-found; the panic test
 // exercises the recover wrapper inside fireListeners.
 
 import (
@@ -303,7 +303,7 @@ func TestSearchListener_EntityGoneBeforeReindex_SilentlySkips(t *testing.T) {
 	st, fake := setupListener(t)
 
 	// AppendEvent for an unknown user_id triggers the listener; the
-	// loader returns pgx.ErrNoRows; the listener logs at Debug and
+	// loader reports not-found (store.IsNotFound); the listener logs at Debug and
 	// MUST NOT enqueue. The reindex queue stays empty.
 	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
 		StreamType: "user", StreamID: "01HXNONEXISTENT00000000000",
@@ -313,7 +313,7 @@ func TestSearchListener_EntityGoneBeforeReindex_SilentlySkips(t *testing.T) {
 	}))
 
 	assert.Zero(t, fake.reindexCount(),
-		"listener must skip enqueue when the entity row is gone (pgx.ErrNoRows path)")
+		"listener must skip enqueue when the entity row is gone (not-found path)")
 }
 
 // =============================================================================

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -182,7 +180,7 @@ func applyAssignmentDeleted(ctx context.Context, q *store.Queries, e store.Persi
 		ProjectionVersion: deref(e.SequenceNum),
 	})
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			// Stale AssignmentDeleted replay against a row whose
 			// projection_version has moved past this event, OR a
 			// deletion of a row that no longer exists. Skipping the

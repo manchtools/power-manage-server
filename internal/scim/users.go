@@ -1,12 +1,9 @@
 package scim
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -107,7 +104,7 @@ func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, prov
 			Email:      f.Value,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				resources = []any{}
 			} else {
 				h.logger.Error("failed to find SCIM user by email", "error", err)
@@ -124,7 +121,7 @@ func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, prov
 			ExternalID: f.Value,
 		})
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				resources = []any{}
 			} else {
 				h.logger.Error("failed to find SCIM user by external ID", "error", err)
@@ -177,7 +174,7 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.Queries().GetUserByID(ctx, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}

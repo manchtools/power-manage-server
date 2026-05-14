@@ -8,10 +8,8 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -191,7 +189,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 
 	// Verify action exists before appending event
 	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
@@ -233,7 +231,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 
 	// Verify action exists before appending event
 	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")

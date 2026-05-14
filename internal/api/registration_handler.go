@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -149,7 +147,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 
 	token, err := h.store.Queries().GetTokenByHash(ctx, tokenHashHex)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			logger.Warn("invalid registration token")
 			return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "invalid registration token")
 		}

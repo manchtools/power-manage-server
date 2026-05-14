@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -99,7 +99,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 
 		// Verify the linked user still exists (not soft-deleted)
 		_, userErr := l.queries.GetUserByID(ctx, link.UserID)
-		if errors.Is(userErr, pgx.ErrNoRows) {
+		if store.IsNotFound(userErr) {
 			// User is soft-deleted — clean up the stale identity link and fall through
 			slog.Warn("SSO linker: linked user is deleted, cleaning up stale identity link",
 				"link_id", link.ID,
@@ -139,7 +139,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			return &LinkResult{UserID: link.UserID, IsNew: false}, nil
 		}
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
+	if !store.IsNotFound(err) {
 		return nil, fmt.Errorf("lookup identity link: %w", err)
 	}
 	slog.Debug("SSO linker: no existing identity link found", "provider_id", provider.ID, "subject", claims.Subject)
@@ -174,7 +174,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProviders
 			}
 			return &LinkResult{UserID: user.ID, IsNew: false}, nil
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !store.IsNotFound(err) {
 			return nil, fmt.Errorf("lookup user by email: %w", err)
 		}
 		slog.Debug("SSO linker: no user found by email", "email", claims.Email)

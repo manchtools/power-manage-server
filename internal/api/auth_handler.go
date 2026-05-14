@@ -3,11 +3,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -57,7 +55,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 
 	user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if store.IsNotFound(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based user enumeration
 			auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
 			return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
@@ -183,7 +181,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 
 	// Atomically revoke the old refresh token BEFORE generating new tokens.
 	// RevokeToken uses INSERT ... ON CONFLICT DO NOTHING RETURNING jti, so it
-	// returns pgx.ErrNoRows when the token was already revoked by a concurrent
+	// reports not-found (recognized via store.IsNotFound) when the token was already revoked by a concurrent
 	// request. This prevents a race where two concurrent RefreshToken calls
 	// with the same token both succeed.
 	if result.OldJTI != "" {

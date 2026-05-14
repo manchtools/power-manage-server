@@ -11,14 +11,12 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
-	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -93,7 +91,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	case *pm.DispatchActionRequest_ActionId:
 		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
