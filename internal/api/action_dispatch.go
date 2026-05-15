@@ -42,7 +42,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// post-commit search listener, which reloads it fresh. We keep the
 	// load here to fail fast with NotFound before touching anything
 	// heavier downstream.
-	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId}); err != nil {
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId}); err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
@@ -707,7 +707,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
 	}
 
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}

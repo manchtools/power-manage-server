@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // UserSelectionHandler handles user selection RPCs.
@@ -41,9 +40,9 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 	}
 
 	// Verify device access (non-admins can only access assigned devices)
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
-		ID:           req.Msg.DeviceId,
-		FilterUserID: userFilterID(ctx, "ListDevices"),
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
+		ID:         req.Msg.DeviceId,
+		OwnerScope: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
@@ -110,9 +109,9 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 	}
 
 	// Verify device access (non-admins can only access assigned devices)
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
-		ID:           req.Msg.DeviceId,
-		FilterUserID: userFilterID(ctx, "ListDevices"),
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
+		ID:         req.Msg.DeviceId,
+		OwnerScope: userFilterID(ctx, "ListDevices"),
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")

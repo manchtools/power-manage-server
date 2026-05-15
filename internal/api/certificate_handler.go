@@ -13,7 +13,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // CertificateHandler handles certificate renewal RPCs.
@@ -47,9 +46,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	}
 
 	// Verify the device exists and is not deleted
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
-		ID: deviceID,
-	})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID})
 	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")

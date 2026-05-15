@@ -14,7 +14,6 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -48,9 +47,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	}
 
 	// Verify device exists
-	_, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{
-		ID: msg.DeviceId,
-	})
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: msg.DeviceId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
@@ -195,9 +192,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	msg := req.Msg
 
 	// Verify device exists
-	_, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{
-		ID: msg.DeviceId,
-	})
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: msg.DeviceId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 	}
