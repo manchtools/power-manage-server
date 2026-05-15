@@ -788,10 +788,7 @@ func (idx *Index) warmDeviceGroups(ctx context.Context) (int, error) {
 	var total int
 
 	for {
-		groups, err := idx.store.Queries().ListDeviceGroups(ctx, db.ListDeviceGroupsParams{
-			Limit:  pageSize,
-			Offset: offset,
-		})
+		groups, err := idx.store.Repos().DeviceGroup.List(ctx, store.ListDeviceGroupsFilter{Limit: pageSize, Offset: offset})
 		if err != nil {
 			return total, err
 		}

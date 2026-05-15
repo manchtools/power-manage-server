@@ -89,7 +89,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device")
 		}
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP:
-		_, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.TargetId)
+		_, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.TargetId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDeviceGroupNotFound, connect.CodeNotFound, "device group not found")

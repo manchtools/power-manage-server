@@ -75,7 +75,7 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -91,12 +91,12 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
-	members, err := h.store.Queries().ListDeviceGroupMembers(ctx, req.Msg.Id)
+	members, err := h.store.Repos().DeviceGroup.ListMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group members")
 	}
@@ -129,15 +129,12 @@ func (h *DeviceGroupHandler) ListDeviceGroups(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	groups, err := h.store.Queries().ListDeviceGroups(ctx, db.ListDeviceGroupsParams{
-		Limit:  pageSize,
-		Offset: offset,
-	})
+	groups, err := h.store.Repos().DeviceGroup.List(ctx, store.ListDeviceGroupsFilter{Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list device groups")
 	}
 
-	count, err := h.store.Queries().CountDeviceGroups(ctx)
+	count, err := h.store.Repos().DeviceGroup.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count device groups")
 	}
@@ -162,7 +159,7 @@ func (h *DeviceGroupHandler) ListDeviceGroupsForDevice(ctx context.Context, req 
 		return nil, err
 	}
 
-	groups, err := h.store.Queries().ListGroupsForDevice(ctx, req.Msg.DeviceId)
+	groups, err := h.store.Repos().DeviceGroup.ListForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list groups for device")
 	}
@@ -201,7 +198,7 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -235,7 +232,7 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -299,7 +296,7 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 	q := h.store.Queries()
 
 	// Verify group exists and is not dynamic
-	group, err := q.GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -333,7 +330,7 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 		}
 	}
 
-	group, err = q.GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err = h.store.Repos().DeviceGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -355,7 +352,7 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 	}
 
 	// Verify group exists and is not dynamic
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -378,7 +375,7 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 		return nil, err
 	}
 
-	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.GroupId)
+	group, err = h.store.Repos().DeviceGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -427,7 +424,7 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -474,7 +471,7 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 	}
 
 	// Verify group exists and is dynamic
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -493,7 +490,7 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 	}
 
 	// Get updated group
-	group, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err = h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -531,7 +528,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 	}
 
 	// Verify group exists
-	_, err = h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
@@ -549,7 +546,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -578,7 +575,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
-	if _, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id); err != nil {
+	if _, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id); err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
 	}
 
@@ -595,7 +592,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetDeviceGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 	}
@@ -605,7 +602,7 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 	}), nil
 }
 
-func (h *DeviceGroupHandler) deviceGroupToProto(g db.DeviceGroupsProjection) *pm.DeviceGroup {
+func (h *DeviceGroupHandler) deviceGroupToProto(g store.DeviceGroup) *pm.DeviceGroup {
 	group := &pm.DeviceGroup{
 		Id:                  g.ID,
 		Name:                g.Name,

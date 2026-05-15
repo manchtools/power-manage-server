@@ -16,6 +16,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 	return &store.Repos{
 		AuthState:        NewAuthState(q),
 		Compliance:       NewCompliance(q),
+		DeviceGroup:      NewDeviceGroup(q),
 		IdentityLink:     NewIdentityLink(q),
 		IdentityProvider: NewIdentityProvider(q),
 		Inventory:        NewInventory(q),

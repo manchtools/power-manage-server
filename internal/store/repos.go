@@ -15,6 +15,7 @@ package store
 type Repos struct {
 	AuthState        AuthStateRepo
 	Compliance       ComplianceRepo
+	DeviceGroup      DeviceGroupRepo
 	IdentityLink     IdentityLinkRepo
 	IdentityProvider IdentityProviderRepo
 	Inventory        InventoryRepo
