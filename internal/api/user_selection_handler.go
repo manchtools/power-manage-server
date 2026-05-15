@@ -54,7 +54,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 	sourceTypeStr := assignmentSourceTypeToString(req.Msg.SourceType)
 
 	// Verify an available-mode assignment exists for this source targeting this device
-	availableAssignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	availableAssignments, err := h.store.Repos().Assignment.ListAvailableForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check available assignments")
 	}
@@ -118,7 +118,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 	}
 
 	// Get available assignments for this device
-	assignments, err := h.store.Queries().ListAvailableAssignmentsForDevice(ctx, req.Msg.DeviceId)
+	assignments, err := h.store.Repos().Assignment.ListAvailableForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list available assignments")
 	}

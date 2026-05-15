@@ -16,6 +16,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 	return &store.Repos{
 		Action:           NewAction(q),
 		ActionSet:        NewActionSet(q),
+		Assignment:       NewAssignment(q),
 		AuthState:        NewAuthState(q),
 		Compliance:       NewCompliance(q),
 		Definition:       NewDefinition(q),

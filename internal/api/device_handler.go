@@ -819,7 +819,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 
 	// Only an assigned owner can create a LUKS token
-	assignedUserIDs, err := h.store.Queries().ListDeviceAssignedUserIDs(ctx, req.Msg.DeviceId)
+	assignedUserIDs, err := h.store.Repos().Assignment.ListAssignedUserIDsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check device assignments")
 	}

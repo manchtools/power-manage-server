@@ -13,7 +13,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // AssignmentHandler handles assignment RPCs.
@@ -123,12 +122,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	targetTypeStr := assignmentTargetTypeToString(req.Msg.TargetType)
 
 	// Check if an active assignment already exists
-	existingAssignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
-		SourceType: sourceTypeStr,
-		SourceID:   req.Msg.SourceId,
-		TargetType: targetTypeStr,
-		TargetID:   req.Msg.TargetId,
-	})
+	existingAssignment, err := h.store.Repos().Assignment.Get(ctx, store.AssignmentKey{SourceType: sourceTypeStr, SourceID: req.Msg.SourceId, TargetType: targetTypeStr, TargetID: req.Msg.TargetId})
 	if err == nil {
 		// Assignment already exists, return it
 		return connect.NewResponse(&pm.CreateAssignmentResponse{
@@ -159,12 +153,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 
 	// Use GetAssignment instead of GetAssignmentByID because the upsert
 	// may have updated an existing soft-deleted record with a different ID
-	assignment, err := h.store.Queries().GetAssignment(ctx, db.GetAssignmentParams{
-		SourceType: sourceTypeStr,
-		SourceID:   req.Msg.SourceId,
-		TargetType: targetTypeStr,
-		TargetID:   req.Msg.TargetId,
-	})
+	assignment, err := h.store.Repos().Assignment.Get(ctx, store.AssignmentKey{SourceType: sourceTypeStr, SourceID: req.Msg.SourceId, TargetType: targetTypeStr, TargetID: req.Msg.TargetId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assignment")
 	}
@@ -186,7 +175,7 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 	}
 
 	// Verify assignment exists before emitting delete event
-	_, err = h.store.Queries().GetAssignmentByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().Assignment.GetByID(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrAssignmentNotFound, "assignment not found")
 	}
@@ -218,24 +207,12 @@ func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Re
 	sourceTypeStr := assignmentSourceTypeToString(req.Msg.SourceType)
 	targetTypeStr := assignmentTargetTypeToString(req.Msg.TargetType)
 
-	assignments, err := h.store.Queries().ListAssignments(ctx, db.ListAssignmentsParams{
-		Column1: sourceTypeStr,
-		Column2: req.Msg.SourceId,
-		Column3: targetTypeStr,
-		Column4: req.Msg.TargetId,
-		Limit:   pageSize,
-		Offset:  offset,
-	})
+	assignments, err := h.store.Repos().Assignment.List(ctx, store.ListAssignmentsFilter{SourceType: sourceTypeStr, SourceID: req.Msg.SourceId, TargetType: targetTypeStr, TargetID: req.Msg.TargetId, Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list assignments")
 	}
 
-	count, err := h.store.Queries().CountAssignments(ctx, db.CountAssignmentsParams{
-		Column1: sourceTypeStr,
-		Column2: req.Msg.SourceId,
-		Column3: targetTypeStr,
-		Column4: req.Msg.TargetId,
-	})
+	count, err := h.store.Repos().Assignment.Count(ctx, store.CountAssignmentsFilter{SourceType: sourceTypeStr, SourceID: req.Msg.SourceId, TargetType: targetTypeStr, TargetID: req.Msg.TargetId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count assignments")
 	}
@@ -459,7 +436,20 @@ func (h *AssignmentHandler) GetUserAssignments(ctx context.Context, req *connect
 
 	protoAssignments := make([]*pm.Assignment, len(assignments))
 	for i, a := range assignments {
-		protoAssignments[i] = h.assignmentToProto(a)
+		// Transitional: ListAssignmentsForUser hasn't migrated yet
+		// (different row shape), so convert to store.Assignment for
+		// assignmentToProto. Falls away when that query moves.
+		protoAssignments[i] = h.assignmentToProto(store.Assignment{
+			ID:         a.ID,
+			SourceType: a.SourceType,
+			SourceID:   a.SourceID,
+			TargetType: a.TargetType,
+			TargetID:   a.TargetID,
+			SortOrder:  a.SortOrder,
+			Mode:       a.Mode,
+			CreatedAt:  a.CreatedAt,
+			CreatedBy:  a.CreatedBy,
+		})
 	}
 
 	return connect.NewResponse(&pm.GetUserAssignmentsResponse{
@@ -467,7 +457,7 @@ func (h *AssignmentHandler) GetUserAssignments(ctx context.Context, req *connect
 	}), nil
 }
 
-func (h *AssignmentHandler) assignmentToProto(a db.AssignmentsProjection) *pm.Assignment {
+func (h *AssignmentHandler) assignmentToProto(a store.Assignment) *pm.Assignment {
 	assignment := &pm.Assignment{
 		Id:         a.ID,
 		SourceType: assignmentSourceTypeFromString(a.SourceType),
