@@ -20,7 +20,7 @@ import (
 
 func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
 	// Check if user exists via the projection
-	_, err := st.Queries().GetUserByEmail(ctx, email)
+	_, err := st.Repos().User.GetByEmail(ctx, email)
 	if err == nil {
 		logger.Info("admin user already exists", "email", email)
 		return nil

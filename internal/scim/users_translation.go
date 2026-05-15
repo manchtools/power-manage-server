@@ -11,6 +11,7 @@ package scim
 import (
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -69,7 +70,7 @@ func scimUserFromFields(f scimUserFields, baseURL string) SCIMUser {
 // ScimExternalID column directly — it lives on the
 // scim_user_links table) plus an externally-resolved externalID
 // into a SCIM resource.
-func userToSCIM(user db.UsersProjection, externalID, baseURL string) SCIMUser {
+func userToSCIM(user store.User, externalID, baseURL string) SCIMUser {
 	return scimUserFromFields(scimUserFields{
 		ID:          user.ID,
 		ExternalID:  externalID,

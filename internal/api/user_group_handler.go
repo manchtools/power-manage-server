@@ -575,7 +575,7 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	}
 
 	// Verify user exists
-	_, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	_, err := h.store.Repos().User.Get(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}

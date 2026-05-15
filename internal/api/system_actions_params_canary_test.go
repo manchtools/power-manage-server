@@ -9,7 +9,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // Tests in this file lock down the "system-managed actions must
@@ -153,9 +153,9 @@ func TestMarshalActionParamsRejectsNil(t *testing.T) {
 }
 
 func TestSystemTtyUserActionParamsOutput(t *testing.T) {
-	params, err := serializeProtoParams(systemTtyUserParams(db.UsersProjection{
+	params, err := serializeProtoParams(systemTtyUserParams(store.User{
 		LinuxUsername: "alice",
-		LinuxUid:      1000,
+		LinuxUID:      1000,
 		Disabled:      false,
 	}))
 	if err != nil {

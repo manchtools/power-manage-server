@@ -72,7 +72,7 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 	targetUserID := link.UserID
 
 	// Prevent unlinking last auth method
-	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
+	user, err := h.store.Repos().User.Get(ctx, targetUserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}

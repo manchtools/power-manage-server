@@ -53,7 +53,7 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 	// between "no such user" and "lookup errored" — that's a deliberate
 	// info-leak guard, see the comment below.
 	if req.Msg.Email != "" {
-		user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)
+		user, err := h.store.Repos().User.GetByEmail(ctx, req.Msg.Email)
 		if err == nil {
 			resp.TotpEnabled = user.TotpEnabled
 
@@ -274,7 +274,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 
 	// Get and validate user before proceeding
-	user, err := h.store.Queries().GetUserByID(ctx, linkResult.UserID)
+	user, err := h.store.Repos().User.Get(ctx, linkResult.UserID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			h.logger.Error("SSO user not found after link resolved — user may be soft-deleted",
@@ -361,7 +361,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 
 	// Generate tokens
-	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)
+	permissions, err := h.store.Repos().User.Permissions(ctx, user.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}

@@ -107,7 +107,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 // enableProvisioningForAllUsers sets user_provisioning_enabled=true on every user
 // that doesn't already have it enabled.
 func (h *SettingsHandler) enableProvisioningForAllUsers(ctx context.Context) error {
-	users, err := h.store.Queries().ListAllNonDeletedUsers(ctx)
+	users, err := h.store.Repos().User.ListAllNonDeleted(ctx)
 	if err != nil {
 		return fmt.Errorf("list users: %w", err)
 	}
@@ -138,7 +138,7 @@ func (h *SettingsHandler) enableProvisioningForAllUsers(ctx context.Context) err
 // enableSshAccessForAllUsers sets ssh_access_enabled=true on every user
 // that doesn't already have it enabled.
 func (h *SettingsHandler) enableSshAccessForAllUsers(ctx context.Context) error {
-	users, err := h.store.Queries().ListAllNonDeletedUsers(ctx)
+	users, err := h.store.Repos().User.ListAllNonDeleted(ctx)
 	if err != nil {
 		return fmt.Errorf("list users: %w", err)
 	}

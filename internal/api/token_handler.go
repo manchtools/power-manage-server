@@ -78,7 +78,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 			eventData["expires_at"] = req.Msg.ExpiresAt.AsTime().Format(time.RFC3339)
 		}
 		if req.Msg.OwnerId != "" {
-			if _, err := h.store.Queries().GetUserByID(ctx, req.Msg.OwnerId); err != nil {
+			if _, err := h.store.Repos().User.Get(ctx, req.Msg.OwnerId); err != nil {
 				return nil, handleGetError(ctx, err, ErrUserNotFound, "owner user not found")
 			}
 			eventData["owner_id"] = req.Msg.OwnerId
