@@ -74,11 +74,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	}
 
 	// Create pending result row
-	if err := h.store.Queries().CreateOSQueryResult(ctx, generated.CreateOSQueryResultParams{
-		QueryID:   queryID,
-		DeviceID:  msg.DeviceId,
-		TableName: tableName,
-	}); err != nil {
+	if err := h.store.Repos().OSQuery.CreateResult(ctx, queryID, msg.DeviceId, tableName); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
@@ -102,10 +98,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	); err != nil {
 		h.logger.Error("osquery enqueue failed; marking result expired",
 			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
-		if expireErr := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
-			QueryID: queryID,
-			Error:   fmt.Sprintf("dispatch enqueue failed: %v", err),
-		}); expireErr != nil {
+		if expireErr := h.store.Repos().OSQuery.ExpirePendingResult(ctx, queryID, fmt.Sprintf("dispatch enqueue failed: %v", err)); expireErr != nil {
 			h.logger.Error("failed to mark enqueue-failed osquery result as expired",
 				"query_id", queryID, "error", expireErr)
 		}
@@ -124,7 +117,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 
 // GetOSQueryResult polls for the result of a dispatched osquery.
 func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Request[pm.GetOSQueryResultRequest]) (*connect.Response[pm.GetOSQueryResultResponse], error) {
-	result, err := h.store.Queries().GetOSQueryResult(ctx, req.Msg.QueryId)
+	result, err := h.store.Repos().OSQuery.GetResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
 	}
@@ -132,10 +125,7 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && time.Since(result.CreatedAt) > osqueryResultTimeout {
 		timeoutErr := "query timed out: device did not respond within 5 minutes"
-		if err := h.store.Queries().ExpirePendingOSQueryResult(ctx, generated.ExpirePendingOSQueryResultParams{
-			QueryID: result.QueryID,
-			Error:   timeoutErr,
-		}); err != nil {
+		if err := h.store.Repos().OSQuery.ExpirePendingResult(ctx, result.QueryID, timeoutErr); err != nil {
 			h.logger.Warn("failed to expire pending osquery result", "query_id", result.QueryID, "error", err)
 		}
 		result.Completed = true

@@ -200,7 +200,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	// the upsert loses (transient DB hiccup), the first chunk's
 	// INSERT ... ON CONFLICT still creates the row, it just lands
 	// with empty tty_user until a later lifecycle event fills it in.
-	if err := h.store.Queries().UpsertTerminalSessionStart(ctx, generated.UpsertTerminalSessionStartParams{
+	if err := h.store.Repos().TerminalSession.UpsertStart(ctx, store.StartTerminalSession{
 		SessionID: sessionID,
 		DeviceID:  req.Msg.DeviceId,
 		UserID:    user.ID,
@@ -423,7 +423,7 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 	// history row is slightly incomplete. No exit code at this call
 	// site; the session ended on user request, not on shell exit.
 	now := time.Now()
-	if err := h.store.Queries().MarkTerminalSessionStopped(ctx, generated.MarkTerminalSessionStoppedParams{
+	if err := h.store.Repos().TerminalSession.MarkStopped(ctx, store.StopTerminalSession{
 		SessionID: session.SessionID,
 		StoppedAt: &now,
 		ExitCode:  nil,
@@ -627,7 +627,7 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	// user than the admin calling Terminate, so use the session's
 	// recorded UserID (validated via the token store), not actorID.
 	sessionUserID := session.UserID
-	if err := h.store.Queries().MarkTerminalSessionTerminated(ctx, generated.MarkTerminalSessionTerminatedParams{
+	if err := h.store.Repos().TerminalSession.MarkTerminated(ctx, store.TerminateTerminalSession{
 		SessionID:    session.SessionID,
 		StoppedAt:    &now,
 		TerminatedBy: &terminatedBy,
