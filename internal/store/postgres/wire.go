@@ -21,6 +21,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		Definition:       NewDefinition(q),
 		Device:           NewDevice(q),
 		DeviceGroup:      NewDeviceGroup(q),
+		Execution:        NewExecution(q),
 		IdentityLink:     NewIdentityLink(q),
 		IdentityProvider: NewIdentityProvider(q),
 		Inventory:        NewInventory(q),

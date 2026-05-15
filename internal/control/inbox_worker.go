@@ -192,7 +192,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	var executionID, actionID string
 	var needsCreate bool
 
-	existingExec, err := w.store.Queries().GetExecutionByID(ctx, resultID)
+	existingExec, err := w.store.Repos().Execution.Get(ctx, resultID)
 	if err == nil {
 		executionID = existingExec.ID
 		if existingExec.ActionID != nil {
@@ -214,7 +214,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		executionID = stableExecutionID(deviceID, actionID, completedStr)
 
 		// Check if this derived execution already exists (retry of a previously processed result)
-		_, checkErr := w.store.Queries().GetExecutionByID(ctx, executionID)
+		_, checkErr := w.store.Repos().Execution.Get(ctx, executionID)
 		if checkErr == nil {
 			needsCreate = false
 		} else if store.IsNotFound(checkErr) {
@@ -629,7 +629,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID string, logger *slog.Logger) error {
 	logger.Debug("checking for pending executions")
 
-	executions, err := w.store.Queries().ListPendingExecutionsForDevice(ctx, deviceID)
+	executions, err := w.store.Repos().Execution.ListPendingForDevice(ctx, deviceID)
 	if err != nil {
 		return fmt.Errorf("list pending executions: %w", err)
 	}

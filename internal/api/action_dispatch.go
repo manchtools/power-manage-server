@@ -23,7 +23,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -308,7 +307,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue action dispatch")
 	}
 
-	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
+	exec, err := h.store.Repos().Execution.Get(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
@@ -582,7 +581,7 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.Id)
+	exec, err := h.store.Repos().Execution.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
@@ -625,24 +624,12 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	typeFilter := int32(req.Msg.TypeFilter)
 	searchQuery := strings.TrimSpace(req.Msg.Search)
 
-	execs, err := h.store.Queries().ListExecutions(ctx, db.ListExecutionsParams{
-		Column1: req.Msg.DeviceId,
-		Column2: statusFilter,
-		Column3: typeFilter,
-		Column4: searchQuery,
-		Limit:   pageSize,
-		Offset:  offset,
-	})
+	execs, err := h.store.Repos().Execution.List(ctx, store.ListExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery, Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list executions")
 	}
 
-	count, err := h.store.Queries().CountExecutions(ctx, db.CountExecutionsParams{
-		Column1: req.Msg.DeviceId,
-		Column2: statusFilter,
-		Column3: typeFilter,
-		Column4: searchQuery,
-	})
+	count, err := h.store.Repos().Execution.Count(ctx, store.CountExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count executions")
 	}
@@ -803,7 +790,7 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to enqueue instant action dispatch")
 	}
 
-	exec, err := h.store.Queries().GetExecutionByID(ctx, id)
+	exec, err := h.store.Repos().Execution.Get(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get execution after creation", "error", err, "execution_id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get execution")
@@ -835,7 +822,7 @@ func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	exec, err := h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	exec, err := h.store.Repos().Execution.Get(ctx, req.Msg.ExecutionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
@@ -873,7 +860,7 @@ func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	exec, err = h.store.Queries().GetExecutionByID(ctx, req.Msg.ExecutionId)
+	exec, err = h.store.Repos().Execution.Get(ctx, req.Msg.ExecutionId)
 	if err != nil {
 		h.logger.Error("CancelExecution: failed to refetch execution after cancel", "execution_id", req.Msg.ExecutionId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read execution after cancel")

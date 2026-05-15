@@ -46,7 +46,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // ActionHandler handles action (single executable) and execution RPCs.
@@ -100,7 +99,7 @@ func (h *ActionHandler) actionToProto(a store.Action) *pm.ManagedAction {
 	return action
 }
 
-func (h *ActionHandler) executionToProto(e db.ExecutionsProjection) *pm.ActionExecution {
+func (h *ActionHandler) executionToProto(e store.Execution) *pm.ActionExecution {
 	exec := &pm.ActionExecution{
 		Id:           e.ID,
 		DeviceId:     e.DeviceID,
@@ -205,7 +204,7 @@ func stringToStatus(s string) pm.ExecutionStatus {
 // loadLiveOutput loads streaming output chunks from the event store and
 // aggregates them into a CommandOutput.
 func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) *pm.CommandOutput {
-	chunks, err := h.store.Queries().LoadOutputChunks(ctx, executionID)
+	chunks, err := h.store.Repos().Execution.LoadOutputChunks(ctx, executionID)
 	if err != nil || len(chunks) == 0 {
 		return nil
 	}

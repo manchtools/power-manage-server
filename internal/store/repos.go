@@ -20,6 +20,7 @@ type Repos struct {
 	Definition       DefinitionRepo
 	Device           DeviceRepo
 	DeviceGroup      DeviceGroupRepo
+	Execution        ExecutionRepo
 	IdentityLink     IdentityLinkRepo
 	IdentityProvider IdentityProviderRepo
 	Inventory        InventoryRepo
