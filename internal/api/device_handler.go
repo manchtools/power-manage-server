@@ -603,7 +603,7 @@ func (h *DeviceHandler) loadActionNamesByIDs(ctx context.Context, ids []string) 
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := h.store.Queries().GetActionNamesByIDs(ctx, ids)
+	rows, err := h.store.Repos().Action.NamesByIDs(ctx, ids)
 	if err != nil {
 		logEnrichmentErr("GetActionNamesByIDs", "action_id_count", fmt.Sprint(len(ids)), err)
 		return nil
@@ -835,7 +835,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 
 	// Verify the action exists and is a LUKS action
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.ActionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}

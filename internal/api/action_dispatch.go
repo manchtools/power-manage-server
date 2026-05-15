@@ -89,7 +89,7 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	switch source := req.Msg.ActionSource.(type) {
 	case *pm.DispatchActionRequest_ActionId:
-		action, err := h.store.Queries().GetActionByID(ctx, source.ActionId)
+		action, err := h.store.Repos().Action.Get(ctx, source.ActionId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
@@ -591,7 +591,7 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 
 	// Fetch action name
 	if exec.ActionID != nil {
-		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, []string{*exec.ActionID})
+		rows, err := h.store.Repos().Action.NamesByIDs(ctx, []string{*exec.ActionID})
 		if err == nil && len(rows) > 0 {
 			protoExec.ActionName = rows[0].Name
 		} else if err != nil {
@@ -662,7 +662,7 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 		}
 	}
 	if len(actionIDs) > 0 {
-		rows, err := h.store.Queries().GetActionNamesByIDs(ctx, actionIDs)
+		rows, err := h.store.Repos().Action.NamesByIDs(ctx, actionIDs)
 		if err != nil {
 			h.logger.Warn("GetActionNamesByIDs bulk enrichment failed",
 				"action_id_count", len(actionIDs), "error", err)

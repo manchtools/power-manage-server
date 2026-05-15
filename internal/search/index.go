@@ -374,10 +374,10 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 	actionNames := map[string]string{}
 
 	for {
-		actions, err := idx.store.Queries().ListActions(ctx, db.ListActionsParams{
-			Column1: 0, // no type filter
-			Limit:   pageSize,
-			Offset:  offset,
+		actions, err := idx.store.Repos().Action.List(ctx, store.ListActionsFilter{
+			ActionTypeFilter: 0, // no type filter
+			Limit:            pageSize,
+			Offset:           offset,
 		})
 		if err != nil {
 			return total, actionNames, err
@@ -922,7 +922,7 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 				actionID = *e.ActionID
 				name, ok := actionNames[*e.ActionID]
 				if !ok {
-					a, err := idx.store.Queries().GetActionByID(ctx, *e.ActionID)
+					a, err := idx.store.Repos().Action.Get(ctx, *e.ActionID)
 					if err == nil {
 						name = a.Name
 					}

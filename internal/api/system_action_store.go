@@ -20,7 +20,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // systemActionStore is the collaborator that owns event-shape
@@ -162,7 +161,7 @@ func (s *systemActionStore) SignActionByID(ctx context.Context, actionID string)
 		return fmt.Errorf("sign system action %s: signer not configured", actionID)
 	}
 
-	action, err := s.store.Queries().GetActionByID(ctx, actionID)
+	action, err := s.store.Repos().Action.Get(ctx, actionID)
 	if err != nil {
 		return fmt.Errorf("load system action %s for signing: %w", actionID, err)
 	}
@@ -177,11 +176,7 @@ func (s *systemActionStore) SignActionByID(ctx context.Context, actionID string)
 		return fmt.Errorf("sign system action %s: %w", actionID, err)
 	}
 
-	if err := s.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
-		ID:              action.ID,
-		Signature:       sig,
-		ParamsCanonical: paramsJSON,
-	}); err != nil {
+	if err := s.store.Repos().Action.UpdateSignature(ctx, store.UpdateActionSignatureParams{ID: action.ID, Signature: sig, ParamsCanonical: paramsJSON}); err != nil {
 		return fmt.Errorf("store system action %s signature: %w", actionID, err)
 	}
 

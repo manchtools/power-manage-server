@@ -14,6 +14,7 @@ import (
 // are migrated under tracker #242.
 func NewRepos(q *generated.Queries) *store.Repos {
 	return &store.Repos{
+		Action:           NewAction(q),
 		AuthState:        NewAuthState(q),
 		Compliance:       NewCompliance(q),
 		Device:           NewDevice(q),

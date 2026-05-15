@@ -151,7 +151,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 		// Load source metadata
 		switch asn.SourceType {
 		case "action":
-			action, err := h.store.Queries().GetActionByID(ctx, asn.SourceID)
+			action, err := h.store.Repos().Action.Get(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = action.Name
 				if action.Description != nil {
