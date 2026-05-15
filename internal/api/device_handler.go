@@ -59,27 +59,21 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		}
 	}
 
-	var devices []db.DevicesProjection
+	var devices []store.Device
 
+	deviceRepo := h.store.Repos().Device
+	deviceFilter := store.ListDevicesFilter{
+		Limit:      pageSize,
+		Offset:     offset,
+		OwnerScope: filterUID,
+	}
 	switch req.Msg.StatusFilter {
 	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
-		devices, err = q.ListDevicesOnline(ctx, db.ListDevicesOnlineParams{
-			Limit:        pageSize,
-			Offset:       offset,
-			FilterUserID: filterUID,
-		})
+		devices, err = deviceRepo.ListOnline(ctx, deviceFilter)
 	case pm.DeviceStatus_DEVICE_STATUS_OFFLINE:
-		devices, err = q.ListDevicesOffline(ctx, db.ListDevicesOfflineParams{
-			Limit:        pageSize,
-			Offset:       offset,
-			FilterUserID: filterUID,
-		})
+		devices, err = deviceRepo.ListOffline(ctx, deviceFilter)
 	default:
-		devices, err = q.ListDevices(ctx, db.ListDevicesParams{
-			Limit:        pageSize,
-			Offset:       offset,
-			FilterUserID: filterUID,
-		})
+		devices, err = deviceRepo.List(ctx, deviceFilter)
 	}
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list devices")
@@ -89,11 +83,11 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	var count int64
 	switch req.Msg.StatusFilter {
 	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
-		count, err = q.CountDevicesOnline(ctx, filterUID)
+		count, err = deviceRepo.CountOnline(ctx, filterUID)
 	case pm.DeviceStatus_DEVICE_STATUS_OFFLINE:
-		count, err = q.CountDevicesOffline(ctx, filterUID)
+		count, err = deviceRepo.CountOffline(ctx, filterUID)
 	default:
-		count, err = q.CountDevices(ctx, filterUID)
+		count, err = deviceRepo.Count(ctx, filterUID)
 	}
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count devices")
@@ -141,9 +135,9 @@ func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{
-		ID:           req.Msg.Id,
-		FilterUserID: userFilterID(ctx, "GetDevice"),
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
+		ID:         req.Msg.Id,
+		OwnerScope: userFilterID(ctx, "GetDevice"),
 	})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
@@ -166,7 +160,7 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	}
 
 	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -187,7 +181,7 @@ func (h *DeviceHandler) SetDeviceLabel(ctx context.Context, req *connect.Request
 	}
 
 	// Read back updated device
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
@@ -209,7 +203,7 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -229,7 +223,7 @@ func (h *DeviceHandler) RemoveDeviceLabel(ctx context.Context, req *connect.Requ
 	}
 
 	// Read back updated device
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
@@ -298,7 +292,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	q := h.store.Queries()
 
 	// Verify device exists
-	_, err = q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -374,7 +368,7 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 	}
 
 	// Read back updated device
-	device, err := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
@@ -425,7 +419,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 	}
 
 	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -461,7 +455,7 @@ func (h *DeviceHandler) UnassignDevice(ctx context.Context, req *connect.Request
 	}
 
 	// Read back updated device
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
@@ -483,7 +477,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}
 
 	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -504,7 +498,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}
 
 	// Read back updated device
-	device, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.Id})
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
 	}
@@ -516,7 +510,7 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 
 // deviceToProtoCtx converts a database device projection to a protobuf device,
 // populating assigned user/group IDs from junction tables.
-func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjection) *pm.Device {
+func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d store.Device) *pm.Device {
 	q := h.store.Queries()
 	var userIDs, groupIDs []string
 	if rows, err := q.ListDeviceAssignedUserIDs(ctx, d.ID); err == nil {
@@ -530,7 +524,7 @@ func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d db.DevicesProjec
 
 // deviceToProtoWithAssignments converts a database device projection to a protobuf
 // device using pre-fetched assignment data. Used by list endpoints with batch queries.
-func (h *DeviceHandler) deviceToProtoWithAssignments(d db.DevicesProjection, assignedUserIDs, assignedGroupIDs []string) *pm.Device {
+func (h *DeviceHandler) deviceToProtoWithAssignments(d store.Device, assignedUserIDs, assignedGroupIDs []string) *pm.Device {
 	device := &pm.Device{
 		Id:                  d.ID,
 		Hostname:            d.Hostname,
@@ -626,7 +620,7 @@ func (h *DeviceHandler) loadDeviceHostnamesByIDs(ctx context.Context, ids []stri
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := h.store.Queries().GetDeviceHostnamesByIDs(ctx, ids)
+	rows, err := h.store.Repos().Device.HostnamesByIDs(ctx, ids)
 	if err != nil {
 		logEnrichmentErr("GetDeviceHostnamesByIDs", "device_id_count", fmt.Sprint(len(ids)), err)
 		return nil
@@ -819,7 +813,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 
 	// Verify device exists
-	_, err = h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -907,7 +901,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	}
 
 	// Verify device exists
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
@@ -1023,7 +1017,7 @@ func (h *DeviceHandler) ListDeviceAssignees(ctx context.Context, req *connect.Re
 	q := h.store.Queries()
 
 	// Verify device exists
-	_, err := q.GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.DeviceId})
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}

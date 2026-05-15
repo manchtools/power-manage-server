@@ -65,7 +65,7 @@ func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
 
-	_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID})
+	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID})
 	if err != nil {
 		h.logger.Warn("device verification failed", "device_id", deviceID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
@@ -82,7 +82,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	}
 
 	// Verify the device exists and is not deleted.
-	if _, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: deviceID}); err != nil {
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID}); err != nil {
 		h.logger.Warn("sync actions for unknown/deleted device", "device_id", deviceID)
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
 	}
@@ -109,7 +109,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve actions")
 	}
 
-	syncInterval, err := h.store.Queries().GetDeviceSyncInterval(ctx, deviceID)
+	syncInterval, err := h.store.Repos().Device.SyncInterval(ctx, deviceID)
 	if err != nil {
 		h.logger.Warn("failed to get sync interval, using default", "device_id", deviceID, "error", err)
 		syncInterval = 0

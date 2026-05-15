@@ -637,11 +637,7 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 	var total int
 
 	for {
-		devices, err := idx.store.Queries().ListDevices(ctx, db.ListDevicesParams{
-			Limit:        pageSize,
-			Offset:       offset,
-			FilterUserID: nil,
-		})
+		devices, err := idx.store.Repos().Device.List(ctx, store.ListDevicesFilter{Limit: pageSize, Offset: offset, OwnerScope: nil})
 		if err != nil {
 			return total, err
 		}
@@ -912,7 +908,7 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 			// Resolve device hostname (cached).
 			hostname, ok := deviceNames[e.DeviceID]
 			if !ok {
-				d, err := idx.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: e.DeviceID})
+				d, err := idx.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: e.DeviceID})
 				if err == nil {
 					hostname = d.Hostname
 				}

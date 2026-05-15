@@ -81,7 +81,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Validate target exists
 	switch req.Msg.TargetType {
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE:
-		_, err := h.store.Queries().GetDeviceByID(ctx, db.GetDeviceByIDParams{ID: req.Msg.TargetId})
+		_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.TargetId})
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")

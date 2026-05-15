@@ -22,7 +22,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
@@ -112,10 +111,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	// to userCtx.ID, which masked admin access to bulk-enrolled
 	// (unassigned) devices.
 	filterUserID := userFilterID(ctx, "StartTerminal")
-	if _, err := h.store.Queries().GetDeviceByID(ctx, generated.GetDeviceByIDParams{
-		ID:           req.Msg.DeviceId,
-		FilterUserID: filterUserID,
-	}); err != nil {
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId, OwnerScope: filterUserID}); err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
 		}
