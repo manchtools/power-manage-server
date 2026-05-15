@@ -15,6 +15,7 @@ package store
 type Repos struct {
 	Action           ActionRepo
 	ActionSet        ActionSetRepo
+	Assignment       AssignmentRepo
 	AuthState        AuthStateRepo
 	Compliance       ComplianceRepo
 	Definition       DefinitionRepo
