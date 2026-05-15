@@ -157,16 +157,13 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Request[pm.GetDeviceInventoryRequest]) (*connect.Response[pm.GetDeviceInventoryResponse], error) {
 	msg := req.Msg
 
-	var rows []generated.DeviceInventory
+	var rows []store.InventoryTable
 	var err error
 
 	if len(msg.TableNames) > 0 {
-		rows, err = h.store.Queries().GetDeviceInventoryByTables(ctx, generated.GetDeviceInventoryByTablesParams{
-			DeviceID: msg.DeviceId,
-			Column2:  msg.TableNames,
-		})
+		rows, err = h.store.Repos().Inventory.ListTables(ctx, msg.DeviceId, msg.TableNames)
 	} else {
-		rows, err = h.store.Queries().GetDeviceInventory(ctx, msg.DeviceId)
+		rows, err = h.store.Repos().Inventory.ListAllTables(ctx, msg.DeviceId)
 	}
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get inventory")

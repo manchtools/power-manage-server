@@ -666,10 +666,7 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 			}
 
 			// Enrich with inventory data (os_version, system_info, kernel_info).
-			inv, err := idx.store.Queries().GetDeviceInventoryByTables(ctx, db.GetDeviceInventoryByTablesParams{
-				DeviceID: d.ID,
-				Column2:  []string{"os_version", "system_info", "kernel_info"},
-			})
+			inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"})
 			if err == nil {
 				for _, t := range inv {
 					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)

@@ -17,7 +17,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/idp"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // SSOHandler handles SSO authentication flow RPCs.
@@ -136,12 +135,12 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 
 	// Store auth state (10 min expiry)
 	expiresAt := time.Now().Add(10 * time.Minute)
-	err = h.store.Queries().CreateAuthState(ctx, db.CreateAuthStateParams{
+	err = h.store.Repos().AuthState.Create(ctx, store.CreateAuthStateParams{
 		State:        state,
 		ProviderID:   provider.ID,
 		Nonce:        nonce,
 		CodeVerifier: codeVerifier,
-		RedirectUri:  req.Msg.RedirectUrl,
+		RedirectURI:  req.Msg.RedirectUrl,
 		ExpiresAt:    expiresAt,
 	})
 	if err != nil {
@@ -194,7 +193,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 	h.logger.Info("SSO callback received", "slug", req.Msg.Slug, "state_prefix", statePrefix)
 
-	authState, err := h.store.Queries().ConsumeAuthState(ctx, req.Msg.State)
+	authState, err := h.store.Repos().AuthState.Consume(ctx, req.Msg.State)
 	if err != nil {
 		if store.IsNotFound(err) {
 			h.logger.Warn("SSO auth state not found or expired", "state_prefix", statePrefix, "slug", req.Msg.Slug)
@@ -228,7 +227,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	// Create OIDC provider.
 	// Use the redirect URI stored during GetSSOLoginURL so the token exchange
 	// redirect_uri matches the one used in the authorization request.
-	callbackURL := authState.RedirectUri
+	callbackURL := authState.RedirectURI
 	if callbackURL == "" {
 		callbackURL = h.callbackBaseURL + "/auth/callback/" + provider.Slug
 	}
