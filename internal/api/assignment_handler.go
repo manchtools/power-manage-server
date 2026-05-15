@@ -105,7 +105,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 		}
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP:
-		_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.TargetId)
+		_, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.TargetId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserGroupNotFound, connect.CodeNotFound, "user group not found")

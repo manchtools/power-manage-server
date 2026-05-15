@@ -27,5 +27,6 @@ type Repos struct {
 	TerminalSession  TerminalSessionRepo
 	Token            TokenRepo
 	Totp             TotpRepo
+	UserGroup        UserGroupRepo
 	UserSelection    UserSelectionRepo
 }

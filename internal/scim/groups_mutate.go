@@ -290,7 +290,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 			requestedSet[id] = true
 		}
 
-		currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
+		currentMemberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 		if err != nil {
 			h.logger.Error("failed to list group members for patch replace", "group_id", groupID, "error", err)
 			return
