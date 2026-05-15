@@ -17,6 +17,7 @@ type Repos struct {
 	ActionSet        ActionSetRepo
 	AuthState        AuthStateRepo
 	Compliance       ComplianceRepo
+	Definition       DefinitionRepo
 	Device           DeviceRepo
 	DeviceGroup      DeviceGroupRepo
 	IdentityLink     IdentityLinkRepo
