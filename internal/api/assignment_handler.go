@@ -62,7 +62,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
 		}
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
-		_, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Repos().Definition.Get(ctx, req.Msg.SourceId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrDefinitionNotFound, connect.CodeNotFound, "definition not found")
@@ -381,7 +381,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	protoDefinitions := make([]*pm.Definition, 0, len(definitionIDs))
 	protoDefinitionDetails := make([]*pm.GetDefinitionResponse, 0, len(definitionIDs))
 	for id := range definitionIDs {
-		def, err := h.store.Queries().GetDefinitionByID(ctx, id)
+		def, err := h.store.Repos().Definition.Get(ctx, id)
 		if err != nil {
 			continue
 		}
@@ -397,7 +397,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		}
 		protoDefinitions = append(protoDefinitions, protoDef)
 
-		members, err := h.store.Queries().ListDefinitionMembers(ctx, id)
+		members, err := h.store.Repos().Definition.ListMembers(ctx, id)
 		if err != nil {
 			continue
 		}

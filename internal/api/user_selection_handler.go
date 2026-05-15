@@ -169,7 +169,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 				logEnrichmentErr("GetActionSetByID", "action_set_id", asn.SourceID, err)
 			}
 		case "definition":
-			def, err := h.store.Queries().GetDefinitionByID(ctx, asn.SourceID)
+			def, err := h.store.Repos().Definition.Get(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = def.Name
 				item.SourceDescription = def.Description

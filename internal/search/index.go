@@ -517,10 +517,7 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 	var total int
 
 	for {
-		defs, err := idx.store.Queries().ListDefinitions(ctx, db.ListDefinitionsParams{
-			Limit:  pageSize,
-			Offset: offset,
-		})
+		defs, err := idx.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
 		if err != nil {
 			return total, err
 		}
@@ -530,7 +527,7 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 
 		for _, d := range defs {
 			// Get members for this definition.
-			members, err := idx.store.Queries().ListDefinitionMembers(ctx, d.ID)
+			members, err := idx.store.Repos().Definition.ListMembers(ctx, d.ID)
 			if err != nil {
 				idx.logger.Warn("failed to list definition members", "def_id", d.ID, "error", err)
 				continue

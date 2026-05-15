@@ -13,7 +13,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // DefinitionHandler handles definition (collection of action sets) RPCs.
@@ -67,7 +66,7 @@ func (h *DefinitionHandler) CreateDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, id)
+	def, err := h.store.Repos().Definition.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
@@ -83,12 +82,12 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
-	members, err := h.store.Queries().ListDefinitionMembers(ctx, req.Msg.Id)
+	members, err := h.store.Repos().Definition.ListMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition members")
 	}
@@ -115,15 +114,12 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	defs, err := h.store.Queries().ListDefinitions(ctx, db.ListDefinitionsParams{
-		Limit:  pageSize,
-		Offset: offset,
-	})
+	defs, err := h.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list definitions")
 	}
 
-	count, err := h.store.Queries().CountDefinitions(ctx)
+	count, err := h.store.Repos().Definition.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count definitions")
 	}
@@ -166,7 +162,7 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -207,7 +203,7 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -241,7 +237,7 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.Id)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -293,7 +289,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	// Verify definition exists
-	_, err = h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	_, err = h.store.Repos().Definition.Get(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -318,7 +314,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get definition")
 	}
@@ -358,7 +354,7 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -399,7 +395,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 		return nil, err
 	}
 
-	def, err := h.store.Queries().GetDefinitionByID(ctx, req.Msg.DefinitionId)
+	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
@@ -409,7 +405,7 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 	}), nil
 }
 
-func (h *DefinitionHandler) definitionToProto(d db.DefinitionsProjection) *pm.Definition {
+func (h *DefinitionHandler) definitionToProto(d store.Definition) *pm.Definition {
 	def := &pm.Definition{
 		Id:          d.ID,
 		Name:        d.Name,
