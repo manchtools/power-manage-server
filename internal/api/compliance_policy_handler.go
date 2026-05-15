@@ -255,7 +255,7 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 	}
 
 	// Verify action exists and is a compliance action
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.ActionId)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.ActionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}

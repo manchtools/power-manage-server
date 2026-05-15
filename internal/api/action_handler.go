@@ -67,7 +67,7 @@ func NewActionHandler(st *store.Store, logger *slog.Logger, signer ca.ActionSign
 	}
 }
 
-func (h *ActionHandler) actionToProto(a db.ActionsProjection) *pm.ManagedAction {
+func (h *ActionHandler) actionToProto(a store.Action) *pm.ManagedAction {
 	action := &pm.ManagedAction{
 		Id:             a.ID,
 		Name:           a.Name,

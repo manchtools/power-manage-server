@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -45,7 +46,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Validate source exists
 	switch req.Msg.SourceType {
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
-		_, err := h.store.Queries().GetActionByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Repos().Action.Get(ctx, req.Msg.SourceId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
@@ -281,17 +282,21 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 
 	protoActions := make([]*pm.ManagedAction, len(actions))
 	for i, a := range actions {
-		protoActions[i] = h.actionHandler.actionToProto(db.ActionsProjection{
-			ID:                a.ID,
-			Name:              a.Name,
-			Description:       a.Description,
-			ActionType:        a.ActionType,
-			Params:            a.Params,
-			TimeoutSeconds:    a.TimeoutSeconds,
-			CreatedAt:         a.CreatedAt,
-			CreatedBy:         a.CreatedBy,
-			IsDeleted:         a.IsDeleted,
-			ProjectionVersion: a.ProjectionVersion,
+		// Transitional: ListAssignedActionsForDevice returns a
+		// db-specific join row; convert the subset of fields used
+		// by actionToProto into the domain shape inline. The full
+		// store.Action will be the natural return type when
+		// ListAssignedActionsForDevice itself migrates with the
+		// assignment domain.
+		protoActions[i] = h.actionHandler.actionToProto(store.Action{
+			ID:             a.ID,
+			Name:           a.Name,
+			Description:    a.Description,
+			ActionType:     a.ActionType,
+			Params:         json.RawMessage(a.Params),
+			TimeoutSeconds: a.TimeoutSeconds,
+			CreatedAt:      a.CreatedAt,
+			CreatedBy:      a.CreatedBy,
 		})
 	}
 

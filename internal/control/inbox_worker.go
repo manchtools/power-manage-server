@@ -239,10 +239,10 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	}
 
 	// Cache the action lookup — reused for both execution creation and compliance check.
-	var cachedAction *db.ActionsProjection
+	var cachedAction *store.Action
 
 	if needsCreate {
-		action, err := w.store.Queries().GetActionByID(ctx, actionID)
+		action, err := w.store.Repos().Action.Get(ctx, actionID)
 		if err != nil {
 			if store.IsNotFound(err) {
 				// Action was deleted while agent was offline — skip, don't retry.
@@ -361,7 +361,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	if result.DetectionOutput != nil && actionID != "" {
 		// Reuse cached action if available, otherwise fetch
 		if cachedAction == nil {
-			if a, err := w.store.Queries().GetActionByID(ctx, actionID); err != nil {
+			if a, err := w.store.Repos().Action.Get(ctx, actionID); err != nil {
 				logger.Warn("failed to look up action for compliance check", "action_id", actionID, "error", err)
 			} else {
 				cachedAction = &a
@@ -665,7 +665,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 			}
 			cached, ok := actionCache[*exec.ActionID]
 			if !ok {
-				action, err := w.store.Queries().GetActionByID(ctx, *exec.ActionID)
+				action, err := w.store.Repos().Action.Get(ctx, *exec.ActionID)
 				if err != nil {
 					if store.IsNotFound(err) {
 						// Action was deleted after the execution was created.

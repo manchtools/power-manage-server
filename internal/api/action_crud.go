@@ -16,7 +16,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // CreateAction creates a new action (single executable).
@@ -41,8 +40,8 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 
 	// Auto-assign priority for SSHD actions based on creation order
 	if req.Msg.Type == pm.ActionType_ACTION_TYPE_SSHD {
-		count, countErr := h.store.Queries().CountActions(ctx, db.CountActionsParams{
-			Column1: int32(pm.ActionType_ACTION_TYPE_SSHD),
+		count, countErr := h.store.Repos().Action.Count(ctx, store.CountActionsFilter{
+			ActionTypeFilter: int32(pm.ActionType_ACTION_TYPE_SSHD),
 		})
 		if countErr != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count SSHD actions")
@@ -96,7 +95,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	action, err := h.store.Queries().GetActionByID(ctx, id)
+	action, err := h.store.Repos().Action.Get(ctx, id)
 	if err != nil {
 		h.logger.Error("failed to get action after create", "error", err, "id", id)
 		// Projection row may already exist without signature; roll
@@ -125,7 +124,7 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
@@ -144,20 +143,12 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 
 	typeFilter := int32(req.Msg.TypeFilter)
 
-	actions, err := h.store.Queries().ListActions(ctx, db.ListActionsParams{
-		Column1:        typeFilter,
-		Limit:          pageSize,
-		Offset:         offset,
-		UnassignedOnly: req.Msg.UnassignedOnly,
-	})
+	actions, err := h.store.Repos().Action.List(ctx, store.ListActionsFilter{ActionTypeFilter: typeFilter, Limit: pageSize, Offset: offset, UnassignedOnly: req.Msg.UnassignedOnly})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
 	}
 
-	count, err := h.store.Queries().CountActions(ctx, db.CountActionsParams{
-		Column1:        typeFilter,
-		UnassignedOnly: req.Msg.UnassignedOnly,
-	})
+	count, err := h.store.Repos().Action.Count(ctx, store.CountActionsFilter{ActionTypeFilter: typeFilter, UnassignedOnly: req.Msg.UnassignedOnly})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count actions")
 	}
@@ -188,7 +179,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 	}
 
 	// Verify action exists before appending event
-	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+	if _, err := h.store.Repos().Action.Get(ctx, req.Msg.Id); err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
@@ -208,7 +199,7 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
@@ -230,7 +221,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 	}
 
 	// Verify action exists before appending event
-	if _, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id); err != nil {
+	if _, err := h.store.Repos().Action.Get(ctx, req.Msg.Id); err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
@@ -250,7 +241,7 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 	}
@@ -275,7 +266,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	existing, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	existing, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
@@ -335,7 +326,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	action, err := h.store.Queries().GetActionByID(ctx, req.Msg.Id)
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
@@ -389,12 +380,8 @@ func (h *ActionHandler) computeActionSignature(ctx context.Context, id string, a
 // On failure the row stays unsigned — callers SHOULD emit a
 // compensating ActionDeleted so the operator doesn't see a broken
 // unsigned row. See rollbackUnsignedCreate.
-func (h *ActionHandler) persistActionSignature(ctx context.Context, action *db.ActionsProjection, sig, paramsCanonical []byte) error {
-	if err := h.store.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
-		ID:              action.ID,
-		Signature:       sig,
-		ParamsCanonical: paramsCanonical,
-	}); err != nil {
+func (h *ActionHandler) persistActionSignature(ctx context.Context, action *store.Action, sig, paramsCanonical []byte) error {
+	if err := h.store.Repos().Action.UpdateSignature(ctx, store.UpdateActionSignatureParams{ID: action.ID, Signature: sig, ParamsCanonical: paramsCanonical}); err != nil {
 		h.logger.Error("failed to store action signature", "action_id", action.ID, "error", err)
 		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store action signature")
 	}
