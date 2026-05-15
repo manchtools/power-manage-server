@@ -14,8 +14,10 @@ import (
 // are migrated under tracker #242.
 func NewRepos(q *generated.Queries) *store.Repos {
 	return &store.Repos{
+		AuthState:       NewAuthState(q),
 		Compliance:      NewCompliance(q),
 		IdentityLink:    NewIdentityLink(q),
+		Inventory:       NewInventory(q),
 		Logs:            NewLogs(q),
 		OSQuery:         NewOSQuery(q),
 		RevokedToken:    NewRevokedToken(q),
@@ -24,5 +26,6 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		TerminalSession: NewTerminalSession(q),
 		Token:           NewToken(q),
 		Totp:            NewTotp(q),
+		UserSelection:   NewUserSelection(q),
 	}
 }

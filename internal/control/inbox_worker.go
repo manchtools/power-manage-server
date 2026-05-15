@@ -471,7 +471,7 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 	)
 
 	for _, table := range payload.Tables {
-		if err := w.store.Queries().UpsertDeviceInventory(ctx, db.UpsertDeviceInventoryParams{
+		if err := w.store.Repos().Inventory.Upsert(ctx, store.UpsertInventoryTable{
 			DeviceID:  payload.DeviceID,
 			TableName: table.TableName,
 			Rows:      table.RowsJSON,

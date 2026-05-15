@@ -89,7 +89,7 @@ func (h *UserSelectionHandler) SetUserSelection(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	selection, err := h.store.Queries().GetUserSelection(ctx, db.GetUserSelectionParams{
+	selection, err := h.store.Repos().UserSelection.Get(ctx, store.GetUserSelectionKey{
 		DeviceID:   req.Msg.DeviceId,
 		SourceType: sourceTypeStr,
 		SourceID:   req.Msg.SourceId,
@@ -125,7 +125,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 	}
 
 	// Get user selections for this device
-	selections, err := h.store.Queries().ListUserSelectionsForDevice(ctx, req.Msg.DeviceId)
+	selections, err := h.store.Repos().UserSelection.ListForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user selections")
 	}
@@ -187,7 +187,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 	}), nil
 }
 
-func userSelectionToProto(s db.UserSelectionsProjection) *pm.UserSelection {
+func userSelectionToProto(s store.UserSelection) *pm.UserSelection {
 	sel := &pm.UserSelection{
 		Id:         s.ID,
 		DeviceId:   s.DeviceID,
