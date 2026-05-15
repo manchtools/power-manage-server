@@ -18,7 +18,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // TokenHandler handles registration token management RPCs.
@@ -106,7 +105,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Read back from projection
-	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: id})
+	token, err := h.store.Repos().Token.Get(ctx, id, nil)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get token")
 	}
@@ -125,7 +124,7 @@ func (h *TokenHandler) GetToken(ctx context.Context, req *connect.Request[pm.Get
 		return nil, err
 	}
 
-	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
+	token, err := h.store.Repos().Token.Get(ctx, req.Msg.Id, nil)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrTokenNotFound, "token not found")
 	}
@@ -142,19 +141,19 @@ func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.L
 		return nil, err
 	}
 
-	tokens, err := h.store.Queries().ListTokens(ctx, db.ListTokensParams{
-		Column1:       req.Msg.IncludeDisabled,
-		Limit:         pageSize,
-		Offset:        offset,
-		FilterOwnerID: userFilterID(ctx, "ListTokens"),
+	tokens, err := h.store.Repos().Token.List(ctx, store.ListTokensFilter{
+		IncludeDisabled: req.Msg.IncludeDisabled,
+		Limit:           pageSize,
+		Offset:          offset,
+		OwnerScope:      userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list tokens")
 	}
 
-	count, err := h.store.Queries().CountTokens(ctx, db.CountTokensParams{
-		Column1:       req.Msg.IncludeDisabled,
-		FilterOwnerID: userFilterID(ctx, "ListTokens"),
+	count, err := h.store.Repos().Token.Count(ctx, store.CountTokensFilter{
+		IncludeDisabled: req.Msg.IncludeDisabled,
+		OwnerScope:      userFilterID(ctx, "ListTokens"),
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count tokens")
@@ -200,7 +199,7 @@ func (h *TokenHandler) RenameToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Read back from projection
-	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
+	token, err := h.store.Repos().Token.Get(ctx, req.Msg.Id, nil)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrTokenNotFound, "token not found")
 	}
@@ -239,7 +238,7 @@ func (h *TokenHandler) SetTokenDisabled(ctx context.Context, req *connect.Reques
 	}
 
 	// Read back from projection
-	token, err := h.store.Queries().GetTokenByID(ctx, db.GetTokenByIDParams{ID: req.Msg.Id})
+	token, err := h.store.Repos().Token.Get(ctx, req.Msg.Id, nil)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrTokenNotFound, "token not found")
 	}
@@ -275,8 +274,8 @@ func (h *TokenHandler) DeleteToken(ctx context.Context, req *connect.Request[pm.
 	return connect.NewResponse(&pm.DeleteTokenResponse{}), nil
 }
 
-// tokenToProto converts a database token projection to a protobuf token.
-func tokenToProto(t db.TokensProjection) *pm.RegistrationToken {
+// tokenToProto converts a domain Token to a protobuf token.
+func tokenToProto(t store.Token) *pm.RegistrationToken {
 	token := &pm.RegistrationToken{
 		Id:          t.ID,
 		Name:        t.Name,
