@@ -12,7 +12,6 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // reconcileGroupMembers diff's the requested member set against the
@@ -82,7 +81,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 // buildGroupResource constructs a SCIMGroup from a mapping and its associated user group.
 // If the user group was deleted but the mapping still exists (orphaned), it re-creates
 // the user group and updates the mapping to restore consistency.
-func (h *Handler) buildGroupResource(ctx context.Context, providerID string, mapping db.ScimGroupMappingProjection, baseURL string) (SCIMGroup, error) {
+func (h *Handler) buildGroupResource(ctx context.Context, providerID string, mapping store.SCIMGroupMapping, baseURL string) (SCIMGroup, error) {
 	group, err := h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
 	if store.IsNotFound(err) {
 		// User group was deleted but SCIM mapping still exists — restore it.
@@ -117,7 +116,7 @@ func (h *Handler) buildGroupResource(ctx context.Context, providerID string, map
 	sg := SCIMGroup{
 		Schemas:     []string{GroupSchema},
 		ID:          mapping.UserGroupID,
-		ExternalID:  mapping.ScimGroupID,
+		ExternalID:  mapping.SCIMGroupID,
 		DisplayName: group.Name,
 		Members:     members,
 		Meta: &SCIMMeta{
@@ -134,9 +133,9 @@ func (h *Handler) buildGroupResource(ctx context.Context, providerID string, map
 
 // restoreOrphanedGroup re-creates the user group and updates the SCIM mapping
 // when the original user group was deleted but the SCIM mapping still exists.
-func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m db.ScimGroupMappingProjection) (db.ScimGroupMappingProjection, error) {
+func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m store.SCIMGroupMapping) (store.SCIMGroupMapping, error) {
 	h.logger.Warn("restoring orphaned SCIM group: re-creating user group",
-		"mapping_id", m.ID, "user_group_id", m.UserGroupID, "display_name", m.ScimDisplayName)
+		"mapping_id", m.ID, "user_group_id", m.UserGroupID, "display_name", m.SCIMDisplayName)
 
 	newGroupID := newULID()
 	if err := h.store.AppendEvent(ctx, store.Event{
@@ -144,7 +143,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		StreamID:   newGroupID,
 		EventType:  string(eventtypes.UserGroupCreated),
 		Data: map[string]any{
-			"name":        m.ScimDisplayName,
+			"name":        m.SCIMDisplayName,
 			"description": "SCIM-provisioned group (restored)",
 		},
 		ActorType: "scim",
@@ -160,7 +159,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		EventType:  string(eventtypes.SCIMGroupUnmapped),
 		Data: map[string]any{
 			"provider_id":   providerID,
-			"scim_group_id": m.ScimGroupID,
+			"scim_group_id": m.SCIMGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   providerID,
@@ -174,8 +173,8 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		EventType:  string(eventtypes.SCIMGroupMapped),
 		Data: map[string]any{
 			"provider_id":       providerID,
-			"scim_group_id":     m.ScimGroupID,
-			"scim_display_name": m.ScimDisplayName,
+			"scim_group_id":     m.SCIMGroupID,
+			"scim_display_name": m.SCIMDisplayName,
 			"user_group_id":     newGroupID,
 		},
 		ActorType: "scim",
@@ -184,10 +183,7 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		return m, fmt.Errorf("create mapping: %w", err)
 	}
 
-	newMapping, err := h.store.Queries().GetSCIMGroupMapping(ctx, db.GetSCIMGroupMappingParams{
-		ProviderID:  providerID,
-		ScimGroupID: m.ScimGroupID,
-	})
+	newMapping, err := h.store.Repos().SCIM.GetGroupMapping(ctx, store.SCIMGroupMappingKey{ProviderID: providerID, SCIMGroupID: m.SCIMGroupID})
 	if err != nil {
 		return m, fmt.Errorf("read new mapping: %w", err)
 	}

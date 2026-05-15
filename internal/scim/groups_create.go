@@ -13,7 +13,6 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // createGroup handles POST /scim/v2/{slug}/Groups
@@ -50,15 +49,12 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if this SCIM group is already mapped
-	existing, err := h.store.Queries().GetSCIMGroupMapping(ctx, db.GetSCIMGroupMappingParams{
-		ProviderID:  provider.ID,
-		ScimGroupID: scimGroupID,
-	})
+	existing, err := h.store.Repos().SCIM.GetGroupMapping(ctx, store.SCIMGroupMappingKey{ProviderID: provider.ID, SCIMGroupID: scimGroupID})
 	if err == nil {
 		// Already exists — update display name if changed and return existing resource.
 		h.logger.Debug("SCIM createGroup: group already exists, syncing", "scim_group_id", scimGroupID, "user_group_id", existing.UserGroupID)
 		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
-		if existing.ScimDisplayName != scimGroup.DisplayName {
+		if existing.SCIMDisplayName != scimGroup.DisplayName {
 			h.appendEvent(ctx, store.Event{
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
@@ -103,7 +99,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				EventType:  string(eventtypes.SCIMGroupUnmapped),
 				Data: map[string]any{
 					"provider_id":   provider.ID,
-					"scim_group_id": existing.ScimGroupID,
+					"scim_group_id": existing.SCIMGroupID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -181,10 +177,7 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build response
-	mapping, err := h.store.Queries().GetSCIMGroupMapping(ctx, db.GetSCIMGroupMappingParams{
-		ProviderID:  provider.ID,
-		ScimGroupID: scimGroupID,
-	})
+	mapping, err := h.store.Repos().SCIM.GetGroupMapping(ctx, store.SCIMGroupMappingKey{ProviderID: provider.ID, SCIMGroupID: scimGroupID})
 	if err != nil {
 		// Fall back to a minimal response
 		writeJSON(w, http.StatusCreated, SCIMGroup{

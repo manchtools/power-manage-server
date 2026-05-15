@@ -23,6 +23,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		OSQuery:          NewOSQuery(q),
 		RevokedToken:     NewRevokedToken(q),
 		Role:             NewRole(q),
+		SCIM:             NewSCIM(q),
 		Settings:         NewSettings(q),
 		TerminalSession:  NewTerminalSession(q),
 		Token:            NewToken(q),

@@ -12,7 +12,6 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // replaceGroup handles PUT /scim/v2/{slug}/Groups/{id}
@@ -41,10 +40,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
 	// Look up the SCIM group mapping
-	mapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
@@ -56,14 +52,14 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update display name if changed
-	if scimGroup.DisplayName != "" && scimGroup.DisplayName != mapping.ScimDisplayName {
+	if scimGroup.DisplayName != "" && scimGroup.DisplayName != mapping.SCIMDisplayName {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
 			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
 			Data: map[string]any{
 				"provider_id":       provider.ID,
-				"scim_group_id":     mapping.ScimGroupID,
+				"scim_group_id":     mapping.SCIMGroupID,
 				"scim_display_name": scimGroup.DisplayName,
 			},
 			ActorType: "scim",
@@ -91,10 +87,7 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read back and return
-	updatedMapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	updatedMapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		updatedMapping = mapping
 	}
@@ -135,10 +128,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
 	// Verify group exists
-	mapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
@@ -173,10 +163,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read back and return
-	updatedMapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	updatedMapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		updatedMapping = mapping
 	}
@@ -261,7 +248,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 }
 
 // handleGroupPatchReplace processes a "replace" patch operation on a group.
-func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.IdentityProvider, groupID string, mapping db.ScimGroupMappingProjection, op SCIMPatchOp) {
+func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.IdentityProvider, groupID string, mapping store.SCIMGroupMapping, op SCIMPatchOp) {
 	path := strings.ToLower(op.Path)
 
 	switch path {
@@ -277,7 +264,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
 			Data: map[string]any{
 				"provider_id":       provider.ID,
-				"scim_group_id":     mapping.ScimGroupID,
+				"scim_group_id":     mapping.SCIMGroupID,
 				"scim_display_name": name,
 			},
 			ActorType: "scim",
