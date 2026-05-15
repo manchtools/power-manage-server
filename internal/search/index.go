@@ -835,10 +835,7 @@ func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
 	var total int
 
 	for {
-		groups, err := idx.store.Queries().ListUserGroups(ctx, db.ListUserGroupsParams{
-			Limit:  pageSize,
-			Offset: offset,
-		})
+		groups, err := idx.store.Repos().UserGroup.List(ctx, store.ListUserGroupsFilter{Limit: pageSize, Offset: offset})
 		if err != nil {
 			return total, err
 		}

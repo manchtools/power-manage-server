@@ -43,7 +43,7 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	// Check name uniqueness — distinguishing NotFound from a transient
 	// DB error matters: silently treating any error as "name available"
 	// would let a concurrent CreateUserGroup succeed twice on a flaky DB.
-	_, err := h.store.Queries().GetUserGroupByName(ctx, req.Msg.Name)
+	_, err := h.store.Repos().UserGroup.GetByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
 	}
@@ -88,7 +88,7 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetUserGroupByID(ctx, id)
+	group, err := h.store.Repos().UserGroup.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
@@ -104,7 +104,7 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -114,7 +114,7 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get group roles")
 	}
 
-	members, err := h.store.Queries().ListUserGroupMembers(ctx, req.Msg.Id)
+	members, err := h.store.Repos().UserGroup.ListMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get group members")
 	}
@@ -143,15 +143,12 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	groups, err := h.store.Queries().ListUserGroups(ctx, db.ListUserGroupsParams{
-		Limit:  pageSize,
-		Offset: offset,
-	})
+	groups, err := h.store.Repos().UserGroup.List(ctx, store.ListUserGroupsFilter{Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
 	}
 
-	count, err := h.store.Queries().CountUserGroups(ctx)
+	count, err := h.store.Repos().UserGroup.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count user groups")
 	}
@@ -178,7 +175,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	_, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -202,7 +199,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	updated, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	updated, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
@@ -235,7 +232,7 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
-	if _, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id); err != nil {
+	if _, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id); err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
@@ -252,7 +249,7 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 		return nil, err
 	}
 
-	updated, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	updated, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
@@ -270,7 +267,7 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	_, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	_, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -399,7 +396,7 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	}
 
 	// Verify group exists and is not dynamic
-	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.GroupId)
+	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -583,7 +580,7 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
-	groups, err := h.store.Queries().ListUserGroupsForUser(ctx, req.Msg.UserId)
+	groups, err := h.store.Repos().UserGroup.ListForUser(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
 	}
@@ -639,7 +636,7 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		return nil, err
 	}
 
-	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -700,7 +697,7 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	}
 
 	// Verify group exists and is dynamic
-	group, err := h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
@@ -719,7 +716,7 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	}
 
 	// Get updated group
-	group, err = h.store.Queries().GetUserGroupByID(ctx, req.Msg.Id)
+	group, err = h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user group")
 	}
@@ -786,7 +783,7 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 // failing member does not prevent the remaining members from being
 // invalidated. A partial bump is better than stopping early.
 func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
-	memberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
+	memberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 	if err != nil {
 		return err
 	}
@@ -802,7 +799,7 @@ func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context
 }
 
 // userGroupToProto converts a database user group projection to a protobuf UserGroup.
-func userGroupToProto(g db.UserGroupsProjection, roles []db.RolesProjection, isScimManaged bool) *pm.UserGroup {
+func userGroupToProto(g store.UserGroup, roles []db.RolesProjection, isScimManaged bool) *pm.UserGroup {
 	group := &pm.UserGroup{
 		Id:                g.ID,
 		Name:              g.Name,

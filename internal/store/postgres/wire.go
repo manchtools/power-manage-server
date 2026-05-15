@@ -28,6 +28,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		TerminalSession:  NewTerminalSession(q),
 		Token:            NewToken(q),
 		Totp:             NewTotp(q),
+		UserGroup:        NewUserGroup(q),
 		UserSelection:    NewUserSelection(q),
 	}
 }

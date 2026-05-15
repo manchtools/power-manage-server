@@ -20,7 +20,7 @@ import (
 // member set twice produces no second-round events.
 func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.IdentityProvider, groupID string, requestedMembers []SCIMMember) {
 	h.logger.Debug("SCIM reconcileGroupMembers", "group_id", groupID, "requested_count", len(requestedMembers))
-	currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
+	currentMemberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 	if err != nil {
 		h.logger.Error("failed to list current group members for reconciliation", "error", err)
 		return
@@ -82,20 +82,20 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 // If the user group was deleted but the mapping still exists (orphaned), it re-creates
 // the user group and updates the mapping to restore consistency.
 func (h *Handler) buildGroupResource(ctx context.Context, providerID string, mapping store.SCIMGroupMapping, baseURL string) (SCIMGroup, error) {
-	group, err := h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
+	group, err := h.store.Repos().UserGroup.GetWithMembers(ctx, mapping.UserGroupID)
 	if store.IsNotFound(err) {
 		// User group was deleted but SCIM mapping still exists — restore it.
 		mapping, err = h.restoreOrphanedGroup(ctx, providerID, mapping)
 		if err != nil {
 			return SCIMGroup{}, fmt.Errorf("restore orphaned group: %w", err)
 		}
-		group, err = h.store.Queries().GetUserGroupWithMembers(ctx, mapping.UserGroupID)
+		group, err = h.store.Repos().UserGroup.GetWithMembers(ctx, mapping.UserGroupID)
 	}
 	if err != nil {
 		return SCIMGroup{}, fmt.Errorf("get user group: %w", err)
 	}
 
-	memberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, mapping.UserGroupID)
+	memberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, mapping.UserGroupID)
 	if err != nil {
 		return SCIMGroup{}, fmt.Errorf("list group members: %w", err)
 	}
