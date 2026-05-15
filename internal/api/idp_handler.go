@@ -18,7 +18,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // IDPHandler handles identity provider CRUD RPCs.
@@ -46,7 +45,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 	}
 
 	// Check for duplicate slug
-	_, err = h.store.Queries().GetIdentityProviderBySlug(ctx, req.Msg.Slug)
+	_, err = h.store.Repos().IdentityProvider.GetBySlug(ctx, req.Msg.Slug)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrProviderSlugExists, connect.CodeAlreadyExists, "provider with this slug already exists")
 	}
@@ -91,7 +90,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read back provider")
 	}
@@ -107,7 +106,7 @@ func (h *IDPHandler) GetIdentityProvider(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -124,7 +123,7 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	providers, err := h.store.Queries().ListIdentityProviders(ctx, db.ListIdentityProvidersParams{
+	providers, err := h.store.Repos().IdentityProvider.List(ctx, store.ListIdentityProvidersFilter{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -132,7 +131,7 @@ func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list providers")
 	}
 
-	count, err := h.store.Queries().CountIdentityProviders(ctx)
+	count, err := h.store.Repos().IdentityProvider.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count providers")
 	}
@@ -163,7 +162,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	}
 
 	// Verify provider exists
-	_, err = h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	_, err = h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -216,7 +215,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read back provider")
 	}
@@ -321,7 +320,7 @@ func (h *IDPHandler) EnableSCIM(ctx context.Context, req *connect.Request[pm.Ena
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -374,7 +373,7 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -408,7 +407,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, req.Msg.Id)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -449,7 +448,7 @@ func (h *IDPHandler) RotateSCIMToken(ctx context.Context, req *connect.Request[p
 
 // idpToProto converts a database identity provider to a proto message.
 // Note: client_secret is never returned to the client.
-func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityProvider {
+func (h *IDPHandler) idpToProto(p store.IdentityProvider) *pm.IdentityProvider {
 	provider := &pm.IdentityProvider{
 		Id:                       p.ID,
 		Name:                     p.Name,
@@ -457,10 +456,10 @@ func (h *IDPHandler) idpToProto(p db.IdentityProvidersProjection) *pm.IdentityPr
 		ProviderType:             identityProviderTypeFromString(p.ProviderType),
 		Enabled:                  p.Enabled,
 		ClientId:                 p.ClientID,
-		IssuerUrl:                p.IssuerUrl,
-		AuthorizationUrl:         p.AuthorizationUrl,
-		TokenUrl:                 p.TokenUrl,
-		UserinfoUrl:              p.UserinfoUrl,
+		IssuerUrl:                p.IssuerURL,
+		AuthorizationUrl:         p.AuthorizationURL,
+		TokenUrl:                 p.TokenURL,
+		UserinfoUrl:              p.UserinfoURL,
 		Scopes:                   p.Scopes,
 		AutoCreateUsers:          p.AutoCreateUsers,
 		AutoLinkByEmail:          p.AutoLinkByEmail,

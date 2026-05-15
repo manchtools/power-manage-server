@@ -192,7 +192,7 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGroupPatchAdd processes an "add" patch operation on a group.
-func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, op SCIMPatchOp) {
+func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) {
 	path := strings.ToLower(op.Path)
 	if path != "members" && path != "" {
 		return
@@ -216,7 +216,7 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider db.IdentityP
 }
 
 // handleGroupPatchRemove processes a "remove" patch operation on a group.
-func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, op SCIMPatchOp) {
+func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) {
 	path := strings.ToLower(op.Path)
 
 	// Handle path like: members[value eq "userId"]
@@ -261,7 +261,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider db.Identi
 }
 
 // handleGroupPatchReplace processes a "replace" patch operation on a group.
-func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, mapping db.ScimGroupMappingProjection, op SCIMPatchOp) {
+func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.IdentityProvider, groupID string, mapping db.ScimGroupMappingProjection, op SCIMPatchOp) {
 	path := strings.ToLower(op.Path)
 
 	switch path {

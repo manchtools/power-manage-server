@@ -63,7 +63,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 }
 
 // listGroupsFiltered handles filtered group list requests.
-func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, provider db.IdentityProvidersProjection, filterStr string, startIndex int, baseURL string) {
+func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, provider store.IdentityProvider, filterStr string, startIndex int, baseURL string) {
 	f, err := parseFilter(filterStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filter: %s", err))

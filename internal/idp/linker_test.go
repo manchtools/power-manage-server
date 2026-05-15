@@ -53,7 +53,7 @@ func TestLinkOrCreate_AutoCreateUserIncludesLinuxFields(t *testing.T) {
 	appender := &mockAppender{}
 	linker := NewLinker(querier, appender)
 
-	provider := db.IdentityProvidersProjection{
+	provider := store.IdentityProvider{
 		ID:              "provider-1",
 		Slug:            "test-idp",
 		AutoCreateUsers: true,
@@ -105,7 +105,7 @@ func TestLinkOrCreate_AutoCreateUserDeriveUsernameFromEmail(t *testing.T) {
 	appender := &mockAppender{}
 	linker := NewLinker(querier, appender)
 
-	provider := db.IdentityProvidersProjection{
+	provider := store.IdentityProvider{
 		ID:              "provider-2",
 		Slug:            "test-idp",
 		AutoCreateUsers: true,

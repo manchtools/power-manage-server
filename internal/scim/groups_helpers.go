@@ -19,7 +19,7 @@ import (
 // current member set and emits per-user UserGroupMemberAdded /
 // UserGroupMemberRemoved events. Idempotent — calling with the same
 // member set twice produces no second-round events.
-func (h *Handler) reconcileGroupMembers(ctx context.Context, provider db.IdentityProvidersProjection, groupID string, requestedMembers []SCIMMember) {
+func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.IdentityProvider, groupID string, requestedMembers []SCIMMember) {
 	h.logger.Debug("SCIM reconcileGroupMembers", "group_id", groupID, "requested_count", len(requestedMembers))
 	currentMemberIDs, err := h.store.Queries().ListUserGroupMemberIDs(ctx, groupID)
 	if err != nil {
