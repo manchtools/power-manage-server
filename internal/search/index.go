@@ -440,7 +440,7 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 	setMembers := map[string][]string{}
 
 	for {
-		sets, err := idx.store.Queries().ListActionSets(ctx, db.ListActionSetsParams{
+		sets, err := idx.store.Repos().ActionSet.List(ctx, store.ListActionSetsFilter{
 			Limit:  pageSize,
 			Offset: offset,
 		})
@@ -453,7 +453,7 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 
 		for _, s := range sets {
 			// Get members for this set.
-			members, err := idx.store.Queries().ListActionSetMembers(ctx, s.ID)
+			members, err := idx.store.Repos().ActionSet.ListMembers(ctx, s.ID)
 			if err != nil {
 				idx.logger.Warn("failed to list action set members", "set_id", s.ID, "error", err)
 				continue

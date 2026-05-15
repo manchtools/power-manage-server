@@ -299,7 +299,7 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 	}
 
 	// Verify action set exists
-	actionSet, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.ActionSetId)
+	actionSet, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}

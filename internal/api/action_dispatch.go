@@ -462,7 +462,7 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	actionSets, err := h.store.Queries().ListActionSetsInDefinition(ctx, req.Msg.DefinitionId)
+	actionSets, err := h.store.Repos().ActionSet.ListInDefinition(ctx, req.Msg.DefinitionId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action sets in definition")
 	}

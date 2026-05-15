@@ -14,6 +14,7 @@ package store
 // add a field here, populate it in postgres.NewRepos.
 type Repos struct {
 	Action           ActionRepo
+	ActionSet        ActionSetRepo
 	AuthState        AuthStateRepo
 	Compliance       ComplianceRepo
 	Device           DeviceRepo
