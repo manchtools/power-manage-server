@@ -820,7 +820,19 @@ func userGroupToProto(g db.UserGroupsProjection, roles []db.RolesProjection, isS
 	group.CreatedAt = timestamppb.New(g.CreatedAt)
 
 	for _, r := range roles {
-		group.Roles = append(group.Roles, roleToProto(r))
+		// Transitional: until UserGroup migrates to a repo, the
+		// GetUserGroupRoles query returns generated.RolesProjection.
+		// Convert to the domain shape so roleToProto stays repo-typed.
+		group.Roles = append(group.Roles, roleToProto(store.Role{
+			ID:          r.ID,
+			Name:        r.Name,
+			Description: r.Description,
+			Permissions: r.Permissions,
+			IsSystem:    r.IsSystem,
+			CreatedAt:   r.CreatedAt,
+			CreatedBy:   r.CreatedBy,
+			UpdatedAt:   r.UpdatedAt,
+		}))
 	}
 
 	return group

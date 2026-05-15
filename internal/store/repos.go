@@ -17,6 +17,7 @@ type Repos struct {
 	IdentityLink    IdentityLinkRepo
 	Logs            LogsRepo
 	OSQuery         OSQueryRepo
+	Role            RoleRepo
 	Settings        SettingsRepo
 	TerminalSession TerminalSessionRepo
 	Totp            TotpRepo

@@ -430,7 +430,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	protoUser := userToProto(user)
-	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+	if roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.ID); err == nil {
 		for _, r := range roles {
 			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
 		}
