@@ -13,7 +13,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // ActionSetHandler handles action set RPCs.
@@ -68,7 +67,7 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, id)
+	set, err := h.store.Repos().ActionSet.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
@@ -84,12 +83,12 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
 
-	members, err := h.store.Queries().ListActionSetMembers(ctx, req.Msg.Id)
+	members, err := h.store.Repos().ActionSet.ListMembers(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set members")
 	}
@@ -117,16 +116,12 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	sets, err := h.store.Queries().ListActionSets(ctx, db.ListActionSetsParams{
-		Limit:          pageSize,
-		Offset:         offset,
-		UnassignedOnly: req.Msg.UnassignedOnly,
-	})
+	sets, err := h.store.Repos().ActionSet.List(ctx, store.ListActionSetsFilter{Limit: pageSize, Offset: offset, UnassignedOnly: req.Msg.UnassignedOnly})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list action sets")
 	}
 
-	count, err := h.store.Queries().CountActionSets(ctx, req.Msg.UnassignedOnly)
+	count, err := h.store.Repos().ActionSet.Count(ctx, req.Msg.UnassignedOnly)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count action sets")
 	}
@@ -169,7 +164,7 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -209,7 +204,7 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -243,7 +238,7 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.Id)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -295,7 +290,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 	}
 
 	// Verify set exists
-	_, err = h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
+	_, err = h.store.Repos().ActionSet.Get(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -320,7 +315,7 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action set")
 	}
@@ -360,7 +355,7 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -401,7 +396,7 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	set, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SetId)
+	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
@@ -411,7 +406,7 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 	}), nil
 }
 
-func (h *ActionSetHandler) actionSetToProto(s db.ActionSetsProjection) *pm.ActionSet {
+func (h *ActionSetHandler) actionSetToProto(s store.ActionSet) *pm.ActionSet {
 	set := &pm.ActionSet{
 		Id:          s.ID,
 		Name:        s.Name,

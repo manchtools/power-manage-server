@@ -54,7 +54,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 		}
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
-		_, err := h.store.Queries().GetActionSetByID(ctx, req.Msg.SourceId)
+		_, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.SourceId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionSetNotFound, connect.CodeNotFound, "action set not found")
@@ -342,7 +342,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 	protoActionSets := make([]*pm.ActionSet, 0, len(actionSetIDs))
 	protoActionSetDetails := make([]*pm.GetActionSetResponse, 0, len(actionSetIDs))
 	for id := range actionSetIDs {
-		set, err := h.store.Queries().GetActionSetByID(ctx, id)
+		set, err := h.store.Repos().ActionSet.Get(ctx, id)
 		if err != nil {
 			continue
 		}
@@ -358,7 +358,7 @@ func (h *AssignmentHandler) GetDeviceAssignments(ctx context.Context, req *conne
 		}
 		protoActionSets = append(protoActionSets, protoSet)
 
-		members, err := h.store.Queries().ListActionSetMembers(ctx, id)
+		members, err := h.store.Repos().ActionSet.ListMembers(ctx, id)
 		if err != nil {
 			continue
 		}

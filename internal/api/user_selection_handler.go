@@ -161,7 +161,7 @@ func (h *UserSelectionHandler) ListAvailableActions(ctx context.Context, req *co
 				logEnrichmentErr("GetActionByID", "action_id", asn.SourceID, err)
 			}
 		case "action_set":
-			set, err := h.store.Queries().GetActionSetByID(ctx, asn.SourceID)
+			set, err := h.store.Repos().ActionSet.Get(ctx, asn.SourceID)
 			if err == nil {
 				item.SourceName = set.Name
 				item.SourceDescription = set.Description
