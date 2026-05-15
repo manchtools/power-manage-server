@@ -128,7 +128,7 @@ func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slo
 		for {
 			select {
 			case <-ticker.C:
-				stale, err := st.Queries().ListStaleExecutions(ctx)
+				stale, err := st.Repos().Execution.ListStale(ctx)
 				if err != nil {
 					logger.Error("failed to list stale executions", "error", err)
 					continue

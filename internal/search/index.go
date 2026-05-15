@@ -889,7 +889,7 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 	actionNames := make(map[string]string)
 
 	for {
-		execs, err := idx.store.Queries().ListExecutionsForWarm(ctx, db.ListExecutionsForWarmParams{
+		execs, err := idx.store.Repos().Execution.ListForWarm(ctx, store.WarmFilter{
 			Limit:  pageSize,
 			Offset: offset,
 		})
