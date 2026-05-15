@@ -172,7 +172,7 @@ func (h *Handler) getUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	user, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "user not found")
@@ -256,7 +256,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		// SCIM was previously bypassing this cleanup entirely,
 		// leaving orphan pm-tty-* and USER provision actions on
 		// every device the deleted user was assigned to.
-		user, loadErr := h.store.Queries().GetUserByID(ctx, userID)
+		user, loadErr := h.store.Repos().User.Get(ctx, userID)
 
 		err = h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",

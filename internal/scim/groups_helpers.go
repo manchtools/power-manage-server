@@ -106,7 +106,7 @@ func (h *Handler) buildGroupResource(ctx context.Context, providerID string, map
 			Value: uid,
 			Ref:   baseURL + "/Users/" + uid,
 		}
-		u, err := h.store.Queries().GetUserByID(ctx, uid)
+		u, err := h.store.Repos().User.Get(ctx, uid)
 		if err == nil {
 			member.Display = u.Email
 		}

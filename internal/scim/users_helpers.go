@@ -32,7 +32,7 @@ func newULID() string {
 // syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
 // SCIM is treated as the source of truth — any differences are overwritten.
 func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityProvider, userID, email string, active *bool, name *SCIMName) {
-	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	user, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to get user for SCIM sync", "user_id", userID, "error", err)
 		return

@@ -8,7 +8,6 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // appendEvent appends an event and logs any error.
@@ -36,7 +35,7 @@ const providerContextKey contextKey = "scim_provider"
 // cleanup entirely on user deletion, leaving orphan pm-tty-* and
 // USER provision actions on devices.
 type SystemActionsCleaner interface {
-	CleanupDeletedUserActions(ctx context.Context, user db.UsersProjection) error
+	CleanupDeletedUserActions(ctx context.Context, user store.User) error
 }
 
 // Handler handles SCIM v2 API requests.

@@ -12,7 +12,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // SystemActionManager creates and maintains system-managed actions
@@ -54,7 +53,7 @@ func NewSystemActionManager(st *store.Store, signer ca.ActionSigner, logger *slo
 // SyncAllUsersSystemActions ensures all users have correct system actions.
 // Called at startup and after global settings changes. Idempotent.
 func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) error {
-	users, err := m.store.Queries().ListAllNonDeletedUsers(ctx)
+	users, err := m.store.Repos().User.ListAllNonDeleted(ctx)
 	if err != nil {
 		return fmt.Errorf("list users: %w", err)
 	}
@@ -145,7 +144,7 @@ func (m *SystemActionManager) StartReconciliation(ctx context.Context, interval,
 // Disabled users get a disabled flag in their USER action params.
 // Idempotent and safe to call after any user mutation.
 func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID string) error {
-	user, err := m.store.Queries().GetUserByID(ctx, userID)
+	user, err := m.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("get user: %w", err)
 	}
@@ -199,7 +198,7 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 	// If the permission query fails, we skip the TTY block entirely
 	// and leave the existing state untouched — a transient DB error
 	// must NOT trigger a cleanup that deletes a working TTY account.
-	permissions, err := m.store.Queries().GetUserPermissionsWithGroups(ctx, userID)
+	permissions, err := m.store.Repos().User.Permissions(ctx, userID)
 	if err != nil {
 		m.logger.Error("failed to resolve user permissions for tty action sync; leaving TTY state unchanged",
 			"user_id", userID, "error", err)
@@ -227,7 +226,7 @@ func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID 
 
 // CleanupDeletedUserActions removes all system actions for a deleted user.
 // Must be called with the user projection loaded BEFORE the delete event.
-func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, user store.User) error {
 	if user.SystemUserActionID != "" {
 		if err := m.actions.DeleteAction(ctx, user.SystemUserActionID); err != nil {
 			m.logger.Error("failed to delete system user action", "action_id", user.SystemUserActionID, "error", err)
@@ -255,7 +254,7 @@ func (m *SystemActionManager) CleanupDeletedUserActions(ctx context.Context, use
 	return nil
 }
 
-func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user db.UsersProjection, sshKeys []string) error {
+func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user store.User, sshKeys []string) error {
 	comment := user.DisplayName
 	if comment == "" {
 		comment = user.Email
@@ -268,7 +267,7 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 	// recur here.
 	params := &pm.UserParams{
 		Username:   user.LinuxUsername,
-		Uid:        user.LinuxUid,
+		Uid:        user.LinuxUID,
 		CreateHome: true,
 		Comment:    comment,
 		Disabled:   user.Disabled,
@@ -316,7 +315,7 @@ func (m *SystemActionManager) syncUserProvisionAction(ctx context.Context, user 
 	return nil
 }
 
-func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user store.User) error {
 	// Typed *pm.SshParams — same rationale as syncUserProvisionAction.
 	params := &pm.SshParams{
 		Users:         []string{user.LinuxUsername},
@@ -363,7 +362,7 @@ func (m *SystemActionManager) syncSshAccessAction(ctx context.Context, user db.U
 	return nil
 }
 
-func (m *SystemActionManager) cleanupUserAction(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) cleanupUserAction(ctx context.Context, user store.User) error {
 	if user.SystemUserActionID == "" {
 		return nil
 	}
@@ -377,7 +376,7 @@ func (m *SystemActionManager) cleanupUserAction(ctx context.Context, user db.Use
 	return nil
 }
 
-func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user store.User) error {
 	if user.SystemSshActionID == "" {
 		return nil
 	}
@@ -402,7 +401,7 @@ func (m *SystemActionManager) cleanupSshAction(ctx context.Context, user db.User
 // The action uses nologin as the shell (the agent temporarily
 // activates it during a session), no home directory, and the
 // deterministic UID from the SDK's TTYUID helper.
-func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user store.User) error {
 	// Typed *pm.UserParams so the Go compiler rejects field-name
 	// typos. The previous map[string]any form accepted "system": true
 	// as a sibling of real fields — protojson silently dropped it on
@@ -467,9 +466,9 @@ func (m *SystemActionManager) syncTtyUserAction(ctx context.Context, user db.Use
 	return nil
 }
 
-func systemTtyUserParams(user db.UsersProjection) *pm.UserParams {
+func systemTtyUserParams(user store.User) *pm.UserParams {
 	ttyUsername := "pm-tty-" + user.LinuxUsername
-	ttyUID := int32(int(user.LinuxUid) + 100000) // terminal.DefaultUIDOffset
+	ttyUID := int32(int(user.LinuxUID) + 100000) // terminal.DefaultUIDOffset
 
 	return &pm.UserParams{
 		Username:   ttyUsername,
@@ -482,7 +481,7 @@ func systemTtyUserParams(user db.UsersProjection) *pm.UserParams {
 	}
 }
 
-func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user db.UsersProjection) error {
+func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user store.User) error {
 	if user.SystemTtyActionID == "" {
 		return nil
 	}

@@ -15,7 +15,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // UserHandler handles user management RPCs.
@@ -65,7 +64,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// then re-surface as the generic Internal from AppendEvent
 	// later — matching the established pattern in
 	// auth_handler.go:59 and sso_handler.go:179.
-	if _, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email); err == nil {
+	if _, err := h.store.Repos().User.GetByEmail(ctx, req.Msg.Email); err == nil {
 		return nil, apiErrorCtx(ctx, ErrEmailAlreadyExists, connect.CodeAlreadyExists, "email already exists")
 	} else if !store.IsNotFound(err) {
 		// Don't log raw email (PII). At this point the user doesn't
@@ -77,7 +76,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	}
 
 	// Assign Linux UID and derive username
-	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
+	linuxUID, err := h.store.Repos().User.NextLinuxUID(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to assign linux uid")
 	}
@@ -185,7 +184,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	}
 
 	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, id)
+	user, err := h.store.Repos().User.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
@@ -213,7 +212,7 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 		return nil, err
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -234,15 +233,12 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, err
 	}
 
-	users, err := h.store.Queries().ListUsers(ctx, db.ListUsersParams{
-		Limit:  pageSize,
-		Offset: offset,
-	})
+	users, err := h.store.Repos().User.List(ctx, store.ListUsersFilter{Limit: pageSize, Offset: offset})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list users")
 	}
 
-	count, err := h.store.Queries().CountUsers(ctx)
+	count, err := h.store.Repos().User.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 	}
@@ -320,7 +316,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 	}
 
 	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -351,7 +347,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "current_password is required for self-update")
 		}
 
-		user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+		user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")
 		}
@@ -383,7 +379,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 	}
 
 	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -423,7 +419,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 	}
 
 	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -447,7 +443,7 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	}
 
 	// Load user BEFORE delete to get system action IDs for cleanup
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -512,7 +508,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 	}
 
 	// Read back from projection
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.Id)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -525,7 +521,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 }
 
 // userToProto converts a database user projection to a protobuf user.
-func userToProto(u db.UsersProjection) *pm.User {
+func userToProto(u store.User) *pm.User {
 	user := &pm.User{
 		Id:                      u.ID,
 		Email:                   u.Email,
@@ -539,7 +535,7 @@ func userToProto(u db.UsersProjection) *pm.User {
 		Picture:                 u.Picture,
 		Locale:                  u.Locale,
 		LinuxUsername:           u.LinuxUsername,
-		LinuxUid:                u.LinuxUid,
+		LinuxUid:                u.LinuxUID,
 		SshAccessEnabled:        u.SshAccessEnabled,
 		SshAllowPubkey:          u.SshAllowPubkey,
 		SshAllowPassword:        u.SshAllowPassword,
@@ -608,7 +604,7 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 
 	// System-action sync runs from the post-commit listener (rc11 #77).
 
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -657,7 +653,7 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update linux username")
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -785,7 +781,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update SSH settings")
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, req.Msg.UserId)
+	user, err := h.store.Repos().User.Get(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}

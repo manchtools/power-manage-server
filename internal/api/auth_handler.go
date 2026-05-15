@@ -52,7 +52,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is disabled on this server")
 	}
 
-	user, err := h.store.Queries().GetUserByEmail(ctx, req.Msg.Email)
+	user, err := h.store.Repos().User.GetByEmail(ctx, req.Msg.Email)
 	if err != nil {
 		if store.IsNotFound(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based user enumeration
@@ -94,7 +94,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	}
 
 	// Resolve permissions from DB and embed in JWT
-	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, user.ID)
+	permissions, err := h.store.Repos().User.Permissions(ctx, user.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
@@ -167,7 +167,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Check user status (disabled, deleted) and session version before issuing new tokens
-	info, err := h.store.Queries().GetUserSessionInfo(ctx, result.Claims.UserID)
+	info, err := h.store.Repos().User.SessionInfo(ctx, result.Claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeUnauthenticated, "user not found")
 	}
@@ -191,7 +191,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	}
 
 	// Resolve fresh permissions from DB
-	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, result.Claims.UserID)
+	permissions, err := h.store.Repos().User.Permissions(ctx, result.Claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
@@ -238,7 +238,7 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Repos().User.Get(ctx, userCtx.ID)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}

@@ -16,7 +16,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
@@ -29,10 +28,10 @@ import (
 // recorded call list.
 type fakeSystemActionsCleaner struct {
 	mu    sync.Mutex
-	calls []db.UsersProjection
+	calls []store.User
 }
 
-func (f *fakeSystemActionsCleaner) CleanupDeletedUserActions(_ context.Context, u db.UsersProjection) error {
+func (f *fakeSystemActionsCleaner) CleanupDeletedUserActions(_ context.Context, u store.User) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, u)
@@ -45,7 +44,7 @@ func (f *fakeSystemActionsCleaner) callCount() int {
 	return len(f.calls)
 }
 
-func (f *fakeSystemActionsCleaner) lastCall() db.UsersProjection {
+func (f *fakeSystemActionsCleaner) lastCall() store.User {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.calls) == 0 {
@@ -53,7 +52,7 @@ func (f *fakeSystemActionsCleaner) lastCall() db.UsersProjection {
 		// zero value so the resulting test failure has a readable
 		// "want X, got <empty UsersProjection>" diff instead of a
 		// panic stack trace.
-		return db.UsersProjection{}
+		return store.User{}
 	}
 	return f.calls[len(f.calls)-1]
 }

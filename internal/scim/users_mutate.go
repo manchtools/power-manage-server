@@ -47,7 +47,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
 	// Verify user exists
-	existingUser, err := h.store.Queries().GetUserByID(ctx, userID)
+	existingUser, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "user not found")
@@ -139,7 +139,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	h.syncIdentityLink(ctx, provider, userID, effectiveEmail, scimUser.Name)
 
 	// Read back updated user
-	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	user, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to read back updated user", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to read user")
@@ -193,7 +193,7 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
 	// Verify user exists
-	existingUser, err := h.store.Queries().GetUserByID(ctx, userID)
+	existingUser, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "user not found")
@@ -229,7 +229,7 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Sync identity link with any name/email changes from PATCH ops
-	patchedUser, err := h.store.Queries().GetUserByID(ctx, userID)
+	patchedUser, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to read back patched user", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to read user")
@@ -251,7 +251,7 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUserPatchReplace processes a single "replace" patch operation on a user.
-func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.IdentityProvider, userID string, existingUser db.UsersProjection, op SCIMPatchOp) error {
+func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.IdentityProvider, userID string, existingUser store.User, op SCIMPatchOp) error {
 	path := strings.ToLower(op.Path)
 
 	switch path {

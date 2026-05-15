@@ -71,7 +71,7 @@ func TestSyncUserSystemActions_NoLinuxUsername_NoOps(t *testing.T) {
 
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
 
-	user, err := st.Queries().GetUserByID(context.Background(), userID)
+	user, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Empty(t, user.SystemUserActionID, "no linux_username → manager must NOT have created a USER action")
 	assert.Empty(t, user.SystemSshActionID, "no linux_username → no SSH action either")
@@ -90,7 +90,7 @@ func TestSyncUserSystemActions_ProvisioningDisabled_NoActionsCreated(t *testing.
 
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
 
-	user, err := st.Queries().GetUserByID(context.Background(), userID)
+	user, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Empty(t, user.SystemUserActionID,
 		"provisioning disabled + no prior action → cleanup branch is a no-op (nothing to delete)")
@@ -108,7 +108,7 @@ func TestSyncUserSystemActions_GlobalProvisioning_CreatesUserAction(t *testing.T
 
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
 
-	user, err := st.Queries().GetUserByID(context.Background(), userID)
+	user, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	require.NotEmpty(t, user.SystemUserActionID,
 		"provisioning enabled + linux_username → manager must create + link a system USER action")
@@ -131,7 +131,7 @@ func TestSyncUserSystemActions_SecondRun_UpdatesExistingAction(t *testing.T) {
 	enableGlobalProvisioning(t, st)
 
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
-	user1, err := st.Queries().GetUserByID(context.Background(), userID)
+	user1, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	originalActionID := user1.SystemUserActionID
 	require.NotEmpty(t, originalActionID)
@@ -140,7 +140,7 @@ func TestSyncUserSystemActions_SecondRun_UpdatesExistingAction(t *testing.T) {
 	// branch (not the create branch) so the action ID stays stable —
 	// otherwise downstream assignments would dangle.
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
-	user2, err := st.Queries().GetUserByID(context.Background(), userID)
+	user2, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Equal(t, originalActionID, user2.SystemUserActionID,
 		"second sync MUST keep the same action ID — re-creating would orphan the assignment row")
@@ -157,7 +157,7 @@ func TestCleanupDeletedUserActions_RemovesAllSystemActions(t *testing.T) {
 	enableGlobalProvisioning(t, st)
 
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
-	user, err := st.Queries().GetUserByID(context.Background(), userID)
+	user, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	require.NotEmpty(t, user.SystemUserActionID, "precondition: user has a system action")
 
@@ -167,7 +167,7 @@ func TestCleanupDeletedUserActions_RemovesAllSystemActions(t *testing.T) {
 
 	// User's link columns are now empty — confirms the cleanup
 	// emitted UserSystemActionLinked with action_id="".
-	after, err := st.Queries().GetUserByID(context.Background(), userID)
+	after, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Empty(t, after.SystemUserActionID, "cleanup MUST clear system_user_action_id")
 }
@@ -184,7 +184,7 @@ func TestSyncUserSystemActions_DisablingProvisioningCleansUpExistingAction(t *te
 
 	// First sync creates the action.
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
-	user, err := st.Queries().GetUserByID(context.Background(), userID)
+	user, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	require.NotEmpty(t, user.SystemUserActionID)
 
@@ -199,7 +199,7 @@ func TestSyncUserSystemActions_DisablingProvisioningCleansUpExistingAction(t *te
 
 	// Second sync must take the cleanup branch.
 	require.NoError(t, m.SyncUserSystemActions(context.Background(), userID))
-	after, err := st.Queries().GetUserByID(context.Background(), userID)
+	after, err := st.Repos().User.Get(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Empty(t, after.SystemUserActionID,
 		"provisioning flipped off → cleanup branch must clear the prior link")

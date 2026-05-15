@@ -97,7 +97,7 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
 		}
 	case pm.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER:
-		_, err := h.store.Queries().GetUserByID(ctx, req.Msg.TargetId)
+		_, err := h.store.Repos().User.Get(ctx, req.Msg.TargetId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")

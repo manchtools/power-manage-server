@@ -86,7 +86,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Repos().User.Get(ctx, userCtx.ID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user not found")

@@ -48,7 +48,7 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 	}
 
 	// SSO-only users cannot set up TOTP — they must use their identity provider's MFA
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Repos().User.Get(ctx, userCtx.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
@@ -157,7 +157,7 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 	}
 
 	// Verify password
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Repos().User.Get(ctx, userCtx.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
@@ -203,7 +203,7 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 	targetUserID := req.Msg.UserId
 
 	// Check target user exists and has TOTP enabled
-	user, err := h.store.Queries().GetUserByID(ctx, targetUserID)
+	user, err := h.store.Repos().User.Get(ctx, targetUserID)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
@@ -262,7 +262,7 @@ func (h *TOTPHandler) RegenerateBackupCodes(ctx context.Context, req *connect.Re
 	}
 
 	// Verify password
-	user, err := h.store.Queries().GetUserByID(ctx, userCtx.ID)
+	user, err := h.store.Repos().User.Get(ctx, userCtx.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}
@@ -375,7 +375,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Check user status
-	info, err := h.store.Queries().GetUserSessionInfo(ctx, claims.UserID)
+	info, err := h.store.Repos().User.SessionInfo(ctx, claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeUnauthenticated, "user not found")
 	}
@@ -387,7 +387,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Resolve permissions and generate real tokens
-	permissions, err := h.store.Queries().GetUserPermissionsWithGroups(ctx, claims.UserID)
+	permissions, err := h.store.Repos().User.Permissions(ctx, claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
@@ -424,7 +424,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	// Get full user for response
-	user, err := h.store.Queries().GetUserByID(ctx, claims.UserID)
+	user, err := h.store.Repos().User.Get(ctx, claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get user")
 	}

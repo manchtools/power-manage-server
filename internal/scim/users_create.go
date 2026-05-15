@@ -66,7 +66,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			// of 409 makes POST idempotent for SCIM clients that re-POST on
 			// every sync cycle.
 			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
-			user, err := h.store.Queries().GetUserByID(ctx, existing.ID)
+			user, err := h.store.Repos().User.Get(ctx, existing.ID)
 			if err != nil {
 				writeJSON(w, http.StatusOK, findExternalIDUserRowToSCIM(existing, baseURL))
 			} else {
@@ -90,7 +90,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			// Already linked — sync data from SCIM (source of truth) and return
 			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
-			user, readErr := h.store.Queries().GetUserByID(ctx, existing.ID)
+			user, readErr := h.store.Repos().User.Get(ctx, existing.ID)
 			if readErr != nil {
 				writeJSON(w, http.StatusOK, findUserRowToSCIM(existing, baseURL))
 			} else {
@@ -100,7 +100,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Check if user exists but is not yet linked
-		existingUser, err := h.store.Queries().GetUserByEmail(ctx, email)
+		existingUser, err := h.store.Repos().User.GetByEmail(ctx, email)
 		if err == nil {
 			// User exists — create identity link
 			h.logger.Debug("SCIM createUser: linking existing user by email", "user_id", existingUser.ID, "email", email)
@@ -139,7 +139,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("SCIM createUser: creating new user", "email", email, "external_id", externalID)
 	userID := newULID()
 
-	linuxUID, err := h.store.Queries().GetNextLinuxUID(ctx)
+	linuxUID, err := h.store.Repos().User.NextLinuxUID(ctx)
 	if err != nil {
 		h.logger.Error("failed to assign linux uid via SCIM", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to assign linux uid")
@@ -240,7 +240,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read back created user
-	user, err := h.store.Queries().GetUserByID(ctx, userID)
+	user, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to read back created user", "error", err)
 		writeError(w, http.StatusInternalServerError, "user created but failed to read back")
