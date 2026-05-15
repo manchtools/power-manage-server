@@ -88,7 +88,7 @@ func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // listUsersFiltered handles filtered user list requests.
-func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, provider db.IdentityProvidersProjection, filterStr string, startIndex, count int, baseURL string) {
+func (h *Handler) listUsersFiltered(w http.ResponseWriter, r *http.Request, provider store.IdentityProvider, filterStr string, startIndex, count int, baseURL string) {
 	f, err := parseFilter(filterStr)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filter: %s", err))

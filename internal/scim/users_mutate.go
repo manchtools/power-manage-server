@@ -251,7 +251,7 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleUserPatchReplace processes a single "replace" patch operation on a user.
-func (h *Handler) handleUserPatchReplace(ctx context.Context, provider db.IdentityProvidersProjection, userID string, existingUser db.UsersProjection, op SCIMPatchOp) error {
+func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.IdentityProvider, userID string, existingUser db.UsersProjection, op SCIMPatchOp) error {
 	path := strings.ToLower(op.Path)
 
 	switch path {

@@ -8,7 +8,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // withAuth wraps a handler with SCIM bearer token authentication.
@@ -98,7 +97,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 // providerFromContext extracts the authenticated identity provider from the context.
-func providerFromContext(ctx context.Context) (db.IdentityProvidersProjection, bool) {
-	provider, ok := ctx.Value(providerContextKey).(db.IdentityProvidersProjection)
+func providerFromContext(ctx context.Context) (store.IdentityProvider, bool) {
+	provider, ok := ctx.Value(providerContextKey).(store.IdentityProvider)
 	return provider, ok
 }
