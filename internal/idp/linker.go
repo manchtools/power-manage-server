@@ -75,7 +75,7 @@ func NewLinker(queries Querier, appender EventAppender) *Linker {
 // 2. If auto_link_by_email: find user by email → create link, return user
 // 3. If auto_create_users: create user (no password), assign default role, create link
 // 4. Otherwise: error
-func (l *Linker) LinkOrCreate(ctx context.Context, provider db.IdentityProvidersProjection, claims *UserClaims) (*LinkResult, error) {
+func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvider, claims *UserClaims) (*LinkResult, error) {
 	slog.Debug("SSO linker: starting LinkOrCreate",
 		"provider_id", provider.ID,
 		"provider_slug", provider.Slug,

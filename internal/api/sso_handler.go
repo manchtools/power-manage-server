@@ -82,7 +82,7 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 	}
 
 	// List enabled providers
-	providers, err := h.store.Queries().ListEnabledIdentityProviders(ctx)
+	providers, err := h.store.Repos().IdentityProvider.ListEnabled(ctx)
 	if err == nil {
 		for _, p := range providers {
 			resp.Providers = append(resp.Providers, &pm.AuthMethodProvider{
@@ -104,7 +104,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		return nil, err
 	}
 
-	provider, err := h.store.Queries().GetIdentityProviderBySlug(ctx, req.Msg.Slug)
+	provider, err := h.store.Repos().IdentityProvider.GetBySlug(ctx, req.Msg.Slug)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrProviderNotFound, "provider not found")
 	}
@@ -159,10 +159,10 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		callbackURL = h.callbackBaseURL + "/auth/callback/" + provider.Slug
 	}
 	oidcProvider, err := idp.NewOIDCProvider(ctx, idp.ProviderConfig{
-		IssuerURL:        provider.IssuerUrl,
-		AuthorizationURL: provider.AuthorizationUrl,
-		TokenURL:         provider.TokenUrl,
-		UserinfoURL:      provider.UserinfoUrl,
+		IssuerURL:        provider.IssuerURL,
+		AuthorizationURL: provider.AuthorizationURL,
+		TokenURL:         provider.TokenURL,
+		UserinfoURL:      provider.UserinfoURL,
 		ClientID:         provider.ClientID,
 		ClientSecret:     clientSecret,
 		Scopes:           provider.Scopes,
@@ -204,7 +204,7 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	}
 
 	// Get provider
-	provider, err := h.store.Queries().GetIdentityProviderByID(ctx, authState.ProviderID)
+	provider, err := h.store.Repos().IdentityProvider.Get(ctx, authState.ProviderID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get provider")
 	}
@@ -232,10 +232,10 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		callbackURL = h.callbackBaseURL + "/auth/callback/" + provider.Slug
 	}
 	oidcProvider, err := idp.NewOIDCProvider(ctx, idp.ProviderConfig{
-		IssuerURL:        provider.IssuerUrl,
-		AuthorizationURL: provider.AuthorizationUrl,
-		TokenURL:         provider.TokenUrl,
-		UserinfoURL:      provider.UserinfoUrl,
+		IssuerURL:        provider.IssuerURL,
+		AuthorizationURL: provider.AuthorizationURL,
+		TokenURL:         provider.TokenURL,
+		UserinfoURL:      provider.UserinfoURL,
 		ClientID:         provider.ClientID,
 		ClientSecret:     clientSecret,
 		Scopes:           provider.Scopes,

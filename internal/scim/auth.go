@@ -56,7 +56,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		// Look up provider by slug with SCIM enabled
-		provider, err := h.store.Queries().GetIdentityProviderBySlugForSCIM(r.Context(), slug)
+		provider, err := h.store.Repos().IdentityProvider.GetBySlugForSCIM(r.Context(), slug)
 		if err != nil {
 			if store.IsNotFound(err) {
 				h.logger.Warn("SCIM auth failed: unknown provider or SCIM not enabled", "slug", slug)
