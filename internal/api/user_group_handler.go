@@ -128,7 +128,7 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 		protoMembers[i].AddedAt = timestamppb.New(m.AddedAt)
 	}
 
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.GetUserGroupResponse{
 		Group:   userGroupToProto(group, roles, isScimManaged),
@@ -161,7 +161,7 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 	protoGroups := make([]*pm.UserGroup, len(groups))
 	for i, g := range groups {
 		roles, _ := h.store.Queries().GetUserGroupRoles(ctx, g.ID)
-		isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, g.ID)
+		isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, g.ID)
 		protoGroups[i] = userGroupToProto(g, roles, isScimManaged)
 	}
 
@@ -209,7 +209,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.GroupId)
 
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.GroupId)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.GroupId)
 
 	return connect.NewResponse(&pm.UpdateUserGroupResponse{
 		Group: userGroupToProto(updated, roles, isScimManaged),
@@ -257,7 +257,7 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read user group")
 	}
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.UpdateUserGroupResponse{
 		Group: userGroupToProto(updated, roles, isScimManaged),
@@ -276,7 +276,7 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	}
 
 	// Prevent deletion of SCIM-managed groups
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 	if isScimManaged {
 		return nil, apiErrorCtx(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
 	}
@@ -591,7 +591,7 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	protoGroups := make([]*pm.UserGroup, len(groups))
 	for i, g := range groups {
 		roles, _ := h.store.Queries().GetUserGroupRoles(ctx, g.ID)
-		isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, g.ID)
+		isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, g.ID)
 		protoGroups[i] = userGroupToProto(g, roles, isScimManaged)
 	}
 
@@ -645,7 +645,7 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 	}
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.UpdateUserGroupQueryResponse{
 		Group: userGroupToProto(group, roles, isScimManaged),
@@ -734,7 +734,7 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	}
 
 	roles, _ := h.store.Queries().GetUserGroupRoles(ctx, req.Msg.Id)
-	isScimManaged, _ := h.store.Queries().IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	// Bump session versions for all current members (permissions
 	// may have changed). Unconditional now that auth is enforced

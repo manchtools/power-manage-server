@@ -22,6 +22,7 @@ type Repos struct {
 	OSQuery          OSQueryRepo
 	RevokedToken     RevokedTokenRepo
 	Role             RoleRepo
+	SCIM             SCIMRepo
 	Settings         SettingsRepo
 	TerminalSession  TerminalSessionRepo
 	Token            TokenRepo

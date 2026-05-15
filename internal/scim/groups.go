@@ -7,7 +7,6 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // listGroups handles GET /scim/v2/{slug}/Groups
@@ -36,7 +35,7 @@ func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// List all SCIM group mappings for this provider
-	mappings, err := h.store.Queries().ListSCIMGroupMappings(ctx, provider.ID)
+	mappings, err := h.store.Repos().SCIM.ListGroupMappings(ctx, provider.ID)
 	if err != nil {
 		h.logger.Error("failed to list SCIM group mappings", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list groups")
@@ -76,7 +75,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 	switch f.Attribute {
 	case "displayName":
 		// Search by display name — iterate through mappings
-		mappings, err := h.store.Queries().ListSCIMGroupMappings(ctx, provider.ID)
+		mappings, err := h.store.Repos().SCIM.ListGroupMappings(ctx, provider.ID)
 		if err != nil {
 			h.logger.Error("failed to list SCIM group mappings for filter", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to search groups")
@@ -84,7 +83,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 		}
 
 		for _, m := range mappings {
-			if m.ScimDisplayName == f.Value {
+			if m.SCIMDisplayName == f.Value {
 				group, err := h.buildGroupResource(ctx, provider.ID, m, baseURL)
 				if err != nil {
 					h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
@@ -95,10 +94,7 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 		}
 
 	case "externalId":
-		mapping, err := h.store.Queries().GetSCIMGroupMapping(ctx, db.GetSCIMGroupMappingParams{
-			ProviderID:  provider.ID,
-			ScimGroupID: f.Value,
-		})
+		mapping, err := h.store.Repos().SCIM.GetGroupMapping(ctx, store.SCIMGroupMappingKey{ProviderID: provider.ID, SCIMGroupID: f.Value})
 		if err != nil {
 			if store.IsNotFound(err) {
 				resources = []any{}
@@ -155,10 +151,7 @@ func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
 	baseURL := baseURLFromRequest(r, provider.Slug)
 
 	// Look up the SCIM group mapping by user_group_id
-	mapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
@@ -197,10 +190,7 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Look up the mapping
-	mapping, err := h.store.Queries().GetSCIMGroupMappingByUserGroup(ctx, db.GetSCIMGroupMappingByUserGroupParams{
-		ProviderID:  provider.ID,
-		UserGroupID: groupID,
-	})
+	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
@@ -218,7 +208,7 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		EventType:  string(eventtypes.SCIMGroupUnmapped),
 		Data: map[string]any{
 			"provider_id":   provider.ID,
-			"scim_group_id": mapping.ScimGroupID,
+			"scim_group_id": mapping.SCIMGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
