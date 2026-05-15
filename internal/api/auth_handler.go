@@ -13,7 +13,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
 // AuthHandler handles authentication RPCs.
@@ -159,7 +158,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 
 	// Validate refresh token and check revocation
 	isRevoked := func(jti string) (bool, error) {
-		return h.store.Queries().IsTokenRevoked(ctx, jti)
+		return h.store.Repos().RevokedToken.IsRevoked(ctx, jti)
 	}
 
 	result, err := h.jwtManager.ValidateRefreshToken(refreshToken, isRevoked)
@@ -185,10 +184,7 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	// request. This prevents a race where two concurrent RefreshToken calls
 	// with the same token both succeed.
 	if result.OldJTI != "" {
-		_, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
-			Jti:       result.OldJTI,
-			ExpiresAt: result.OldExp,
-		})
+		_, err := h.store.Repos().RevokedToken.Revoke(ctx, result.OldJTI, result.OldExp)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "refresh token already used")
 		}
@@ -226,10 +222,7 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 	if refreshToken != "" {
 		claims, err := h.jwtManager.ValidateToken(refreshToken, auth.TokenTypeRefresh)
 		if err == nil && claims.ID != "" {
-			if _, err := h.store.Queries().RevokeToken(ctx, generated.RevokeTokenParams{
-				Jti:       claims.ID,
-				ExpiresAt: claims.ExpiresAt.Time,
-			}); err != nil {
+			if _, err := h.store.Repos().RevokedToken.Revoke(ctx, claims.ID, claims.ExpiresAt.Time); err != nil {
 				h.logger.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
 			}
 		}

@@ -145,7 +145,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	tokenHash := sha256.Sum256([]byte(req.Msg.Token))
 	tokenHashHex := hex.EncodeToString(tokenHash[:])
 
-	token, err := h.store.Queries().GetTokenByHash(ctx, tokenHashHex)
+	token, err := h.store.Repos().Token.GetByHash(ctx, tokenHashHex)
 	if err != nil {
 		if store.IsNotFound(err) {
 			logger.Warn("invalid registration token")
