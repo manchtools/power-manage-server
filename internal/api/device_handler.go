@@ -23,7 +23,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
-	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -639,13 +638,13 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	}
 
 	// Get current passwords
-	current, err := h.store.Queries().GetCurrentLpsPasswords(ctx, req.Msg.DeviceId)
+	current, err := h.store.Repos().Lps.ListCurrent(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load current LPS passwords")
 	}
 
 	// Get password history
-	history, err := h.store.Queries().GetLpsPasswordHistory(ctx, req.Msg.DeviceId)
+	history, err := h.store.Repos().Lps.ListHistory(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LPS password history")
 	}
@@ -722,12 +721,12 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	current, err := h.store.Queries().GetCurrentLuksKeys(ctx, req.Msg.DeviceId)
+	current, err := h.store.Repos().Luks.ListCurrent(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load current LUKS keys")
 	}
 
-	history, err := h.store.Queries().GetLuksKeyHistory(ctx, req.Msg.DeviceId)
+	history, err := h.store.Repos().Luks.ListHistory(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to load LUKS key history")
 	}
@@ -863,13 +862,7 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	token := hex.EncodeToString(tokenBytes)
 
 	// Store in DB
-	_, err = h.store.Queries().CreateLuksToken(ctx, db.CreateLuksTokenParams{
-		DeviceID:   req.Msg.DeviceId,
-		ActionID:   req.Msg.ActionId,
-		Token:      token,
-		MinLength:  minLength,
-		Complexity: complexity,
-	})
+	_, err = h.store.Repos().Luks.CreateToken(ctx, store.CreateLuksTokenParams{DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId, Token: token, MinLength: minLength, Complexity: complexity})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create token")
 	}

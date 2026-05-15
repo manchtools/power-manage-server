@@ -27,6 +27,8 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		IdentityProvider: NewIdentityProvider(q),
 		Inventory:        NewInventory(q),
 		Logs:             NewLogs(q),
+		Lps:              NewLps(q),
+		Luks:             NewLuks(q),
 		OSQuery:          NewOSQuery(q),
 		RevokedToken:     NewRevokedToken(q),
 		Role:             NewRole(q),

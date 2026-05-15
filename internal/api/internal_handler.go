@@ -245,20 +245,14 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and token are required")
 	}
 
-	token, err := h.store.Queries().ValidateAndConsumeLuksToken(ctx, db.ValidateAndConsumeLuksTokenParams{
-		Token:    req.Msg.Token,
-		DeviceID: req.Msg.DeviceId,
-	})
+	token, err := h.store.Repos().Luks.ConsumeToken(ctx, store.ConsumeLuksTokenParams{Token: req.Msg.Token, DeviceID: req.Msg.DeviceId})
 	if err != nil {
 		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token is invalid or has expired")
 	}
 
 	devicePath := ""
-	key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
-		DeviceID: req.Msg.DeviceId,
-		ActionID: token.ActionID,
-	})
+	key, err := h.store.Repos().Luks.GetCurrentForAction(ctx, store.LuksKeyByActionKey{DeviceID: req.Msg.DeviceId, ActionID: token.ActionID})
 	if err == nil {
 		devicePath = key.DevicePath
 	} else {
@@ -279,10 +273,7 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
 
-	key, err := h.store.Queries().GetCurrentLuksKeyForAction(ctx, db.GetCurrentLuksKeyForActionParams{
-		DeviceID: req.Msg.DeviceId,
-		ActionID: req.Msg.ActionId,
-	})
+	key, err := h.store.Repos().Luks.GetCurrentForAction(ctx, store.LuksKeyByActionKey{DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrLuksKeyNotFound, connect.CodeNotFound, "no LUKS key found for this action")
 	}
