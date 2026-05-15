@@ -41,7 +41,7 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 	// Go projector treats a missing role_ids key the same as an
 	// empty slice and skips the per-role INSERT loop.
 	var roleIDs []string
-	if adminRole, err := st.Queries().GetRoleByName(ctx, "Admin"); err == nil {
+	if adminRole, err := st.Repos().Role.GetByName(ctx, "Admin"); err == nil {
 		roleIDs = []string{adminRole.ID}
 	} else {
 		logger.Warn("failed to look up Admin role for bootstrap user; user will be created with no roles",

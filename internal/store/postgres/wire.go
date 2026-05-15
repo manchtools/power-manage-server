@@ -18,6 +18,7 @@ func NewRepos(q *generated.Queries) *store.Repos {
 		IdentityLink:    NewIdentityLink(q),
 		Logs:            NewLogs(q),
 		OSQuery:         NewOSQuery(q),
+		Role:            NewRole(q),
 		Settings:        NewSettings(q),
 		TerminalSession: NewTerminalSession(q),
 		Totp:            NewTotp(q),

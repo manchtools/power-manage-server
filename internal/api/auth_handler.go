@@ -129,7 +129,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 
 	protoUser := userToProto(user)
 	// Populate user roles
-	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+	if roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.ID); err == nil {
 		for _, r := range roles {
 			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
 		}
@@ -252,7 +252,7 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 
 	protoUser := userToProto(user)
 	// Populate user roles
-	if roles, err := h.store.Queries().GetUserRoles(ctx, user.ID); err == nil {
+	if roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.ID); err == nil {
 		for _, r := range roles {
 			protoUser.Roles = append(protoUser.Roles, roleToProto(r))
 		}

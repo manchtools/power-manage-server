@@ -94,7 +94,7 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 	// silently is the bug operators triage.
 	roleIDs := req.Msg.RoleIds
 	if len(roleIDs) == 0 {
-		userRole, err := h.store.Queries().GetRoleByName(ctx, "User")
+		userRole, err := h.store.Repos().Role.GetByName(ctx, "User")
 		if err == nil {
 			roleIDs = []string{userRole.ID}
 		} else {
@@ -810,7 +810,7 @@ func (h *UserHandler) populateUserIdentityLinks(ctx context.Context, user *pm.Us
 
 // populateUserRoles loads roles for a user and attaches them to the proto User.
 func (h *UserHandler) populateUserRoles(ctx context.Context, user *pm.User) {
-	roles, err := h.store.Queries().GetUserRoles(ctx, user.Id)
+	roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.Id)
 	if err != nil {
 		return
 	}

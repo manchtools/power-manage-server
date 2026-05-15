@@ -48,7 +48,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 	// Check name uniqueness — distinguishing NotFound from a transient
 	// DB error matters: silently treating any error as "name available"
 	// would let a concurrent CreateRole succeed twice on a flaky DB.
-	_, err := h.store.Queries().GetRoleByName(ctx, req.Msg.Name)
+	_, err := h.store.Repos().Role.GetByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrRoleNameExists, connect.CodeAlreadyExists, "role name already exists")
 	}
@@ -84,7 +84,7 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, err
 	}
 
-	role, err := h.store.Queries().GetRoleByID(ctx, id)
+	role, err := h.store.Repos().Role.Get(ctx, id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read role")
 	}
@@ -100,12 +100,12 @@ func (h *RoleHandler) GetRole(ctx context.Context, req *connect.Request[pm.GetRo
 		return nil, err
 	}
 
-	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
+	role, err := h.store.Repos().Role.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
-	userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.Id)
+	userCount, err := h.store.Repos().Role.CountUsersWithRole(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 	}
@@ -123,7 +123,7 @@ func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, err
 	}
 
-	roles, err := h.store.Queries().ListRoles(ctx, db.ListRolesParams{
+	roles, err := h.store.Repos().Role.List(ctx, store.ListRolesFilter{
 		Limit:  pageSize,
 		Offset: offset,
 	})
@@ -131,7 +131,7 @@ func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list roles")
 	}
 
-	count, err := h.store.Queries().CountRoles(ctx)
+	count, err := h.store.Repos().Role.Count(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count roles")
 	}
@@ -156,7 +156,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		return nil, err
 	}
 
-	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
+	role, err := h.store.Repos().Role.Get(ctx, req.Msg.RoleId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
@@ -202,7 +202,7 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 	// Bump session_version for all users with this role to invalidate cached permissions
 	h.bumpSessionVersionForRole(ctx, req.Msg.RoleId, userCtx.ID)
 
-	updated, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
+	updated, err := h.store.Repos().Role.Get(ctx, req.Msg.RoleId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to read role")
 	}
@@ -218,7 +218,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		return nil, err
 	}
 
-	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.Id)
+	role, err := h.store.Repos().Role.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
@@ -227,7 +227,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		return nil, apiErrorCtx(ctx, ErrCannotDeleteSystemRole, connect.CodeFailedPrecondition, "cannot delete system role")
 	}
 
-	userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.Id)
+	userCount, err := h.store.Repos().Role.CountUsersWithRole(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 	}
@@ -235,7 +235,7 @@ func (h *RoleHandler) DeleteRole(ctx context.Context, req *connect.Request[pm.De
 		return nil, apiErrorCtx(ctx, ErrRoleInUse, connect.CodeFailedPrecondition, fmt.Sprintf("role still has %d assigned users", userCount))
 	}
 
-	groupCount, err := h.store.Queries().CountGroupsWithRole(ctx, req.Msg.Id)
+	groupCount, err := h.store.Repos().Role.CountGroupsWithRole(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count user groups")
 	}
@@ -349,14 +349,14 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	}
 
 	// Check if the role is the Admin system role
-	role, err := h.store.Queries().GetRoleByID(ctx, req.Msg.RoleId)
+	role, err := h.store.Repos().Role.Get(ctx, req.Msg.RoleId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
 	// Prevent removing the last user from the Admin system role
 	if role.IsSystem && role.Name == "Admin" {
-		userCount, err := h.store.Queries().CountUsersWithRole(ctx, req.Msg.RoleId)
+		userCount, err := h.store.Repos().Role.CountUsersWithRole(ctx, req.Msg.RoleId)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 		}
@@ -371,10 +371,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	}
 
 	// Check if the user currently has the role — skip the event on retry/idempotent call
-	hasRole, err := h.store.Queries().UserHasRole(ctx, db.UserHasRoleParams{
-		UserID: req.Msg.UserId,
-		RoleID: req.Msg.RoleId,
-	})
+	hasRole, err := h.store.Repos().Role.UserHasRole(ctx, req.Msg.UserId, req.Msg.RoleId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
@@ -458,7 +455,7 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 	seen := make(map[string]bool)
 
 	// Direct role assignments
-	userIDs, err := h.store.Queries().ListUserIDsWithRole(ctx, roleID)
+	userIDs, err := h.store.Repos().Role.ListUserIDsWithRole(ctx, roleID)
 	if err != nil {
 		h.logger.Error("failed to list users with role for session invalidation",
 			"role_id", roleID, "error", err)
@@ -475,7 +472,7 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 	}
 
 	// User group role assignments
-	groupUserIDs, err := h.store.Queries().ListUserIDsWithGroupRole(ctx, roleID)
+	groupUserIDs, err := h.store.Repos().Role.ListUserIDsWithGroupRole(ctx, roleID)
 	if err != nil {
 		h.logger.Error("failed to list group users with role for session invalidation",
 			"role_id", roleID, "error", err)
@@ -491,8 +488,8 @@ func (h *RoleHandler) bumpSessionVersionForRole(ctx context.Context, roleID, act
 	}
 }
 
-// roleToProto converts a database role projection to a protobuf Role.
-func roleToProto(r db.RolesProjection) *pm.Role {
+// roleToProto converts a domain Role to a protobuf Role.
+func roleToProto(r store.Role) *pm.Role {
 	role := &pm.Role{
 		Id:          r.ID,
 		Name:        r.Name,
