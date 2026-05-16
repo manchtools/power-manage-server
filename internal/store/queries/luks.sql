@@ -114,20 +114,24 @@ WHERE token = $1
   AND expires_at > NOW()
 RETURNING *;
 
--- GetLuksRevocationStreamID looks up the luks_key event-stream ID that
--- was minted when api/device_handler.go appended the
--- LuksDeviceKeyRevocationRequested event for this (device, action).
--- The inbox worker uses it to append the final Revoked / Failed event
--- to the SAME stream so the three-phase projection stitches together.
--- Returns the most recent request if somehow there are multiple (there
--- should only ever be one; LIMIT 1 is belt-and-braces).
+-- ListLuksRevocationCandidates returns recent luks_key revocation-request /
+-- dispatch events for Go-side (device_id, action_id) filtering. Wave E.2
+-- moved the filter out of SQL — data->>'device_id' and ->>'action_id'
+-- were the last JSONB operators on the events table, blocking the
+-- portable-storage goal (tracker #242). The repo method consumes this
+-- result and short-circuits on the first match.
 --
--- name: GetLuksRevocationStreamID :one
-SELECT stream_id
+-- The LIMIT bounds the worst case: the matching event is typically the
+-- most recent one for the requested pair. 1000 covers many devices'
+-- recent revocation traffic without any practical risk of scanning past
+-- the target. If the projection ever holds more pending revocations
+-- than that, raise the LIMIT or paginate — but the inbox worker calls
+-- this once per agent outcome, so volume stays bounded in practice.
+--
+-- name: ListLuksRevocationCandidates :many
+SELECT stream_id, data
 FROM events
 WHERE stream_type = 'luks_key'
   AND event_type IN ('LuksDeviceKeyRevocationRequested', 'LuksDeviceKeyRevocationDispatched')
-  AND data->>'device_id' = sqlc.arg(device_id)::text
-  AND data->>'action_id' = sqlc.arg(action_id)::text
 ORDER BY sequence_num DESC
-LIMIT 1;
+LIMIT 1000;
