@@ -12,6 +12,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -63,12 +64,8 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
 			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
 		}
-		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
-		}
-		if validationErr != "" {
-			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
+		if err := dynamicquery.ValidateUserQuery(req.Msg.DynamicQuery); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, err.Error())
 		}
 	}
 
@@ -613,12 +610,8 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
 			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
 		}
-		validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.DynamicQuery)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
-		}
-		if validationErr != "" {
-			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, validationErr)
+		if err := dynamicquery.ValidateUserQuery(req.Msg.DynamicQuery); err != nil {
+			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, err.Error())
 		}
 	}
 
@@ -655,15 +648,10 @@ func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *conn
 		return nil, err
 	}
 
-	validationErr, err := h.store.Queries().ValidateUserGroupQuery(ctx, req.Msg.Query)
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate query")
-	}
-
-	if validationErr != "" {
+	if err := dynamicquery.ValidateUserQuery(req.Msg.Query); err != nil {
 		return connect.NewResponse(&pm.ValidateUserGroupQueryResponse{
 			Valid: false,
-			Error: validationErr,
+			Error: err.Error(),
 		}), nil
 	}
 
