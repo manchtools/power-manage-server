@@ -44,6 +44,30 @@ JOIN device_group_members_projection m ON g.id = m.group_id
 WHERE m.device_id = $1 AND g.is_deleted = FALSE
 ORDER BY g.name ASC;
 
+-- name: ListDeviceGroupMemberIDs :many
+-- Light projection — just the device IDs in a group. Used by the
+-- Wave C.3 in-process dynamic-group evaluator to diff new vs current
+-- membership without loading the joined device columns
+-- ListDeviceGroupMembers returns.
+SELECT device_id FROM device_group_members_projection WHERE group_id = $1;
+
+-- name: ListGroupNamesForDevice :many
+-- Light projection — just the names of the (non-deleted) groups this
+-- device belongs to. Powers the `device.group` predicate evaluation
+-- in the in-process dynamic-query evaluator (Wave C.3).
+SELECT g.name FROM device_groups_projection g
+JOIN device_group_members_projection m ON g.id = m.group_id
+WHERE m.device_id = $1 AND g.is_deleted = FALSE;
+
+-- name: ListDevicesForDynamicEvaluation :many
+-- All non-deleted devices' (id, labels) for the in-process dynamic-group
+-- evaluator (Wave C.3). Returning the JSONB labels column is still
+-- correct pre-E.4; once labels move to the device_labels child table
+-- this query becomes an id-only list and labels load via the child
+-- repo.
+SELECT id, labels FROM devices_projection
+WHERE is_deleted = FALSE;
+
 -- Dynamic Group queries
 
 -- name: ListDynamicDeviceGroups :many
@@ -233,6 +257,15 @@ DELETE FROM device_group_members_projection WHERE group_id = $1;
 -- the next dynamic-evaluation pass doesn't try to reconcile a deleted
 -- group.
 DELETE FROM dynamic_group_evaluation_queue WHERE group_id = $1;
+
+-- name: DeleteDynamicDeviceGroupQueueBefore :exec
+-- Wave C.3: clear queue entries for `group_id` that were queued before
+-- `before_ts`. Preserves the PL/pgSQL clock_timestamp() race semantics:
+-- if a trigger re-queued the group while the in-process evaluator was
+-- running, the newer queue entry survives so the drain loop re-evaluates.
+DELETE FROM dynamic_group_evaluation_queue
+WHERE group_id = sqlc.arg(group_id)::TEXT
+  AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
 
 -- name: ClaimDeviceGroupForMembership :execrows
 -- Atomic guard for the four member-mutation events

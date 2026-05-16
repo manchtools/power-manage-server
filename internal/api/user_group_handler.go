@@ -13,6 +13,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
+	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -655,8 +656,8 @@ func (h *UserGroupHandler) ValidateUserGroupQuery(ctx context.Context, req *conn
 		}), nil
 	}
 
-	// Count matching users
-	matchingCount, err := h.store.Queries().CountMatchingUsersForQuery(ctx, req.Msg.Query)
+	// Count matching users via the in-process evaluator (Wave C.3).
+	matchingCount, err := dyngroupeval.New(h.store, h.logger).CountMatchingUsers(ctx, req.Msg.Query)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count matching users")
 	}
@@ -697,9 +698,8 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	// Get current member count before evaluation
 	membersBefore := group.MemberCount
 
-	// Trigger evaluation
-	err = h.store.Queries().EvaluateDynamicUserGroup(ctx, req.Msg.Id)
-	if err != nil {
+	// Trigger in-process evaluation (Wave C.3).
+	if err := dyngroupeval.New(h.store, h.logger).EvaluateUserGroup(ctx, req.Msg.Id); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to evaluate dynamic user group")
 	}
 

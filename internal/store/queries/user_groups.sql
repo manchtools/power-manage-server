@@ -280,6 +280,23 @@ DELETE FROM user_group_roles_projection WHERE group_id = $1;
 -- group.
 DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = $1;
 
+-- name: DeleteDynamicUserGroupQueueBefore :exec
+-- Wave C.3: clear queue entries queued before `before_ts`. Same race
+-- guard as DeleteDynamicDeviceGroupQueueBefore — re-queue during eval
+-- survives so the next drain pass re-evaluates.
+DELETE FROM dynamic_user_group_evaluation_queue
+WHERE group_id = sqlc.arg(group_id)::TEXT
+  AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
+
+-- name: ListUsersForDynamicEvaluation :many
+-- All non-deleted users' fields the user-group evaluator reads (matches
+-- the 7 parameters evaluate_user_condition takes plus id for membership
+-- writes).
+SELECT id, email, disabled, totp_enabled, has_password,
+       display_name, preferred_username, locale
+FROM users_projection
+WHERE is_deleted = FALSE;
+
 -- name: ClaimUserGroupForMembership :execrows
 -- Atomic guard for the three member-mutation events
 -- (UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupMembersRebuilt).

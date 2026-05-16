@@ -11,6 +11,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
+	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/search"
@@ -440,8 +441,8 @@ func (h *DeviceGroupHandler) ValidateDynamicQuery(ctx context.Context, req *conn
 		}), nil
 	}
 
-	// Count matching devices
-	matchingCount, err := h.store.Queries().CountMatchingDevicesForQuery(ctx, req.Msg.Query)
+	// Count matching devices via the in-process evaluator (Wave C.3).
+	matchingCount, err := dyngroupeval.New(h.store, h.logger).CountMatchingDevices(ctx, req.Msg.Query)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count matching devices")
 	}
@@ -471,9 +472,8 @@ func (h *DeviceGroupHandler) EvaluateDynamicGroup(ctx context.Context, req *conn
 	// Get current member count before evaluation
 	membersBefore := group.MemberCount
 
-	// Trigger evaluation
-	err = h.store.Queries().EvaluateDynamicGroup(ctx, req.Msg.Id)
-	if err != nil {
+	// Trigger in-process evaluation (Wave C.3).
+	if err := dyngroupeval.New(h.store, h.logger).EvaluateDeviceGroup(ctx, req.Msg.Id); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to evaluate dynamic group")
 	}
 
