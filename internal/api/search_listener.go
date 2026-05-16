@@ -381,6 +381,15 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if err != nil {
 			return nil, err
 		}
+		// Wave E.4: labels live in device_labels — load separately.
+		labelRows, err := q.ListDeviceLabels(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		labels := make(map[string]string, len(labelRows))
+		for _, r := range labelRows {
+			labels[r.Key] = r.Value
+		}
 		var registeredAt, lastSeenAt int64
 		if d.RegisteredAt != nil {
 			registeredAt = d.RegisteredAt.Unix()
@@ -391,7 +400,7 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		data := &taskqueue.SearchEntityData{
 			Hostname:         d.Hostname,
 			AgentVersion:     d.AgentVersion,
-			Labels:           search.FlattenLabels(d.Labels),
+			Labels:           search.FlattenLabels(labels),
 			ComplianceStatus: d.ComplianceStatus,
 			RegisteredAt:     registeredAt,
 			LastSeenAt:       lastSeenAt,

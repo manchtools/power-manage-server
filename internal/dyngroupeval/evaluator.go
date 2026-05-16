@@ -70,17 +70,21 @@ func (e *Evaluator) EvaluateDeviceGroup(ctx context.Context, groupID string) err
 	}
 	currentSet := toSet(currentMembers)
 
-	devices, err := q.ListDevicesForDynamicEvaluation(ctx)
+	deviceIDs, err := q.ListDevicesForDynamicEvaluation(ctx)
 	if err != nil {
 		return fmt.Errorf("dyngroupeval: list devices: %w", err)
+	}
+	labelsByDevice, err := e.loadAllDeviceLabels(ctx)
+	if err != nil {
+		return err
 	}
 
 	needsGroups := referencesGroupField(expr)
 	newSet := make(map[string]bool, len(currentMembers))
-	for _, d := range devices {
-		dctx := e.attachGroupMembership(ctx, e.buildDeviceContext(ctx, d.ID, d.Labels), needsGroups)
+	for _, id := range deviceIDs {
+		dctx := e.attachGroupMembership(ctx, e.buildDeviceContext(ctx, id, labelsByDevice[id]), needsGroups)
 		if dynamicquery.EvaluateDevice(expr, dctx) {
-			newSet[d.ID] = true
+			newSet[id] = true
 		}
 	}
 
@@ -280,19 +284,45 @@ func (e *Evaluator) CountMatchingDevices(ctx context.Context, query string) (int
 	if err != nil {
 		return 0, fmt.Errorf("dyngroupeval: parse: %w", err)
 	}
-	devices, err := e.store.Queries().ListDevicesForDynamicEvaluation(ctx)
+	deviceIDs, err := e.store.Queries().ListDevicesForDynamicEvaluation(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("dyngroupeval: list devices: %w", err)
 	}
+	labelsByDevice, err := e.loadAllDeviceLabels(ctx)
+	if err != nil {
+		return 0, err
+	}
 	needsGroups := referencesGroupField(expr)
 	var count int64
-	for _, d := range devices {
-		dctx := e.attachGroupMembership(ctx, e.buildDeviceContext(ctx, d.ID, d.Labels), needsGroups)
+	for _, id := range deviceIDs {
+		dctx := e.attachGroupMembership(ctx, e.buildDeviceContext(ctx, id, labelsByDevice[id]), needsGroups)
 		if dynamicquery.EvaluateDevice(expr, dctx) {
 			count++
 		}
 	}
 	return count, nil
+}
+
+// loadAllDeviceLabels pulls every (device_id, key, value) row in one
+// query and groups by device_id. The map's nil-entry semantics let
+// the callers index by device_id without needing a presence check;
+// missing entries simply yield nil maps which the evaluator treats as
+// "no labels."
+func (e *Evaluator) loadAllDeviceLabels(ctx context.Context) (map[string]map[string]string, error) {
+	rows, err := e.store.Queries().ListAllDeviceLabels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("dyngroupeval: list all device labels: %w", err)
+	}
+	out := make(map[string]map[string]string)
+	for _, r := range rows {
+		m, ok := out[r.DeviceID]
+		if !ok {
+			m = map[string]string{}
+			out[r.DeviceID] = m
+		}
+		m[r.Key] = r.Value
+	}
+	return out, nil
 }
 
 // CountMatchingUsers returns the number of non-deleted users that
@@ -324,14 +354,11 @@ func (e *Evaluator) CountMatchingUsers(ctx context.Context, query string) (int64
 	return count, nil
 }
 
-// buildDeviceContext returns a DeviceContext that lazy-loads inventory
-// + group memberships on first reference. Both incur a per-device
-// round-trip the first time the AST touches device.<inventory> or
-// device.group; queries that only use labels stay at the single
-// list-devices query.
-func (e *Evaluator) buildDeviceContext(ctx context.Context, deviceID string, labelsJSON []byte) dynamicquery.DeviceContext {
-	labels := parseLabelsJSON(labelsJSON)
-
+// buildDeviceContext returns a DeviceContext with pre-loaded labels
+// and a lazy-loading Inventory closure. Wave E.4 dropped the labels
+// JSONB column — callers now pass the already-grouped map[string]string
+// from a single ListAllDeviceLabels round-trip.
+func (e *Evaluator) buildDeviceContext(ctx context.Context, deviceID string, labels map[string]string) dynamicquery.DeviceContext {
 	var (
 		inventoryLoaded bool
 		inventoryByCol  map[string]string
@@ -508,21 +535,6 @@ func anyToString(v any) string {
 		return fmt.Sprintf("%g", x)
 	}
 	return fmt.Sprint(v)
-}
-
-func parseLabelsJSON(raw []byte) map[string]string {
-	if len(raw) == 0 {
-		return nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = anyToString(v)
-	}
-	return out
 }
 
 func toSet(ids []string) map[string]bool {

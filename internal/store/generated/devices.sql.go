@@ -10,6 +10,43 @@ import (
 	"time"
 )
 
+const advanceDeviceProjectionVersion = `-- name: AdvanceDeviceProjectionVersion :execrows
+UPDATE devices_projection
+SET projection_version = $1
+WHERE id = $2
+  AND projection_version < $1
+`
+
+type AdvanceDeviceProjectionVersionParams struct {
+	ProjectionVersion int64  `json:"projection_version"`
+	ID                string `json:"id"`
+}
+
+// Wave E.4: parent-row stale-replay guard for the device_labels child
+// table writes. The PL/pgSQL projector folded the version bump into
+// the JSONB UPDATE in one statement; with the column gone, the listener
+// runs this query first, checks the rows-affected, and only proceeds
+// with the child-table change when the bump succeeded.
+func (q *Queries) AdvanceDeviceProjectionVersion(ctx context.Context, arg AdvanceDeviceProjectionVersionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceDeviceProjectionVersion, arg.ProjectionVersion, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const clearDeviceLabels = `-- name: ClearDeviceLabels :exec
+DELETE FROM device_labels WHERE device_id = $1
+`
+
+// Bulk-replace half of DeviceLabelsUpdated. Listener follows this with
+// a series of SetDeviceLabel writes for the new label set, all under
+// the AdvanceDeviceProjectionVersion guard.
+func (q *Queries) ClearDeviceLabels(ctx context.Context, deviceID string) error {
+	_, err := q.db.Exec(ctx, clearDeviceLabels, deviceID)
+	return err
+}
+
 const countDevices = `-- name: CountDevices :one
 SELECT COUNT(*) FROM devices_projection
 WHERE is_deleted = FALSE
@@ -136,7 +173,7 @@ func (q *Queries) DeleteDeviceAssignedUsersByDevice(ctx context.Context, deviceI
 }
 
 const getDeviceByFingerprint = `-- name: GetDeviceByFingerprint :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE
 `
 
@@ -152,7 +189,6 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 		&i.RegisteredAt,
 		&i.LastSeenAt,
 		&i.RegistrationTokenID,
-		&i.Labels,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.SyncIntervalMinutes,
@@ -165,7 +201,7 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 }
 
 const getDeviceByID = `-- name: GetDeviceByID :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
   AND ($2::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $2)
@@ -190,7 +226,6 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 		&i.RegisteredAt,
 		&i.LastSeenAt,
 		&i.RegistrationTokenID,
-		&i.Labels,
 		&i.IsDeleted,
 		&i.ProjectionVersion,
 		&i.SyncIntervalMinutes,
@@ -281,24 +316,29 @@ func (q *Queries) GetDeviceSyncInterval(ctx context.Context, dollar_1 string) (i
 }
 
 const getDevicesWithLabel = `-- name: GetDevicesWithLabel :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
-WHERE is_deleted = FALSE
-  AND labels->>$1 = $2
-ORDER BY last_seen_at DESC
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
+JOIN device_labels l ON l.device_id = d.id
+WHERE d.is_deleted = FALSE
+  AND l.key = $1
+  AND l.value = $2
+ORDER BY d.last_seen_at DESC
 LIMIT $3 OFFSET $4
 `
 
 type GetDevicesWithLabelParams struct {
-	Labels   []byte `json:"labels"`
-	Labels_2 []byte `json:"labels_2"`
-	Limit    int32  `json:"limit"`
-	Offset   int32  `json:"offset"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Limit  int32  `json:"limit"`
+	Offset int32  `json:"offset"`
 }
 
+// Wave E.4: labels live in the device_labels child table now. The JOIN
+// against (key, value) hits idx_device_labels_key_value for a direct
+// lookup; no more JSONB operator.
 func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLabelParams) ([]DevicesProjection, error) {
 	rows, err := q.db.Query(ctx, getDevicesWithLabel,
-		arg.Labels,
-		arg.Labels_2,
+		arg.Key,
+		arg.Value,
 		arg.Limit,
 		arg.Offset,
 	)
@@ -318,7 +358,6 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 			&i.RegisteredAt,
 			&i.LastSeenAt,
 			&i.RegistrationTokenID,
-			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SyncIntervalMinutes,
@@ -432,6 +471,34 @@ func (q *Queries) IsDeviceDeleted(ctx context.Context, id string) (bool, error) 
 	var is_deleted bool
 	err := row.Scan(&is_deleted)
 	return is_deleted, err
+}
+
+const listAllDeviceLabels = `-- name: ListAllDeviceLabels :many
+SELECT device_id, key, value FROM device_labels
+ORDER BY device_id, key
+`
+
+// Wave E.4: load every label row in one query for the dyngroupeval
+// queue-drain hot path. Replaces the labels JSONB column that used
+// to come back with each device row.
+func (q *Queries) ListAllDeviceLabels(ctx context.Context) ([]DeviceLabel, error) {
+	rows, err := q.db.Query(ctx, listAllDeviceLabels)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeviceLabel{}
+	for rows.Next() {
+		var i DeviceLabel
+		if err := rows.Scan(&i.DeviceID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDeviceAssignedGroupIDs = `-- name: ListDeviceAssignedGroupIDs :many
@@ -608,8 +675,72 @@ func (q *Queries) ListDeviceAssignedUsers(ctx context.Context, deviceID string) 
 	return items, nil
 }
 
+const listDeviceLabels = `-- name: ListDeviceLabels :many
+SELECT key, value FROM device_labels
+WHERE device_id = $1
+ORDER BY key
+`
+
+type ListDeviceLabelsRow struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// Wave E.4: returns the (key, value) pairs for a single device.
+// Powers the in-process evaluator's per-device DeviceContext.Labels
+// map and any single-device repo callers that need the typed slice.
+func (q *Queries) ListDeviceLabels(ctx context.Context, deviceID string) ([]ListDeviceLabelsRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceLabels, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceLabelsRow{}
+	for rows.Next() {
+		var i ListDeviceLabelsRow
+		if err := rows.Scan(&i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceLabelsBatch = `-- name: ListDeviceLabelsBatch :many
+SELECT device_id, key, value FROM device_labels
+WHERE device_id = ANY($1::TEXT[])
+ORDER BY device_id, key
+`
+
+// Wave E.4: batched per-device label fetch for repo.List and the
+// in-process group evaluator. Single round-trip across the slice of
+// device IDs avoids the N+1 the per-device ListDeviceLabels would
+// have at population time.
+func (q *Queries) ListDeviceLabelsBatch(ctx context.Context, deviceIds []string) ([]DeviceLabel, error) {
+	rows, err := q.db.Query(ctx, listDeviceLabelsBatch, deviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeviceLabel{}
+	for rows.Next() {
+		var i DeviceLabel
+		if err := rows.Scan(&i.DeviceID, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDevices = `-- name: ListDevices :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND ($3::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
@@ -643,7 +774,6 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.RegisteredAt,
 			&i.LastSeenAt,
 			&i.RegistrationTokenID,
-			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SyncIntervalMinutes,
@@ -663,7 +793,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 }
 
 const listDevicesOffline = `-- name: ListDevicesOffline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at <= NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL
@@ -698,7 +828,6 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 			&i.RegisteredAt,
 			&i.LastSeenAt,
 			&i.RegistrationTokenID,
-			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SyncIntervalMinutes,
@@ -718,7 +847,7 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 }
 
 const listDevicesOnline = `-- name: ListDevicesOnline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, labels, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL
@@ -753,7 +882,6 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 			&i.RegisteredAt,
 			&i.LastSeenAt,
 			&i.RegistrationTokenID,
-			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SyncIntervalMinutes,
@@ -772,61 +900,43 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 	return items, nil
 }
 
-const removeDeviceLabelKey = `-- name: RemoveDeviceLabelKey :execrows
-UPDATE devices_projection
-SET labels             = labels - $3::TEXT,
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2
+const removeDeviceLabel = `-- name: RemoveDeviceLabel :exec
+DELETE FROM device_labels
+WHERE device_id = $1
+  AND key = $2::TEXT
 `
 
-type RemoveDeviceLabelKeyParams struct {
-	ID                string `json:"id"`
-	ProjectionVersion int64  `json:"projection_version"`
-	Key               string `json:"key"`
+type RemoveDeviceLabelParams struct {
+	DeviceID string `json:"device_id"`
+	Key      string `json:"key"`
 }
 
-// DeviceLabelRemoved handler. JSONB minus operator drops the key from
-// the labels object. Stale-replay guard via projection_version.
-func (q *Queries) RemoveDeviceLabelKey(ctx context.Context, arg RemoveDeviceLabelKeyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, removeDeviceLabelKey, arg.ID, arg.ProjectionVersion, arg.Key)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// DeviceLabelRemoved handler. DELETE-with-no-match is silently fine
+// (matches the PL/pgSQL JSONB minus-operator behaviour on a missing key).
+func (q *Queries) RemoveDeviceLabel(ctx context.Context, arg RemoveDeviceLabelParams) error {
+	_, err := q.db.Exec(ctx, removeDeviceLabel, arg.DeviceID, arg.Key)
+	return err
 }
 
-const setDeviceLabelKey = `-- name: SetDeviceLabelKey :execrows
-UPDATE devices_projection
-SET labels             = COALESCE(labels, '{}'::JSONB) || jsonb_build_object($3::TEXT, $4::TEXT),
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2
+const setDeviceLabel = `-- name: SetDeviceLabel :exec
+INSERT INTO device_labels (device_id, key, value)
+VALUES ($1, $2::TEXT, $3::TEXT)
+ON CONFLICT (device_id, key) DO UPDATE SET value = EXCLUDED.value
 `
 
-type SetDeviceLabelKeyParams struct {
-	ID                string `json:"id"`
-	ProjectionVersion int64  `json:"projection_version"`
-	Key               string `json:"key"`
-	Value             string `json:"value"`
+type SetDeviceLabelParams struct {
+	DeviceID string `json:"device_id"`
+	Key      string `json:"key"`
+	Value    string `json:"value"`
 }
 
-// DeviceLabelSet handler. Mirrors the PL/pgSQL JSONB merge:
-// `labels || jsonb_build_object(key, value)`. The first COALESCE on
-// labels handles the (theoretical) NULL case for legacy rows — matches
-// PL/pgSQL's `COALESCE(labels, '{}'::jsonb) || ...`. Stale-replay guard
-// via projection_version.
-func (q *Queries) SetDeviceLabelKey(ctx context.Context, arg SetDeviceLabelKeyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setDeviceLabelKey,
-		arg.ID,
-		arg.ProjectionVersion,
-		arg.Key,
-		arg.Value,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// DeviceLabelSet handler against the device_labels child table (Wave E.4).
+// ON CONFLICT DO UPDATE preserves replay-safety: re-applying the same
+// event lands the same (key, value); a stale event would have already
+// been intercepted by AdvanceDeviceProjectionVersion above.
+func (q *Queries) SetDeviceLabel(ctx context.Context, arg SetDeviceLabelParams) error {
+	_, err := q.db.Exec(ctx, setDeviceLabel, arg.DeviceID, arg.Key, arg.Value)
+	return err
 }
 
 const softDeleteDeviceProjection = `-- name: SoftDeleteDeviceProjection :execrows
@@ -918,34 +1028,6 @@ func (q *Queries) UpdateDeviceHeartbeatProjection(ctx context.Context, arg Updat
 	return result.RowsAffected(), nil
 }
 
-const updateDeviceLabelsProjection = `-- name: UpdateDeviceLabelsProjection :execrows
-UPDATE devices_projection
-SET labels             = COALESCE($3::JSONB, labels),
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2
-`
-
-type UpdateDeviceLabelsProjectionParams struct {
-	ID                string `json:"id"`
-	ProjectionVersion int64  `json:"projection_version"`
-	Labels            []byte `json:"labels"`
-}
-
-// DeviceLabelsUpdated handler. The decoder leaves a missing labels key
-// as a nil byte slice; the SQL COALESCE preserves the existing column
-// value in that case (matches PL/pgSQL `COALESCE(payload, labels)`).
-// The :: JSONB cast is required so PostgreSQL can resolve the parameter
-// type when the value is NULL.
-// Stale-replay guard via projection_version.
-func (q *Queries) UpdateDeviceLabelsProjection(ctx context.Context, arg UpdateDeviceLabelsProjectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateDeviceLabelsProjection, arg.ID, arg.ProjectionVersion, arg.Labels)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const updateDeviceSeenProjection = `-- name: UpdateDeviceSeenProjection :execrows
 UPDATE devices_projection
 SET last_seen_at        = $2,
@@ -1017,8 +1099,8 @@ const upsertDeviceProjection = `-- name: UpsertDeviceProjection :exec
 INSERT INTO devices_projection (
     id, hostname, cert_fingerprint, cert_not_after,
     registered_at, last_seen_at, registration_token_id,
-    labels, projection_version
-) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)
+    projection_version
+) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
     hostname              = EXCLUDED.hostname,
     cert_fingerprint      = EXCLUDED.cert_fingerprint,
@@ -1026,7 +1108,6 @@ ON CONFLICT (id) DO UPDATE SET
     registered_at         = EXCLUDED.registered_at,
     last_seen_at          = EXCLUDED.last_seen_at,
     registration_token_id = EXCLUDED.registration_token_id,
-    labels                = EXCLUDED.labels,
     projection_version    = EXCLUDED.projection_version,
     is_deleted            = FALSE
 `
@@ -1038,7 +1119,6 @@ type UpsertDeviceProjectionParams struct {
 	CertNotAfter        *time.Time `json:"cert_not_after"`
 	RegisteredAt        *time.Time `json:"registered_at"`
 	RegistrationTokenID *string    `json:"registration_token_id"`
-	Labels              []byte     `json:"labels"`
 	ProjectionVersion   int64      `json:"projection_version"`
 }
 
@@ -1072,6 +1152,10 @@ type UpsertDeviceProjectionParams struct {
 // timeline). projection_version is unconditionally bumped here because
 // DeviceRegistered is the stream's birthing event; replay safety for
 // subsequent events lives on their per-event guarded UPDATEs.
+//
+// Wave E.4: labels moved out of devices_projection into device_labels.
+// Initial-labels writes happen via InsertDeviceLabel in the listener
+// after this upsert, inside the same WithTx.
 func (q *Queries) UpsertDeviceProjection(ctx context.Context, arg UpsertDeviceProjectionParams) error {
 	_, err := q.db.Exec(ctx, upsertDeviceProjection,
 		arg.ID,
@@ -1080,7 +1164,6 @@ func (q *Queries) UpsertDeviceProjection(ctx context.Context, arg UpsertDevicePr
 		arg.CertNotAfter,
 		arg.RegisteredAt,
 		arg.RegistrationTokenID,
-		arg.Labels,
 		arg.ProjectionVersion,
 	)
 	return err

@@ -399,14 +399,13 @@ func TestProjection_DeviceLabelSet(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var labels []byte
+	var value string
 	err = st.Pool().QueryRow(ctx,
-		"SELECT labels FROM devices_projection WHERE id = $1",
-		deviceID,
-	).Scan(&labels)
+		"SELECT value FROM device_labels WHERE device_id = $1 AND key = $2",
+		deviceID, "environment",
+	).Scan(&value)
 	require.NoError(t, err)
-	assert.Contains(t, string(labels), "environment")
-	assert.Contains(t, string(labels), "production")
+	assert.Equal(t, "production", value)
 }
 
 func TestProjection_TokenCreated(t *testing.T) {

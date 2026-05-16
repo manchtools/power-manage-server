@@ -2,14 +2,14 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
-// Device implements store.DeviceRepo against devices_projection.
+// Device implements store.DeviceRepo against devices_projection +
+// device_labels (Wave E.4 normalized labels into a child table).
 type Device struct {
 	q *generated.Queries
 }
@@ -27,7 +27,13 @@ func (d *Device) Get(ctx context.Context, key store.GetDeviceKey) (store.Device,
 	if err != nil {
 		return store.Device{}, fmt.Errorf("device: get: %w", translateNotFound(err))
 	}
-	return deviceFromRow(row), nil
+	dev := deviceFromRow(row)
+	labels, err := d.q.ListDeviceLabels(ctx, key.ID)
+	if err != nil {
+		return store.Device{}, fmt.Errorf("device: load labels: %w", err)
+	}
+	dev.Labels = labelsFromRows(labels)
+	return dev, nil
 }
 
 func (d *Device) IsDeleted(ctx context.Context, id string) (bool, error) {
@@ -47,7 +53,7 @@ func (d *Device) List(ctx context.Context, filter store.ListDevicesFilter) ([]st
 	if err != nil {
 		return nil, fmt.Errorf("device: list: %w", err)
 	}
-	return deviceRowsToSlice(rows), nil
+	return d.deviceRowsToSlice(ctx, rows)
 }
 
 func (d *Device) ListOnline(ctx context.Context, filter store.ListDevicesFilter) ([]store.Device, error) {
@@ -59,7 +65,7 @@ func (d *Device) ListOnline(ctx context.Context, filter store.ListDevicesFilter)
 	if err != nil {
 		return nil, fmt.Errorf("device: list online: %w", err)
 	}
-	return deviceRowsToSlice(rows), nil
+	return d.deviceRowsToSlice(ctx, rows)
 }
 
 func (d *Device) ListOffline(ctx context.Context, filter store.ListDevicesFilter) ([]store.Device, error) {
@@ -71,7 +77,7 @@ func (d *Device) ListOffline(ctx context.Context, filter store.ListDevicesFilter
 	if err != nil {
 		return nil, fmt.Errorf("device: list offline: %w", err)
 	}
-	return deviceRowsToSlice(rows), nil
+	return d.deviceRowsToSlice(ctx, rows)
 }
 
 func (d *Device) Count(ctx context.Context, ownerScope *string) (int64, error) {
@@ -98,12 +104,53 @@ func (d *Device) CountOffline(ctx context.Context, ownerScope *string) (int64, e
 	return n, nil
 }
 
-// deviceRowsToSlice translates a slice of sqlc rows to domain
-// devices. Shared by List / ListOnline / ListOffline.
-func deviceRowsToSlice(rows []generated.DevicesProjection) []store.Device {
+// deviceRowsToSlice translates a slice of sqlc rows to domain devices
+// and batch-loads labels for all of them in a single round-trip.
+func (d *Device) deviceRowsToSlice(ctx context.Context, rows []generated.DevicesProjection) ([]store.Device, error) {
 	out := make([]store.Device, len(rows))
+	ids := make([]string, len(rows))
 	for i, r := range rows {
 		out[i] = deviceFromRow(r)
+		ids[i] = r.ID
+	}
+	if err := d.attachLabels(ctx, out, ids); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachLabels populates Labels across a slice of devices via a single
+// ListDeviceLabelsBatch query. Devices with no labels get a nil map.
+func (d *Device) attachLabels(ctx context.Context, devices []store.Device, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := d.q.ListDeviceLabelsBatch(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("device: list labels batch: %w", err)
+	}
+	byDevice := make(map[string]map[string]string, len(ids))
+	for _, r := range rows {
+		m, ok := byDevice[r.DeviceID]
+		if !ok {
+			m = map[string]string{}
+			byDevice[r.DeviceID] = m
+		}
+		m[r.Key] = r.Value
+	}
+	for i := range devices {
+		devices[i].Labels = byDevice[devices[i].ID]
+	}
+	return nil
+}
+
+func labelsFromRows(rows []generated.ListDeviceLabelsRow) map[string]string {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r.Value
 	}
 	return out
 }
@@ -128,8 +175,9 @@ func (d *Device) SyncInterval(ctx context.Context, deviceID string) (int32, erro
 	return mins, nil
 }
 
-// deviceFromRow translates a sqlc projection row to the domain
-// shape. Shared so the field mapping lives in one place.
+// deviceFromRow translates a sqlc projection row to the domain shape.
+// Labels are populated separately from the device_labels child table —
+// callers should follow up with attachLabels / ListDeviceLabels.
 func deviceFromRow(r generated.DevicesProjection) store.Device {
 	return store.Device{
 		ID:                  r.ID,
@@ -140,7 +188,6 @@ func deviceFromRow(r generated.DevicesProjection) store.Device {
 		RegisteredAt:        r.RegisteredAt,
 		LastSeenAt:          r.LastSeenAt,
 		RegistrationTokenID: r.RegistrationTokenID,
-		Labels:              json.RawMessage(r.Labels),
 		IsDeleted:           r.IsDeleted,
 		SyncIntervalMinutes: r.SyncIntervalMinutes,
 		ComplianceStatus:    r.ComplianceStatus,

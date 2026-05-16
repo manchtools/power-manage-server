@@ -78,11 +78,40 @@ SELECT device_id, user_id FROM device_assigned_users_projection WHERE device_id 
 SELECT device_id, group_id FROM device_assigned_groups_projection WHERE device_id = ANY(@device_ids::text[]);
 
 -- name: GetDevicesWithLabel :many
-SELECT * FROM devices_projection
-WHERE is_deleted = FALSE
-  AND labels->>$1 = $2
-ORDER BY last_seen_at DESC
+-- Wave E.4: labels live in the device_labels child table now. The JOIN
+-- against (key, value) hits idx_device_labels_key_value for a direct
+-- lookup; no more JSONB operator.
+SELECT d.* FROM devices_projection d
+JOIN device_labels l ON l.device_id = d.id
+WHERE d.is_deleted = FALSE
+  AND l.key = $1
+  AND l.value = $2
+ORDER BY d.last_seen_at DESC
 LIMIT $3 OFFSET $4;
+
+-- name: ListDeviceLabels :many
+-- Wave E.4: returns the (key, value) pairs for a single device.
+-- Powers the in-process evaluator's per-device DeviceContext.Labels
+-- map and any single-device repo callers that need the typed slice.
+SELECT key, value FROM device_labels
+WHERE device_id = $1
+ORDER BY key;
+
+-- name: ListDeviceLabelsBatch :many
+-- Wave E.4: batched per-device label fetch for repo.List and the
+-- in-process group evaluator. Single round-trip across the slice of
+-- device IDs avoids the N+1 the per-device ListDeviceLabels would
+-- have at population time.
+SELECT device_id, key, value FROM device_labels
+WHERE device_id = ANY(sqlc.arg(device_ids)::TEXT[])
+ORDER BY device_id, key;
+
+-- name: ListAllDeviceLabels :many
+-- Wave E.4: load every label row in one query for the dyngroupeval
+-- queue-drain hot path. Replaces the labels JSONB column that used
+-- to come back with each device row.
+SELECT device_id, key, value FROM device_labels
+ORDER BY device_id, key;
 
 -- name: GetDeviceSyncInterval :one
 -- Effective sync interval for a device, in minutes.
@@ -180,11 +209,15 @@ WHERE id = ANY($1::TEXT[]) AND is_deleted = FALSE;
 -- timeline). projection_version is unconditionally bumped here because
 -- DeviceRegistered is the stream's birthing event; replay safety for
 -- subsequent events lives on their per-event guarded UPDATEs.
+--
+-- Wave E.4: labels moved out of devices_projection into device_labels.
+-- Initial-labels writes happen via InsertDeviceLabel in the listener
+-- after this upsert, inside the same WithTx.
 INSERT INTO devices_projection (
     id, hostname, cert_fingerprint, cert_not_after,
     registered_at, last_seen_at, registration_token_id,
-    labels, projection_version
-) VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)
+    projection_version
+) VALUES ($1, $2, $3, $4, $5, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
     hostname              = EXCLUDED.hostname,
     cert_fingerprint      = EXCLUDED.cert_fingerprint,
@@ -192,7 +225,6 @@ ON CONFLICT (id) DO UPDATE SET
     registered_at         = EXCLUDED.registered_at,
     last_seen_at          = EXCLUDED.last_seen_at,
     registration_token_id = EXCLUDED.registration_token_id,
-    labels                = EXCLUDED.labels,
     projection_version    = EXCLUDED.projection_version,
     is_deleted            = FALSE;
 
@@ -245,39 +277,38 @@ SET cert_fingerprint   = $2,
 WHERE id = $1
   AND projection_version < $3;
 
--- name: UpdateDeviceLabelsProjection :execrows
--- DeviceLabelsUpdated handler. The decoder leaves a missing labels key
--- as a nil byte slice; the SQL COALESCE preserves the existing column
--- value in that case (matches PL/pgSQL `COALESCE(payload, labels)`).
--- The :: JSONB cast is required so PostgreSQL can resolve the parameter
--- type when the value is NULL.
--- Stale-replay guard via projection_version.
+-- name: AdvanceDeviceProjectionVersion :execrows
+-- Wave E.4: parent-row stale-replay guard for the device_labels child
+-- table writes. The PL/pgSQL projector folded the version bump into
+-- the JSONB UPDATE in one statement; with the column gone, the listener
+-- runs this query first, checks the rows-affected, and only proceeds
+-- with the child-table change when the bump succeeded.
 UPDATE devices_projection
-SET labels             = COALESCE(sqlc.narg('labels')::JSONB, labels),
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2;
+SET projection_version = sqlc.arg(projection_version)
+WHERE id = sqlc.arg(id)
+  AND projection_version < sqlc.arg(projection_version);
 
--- name: SetDeviceLabelKey :execrows
--- DeviceLabelSet handler. Mirrors the PL/pgSQL JSONB merge:
--- `labels || jsonb_build_object(key, value)`. The first COALESCE on
--- labels handles the (theoretical) NULL case for legacy rows — matches
--- PL/pgSQL's `COALESCE(labels, '{}'::jsonb) || ...`. Stale-replay guard
--- via projection_version.
-UPDATE devices_projection
-SET labels             = COALESCE(labels, '{}'::JSONB) || jsonb_build_object(@key::TEXT, @value::TEXT),
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2;
+-- name: SetDeviceLabel :exec
+-- DeviceLabelSet handler against the device_labels child table (Wave E.4).
+-- ON CONFLICT DO UPDATE preserves replay-safety: re-applying the same
+-- event lands the same (key, value); a stale event would have already
+-- been intercepted by AdvanceDeviceProjectionVersion above.
+INSERT INTO device_labels (device_id, key, value)
+VALUES (sqlc.arg(device_id), sqlc.arg(key)::TEXT, sqlc.arg(value)::TEXT)
+ON CONFLICT (device_id, key) DO UPDATE SET value = EXCLUDED.value;
 
--- name: RemoveDeviceLabelKey :execrows
--- DeviceLabelRemoved handler. JSONB minus operator drops the key from
--- the labels object. Stale-replay guard via projection_version.
-UPDATE devices_projection
-SET labels             = labels - @key::TEXT,
-    projection_version = $2
-WHERE id = $1
-  AND projection_version < $2;
+-- name: RemoveDeviceLabel :exec
+-- DeviceLabelRemoved handler. DELETE-with-no-match is silently fine
+-- (matches the PL/pgSQL JSONB minus-operator behaviour on a missing key).
+DELETE FROM device_labels
+WHERE device_id = sqlc.arg(device_id)
+  AND key = sqlc.arg(key)::TEXT;
+
+-- name: ClearDeviceLabels :exec
+-- Bulk-replace half of DeviceLabelsUpdated. Listener follows this with
+-- a series of SetDeviceLabel writes for the new label set, all under
+-- the AdvanceDeviceProjectionVersion guard.
+DELETE FROM device_labels WHERE device_id = $1;
 
 -- name: SoftDeleteDeviceProjection :execrows
 -- DeviceDeleted handler — first half. Returns rows-affected so the

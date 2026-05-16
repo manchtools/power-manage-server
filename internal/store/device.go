@@ -2,15 +2,17 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
 // Device is the device projection row. CertFingerprint pins the
 // agent cert the device currently uses — used by the
 // CertificateHandler to refuse renewals when a different fingerprint
-// presents. Labels stays as json.RawMessage at the boundary per the
-// JSONB normalize plan in #242.
+// presents.
+//
+// Labels is a typed map loaded from the device_labels child table
+// (Wave E.4, tracker #242); repo implementations populate it alongside
+// the core row.
 //
 // The compliance-status quadruple (Status / CheckedAt / Total /
 // Passing) is denormalized on the device row by the compliance
@@ -25,7 +27,7 @@ type Device struct {
 	RegisteredAt        *time.Time
 	LastSeenAt          *time.Time
 	RegistrationTokenID *string
-	Labels              json.RawMessage
+	Labels              map[string]string
 	IsDeleted           bool
 	SyncIntervalMinutes int32
 	ComplianceStatus    int32
