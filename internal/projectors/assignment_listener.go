@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/compliance"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -220,7 +221,7 @@ func cascadeComplianceForAssignment(ctx context.Context, q *store.Queries, sourc
 				return err
 			}
 		}
-		return q.EvaluateDeviceCompliancePolicies(ctx, targetID)
+		return compliance.EvaluateInTx(ctx, q, targetID)
 	case "device_group":
 		deviceIDs, err := q.ListDeviceGroupMemberDeviceIDs(ctx, targetID)
 		if err != nil {
@@ -235,7 +236,7 @@ func cascadeComplianceForAssignment(ctx context.Context, q *store.Queries, sourc
 					return err
 				}
 			}
-			if err := q.EvaluateDeviceCompliancePolicies(ctx, deviceID); err != nil {
+			if err := compliance.EvaluateInTx(ctx, q, deviceID); err != nil {
 				return err
 			}
 		}

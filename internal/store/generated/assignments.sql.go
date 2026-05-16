@@ -59,19 +59,6 @@ func (q *Queries) DeleteCompliancePolicyEvaluationsForDevicePolicy(ctx context.C
 	return err
 }
 
-const evaluateDeviceCompliancePolicies = `-- name: EvaluateDeviceCompliancePolicies :exec
-SELECT evaluate_device_compliance_policies($1::TEXT)
-`
-
-// Invokes the existing PL/pgSQL evaluate_device_compliance_policies
-// function. Compliance is deferred to a later phase of #136; until
-// then, the assignment listener calls through to PL/pgSQL via this
-// typed shim so the cascade behaviour is preserved.
-func (q *Queries) EvaluateDeviceCompliancePolicies(ctx context.Context, dollar_1 string) error {
-	_, err := q.db.Exec(ctx, evaluateDeviceCompliancePolicies, dollar_1)
-	return err
-}
-
 const getAssignment = `-- name: GetAssignment :one
 SELECT id, source_type, source_id, target_type, target_id, sort_order, mode, created_at, created_by, is_deleted, projection_version FROM assignments_projection
 WHERE source_type = $1 AND source_id = $2 AND target_type = $3 AND target_id = $4 AND is_deleted = FALSE

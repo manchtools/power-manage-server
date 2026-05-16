@@ -851,13 +851,6 @@ DELETE FROM compliance_policy_evaluation_projection
 WHERE device_id = $1
   AND policy_id = $2;
 
--- name: EvaluateDeviceCompliancePolicies :exec
--- Invokes the existing PL/pgSQL evaluate_device_compliance_policies
--- function. Compliance is deferred to a later phase of #136; until
--- then, the assignment listener calls through to PL/pgSQL via this
--- typed shim so the cascade behaviour is preserved.
-SELECT evaluate_device_compliance_policies($1::TEXT);
-
 -- Get all assignments targeting a user directly or via their user groups.
 -- name: ListAssignmentsForUser :many
 SELECT * FROM assignments_projection

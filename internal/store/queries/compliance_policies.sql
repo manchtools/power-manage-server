@@ -227,11 +227,103 @@ SET rule_count = (
 )
 WHERE id = $1;
 
--- name: ReevaluateCompliancePolicyDevices :exec
--- CompliancePolicyDeleted / CompliancePolicyRuleRemoved handler —
--- final cascade step. Thin shim around the still-PL/pgSQL
--- reevaluate_compliance_policy_devices(p_policy_id) function defined
--- in migration 003. Per #136 the eval engine itself stays in PL/pgSQL
--- until a later phase; the listener just calls into it so the per-
--- device compliance status reflects the rule mutation.
-SELECT reevaluate_compliance_policy_devices($1);
+-- ============================================================================
+-- Wave D compliance-evaluator reads (manchtools/power-manage-server#242).
+-- ============================================================================
+--
+-- The PL/pgSQL evaluate_device_compliance_policies + recalculate_device_compliance
+-- + reevaluate_compliance_policy_devices were dropped under Wave D. The
+-- replacements in internal/compliance consume the queries below.
+
+-- name: ListComplianceRulesForDevice :many
+-- Wave D: returns every (policy_id, action_id, grace_period_hours)
+-- rule applicable to a device via direct + device_group assignments
+-- of compliance policies. Soft-deleted policies are excluded so a
+-- pending re-assignment doesn't pollute the evaluation cycle.
+SELECT r.policy_id, r.action_id, r.grace_period_hours
+FROM compliance_policy_rules_projection r
+JOIN compliance_policies_projection p
+    ON p.id = r.policy_id AND p.is_deleted = FALSE
+JOIN assignments_projection a
+    ON a.source_type = 'compliance_policy'
+       AND a.source_id = r.policy_id
+       AND a.is_deleted = FALSE
+WHERE (
+    (a.target_type = 'device' AND a.target_id = $1)
+    OR (a.target_type = 'device_group' AND a.target_id IN (
+        SELECT group_id FROM device_group_members_projection
+        WHERE device_id = $1
+    ))
+);
+
+-- name: GetLatestComplianceResultForAction :one
+-- Wave D: per-rule probe inside the evaluator loop. Returns whether
+-- the most recent compliance check for (device, action) was compliant
+-- and when it was checked.
+SELECT compliant, checked_at FROM compliance_results_projection
+WHERE device_id = $1 AND action_id = $2;
+
+-- name: GetComplianceEvaluationFirstFailedAt :one
+-- Wave D: preserves the PL/pgSQL "first-failed timestamp sticks across
+-- repeated NON_COMPLIANT results" invariant. The evaluator reads the
+-- existing value before writing; nil result means the rule transitioned
+-- from compliant (or never observed) to non-compliant this round.
+SELECT first_failed_at FROM compliance_policy_evaluation_projection
+WHERE device_id = $1 AND policy_id = $2 AND action_id = $3;
+
+-- name: UpsertComplianceEvaluation :exec
+-- Wave D: write one row of compliance_policy_evaluation_projection.
+-- The Go evaluator resolves first_failed_at upstream — passes nil on a
+-- compliant transition (clears the column) and the preserved-or-fresh
+-- timestamp on a failing one — so the UPSERT writes the value verbatim
+-- without a COALESCE-on-UPDATE branch.
+INSERT INTO compliance_policy_evaluation_projection (
+    device_id, policy_id, action_id, compliant, first_failed_at,
+    status, checked_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)
+ON CONFLICT (device_id, policy_id, action_id) DO UPDATE SET
+    compliant       = EXCLUDED.compliant,
+    first_failed_at = EXCLUDED.first_failed_at,
+    status          = EXCLUDED.status,
+    checked_at      = EXCLUDED.checked_at;
+
+-- name: UpdateDeviceComplianceSummary :exec
+-- Wave D: writes the denormalized compliance quadruple on
+-- devices_projection. Used by both code paths — the policy-evaluation
+-- finaliser and the no-policies fallback. checked_at is the supplied
+-- time so the recompute and the per-rule writes agree on a single
+-- timestamp.
+UPDATE devices_projection SET
+    compliance_status     = $2,
+    compliance_checked_at = $3,
+    compliance_total      = $4,
+    compliance_passing    = $5
+WHERE id = $1;
+
+-- name: ComplianceResultCounts :one
+-- Wave D: powers the no-policies fallback (recalculate_device_compliance).
+-- Two filtered counts over compliance_results_projection in one query.
+SELECT
+    COUNT(*)::INTEGER AS total,
+    COUNT(*) FILTER (WHERE compliant = TRUE)::INTEGER AS passing
+FROM compliance_results_projection
+WHERE device_id = $1;
+
+-- name: ListDevicesForCompliancePolicy :many
+-- Wave D: fan-out target list for ReevaluatePolicy. Mirrors the SQL
+-- inside reevaluate_compliance_policy_devices — direct device targets
+-- UNIONed with members of every targeted device group.
+SELECT a.target_id AS device_id
+FROM assignments_projection a
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = $1
+  AND a.target_type = 'device'
+  AND a.is_deleted = FALSE
+UNION
+SELECT dgm.device_id
+FROM assignments_projection a
+JOIN device_group_members_projection dgm ON dgm.group_id = a.target_id
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = $1
+  AND a.target_type = 'device_group'
+  AND a.is_deleted = FALSE;

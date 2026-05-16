@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/compliance"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -207,7 +208,7 @@ func applyCompliancePolicyDeleted(ctx context.Context, q *store.Queries, e store
 	// compliance status in sync with the policy deletion (devices
 	// whose only failing rule lived under the now-deleted policy
 	// flip back to compliant on the next read).
-	return q.ReevaluateCompliancePolicyDevices(ctx, e.StreamID)
+	return compliance.ReevaluatePolicyInTx(ctx, q, e.StreamID)
 }
 
 func applyCompliancePolicyRuleAdded(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -286,7 +287,7 @@ func applyCompliancePolicyRuleRemoved(ctx context.Context, q *store.Queries, e s
 	}); err != nil {
 		return err
 	}
-	return q.ReevaluateCompliancePolicyDevices(ctx, payload.PolicyID)
+	return compliance.ReevaluatePolicyInTx(ctx, q, payload.PolicyID)
 }
 
 func applyCompliancePolicyRuleUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

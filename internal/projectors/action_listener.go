@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/compliance"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -355,7 +356,7 @@ func applyActionDeleted(ctx context.Context, q *store.Queries, e store.Persisted
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := q.EvaluateDeviceCompliancePolicies(ctx, deviceID); err != nil {
+		if err := compliance.EvaluateInTx(ctx, q, deviceID); err != nil {
 			return err
 		}
 	}
