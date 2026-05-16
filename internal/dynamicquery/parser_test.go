@@ -105,6 +105,48 @@ func TestValidateDeviceQuery(t *testing.T) {
 	}
 }
 
+// TestParse_DeepNesting_RejectedNotPanic exercises the depth cap added
+// in response to the security audit's parser-recursion finding. Both
+// `not not not ... atom` and `((( ... )))` were unbounded recursion
+// vectors before the depth guard; verify a pathological input returns
+// an error instead of stack-overflowing the test process.
+func TestParse_DeepNesting_RejectedNotPanic(t *testing.T) {
+	t.Run("nested not chain", func(t *testing.T) {
+		const depth = 500 // well above the 100 cap, well below stack-blow.
+		var sb strings.Builder
+		for i := 0; i < depth; i++ {
+			sb.WriteString("not ")
+		}
+		sb.WriteString(`labels.env equals "prod"`)
+		_, err := dynamicquery.Parse(sb.String())
+		if err == nil {
+			t.Fatalf("Parse on %d-deep not chain succeeded; expected depth error", depth)
+		}
+		if !strings.Contains(err.Error(), "nesting depth") {
+			t.Fatalf("expected nesting-depth error, got: %v", err)
+		}
+	})
+
+	t.Run("nested parens", func(t *testing.T) {
+		const depth = 500
+		var sb strings.Builder
+		for i := 0; i < depth; i++ {
+			sb.WriteString("(")
+		}
+		sb.WriteString(`labels.env equals "prod"`)
+		for i := 0; i < depth; i++ {
+			sb.WriteString(")")
+		}
+		_, err := dynamicquery.Parse(sb.String())
+		if err == nil {
+			t.Fatalf("Parse on %d-deep paren chain succeeded; expected depth error", depth)
+		}
+		if !strings.Contains(err.Error(), "nesting depth") {
+			t.Fatalf("expected nesting-depth error, got: %v", err)
+		}
+	})
+}
+
 func TestValidateUserQuery(t *testing.T) {
 	if err := dynamicquery.ValidateUserQuery(""); err == nil {
 		t.Fatalf("ValidateUserQuery(\"\") = nil; want non-empty error")
