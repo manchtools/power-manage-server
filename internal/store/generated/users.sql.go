@@ -10,53 +10,6 @@ import (
 	"time"
 )
 
-const appendUserSshKeyProjection = `-- name: AppendUserSshKeyProjection :execrows
-UPDATE users_projection
-SET ssh_public_keys = ssh_public_keys || jsonb_build_array(
-        jsonb_build_object(
-            'id', $1::TEXT,
-            'public_key', $2::TEXT,
-            'comment', $3::TEXT,
-            'added_at', $4::TIMESTAMPTZ
-        )
-    ),
-    updated_at         = $4::TIMESTAMPTZ,
-    projection_version = $5
-WHERE id = $6
-  AND projection_version < $5
-`
-
-type AppendUserSshKeyProjectionParams struct {
-	KeyID             string    `json:"key_id"`
-	PublicKey         *string   `json:"public_key"`
-	Comment           *string   `json:"comment"`
-	AddedAt           time.Time `json:"added_at"`
-	ProjectionVersion int64     `json:"projection_version"`
-	ID                string    `json:"id"`
-}
-
-// UserSshKeyAdded handler. Mirrors the PL/pgSQL JSONB array-append
-// exactly: builds a single-element array and concatenates.
-// public_key + comment use sqlc.narg so an omitted-key payload
-// writes JSON null into the JSONB element (PL/pgSQL parity:
-// `event.data->>'public_key'` returned NULL for missing keys, and
-// jsonb_build_object preserves NULL as a JSON null entry).
-// Stale-replay guard via projection_version.
-func (q *Queries) AppendUserSshKeyProjection(ctx context.Context, arg AppendUserSshKeyProjectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, appendUserSshKeyProjection,
-		arg.KeyID,
-		arg.PublicKey,
-		arg.Comment,
-		arg.AddedAt,
-		arg.ProjectionVersion,
-		arg.ID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users_projection
 WHERE is_deleted = FALSE
@@ -78,6 +31,24 @@ DELETE FROM identity_links_projection WHERE user_id = $1
 // in store.WithTx for inter-write atomicity.
 func (q *Queries) DeleteIdentityLinksByUser(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, deleteIdentityLinksByUser, userID)
+	return err
+}
+
+const deleteUserSshKey = `-- name: DeleteUserSshKey :exec
+DELETE FROM user_ssh_keys
+WHERE user_id = $1
+  AND key_id = $2
+`
+
+type DeleteUserSshKeyParams struct {
+	UserID string `json:"user_id"`
+	KeyID  string `json:"key_id"`
+}
+
+// UserSshKeyRemoved handler. DELETE on the child table — replay-safe
+// because removing an already-absent row is a no-op.
+func (q *Queries) DeleteUserSshKey(ctx context.Context, arg DeleteUserSshKeyParams) error {
+	_, err := q.db.Exec(ctx, deleteUserSshKey, arg.UserID, arg.KeyID)
 	return err
 }
 
@@ -148,7 +119,7 @@ func (q *Queries) GetNextLinuxUID(ctx context.Context) (int32, error) {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 WHERE email = $1 AND is_deleted = FALSE
 `
 
@@ -177,7 +148,6 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (UsersProjec
 		&i.Locale,
 		&i.LinuxUsername,
 		&i.LinuxUid,
-		&i.SshPublicKeys,
 		&i.SshAccessEnabled,
 		&i.SshAllowPubkey,
 		&i.SshAllowPassword,
@@ -190,7 +160,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (UsersProjec
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -219,7 +189,6 @@ func (q *Queries) GetUserByID(ctx context.Context, id string) (UsersProjection, 
 		&i.Locale,
 		&i.LinuxUsername,
 		&i.LinuxUid,
-		&i.SshPublicKeys,
 		&i.SshAccessEnabled,
 		&i.SshAllowPubkey,
 		&i.SshAllowPassword,
@@ -307,6 +276,42 @@ func (q *Queries) InsertUserProjection(ctx context.Context, arg InsertUserProjec
 	return err
 }
 
+const insertUserSshKey = `-- name: InsertUserSshKey :exec
+INSERT INTO user_ssh_keys (user_id, key_id, public_key, comment, added_at)
+VALUES (
+    $1,
+    $2::TEXT,
+    $3::TEXT,
+    $4::TEXT,
+    $5::TIMESTAMPTZ
+)
+ON CONFLICT (user_id, key_id) DO NOTHING
+`
+
+type InsertUserSshKeyParams struct {
+	UserID    string    `json:"user_id"`
+	KeyID     string    `json:"key_id"`
+	PublicKey *string   `json:"public_key"`
+	Comment   *string   `json:"comment"`
+	AddedAt   time.Time `json:"added_at"`
+}
+
+// UserSshKeyAdded handler against the user_ssh_keys child table (Wave
+// E.3 — tracker #242). Replaces the JSONB array-append shape. The
+// ON CONFLICT clause makes replays safe: re-applying the same event
+// against an already-populated table no-ops on the (user_id, key_id)
+// PK rather than corrupting the row.
+func (q *Queries) InsertUserSshKey(ctx context.Context, arg InsertUserSshKeyParams) error {
+	_, err := q.db.Exec(ctx, insertUserSshKey,
+		arg.UserID,
+		arg.KeyID,
+		arg.PublicKey,
+		arg.Comment,
+		arg.AddedAt,
+	)
+	return err
+}
+
 const invalidateUserSessionProjection = `-- name: InvalidateUserSessionProjection :execrows
 UPDATE users_projection
 SET session_version    = session_version + 1,
@@ -382,7 +387,7 @@ func (q *Queries) LinkUserSystemActionProjection(ctx context.Context, arg LinkUs
 }
 
 const listAllNonDeletedUsers = `-- name: ListAllNonDeletedUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at
 `
@@ -418,7 +423,6 @@ func (q *Queries) ListAllNonDeletedUsers(ctx context.Context) ([]UsersProjection
 			&i.Locale,
 			&i.LinuxUsername,
 			&i.LinuxUid,
-			&i.SshPublicKeys,
 			&i.SshAccessEnabled,
 			&i.SshAllowPubkey,
 			&i.SshAllowPassword,
@@ -438,7 +442,7 @@ func (q *Queries) ListAllNonDeletedUsers(ctx context.Context) ([]UsersProjection
 }
 
 const listAllUsers = `-- name: ListAllUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -479,7 +483,6 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 			&i.Locale,
 			&i.LinuxUsername,
 			&i.LinuxUid,
-			&i.SshPublicKeys,
 			&i.SshAccessEnabled,
 			&i.SshAllowPubkey,
 			&i.SshAllowPassword,
@@ -498,8 +501,78 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]U
 	return items, nil
 }
 
+const listUserSshKeys = `-- name: ListUserSshKeys :many
+SELECT user_id, key_id, public_key, comment, added_at
+FROM user_ssh_keys
+WHERE user_id = $1
+ORDER BY added_at, key_id
+`
+
+// Fetch all SSH keys for one user, ordered by added_at then key_id for
+// stable replay output. Used by user repo Get methods.
+func (q *Queries) ListUserSshKeys(ctx context.Context, userID string) ([]UserSshKey, error) {
+	rows, err := q.db.Query(ctx, listUserSshKeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserSshKey{}
+	for rows.Next() {
+		var i UserSshKey
+		if err := rows.Scan(
+			&i.UserID,
+			&i.KeyID,
+			&i.PublicKey,
+			&i.Comment,
+			&i.AddedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserSshKeysBatch = `-- name: ListUserSshKeysBatch :many
+SELECT user_id, key_id, public_key, comment, added_at
+FROM user_ssh_keys
+WHERE user_id = ANY($1::TEXT[])
+ORDER BY user_id, added_at, key_id
+`
+
+// Batch SSH-key fetch for list endpoints: returns rows for every user
+// in the input slice in a single round-trip so repo.List doesn't N+1.
+func (q *Queries) ListUserSshKeysBatch(ctx context.Context, userIds []string) ([]UserSshKey, error) {
+	rows, err := q.db.Query(ctx, listUserSshKeysBatch, userIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserSshKey{}
+	for rows.Next() {
+		var i UserSshKey
+		if err := rows.Scan(
+			&i.UserID,
+			&i.KeyID,
+			&i.PublicKey,
+			&i.Comment,
+			&i.AddedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_public_keys, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
+SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -541,7 +614,6 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersPr
 			&i.Locale,
 			&i.LinuxUsername,
 			&i.LinuxUid,
-			&i.SshPublicKeys,
 			&i.SshAccessEnabled,
 			&i.SshAllowPubkey,
 			&i.SshAllowPassword,
@@ -558,43 +630,6 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersPr
 		return nil, err
 	}
 	return items, nil
-}
-
-const removeUserSshKeyProjection = `-- name: RemoveUserSshKeyProjection :execrows
-UPDATE users_projection
-SET ssh_public_keys = COALESCE((
-        SELECT jsonb_agg(e.value)
-        FROM jsonb_array_elements(ssh_public_keys) AS e(value)
-        WHERE e.value->>'id' != $4::TEXT
-    ), '[]'::JSONB),
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3
-`
-
-type RemoveUserSshKeyProjectionParams struct {
-	ID                string     `json:"id"`
-	UpdatedAt         *time.Time `json:"updated_at"`
-	ProjectionVersion int64      `json:"projection_version"`
-	KeyID             string     `json:"key_id"`
-}
-
-// UserSshKeyRemoved handler. Mirrors the PL/pgSQL JSONB filter-by-id
-// via subquery exactly — the array filter happens in SQL so we
-// don't read-modify-write the JSONB blob through Go.
-// Stale-replay guard via projection_version.
-func (q *Queries) RemoveUserSshKeyProjection(ctx context.Context, arg RemoveUserSshKeyProjectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, removeUserSshKeyProjection,
-		arg.ID,
-		arg.UpdatedAt,
-		arg.ProjectionVersion,
-		arg.KeyID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const softDeleteUserProjection = `-- name: SoftDeleteUserProjection :execrows
@@ -621,6 +656,33 @@ type SoftDeleteUserProjectionParams struct {
 // on PR #101 pattern).
 func (q *Queries) SoftDeleteUserProjection(ctx context.Context, arg SoftDeleteUserProjectionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, softDeleteUserProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchUserUpdatedAt = `-- name: TouchUserUpdatedAt :execrows
+UPDATE users_projection
+SET updated_at         = $1::TIMESTAMPTZ,
+    projection_version = $2
+WHERE id = $3
+  AND projection_version < $2
+`
+
+type TouchUserUpdatedAtParams struct {
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+	ID                string    `json:"id"`
+}
+
+// Companion write for InsertUserSshKey + DeleteUserSshKey. The PL/pgSQL
+// shape coupled the JSONB write to updated_at + projection_version on
+// users_projection. The child table replaces the array but the listener
+// still wants to mark the user row updated and bump the stale-replay
+// version. Stale-replay guard via projection_version.
+func (q *Queries) TouchUserUpdatedAt(ctx context.Context, arg TouchUserUpdatedAtParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchUserUpdatedAt, arg.UpdatedAt, arg.ProjectionVersion, arg.ID)
 	if err != nil {
 		return 0, err
 	}

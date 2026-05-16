@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -550,27 +549,18 @@ func userToProto(u store.User) *pm.User {
 		user.LastLoginAt = timestamppb.New(*u.LastLoginAt)
 	}
 
-	// Parse SSH public keys from JSONB
-	if len(u.SshPublicKeys) > 0 {
-		var keys []struct {
-			ID        string `json:"id"`
-			PublicKey string `json:"public_key"`
-			Comment   string `json:"comment"`
-			AddedAt   string `json:"added_at"`
+	for _, k := range u.SshPublicKeys {
+		pk := &pm.SshPublicKey{
+			Id:      k.KeyID,
+			AddedAt: timestamppb.New(k.AddedAt),
 		}
-		if err := json.Unmarshal(u.SshPublicKeys, &keys); err == nil {
-			for _, k := range keys {
-				pk := &pm.SshPublicKey{
-					Id:        k.ID,
-					PublicKey: k.PublicKey,
-					Comment:   k.Comment,
-				}
-				if t, err := time.Parse(time.RFC3339, k.AddedAt); err == nil {
-					pk.AddedAt = timestamppb.New(t)
-				}
-				user.SshPublicKeys = append(user.SshPublicKeys, pk)
-			}
+		if k.PublicKey != nil {
+			pk.PublicKey = *k.PublicKey
 		}
+		if k.Comment != nil {
+			pk.Comment = *k.Comment
+		}
+		user.SshPublicKeys = append(user.SshPublicKeys, pk)
 	}
 
 	return user

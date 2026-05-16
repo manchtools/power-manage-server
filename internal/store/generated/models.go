@@ -512,6 +512,14 @@ type UserSelectionsProjection struct {
 	ProjectionVersion int64     `json:"projection_version"`
 }
 
+type UserSshKey struct {
+	UserID    string    `json:"user_id"`
+	KeyID     string    `json:"key_id"`
+	PublicKey *string   `json:"public_key"`
+	Comment   *string   `json:"comment"`
+	AddedAt   time.Time `json:"added_at"`
+}
+
 type UsersProjection struct {
 	ID                      string     `json:"id"`
 	Email                   string     `json:"email"`
@@ -534,7 +542,6 @@ type UsersProjection struct {
 	Locale                  string     `json:"locale"`
 	LinuxUsername           string     `json:"linux_username"`
 	LinuxUid                int32      `json:"linux_uid"`
-	SshPublicKeys           []byte     `json:"ssh_public_keys"`
 	SshAccessEnabled        bool       `json:"ssh_access_enabled"`
 	SshAllowPubkey          bool       `json:"ssh_allow_pubkey"`
 	SshAllowPassword        bool       `json:"ssh_allow_password"`

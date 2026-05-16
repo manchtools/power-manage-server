@@ -2,18 +2,16 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
 
-// User is the user projection row. PasswordHash and SSH key material
-// stay encoded as-stored at the boundary; handlers verify against
-// auth.VerifyPassword / parse SSH keys when they actually need to
-// consume those bytes.
+// User is the user projection row. PasswordHash stays encoded
+// as-stored at the boundary; handlers verify against auth.VerifyPassword
+// when they actually need to consume those bytes.
 //
-// SshPublicKeys is JSON at the row level (an array of {id, key, …}
-// objects) and stays as json.RawMessage at the boundary per the
-// JSONB normalize plan in #242.
+// SshPublicKeys is a typed slice loaded from the user_ssh_keys child
+// table (Wave E.3, tracker #242) — repo implementations populate it
+// alongside the core row.
 type User struct {
 	ID                      string
 	Email                   string
@@ -35,7 +33,7 @@ type User struct {
 	Locale                  string
 	LinuxUsername           string
 	LinuxUID                int32
-	SshPublicKeys           json.RawMessage
+	SshPublicKeys           []SshPublicKey
 	SshAccessEnabled        bool
 	SshAllowPubkey          bool
 	SshAllowPassword        bool
@@ -43,6 +41,17 @@ type User struct {
 	SystemSshActionID       string
 	UserProvisioningEnabled bool
 	SystemTtyActionID       string
+}
+
+// SshPublicKey is one row from the user_ssh_keys child table. PublicKey
+// and Comment are pointers because the projector preserves "field
+// absent in payload" semantics (PL/pgSQL parity: missing keys become
+// SQL NULL, which round-trips as nil for downstream consumers).
+type SshPublicKey struct {
+	KeyID     string
+	PublicKey *string
+	Comment   *string
+	AddedAt   time.Time
 }
 
 // UserSessionInfo is the narrow shape returned for the refresh-token

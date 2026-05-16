@@ -358,12 +358,19 @@ func applyUserSshKeyAdded(ctx context.Context, q *store.Queries, e store.Persist
 		}
 		return err
 	}
-	if _, err := q.AppendUserSshKeyProjection(ctx, db.AppendUserSshKeyProjectionParams{
+	if err := q.InsertUserSshKey(ctx, db.InsertUserSshKeyParams{
+		UserID:    payload.ID,
+		KeyID:     payload.KeyID,
+		PublicKey: payload.PublicKey,
+		Comment:   payload.Comment,
+		AddedAt:   payload.AddedAt,
+	}); err != nil {
+		return err
+	}
+	updatedAt := payload.AddedAt
+	if _, err := q.TouchUserUpdatedAt(ctx, db.TouchUserUpdatedAtParams{
 		ID:                payload.ID,
-		KeyID:             payload.KeyID,
-		PublicKey:         payload.PublicKey,
-		Comment:           payload.Comment,
-		AddedAt:           payload.AddedAt,
+		UpdatedAt:         updatedAt,
 		ProjectionVersion: deref(e.SequenceNum),
 	}); err != nil {
 		return err
@@ -379,12 +386,16 @@ func applyUserSshKeyRemoved(ctx context.Context, q *store.Queries, e store.Persi
 		}
 		return err
 	}
-	updatedAt := e.OccurredAt
-	if _, err := q.RemoveUserSshKeyProjection(ctx, db.RemoveUserSshKeyProjectionParams{
+	if err := q.DeleteUserSshKey(ctx, db.DeleteUserSshKeyParams{
+		UserID: payload.ID,
+		KeyID:  payload.KeyID,
+	}); err != nil {
+		return err
+	}
+	if _, err := q.TouchUserUpdatedAt(ctx, db.TouchUserUpdatedAtParams{
 		ID:                payload.ID,
-		UpdatedAt:         &updatedAt,
+		UpdatedAt:         e.OccurredAt,
 		ProjectionVersion: deref(e.SequenceNum),
-		KeyID:             payload.KeyID,
 	}); err != nil {
 		return err
 	}

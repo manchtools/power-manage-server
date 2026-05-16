@@ -166,43 +166,56 @@ WHERE id = $1
 -- in store.WithTx for inter-write atomicity.
 DELETE FROM identity_links_projection WHERE user_id = $1;
 
--- name: AppendUserSshKeyProjection :execrows
--- UserSshKeyAdded handler. Mirrors the PL/pgSQL JSONB array-append
--- exactly: builds a single-element array and concatenates.
--- public_key + comment use sqlc.narg so an omitted-key payload
--- writes JSON null into the JSONB element (PL/pgSQL parity:
--- `event.data->>'public_key'` returned NULL for missing keys, and
--- jsonb_build_object preserves NULL as a JSON null entry).
--- Stale-replay guard via projection_version.
+-- name: InsertUserSshKey :exec
+-- UserSshKeyAdded handler against the user_ssh_keys child table (Wave
+-- E.3 — tracker #242). Replaces the JSONB array-append shape. The
+-- ON CONFLICT clause makes replays safe: re-applying the same event
+-- against an already-populated table no-ops on the (user_id, key_id)
+-- PK rather than corrupting the row.
+INSERT INTO user_ssh_keys (user_id, key_id, public_key, comment, added_at)
+VALUES (
+    sqlc.arg(user_id),
+    sqlc.arg(key_id)::TEXT,
+    sqlc.narg(public_key)::TEXT,
+    sqlc.narg(comment)::TEXT,
+    sqlc.arg(added_at)::TIMESTAMPTZ
+)
+ON CONFLICT (user_id, key_id) DO NOTHING;
+
+-- name: TouchUserUpdatedAt :execrows
+-- Companion write for InsertUserSshKey + DeleteUserSshKey. The PL/pgSQL
+-- shape coupled the JSONB write to updated_at + projection_version on
+-- users_projection. The child table replaces the array but the listener
+-- still wants to mark the user row updated and bump the stale-replay
+-- version. Stale-replay guard via projection_version.
 UPDATE users_projection
-SET ssh_public_keys = ssh_public_keys || jsonb_build_array(
-        jsonb_build_object(
-            'id', sqlc.arg(key_id)::TEXT,
-            'public_key', sqlc.narg(public_key)::TEXT,
-            'comment', sqlc.narg(comment)::TEXT,
-            'added_at', sqlc.arg(added_at)::TIMESTAMPTZ
-        )
-    ),
-    updated_at         = sqlc.arg(added_at)::TIMESTAMPTZ,
+SET updated_at         = sqlc.arg(updated_at)::TIMESTAMPTZ,
     projection_version = sqlc.arg(projection_version)
 WHERE id = sqlc.arg(id)
   AND projection_version < sqlc.arg(projection_version);
 
--- name: RemoveUserSshKeyProjection :execrows
--- UserSshKeyRemoved handler. Mirrors the PL/pgSQL JSONB filter-by-id
--- via subquery exactly — the array filter happens in SQL so we
--- don't read-modify-write the JSONB blob through Go.
--- Stale-replay guard via projection_version.
-UPDATE users_projection
-SET ssh_public_keys = COALESCE((
-        SELECT jsonb_agg(e.value)
-        FROM jsonb_array_elements(ssh_public_keys) AS e(value)
-        WHERE e.value->>'id' != @key_id::TEXT
-    ), '[]'::JSONB),
-    updated_at         = $2,
-    projection_version = $3
-WHERE id = $1
-  AND projection_version < $3;
+-- name: DeleteUserSshKey :exec
+-- UserSshKeyRemoved handler. DELETE on the child table — replay-safe
+-- because removing an already-absent row is a no-op.
+DELETE FROM user_ssh_keys
+WHERE user_id = sqlc.arg(user_id)
+  AND key_id = sqlc.arg(key_id);
+
+-- name: ListUserSshKeys :many
+-- Fetch all SSH keys for one user, ordered by added_at then key_id for
+-- stable replay output. Used by user repo Get methods.
+SELECT user_id, key_id, public_key, comment, added_at
+FROM user_ssh_keys
+WHERE user_id = $1
+ORDER BY added_at, key_id;
+
+-- name: ListUserSshKeysBatch :many
+-- Batch SSH-key fetch for list endpoints: returns rows for every user
+-- in the input slice in a single round-trip so repo.List doesn't N+1.
+SELECT user_id, key_id, public_key, comment, added_at
+FROM user_ssh_keys
+WHERE user_id = ANY(sqlc.arg(user_ids)::TEXT[])
+ORDER BY user_id, added_at, key_id;
 
 -- name: UpdateUserSshSettingsProjection :execrows
 -- UserSshSettingsUpdated handler. Each boolean is COALESCE-preserved

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -495,23 +494,13 @@ func (m *SystemActionManager) cleanupTtyAction(ctx context.Context, user store.U
 	return nil
 }
 
-// parseSshPublicKeys extracts the public_key strings from the JSONB array.
-func parseSshPublicKeys(raw []byte) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-
-	var keys []struct {
-		PublicKey string `json:"public_key"`
-	}
-	if err := json.Unmarshal(raw, &keys); err != nil {
-		return nil
-	}
-
+// parseSshPublicKeys extracts the non-empty public_key strings from
+// the typed slice the user repo now returns (Wave E.3, tracker #242).
+func parseSshPublicKeys(keys []store.SshPublicKey) []string {
 	result := make([]string, 0, len(keys))
 	for _, k := range keys {
-		if k.PublicKey != "" {
-			result = append(result, k.PublicKey)
+		if k.PublicKey != nil && *k.PublicKey != "" {
+			result = append(result, *k.PublicKey)
 		}
 	}
 	return result
