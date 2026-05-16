@@ -98,19 +98,6 @@ func (q *Queries) CountGroupsWithRole(ctx context.Context, roleID string) (int64
 	return count, err
 }
 
-const countMatchingUsersForQuery = `-- name: CountMatchingUsersForQuery :one
-SELECT COUNT(*) FROM users_projection
-WHERE is_deleted = FALSE
-AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE
-`
-
-func (q *Queries) CountMatchingUsersForQuery(ctx context.Context, query string) (int64, error) {
-	row := q.db.QueryRow(ctx, countMatchingUsersForQuery, query)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const countUserGroups = `-- name: CountUserGroups :one
 SELECT count(*) FROM user_groups_projection WHERE is_deleted = FALSE
 `
@@ -252,34 +239,6 @@ type EnqueueDynamicUserGroupEvaluationParams struct {
 func (q *Queries) EnqueueDynamicUserGroupEvaluation(ctx context.Context, arg EnqueueDynamicUserGroupEvaluationParams) error {
 	_, err := q.db.Exec(ctx, enqueueDynamicUserGroupEvaluation, arg.GroupID, arg.Reason)
 	return err
-}
-
-const evaluateDynamicUserGroup = `-- name: EvaluateDynamicUserGroup :exec
-SELECT evaluate_dynamic_user_group($1)
-`
-
-func (q *Queries) EvaluateDynamicUserGroup(ctx context.Context, groupIDParam string) error {
-	_, err := q.db.Exec(ctx, evaluateDynamicUserGroup, groupIDParam)
-	return err
-}
-
-const evaluateQueuedDynamicUserGroups = `-- name: EvaluateQueuedDynamicUserGroups :one
-SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
-FROM evaluate_queued_dynamic_user_groups()
-`
-
-type EvaluateQueuedDynamicUserGroupsRow struct {
-	EvaluatedCount int32 `json:"evaluated_count"`
-	More           bool  `json:"more"`
-}
-
-// Returns (evaluated_count, more) so the drain loop in cmd/control
-// terminates on `more = false`. See migration 044 + #168.
-func (q *Queries) EvaluateQueuedDynamicUserGroups(ctx context.Context) (EvaluateQueuedDynamicUserGroupsRow, error) {
-	row := q.db.QueryRow(ctx, evaluateQueuedDynamicUserGroups)
-	var i EvaluateQueuedDynamicUserGroupsRow
-	err := row.Scan(&i.EvaluatedCount, &i.More)
-	return i, err
 }
 
 const getUserGroupByID = `-- name: GetUserGroupByID :one
@@ -1053,17 +1012,6 @@ func (q *Queries) UserGroupHasRole(ctx context.Context, arg UserGroupHasRolePara
 	var has_role bool
 	err := row.Scan(&has_role)
 	return has_role, err
-}
-
-const validateUserGroupQuery = `-- name: ValidateUserGroupQuery :one
-SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message
-`
-
-func (q *Queries) ValidateUserGroupQuery(ctx context.Context, query string) (string, error) {
-	row := q.db.QueryRow(ctx, validateUserGroupQuery, query)
-	var error_message string
-	err := row.Scan(&error_message)
-	return error_message, err
 }
 
 const wipeUserGroupMembers = `-- name: WipeUserGroupMembers :exec

@@ -284,9 +284,11 @@ func (e *Evaluator) CountMatchingDevices(ctx context.Context, query string) (int
 	if err != nil {
 		return 0, fmt.Errorf("dyngroupeval: list devices: %w", err)
 	}
+	needsGroups := referencesGroupField(expr)
 	var count int64
 	for _, d := range devices {
-		if dynamicquery.EvaluateDevice(expr, e.buildDeviceContext(ctx, d.ID, d.Labels)) {
+		dctx := e.attachGroupMembership(ctx, e.buildDeviceContext(ctx, d.ID, d.Labels), needsGroups)
+		if dynamicquery.EvaluateDevice(expr, dctx) {
 			count++
 		}
 	}

@@ -49,14 +49,9 @@ type ListUserGroupsFilter struct {
 
 // UserGroupRepo reads user-group state from the projection. Writes
 // (UserGroupCreated / Updated / Deleted / MemberAdded / MemberRemoved
-// etc.) flow through the event store + projector.
-//
-// Dynamic-group evaluator queries (EvaluateDynamicUserGroup,
-// EvaluateQueuedDynamicUserGroups, ValidateUserGroupQuery) are NOT
-// surfaced here — they call PL/pgSQL functions today and will move
-// to a Go interpreter under Wave C of the storage-abstraction
-// tracker. Until then, those call sites continue to use
-// Store.Queries() directly.
+// etc.) flow through the event store + projector. Dynamic-group
+// re-evaluation lives in internal/dyngroupeval (the PL/pgSQL
+// evaluator was dropped under Wave C of tracker #242).
 type UserGroupRepo interface {
 	// Get returns the group by ID. Returns ErrNotFound when no
 	// group with that ID exists.

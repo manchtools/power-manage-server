@@ -82,22 +82,6 @@ JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
 WHERE ugm.user_id = ANY($1::TEXT[])
 ORDER BY ugm.user_id, ug.name, r.name;
 
--- name: ValidateUserGroupQuery :one
-SELECT COALESCE(validate_user_group_query($1), '')::TEXT AS error_message;
-
--- name: EvaluateDynamicUserGroup :exec
-SELECT evaluate_dynamic_user_group($1);
-
--- name: EvaluateQueuedDynamicUserGroups :one
--- Returns (evaluated_count, more) so the drain loop in cmd/control
--- terminates on `more = false`. See migration 044 + #168.
-SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
-FROM evaluate_queued_dynamic_user_groups();
-
--- name: CountMatchingUsersForQuery :one
-SELECT COUNT(*) FROM users_projection
-WHERE is_deleted = FALSE
-AND evaluate_dynamic_user_query(email, disabled, totp_enabled, has_password, display_name, preferred_username, locale, $1) = TRUE;
 
 -- ============================================================================
 -- Projector listener writes (manchtools/power-manage-server#138).

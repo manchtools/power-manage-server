@@ -43,9 +43,9 @@ type ListDeviceGroupsFilter struct {
 }
 
 // DeviceGroupRepo reads device-group state from the projection.
-// Writes flow through events; the dynamic-query evaluator
-// (EvaluateDynamicGroup / ValidateDynamicQuery / etc.) stays on
-// Queries() until the Wave C PL/pgSQL → Go port.
+// Writes flow through events; dynamic-group re-evaluation lives in
+// internal/dyngroupeval (the PL/pgSQL evaluator was dropped under
+// Wave C of tracker #242).
 type DeviceGroupRepo interface {
 	// Get returns the group by ID. Returns ErrNotFound when no
 	// group with that ID exists.
