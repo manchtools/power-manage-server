@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -80,14 +81,23 @@ func (l *Luks) ConsumeToken(ctx context.Context, p store.ConsumeLuksTokenParams)
 }
 
 func (l *Luks) GetRevocationStreamID(ctx context.Context, key store.LuksRevocationStreamKey) (string, error) {
-	id, err := l.q.GetLuksRevocationStreamID(ctx, generated.GetLuksRevocationStreamIDParams{
-		DeviceID: key.DeviceID,
-		ActionID: key.ActionID,
-	})
+	rows, err := l.q.ListLuksRevocationCandidates(ctx)
 	if err != nil {
-		return "", fmt.Errorf("luks: get revocation stream id: %w", translateNotFound(err))
+		return "", fmt.Errorf("luks: list revocation candidates: %w", err)
 	}
-	return id, nil
+	var payload struct {
+		DeviceID string `json:"device_id"`
+		ActionID string `json:"action_id"`
+	}
+	for _, r := range rows {
+		if err := json.Unmarshal(r.Data, &payload); err != nil {
+			continue
+		}
+		if payload.DeviceID == key.DeviceID && payload.ActionID == key.ActionID {
+			return r.StreamID, nil
+		}
+	}
+	return "", fmt.Errorf("luks: get revocation stream id: %w", store.ErrNotFound)
 }
 
 func luksFromRow(r generated.LuksKeysProjection) store.LuksKey {

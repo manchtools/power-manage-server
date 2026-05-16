@@ -170,36 +170,6 @@ func (q *Queries) GetLuksKeyHistory(ctx context.Context, deviceID string) ([]Luk
 	return items, nil
 }
 
-const getLuksRevocationStreamID = `-- name: GetLuksRevocationStreamID :one
-SELECT stream_id
-FROM events
-WHERE stream_type = 'luks_key'
-  AND event_type IN ('LuksDeviceKeyRevocationRequested', 'LuksDeviceKeyRevocationDispatched')
-  AND data->>'device_id' = $1::text
-  AND data->>'action_id' = $2::text
-ORDER BY sequence_num DESC
-LIMIT 1
-`
-
-type GetLuksRevocationStreamIDParams struct {
-	DeviceID string `json:"device_id"`
-	ActionID string `json:"action_id"`
-}
-
-// GetLuksRevocationStreamID looks up the luks_key event-stream ID that
-// was minted when api/device_handler.go appended the
-// LuksDeviceKeyRevocationRequested event for this (device, action).
-// The inbox worker uses it to append the final Revoked / Failed event
-// to the SAME stream so the three-phase projection stitches together.
-// Returns the most recent request if somehow there are multiple (there
-// should only ever be one; LIMIT 1 is belt-and-braces).
-func (q *Queries) GetLuksRevocationStreamID(ctx context.Context, arg GetLuksRevocationStreamIDParams) (string, error) {
-	row := q.db.QueryRow(ctx, getLuksRevocationStreamID, arg.DeviceID, arg.ActionID)
-	var stream_id string
-	err := row.Scan(&stream_id)
-	return stream_id, err
-}
-
 const insertLuksKey = `-- name: InsertLuksKey :exec
 INSERT INTO luks_keys_projection
     (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
@@ -233,6 +203,53 @@ func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) er
 		arg.ProjectionVersion,
 	)
 	return err
+}
+
+const listLuksRevocationCandidates = `-- name: ListLuksRevocationCandidates :many
+SELECT stream_id, data
+FROM events
+WHERE stream_type = 'luks_key'
+  AND event_type IN ('LuksDeviceKeyRevocationRequested', 'LuksDeviceKeyRevocationDispatched')
+ORDER BY sequence_num DESC
+LIMIT 1000
+`
+
+type ListLuksRevocationCandidatesRow struct {
+	StreamID string `json:"stream_id"`
+	Data     []byte `json:"data"`
+}
+
+// ListLuksRevocationCandidates returns recent luks_key revocation-request /
+// dispatch events for Go-side (device_id, action_id) filtering. Wave E.2
+// moved the filter out of SQL — data->>'device_id' and ->>'action_id'
+// were the last JSONB operators on the events table, blocking the
+// portable-storage goal (tracker #242). The repo method consumes this
+// result and short-circuits on the first match.
+//
+// The LIMIT bounds the worst case: the matching event is typically the
+// most recent one for the requested pair. 1000 covers many devices'
+// recent revocation traffic without any practical risk of scanning past
+// the target. If the projection ever holds more pending revocations
+// than that, raise the LIMIT or paginate — but the inbox worker calls
+// this once per agent outcome, so volume stays bounded in practice.
+func (q *Queries) ListLuksRevocationCandidates(ctx context.Context) ([]ListLuksRevocationCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listLuksRevocationCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLuksRevocationCandidatesRow{}
+	for rows.Next() {
+		var i ListLuksRevocationCandidatesRow
+		if err := rows.Scan(&i.StreamID, &i.Data); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const luksKeyExistsForDeviceActionPath = `-- name: LuksKeyExistsForDeviceActionPath :one
