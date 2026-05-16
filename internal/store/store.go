@@ -373,6 +373,29 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
+// LoadStream satisfies EventStore.LoadStream. Thin wrapper over the
+// sqlc-generated LoadStream query; lifts the (stream_type, stream_id)
+// → []PersistedEvent shape onto Store so callers can depend on the
+// EventStore interface instead of reaching into Queries().
+func (s *Store) LoadStream(ctx context.Context, streamType, streamID string) ([]PersistedEvent, error) {
+	return s.queries.LoadStream(ctx, generated.LoadStreamParams{
+		StreamType: streamType,
+		StreamID:   streamID,
+	})
+}
+
+// LoadStreamByType satisfies EventStore.LoadStreamByType. Pages over
+// every event with the given stream_type ordered by sequence_num
+// descending. Mirrors the existing LoadEventsByStreamType query the
+// audit-log + reconciler callers used directly.
+func (s *Store) LoadStreamByType(ctx context.Context, streamType string, limit, offset int32) ([]PersistedEvent, error) {
+	return s.queries.LoadEventsByStreamType(ctx, generated.LoadEventsByStreamTypeParams{
+		StreamType: streamType,
+		Limit:      limit,
+		Offset:     offset,
+	})
+}
+
 // WithTx runs a function within a transaction.
 func (s *Store) WithTx(ctx context.Context, fn func(*Queries) error) error {
 	tx, err := s.pool.Begin(ctx)
