@@ -537,21 +537,6 @@ func anyToString(v any) string {
 	return fmt.Sprint(v)
 }
 
-func parseLabelsJSON(raw []byte) map[string]string {
-	if len(raw) == 0 {
-		return nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = anyToString(v)
-	}
-	return out
-}
-
 func toSet(ids []string) map[string]bool {
 	out := make(map[string]bool, len(ids))
 	for _, id := range ids {
