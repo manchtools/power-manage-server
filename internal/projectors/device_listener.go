@@ -151,6 +151,13 @@ func applyDeviceRegistered(ctx context.Context, q *store.Queries, e store.Persis
 			return err
 		}
 	}
+	// Re-evaluation enqueue: freshly-registered devices with seed
+	// labels (or no labels — equally relevant) must be considered by
+	// every dynamic device group. Wave F replacement for the PL/pgSQL
+	// device_labels_change_trigger fan-out.
+	if err := enqueueDynamicDeviceGroupsForDevice(ctx, q, payload.ID); err != nil {
+		return err
+	}
 	if payload.AssignedUserID == nil || *payload.AssignedUserID == "" {
 		return nil
 	}
@@ -256,7 +263,7 @@ func applyDeviceLabelsUpdated(ctx context.Context, q *store.Queries, e store.Per
 			return err
 		}
 	}
-	return nil
+	return enqueueDynamicDeviceGroupsForDevice(ctx, q, payload.ID)
 }
 
 func applyDeviceLabelSet(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -271,11 +278,14 @@ func applyDeviceLabelSet(ctx context.Context, q *store.Queries, e store.Persiste
 	if err != nil || !advanced {
 		return err
 	}
-	return q.SetDeviceLabel(ctx, db.SetDeviceLabelParams{
+	if err := q.SetDeviceLabel(ctx, db.SetDeviceLabelParams{
 		DeviceID: payload.ID,
 		Key:      payload.Key,
 		Value:    payload.Value,
-	})
+	}); err != nil {
+		return err
+	}
+	return enqueueDynamicDeviceGroupsForDevice(ctx, q, payload.ID)
 }
 
 func applyDeviceLabelRemoved(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -290,10 +300,13 @@ func applyDeviceLabelRemoved(ctx context.Context, q *store.Queries, e store.Pers
 	if err != nil || !advanced {
 		return err
 	}
-	return q.RemoveDeviceLabel(ctx, db.RemoveDeviceLabelParams{
+	if err := q.RemoveDeviceLabel(ctx, db.RemoveDeviceLabelParams{
 		DeviceID: payload.ID,
 		Key:      payload.Key,
-	})
+	}); err != nil {
+		return err
+	}
+	return enqueueDynamicDeviceGroupsForDevice(ctx, q, payload.ID)
 }
 
 // advanceDeviceVersion bumps devices_projection.projection_version to
@@ -312,6 +325,15 @@ func advanceDeviceVersion(ctx context.Context, q *store.Queries, deviceID string
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// enqueueDynamicDeviceGroupsForDevice queues every active dynamic
+// device group for re-evaluation, tagging the queue entry with a
+// human-readable reason ("device_<id>_changed"). Replaces the
+// PL/pgSQL trigger_device_label_change / trigger_inventory_change /
+// queue_dynamic_groups_for_device chain (Wave F, tracker #242).
+func enqueueDynamicDeviceGroupsForDevice(ctx context.Context, q *store.Queries, deviceID string) error {
+	return q.EnqueueAllDynamicDeviceGroups(ctx, "device_"+deviceID+"_changed")
 }
 
 func applyDeviceDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -334,7 +356,26 @@ func applyDeviceDeleted(ctx context.Context, q *store.Queries, e store.Persisted
 	if err := q.DeleteDeviceAssignedUsersByDevice(ctx, e.StreamID); err != nil {
 		return err
 	}
-	return q.DeleteDeviceAssignedGroupsByDevice(ctx, e.StreamID)
+	if err := q.DeleteDeviceAssignedGroupsByDevice(ctx, e.StreamID); err != nil {
+		return err
+	}
+	// Cascade out of every dynamic group membership the device
+	// participated in. Replaces the PL/pgSQL device_deleted_trigger
+	// (Wave F, tracker #242): scope the recount to just the affected
+	// groups instead of the trigger's full-table sweep.
+	affectedGroups, err := q.ListDeviceGroupMembershipsByDevice(ctx, e.StreamID)
+	if err != nil {
+		return err
+	}
+	if err := q.DeleteDeviceGroupMembershipsForDevice(ctx, e.StreamID); err != nil {
+		return err
+	}
+	for _, groupID := range affectedGroups {
+		if err := q.RecountDeviceGroupMembers(ctx, groupID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func applyDeviceAssigned(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

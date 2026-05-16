@@ -86,6 +86,10 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=TRUE",
 					"event_id", e.ID, "user_id", userID, "error", err)
 			}
+			if err := enqueueDynamicUserGroupsForUser(ctx, q, userID); err != nil {
+				logger.Warn("totp projector: failed to enqueue dynamic user groups",
+					"event_id", e.ID, "user_id", userID, "error", err)
+			}
 
 		case string(eventtypes.TOTPDisabled):
 			if err := q.DeleteTotpProjection(ctx, userID); err != nil {
@@ -99,6 +103,10 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				ProjectionVersion: deref(e.SequenceNum),
 			}); err != nil {
 				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=FALSE",
+					"event_id", e.ID, "user_id", userID, "error", err)
+			}
+			if err := enqueueDynamicUserGroupsForUser(ctx, q, userID); err != nil {
+				logger.Warn("totp projector: failed to enqueue dynamic user groups",
 					"event_id", e.ID, "user_id", userID, "error", err)
 			}
 

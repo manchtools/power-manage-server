@@ -109,9 +109,16 @@ func startDynamicGroupWorker(ctx context.Context, st *store.Store, interval time
 
 	// Periodic full re-evaluation as a safety net (every 24h).
 	// Queues all dynamic groups for evaluation; the worker above drains them.
+	// Wave F replacement for the PL/pgSQL queue_all_dynamic_groups
+	// function — two typed enqueues here instead of one SELECT
+	// fn() that did both inserts internally.
 	go runPeriodic(ctx, 24*time.Hour, func() {
-		if err := st.Queries().QueueAllDynamicGroups(ctx); err != nil {
-			logger.Error("failed to queue full dynamic group re-evaluation", "error", err)
+		const reason = "periodic_full_evaluation"
+		if err := st.Queries().EnqueueAllDynamicDeviceGroups(ctx, reason); err != nil {
+			logger.Error("failed to queue full dynamic device-group re-evaluation", "error", err)
+		}
+		if err := st.Queries().EnqueueAllDynamicUserGroups(ctx, reason); err != nil {
+			logger.Error("failed to queue full dynamic user-group re-evaluation", "error", err)
 		} else {
 			logger.Info("queued full dynamic group re-evaluation")
 		}
