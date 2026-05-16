@@ -567,7 +567,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	// a fresh stream ID so we still record the Failed outcome
 	// durably — an orphan Failed event is better than dropping the
 	// agent-reported failure on the floor.
-	luksStreamID, err := w.store.Queries().GetLuksRevocationStreamID(ctx, db.GetLuksRevocationStreamIDParams{
+	luksStreamID, err := w.store.Repos().Luks.GetRevocationStreamID(ctx, store.LuksRevocationStreamKey{
 		DeviceID: payload.DeviceID,
 		ActionID: payload.ActionID,
 	})

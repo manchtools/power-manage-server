@@ -26,6 +26,8 @@ type Repos struct {
 	IdentityProvider IdentityProviderRepo
 	Inventory        InventoryRepo
 	Logs             LogsRepo
+	Lps              LpsRepo
+	Luks             LuksRepo
 	OSQuery          OSQueryRepo
 	RevokedToken     RevokedTokenRepo
 	Role             RoleRepo
