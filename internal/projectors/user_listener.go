@@ -192,7 +192,18 @@ func applyUserCreatedWithRoles(ctx context.Context, q *store.Queries, e store.Pe
 			return err
 		}
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, payload.ID)
+}
+
+// enqueueDynamicUserGroupsForUser queues every active dynamic user
+// group for re-evaluation after a column on users_projection that the
+// user-group query language reads has changed. Wave F replacement for
+// the PL/pgSQL user_attribute_change_trigger (tracker #242). Called
+// from every user-event handler that touched email / disabled /
+// totp_enabled / has_password / is_deleted / display_name /
+// preferred_username / locale.
+func enqueueDynamicUserGroupsForUser(ctx context.Context, q *store.Queries, userID string) error {
+	return q.EnqueueAllDynamicUserGroups(ctx, "user_"+userID+"_changed")
 }
 
 func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -217,7 +228,7 @@ func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.Pers
 	}); err != nil {
 		return err
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, payload.ID)
 }
 
 func applyUserEmailChanged(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -237,7 +248,7 @@ func applyUserEmailChanged(ctx context.Context, q *store.Queries, e store.Persis
 	}); err != nil {
 		return err
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, payload.ID)
 }
 
 func applyUserPasswordChanged(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -258,7 +269,7 @@ func applyUserPasswordChanged(ctx context.Context, q *store.Queries, e store.Per
 	}); err != nil {
 		return err
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, payload.ID)
 }
 
 func applyUserRoleChanged(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -302,7 +313,7 @@ func applyUserDisabled(ctx context.Context, q *store.Queries, e store.PersistedE
 	}); err != nil {
 		return err
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, e.StreamID)
 }
 
 func applyUserEnabled(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -314,7 +325,7 @@ func applyUserEnabled(ctx context.Context, q *store.Queries, e store.PersistedEv
 	}); err != nil {
 		return err
 	}
-	return nil
+	return enqueueDynamicUserGroupsForUser(ctx, q, e.StreamID)
 }
 
 func applyUserLoggedIn(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -347,7 +358,10 @@ func applyUserDeleted(ctx context.Context, q *store.Queries, e store.PersistedEv
 		// user would silently nuke that user's identity links.
 		return nil
 	}
-	return q.DeleteIdentityLinksByUser(ctx, e.StreamID)
+	if err := q.DeleteIdentityLinksByUser(ctx, e.StreamID); err != nil {
+		return err
+	}
+	return enqueueDynamicUserGroupsForUser(ctx, q, e.StreamID)
 }
 
 func applyUserSshKeyAdded(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

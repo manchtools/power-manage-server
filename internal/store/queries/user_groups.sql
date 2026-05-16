@@ -207,6 +207,21 @@ INSERT INTO dynamic_user_group_evaluation_queue (group_id, reason)
 VALUES ($1, $2)
 ON CONFLICT (group_id) DO UPDATE SET queued_at = clock_timestamp();
 
+-- name: EnqueueAllDynamicUserGroups :exec
+-- Wave F: enqueues every non-deleted dynamic user group for re-eval.
+-- Used by user-attribute projector listeners after a column change
+-- (reason='user_<id>_changed') and by the periodic safety-net sweep
+-- (reason='periodic_full_evaluation'). Replaces the PL/pgSQL
+-- queue_dynamic_user_groups_on_user_change + queue_all_dynamic_groups
+-- helpers.
+INSERT INTO dynamic_user_group_evaluation_queue (group_id, queued_at, reason)
+SELECT id, clock_timestamp(), sqlc.arg(reason)::TEXT
+FROM user_groups_projection
+WHERE is_dynamic = TRUE AND is_deleted = FALSE
+ON CONFLICT (group_id) DO UPDATE SET
+    queued_at = clock_timestamp(),
+    reason = EXCLUDED.reason;
+
 -- name: UpdateUserGroupMaintenanceWindowProjection :execrows
 -- UserGroupMaintenanceWindowSet handler. Mirrors the PL/pgSQL
 -- `COALESCE(payload, '{}'::JSONB)`: the listener decoder substitutes

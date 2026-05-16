@@ -80,8 +80,21 @@ WHERE g.is_deleted = FALSE
 ORDER BY q.queued_at ASC
 LIMIT $1;
 
--- name: QueueAllDynamicGroups :exec
-SELECT queue_all_dynamic_groups();
+-- name: EnqueueAllDynamicDeviceGroups :exec
+-- Wave F: enqueues every non-deleted dynamic device group for
+-- re-evaluation. Used by both the projector listeners (after a
+-- side-table change like a label / inventory mutation, with
+-- reason='device_<id>_changed') and the periodic safety-net
+-- sweep (reason='periodic_full_evaluation'). Replaces the
+-- PL/pgSQL queue_dynamic_groups_for_device + queue_all_dynamic_groups
+-- helpers; the caller picks the reason.
+INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
+SELECT id, clock_timestamp(), sqlc.arg(reason)::TEXT
+FROM device_groups_projection
+WHERE is_dynamic = TRUE AND is_deleted = FALSE
+ON CONFLICT (group_id) DO UPDATE SET
+    queued_at = clock_timestamp(),
+    reason = EXCLUDED.reason;
 
 -- ============================================================================
 -- Projector listener writes (manchtools/power-manage-server#136).
@@ -237,6 +250,20 @@ DELETE FROM device_group_members_projection WHERE group_id = $1;
 -- the next dynamic-evaluation pass doesn't try to reconcile a deleted
 -- group.
 DELETE FROM dynamic_group_evaluation_queue WHERE group_id = $1;
+
+-- name: ListDeviceGroupMembershipsByDevice :many
+-- Wave F: pre-fetch the (group_id) list a soft-deleted device belongs
+-- to. The device-projector cascade uses this to scope the post-delete
+-- recount to just the affected groups instead of recomputing every
+-- group's member_count (what the dropped PL/pgSQL trigger did).
+SELECT group_id FROM device_group_members_projection
+WHERE device_id = $1;
+
+-- name: DeleteDeviceGroupMembershipsForDevice :exec
+-- Wave F: removes every membership row for the deleted device.
+-- Replaces the cascade half of the dropped device_deleted_trigger
+-- (PL/pgSQL trigger_device_deleted).
+DELETE FROM device_group_members_projection WHERE device_id = $1;
 
 -- name: DeleteDynamicDeviceGroupQueueBefore :exec
 -- Wave C.3: clear queue entries for `group_id` that were queued before

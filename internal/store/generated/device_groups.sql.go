@@ -97,6 +97,18 @@ func (q *Queries) DeleteDeviceGroupMembersByGroup(ctx context.Context, groupID s
 	return err
 }
 
+const deleteDeviceGroupMembershipsForDevice = `-- name: DeleteDeviceGroupMembershipsForDevice :exec
+DELETE FROM device_group_members_projection WHERE device_id = $1
+`
+
+// Wave F: removes every membership row for the deleted device.
+// Replaces the cascade half of the dropped device_deleted_trigger
+// (PL/pgSQL trigger_device_deleted).
+func (q *Queries) DeleteDeviceGroupMembershipsForDevice(ctx context.Context, deviceID string) error {
+	_, err := q.db.Exec(ctx, deleteDeviceGroupMembershipsForDevice, deviceID)
+	return err
+}
+
 const deleteDynamicDeviceGroupEvaluationQueueRow = `-- name: DeleteDynamicDeviceGroupEvaluationQueueRow :exec
 DELETE FROM dynamic_group_evaluation_queue WHERE group_id = $1
 `
@@ -126,6 +138,28 @@ type DeleteDynamicDeviceGroupQueueBeforeParams struct {
 // running, the newer queue entry survives so the drain loop re-evaluates.
 func (q *Queries) DeleteDynamicDeviceGroupQueueBefore(ctx context.Context, arg DeleteDynamicDeviceGroupQueueBeforeParams) error {
 	_, err := q.db.Exec(ctx, deleteDynamicDeviceGroupQueueBefore, arg.GroupID, arg.BeforeTs)
+	return err
+}
+
+const enqueueAllDynamicDeviceGroups = `-- name: EnqueueAllDynamicDeviceGroups :exec
+INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
+SELECT id, clock_timestamp(), $1::TEXT
+FROM device_groups_projection
+WHERE is_dynamic = TRUE AND is_deleted = FALSE
+ON CONFLICT (group_id) DO UPDATE SET
+    queued_at = clock_timestamp(),
+    reason = EXCLUDED.reason
+`
+
+// Wave F: enqueues every non-deleted dynamic device group for
+// re-evaluation. Used by both the projector listeners (after a
+// side-table change like a label / inventory mutation, with
+// reason='device_<id>_changed') and the periodic safety-net
+// sweep (reason='periodic_full_evaluation'). Replaces the
+// PL/pgSQL queue_dynamic_groups_for_device + queue_all_dynamic_groups
+// helpers; the caller picks the reason.
+func (q *Queries) EnqueueAllDynamicDeviceGroups(ctx context.Context, reason string) error {
+	_, err := q.db.Exec(ctx, enqueueAllDynamicDeviceGroups, reason)
 	return err
 }
 
@@ -448,6 +482,35 @@ func (q *Queries) ListDeviceGroupMembers(ctx context.Context, groupID string) ([
 	return items, nil
 }
 
+const listDeviceGroupMembershipsByDevice = `-- name: ListDeviceGroupMembershipsByDevice :many
+SELECT group_id FROM device_group_members_projection
+WHERE device_id = $1
+`
+
+// Wave F: pre-fetch the (group_id) list a soft-deleted device belongs
+// to. The device-projector cascade uses this to scope the post-delete
+// recount to just the affected groups instead of recomputing every
+// group's member_count (what the dropped PL/pgSQL trigger did).
+func (q *Queries) ListDeviceGroupMembershipsByDevice(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupMembershipsByDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceGroups = `-- name: ListDeviceGroups :many
 SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
 WHERE is_deleted = FALSE
@@ -702,15 +765,6 @@ func (q *Queries) ListGroupsForDevice(ctx context.Context, deviceID string) ([]D
 		return nil, err
 	}
 	return items, nil
-}
-
-const queueAllDynamicGroups = `-- name: QueueAllDynamicGroups :exec
-SELECT queue_all_dynamic_groups()
-`
-
-func (q *Queries) QueueAllDynamicGroups(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, queueAllDynamicGroups)
-	return err
 }
 
 const recountDeviceGroupMembers = `-- name: RecountDeviceGroupMembers :exec

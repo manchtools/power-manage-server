@@ -485,7 +485,18 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 		}
 	}
 
-	// Immediately evaluate dynamic groups queued by the device_inventory_changed trigger.
+	// Enqueue dynamic device groups for re-evaluation. Wave F
+	// replacement for the PL/pgSQL device_inventory_changed trigger:
+	// since the trigger is gone, the inbox worker enqueues explicitly
+	// after the inventory upsert chain completes.
+	if err := w.store.Queries().EnqueueAllDynamicDeviceGroups(ctx, "device_"+payload.DeviceID+"_changed"); err != nil {
+		w.logger.Warn("failed to enqueue dynamic device groups after inventory update",
+			"device_id", payload.DeviceID,
+			"error", err,
+		)
+	}
+
+	// Immediately evaluate dynamic groups queued by the inventory update above.
 	// Without this, groups are only evaluated on the periodic ticker (default 1h).
 	// Single-batch invocation here — the caller doesn't drain to
 	// completion the way cmd/control does. The `more` flag is
