@@ -47,6 +47,28 @@ func (q *Queries) ClaimCompliancePolicyForRuleMutation(ctx context.Context, arg 
 	return result.RowsAffected(), nil
 }
 
+const complianceResultCounts = `-- name: ComplianceResultCounts :one
+SELECT
+    COUNT(*)::INTEGER AS total,
+    COUNT(*) FILTER (WHERE compliant = TRUE)::INTEGER AS passing
+FROM compliance_results_projection
+WHERE device_id = $1
+`
+
+type ComplianceResultCountsRow struct {
+	Total   int32 `json:"total"`
+	Passing int32 `json:"passing"`
+}
+
+// Wave D: powers the no-policies fallback (recalculate_device_compliance).
+// Two filtered counts over compliance_results_projection in one query.
+func (q *Queries) ComplianceResultCounts(ctx context.Context, deviceID string) (ComplianceResultCountsRow, error) {
+	row := q.db.QueryRow(ctx, complianceResultCounts, deviceID)
+	var i ComplianceResultCountsRow
+	err := row.Scan(&i.Total, &i.Passing)
+	return i, err
+}
+
 const countCompliancePolicies = `-- name: CountCompliancePolicies :one
 SELECT COUNT(*) FROM compliance_policies_projection
 WHERE is_deleted = FALSE
@@ -121,6 +143,28 @@ DELETE FROM compliance_policy_rules_projection WHERE policy_id = $1
 func (q *Queries) DeleteCompliancePolicyRulesByPolicy(ctx context.Context, policyID string) error {
 	_, err := q.db.Exec(ctx, deleteCompliancePolicyRulesByPolicy, policyID)
 	return err
+}
+
+const getComplianceEvaluationFirstFailedAt = `-- name: GetComplianceEvaluationFirstFailedAt :one
+SELECT first_failed_at FROM compliance_policy_evaluation_projection
+WHERE device_id = $1 AND policy_id = $2 AND action_id = $3
+`
+
+type GetComplianceEvaluationFirstFailedAtParams struct {
+	DeviceID string `json:"device_id"`
+	PolicyID string `json:"policy_id"`
+	ActionID string `json:"action_id"`
+}
+
+// Wave D: preserves the PL/pgSQL "first-failed timestamp sticks across
+// repeated NON_COMPLIANT results" invariant. The evaluator reads the
+// existing value before writing; nil result means the rule transitioned
+// from compliant (or never observed) to non-compliant this round.
+func (q *Queries) GetComplianceEvaluationFirstFailedAt(ctx context.Context, arg GetComplianceEvaluationFirstFailedAtParams) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, getComplianceEvaluationFirstFailedAt, arg.DeviceID, arg.PolicyID, arg.ActionID)
+	var first_failed_at *time.Time
+	err := row.Scan(&first_failed_at)
+	return first_failed_at, err
 }
 
 const getCompliancePolicyByID = `-- name: GetCompliancePolicyByID :one
@@ -233,6 +277,31 @@ func (q *Queries) GetDeviceCompliancePolicyEvaluations(ctx context.Context, devi
 		return nil, err
 	}
 	return items, nil
+}
+
+const getLatestComplianceResultForAction = `-- name: GetLatestComplianceResultForAction :one
+SELECT compliant, checked_at FROM compliance_results_projection
+WHERE device_id = $1 AND action_id = $2
+`
+
+type GetLatestComplianceResultForActionParams struct {
+	DeviceID string `json:"device_id"`
+	ActionID string `json:"action_id"`
+}
+
+type GetLatestComplianceResultForActionRow struct {
+	Compliant bool      `json:"compliant"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// Wave D: per-rule probe inside the evaluator loop. Returns whether
+// the most recent compliance check for (device, action) was compliant
+// and when it was checked.
+func (q *Queries) GetLatestComplianceResultForAction(ctx context.Context, arg GetLatestComplianceResultForActionParams) (GetLatestComplianceResultForActionRow, error) {
+	row := q.db.QueryRow(ctx, getLatestComplianceResultForAction, arg.DeviceID, arg.ActionID)
+	var i GetLatestComplianceResultForActionRow
+	err := row.Scan(&i.Compliant, &i.CheckedAt)
+	return i, err
 }
 
 const insertCompliancePolicyProjection = `-- name: InsertCompliancePolicyProjection :exec
@@ -374,6 +443,102 @@ func (q *Queries) ListCompliancePolicyRules(ctx context.Context, policyID string
 	return items, nil
 }
 
+const listComplianceRulesForDevice = `-- name: ListComplianceRulesForDevice :many
+
+SELECT r.policy_id, r.action_id, r.grace_period_hours
+FROM compliance_policy_rules_projection r
+JOIN compliance_policies_projection p
+    ON p.id = r.policy_id AND p.is_deleted = FALSE
+JOIN assignments_projection a
+    ON a.source_type = 'compliance_policy'
+       AND a.source_id = r.policy_id
+       AND a.is_deleted = FALSE
+WHERE (
+    (a.target_type = 'device' AND a.target_id = $1)
+    OR (a.target_type = 'device_group' AND a.target_id IN (
+        SELECT group_id FROM device_group_members_projection
+        WHERE device_id = $1
+    ))
+)
+`
+
+type ListComplianceRulesForDeviceRow struct {
+	PolicyID         string `json:"policy_id"`
+	ActionID         string `json:"action_id"`
+	GracePeriodHours int32  `json:"grace_period_hours"`
+}
+
+// ============================================================================
+// Wave D compliance-evaluator reads (manchtools/power-manage-server#242).
+// ============================================================================
+//
+// The PL/pgSQL evaluate_device_compliance_policies + recalculate_device_compliance
+// + reevaluate_compliance_policy_devices were dropped under Wave D. The
+// replacements in internal/compliance consume the queries below.
+// Wave D: returns every (policy_id, action_id, grace_period_hours)
+// rule applicable to a device via direct + device_group assignments
+// of compliance policies. Soft-deleted policies are excluded so a
+// pending re-assignment doesn't pollute the evaluation cycle.
+func (q *Queries) ListComplianceRulesForDevice(ctx context.Context, targetID string) ([]ListComplianceRulesForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listComplianceRulesForDevice, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListComplianceRulesForDeviceRow{}
+	for rows.Next() {
+		var i ListComplianceRulesForDeviceRow
+		if err := rows.Scan(&i.PolicyID, &i.ActionID, &i.GracePeriodHours); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDevicesForCompliancePolicy = `-- name: ListDevicesForCompliancePolicy :many
+SELECT a.target_id AS device_id
+FROM assignments_projection a
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = $1
+  AND a.target_type = 'device'
+  AND a.is_deleted = FALSE
+UNION
+SELECT dgm.device_id
+FROM assignments_projection a
+JOIN device_group_members_projection dgm ON dgm.group_id = a.target_id
+WHERE a.source_type = 'compliance_policy'
+  AND a.source_id = $1
+  AND a.target_type = 'device_group'
+  AND a.is_deleted = FALSE
+`
+
+// Wave D: fan-out target list for ReevaluatePolicy. Mirrors the SQL
+// inside reevaluate_compliance_policy_devices — direct device targets
+// UNIONed with members of every targeted device group.
+func (q *Queries) ListDevicesForCompliancePolicy(ctx context.Context, sourceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDevicesForCompliancePolicy, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recountCompliancePolicyRules = `-- name: RecountCompliancePolicyRules :exec
 UPDATE compliance_policies_projection
 SET rule_count = (
@@ -391,21 +556,6 @@ WHERE id = $1
 // re-stamping cannot regress.
 func (q *Queries) RecountCompliancePolicyRules(ctx context.Context, policyID string) error {
 	_, err := q.db.Exec(ctx, recountCompliancePolicyRules, policyID)
-	return err
-}
-
-const reevaluateCompliancePolicyDevices = `-- name: ReevaluateCompliancePolicyDevices :exec
-SELECT reevaluate_compliance_policy_devices($1)
-`
-
-// CompliancePolicyDeleted / CompliancePolicyRuleRemoved handler —
-// final cascade step. Thin shim around the still-PL/pgSQL
-// reevaluate_compliance_policy_devices(p_policy_id) function defined
-// in migration 003. Per #136 the eval engine itself stays in PL/pgSQL
-// until a later phase; the listener just calls into it so the per-
-// device compliance status reflects the rule mutation.
-func (q *Queries) ReevaluateCompliancePolicyDevices(ctx context.Context, pPolicyID string) error {
-	_, err := q.db.Exec(ctx, reevaluateCompliancePolicyDevices, pPolicyID)
 	return err
 }
 
@@ -515,6 +665,79 @@ func (q *Queries) UpdateCompliancePolicyRuleGracePeriod(ctx context.Context, arg
 		arg.ActionID,
 		arg.GracePeriodHours,
 		arg.ProjectionVersion,
+	)
+	return err
+}
+
+const updateDeviceComplianceSummary = `-- name: UpdateDeviceComplianceSummary :exec
+UPDATE devices_projection SET
+    compliance_status     = $2,
+    compliance_checked_at = $3,
+    compliance_total      = $4,
+    compliance_passing    = $5
+WHERE id = $1
+`
+
+type UpdateDeviceComplianceSummaryParams struct {
+	ID                  string     `json:"id"`
+	ComplianceStatus    int32      `json:"compliance_status"`
+	ComplianceCheckedAt *time.Time `json:"compliance_checked_at"`
+	ComplianceTotal     int32      `json:"compliance_total"`
+	CompliancePassing   int32      `json:"compliance_passing"`
+}
+
+// Wave D: writes the denormalized compliance quadruple on
+// devices_projection. Used by both code paths — the policy-evaluation
+// finaliser and the no-policies fallback. checked_at is the supplied
+// time so the recompute and the per-rule writes agree on a single
+// timestamp.
+func (q *Queries) UpdateDeviceComplianceSummary(ctx context.Context, arg UpdateDeviceComplianceSummaryParams) error {
+	_, err := q.db.Exec(ctx, updateDeviceComplianceSummary,
+		arg.ID,
+		arg.ComplianceStatus,
+		arg.ComplianceCheckedAt,
+		arg.ComplianceTotal,
+		arg.CompliancePassing,
+	)
+	return err
+}
+
+const upsertComplianceEvaluation = `-- name: UpsertComplianceEvaluation :exec
+INSERT INTO compliance_policy_evaluation_projection (
+    device_id, policy_id, action_id, compliant, first_failed_at,
+    status, checked_at, projection_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, 0)
+ON CONFLICT (device_id, policy_id, action_id) DO UPDATE SET
+    compliant       = EXCLUDED.compliant,
+    first_failed_at = EXCLUDED.first_failed_at,
+    status          = EXCLUDED.status,
+    checked_at      = EXCLUDED.checked_at
+`
+
+type UpsertComplianceEvaluationParams struct {
+	DeviceID      string     `json:"device_id"`
+	PolicyID      string     `json:"policy_id"`
+	ActionID      string     `json:"action_id"`
+	Compliant     bool       `json:"compliant"`
+	FirstFailedAt *time.Time `json:"first_failed_at"`
+	Status        int32      `json:"status"`
+	CheckedAt     *time.Time `json:"checked_at"`
+}
+
+// Wave D: write one row of compliance_policy_evaluation_projection.
+// The Go evaluator resolves first_failed_at upstream — passes nil on a
+// compliant transition (clears the column) and the preserved-or-fresh
+// timestamp on a failing one — so the UPSERT writes the value verbatim
+// without a COALESCE-on-UPDATE branch.
+func (q *Queries) UpsertComplianceEvaluation(ctx context.Context, arg UpsertComplianceEvaluationParams) error {
+	_, err := q.db.Exec(ctx, upsertComplianceEvaluation,
+		arg.DeviceID,
+		arg.PolicyID,
+		arg.ActionID,
+		arg.Compliant,
+		arg.FirstFailedAt,
+		arg.Status,
+		arg.CheckedAt,
 	)
 	return err
 }

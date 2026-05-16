@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/compliance"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -110,7 +111,7 @@ func applyComplianceResultUpdated(ctx context.Context, q *store.Queries, e store
 	// per-action result mutation: the PL/pgSQL function recomputes
 	// the device's pass/fail/grace verdict by aggregating across
 	// every result + every assigned policy's grace window.
-	return q.EvaluateDeviceCompliancePolicies(ctx, payload.DeviceID)
+	return compliance.EvaluateInTx(ctx, q, payload.DeviceID)
 }
 
 func applyComplianceResultRemoved(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -140,5 +141,5 @@ func applyComplianceResultRemoved(ctx context.Context, q *store.Queries, e store
 	if n == 0 {
 		return nil
 	}
-	return q.EvaluateDeviceCompliancePolicies(ctx, payload.DeviceID)
+	return compliance.EvaluateInTx(ctx, q, payload.DeviceID)
 }
