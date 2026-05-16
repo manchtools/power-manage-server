@@ -402,6 +402,19 @@ func (q *Queries) GetUserPermissionsWithGroups(ctx context.Context, userID strin
 	return items, nil
 }
 
+const hasDynamicUserGroupQueueEntries = `-- name: HasDynamicUserGroupQueueEntries :one
+SELECT EXISTS (SELECT 1 FROM dynamic_user_group_evaluation_queue LIMIT 1)::BOOLEAN AS has_more
+`
+
+// Wave C.4: cheap EXISTS probe for the `more` flag — same semantic as
+// HasDynamicDeviceGroupQueueEntries.
+func (q *Queries) HasDynamicUserGroupQueueEntries(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, hasDynamicUserGroupQueueEntries)
+	var has_more bool
+	err := row.Scan(&has_more)
+	return has_more, err
+}
+
 const insertUserGroupMember = `-- name: InsertUserGroupMember :exec
 INSERT INTO user_group_members_projection (
     group_id, user_id, added_at, added_by, projection_version
@@ -539,6 +552,35 @@ func (q *Queries) IsUserInGroup(ctx context.Context, arg IsUserInGroupParams) (b
 	var is_member bool
 	err := row.Scan(&is_member)
 	return is_member, err
+}
+
+const listDynamicUserGroupQueueBatch = `-- name: ListDynamicUserGroupQueueBatch :many
+SELECT group_id FROM dynamic_user_group_evaluation_queue
+ORDER BY queued_at
+LIMIT $1
+`
+
+// Wave C.4: returns the next batch of queued user-group IDs for the
+// in-process drain loop, oldest first. Replaces the SELECT inside the
+// PL/pgSQL evaluate_queued_dynamic_user_groups function.
+func (q *Queries) ListDynamicUserGroupQueueBatch(ctx context.Context, limit int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDynamicUserGroupQueueBatch, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listInheritedRolesByUserIDs = `-- name: ListInheritedRolesByUserIDs :many

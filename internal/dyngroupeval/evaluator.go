@@ -201,6 +201,75 @@ func (e *Evaluator) EvaluateUserGroup(ctx context.Context, groupID string) error
 	})
 }
 
+// DrainResult is the per-batch summary the drain loop returns. Count
+// is the number of groups evaluated; More is true when the queue still
+// has rows after this batch (the caller should iterate again).
+type DrainResult struct {
+	Count int32
+	More  bool
+}
+
+// device-group drain batch size matches the PL/pgSQL evaluate_queued_dynamic_groups
+// constant (audit F035 / #168 wave). User-group drain uses 100 — historical
+// asymmetry the PL/pgSQL function had; keep the parity until tuning data
+// suggests otherwise.
+const (
+	deviceQueueBatchLimit = 1000
+	userQueueBatchLimit   = 100
+)
+
+// DrainDeviceGroupQueue evaluates the next batch of device-group queue
+// entries and returns (count, more). Per-group failures are logged and
+// skipped — one bad group should not block evaluation of the rest of
+// the batch.
+//
+// Replaces the PL/pgSQL evaluate_queued_dynamic_groups call. Callers
+// loop until More is false (see cmd/control/drainDynamicQueue).
+func (e *Evaluator) DrainDeviceGroupQueue(ctx context.Context) (DrainResult, error) {
+	q := e.store.Queries()
+	ids, err := q.ListDynamicDeviceGroupQueueBatch(ctx, deviceQueueBatchLimit)
+	if err != nil {
+		return DrainResult{}, fmt.Errorf("dyngroupeval: list device-group queue batch: %w", err)
+	}
+	var count int32
+	for _, id := range ids {
+		if err := e.EvaluateDeviceGroup(ctx, id); err != nil {
+			e.logger.Warn("dyngroupeval: failed to evaluate queued device group; skipping",
+				"group_id", id, "error", err)
+			continue
+		}
+		count++
+	}
+	more, err := q.HasDynamicDeviceGroupQueueEntries(ctx)
+	if err != nil {
+		return DrainResult{}, fmt.Errorf("dyngroupeval: probe device-group queue: %w", err)
+	}
+	return DrainResult{Count: count, More: more}, nil
+}
+
+// DrainUserGroupQueue is the user-group sibling of DrainDeviceGroupQueue.
+func (e *Evaluator) DrainUserGroupQueue(ctx context.Context) (DrainResult, error) {
+	q := e.store.Queries()
+	ids, err := q.ListDynamicUserGroupQueueBatch(ctx, userQueueBatchLimit)
+	if err != nil {
+		return DrainResult{}, fmt.Errorf("dyngroupeval: list user-group queue batch: %w", err)
+	}
+	var count int32
+	for _, id := range ids {
+		if err := e.EvaluateUserGroup(ctx, id); err != nil {
+			e.logger.Warn("dyngroupeval: failed to evaluate queued user group; skipping",
+				"group_id", id, "error", err)
+			continue
+		}
+		count++
+	}
+	more, err := q.HasDynamicUserGroupQueueEntries(ctx)
+	if err != nil {
+		return DrainResult{}, fmt.Errorf("dyngroupeval: probe user-group queue: %w", err)
+	}
+	return DrainResult{Count: count, More: more}, nil
+}
+
 // CountMatchingDevices returns the number of non-deleted devices that
 // match the given query. Used by the ValidateDynamicQuery RPC's preview
 // count. Parse failure is surfaced as an error so the caller can
