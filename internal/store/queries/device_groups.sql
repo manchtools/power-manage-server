@@ -60,12 +60,10 @@ JOIN device_group_members_projection m ON g.id = m.group_id
 WHERE m.device_id = $1 AND g.is_deleted = FALSE;
 
 -- name: ListDevicesForDynamicEvaluation :many
--- All non-deleted devices' (id, labels) for the in-process dynamic-group
--- evaluator (Wave C.3). Returning the JSONB labels column is still
--- correct pre-E.4; once labels move to the device_labels child table
--- this query becomes an id-only list and labels load via the child
--- repo.
-SELECT id, labels FROM devices_projection
+-- Wave E.4: labels moved to device_labels — this query is now id-only.
+-- The in-process evaluator follows up with ListAllDeviceLabels and
+-- joins the two in Go to build per-device DeviceContext.Labels maps.
+SELECT id FROM devices_projection
 WHERE is_deleted = FALSE;
 
 -- Dynamic Group queries

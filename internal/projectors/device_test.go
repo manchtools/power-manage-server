@@ -46,19 +46,19 @@ func TestDeviceRegisteredFromEvent_Pure(t *testing.T) {
 		assert.Equal(t, "abc123", *got.CertFingerprint)
 		require.NotNil(t, got.RegistrationTokenID)
 		assert.Equal(t, "tok-1", *got.RegistrationTokenID)
-		assert.Contains(t, string(got.Labels), "prod")
+		assert.Equal(t, "prod", got.Labels["env"])
 		require.NotNil(t, got.AssignedUserID)
 		assert.Equal(t, "user-A", *got.AssignedUserID)
 	})
 
-	t.Run("defaults: missing hostname → '', missing labels → '{}', missing cert/assigned → nil", func(t *testing.T) {
+	t.Run("defaults: missing hostname → '', missing labels → nil map, missing cert/assigned → nil", func(t *testing.T) {
 		got, err := projectors.DeviceRegisteredFromEvent(store.PersistedEvent{
 			StreamType: "device", StreamID: "dev-2", EventType: "DeviceRegistered",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, "", got.Hostname)
-		assert.JSONEq(t, "{}", string(got.Labels))
+		assert.Empty(t, got.Labels)
 		assert.Nil(t, got.CertFingerprint)
 		assert.Nil(t, got.AssignedUserID)
 	})
@@ -193,6 +193,18 @@ func TestDeviceCertRenewedFromEvent_Pure(t *testing.T) {
 	})
 }
 
+// labelRowsAsMap flattens the sqlc ListDeviceLabels result into a
+// map[key]value for terse test assertions. Wave E.4 normalized labels
+// out of the JSONB column into device_labels; the tests grew this
+// helper alongside that move.
+func labelRowsAsMap(rows []db.ListDeviceLabelsRow) map[string]string {
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.Key] = r.Value
+	}
+	return out
+}
+
 // TestDeviceLabelsUpdatedFromEvent_Pure — missing labels stays nil so
 // the SQL COALESCE preserves the existing column value.
 func TestDeviceLabelsUpdatedFromEvent_Pure(t *testing.T) {
@@ -202,15 +214,17 @@ func TestDeviceLabelsUpdatedFromEvent_Pure(t *testing.T) {
 			Data: jsonOrFail(t, map[string]any{"labels": map[string]any{"env": "prod"}}),
 		})
 		require.NoError(t, err)
-		assert.Contains(t, string(got.Labels), "prod")
+		assert.True(t, got.HasLabels)
+		assert.Equal(t, "prod", got.Labels["env"])
 	})
 
-	t.Run("missing labels stays nil", func(t *testing.T) {
+	t.Run("missing labels => HasLabels false (preserve existing rows)", func(t *testing.T) {
 		got, err := projectors.DeviceLabelsUpdatedFromEvent(store.PersistedEvent{
 			StreamType: "device", StreamID: "dev-1", EventType: "DeviceLabelsUpdated",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
 		require.NoError(t, err)
+		assert.False(t, got.HasLabels)
 		assert.Nil(t, got.Labels)
 	})
 
@@ -455,38 +469,42 @@ func TestDeviceListener_FullLifecycle(t *testing.T) {
 	require.NotNil(t, got.CertFingerprint)
 	assert.Equal(t, "renewed-fp", *got.CertFingerprint)
 
-	// 5. LabelsUpdated — REPLACES the entire labels JSONB.
+	// 5. LabelsUpdated — REPLACES the entire label set in device_labels.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "device", StreamID: deviceID, EventType: "DeviceLabelsUpdated",
 		Data:      map[string]any{"labels": map[string]any{"env": "prod", "region": "eu"}},
 		ActorType: "user", ActorID: "u",
 	}))
-	got, err = st.Queries().GetDeviceByID(ctx, deviceLookup(deviceID))
+	labels, err := st.Queries().ListDeviceLabels(ctx, deviceID)
 	require.NoError(t, err)
-	assert.Contains(t, string(got.Labels), "prod")
-	assert.Contains(t, string(got.Labels), "eu")
+	labelMap := labelRowsAsMap(labels)
+	assert.Equal(t, "prod", labelMap["env"])
+	assert.Equal(t, "eu", labelMap["region"])
 
-	// 6. LabelSet — JSONB merge keeps existing labels and adds the new key.
+	// 6. LabelSet — UPSERT keeps existing labels and adds the new key.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "device", StreamID: deviceID, EventType: "DeviceLabelSet",
 		Data:      map[string]any{"key": "tier", "value": "gold"},
 		ActorType: "user", ActorID: "u",
 	}))
-	got, err = st.Queries().GetDeviceByID(ctx, deviceLookup(deviceID))
+	labels, err = st.Queries().ListDeviceLabels(ctx, deviceID)
 	require.NoError(t, err)
-	assert.Contains(t, string(got.Labels), "gold", "DeviceLabelSet must merge new key into labels")
-	assert.Contains(t, string(got.Labels), "prod", "DeviceLabelSet must preserve existing keys")
+	labelMap = labelRowsAsMap(labels)
+	assert.Equal(t, "gold", labelMap["tier"], "DeviceLabelSet must add the new key")
+	assert.Equal(t, "prod", labelMap["env"], "DeviceLabelSet must preserve existing keys")
 
-	// 7. LabelRemoved — drops the key from labels.
+	// 7. LabelRemoved — drops the key from device_labels.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "device", StreamID: deviceID, EventType: "DeviceLabelRemoved",
 		Data:      map[string]any{"key": "env"},
 		ActorType: "user", ActorID: "u",
 	}))
-	got, err = st.Queries().GetDeviceByID(ctx, deviceLookup(deviceID))
+	labels, err = st.Queries().ListDeviceLabels(ctx, deviceID)
 	require.NoError(t, err)
-	assert.NotContains(t, string(got.Labels), `"env"`, "DeviceLabelRemoved must drop the named key")
-	assert.Contains(t, string(got.Labels), "gold", "DeviceLabelRemoved must preserve other keys")
+	labelMap = labelRowsAsMap(labels)
+	_, hasEnv := labelMap["env"]
+	assert.False(t, hasEnv, "DeviceLabelRemoved must drop the named key")
+	assert.Equal(t, "gold", labelMap["tier"], "DeviceLabelRemoved must preserve other keys")
 
 	// 8. SyncIntervalSet — stamps the per-device override.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{

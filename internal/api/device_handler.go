@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -554,12 +553,8 @@ func (h *DeviceHandler) deviceToProtoWithAssignments(d store.Device, assignedUse
 		device.CertExpiresAt = timestamppb.New(*d.CertNotAfter)
 	}
 
-	// Parse labels from JSONB
 	if len(d.Labels) > 0 {
-		var labels map[string]string
-		if err := json.Unmarshal(d.Labels, &labels); err == nil {
-			device.Labels = labels
-		}
+		device.Labels = d.Labels
 	}
 
 	// Compliance fields

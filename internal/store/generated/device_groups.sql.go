@@ -494,33 +494,26 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 }
 
 const listDevicesForDynamicEvaluation = `-- name: ListDevicesForDynamicEvaluation :many
-SELECT id, labels FROM devices_projection
+SELECT id FROM devices_projection
 WHERE is_deleted = FALSE
 `
 
-type ListDevicesForDynamicEvaluationRow struct {
-	ID     string `json:"id"`
-	Labels []byte `json:"labels"`
-}
-
-// All non-deleted devices' (id, labels) for the in-process dynamic-group
-// evaluator (Wave C.3). Returning the JSONB labels column is still
-// correct pre-E.4; once labels move to the device_labels child table
-// this query becomes an id-only list and labels load via the child
-// repo.
-func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]ListDevicesForDynamicEvaluationRow, error) {
+// Wave E.4: labels moved to device_labels — this query is now id-only.
+// The in-process evaluator follows up with ListAllDeviceLabels and
+// joins the two in Go to build per-device DeviceContext.Labels maps.
+func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]string, error) {
 	rows, err := q.db.Query(ctx, listDevicesForDynamicEvaluation)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDevicesForDynamicEvaluationRow{}
+	items := []string{}
 	for rows.Next() {
-		var i ListDevicesForDynamicEvaluationRow
-		if err := rows.Scan(&i.ID, &i.Labels); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -529,7 +522,7 @@ func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]ListDe
 }
 
 const listDevicesInGroup = `-- name: ListDevicesInGroup :many
-SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
 JOIN device_group_members_projection m ON d.id = m.device_id
 WHERE m.group_id = $1 AND d.is_deleted = FALSE
 ORDER BY d.hostname ASC
@@ -553,7 +546,6 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 			&i.RegisteredAt,
 			&i.LastSeenAt,
 			&i.RegistrationTokenID,
-			&i.Labels,
 			&i.IsDeleted,
 			&i.ProjectionVersion,
 			&i.SyncIntervalMinutes,

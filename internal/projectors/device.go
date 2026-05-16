@@ -10,11 +10,33 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// defaultDeviceLabels mirrors the PL/pgSQL projector's
-// `COALESCE(event.data->'labels', '{}')` fallback for
-// DeviceRegistered. Held as raw bytes so the listener can pass it
-// straight to the JSONB column without an extra marshal.
-var defaultDeviceLabels = []byte(`{}`)
+// decodeLabelsMap accepts the JSONB-encoded {key:value} bytes the
+// emitter put on the wire and returns the parallel map[string]string
+// the device_labels child table consumes. Returns nil on empty input
+// or a non-object payload so the listener can skip the child-write
+// path cleanly. Non-string values are coerced via fmt.Sprint to match
+// the PL/pgSQL `->>` coercion that always returned TEXT.
+func decodeLabelsMap(raw []byte) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var any map[string]any
+	if err := json.Unmarshal(raw, &any); err != nil || len(any) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(any))
+	for k, v := range any {
+		switch x := v.(type) {
+		case string:
+			out[k] = x
+		case nil:
+			out[k] = ""
+		default:
+			out[k] = fmt.Sprint(x)
+		}
+	}
+	return out
+}
 
 // DeviceRegisteredPayload mirrors the fields the deleted PL/pgSQL
 // project_device_event() read out of a DeviceRegistered event:
@@ -38,7 +60,7 @@ type DeviceRegisteredPayload struct {
 	CertFingerprint     *string
 	CertNotAfter        *time.Time
 	RegistrationTokenID *string
-	Labels              []byte
+	Labels              map[string]string
 	AssignedUserID      *string
 }
 
@@ -61,7 +83,6 @@ func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload,
 		CertFingerprint:     raw.CertFingerprint,
 		RegistrationTokenID: raw.RegistrationTokenID,
 		AssignedUserID:      raw.AssignedUserID,
-		Labels:              defaultDeviceLabels,
 	}
 	notAfter, err := parseOptionalRFC3339(raw.CertNotAfter)
 	if err != nil {
@@ -71,12 +92,7 @@ func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload,
 	if raw.Hostname != nil {
 		out.Hostname = *raw.Hostname
 	}
-	if len(raw.Labels) > 0 {
-		// Preserve wire bytes verbatim so the listener writes the same
-		// JSONB the emitter sent (matches the PL/pgSQL projector's
-		// `event.data->'labels'`).
-		out.Labels = []byte(raw.Labels)
-	}
+	out.Labels = decodeLabelsMap(raw.Labels)
 	return out, nil
 }
 
@@ -207,18 +223,24 @@ func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayloa
 	}, nil
 }
 
-// DeviceLabelsUpdatedPayload mirrors the PL/pgSQL projector's
-// `COALESCE(event.data->'labels', labels)` for DeviceLabelsUpdated:
-// missing key preserves the existing labels JSONB, present key
-// REPLACES the entire blob.
+// DeviceLabelsUpdatedPayload carries the new label set for
+// DeviceLabelsUpdated. The listener clears the existing device_labels
+// rows for the device and inserts every (key, value) here in one
+// transaction — matches the PL/pgSQL projector's "REPLACE the entire
+// JSONB blob" semantics. HasLabels distinguishes "labels key was
+// missing on the wire — preserve" from "labels key was present and
+// empty — clear all".
 type DeviceLabelsUpdatedPayload struct {
-	ID     string
-	Labels []byte
+	ID        string
+	Labels    map[string]string
+	HasLabels bool
 }
 
-// DeviceLabelsUpdatedFromEvent decodes DeviceLabelsUpdated. Empty
-// labels => nil byte slice; the SQL COALESCE will preserve the
-// existing row value.
+// DeviceLabelsUpdatedFromEvent decodes DeviceLabelsUpdated. Absent
+// labels key on the wire => HasLabels=false; the listener will skip the
+// child-table writes (preserves the existing rows). Present labels =>
+// HasLabels=true and Labels carries the new set (possibly empty, which
+// means clear all).
 func DeviceLabelsUpdatedFromEvent(e store.PersistedEvent) (DeviceLabelsUpdatedPayload, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelsUpdated) {
 		return DeviceLabelsUpdatedPayload{}, ErrIgnoredEvent
@@ -232,7 +254,8 @@ func DeviceLabelsUpdatedFromEvent(e store.PersistedEvent) (DeviceLabelsUpdatedPa
 		return DeviceLabelsUpdatedPayload{}, fmt.Errorf("projector: invalid DeviceLabelsUpdated payload: %w", err)
 	}
 	if len(raw.Labels) > 0 {
-		out.Labels = []byte(raw.Labels)
+		out.Labels = decodeLabelsMap(raw.Labels)
+		out.HasLabels = true
 	}
 	return out, nil
 }

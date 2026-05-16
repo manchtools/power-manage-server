@@ -133,10 +133,23 @@ func applyDeviceRegistered(ctx context.Context, q *store.Queries, e store.Persis
 		CertNotAfter:        payload.CertNotAfter,
 		RegisteredAt:        &occurredAt,
 		RegistrationTokenID: payload.RegistrationTokenID,
-		Labels:              payload.Labels,
 		ProjectionVersion:   deref(e.SequenceNum),
 	}); err != nil {
 		return err
+	}
+	// Initial label rows for a freshly-registered device. ON CONFLICT
+	// inside SetDeviceLabel makes the re-register revival path safe —
+	// we keep whatever labels were already on the row (PL/pgSQL
+	// behaviour: ON CONFLICT DO UPDATE kept the EXCLUDED labels, so
+	// the new payload's labels are now applied per-key instead).
+	for k, v := range payload.Labels {
+		if err := q.SetDeviceLabel(ctx, db.SetDeviceLabelParams{
+			DeviceID: payload.ID,
+			Key:      k,
+			Value:    v,
+		}); err != nil {
+			return err
+		}
 	}
 	if payload.AssignedUserID == nil || *payload.AssignedUserID == "" {
 		return nil
@@ -223,12 +236,25 @@ func applyDeviceLabelsUpdated(ctx context.Context, q *store.Queries, e store.Per
 		}
 		return err
 	}
-	if _, err := q.UpdateDeviceLabelsProjection(ctx, db.UpdateDeviceLabelsProjectionParams{
-		ID:                payload.ID,
-		Labels:            payload.Labels,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
+	if !payload.HasLabels {
+		// "labels" key absent on the wire — preserve existing rows.
+		return nil
+	}
+	advanced, err := advanceDeviceVersion(ctx, q, payload.ID, e.SequenceNum)
+	if err != nil || !advanced {
 		return err
+	}
+	if err := q.ClearDeviceLabels(ctx, payload.ID); err != nil {
+		return err
+	}
+	for k, v := range payload.Labels {
+		if err := q.SetDeviceLabel(ctx, db.SetDeviceLabelParams{
+			DeviceID: payload.ID,
+			Key:      k,
+			Value:    v,
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -241,15 +267,15 @@ func applyDeviceLabelSet(ctx context.Context, q *store.Queries, e store.Persiste
 		}
 		return err
 	}
-	if _, err := q.SetDeviceLabelKey(ctx, db.SetDeviceLabelKeyParams{
-		ID:                payload.ID,
-		Key:               payload.Key,
-		Value:             payload.Value,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
+	advanced, err := advanceDeviceVersion(ctx, q, payload.ID, e.SequenceNum)
+	if err != nil || !advanced {
 		return err
 	}
-	return nil
+	return q.SetDeviceLabel(ctx, db.SetDeviceLabelParams{
+		DeviceID: payload.ID,
+		Key:      payload.Key,
+		Value:    payload.Value,
+	})
 }
 
 func applyDeviceLabelRemoved(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
@@ -260,14 +286,32 @@ func applyDeviceLabelRemoved(ctx context.Context, q *store.Queries, e store.Pers
 		}
 		return err
 	}
-	if _, err := q.RemoveDeviceLabelKey(ctx, db.RemoveDeviceLabelKeyParams{
-		ID:                payload.ID,
-		Key:               payload.Key,
-		ProjectionVersion: deref(e.SequenceNum),
-	}); err != nil {
+	advanced, err := advanceDeviceVersion(ctx, q, payload.ID, e.SequenceNum)
+	if err != nil || !advanced {
 		return err
 	}
-	return nil
+	return q.RemoveDeviceLabel(ctx, db.RemoveDeviceLabelParams{
+		DeviceID: payload.ID,
+		Key:      payload.Key,
+	})
+}
+
+// advanceDeviceVersion bumps devices_projection.projection_version to
+// sequenceNum if it was lower. Returns (true, nil) when the bump
+// succeeded — meaning the event is newer than the row's last-applied
+// state, so the caller should proceed with the child-table change.
+// Returns (false, nil) when the event is stale and must be skipped
+// (the corresponding label row would otherwise be overwritten by an
+// out-of-order replay).
+func advanceDeviceVersion(ctx context.Context, q *store.Queries, deviceID string, sequenceNum *int64) (bool, error) {
+	n, err := q.AdvanceDeviceProjectionVersion(ctx, db.AdvanceDeviceProjectionVersionParams{
+		ID:                deviceID,
+		ProjectionVersion: deref(sequenceNum),
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func applyDeviceDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

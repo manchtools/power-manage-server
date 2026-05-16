@@ -181,6 +181,12 @@ type DeviceInventory struct {
 	CollectedAt time.Time `json:"collected_at"`
 }
 
+type DeviceLabel struct {
+	DeviceID string `json:"device_id"`
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+}
+
 type DevicesProjection struct {
 	ID                  string     `json:"id"`
 	Hostname            string     `json:"hostname"`
@@ -190,7 +196,6 @@ type DevicesProjection struct {
 	RegisteredAt        *time.Time `json:"registered_at"`
 	LastSeenAt          *time.Time `json:"last_seen_at"`
 	RegistrationTokenID *string    `json:"registration_token_id"`
-	Labels              []byte     `json:"labels"`
 	IsDeleted           bool       `json:"is_deleted"`
 	ProjectionVersion   int64      `json:"projection_version"`
 	SyncIntervalMinutes int32      `json:"sync_interval_minutes"`

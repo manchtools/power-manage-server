@@ -863,13 +863,11 @@ func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
 	return total, nil
 }
 
-// FlattenLabels converts a JSONB labels map to a space-separated "key=value" string for TEXT search.
-func FlattenLabels(labelsJSON []byte) string {
-	if len(labelsJSON) == 0 {
-		return ""
-	}
-	var labels map[string]string
-	if err := json.Unmarshal(labelsJSON, &labels); err != nil {
+// FlattenLabels converts a labels map to a space-separated "key=value"
+// string for TEXT search. Wave E.4 dropped the JSONB intermediate;
+// callers pass the typed map directly.
+func FlattenLabels(labels map[string]string) string {
+	if len(labels) == 0 {
 		return ""
 	}
 	var parts []string
