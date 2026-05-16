@@ -442,7 +442,15 @@ func (e *Evaluator) loadInventoryFields(ctx context.Context, deviceID string) ma
 	byTable := make(map[string]map[string]string, len(rows))
 	for _, r := range rows {
 		var arr []map[string]any
-		if err := json.Unmarshal(r.Rows, &arr); err != nil || len(arr) == 0 {
+		if err := json.Unmarshal(r.Rows, &arr); err != nil {
+			// Corrupt inventory blob — surface it instead of silently
+			// dropping the row. The device.* predicate that referenced
+			// this table will evaluate as absent.
+			e.logger.Warn("dyngroupeval: skipping corrupt inventory row",
+				"device_id", deviceID, "table", r.TableName, "error", err)
+			continue
+		}
+		if len(arr) == 0 {
 			continue
 		}
 		colVals := make(map[string]string)

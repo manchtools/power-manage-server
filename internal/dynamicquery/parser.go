@@ -47,12 +47,36 @@ func Parse(query string) (Expr, error) {
 	return expr, nil
 }
 
+// maxParseDepth caps recursion depth across parseOr / parseAnd /
+// parseNot / parsePrimary. Adversarial inputs like `not not not ...`
+// or `(((((... )))))` would otherwise consume one Go stack frame per
+// nesting level — at ~20 KB per frame, ~100 K nested tokens (well
+// within the 10 K-char query length used in production) would
+// stack-overflow the process. 100 is comfortably above any
+// human-authored query's nesting depth.
+const maxParseDepth = 100
+
 type parser struct {
-	src string
-	pos int
+	src   string
+	pos   int
+	depth int
 }
 
 func (p *parser) atEnd() bool { return p.pos >= len(p.src) }
+
+// enterDepth increments the recursion counter and reports an error
+// when the cap is exceeded. Pair every call with a `defer p.exitDepth()`
+// — the leaveDepth helper symmetry mirrors how Go callers typically
+// shape their own depth guards.
+func (p *parser) enterDepth() error {
+	if p.depth >= maxParseDepth {
+		return p.errorf("query nesting depth exceeds %d", maxParseDepth)
+	}
+	p.depth++
+	return nil
+}
+
+func (p *parser) exitDepth() { p.depth-- }
 
 func (p *parser) peek() byte {
 	if p.atEnd() {
@@ -72,6 +96,10 @@ func (p *parser) errorf(format string, args ...any) error {
 }
 
 func (p *parser) parseOr() (Expr, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.exitDepth()
 	left, err := p.parseAnd()
 	if err != nil {
 		return nil, err
@@ -90,6 +118,10 @@ func (p *parser) parseOr() (Expr, error) {
 }
 
 func (p *parser) parseAnd() (Expr, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.exitDepth()
 	left, err := p.parseNot()
 	if err != nil {
 		return nil, err
@@ -108,6 +140,10 @@ func (p *parser) parseAnd() (Expr, error) {
 }
 
 func (p *parser) parseNot() (Expr, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.exitDepth()
 	p.skipSpace()
 	if p.matchKeyword("not") {
 		inner, err := p.parseNot()
@@ -120,6 +156,10 @@ func (p *parser) parseNot() (Expr, error) {
 }
 
 func (p *parser) parsePrimary() (Expr, error) {
+	if err := p.enterDepth(); err != nil {
+		return nil, err
+	}
+	defer p.exitDepth()
 	p.skipSpace()
 	if p.atEnd() {
 		return nil, p.errorf("expected condition or '(' but reached end of query")
