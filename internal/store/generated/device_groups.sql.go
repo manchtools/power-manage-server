@@ -122,6 +122,26 @@ func (q *Queries) DeleteDynamicDeviceGroupEvaluationQueueRow(ctx context.Context
 	return err
 }
 
+const deleteDynamicDeviceGroupQueueBefore = `-- name: DeleteDynamicDeviceGroupQueueBefore :exec
+DELETE FROM dynamic_group_evaluation_queue
+WHERE group_id = $1::TEXT
+  AND queued_at <= $2::TIMESTAMPTZ
+`
+
+type DeleteDynamicDeviceGroupQueueBeforeParams struct {
+	GroupID  string    `json:"group_id"`
+	BeforeTs time.Time `json:"before_ts"`
+}
+
+// Wave C.3: clear queue entries for `group_id` that were queued before
+// `before_ts`. Preserves the PL/pgSQL clock_timestamp() race semantics:
+// if a trigger re-queued the group while the in-process evaluator was
+// running, the newer queue entry survives so the drain loop re-evaluates.
+func (q *Queries) DeleteDynamicDeviceGroupQueueBefore(ctx context.Context, arg DeleteDynamicDeviceGroupQueueBeforeParams) error {
+	_, err := q.db.Exec(ctx, deleteDynamicDeviceGroupQueueBefore, arg.GroupID, arg.BeforeTs)
+	return err
+}
+
 const enqueueDynamicDeviceGroupEvaluation = `-- name: EnqueueDynamicDeviceGroupEvaluation :exec
 INSERT INTO dynamic_group_evaluation_queue (group_id, queued_at, reason)
 VALUES ($1, clock_timestamp(), $2)
@@ -379,6 +399,34 @@ func (q *Queries) InsertDeviceGroupProjection(ctx context.Context, arg InsertDev
 	return err
 }
 
+const listDeviceGroupMemberIDs = `-- name: ListDeviceGroupMemberIDs :many
+SELECT device_id FROM device_group_members_projection WHERE group_id = $1
+`
+
+// Light projection — just the device IDs in a group. Used by the
+// Wave C.3 in-process dynamic-group evaluator to diff new vs current
+// membership without loading the joined device columns
+// ListDeviceGroupMembers returns.
+func (q *Queries) ListDeviceGroupMemberIDs(ctx context.Context, groupID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupMemberIDs, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var device_id string
+		if err := rows.Scan(&device_id); err != nil {
+			return nil, err
+		}
+		items = append(items, device_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceGroupMembers = `-- name: ListDeviceGroupMembers :many
 
 SELECT m.group_id, m.device_id, m.added_at, m.projection_version,
@@ -473,6 +521,41 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 	return items, nil
 }
 
+const listDevicesForDynamicEvaluation = `-- name: ListDevicesForDynamicEvaluation :many
+SELECT id, labels FROM devices_projection
+WHERE is_deleted = FALSE
+`
+
+type ListDevicesForDynamicEvaluationRow struct {
+	ID     string `json:"id"`
+	Labels []byte `json:"labels"`
+}
+
+// All non-deleted devices' (id, labels) for the in-process dynamic-group
+// evaluator (Wave C.3). Returning the JSONB labels column is still
+// correct pre-E.4; once labels move to the device_labels child table
+// this query becomes an id-only list and labels load via the child
+// repo.
+func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]ListDevicesForDynamicEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, listDevicesForDynamicEvaluation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDevicesForDynamicEvaluationRow{}
+	for rows.Next() {
+		var i ListDevicesForDynamicEvaluationRow
+		if err := rows.Scan(&i.ID, &i.Labels); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDevicesInGroup = `-- name: ListDevicesInGroup :many
 SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.labels, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
 JOIN device_group_members_projection m ON d.id = m.device_id
@@ -551,6 +634,35 @@ func (q *Queries) ListDynamicDeviceGroups(ctx context.Context) ([]DeviceGroupsPr
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listGroupNamesForDevice = `-- name: ListGroupNamesForDevice :many
+SELECT g.name FROM device_groups_projection g
+JOIN device_group_members_projection m ON g.id = m.group_id
+WHERE m.device_id = $1 AND g.is_deleted = FALSE
+`
+
+// Light projection — just the names of the (non-deleted) groups this
+// device belongs to. Powers the `device.group` predicate evaluation
+// in the in-process dynamic-query evaluator (Wave C.3).
+func (q *Queries) ListGroupNamesForDevice(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listGroupNamesForDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -134,6 +134,25 @@ func (q *Queries) DeleteDynamicUserGroupEvaluationQueueRow(ctx context.Context, 
 	return err
 }
 
+const deleteDynamicUserGroupQueueBefore = `-- name: DeleteDynamicUserGroupQueueBefore :exec
+DELETE FROM dynamic_user_group_evaluation_queue
+WHERE group_id = $1::TEXT
+  AND queued_at <= $2::TIMESTAMPTZ
+`
+
+type DeleteDynamicUserGroupQueueBeforeParams struct {
+	GroupID  string    `json:"group_id"`
+	BeforeTs time.Time `json:"before_ts"`
+}
+
+// Wave C.3: clear queue entries queued before `before_ts`. Same race
+// guard as DeleteDynamicDeviceGroupQueueBefore — re-queue during eval
+// survives so the next drain pass re-evaluates.
+func (q *Queries) DeleteDynamicUserGroupQueueBefore(ctx context.Context, arg DeleteDynamicUserGroupQueueBeforeParams) error {
+	_, err := q.db.Exec(ctx, deleteDynamicUserGroupQueueBefore, arg.GroupID, arg.BeforeTs)
+	return err
+}
+
 const deleteScimGroupMappingsByUserGroup = `-- name: DeleteScimGroupMappingsByUserGroup :exec
 DELETE FROM scim_group_mapping_projection WHERE user_group_id = $1
 `
@@ -733,6 +752,56 @@ func (q *Queries) ListUserIDsWithGroupRole(ctx context.Context, roleID string) (
 			return nil, err
 		}
 		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUsersForDynamicEvaluation = `-- name: ListUsersForDynamicEvaluation :many
+SELECT id, email, disabled, totp_enabled, has_password,
+       display_name, preferred_username, locale
+FROM users_projection
+WHERE is_deleted = FALSE
+`
+
+type ListUsersForDynamicEvaluationRow struct {
+	ID                string `json:"id"`
+	Email             string `json:"email"`
+	Disabled          bool   `json:"disabled"`
+	TotpEnabled       bool   `json:"totp_enabled"`
+	HasPassword       bool   `json:"has_password"`
+	DisplayName       string `json:"display_name"`
+	PreferredUsername string `json:"preferred_username"`
+	Locale            string `json:"locale"`
+}
+
+// All non-deleted users' fields the user-group evaluator reads (matches
+// the 7 parameters evaluate_user_condition takes plus id for membership
+// writes).
+func (q *Queries) ListUsersForDynamicEvaluation(ctx context.Context) ([]ListUsersForDynamicEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, listUsersForDynamicEvaluation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsersForDynamicEvaluationRow{}
+	for rows.Next() {
+		var i ListUsersForDynamicEvaluationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Disabled,
+			&i.TotpEnabled,
+			&i.HasPassword,
+			&i.DisplayName,
+			&i.PreferredUsername,
+			&i.Locale,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
