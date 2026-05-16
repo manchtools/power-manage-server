@@ -557,10 +557,12 @@ func TestUserListener_FullLifecycle(t *testing.T) {
 		},
 		ActorType: "user", ActorID: "u",
 	}))
-	got, err = st.Queries().GetUserByID(ctx, userID)
+	keys, err := st.Queries().ListUserSshKeys(ctx, userID)
 	require.NoError(t, err)
-	assert.Contains(t, string(got.SshPublicKeys), "k-1")
-	assert.Contains(t, string(got.SshPublicKeys), "ssh-rsa AAA")
+	require.Len(t, keys, 1)
+	assert.Equal(t, "k-1", keys[0].KeyID)
+	require.NotNil(t, keys[0].PublicKey)
+	assert.Equal(t, "ssh-rsa AAA", *keys[0].PublicKey)
 
 	// 9. SshKeyRemoved — drops the matching element.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
@@ -568,9 +570,9 @@ func TestUserListener_FullLifecycle(t *testing.T) {
 		Data:      map[string]any{"key_id": "k-1"},
 		ActorType: "user", ActorID: "u",
 	}))
-	got, err = st.Queries().GetUserByID(ctx, userID)
+	keys, err = st.Queries().ListUserSshKeys(ctx, userID)
 	require.NoError(t, err)
-	assert.NotContains(t, string(got.SshPublicKeys), "k-1")
+	assert.Empty(t, keys)
 
 	// 10. SshSettingsUpdated — explicit values.
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
@@ -684,11 +686,15 @@ func TestUserListener_SshKeyFilterIsolatesByID(t *testing.T) {
 		ActorType: "user", ActorID: "u",
 	}))
 
-	got, err := st.Queries().GetUserByID(ctx, userID)
+	keys, err := st.Queries().ListUserSshKeys(ctx, userID)
 	require.NoError(t, err)
-	assert.NotContains(t, string(got.SshPublicKeys), "key-A",
+	keyIDs := make([]string, 0, len(keys))
+	for _, k := range keys {
+		keyIDs = append(keyIDs, k.KeyID)
+	}
+	assert.NotContains(t, keyIDs, "key-A",
 		"UserSshKeyRemoved must drop the matching element")
-	assert.Contains(t, string(got.SshPublicKeys), "key-B",
+	assert.Contains(t, keyIDs, "key-B",
 		"UserSshKeyRemoved must NOT touch other elements")
 }
 
