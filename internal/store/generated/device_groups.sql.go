@@ -65,19 +65,6 @@ func (q *Queries) CountDeviceGroups(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const countMatchingDevicesForQuery = `-- name: CountMatchingDevicesForQuery :one
-SELECT COUNT(*) FROM devices_projection
-WHERE is_deleted = FALSE
-AND evaluate_dynamic_query_v2(id, labels, $1) = TRUE
-`
-
-func (q *Queries) CountMatchingDevicesForQuery(ctx context.Context, query string) (int64, error) {
-	row := q.db.QueryRow(ctx, countMatchingDevicesForQuery, query)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const deleteDeviceGroupMember = `-- name: DeleteDeviceGroupMember :exec
 DELETE FROM device_group_members_projection
 WHERE group_id = $1
@@ -163,35 +150,6 @@ type EnqueueDynamicDeviceGroupEvaluationParams struct {
 func (q *Queries) EnqueueDynamicDeviceGroupEvaluation(ctx context.Context, arg EnqueueDynamicDeviceGroupEvaluationParams) error {
 	_, err := q.db.Exec(ctx, enqueueDynamicDeviceGroupEvaluation, arg.GroupID, arg.Reason)
 	return err
-}
-
-const evaluateDynamicGroup = `-- name: EvaluateDynamicGroup :exec
-SELECT evaluate_dynamic_group($1)
-`
-
-func (q *Queries) EvaluateDynamicGroup(ctx context.Context, groupIDParam string) error {
-	_, err := q.db.Exec(ctx, evaluateDynamicGroup, groupIDParam)
-	return err
-}
-
-const evaluateQueuedDynamicGroups = `-- name: EvaluateQueuedDynamicGroups :one
-SELECT evaluated_count::INTEGER AS evaluated_count, more::BOOLEAN AS more
-FROM evaluate_queued_dynamic_groups()
-`
-
-type EvaluateQueuedDynamicGroupsRow struct {
-	EvaluatedCount int32 `json:"evaluated_count"`
-	More           bool  `json:"more"`
-}
-
-// Returns (evaluated_count, more) so the drain loop in cmd/control
-// terminates on `more = false` instead of inferring queue-empty
-// from "count < batch_limit". See migration 044 + #168.
-func (q *Queries) EvaluateQueuedDynamicGroups(ctx context.Context) (EvaluateQueuedDynamicGroupsRow, error) {
-	row := q.db.QueryRow(ctx, evaluateQueuedDynamicGroups)
-	var i EvaluateQueuedDynamicGroupsRow
-	err := row.Scan(&i.EvaluatedCount, &i.More)
-	return i, err
 }
 
 const getDeviceGroupByID = `-- name: GetDeviceGroupByID :one
@@ -965,17 +923,6 @@ func (q *Queries) UpdateDeviceGroupSyncIntervalProjection(ctx context.Context, a
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const validateDynamicQuery = `-- name: ValidateDynamicQuery :one
-SELECT COALESCE(validate_dynamic_query($1), '')::TEXT AS error_message
-`
-
-func (q *Queries) ValidateDynamicQuery(ctx context.Context, query string) (string, error) {
-	row := q.db.QueryRow(ctx, validateDynamicQuery, query)
-	var error_message string
-	err := row.Scan(&error_message)
-	return error_message, err
 }
 
 const wipeDeviceGroupMembers = `-- name: WipeDeviceGroupMembers :exec

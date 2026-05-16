@@ -2,14 +2,26 @@ package store_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
+	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+// newEvalSvc returns a dyngroupeval.Evaluator wired against the test
+// store. The tests in this file used to count matching devices via the
+// PL/pgSQL CountMatchingDevicesForQuery; Wave C.5 dropped that function
+// in favour of the in-process evaluator. Behaviour is unchanged.
+func newEvalSvc(st *store.Store) *dyngroupeval.Evaluator {
+	return dyngroupeval.New(st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
 
 // addDeviceToGroup emits a DeviceAddedToGroup event.
 func addDeviceToGroup(t *testing.T, st *store.Store, groupID, deviceID, actorID string) {
@@ -27,6 +39,7 @@ func addDeviceToGroup(t *testing.T, st *store.Store, groupID, deviceID, actorID 
 
 func TestDynamicGroupQuery_DeviceGroupEquals(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -34,13 +47,14 @@ func TestDynamicGroupQuery_DeviceGroupEquals(t *testing.T) {
 	group := testutil.CreateTestDeviceGroup(t, st, actor, "Production")
 	addDeviceToGroup(t, st, group, device, actor)
 
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `device.group equals "Production"`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `device.group equals "Production"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupNotEquals(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -48,17 +62,18 @@ func TestDynamicGroupQuery_DeviceGroupNotEquals(t *testing.T) {
 	group := testutil.CreateTestDeviceGroup(t, st, actor, "Production")
 	addDeviceToGroup(t, st, group, device, actor)
 
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `device.group notEquals "Staging"`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `device.group notEquals "Staging"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `device.group notEquals "Production"`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `device.group notEquals "Production"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupContains(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -66,17 +81,18 @@ func TestDynamicGroupQuery_DeviceGroupContains(t *testing.T) {
 	group := testutil.CreateTestDeviceGroup(t, st, actor, "Berlin Office Servers")
 	addDeviceToGroup(t, st, group, device, actor)
 
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `device.group contains "Berlin"`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `device.group contains "Berlin"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `device.group contains "Munich"`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `device.group contains "Munich"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupIn(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -84,17 +100,18 @@ func TestDynamicGroupQuery_DeviceGroupIn(t *testing.T) {
 	group := testutil.CreateTestDeviceGroup(t, st, actor, "Production")
 	addDeviceToGroup(t, st, group, device, actor)
 
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `device.group in "Production,Staging"`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `device.group in "Production,Staging"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `device.group in "Staging,Development"`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `device.group in "Staging,Development"`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupExists(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -103,17 +120,18 @@ func TestDynamicGroupQuery_DeviceGroupExists(t *testing.T) {
 	group := testutil.CreateTestDeviceGroup(t, st, actor, "Production")
 	addDeviceToGroup(t, st, group, deviceInGroup, actor)
 
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `device.group exists`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `device.group exists`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `device.group notExists`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `device.group notExists`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupCombinedWithLabel(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -133,36 +151,28 @@ func TestDynamicGroupQuery_DeviceGroupCombinedWithLabel(t *testing.T) {
 	require.NoError(t, err)
 
 	// Both conditions match
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `(device.group equals "Production") AND (device.labels.env equals "prod")`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `(device.group equals "Production") AND (device.labels.env equals "prod")`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
 	// Group matches, label doesn't
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `(device.group equals "Production") AND (device.labels.env equals "staging")`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `(device.group equals "Production") AND (device.labels.env equals "staging")`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
 
 func TestDynamicGroupQuery_DeviceGroupValidation(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	ctx := context.Background()
-
-	// Valid queries should validate without error
-	errMsg, err := st.Queries().ValidateDynamicQuery(ctx, `device.group equals "Production"`)
-	require.NoError(t, err)
-	assert.Empty(t, errMsg)
-
-	errMsg, err = st.Queries().ValidateDynamicQuery(ctx, `device.group exists`)
-	require.NoError(t, err)
-	assert.Empty(t, errMsg)
-
-	errMsg, err = st.Queries().ValidateDynamicQuery(ctx, `device.group in "A,B,C"`)
-	require.NoError(t, err)
-	assert.Empty(t, errMsg)
+	// Pure validation — no DB needed since the Go validator parses
+	// the query string in-process. testutil.SetupPostgres is skipped
+	// here so the test stays fast.
+	require.NoError(t, dynamicquery.ValidateDeviceQuery(`device.group equals "Production"`))
+	require.NoError(t, dynamicquery.ValidateDeviceQuery(`device.group exists`))
+	require.NoError(t, dynamicquery.ValidateDeviceQuery(`device.group in "A,B,C"`))
 }
 
 func TestDynamicGroupQuery_MultipleGroups(t *testing.T) {
 	st := testutil.SetupPostgres(t)
+	evalSvc := newEvalSvc(st)
 	ctx := context.Background()
 	actor := testutil.NewID()
 
@@ -173,12 +183,12 @@ func TestDynamicGroupQuery_MultipleGroups(t *testing.T) {
 	addDeviceToGroup(t, st, group2, device, actor)
 
 	// Device is in both groups
-	count, err := st.Queries().CountMatchingDevicesForQuery(ctx, `(device.group equals "Production") AND (device.group equals "Ubuntu")`)
+	count, err := evalSvc.CountMatchingDevices(ctx, `(device.group equals "Production") AND (device.group equals "Ubuntu")`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 
 	// Device is in Production but not Staging
-	count, err = st.Queries().CountMatchingDevicesForQuery(ctx, `(device.group equals "Production") AND (device.group equals "Staging")`)
+	count, err = evalSvc.CountMatchingDevices(ctx, `(device.group equals "Production") AND (device.group equals "Staging")`)
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), count)
 }
