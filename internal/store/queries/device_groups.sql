@@ -267,6 +267,21 @@ DELETE FROM dynamic_group_evaluation_queue
 WHERE group_id = sqlc.arg(group_id)::TEXT
   AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
 
+-- name: ListDynamicDeviceGroupQueueBatch :many
+-- Wave C.4: returns the next batch of queued group IDs for the
+-- in-process drain loop, ordered by queued_at so older entries get
+-- evaluated first. Replaces the SELECT inside the PL/pgSQL
+-- evaluate_queued_dynamic_groups function.
+SELECT group_id FROM dynamic_group_evaluation_queue
+ORDER BY queued_at
+LIMIT $1;
+
+-- name: HasDynamicDeviceGroupQueueEntries :one
+-- Wave C.4: cheap EXISTS probe used by the in-process drain loop to
+-- set the `more` flag after a batch is processed. Same semantic the
+-- PL/pgSQL function's tail SELECT covered (closes audit F035 / #168).
+SELECT EXISTS (SELECT 1 FROM dynamic_group_evaluation_queue LIMIT 1)::BOOLEAN AS has_more;
+
 -- name: ClaimDeviceGroupForMembership :execrows
 -- Atomic guard for the four member-mutation events
 -- (DeviceGroupMemberAdded, DeviceAddedToGroup, DeviceGroupMemberRemoved,

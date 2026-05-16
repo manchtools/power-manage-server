@@ -309,6 +309,20 @@ func (q *Queries) GetDynamicGroupsNeedingEvaluation(ctx context.Context, limit i
 	return items, nil
 }
 
+const hasDynamicDeviceGroupQueueEntries = `-- name: HasDynamicDeviceGroupQueueEntries :one
+SELECT EXISTS (SELECT 1 FROM dynamic_group_evaluation_queue LIMIT 1)::BOOLEAN AS has_more
+`
+
+// Wave C.4: cheap EXISTS probe used by the in-process drain loop to
+// set the `more` flag after a batch is processed. Same semantic the
+// PL/pgSQL function's tail SELECT covered (closes audit F035 / #168).
+func (q *Queries) HasDynamicDeviceGroupQueueEntries(ctx context.Context) (bool, error) {
+	row := q.db.QueryRow(ctx, hasDynamicDeviceGroupQueueEntries)
+	var has_more bool
+	err := row.Scan(&has_more)
+	return has_more, err
+}
+
 const insertDeviceGroupMember = `-- name: InsertDeviceGroupMember :exec
 INSERT INTO device_group_members_projection (
     group_id, device_id, added_at, projection_version
@@ -593,6 +607,36 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDynamicDeviceGroupQueueBatch = `-- name: ListDynamicDeviceGroupQueueBatch :many
+SELECT group_id FROM dynamic_group_evaluation_queue
+ORDER BY queued_at
+LIMIT $1
+`
+
+// Wave C.4: returns the next batch of queued group IDs for the
+// in-process drain loop, ordered by queued_at so older entries get
+// evaluated first. Replaces the SELECT inside the PL/pgSQL
+// evaluate_queued_dynamic_groups function.
+func (q *Queries) ListDynamicDeviceGroupQueueBatch(ctx context.Context, limit int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDynamicDeviceGroupQueueBatch, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var group_id string
+		if err := rows.Scan(&group_id); err != nil {
+			return nil, err
+		}
+		items = append(items, group_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

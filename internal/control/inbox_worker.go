@@ -15,6 +15,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -490,15 +491,15 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 	// completion the way cmd/control does. The `more` flag is
 	// ignored on this path because the periodic worker (or a
 	// subsequent inbox event) will pick up any leftover.
-	if r, err := w.store.Queries().EvaluateQueuedDynamicGroups(ctx); err != nil {
+	if r, err := dyngroupeval.New(w.store, w.logger).DrainDeviceGroupQueue(ctx); err != nil {
 		w.logger.Warn("failed to evaluate dynamic groups after inventory update",
 			"device_id", payload.DeviceID,
 			"error", err,
 		)
-	} else if r.EvaluatedCount > 0 {
+	} else if r.Count > 0 {
 		w.logger.Info("evaluated dynamic groups after inventory update",
 			"device_id", payload.DeviceID,
-			"count", r.EvaluatedCount,
+			"count", r.Count,
 		)
 	}
 

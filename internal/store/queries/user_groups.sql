@@ -288,6 +288,19 @@ DELETE FROM dynamic_user_group_evaluation_queue
 WHERE group_id = sqlc.arg(group_id)::TEXT
   AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
 
+-- name: ListDynamicUserGroupQueueBatch :many
+-- Wave C.4: returns the next batch of queued user-group IDs for the
+-- in-process drain loop, oldest first. Replaces the SELECT inside the
+-- PL/pgSQL evaluate_queued_dynamic_user_groups function.
+SELECT group_id FROM dynamic_user_group_evaluation_queue
+ORDER BY queued_at
+LIMIT $1;
+
+-- name: HasDynamicUserGroupQueueEntries :one
+-- Wave C.4: cheap EXISTS probe for the `more` flag — same semantic as
+-- HasDynamicDeviceGroupQueueEntries.
+SELECT EXISTS (SELECT 1 FROM dynamic_user_group_evaluation_queue LIMIT 1)::BOOLEAN AS has_more;
+
 -- name: ListUsersForDynamicEvaluation :many
 -- All non-deleted users' fields the user-group evaluator reads (matches
 -- the 7 parameters evaluate_user_condition takes plus id for membership

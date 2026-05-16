@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -74,16 +75,17 @@ func drainDynamicQueue(ctx context.Context, label string, logger *slog.Logger, e
 // is logged in main.go's else branch — kept there because main owns
 // the boot-time "feature is disabled" reporting).
 func startDynamicGroupWorker(ctx context.Context, st *store.Store, interval time.Duration, logger *slog.Logger) {
+	ev := dyngroupeval.New(st, logger)
 	evalGroups := func() {
 		drainDynamicQueue(ctx, "dynamic groups", logger, func(ctx context.Context) (dynamicQueueBatch, error) {
-			r, err := st.Queries().EvaluateQueuedDynamicGroups(ctx)
-			return dynamicQueueBatch{count: r.EvaluatedCount, more: r.More}, err
+			r, err := ev.DrainDeviceGroupQueue(ctx)
+			return dynamicQueueBatch{count: r.Count, more: r.More}, err
 		})
 	}
 	evalUserGroups := func() {
 		drainDynamicQueue(ctx, "dynamic user groups", logger, func(ctx context.Context) (dynamicQueueBatch, error) {
-			r, err := st.Queries().EvaluateQueuedDynamicUserGroups(ctx)
-			return dynamicQueueBatch{count: r.EvaluatedCount, more: r.More}, err
+			r, err := ev.DrainUserGroupQueue(ctx)
+			return dynamicQueueBatch{count: r.Count, more: r.More}, err
 		})
 	}
 
