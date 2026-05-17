@@ -80,7 +80,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 
 	// Emit DeviceCertRenewed event (projection handler already exists in migration 001)
 	fingerprint := newCert.Fingerprint
-	notAfterStr := newCert.NotAfter.Format(time.RFC3339)
+	notAfterStr := newCert.NotAfter.Format(time.RFC3339Nano)
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,

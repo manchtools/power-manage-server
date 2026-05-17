@@ -2,9 +2,8 @@ package resolution
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
+	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
@@ -202,7 +201,12 @@ func ResolveDeviceTree(ctx context.Context, q TreeQuerier, deviceID string) (Dev
 			// lookup (e.g. concurrent deletion); that's non-fatal — drop
 			// silently from this resolution. Any other DB error must
 			// surface so we don't silently emit an incomplete tree.
-			if errors.Is(err, sql.ErrNoRows) {
+			// Route through store.IsNotFound rather than pgx.ErrNoRows /
+			// sql.ErrNoRows directly so the recognizer is the single
+			// source of truth for missing-row semantics (#242, Wave A).
+			// q.GetActionByID is the raw sqlc handle (not the repo) so
+			// it returns pgx.ErrNoRows on miss; IsNotFound matches both.
+			if store.IsNotFound(err) {
 				return nil
 			}
 			return err

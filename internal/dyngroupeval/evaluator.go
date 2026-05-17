@@ -5,6 +5,15 @@
 // device_group_members_projection / user_group_members_projection with
 // the result.
 //
+// Shape vs. internal/compliance (audit N034). dyngroupeval is invoked
+// as a top-level operation from API handlers and the control inbox
+// worker, so its public API takes a *store.Store and opens its own
+// transactions internally — there is no *InTx variant. compliance, by
+// contrast, runs inside the projector listener WithTx blocks, so its
+// public API takes a *store.Queries the caller already obtained. The
+// difference is intentional, not naming drift: matching the API would
+// force dyngroupeval callers to manage a tx they don't otherwise need.
+//
 // Part of Wave C of the storage-abstraction roadmap (tracker
 // manchtools/power-manage-server#242).
 package dyngroupeval

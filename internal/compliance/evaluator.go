@@ -5,6 +5,14 @@
 // Evaluator that consumes repo methods instead of dispatching to
 // SELECT plpgsql_function($1) shims.
 //
+// Shape vs. internal/dyngroupeval (audit N034). compliance runs from
+// inside projector listener WithTx blocks (after device-inventory /
+// policy-rule events have applied), so its public API is *InTx-suffixed
+// and takes the caller's *store.Queries — the surrounding transaction
+// must commit atomically. dyngroupeval, by contrast, is invoked as a
+// top-level operation, so its API takes a *store.Store and opens its
+// own transactions. The asymmetry is intentional, not a naming gap.
+//
 // Part of Wave D of the storage-abstraction roadmap (tracker
 // manchtools/power-manage-server#242).
 package compliance

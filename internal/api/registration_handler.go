@@ -203,7 +203,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	// pre-typed-payload emission. The projector parses the string
 	// back into a time.Time via parseOptionalRFC3339, which accepts
 	// both RFC 3339 and RFC 3339Nano.
-	certNotAfterStr := cert.NotAfter.Format(time.RFC3339)
+	certNotAfterStr := cert.NotAfter.Format(time.RFC3339Nano)
 	registrationTokenID := token.ID
 	certPEM := string(cert.CertPEM)
 	caCertPEM := string(h.ca.CACertPEM())
