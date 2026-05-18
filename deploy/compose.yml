@@ -150,6 +150,10 @@ services:
       - CONTROL_SSH_ACCESS_FOR_ALL=${CONTROL_SSH_ACCESS_FOR_ALL:-false}
       - CONTROL_VALKEY_ADDR=valkey:6379
       - CONTROL_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      # Asynq task signing (audit F-02). Identical 64-hex value on
+      # control, gateway, and indexer — they HMAC every task payload
+      # so a Valkey compromise can't forge dispatches.
+      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       # Remote terminal fallback URL for single-gateway deployments.
       # Leave empty when using multi-gateway routing (the control
       # server resolves the correct gateway from the registry).
@@ -183,6 +187,7 @@ services:
       - INDEXER_DATABASE_URL=postgres://pm_indexer:${INDEXER_POSTGRES_PASSWORD}@postgres:5432/powermanage?sslmode=disable
       - INDEXER_VALKEY_ADDR=valkey:6379
       - INDEXER_VALKEY_PASSWORD=${VALKEY_PASSWORD}
+      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       - INDEXER_RECONCILE_INTERVAL=1h
       - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
       - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
@@ -211,6 +216,7 @@ services:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
+      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       - GATEWAY_CONTROL_URL=https://control:8082
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}

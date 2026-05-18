@@ -30,20 +30,27 @@ import (
 // signing (dev mode); dispatchPendingActions skips any execution
 // referencing an action when signer is nil, since agents reject
 // unsigned payloads.
+//
+// taskSigner is the HMAC signer for the Asynq envelope (audit F-02);
+// NewMux wires it as a middleware so every handler sees an
+// HMAC-verified payload before its JSON-unmarshal call. nil means
+// "verification disabled" (tests only).
 type InboxWorker struct {
-	store    *store.Store
-	aqClient *taskqueue.Client
-	signer   ca.ActionSigner
-	logger   *slog.Logger
+	store      *store.Store
+	aqClient   *taskqueue.Client
+	signer     ca.ActionSigner
+	taskSigner *taskqueue.Signer
+	logger     *slog.Logger
 }
 
 // NewInboxWorker creates a new inbox worker.
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, logger *slog.Logger) *InboxWorker {
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
-		store:    st,
-		aqClient: aqClient,
-		signer:   signer,
-		logger:   logger,
+		store:      st,
+		aqClient:   aqClient,
+		signer:     signer,
+		taskSigner: taskSigner,
+		logger:     logger,
 	}
 }
 
@@ -54,6 +61,9 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.Actio
 // on taskqueue.ControlTerminalAuditQueue.
 func (w *InboxWorker) NewMux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
+	if w.taskSigner != nil {
+		mux.Use(w.taskSigner.VerifyMiddleware())
+	}
 	mux.HandleFunc(taskqueue.TypeDeviceHello, w.handleDeviceHello)
 	mux.HandleFunc(taskqueue.TypeDeviceHeartbeat, w.handleDeviceHeartbeat)
 	mux.HandleFunc(taskqueue.TypeExecutionResult, w.handleExecutionResult)
@@ -74,6 +84,9 @@ func (w *InboxWorker) NewMux() *asynq.ServeMux {
 // guard and the loser's bytes would be silently dropped.
 func (w *InboxWorker) NewTerminalAuditMux() *asynq.ServeMux {
 	mux := asynq.NewServeMux()
+	if w.taskSigner != nil {
+		mux.Use(w.taskSigner.VerifyMiddleware())
+	}
 	mux.HandleFunc(taskqueue.TypeTerminalAuditChunk, w.handleTerminalAuditChunk)
 	return mux
 }

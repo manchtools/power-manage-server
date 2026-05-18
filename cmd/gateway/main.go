@@ -84,8 +84,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Load the Asynq-payload HMAC signer/verifier (audit F-02). The
+	// key MUST match control's PM_TASK_SIGNING_KEY — gateway is both
+	// the verifier on the device:* queues AND the producer for
+	// control:inbox messages flowing the other way, so the same
+	// signer wraps both sides.
+	taskSigner, err := taskqueue.NewSigner(os.Getenv("PM_TASK_SIGNING_KEY"))
+	if err != nil {
+		logger.Error("failed to load task signer", "error", err)
+		os.Exit(1)
+	}
+	if taskSigner == nil {
+		logger.Error("PM_TASK_SIGNING_KEY is required (audit F-02 — Asynq task verification is mandatory)")
+		os.Exit(1)
+	}
+
 	// Create Asynq task queue client
-	aqClient := taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
+	aqClient := taskqueue.NewClientWithSigner(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB, taskSigner)
 	defer aqClient.Close()
 	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
 
@@ -121,8 +136,10 @@ func main() {
 	// Create connection manager
 	manager := connection.NewManager()
 
-	// Create task handler factory for per-device Asynq workers
-	taskFactory := gateway.NewTaskHandlerFactory(manager, logger)
+	// Create task handler factory for per-device Asynq workers.
+	// taskSigner was loaded above (audit F-02) and wires the same
+	// HMAC key into the worker mux as the aqClient producer.
+	taskFactory := gateway.NewTaskHandlerFactory(manager, taskSigner, logger)
 
 	// Create device worker manager
 	workerMgr := gateway.NewDeviceWorkerManager(

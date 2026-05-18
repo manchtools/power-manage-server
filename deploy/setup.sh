@@ -555,6 +555,17 @@ guided_setup() {
     fi
     write_env_var CONTROL_ENCRYPTION_KEY "$REPLY_VALUE"
 
+    # Asynq task-signing key (audit F-02). 64 hex chars (32 bytes).
+    # Shared between control, gateway, and indexer — every service
+    # that touches the Valkey-backed task queue HMAC-signs and
+    # verifies the envelope so a Valkey compromise can't forge tasks.
+    prompt_secret "Asynq task signing key (PM_TASK_SIGNING_KEY, 64 hex chars)" "openssl rand -hex 32" "${PM_TASK_SIGNING_KEY:-}"
+    if [[ ! "$REPLY_VALUE" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "PM_TASK_SIGNING_KEY must be exactly 64 hex characters; got ${#REPLY_VALUE} chars. Aborting."
+        exit 1
+    fi
+    write_env_var PM_TASK_SIGNING_KEY "$REPLY_VALUE"
+
     # --- Admin account ---
     # admin@<parent-domain> if CONTROL_DOMAIN has a dot; admin@<full>
     # for single-label cases (admin@localhost is a valid local-delivery

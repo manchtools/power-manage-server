@@ -112,8 +112,22 @@ func main() {
 		logger.Info("periodic reconciliation started", "interval", cfg.ReconcileInterval)
 	}
 
+	// Load the Asynq-payload HMAC verifier (audit F-02). Indexer is
+	// a consumer of search:* tasks produced by control; the key MUST
+	// match control's PM_TASK_SIGNING_KEY or every task in the queue
+	// will land in the dead queue.
+	taskSigner, err := taskqueue.NewSigner(os.Getenv("PM_TASK_SIGNING_KEY"))
+	if err != nil {
+		logger.Error("failed to load task signer", "error", err)
+		os.Exit(1)
+	}
+	if taskSigner == nil {
+		logger.Error("PM_TASK_SIGNING_KEY is required (audit F-02 — Asynq task verification is mandatory)")
+		os.Exit(1)
+	}
+
 	// Initialize and start Asynq worker for search task processing
-	searchWorker := search.NewWorker(rdb, logger.With("component", "search_worker"))
+	searchWorker := search.NewWorker(rdb, taskSigner, logger.With("component", "search_worker"))
 	mux := asynq.NewServeMux()
 	searchWorker.RegisterHandlers(mux)
 

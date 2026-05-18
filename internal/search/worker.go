@@ -15,18 +15,27 @@ import (
 )
 
 // Worker processes search index update tasks from the Asynq search queue.
+//
+// taskSigner verifies the HMAC envelope on every dequeue (audit
+// F-02). The key MUST match PM_TASK_SIGNING_KEY on control — control
+// is the producer of search:* tasks (via SearchListener), indexer is
+// the consumer. nil disables verification (tests only).
 type Worker struct {
-	rdb    *redis.Client
-	logger *slog.Logger
+	rdb        *redis.Client
+	taskSigner *taskqueue.Signer
+	logger     *slog.Logger
 }
 
 // NewWorker creates a new search index worker.
-func NewWorker(rdb *redis.Client, logger *slog.Logger) *Worker {
-	return &Worker{rdb: rdb, logger: logger}
+func NewWorker(rdb *redis.Client, taskSigner *taskqueue.Signer, logger *slog.Logger) *Worker {
+	return &Worker{rdb: rdb, taskSigner: taskSigner, logger: logger}
 }
 
 // RegisterHandlers registers the search task handlers on the given mux.
 func (w *Worker) RegisterHandlers(mux *asynq.ServeMux) {
+	if w.taskSigner != nil {
+		mux.Use(w.taskSigner.VerifyMiddleware())
+	}
 	mux.HandleFunc(taskqueue.TypeSearchReindex, w.handleReindex)
 	mux.HandleFunc(taskqueue.TypeSearchMemberChange, w.handleMemberChange)
 	mux.HandleFunc(taskqueue.TypeSearchRemove, w.handleRemove)
