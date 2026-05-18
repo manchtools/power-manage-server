@@ -51,6 +51,14 @@ type valkeySubsystem struct {
 	inboxServer         *asynq.Server
 	terminalAuditServer *asynq.Server
 
+	// taskSigner is the HMAC signer threaded into the Asynq Client
+	// (producer side) AND the InboxWorker / TerminalAudit mux
+	// (consumer side). Both sides MUST share the same key — the
+	// signer is constructed once here so a misconfiguration loud-
+	// fails at boot rather than producing tasks the consumer can't
+	// verify (audit F-02).
+	taskSigner *taskqueue.Signer
+
 	// TerminalTokenStore is exported because main() hands it to the
 	// InternalHandler later in the boot sequence — they MUST share
 	// one instance so ProxyValidateTerminalToken can validate tokens
@@ -92,8 +100,23 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 		return nil, nil
 	}
 
-	v := &valkeySubsystem{}
-	v.aqClient = taskqueue.NewClient(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB)
+	// Load the Asynq-payload HMAC signer (audit F-02). The hex key
+	// is operator-provided via PM_TASK_SIGNING_KEY and must match
+	// across every service that participates in the Asynq fan-out
+	// (control, gateway, indexer). NewSigner returns (nil, nil) on
+	// an empty key string for test ergonomics, but production wiring
+	// rejects that here so a deployment can't accidentally turn
+	// signing off.
+	taskSigner, err := taskqueue.NewSigner(os.Getenv("PM_TASK_SIGNING_KEY"))
+	if err != nil {
+		return nil, fmt.Errorf("load task signer: %w", err)
+	}
+	if taskSigner == nil {
+		return nil, errors.New("PM_TASK_SIGNING_KEY is required when CONTROL_VALKEY_ADDR is set (audit F-02 — task signing is mandatory)")
+	}
+
+	v := &valkeySubsystem{taskSigner: taskSigner}
+	v.aqClient = taskqueue.NewClientWithSigner(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB, taskSigner)
 	svc.SetTaskQueueClient(v.aqClient)
 
 	// Force RESP2 protocol: go-redis v9 auto-negotiates RESP3 with Redis 7+,
@@ -145,7 +168,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	}
 
 	// Asynq mux + servers.
-	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, logger.With("component", "inbox_worker"))
+	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"))
 	aqLogger := logger.With("component", "asynq_server")
 	v.inboxServer = newInboxAsynqServer(cfg, aqLogger)
 	if err := v.inboxServer.Start(inboxWorker.NewMux()); err != nil {

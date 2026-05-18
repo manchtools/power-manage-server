@@ -62,7 +62,7 @@ func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
 
 func TestHandleDeviceHeartbeat(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "heartbeat-host")
@@ -83,7 +83,7 @@ func TestHandleDeviceHeartbeat(t *testing.T) {
 
 func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "deleted-heartbeat-host")
@@ -111,7 +111,7 @@ func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 
 func TestHandleSecurityAlert(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "alert-host")
@@ -145,7 +145,7 @@ func TestHandleSecurityAlert(t *testing.T) {
 
 func TestHandleExecutionResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -204,7 +204,7 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 
 func TestHandleExecutionResult_Failed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -259,7 +259,7 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 
 func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -288,7 +288,7 @@ func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 
 func TestHandleExecutionOutputChunk(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "chunk-host")
@@ -328,7 +328,7 @@ func TestHandleExecutionOutputChunk(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-host")
@@ -346,7 +346,7 @@ func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Failure(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-fail-host")
@@ -367,7 +367,7 @@ func TestHandleDeviceHello(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	// handleDeviceHello calls dispatchPendingActions which needs aqClient.
 	// Passing nil is safe here because there are no pending executions to dispatch.
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-host")
@@ -389,7 +389,7 @@ func TestHandleDeviceHello(t *testing.T) {
 
 func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, slog.Default())
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-deleted-host")
@@ -428,7 +428,7 @@ func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
 	defer aqClient.Close()
 
 	signer := &fakeSigner{}
-	worker := control.NewInboxWorker(st, aqClient, signer, slog.Default())
+	worker := control.NewInboxWorker(st, aqClient, signer, nil, slog.Default())
 	mux := worker.NewMux()
 
 	ctx := context.Background()

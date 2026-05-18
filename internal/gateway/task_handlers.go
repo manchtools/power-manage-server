@@ -16,16 +16,25 @@ import (
 )
 
 // TaskHandlerFactory creates per-device Asynq ServeMux instances.
+//
+// taskSigner is the HMAC signer that verifies the Asynq envelope on
+// every dequeue (audit F-02). It must match the key configured on
+// control so the wrapper produced by Client.EnqueueToDevice
+// round-trips cleanly. A nil signer disables verification — tests
+// only; production wiring in cmd/gateway/main.go refuses an empty
+// PM_TASK_SIGNING_KEY.
 type TaskHandlerFactory struct {
-	manager *connection.Manager
-	logger  *slog.Logger
+	manager    *connection.Manager
+	taskSigner *taskqueue.Signer
+	logger     *slog.Logger
 }
 
 // NewTaskHandlerFactory creates a new factory.
-func NewTaskHandlerFactory(manager *connection.Manager, logger *slog.Logger) *TaskHandlerFactory {
+func NewTaskHandlerFactory(manager *connection.Manager, taskSigner *taskqueue.Signer, logger *slog.Logger) *TaskHandlerFactory {
 	return &TaskHandlerFactory{
-		manager: manager,
-		logger:  logger,
+		manager:    manager,
+		taskSigner: taskSigner,
+		logger:     logger,
 	}
 }
 
@@ -38,6 +47,9 @@ func (f *TaskHandlerFactory) NewMux(deviceID string) *asynq.ServeMux {
 	}
 
 	mux := asynq.NewServeMux()
+	if f.taskSigner != nil {
+		mux.Use(f.taskSigner.VerifyMiddleware())
+	}
 	mux.HandleFunc(taskqueue.TypeActionDispatch, h.handleActionDispatch)
 	mux.HandleFunc(taskqueue.TypeOSQueryDispatch, h.handleOSQueryDispatch)
 	mux.HandleFunc(taskqueue.TypeInventoryRequest, h.handleInventoryRequest)

@@ -33,6 +33,12 @@ type Enqueuer interface {
 type Client struct {
 	client    *asynq.Client
 	inspector *asynq.Inspector
+	// signer wraps payloads with an HMAC prefix on enqueue (audit
+	// F-02). nil means signing is disabled — only used by tests
+	// that don't wire the signer; production boot in
+	// cmd/{control,gateway,indexer} rejects an empty
+	// PM_TASK_SIGNING_KEY.
+	signer *Signer
 }
 
 // Compile-time check that *Client satisfies Enqueuer. A drift here
@@ -40,7 +46,18 @@ type Client struct {
 var _ Enqueuer = (*Client)(nil)
 
 // NewClient creates a new task queue client connected to Valkey.
+// Production boot must use NewClientWithSigner so every enqueue path
+// is HMAC-signed (audit F-02); NewClient is preserved as a thin
+// "no signing" wrapper for tests and migration helpers only.
 func NewClient(addr, password string, db int) *Client {
+	return NewClientWithSigner(addr, password, db, nil)
+}
+
+// NewClientWithSigner is the production constructor. The signer is
+// loaded from PM_TASK_SIGNING_KEY at boot and used to HMAC every
+// payload before it lands in Valkey, so a Valkey compromise can't
+// forge task content the workers will dispatch.
+func NewClientWithSigner(addr, password string, db int, signer *Signer) *Client {
 	opts := asynq.RedisClientOpt{
 		Addr:     addr,
 		Password: password,
@@ -49,6 +66,7 @@ func NewClient(addr, password string, db int) *Client {
 	return &Client{
 		client:    asynq.NewClient(opts),
 		inspector: asynq.NewInspector(opts),
+		signer:    signer,
 	}
 }
 
@@ -60,6 +78,9 @@ func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any, opts ..
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
+	// Wrap with HMAC prefix (audit F-02). c.signer is nil-safe — a
+	// disabled signer returns data unchanged.
+	data = c.signer.Wrap(data)
 
 	task := asynq.NewTask(taskType, data)
 	enqueueOpts := append([]asynq.Option{asynq.Queue(DeviceQueue(deviceID))}, opts...)
@@ -84,6 +105,7 @@ func (c *Client) EnqueueToControl(taskType string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
+	data = c.signer.Wrap(data)
 
 	queue := ControlInboxQueue
 	if taskType == TypeTerminalAuditChunk {
@@ -104,6 +126,7 @@ func (c *Client) EnqueueToSearch(taskType string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
+	data = c.signer.Wrap(data)
 
 	task := asynq.NewTask(taskType, data)
 	_, err = c.client.Enqueue(task, asynq.Queue(SearchQueue))
