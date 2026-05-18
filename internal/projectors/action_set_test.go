@@ -430,13 +430,13 @@ func TestActionSetListener_DeleteCascadesMembersAndDefinitions(t *testing.T) {
 	// row that references our action set. Direct SQL because the
 	// definition projector is still PL/pgSQL — we don't want to
 	// couple this test to its event flow.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO definitions_projection (id, name, member_count, created_at, created_by, projection_version)
 		 VALUES ($1, $2, 1, NOW(), '', 0)`,
 		defID, "wraps-our-set",
 	)
 	require.NoError(t, err)
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO definition_members_projection (definition_id, action_set_id, sort_order, added_at)
 		 VALUES ($1, $2, 0, NOW())`,
 		defID, setID,
@@ -452,27 +452,27 @@ func TestActionSetListener_DeleteCascadesMembersAndDefinitions(t *testing.T) {
 
 	// Set row marked deleted.
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM action_sets_projection WHERE id = $1", setID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted)
 
 	// Members wiped.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM action_set_members_projection WHERE set_id = $1", setID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
 
 	// definition_members rows for this set wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM definition_members_projection WHERE action_set_id = $1", setID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
 
 	// Parent definition's member_count decremented (1 → 0).
 	var memberCount int32
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT member_count FROM definitions_projection WHERE id = $1", defID,
 	).Scan(&memberCount))
 	assert.Equal(t, int32(0), memberCount,
@@ -543,13 +543,13 @@ func TestActionSetListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	live, err := st.Queries().GetActionSetByID(ctx, setID)
 	require.NoError(t, err)
 
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO definitions_projection (id, name, member_count, created_at, created_by, projection_version)
 		 VALUES ($1, $2, 1, NOW(), '', 0)`,
 		defID, "still-references-live-set",
 	)
 	require.NoError(t, err)
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO definition_members_projection (definition_id, action_set_id, sort_order, added_at)
 		 VALUES ($1, $2, 0, NOW())`,
 		defID, setID,
@@ -580,20 +580,20 @@ func TestActionSetListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 
 	// Member still there.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM action_set_members_projection WHERE set_id = $1", setID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale ActionSetDeleted must NOT cascade-delete members")
 
 	// definition_members row still there.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM definition_members_projection WHERE action_set_id = $1", setID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale ActionSetDeleted must NOT cascade-delete definition_members")
 
 	// Parent definition's member_count untouched.
 	var memberCount int32
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT member_count FROM definitions_projection WHERE id = $1", defID,
 	).Scan(&memberCount))
 	assert.Equal(t, int32(1), memberCount,
@@ -648,7 +648,7 @@ func TestActionSetListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM action_set_members_projection WHERE set_id = $1 AND action_id = $2",
 		setID, actionID,
 	).Scan(&count))

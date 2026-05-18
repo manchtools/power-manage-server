@@ -88,7 +88,7 @@ func TestSystemActionStore_AssignActionToUser_EmitsAssignmentCreated(t *testing.
 	// The assignment stream id is generated; we have to find it via
 	// the projection rather than by stream lookup. Use the assignments
 	// projection: source_id = act-1, target_id = user-1.
-	rows, err := st.Pool().Query(context.Background(),
+	rows, err := st.TestingPool().Query(context.Background(),
 		`SELECT source_type, target_type, mode FROM assignments_projection
 		 WHERE source_id = $1 AND target_id = $2`, "act-1", "user-1")
 	require.NoError(t, err)

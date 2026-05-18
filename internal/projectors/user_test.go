@@ -735,7 +735,7 @@ func TestUserListener_StaleDeleteReplayDoesNotNukeIdentityLinks(t *testing.T) {
 	require.NoError(t, err)
 
 	// Plant an identity_link that a stale replay would wrongly nuke.
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		"INSERT INTO identity_links_projection (id, user_id, provider_id, external_id) VALUES ($1, $2, $3, $4)",
 		"link-"+testutil.NewID(), userID, idpID, "ext-stale",
 	)
@@ -765,7 +765,7 @@ func TestUserListener_StaleDeleteReplayDoesNotNukeIdentityLinks(t *testing.T) {
 	// Identity link still there — cascade was short-circuited by the
 	// SoftDelete returning n == 0.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM identity_links_projection WHERE user_id = $1", userID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale UserDeleted must NOT cascade-delete identity_links")

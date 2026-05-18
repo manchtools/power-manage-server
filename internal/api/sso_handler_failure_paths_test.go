@@ -116,7 +116,7 @@ func TestSSOCallback_StateIsSingleUse(t *testing.T) {
 	// which the handler must treat the same as never-existed.
 	state := "test-state-" + testutil.NewID()
 	ctx := context.Background()
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`DELETE FROM auth_states WHERE state = $1`, state)
 	require.NoError(t, err)
 	// Use the SQL directly to insert; the auth_states table doesn't
@@ -126,7 +126,7 @@ func TestSSOCallback_StateIsSingleUse(t *testing.T) {
 	// build, but only AFTER ConsumeAuthState has deleted the row —
 	// which is the contract this test pins.
 	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Single Use", "single-use-fk")
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, expires_at)
 		 VALUES ($1, $2, 'n', 'cv', '', NOW() + INTERVAL '5 minutes')`,
 		state, providerID,

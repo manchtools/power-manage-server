@@ -179,7 +179,7 @@ func TestSCIMGroupMappingListener_MapUpdateUnmap(t *testing.T) {
 
 	// Read back via direct SQL (no GetByCompositeKey query exists).
 	var displayName, userGroupID string
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT scim_display_name, user_group_id FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg-eng",
 	).Scan(&displayName, &userGroupID))
@@ -197,7 +197,7 @@ func TestSCIMGroupMappingListener_MapUpdateUnmap(t *testing.T) {
 		},
 		ActorType: "user", ActorID: "u",
 	}))
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT scim_display_name FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg-eng",
 	).Scan(&displayName))
@@ -214,7 +214,7 @@ func TestSCIMGroupMappingListener_MapUpdateUnmap(t *testing.T) {
 		ActorType: "user", ActorID: "u",
 	}))
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg-eng",
 	).Scan(&count))
@@ -265,14 +265,14 @@ func TestSCIMGroupMappingListener_MapReplayIsIdempotent(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg",
 	).Scan(&count))
 	assert.Equal(t, 1, count, "ON CONFLICT preserves uniqueness on (provider_id, scim_group_id)")
 
 	var displayName, ugID string
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT scim_display_name, user_group_id FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg",
 	).Scan(&displayName, &ugID))
@@ -325,7 +325,7 @@ func TestSCIMGroupMappingListener_StaleUpdateIgnored(t *testing.T) {
 	// Capture current projection_version, then apply a stale UPDATE
 	// directly with version-5. The guard must reject it.
 	var currentVer int64
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT projection_version FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg-stale",
 	).Scan(&currentVer))
@@ -340,7 +340,7 @@ func TestSCIMGroupMappingListener_StaleUpdateIgnored(t *testing.T) {
 
 	var displayName string
 	var afterVer int64
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT scim_display_name, projection_version FROM scim_group_mapping_projection WHERE provider_id=$1 AND scim_group_id=$2",
 		idpID, "sg-stale",
 	).Scan(&displayName, &afterVer))
@@ -366,7 +366,7 @@ func TestSCIMGroupMappingListener_IgnoresWrongStreamType(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id=$1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "wrong-stream-type SCIMGroupMapped must NOT create a row")

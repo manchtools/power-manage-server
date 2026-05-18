@@ -732,7 +732,7 @@ func TestDeviceListener_StaleUnassignedAfterReAssignDoesNotWipeRow(t *testing.T)
 	// reading the assignment row's projection_version + 1 — this
 	// mirrors the gap a stale event from the past carries.
 	var firstAssignVer int64
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT projection_version FROM device_assigned_users_projection WHERE device_id = $1 AND user_id = $2",
 		deviceID, userID,
 	).Scan(&firstAssignVer))

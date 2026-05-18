@@ -2,55 +2,18 @@
 -- 005. pg_dump --schema-only didn't capture these so they need to be
 -- restored explicitly.
 --
--- Wave H consolidation (tracker manchtools/power-manage-server#242):
--- everything in this file is replay-safe via ON CONFLICT / IF NOT
--- EXISTS so re-running the migration after a partial apply doesn't
--- corrupt seeded state.
+-- Wave H (tracker manchtools/power-manage-server#242) moved the
+-- PL/pgSQL-only seeds — generate_ulid() and the "All Devices"
+-- DO $$...$$ block — into Go bootstrap (cmd/control/setup.go::
+-- bootstrapAllDevicesGroup) so a future non-Postgres backend doesn't
+-- need a dialect-specific seed. The Postgres role/grant block stays
+-- here because it's an operator concern, not application runtime.
+--
+-- Everything is replay-safe via ON CONFLICT / IF NOT EXISTS so
+-- re-running the migration after a partial apply doesn't corrupt
+-- seeded state.
 
 -- +goose Up
-
--- ============================================================================
--- generate_ulid() utility — used by the "All Devices" seed below.
--- ============================================================================
-
--- +goose StatementBegin
-CREATE OR REPLACE FUNCTION generate_ulid() RETURNS text
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    timestamp_ms BIGINT;
-    random_bytes BYTEA;
-    ulid TEXT := '';
-    alphabet TEXT := '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-    i INTEGER;
-    val BIGINT;
-BEGIN
-    timestamp_ms := (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::BIGINT;
-
-    FOR i IN REVERSE 9..0 LOOP
-        ulid := ulid || substr(alphabet, (timestamp_ms % 32)::INTEGER + 1, 1);
-        timestamp_ms := timestamp_ms / 32;
-    END LOOP;
-
-    ulid := reverse(ulid);
-
-    random_bytes := gen_random_bytes(10);
-
-    val := 0;
-    FOR i IN 0..9 LOOP
-        val := (val * 256) + get_byte(random_bytes, i);
-        IF (i + 1) % 5 = 0 THEN
-            FOR j IN REVERSE 7..0 LOOP
-                ulid := ulid || substr(alphabet, ((val >> (j * 5)) & 31)::INTEGER + 1, 1);
-            END LOOP;
-            val := 0;
-        END IF;
-    END LOOP;
-
-    RETURN ulid;
-END;
-$$;
--- +goose StatementEnd
 
 -- ============================================================================
 -- Server settings: the single 'global' row that handlers read on every
@@ -84,37 +47,23 @@ VALUES (
 ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================================
--- "All Devices" dynamic group. Emitted as a DeviceGroupCreated event so the
--- projector path takes over from here. Guarded by EXISTS so a re-run leaves
--- the existing group alone.
+-- "All Devices" dynamic group: now seeded by Go bootstrap (see
+-- cmd/control/setup.go::bootstrapAllDevicesGroup). The seed runs AFTER
+-- projectors.WireAll so the emitted DeviceGroupCreated event flows
+-- through the registered Go listener and materialises the projection
+-- row — the prior PL/pgSQL DO block bypassed AppendEvent and orphaned
+-- the event once Wave F retired the reactive triggers.
 -- ============================================================================
-
--- +goose StatementBegin
-DO $$
-DECLARE
-    group_id TEXT;
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM device_groups_projection WHERE name = 'All Devices' AND is_deleted = FALSE) THEN
-        group_id := generate_ulid();
-        INSERT INTO events (stream_type, stream_id, stream_version, event_type, data, actor_type, actor_id)
-        VALUES (
-            'device_group', group_id, 1, 'DeviceGroupCreated',
-            jsonb_build_object(
-                'name', 'All Devices',
-                'description', 'Dynamic group that matches all registered devices',
-                'is_dynamic', true,
-                'dynamic_query', ''
-            ),
-            'system', 'migration'
-        );
-    END IF;
-END;
-$$;
--- +goose StatementEnd
 
 -- ============================================================================
 -- Database roles for the read-only / indexer login. The indexer service
 -- uses pm_indexer; everything else uses the owning role.
+--
+-- This block stays in SQL because it's a Postgres-specific operator
+-- concern, not application runtime. Non-Postgres backends would
+-- implement read-only access via their own grant model and skip this
+-- migration step (e.g. via a build-tag-scoped migration file). See
+-- #242 cheap-wins note in the file header.
 -- ============================================================================
 
 -- +goose StatementBegin

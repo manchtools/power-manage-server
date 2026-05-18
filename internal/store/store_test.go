@@ -16,7 +16,7 @@ import (
 func TestNew_RunsMigrations(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	assert.NotNil(t, st.Queries())
-	assert.NotNil(t, st.Pool())
+	assert.NotNil(t, st.TestingPool())
 }
 
 func TestAppendEvent_Basic(t *testing.T) {
@@ -35,7 +35,7 @@ func TestAppendEvent_Basic(t *testing.T) {
 	require.NoError(t, err)
 
 	var count int64
-	err = st.Pool().QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE stream_id = $1", id).Scan(&count)
+	err = st.TestingPool().QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE stream_id = $1", id).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), count)
 }
@@ -58,7 +58,7 @@ func TestAppendEvent_AutoVersioning(t *testing.T) {
 	}
 
 	var maxVersion int32
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT MAX(stream_version) FROM events WHERE stream_id = $1", id,
 	).Scan(&maxVersion)
 	require.NoError(t, err)
@@ -260,7 +260,7 @@ func TestProjection_DeviceRegistered(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "test-host")
 
 	var hostname, agentVersion string
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT hostname, agent_version FROM devices_projection WHERE id = $1",
 		deviceID,
 	).Scan(&hostname, &agentVersion)
@@ -289,7 +289,7 @@ func TestProjection_DeviceHeartbeat(t *testing.T) {
 	require.NoError(t, err)
 
 	var agentVersion string
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT agent_version FROM devices_projection WHERE id = $1",
 		deviceID,
 	).Scan(&agentVersion)
@@ -306,7 +306,7 @@ func TestProjection_ActionCreated(t *testing.T) {
 
 	var name string
 	var actionType int32
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT name, action_type FROM actions_projection WHERE id = $1",
 		actionID,
 	).Scan(&name, &actionType)
@@ -338,7 +338,7 @@ func TestProjection_ActionSetWithMembers(t *testing.T) {
 	require.NoError(t, err)
 
 	var memberCount int32
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT member_count FROM action_sets_projection WHERE id = $1",
 		setID,
 	).Scan(&memberCount)
@@ -354,7 +354,7 @@ func TestProjection_DefinitionCreated(t *testing.T) {
 	defID := testutil.CreateTestDefinition(t, st, actorID, "Full Deploy")
 
 	var name string
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT name FROM definitions_projection WHERE id = $1",
 		defID,
 	).Scan(&name)
@@ -371,7 +371,7 @@ func TestProjection_DeviceGroupCreated(t *testing.T) {
 
 	var name string
 	var isDynamic bool
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT name, is_dynamic FROM device_groups_projection WHERE id = $1",
 		groupID,
 	).Scan(&name, &isDynamic)
@@ -400,7 +400,7 @@ func TestProjection_DeviceLabelSet(t *testing.T) {
 	require.NoError(t, err)
 
 	var value string
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT value FROM device_labels WHERE device_id = $1 AND key = $2",
 		deviceID, "environment",
 	).Scan(&value)
@@ -416,7 +416,7 @@ func TestProjection_TokenCreated(t *testing.T) {
 	tokenID := testutil.CreateTestToken(t, st, actorID, "Test Token", "hash123")
 
 	var name string
-	err := st.Pool().QueryRow(ctx,
+	err := st.TestingPool().QueryRow(ctx,
 		"SELECT name FROM tokens_projection WHERE id = $1",
 		tokenID,
 	).Scan(&name)
@@ -458,7 +458,7 @@ func TestProjection_ExecutionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	var status string
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT status FROM executions_projection WHERE id = $1",
 		execID,
 	).Scan(&status)
@@ -480,7 +480,7 @@ func TestProjection_ExecutionLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT status FROM executions_projection WHERE id = $1",
 		execID,
 	).Scan(&status)
@@ -514,7 +514,7 @@ func TestProjection_AssignmentCreated(t *testing.T) {
 	require.NoError(t, err)
 
 	var sourceType, sourceID, targetType, targetID string
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT source_type, source_id, target_type, target_id FROM assignments_projection WHERE id = $1",
 		assignmentID,
 	).Scan(&sourceType, &sourceID, &targetType, &targetID)

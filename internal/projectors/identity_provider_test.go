@@ -212,7 +212,7 @@ func TestIdentityProviderListener_FullLifecycle(t *testing.T) {
 	require.Error(t, err, "GetIdentityProviderByID excludes is_deleted=TRUE rows")
 
 	var isDeleted, enabled, scimEnabled bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted, enabled, scim_enabled FROM identity_providers_projection WHERE id = $1", idpID,
 	).Scan(&isDeleted, &enabled, &scimEnabled))
 	assert.True(t, isDeleted)
@@ -242,13 +242,13 @@ func TestIdentityProviderListener_DeleteCascadesIdentityLinksAndSCIM(t *testing.
 	}))
 
 	// Plant an identity_links row + scim_group_mapping row.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		"INSERT INTO identity_links_projection (id, user_id, provider_id, external_id) VALUES ($1, $2, $3, $4)",
 		"link-"+testutil.NewID(), userID, idpID, "ext-1",
 	)
 	require.NoError(t, err)
 	groupID := testutil.CreateTestUserGroup(t, st, "actor", "test-group")
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		"INSERT INTO scim_group_mapping_projection (id, provider_id, scim_group_id, user_group_id) VALUES ($1, $2, $3, $4)",
 		"mapping-"+testutil.NewID(), idpID, "sg-1", groupID,
 	)
@@ -263,12 +263,12 @@ func TestIdentityProviderListener_DeleteCascadesIdentityLinksAndSCIM(t *testing.
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM identity_links_projection WHERE provider_id = $1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "identity_links_projection rows for the deleted IdP are removed")
 
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id = $1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "scim_group_mapping_projection rows for the deleted IdP are removed")
@@ -294,7 +294,7 @@ func TestIdentityProviderListener_SCIMDisableCascadesGroupMappings(t *testing.T)
 	}))
 
 	groupID := testutil.CreateTestUserGroup(t, st, "actor", "test-group-scim")
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		"INSERT INTO scim_group_mapping_projection (id, provider_id, scim_group_id, user_group_id) VALUES ($1, $2, $3, $4)",
 		"mapping-"+testutil.NewID(), idpID, "sg-x", groupID,
 	)
@@ -308,7 +308,7 @@ func TestIdentityProviderListener_SCIMDisableCascadesGroupMappings(t *testing.T)
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id = $1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "SCIM disable wipes group mappings for that provider")
@@ -417,13 +417,13 @@ func TestIdentityProviderListener_StaleDeleteReplay(t *testing.T) {
 	require.NoError(t, err)
 
 	// Plant a link + mapping that a stale replay would wrongly nuke.
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		"INSERT INTO identity_links_projection (id, user_id, provider_id, external_id) VALUES ($1, $2, $3, $4)",
 		"link-"+testutil.NewID(), userID, idpID, "ext-2",
 	)
 	require.NoError(t, err)
 	groupID := testutil.CreateTestUserGroup(t, st, "actor", "test-group-stale")
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		"INSERT INTO scim_group_mapping_projection (id, provider_id, scim_group_id, user_group_id) VALUES ($1, $2, $3, $4)",
 		"mapping-"+testutil.NewID(), idpID, "sg-y", groupID,
 	)
@@ -446,12 +446,12 @@ func TestIdentityProviderListener_StaleDeleteReplay(t *testing.T) {
 
 	// Identity link + SCIM mapping survive.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM identity_links_projection WHERE provider_id = $1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale IdentityProviderDeleted must NOT cascade-delete identity_links")
 
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM scim_group_mapping_projection WHERE provider_id = $1", idpID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale IdentityProviderDeleted must NOT cascade-delete scim_group_mappings")

@@ -216,6 +216,12 @@ func main() {
 	// periodic reconciler. See setup.go for the full rationale.
 	wireSystemActions(ctx, st, svc, cfg, logger)
 
+	// Boot-time seed of the "All Devices" dynamic group. Runs AFTER
+	// WireAll so the DeviceGroupCreated event flows through the
+	// registered projector listener (#242 Wave H — replaces the
+	// PL/pgSQL DO block in migration 008).
+	bootstrapAllDevicesGroup(ctx, st, logger)
+
 	configureTrustedProxies(cfg, logger)
 
 	// Valkey-backed subsystem: taskqueue.Client + RediSearch index +

@@ -518,7 +518,7 @@ func mustAppend(t *testing.T, st *store.Store, ctx context.Context, e store.Even
 // it.
 func dumpLuksKeysForAction(t *testing.T, st *store.Store, deviceID, actionID, devicePath string) []luksKeyRow {
 	t.Helper()
-	rows, err := st.Pool().Query(context.Background(),
+	rows, err := st.TestingPool().Query(context.Background(),
 		`SELECT id, passphrase, rotated_at, is_current, revocation_status FROM luks_keys_projection
 		 WHERE device_id = $1 AND action_id = $2 AND device_path = $3
 		 ORDER BY rotated_at DESC`,

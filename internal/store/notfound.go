@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrNotFound is the canonical "no row matched" sentinel for store
@@ -25,4 +26,29 @@ func IsNotFound(err error) bool {
 		return false
 	}
 	return errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows)
+}
+
+// ErrVersionConflict is the canonical "optimistic-concurrency lost"
+// sentinel for AppendEvent writes. The Postgres backend recognises a
+// unique-violation on (stream_type, stream_id, stream_version) as the
+// conflict signal (`pgconn.PgError.Code == "23505"`); a future MySQL /
+// SQLite backend would map ER_DUP_ENTRY 1062 / SQLITE_CONSTRAINT_UNIQUE
+// onto the same sentinel without callers needing to know.
+var ErrVersionConflict = errors.New("version conflict")
+
+// IsVersionConflict reports whether err signals a stream-version
+// collision on AppendEvent. Mirrors IsNotFound — the only intended
+// recognizer for OCC failures outside the store package.
+func IsVersionConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrVersionConflict) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true
+	}
+	return false
 }

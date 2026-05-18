@@ -142,7 +142,7 @@ func TestUserSelectionListener_UpsertSelectThenDeselect(t *testing.T) {
 	}))
 
 	var selected bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT selected FROM user_selections_projection WHERE device_id=$1 AND source_type='user' AND source_id=$2",
 		deviceID, sourceID,
 	).Scan(&selected))
@@ -158,7 +158,7 @@ func TestUserSelectionListener_UpsertSelectThenDeselect(t *testing.T) {
 		},
 		ActorType: "user", ActorID: "u",
 	}))
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT selected FROM user_selections_projection WHERE device_id=$1 AND source_type='user' AND source_id=$2",
 		deviceID, sourceID,
 	).Scan(&selected))
@@ -166,7 +166,7 @@ func TestUserSelectionListener_UpsertSelectThenDeselect(t *testing.T) {
 
 	// Confirm exactly one row (UPSERT, not duplicate insert).
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_selections_projection WHERE device_id=$1 AND source_type='user' AND source_id=$2",
 		deviceID, sourceID,
 	).Scan(&count))
@@ -195,7 +195,7 @@ func TestUserSelectionListener_PerSourceTypeScope(t *testing.T) {
 	}
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_selections_projection WHERE device_id=$1", deviceID,
 	).Scan(&count))
 	assert.Equal(t, 2, count, "different source_types must NOT collapse into one row")
@@ -233,7 +233,7 @@ func TestUserSelectionListener_StaleReplayRejected(t *testing.T) {
 
 	var currentVer int64
 	var currentSelected bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT projection_version, selected FROM user_selections_projection WHERE device_id=$1 AND source_type='user' AND source_id=$2",
 		deviceID, sourceID,
 	).Scan(&currentVer, &currentSelected))
@@ -255,7 +255,7 @@ func TestUserSelectionListener_StaleReplayRejected(t *testing.T) {
 
 	var afterVer int64
 	var afterSelected bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT projection_version, selected FROM user_selections_projection WHERE device_id=$1 AND source_type='user' AND source_id=$2",
 		deviceID, sourceID,
 	).Scan(&afterVer, &afterSelected))
@@ -280,7 +280,7 @@ func TestUserSelectionListener_IgnoresWrongStreamType(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_selections_projection WHERE device_id=$1", deviceID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "wrong-stream-type UserSelectionChanged must NOT create a row")
