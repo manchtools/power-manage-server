@@ -910,7 +910,7 @@ func TestIdentityProviderCreatedFromEvent_GroupMappingDefaults(t *testing.T) {
 			"explicit empty object must round-trip as {} — indistinguishable from default")
 	})
 
-	t.Run("nested group_mapping forwards verbatim JSONB bytes", func(t *testing.T) {
+	t.Run("flat group_mapping forwards verbatim JSONB bytes", func(t *testing.T) {
 		got, err := projectors.IdentityProviderCreatedFromEvent(mkEvent(t, map[string]any{
 			"group_mapping": map[string]any{
 				"engineering": "role-eng",
@@ -923,5 +923,33 @@ func TestIdentityProviderCreatedFromEvent_GroupMappingDefaults(t *testing.T) {
 		var decoded map[string]string
 		require.NoError(t, json.Unmarshal(got.GroupMapping, &decoded))
 		assert.Equal(t, map[string]string{"engineering": "role-eng", "admins": "role-admin"}, decoded)
+	})
+
+	t.Run("nested group_mapping forwards verbatim JSONB bytes", func(t *testing.T) {
+		// The wire shape allows nested objects — e.g. an IdP that maps
+		// a SCIM claim path to a structured policy descriptor. The
+		// decoder must forward the raw bytes unmodified so the
+		// listener can write the JSONB column without re-encoding;
+		// any re-marshal would reorder keys and risk a stale-replay
+		// guard mismatching the canonical form.
+		nested := map[string]any{
+			"engineering": map[string]any{
+				"role":  "role-eng",
+				"scope": []any{"prod", "staging"},
+				"meta":  map[string]any{"source": "scim", "ttl": float64(3600)},
+			},
+			"admins": map[string]any{
+				"role": "role-admin",
+				"meta": map[string]any{"source": "manual"},
+			},
+		}
+		got, err := projectors.IdentityProviderCreatedFromEvent(mkEvent(t, map[string]any{
+			"group_mapping": nested,
+		}))
+		require.NoError(t, err)
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(got.GroupMapping, &decoded))
+		assert.Equal(t, nested, decoded,
+			"nested object structure must round-trip without loss")
 	})
 }
