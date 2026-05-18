@@ -589,3 +589,129 @@ func TestExecutionListener_IgnoresWrongStreamType(t *testing.T) {
 	_, err := st.Queries().GetExecutionByID(ctx, roleID)
 	require.Error(t, err, "no executions_projection row should exist for a role-stream event")
 }
+
+// TestExecutionScheduledFromEvent_TimeParseEdgeCases hardens the
+// scheduled_for parsing path. The decoder rejects malformed RFC3339
+// strings explicitly so a bad event surfaces as a wrapped error
+// instead of silently round-tripping a zero time.Time into the
+// projection (which would race with the dispatch-window guard and
+// land the row in 'scheduled' state with executed_at=epoch).
+func TestExecutionScheduledFromEvent_TimeParseEdgeCases(t *testing.T) {
+	t.Run("RFC3339 without sub-second precision is accepted", func(t *testing.T) {
+		got, err := projectors.ExecutionScheduledFromEvent(store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-1", EventType: "ExecutionScheduled",
+			ActorType: "user", ActorID: "u-1",
+			Data: jsonOrFail(t, map[string]any{
+				"device_id":     "dev-1",
+				"action_type":   1,
+				"scheduled_for": "2026-03-01T00:00:00Z",
+			}),
+		})
+		require.NoError(t, err, "RFC3339Nano parser accepts plain RFC3339")
+		assert.True(t, got.ScheduledFor.Equal(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)))
+	})
+
+	t.Run("malformed scheduled_for is a wrapped error, not ErrIgnoredEvent", func(t *testing.T) {
+		_, err := projectors.ExecutionScheduledFromEvent(store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-2", EventType: "ExecutionScheduled",
+			ActorType: "user", ActorID: "u-1",
+			Data: jsonOrFail(t, map[string]any{
+				"device_id":     "dev-1",
+				"action_type":   1,
+				"scheduled_for": "not-a-timestamp",
+			}),
+		})
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, projectors.ErrIgnoredEvent),
+			"a bad timestamp must surface as a validation error, not a silent skip")
+		assert.Contains(t, err.Error(), "scheduled_for")
+	})
+
+	t.Run("Z and +00:00 round-trip identically", func(t *testing.T) {
+		gotZ, errZ := projectors.ExecutionScheduledFromEvent(store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-z", EventType: "ExecutionScheduled",
+			ActorType: "user", ActorID: "u",
+			Data: jsonOrFail(t, map[string]any{
+				"device_id":     "dev-1",
+				"action_type":   1,
+				"scheduled_for": "2026-03-01T12:34:56Z",
+			}),
+		})
+		require.NoError(t, errZ)
+		gotOffset, errOffset := projectors.ExecutionScheduledFromEvent(store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-o", EventType: "ExecutionScheduled",
+			ActorType: "user", ActorID: "u",
+			Data: jsonOrFail(t, map[string]any{
+				"device_id":     "dev-1",
+				"action_type":   1,
+				"scheduled_for": "2026-03-01T12:34:56+00:00",
+			}),
+		})
+		require.NoError(t, errOffset)
+		assert.True(t, gotZ.ScheduledFor.Equal(gotOffset.ScheduledFor),
+			"Z and +00:00 must parse to the same instant")
+	})
+}
+
+// TestExecutionCreatedFromEvent_ActionIDCoalesce hardens the
+// COALESCE(action_id, definition_id) semantics. The PL/pgSQL projector
+// wrote action_id when present, definition_id when action_id was
+// missing — used by the compliance-policy bootstrap path that
+// synthesises an action row from a definition. The decoder must
+// match: explicit action_id wins, missing action_id falls through to
+// definition_id, neither present yields nil so the projector writes
+// NULL.
+func TestExecutionCreatedFromEvent_ActionIDCoalesce(t *testing.T) {
+	mkEvent := func(payload map[string]any) store.PersistedEvent {
+		base := map[string]any{
+			"device_id":   "dev-1",
+			"action_type": 1,
+		}
+		for k, v := range payload {
+			base[k] = v
+		}
+		return store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-x", EventType: "ExecutionCreated",
+			ActorType: "user", ActorID: "u",
+			Data: jsonOrFail(t, base),
+		}
+	}
+
+	t.Run("action_id present wins over definition_id", func(t *testing.T) {
+		got, err := projectors.ExecutionCreatedFromEvent(mkEvent(map[string]any{
+			"action_id":     "act-canonical",
+			"definition_id": "def-fallback",
+		}))
+		require.NoError(t, err)
+		require.NotNil(t, got.ActionID)
+		assert.Equal(t, "act-canonical", *got.ActionID)
+	})
+
+	t.Run("definition_id used when action_id absent", func(t *testing.T) {
+		got, err := projectors.ExecutionCreatedFromEvent(mkEvent(map[string]any{
+			"definition_id": "def-only",
+		}))
+		require.NoError(t, err)
+		require.NotNil(t, got.ActionID)
+		assert.Equal(t, "def-only", *got.ActionID,
+			"COALESCE(action_id, definition_id) falls back to definition_id")
+	})
+
+	t.Run("neither action_id nor definition_id → ActionID nil (NULL in projection)", func(t *testing.T) {
+		got, err := projectors.ExecutionCreatedFromEvent(mkEvent(map[string]any{}))
+		require.NoError(t, err)
+		assert.Nil(t, got.ActionID,
+			"both action_id and definition_id absent must yield nil so the listener writes NULL")
+	})
+
+	t.Run("empty-string action_id falls through to definition_id", func(t *testing.T) {
+		got, err := projectors.ExecutionCreatedFromEvent(mkEvent(map[string]any{
+			"action_id":     "",
+			"definition_id": "def-via-empty",
+		}))
+		require.NoError(t, err)
+		require.NotNil(t, got.ActionID)
+		assert.Equal(t, "def-via-empty", *got.ActionID,
+			"empty-string action_id collapses to nil, then COALESCE falls back to definition_id")
+	})
+}
