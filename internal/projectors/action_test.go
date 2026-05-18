@@ -298,7 +298,7 @@ func TestActionListener_RenameCascadesIntoComplianceRule(t *testing.T) {
 	}))
 
 	var actionName string
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		`SELECT action_name FROM compliance_policy_rules_projection
 		 WHERE policy_id = $1 AND action_id = $2`, policyID, actionID,
 	).Scan(&actionName))
@@ -349,13 +349,13 @@ func TestActionListener_DeletedCascadesAcrossEverything(t *testing.T) {
 	}))
 	// Plant a compliance result + an evaluation row directly so we
 	// don't have to drive the full eval engine to exercise the wipes.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO compliance_results_projection (device_id, action_id, action_name, compliant, checked_at)
 		 VALUES ($1, $2, $3, TRUE, NOW())`,
 		deviceID, actionID, "doomed",
 	)
 	require.NoError(t, err)
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO compliance_policy_evaluation_projection (device_id, policy_id, action_id, compliant, checked_at)
 		 VALUES ($1, $2, $3, TRUE, NOW())`,
 		deviceID, policyID, actionID,
@@ -380,7 +380,7 @@ func TestActionListener_DeletedCascadesAcrossEverything(t *testing.T) {
 
 	// action_set member wiped + member_count decremented.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM action_set_members_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "action_set members for deleted action wiped")
@@ -389,7 +389,7 @@ func TestActionListener_DeletedCascadesAcrossEverything(t *testing.T) {
 	assert.Equal(t, int32(0), afterSet.MemberCount, "parent action_set member_count decremented")
 
 	// Compliance rules wiped + per-policy rule_count decremented.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_rules_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "compliance rules for deleted action wiped")
@@ -398,11 +398,11 @@ func TestActionListener_DeletedCascadesAcrossEverything(t *testing.T) {
 	assert.Equal(t, int32(0), afterPolicy.RuleCount, "policy rule_count decremented")
 
 	// Evaluation + result rows wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_evaluation_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "evaluation rows for deleted action wiped")
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_results_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "result rows for deleted action wiped")
@@ -450,7 +450,7 @@ func TestActionListener_StaleDeleteReplayDoesNotNukeCascade(t *testing.T) {
 		},
 		ActorType: "user", ActorID: "u",
 	}))
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO compliance_results_projection (device_id, action_id, action_name, compliant, checked_at)
 		 VALUES ($1, $2, $3, TRUE, NOW())`,
 		deviceID, actionID, "live",
@@ -484,7 +484,7 @@ func TestActionListener_StaleDeleteReplayDoesNotNukeCascade(t *testing.T) {
 
 	// action_set member NOT wiped, member_count NOT decremented.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM action_set_members_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale ActionDeleted must NOT cascade-delete action_set members")
@@ -494,7 +494,7 @@ func TestActionListener_StaleDeleteReplayDoesNotNukeCascade(t *testing.T) {
 		"stale ActionDeleted must NOT decrement live action_set member_count")
 
 	// Compliance rule NOT wiped, rule_count NOT decremented.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_rules_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale ActionDeleted must NOT cascade-delete compliance rules")
@@ -504,7 +504,7 @@ func TestActionListener_StaleDeleteReplayDoesNotNukeCascade(t *testing.T) {
 		"stale ActionDeleted must NOT decrement live policy rule_count")
 
 	// Compliance results NOT wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_results_projection WHERE action_id = $1", actionID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale ActionDeleted must NOT cascade-delete compliance results")

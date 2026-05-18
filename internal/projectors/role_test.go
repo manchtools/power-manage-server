@@ -236,7 +236,7 @@ func TestRoleListener_DeleteCascadesUserRoles(t *testing.T) {
 	// insert (bypassing the user_role projector since #102 hasn't
 	// landed yet). The role projector only cares about cleanup, not
 	// who put them there.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		"INSERT INTO user_roles_projection (user_id, role_id, assigned_at, assigned_by) VALUES ($1,$2,NOW(),''),($3,$2,NOW(),'')",
 		"user-A", roleID, "user-B",
 	)
@@ -244,7 +244,7 @@ func TestRoleListener_DeleteCascadesUserRoles(t *testing.T) {
 
 	// Verify pre-delete state.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_roles_projection WHERE role_id = $1", roleID,
 	).Scan(&count))
 	require.Equal(t, 2, count)
@@ -258,13 +258,13 @@ func TestRoleListener_DeleteCascadesUserRoles(t *testing.T) {
 	// Role row marked deleted (won't show up via GetRoleByID which
 	// filters is_deleted=FALSE — query directly).
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM roles_projection WHERE id = $1", roleID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted, "RoleDeleted flips is_deleted=TRUE")
 
 	// Cascade cleared the user-role memberships.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_roles_projection WHERE role_id = $1", roleID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "user_roles_projection rows for the deleted role are removed")
@@ -337,7 +337,7 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 	require.NoError(t, err)
 
 	// Plant 2 memberships.
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		"INSERT INTO user_roles_projection (user_id, role_id, assigned_at, assigned_by) VALUES ($1,$2,NOW(),''),($3,$2,NOW(),'')",
 		"user-A", roleID, "user-B",
 	)
@@ -366,7 +366,7 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 
 	// Memberships still there.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_roles_projection WHERE role_id = $1", roleID,
 	).Scan(&count))
 	assert.Equal(t, 2, count, "stale RoleDeleted replay must NOT cascade-delete live memberships")

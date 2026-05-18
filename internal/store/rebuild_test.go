@@ -37,7 +37,7 @@ func TestRebuildAll_RoundTripsThroughEventStore(t *testing.T) {
 	// Truncate the projection out from under the live pipeline,
 	// simulating an incident (manual delete, projector bug, etc.)
 	// that left the projection inconsistent with the event store.
-	_, err = st.Pool().Exec(ctx, "TRUNCATE users_projection CASCADE")
+	_, err = st.TestingPool().Exec(ctx, "TRUNCATE users_projection CASCADE")
 	require.NoError(t, err)
 
 	_, err = st.Queries().GetUserByID(ctx, userID)
@@ -71,7 +71,7 @@ func TestRebuildAll_NoArgsRebuildsEverything(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "rebuild-test-host")
 	groupID := testutil.CreateTestDeviceGroup(t, st, adminID, "Rebuild Test Group")
 
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`TRUNCATE users_projection CASCADE;
 		 TRUNCATE devices_projection CASCADE;
 		 TRUNCATE device_groups_projection CASCADE`)
@@ -134,7 +134,7 @@ func TestRebuildAll_PortedProjector_RoundTrip(t *testing.T) {
 	require.NoError(t, err, "role must exist after live pipeline projection")
 	assert.Equal(t, "RebuildPortedRole", before.Name)
 
-	_, err = st.Pool().Exec(ctx, "TRUNCATE roles_projection CASCADE")
+	_, err = st.TestingPool().Exec(ctx, "TRUNCATE roles_projection CASCADE")
 	require.NoError(t, err)
 
 	_, err = st.Queries().GetRoleByID(ctx, roleID)
@@ -186,7 +186,7 @@ func TestRebuildAll_PortedToken_RoundTrip(t *testing.T) {
 	require.NoError(t, err, "token must exist after live pipeline projection")
 	assert.Equal(t, "RebuildPortedToken", before.Name)
 
-	_, err = st.Pool().Exec(ctx, "TRUNCATE tokens_projection CASCADE")
+	_, err = st.TestingPool().Exec(ctx, "TRUNCATE tokens_projection CASCADE")
 	require.NoError(t, err)
 
 	_, err = st.Queries().GetTokenByID(ctx, generated.GetTokenByIDParams{ID: tokenID})
@@ -239,7 +239,7 @@ func TestRebuildAll_PortedUserSelection_RoundTrip(t *testing.T) {
 	require.NoError(t, err, "selection must exist after live pipeline projection")
 	assert.True(t, before.Selected)
 
-	_, err = st.Pool().Exec(ctx, "TRUNCATE user_selections_projection CASCADE")
+	_, err = st.TestingPool().Exec(ctx, "TRUNCATE user_selections_projection CASCADE")
 	require.NoError(t, err)
 
 	_, err = st.Queries().GetUserSelection(ctx, generated.GetUserSelectionParams{
@@ -286,7 +286,7 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	// production projection) is verified by reading runOneTarget,
 	// not by this test alone.
 	roleID := testutil.NewID()
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, projection_version)
 		 VALUES ($1, 'guard-canary', '', ARRAY[]::TEXT[], false, NOW(), 0)`,
 		roleID,
@@ -305,7 +305,7 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	// leaves the projection intact); strict pre-TRUNCATE ordering
 	// is verified by reading runOneTarget.
 	var count int
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
 	).Scan(&count))
 	assert.Equal(t, 1, count,

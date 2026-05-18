@@ -5,13 +5,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"sync"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
 	"github.com/pressly/goose/v3"
@@ -363,8 +361,17 @@ func (s *Store) Repos() *Repos {
 	return r
 }
 
-// Pool returns the underlying connection pool.
-func (s *Store) Pool() *pgxpool.Pool {
+// TestingPool returns the underlying pgx connection pool for test
+// fixtures that need to issue raw SQL outside the repo abstraction
+// (projector applies, schema introspection, raw-row asserts). Production
+// code must not call this — every backend swap on the storage-abstraction
+// tracker (#242) would have to re-implement this method, so reaching for
+// it is by definition backend-specific. New tests should prefer
+// Store.Queries() / Store.Repos() and add a query if one is missing.
+//
+// The name is deliberately backend-flavoured to make new misuse easy to
+// grep for and to keep the "this couples me to Postgres" signal visible.
+func (s *Store) TestingPool() *pgxpool.Pool {
 	return s.pool
 }
 
@@ -456,12 +463,11 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 			ActorID:       event.ActorID,
 		})
 		if err != nil {
-			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if IsVersionConflict(err) {
 				if i < maxRetries-1 {
 					continue // Retry on version conflict
 				}
-				return fmt.Errorf("version conflict after %d retries: stream was modified concurrently", maxRetries)
+				return fmt.Errorf("%w: stream was modified concurrently after %d retries", ErrVersionConflict, maxRetries)
 			}
 			return fmt.Errorf("append event: %w", err)
 		}
@@ -497,9 +503,8 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 		ActorID:       event.ActorID,
 	})
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			return fmt.Errorf("version conflict: expected version %d but stream was modified", expectedVersion)
+		if IsVersionConflict(err) {
+			return fmt.Errorf("%w: expected version %d but stream was modified", ErrVersionConflict, expectedVersion)
 		}
 		return fmt.Errorf("append event: %w", err)
 	}

@@ -316,7 +316,7 @@ func TestAssignmentListener_DeleteSoftDeletes(t *testing.T) {
 
 	// But the row is still there with is_deleted=TRUE.
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM assignments_projection WHERE id = $1", asnID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted)
@@ -458,7 +458,7 @@ func TestAssignmentListener_StaleDeleteReplayDoesNotCascade(t *testing.T) {
 	// cascade DELETE is skipped on a stale replay. action_id is part
 	// of the composite PK; any value will do — the cascade DELETE
 	// scopes on (device_id, policy_id) only.
-	_, err = st.Pool().Exec(ctx,
+	_, err = st.TestingPool().Exec(ctx,
 		`INSERT INTO compliance_policy_evaluation_projection
 		   (device_id, policy_id, action_id, compliant, status)
 		 VALUES ($1, $2, $3, TRUE, 1)`,
@@ -491,7 +491,7 @@ func TestAssignmentListener_StaleDeleteReplayDoesNotCascade(t *testing.T) {
 	// Compliance evaluation row is still there — the cascade was
 	// skipped because the guarded SoftDelete returned ErrNoRows.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_evaluation_projection WHERE device_id = $1 AND policy_id = $2",
 		deviceID, policyID,
 	).Scan(&count))

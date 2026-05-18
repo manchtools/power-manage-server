@@ -191,7 +191,7 @@ func TestTokenListener_CreateRenameUseDisableEnableDeleteLifecycle(t *testing.T)
 	require.Error(t, err, "GetTokenByID excludes soft-deleted rows")
 	// Confirm row still exists with is_deleted=TRUE for audit.
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM tokens_projection WHERE id = $1", tokenID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted)

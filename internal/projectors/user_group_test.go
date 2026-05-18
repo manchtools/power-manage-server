@@ -447,7 +447,7 @@ func TestUserGroupListener_MemberMutationsSkippedForDynamicGroup(t *testing.T) {
 
 	// The dynamic flip enqueues an evaluation row.
 	var queueCount int
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM dynamic_user_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&queueCount))
 	assert.Equal(t, 1, queueCount, "UserGroupCreated for a dynamic group enqueues an evaluation row")
@@ -518,7 +518,7 @@ func TestUserGroupListener_QueryUpdatedFlipToDynamicWipesMembers(t *testing.T) {
 	assert.Empty(t, memberIDs, "flip-to-dynamic must wipe every static-membership row")
 
 	var queueCount int
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM dynamic_user_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&queueCount))
 	assert.Equal(t, 1, queueCount, "flip-to-dynamic must (re-)enqueue the group for the evaluator")
@@ -626,7 +626,7 @@ func TestUserGroupListener_DeleteCascadesMembersAndRoles(t *testing.T) {
 
 	// Plant a dynamic-queue entry directly so we can confirm the
 	// cleanup half of UserGroupDeleted wipes it.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO dynamic_user_group_evaluation_queue (group_id, queued_at, reason)
 		 VALUES ($1, NOW(), 'test-seed')
 		 ON CONFLICT (group_id) DO NOTHING`,
@@ -642,26 +642,26 @@ func TestUserGroupListener_DeleteCascadesMembersAndRoles(t *testing.T) {
 
 	// Group row marked deleted.
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM user_groups_projection WHERE id = $1", groupID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted)
 
 	// Members wiped.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
 
 	// Roles wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_roles_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
 
 	// Dynamic-evaluation-queue row wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM dynamic_user_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
@@ -755,13 +755,13 @@ func TestUserGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 
 	// Member still there.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale UserGroupDeleted must NOT cascade-delete members")
 
 	// Role still there.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_roles_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale UserGroupDeleted must NOT cascade-delete role assignments")
@@ -807,7 +807,7 @@ func TestUserGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1 AND user_id = $2",
 		groupID, userID,
 	).Scan(&count))
@@ -888,7 +888,7 @@ func TestUserGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(t 
 		ActorType: "user", ActorID: "u",
 	}))
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@x.com", "pass", "user")
-	_, err := st.Pool().Exec(ctx, `
+	_, err := st.TestingPool().Exec(ctx, `
 		INSERT INTO user_group_members_projection (group_id, user_id, added_at, added_by, projection_version)
 		VALUES ($1, $2, now(), 'system', 0)`, groupID, userID)
 	require.NoError(t, err)
@@ -900,7 +900,7 @@ func TestUserGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(t 
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "steady-state dynamic-query edit must NOT wipe evaluator-populated members")
@@ -944,7 +944,7 @@ func TestUserGroupListener_StaleRoleAssignedDoesNotReinsertRevoked(t *testing.T)
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_group_roles_projection WHERE group_id = $1 AND role_id = $2",
 		groupID, roleID,
 	).Scan(&count))

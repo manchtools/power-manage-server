@@ -408,7 +408,7 @@ func TestDeviceGroupListener_CreateLifecycle(t *testing.T) {
 	require.Error(t, err, "GetDeviceGroupByID filters is_deleted=FALSE; deleted group is gone from this query")
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "DeviceGroupDeleted cascade must wipe member rows")
@@ -471,7 +471,7 @@ func TestDeviceGroupListener_DynamicCreatedEnqueues(t *testing.T) {
 	assert.True(t, got.IsDynamic)
 
 	var reason *string
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT reason FROM dynamic_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&reason))
 	require.NotNil(t, reason)
@@ -522,13 +522,13 @@ func TestDeviceGroupListener_QueryUpdatedFlipToDynamicCascade(t *testing.T) {
 	assert.Equal(t, int32(0), afterFlip.MemberCount, "flip-to-dynamic must zero member_count")
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "flip-to-dynamic must wipe every static member row")
 
 	var reason *string
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT reason FROM dynamic_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&reason))
 	require.NotNil(t, reason)
@@ -561,7 +561,7 @@ func TestDeviceGroupListener_DynamicGroupRejectsMemberMutations(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "DeviceGroupMemberAdded against a dynamic group must be a no-op")
@@ -656,7 +656,7 @@ func TestDeviceGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 
 	// Member still there.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale DeviceGroupDeleted must NOT cascade-delete members")
@@ -711,13 +711,13 @@ func TestDeviceGroupListener_StaleQueryUpdatedDoesNotNukeMembers(t *testing.T) {
 
 	// Member still there because the cascade was skipped.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale QueryUpdated must NOT cascade-wipe static members")
 
 	// No queue entry — the cascade was skipped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM dynamic_group_evaluation_queue WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "stale QueryUpdated must NOT enqueue the group")
@@ -770,7 +770,7 @@ func TestDeviceGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testin
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1 AND device_id = $2",
 		groupID, deviceID,
 	).Scan(&count))
@@ -799,7 +799,7 @@ func TestDeviceGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(
 		Data:      map[string]any{"name": "dyn", "is_dynamic": true, "dynamic_query": "(env equals \"prod\")"},
 		ActorType: "user", ActorID: "u",
 	}))
-	_, err := st.Pool().Exec(ctx, `
+	_, err := st.TestingPool().Exec(ctx, `
 		INSERT INTO device_group_members_projection (group_id, device_id, added_at, projection_version)
 		VALUES ($1, 'dev-evaluator-populated', now(), 0)`, groupID)
 	require.NoError(t, err)
@@ -811,7 +811,7 @@ func TestDeviceGroupListener_QueryUpdatedSteadyStateDynamicEditPreservesMembers(
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM device_group_members_projection WHERE group_id = $1", groupID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "steady-state dynamic-query edit must NOT wipe evaluator-populated members")

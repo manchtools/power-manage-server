@@ -47,7 +47,7 @@ func TestProjection_ActionRenameWithSoftDeletedSameName(t *testing.T) {
 
 	// Verify the rename succeeded
 	var name string
-	err = st.Pool().QueryRow(ctx,
+	err = st.TestingPool().QueryRow(ctx,
 		"SELECT name FROM actions_projection WHERE id = $1",
 		action2ID,
 	).Scan(&name)

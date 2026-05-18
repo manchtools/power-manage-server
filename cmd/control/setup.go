@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/crypto"
@@ -19,6 +21,46 @@ import (
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
+
+// bootstrapAllDevicesGroup emits the seed DeviceGroupCreated event
+// for the "All Devices" dynamic group on a fresh deployment. Previously
+// done in PL/pgSQL inside migration 008 via a DO block + generate_ulid()
+// function (#242 Wave H); moved into Go bootstrap so a future non-Postgres
+// backend doesn't need a dialect-specific seed.
+//
+// Must run AFTER projectors.WireAll so the event flows through the
+// registered DeviceGroup listener and materialises the projection row.
+// Idempotent — early-returns when the group already exists. Errors are
+// logged (not returned) because this is a best-effort boot convenience
+// matching seedSSHAccessForAll.
+func bootstrapAllDevicesGroup(ctx context.Context, st *store.Store, logger *slog.Logger) {
+	_, err := st.Repos().DeviceGroup.GetByName(ctx, "All Devices")
+	if err == nil {
+		return // already present
+	}
+	if !store.IsNotFound(err) {
+		logger.Error("bootstrap: All Devices group lookup failed", "error", err)
+		return
+	}
+	id := ulid.Make().String()
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "device_group",
+		StreamID:   id,
+		EventType:  string(eventtypes.DeviceGroupCreated),
+		Data: payloads.DeviceGroupCreated{
+			Name:         "All Devices",
+			Description:  "Dynamic group that matches all registered devices",
+			IsDynamic:    true,
+			DynamicQuery: "",
+		},
+		ActorType: "system",
+		ActorID:   "bootstrap",
+	}); err != nil {
+		logger.Error("bootstrap: failed to emit DeviceGroupCreated for All Devices", "error", err)
+		return
+	}
+	logger.Info("bootstrap: emitted DeviceGroupCreated for All Devices", "group_id", id)
+}
 
 // errEncryptionKeyRequired is the boot-time fatal returned when
 // CONTROL_ENCRYPTION_KEY is unset and the operator did not opt out

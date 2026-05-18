@@ -332,7 +332,7 @@ func TestDefinitionListener_SynthesisedActionBranch(t *testing.T) {
 	// definitions_projection MUST NOT have a row (synthesis branch
 	// is the action-stream side; definition stream no-ops).
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM definitions_projection WHERE id = $1", id,
 	).Scan(&count))
 	assert.Equal(t, 0, count,
@@ -434,7 +434,7 @@ func TestDefinitionListener_StaleMemberAddedDoesNotRecreateMembership(t *testing
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM definition_members_projection WHERE definition_id = $1 AND action_set_id = $2",
 		defID, actionSetID,
 	).Scan(&count))
@@ -463,7 +463,7 @@ func TestDefinitionListener_IgnoresOtherStreamTypes(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM definitions_projection WHERE id = $1", id,
 	).Scan(&count))
 	assert.Equal(t, 0, count)

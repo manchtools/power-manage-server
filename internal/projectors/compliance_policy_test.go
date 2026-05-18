@@ -503,7 +503,7 @@ func TestCompliancePolicyListener_DeleteCascadesRulesAndEvaluations(t *testing.T
 	// half of CompliancePolicyDeleted wipes it. Live evaluation rows
 	// are written by the still-PL/pgSQL eval engine; we simulate one
 	// to lock the cascade behaviour.
-	_, err := st.Pool().Exec(ctx,
+	_, err := st.TestingPool().Exec(ctx,
 		`INSERT INTO compliance_policy_evaluation_projection
 		   (device_id, policy_id, action_id, compliant, status, projection_version)
 		 VALUES ($1, $2, $3, FALSE, 0, 1)`,
@@ -519,20 +519,20 @@ func TestCompliancePolicyListener_DeleteCascadesRulesAndEvaluations(t *testing.T
 
 	// Policy row marked deleted.
 	var isDeleted bool
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT is_deleted FROM compliance_policies_projection WHERE id = $1", policyID,
 	).Scan(&isDeleted))
 	assert.True(t, isDeleted)
 
 	// Rules wiped.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_rules_projection WHERE policy_id = $1", policyID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
 
 	// Evaluations wiped.
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_evaluation_projection WHERE policy_id = $1", policyID,
 	).Scan(&count))
 	assert.Equal(t, 0, count)
@@ -557,7 +557,7 @@ func TestCompliancePolicyListener_RuleRemovedWipesEvaluations(t *testing.T) {
 			Data:      map[string]any{"action_id": aid, "action_name": "r", "grace_period_hours": 0},
 			ActorType: "user", ActorID: "u",
 		}))
-		_, err := st.Pool().Exec(ctx,
+		_, err := st.TestingPool().Exec(ctx,
 			`INSERT INTO compliance_policy_evaluation_projection
 			   (device_id, policy_id, action_id, compliant, status, projection_version)
 			 VALUES ($1, $2, $3, FALSE, 0, 1)`,
@@ -573,13 +573,13 @@ func TestCompliancePolicyListener_RuleRemovedWipesEvaluations(t *testing.T) {
 	}))
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_evaluation_projection WHERE policy_id = $1 AND action_id = $2",
 		policyID, actionA,
 	).Scan(&count))
 	assert.Equal(t, 0, count, "RuleRemoved must wipe evaluations for the (policy, action) pair")
 
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_evaluation_projection WHERE policy_id = $1 AND action_id = $2",
 		policyID, actionB,
 	).Scan(&count))
@@ -661,7 +661,7 @@ func TestCompliancePolicyListener_StaleDeleteReplayDoesNotNukeRules(t *testing.T
 
 	// Rule still there.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_rules_projection WHERE policy_id = $1", policyID,
 	).Scan(&count))
 	assert.Equal(t, 1, count, "stale CompliancePolicyDeleted must NOT cascade-delete rules")
@@ -715,7 +715,7 @@ func TestCompliancePolicyListener_StaleRuleAddedDoesNotResurrectRemoved(t *testi
 	})
 
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM compliance_policy_rules_projection WHERE policy_id = $1 AND action_id = $2",
 		policyID, actionID,
 	).Scan(&count))

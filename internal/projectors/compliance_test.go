@@ -384,7 +384,7 @@ func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
 	}))
 	// Capture this Removed's sequence so we can replay it later.
 	var staleRemovedSeq int64
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		`SELECT sequence_num FROM events
 		 WHERE stream_type = 'compliance' AND stream_id = $1
 		   AND event_type = 'ComplianceResultRemoved'

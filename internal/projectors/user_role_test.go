@@ -202,7 +202,7 @@ func TestUserRoleListener_AssignReplayIsIdempotent(t *testing.T) {
 
 	// Confirm exactly one row.
 	count := 0
-	require.NoError(t, st.Pool().QueryRow(ctx,
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
 		"SELECT count(*) FROM user_roles_projection WHERE user_id=$1 AND role_id=$2",
 		userID, roleID,
 	).Scan(&count))
