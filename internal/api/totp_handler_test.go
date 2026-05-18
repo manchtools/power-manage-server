@@ -322,3 +322,87 @@ func TestVerifyLoginTOTP_BackupCode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(9), statusResp.Msg.BackupCodesRemaining)
 }
+
+// TestVerifyLoginTOTP_BackupCodeRaceCondition exercises the audit
+// F-07 follow-up: when two requests submit the same backup code
+// concurrently, exactly one must succeed and the other must fail
+// with "invalid TOTP code". Pre-fix, both passed the in-memory
+// VerifyBackupCode check and both got auth-success tokens, even
+// though only one TOTPBackupCodeUsed event landed and only one
+// projection-update fired. The post-fix path uses
+// AppendEventWithVersion so the second concurrent attempt fails the
+// UNIQUE(stream_type, stream_id, stream_version) constraint and the
+// handler maps the resulting ErrVersionConflict to InvalidArgument.
+func TestVerifyLoginTOTP_BackupCodeRaceCondition(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	enc := testutil.NewEncryptor(t)
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{ID: userID, Email: email, Permissions: auth.DefaultUserPermissions()})
+
+	setupResp, err := h.SetupTOTP(ctx, connect.NewRequest(&pm.SetupTOTPRequest{}))
+	require.NoError(t, err)
+	code, err := totp.GenerateCode(setupResp.Msg.Secret, time.Now())
+	require.NoError(t, err)
+	_, err = h.VerifyTOTP(ctx, connect.NewRequest(&pm.VerifyTOTPRequest{Code: code}))
+	require.NoError(t, err)
+
+	// Two independent challenges for the same user — both legitimate
+	// from a JWT perspective; the race is at the event-store level.
+	challengeA, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+	require.NoError(t, err)
+	challengeB, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+	require.NoError(t, err)
+
+	backup := setupResp.Msg.BackupCodes[0]
+
+	// Fire both calls concurrently and wait for both results.
+	type result struct {
+		ok  bool
+		err error
+	}
+	results := make(chan result, 2)
+	doVerify := func(challenge string) {
+		_, err := h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+			Challenge: challenge,
+			Code:      backup,
+		}))
+		results <- result{ok: err == nil, err: err}
+	}
+	go doVerify(challengeA)
+	go doVerify(challengeB)
+	r1 := <-results
+	r2 := <-results
+
+	// Exactly one must succeed.
+	successes := 0
+	if r1.ok {
+		successes++
+	}
+	if r2.ok {
+		successes++
+	}
+	assert.Equal(t, 1, successes,
+		"backup-code race must allow exactly one consumer; got %d (results: %+v %+v)",
+		successes, r1, r2)
+
+	// The loser must surface as invalid TOTP, NOT internal error.
+	if !r1.ok {
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(r1.err),
+			"race loser must return CodeInvalidArgument so the client retries with a fresh code")
+	}
+	if !r2.ok {
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(r2.err),
+			"race loser must return CodeInvalidArgument so the client retries with a fresh code")
+	}
+
+	// Backup-codes-remaining decreased by exactly one (the winner),
+	// not two — proves the projection wasn't double-decremented.
+	statusResp, err := h.GetTOTPStatus(ctx, connect.NewRequest(&pm.GetTOTPStatusRequest{}))
+	require.NoError(t, err)
+	assert.Equal(t, int32(9), statusResp.Msg.BackupCodesRemaining,
+		"exactly one code consumed despite two concurrent attempts")
+}
