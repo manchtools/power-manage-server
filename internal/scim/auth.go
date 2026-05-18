@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -52,6 +53,23 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			h.logger.Warn("SCIM rate limit exceeded", "slug", slug, "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
+		}
+		// Secondary rate-limit bucket keyed on (slug, client IP) so an
+		// attacker that distributes requests across multiple known
+		// slugs cannot evade the per-slug cap (audit F-08). The IP
+		// fallback path returns "" for unparsable RemoteAddr — coalescing
+		// those onto a single bucket would let a misconfigured deploy
+		// rate-limit everyone to 20/min, so we skip the IP gate when
+		// the address can't be identified and rely on the slug limit
+		// + the underlying TCP-level peer accounting.
+		if ip := auth.ClientIPFromHTTP(r); ip != "" {
+			if !h.ipRateLimiter.Allow(slug + "|" + ip) {
+				h.logger.Warn("SCIM per-IP rate limit exceeded",
+					"slug", slug, "client_ip", ip,
+					"method", r.Method, "path", r.URL.Path)
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
 		}
 
 		// Look up provider by slug with SCIM enabled

@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"time"
 
 	"connectrpc.com/connect"
@@ -18,6 +21,64 @@ import (
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
+
+// validateSSORedirectURL enforces a server-side allowlist on the
+// client-supplied redirect URL (audit F-15). The OIDC provider also
+// validates `redirect_uri` against its own registered list, but
+// relying solely on the IdP's check is fragile — a misconfigured
+// provider (or an IdP CVE) would otherwise let an attacker pass
+// `https://evil.com/callback` and complete an OIDC dance that mints a
+// session bound to a redirect they control.
+//
+// Accept:
+//   - empty string (server falls back to callbackBaseURL)
+//   - same origin as callbackBaseURL (scheme + host + port match)
+//   - loopback URLs (http://127.0.0.1:* / http://localhost:* /
+//     http://[::1]:*) — pm-enroll CLI uses this to receive the
+//     callback on a local port
+//
+// Reject everything else with InvalidArgument.
+func validateSSORedirectURL(redirectURL, callbackBaseURL string) error {
+	if redirectURL == "" {
+		return nil
+	}
+	u, err := url.Parse(redirectURL)
+	if err != nil {
+		return fmt.Errorf("malformed redirect_url: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("redirect_url scheme must be http or https, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("redirect_url missing host")
+	}
+	// Loopback hosts are accepted for CLI flows. net.ParseIP catches
+	// IPv4/IPv6 literals; the string "localhost" is the conventional
+	// hostname for the same purpose.
+	host := u.Hostname()
+	if host == "localhost" {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	// Same-origin match against the configured base URL. The base is
+	// required to be configured for any non-loopback redirect — a
+	// deployment without callbackBaseURL refuses non-loopback clients
+	// by construction.
+	if callbackBaseURL == "" {
+		return fmt.Errorf("redirect_url not permitted: CONTROL_SSO_CALLBACK_BASE_URL is not configured")
+	}
+	base, err := url.Parse(callbackBaseURL)
+	if err != nil {
+		return fmt.Errorf("server-side callback base URL is malformed: %w", err)
+	}
+	if u.Scheme != base.Scheme || u.Host != base.Host {
+		return fmt.Errorf("redirect_url origin %q does not match server callback base %q",
+			u.Scheme+"://"+u.Host, base.Scheme+"://"+base.Host)
+	}
+	return nil
+}
 
 // SSOHandler handles SSO authentication flow RPCs.
 type SSOHandler struct {
@@ -102,6 +163,10 @@ func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[p
 func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm.GetSSOLoginURLRequest]) (*connect.Response[pm.GetSSOLoginURLResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	if err := validateSSORedirectURL(req.Msg.RedirectUrl, h.callbackBaseURL); err != nil {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
 
 	provider, err := h.store.Repos().IdentityProvider.GetBySlug(ctx, req.Msg.Slug)

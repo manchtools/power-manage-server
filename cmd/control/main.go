@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -280,11 +279,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Add health check endpoint.
+	// Public health endpoint — minimal response so unauthenticated
+	// callers cannot enumerate server versions for vulnerability
+	// scanning (audit F-26). The version is still reachable via
+	// authenticated control RPCs (GetServerVersion equivalent) and
+	// via the mTLS-protected internal /health below for operator
+	// scrape tools.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","version":%q}`, version)
+		_, _ = w.Write([]byte("ok"))
 	})
 
 	// Mount InternalService on a separate mTLS-protected listener.

@@ -39,10 +39,19 @@ type SystemActionsCleaner interface {
 }
 
 // Handler handles SCIM v2 API requests.
+//
+// Two rate-limit buckets per request (audit F-08):
+//   - rateLimiter   — keyed on the provider slug, generous 100/min ceiling
+//     so a real SCIM sync (list users → upsert users → patch groups)
+//     never bumps into the limit
+//   - ipRateLimiter — keyed on the (slug, client IP) tuple, tighter
+//     20/min ceiling so an attacker that knows multiple valid slugs
+//     can't spread requests across slugs to bypass the per-slug limit
 type Handler struct {
 	store         *store.Store
 	logger        *slog.Logger
 	rateLimiter   *auth.RateLimiter
+	ipRateLimiter *auth.RateLimiter
 	systemActions SystemActionsCleaner // optional; nil = no cleanup on delete
 }
 
@@ -57,6 +66,7 @@ func NewHandler(st *store.Store, logger *slog.Logger, systemActions SystemAction
 		store:         st,
 		logger:        logger,
 		rateLimiter:   auth.NewRateLimiter(100, 1*time.Minute),
+		ipRateLimiter: auth.NewRateLimiter(20, 1*time.Minute),
 		systemActions: systemActions,
 	}
 

@@ -67,17 +67,26 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		StreamID:   id,
 		EventType:  string(eventtypes.IdentityProviderCreated),
 		Data: payloads.IdentityProviderCreated{
-			Name:                     req.Msg.Name,
-			Slug:                     req.Msg.Slug,
-			ProviderType:             identityProviderTypeToString(req.Msg.ProviderType),
-			ClientID:                 req.Msg.ClientId,
-			ClientSecretEncrypted:    encryptedSecret,
-			IssuerURL:                req.Msg.IssuerUrl,
-			AuthorizationURL:         req.Msg.AuthorizationUrl,
-			TokenURL:                 req.Msg.TokenUrl,
-			UserinfoURL:              req.Msg.UserinfoUrl,
-			Scopes:                   req.Msg.Scopes,
-			AutoCreateUsers:          req.Msg.AutoCreateUsers,
+			Name:                  req.Msg.Name,
+			Slug:                  req.Msg.Slug,
+			ProviderType:          identityProviderTypeToString(req.Msg.ProviderType),
+			ClientID:              req.Msg.ClientId,
+			ClientSecretEncrypted: encryptedSecret,
+			IssuerURL:             req.Msg.IssuerUrl,
+			AuthorizationURL:      req.Msg.AuthorizationUrl,
+			TokenURL:              req.Msg.TokenUrl,
+			UserinfoURL:           req.Msg.UserinfoUrl,
+			Scopes:                req.Msg.Scopes,
+			AutoCreateUsers:       req.Msg.AutoCreateUsers,
+			// AutoLinkByEmail defaults to FALSE for new providers
+			// (proto bool default) and must be explicitly enabled
+			// by the operator (audit F-28). Enabling it makes the
+			// IdP's email-verification policy a hard dependency
+			// for the local-account trust boundary — an IdP that
+			// returns unverified emails would let an attacker hijack
+			// a local user by signing into the IdP with the
+			// victim's email address. Document this in operator
+			// guidance before flipping the default.
 			AutoLinkByEmail:          req.Msg.AutoLinkByEmail,
 			DefaultRoleID:            req.Msg.DefaultRoleId,
 			DisablePasswordForLinked: req.Msg.DisablePasswordForLinked,

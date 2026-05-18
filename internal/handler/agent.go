@@ -571,6 +571,15 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 	return nil
 }
 
+// maxOutputChunkBytes is the per-chunk ceiling enforced by the
+// gateway before enqueueing the chunk to the control inbox. Agents
+// are expected to fragment large output internally; a chunk larger
+// than this is either a buggy or compromised agent (audit F-13). The
+// 64 KiB cap matches a single sane terminal/log line and keeps the
+// projection's `executions.output` JSONB column from being filled
+// with megabytes of data via a flood from one stream.
+const maxOutputChunkBytes = 64 * 1024
+
 func (h *AgentHandler) handleOutputChunk(ctx context.Context, deviceID string, chunk *pm.OutputChunk) error {
 	if chunk.ExecutionId == "" {
 		return fmt.Errorf("output chunk missing execution ID")
@@ -578,6 +587,22 @@ func (h *AgentHandler) handleOutputChunk(ctx context.Context, deviceID string, c
 	streamType := "stdout"
 	if chunk.Stream == pm.OutputStreamType_OUTPUT_STREAM_TYPE_STDERR {
 		streamType = "stderr"
+	}
+	// Drop oversized chunks rather than enqueue them. A noisy agent
+	// will repeatedly hit the cap and surface via the WARN log; the
+	// alternative (silently truncating) would corrupt the displayed
+	// output for legitimate cases the agent later fixes by chunking
+	// correctly.
+	if len(chunk.Data) > maxOutputChunkBytes {
+		h.logger.Warn("output chunk exceeds size cap; dropping",
+			"device_id", deviceID,
+			"execution_id", chunk.ExecutionId,
+			"stream", streamType,
+			"sequence", chunk.Sequence,
+			"size", len(chunk.Data),
+			"limit", maxOutputChunkBytes,
+		)
+		return nil
 	}
 	h.logger.Debug("received output chunk",
 		"device_id", deviceID,

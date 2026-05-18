@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"time"
 
@@ -63,7 +64,13 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to compute fingerprint")
 	}
-	if device.CertFingerprint == nil || *device.CertFingerprint != currentFP {
+	// Use a constant-time comparison so a co-located attacker can't
+	// extract the stored fingerprint byte-by-byte via response-timing
+	// (audit F-04). The fingerprints are equal-length hex strings on
+	// the happy path; the nil-pointer short-circuit handles the
+	// "device never had a cert" case before we reach the compare.
+	if device.CertFingerprint == nil ||
+		subtle.ConstantTimeCompare([]byte(*device.CertFingerprint), []byte(currentFP)) != 1 {
 		h.logger.Warn("certificate fingerprint mismatch",
 			"device_id", deviceID,
 			"presented", currentFP,

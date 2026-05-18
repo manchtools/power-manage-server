@@ -110,6 +110,20 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	// reads from the device projection. Pre-fix this was hardcoded
 	// to userCtx.ID, which masked admin access to bulk-enrolled
 	// (unassigned) devices.
+	//
+	// Security note (audit F-27): the unscoped StartTerminal
+	// permission deliberately grants cross-user terminal access — an
+	// admin can open a session that runs as ANY device user's TTY
+	// account, not only their own (subject to the caller having a
+	// linux_username configured on their own profile, which becomes
+	// the TTY user inside the session). This is the intended admin
+	// behaviour for incident response; the audit trail captures
+	// caller identity via `actor_id = userCtx.ID` on the emitted
+	// TerminalSessionStarted event so post-hoc attribution works
+	// even though the in-session UID belongs to a different user.
+	// If a deployment needs the no-cross-user variant, add a
+	// `StartTerminal:self` scope that checks the device's
+	// linux_username matches userCtx.LinuxUsername.
 	filterUserID := userFilterID(ctx, "StartTerminal")
 	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId, OwnerScope: filterUserID}); err != nil {
 		if store.IsNotFound(err) {

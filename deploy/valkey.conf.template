@@ -1,0 +1,36 @@
+# Valkey/Redis-stack server configuration (audit F-03).
+#
+# Rendered to ./valkey.conf at setup time by setup.sh — the only
+# value substituted in is ${VALKEY_PASSWORD}. The rendered file is
+# bind-mounted read-only into the pm-valkey container at
+# /etc/valkey/valkey.conf. Keeping the password in a file (with
+# operator-controlled permissions) rather than the command line
+# stops /proc/<pid>/cmdline from leaking the credential to anything
+# sharing the PID namespace.
+#
+# Permissions on the rendered file should be 0400 on the host so
+# only the user that owns the deployment can read it; the bind-mount
+# carries those bits into the container.
+
+# Module loading (RediSearch ships in the redis-stack-server image at
+# the path below; keep this in sync with the image's --loadmodule arg).
+loadmodule /opt/redis-stack/lib/redisearch.so
+
+# Authentication. setup.sh replaces __VALKEY_PASSWORD__ with the
+# operator-generated password from .env.
+requirepass __VALKEY_PASSWORD__
+
+# Durability — match the previous --appendonly yes flag.
+appendonly yes
+
+# Bind/listen — Compose's internal network already gates access to
+# the valkey service from outside the compose project, so the default
+# bind is sufficient. Explicit here so it's reviewable.
+bind 0.0.0.0 -::*
+port 6379
+
+# Protected mode is OFF because requirepass is set; turning it back
+# on would block the legitimate cross-container access path from
+# control, gateway, indexer, and traefik. The password is the only
+# auth gate.
+protected-mode no

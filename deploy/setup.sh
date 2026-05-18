@@ -660,7 +660,29 @@ main() {
     chmod 755 "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
+    render_valkey_config
+
     show_instructions
+}
+
+# render_valkey_config writes the deployment's valkey.conf from the
+# template (deploy/valkey.conf.template) with VALKEY_PASSWORD
+# substituted in. The rendered file is read-only-mounted into the
+# pm-valkey container so the password no longer appears in
+# /proc/<pid>/cmdline (audit F-03).
+render_valkey_config() {
+    local template="$SCRIPT_DIR/valkey.conf.template"
+    local rendered="$SCRIPT_DIR/valkey.conf"
+    if [[ ! -f "$template" ]]; then
+        log_error "valkey.conf.template missing at $template"
+        return 1
+    fi
+    # Use awk so a password containing &, \, /, or | doesn't get
+    # interpreted by sed's replacement syntax.
+    awk -v pw="$VALKEY_PASSWORD" '{ gsub(/__VALKEY_PASSWORD__/, pw); print }' \
+        "$template" > "$rendered"
+    chmod 0400 "$rendered"
+    log_info "Rendered valkey.conf (mode 0400) from template"
 }
 
 # Run main only when executed directly. When this file is `source`d
