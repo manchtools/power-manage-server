@@ -764,12 +764,41 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 	if dispatchDelay > 0 {
 		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
 	}
+	// Sign the instant dispatch with the same canonical-bytes contract
+	// as regular actions (audit F-31): the agent refuses to execute
+	// REBOOT / SYNC without a valid CA-signature once the matching
+	// agent PR drops the IsInstantAction verifier skip. Canonical
+	// params for parameterless instant actions is the empty-object
+	// JSON `{}` — agent's verifier uses the same (id, type,
+	// paramsCanonical) tuple as for regular actions, so no protocol
+	// change is needed.
+	//
+	// Fail-closed on a nil signer — matches the existing
+	// DispatchAction contract at action_dispatch.go:219 (CR finding
+	// on the F-31 PR). A nil signer is a wiring bug, not a config
+	// option: production main.go passes the real internal/ca signer,
+	// tests pass NoOpSigner. Dispatching an unsigned instant task
+	// from this branch would silently survive a misconfigured boot
+	// and re-open the REBOOT-storm primitive that F-31 closes.
+	if h.signer == nil {
+		h.logger.Error("instant dispatch: nil signer — wiring bug", "execution_id", id)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
+	}
+	canonicalParams := []byte("{}")
+	instantSig, sigErr := h.signer.Sign(id, int32(req.Msg.InstantAction), canonicalParams)
+	if sigErr != nil {
+		h.logger.Error("failed to sign instant action; refusing dispatch",
+			"execution_id", id, "action_type", req.Msg.InstantAction.String(), "error", sigErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign instant action")
+	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-		ExecutionID:    id,
-		ActionType:     int32(req.Msg.InstantAction),
-		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		Params:         json.RawMessage("{}"),
-		TimeoutSeconds: timeoutSeconds,
+		ExecutionID:     id,
+		ActionType:      int32(req.Msg.InstantAction),
+		DesiredState:    int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		Params:          json.RawMessage("{}"),
+		ParamsCanonical: canonicalParams,
+		Signature:       instantSig,
+		TimeoutSeconds:  timeoutSeconds,
 	}, enqueueOpts...); err != nil {
 		h.logger.Error("failed to enqueue instant action dispatch; emitting ExecutionFailed",
 			"error", err, "execution_id", id)
