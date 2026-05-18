@@ -149,9 +149,17 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 		slog.Debug("SSO linker: trying auto-link by email", "email", claims.Email)
 		user, err := l.queries.GetUserByEmail(ctx, claims.Email)
 		if err == nil {
-			slog.Debug("SSO linker: found user by email, creating link",
+			// Info-level log on the actual link (audit F-28) — this
+			// is a trust-boundary event: the IdP's email-verification
+			// posture is what gates account hijack via this path, and
+			// an operator looking at boot logs after enabling
+			// auto-link-by-email must be able to see who gets linked.
+			slog.Info("SSO linker: auto-linked SSO identity to existing local user by email",
 				"user_id", user.ID,
 				"user_email", user.Email,
+				"provider_id", provider.ID,
+				"provider_slug", provider.Slug,
+				"external_subject", claims.Subject,
 			)
 			// Found user by email — create link
 			linkID := newULID()

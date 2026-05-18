@@ -348,7 +348,15 @@ func (p *parser) consumeBareValue() string {
 		}
 		p.pos++
 	}
-	return strings.TrimRight(p.src[start:p.pos], " \t\r\n")
+	// Trim leading + trailing whitespace symmetrically (audit F-12).
+	// The trailing trim alone produced asymmetric behaviour where
+	// `equals  foo` round-tripped as `foo` but `equals foo  ` round-tripped
+	// as `foo` too — fine in isolation, but the asymmetry made it
+	// hard to reason about which side of the operator the
+	// whitespace belonged to. The field allowlist in the validator
+	// kept this from ever being exploitable, but the parser smell
+	// is gone.
+	return strings.TrimSpace(p.src[start:p.pos])
 }
 
 // matchBoundaryKeywordAt reports whether the position is at the start

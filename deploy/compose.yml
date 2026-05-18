@@ -89,12 +89,28 @@ services:
     restart: unless-stopped
     volumes:
       - ./data/valkey:/data:z
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${VALKEY_PASSWORD}", "--loadmodule", "/opt/redis-stack/lib/redisearch.so"]
+      # valkey.conf is rendered from valkey.conf.template at setup
+      # time with VALKEY_PASSWORD substituted in. Mounted read-only
+      # so a runtime container compromise can't tamper with it.
+      - ./valkey.conf:/etc/valkey/valkey.conf:ro,z
+    # Secrets-in-cmdline hardening (audit F-03): the password used
+    # to live in `--requirepass ${VALKEY_PASSWORD}` here, which made
+    # it readable to anything with PID-namespace access via
+    # /proc/<pid>/cmdline. Now the password is in /etc/valkey/valkey.conf
+    # (file permissions enforced by the bind-mount), and the health
+    # check authenticates via REDISCLI_AUTH so the cmdline of the
+    # one-shot redis-cli probe stays clean too.
+    command: ["redis-server", "/etc/valkey/valkey.conf"]
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${VALKEY_PASSWORD}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 3
+    environment:
+      # Exposed to the container so the healthcheck shell can read
+      # REDISCLI_AUTH. The password is NOT a cmdline arg here, and the
+      # env var is namespace-isolated to this container.
+      - VALKEY_PASSWORD=${VALKEY_PASSWORD}
     networks:
       - internal
 

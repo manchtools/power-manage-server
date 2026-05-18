@@ -406,6 +406,27 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 		return fmt.Errorf("unmarshal output chunk: %w", err)
 	}
 
+	// Second-line size guard (audit F-33). The gateway already caps
+	// at 64 KiB on the agent-facing side (handler/agent.go,
+	// maxOutputChunkBytes), but the inbox worker is also a trust
+	// boundary — a future gateway compromise or a buggy intermediate
+	// could otherwise enqueue an oversized chunk into Valkey. We
+	// drop oversized chunks here rather than truncate, matching the
+	// gateway's drop-with-WARN policy, so a fuzz-fed flood doesn't
+	// silently corrupt the visible output stream.
+	const maxOutputChunkInboxBytes = 64 * 1024
+	if len(payload.Data) > maxOutputChunkInboxBytes {
+		w.logger.Warn("inbox: output chunk exceeds size cap; dropping",
+			"device_id", payload.DeviceID,
+			"execution_id", payload.ExecutionID,
+			"stream", payload.Stream,
+			"sequence", payload.Sequence,
+			"size", len(payload.Data),
+			"limit", maxOutputChunkInboxBytes,
+		)
+		return nil
+	}
+
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "execution",
 		StreamID:   payload.ExecutionID,
@@ -809,17 +830,41 @@ func commandOutputToMap(o *pm.CommandOutput) map[string]any {
 	}
 }
 
+// maxCommandOutputBytes is the per-stream ceiling enforced on
+// stdout / stderr before persistence (audit F-33). A compromised
+// agent (or a buggy executor) could otherwise dump multi-MB results
+// into the event store and the Valkey inbox queue, filling
+// events.data and bloating the audit trail. 1 MiB is comfortably
+// above any sane single-execution output — when a stream exceeds
+// it, we keep the head (first MiB) and append a trailing marker so
+// the UI shows what happened. The F-13 per-chunk cap (64 KiB) gates
+// streaming output; F-33 gates the consolidated result payload that
+// the agent emits on completion.
+const maxCommandOutputBytes = 1024 * 1024
+
+// truncateOutputStream caps an output stream at maxCommandOutputBytes
+// and appends an explicit truncation marker so the UI / log readers
+// can tell the difference between "agent emitted exactly N bytes" and
+// "we dropped the tail." Returns the input unchanged when it fits.
+func truncateOutputStream(s string) string {
+	if len(s) <= maxCommandOutputBytes {
+		return s
+	}
+	const marker = "\n... [truncated by control server — output exceeded 1 MiB]"
+	return s[:maxCommandOutputBytes-len(marker)] + marker
+}
+
 // commandOutputPayload converts a CommandOutput proto into the typed
 // payloads.CommandOutput used by the execution-event payload structs.
 // Returns nil for nil input so payloads.RawCommandOutput drops the
-// field via omitempty.
+// field via omitempty. Caps Stdout + Stderr per stream (audit F-33).
 func commandOutputPayload(o *pm.CommandOutput) *payloads.CommandOutput {
 	if o == nil {
 		return nil
 	}
 	return &payloads.CommandOutput{
-		Stdout:   o.Stdout,
-		Stderr:   o.Stderr,
+		Stdout:   truncateOutputStream(o.Stdout),
+		Stderr:   truncateOutputStream(o.Stderr),
 		ExitCode: o.ExitCode,
 	}
 }

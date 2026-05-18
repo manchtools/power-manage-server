@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -82,6 +83,41 @@ func isTrustedProxy(addr string) bool {
 		}
 	}
 	return false
+}
+
+// ClientIPFromHTTP is the http.Request analogue of clientIP — used by
+// non-Connect handlers (SCIM, /health, OIDC callback) that need the
+// same trusted-proxy semantics. Falls back to RemoteAddr when proxy
+// headers are absent or the peer isn't in the trusted-proxy CIDR set.
+//
+// Returns the empty string if neither RemoteAddr nor proxy headers
+// yield a parsable IP — callers should treat that as "could not
+// identify" and skip per-IP rate-limit bookkeeping rather than coalesce
+// every anonymous request onto a single bucket.
+func ClientIPFromHTTP(r *http.Request) string {
+	peerAddr := r.RemoteAddr
+	peerIP := peerAddr
+	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
+		peerIP = host
+	}
+	if isTrustedProxy(peerIP) {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
+			if parsed := net.ParseIP(ip); parsed != nil {
+				return ip
+			}
+		}
+		if xri := r.Header.Get("X-Real-IP"); xri != "" {
+			ip := strings.TrimSpace(xri)
+			if parsed := net.ParseIP(ip); parsed != nil {
+				return ip
+			}
+		}
+	}
+	if parsed := net.ParseIP(peerIP); parsed != nil {
+		return peerIP
+	}
+	return ""
 }
 
 // clientIP extracts the real client IP. Proxy headers (X-Forwarded-For,

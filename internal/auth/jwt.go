@@ -152,7 +152,13 @@ func (m *JWTManager) GenerateTOTPChallenge(userID, email string, sessionVersion 
 // ValidateToken validates a JWT token and returns the claims.
 func (m *JWTManager) ValidateToken(tokenString string, expectedType TokenType) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+		// Pin the algorithm to HS256 (audit F-14). Accepting any
+		// HMAC family lets an attacker forge a token under HS384 /
+		// HS512 if the shared secret length supports it — issuance
+		// always uses HS256 (jwt.SigningMethodHS256 in GenerateAccessToken
+		// / GenerateRefreshToken / TOTP challenge), so anything else
+		// is by definition forged.
+		if token.Method != jwt.SigningMethodHS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return m.config.Secret, nil

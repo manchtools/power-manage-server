@@ -5,12 +5,26 @@ import (
 	"time"
 )
 
+// maxRateLimiterKeys caps the size of the per-key attempts map
+// (audit F-20). A distributed attacker sending one request each from
+// many distinct IPs would otherwise grow the map unbounded between
+// cleanup ticks (every 5 minutes). 100k entries is the per-instance
+// ceiling — beyond that the eldest-seen entry is evicted to make
+// room. Set high enough that legitimate IP diversity (a CDN front,
+// large multi-tenant deployment) doesn't bump into it.
+const maxRateLimiterKeys = 100_000
+
 // RateLimiter implements a sliding window rate limiter.
 // It tracks attempts per key (e.g., IP address) and rejects requests
 // that exceed the configured limit within the time window.
 type RateLimiter struct {
 	mu       sync.Mutex
 	attempts map[string][]time.Time
+	// lastSeen tracks the most recent attempt timestamp per key so
+	// the LRU eviction in Allow can pick the truly stalest entry
+	// without re-scanning the attempts slices. Kept in lock-step
+	// with attempts — every write to attempts updates this map too.
+	lastSeen map[string]time.Time
 	limit    int
 	window   time.Duration
 	stopCh   chan struct{}
@@ -22,6 +36,7 @@ type RateLimiter struct {
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		attempts: make(map[string][]time.Time),
+		lastSeen: make(map[string]time.Time),
 		limit:    limit,
 		window:   window,
 		stopCh:   make(chan struct{}),
@@ -50,11 +65,40 @@ func (rl *RateLimiter) Allow(key string) bool {
 
 	if len(valid) >= rl.limit {
 		rl.attempts[key] = valid
+		rl.lastSeen[key] = now
 		return false
 	}
 
+	// Enforce the per-instance key cap before insertion. If we're at
+	// the ceiling AND this is a never-seen-before key, evict the
+	// eldest entry. Existing keys are exempt — they just get a fresh
+	// timestamp.
+	if _, exists := rl.attempts[key]; !exists && len(rl.attempts) >= maxRateLimiterKeys {
+		rl.evictEldestLocked()
+	}
+
 	rl.attempts[key] = append(valid, now)
+	rl.lastSeen[key] = now
 	return true
+}
+
+// evictEldestLocked removes the single key with the oldest lastSeen
+// timestamp. Caller must hold rl.mu. O(n) scan — only called on the
+// rare path where the map is at the key ceiling, so the cost lives in
+// the attack scenario rather than the happy path.
+func (rl *RateLimiter) evictEldestLocked() {
+	var eldestKey string
+	var eldestAt time.Time
+	for k, t := range rl.lastSeen {
+		if eldestKey == "" || t.Before(eldestAt) {
+			eldestKey = k
+			eldestAt = t
+		}
+	}
+	if eldestKey != "" {
+		delete(rl.attempts, eldestKey)
+		delete(rl.lastSeen, eldestKey)
+	}
 }
 
 // Stop stops the background cleanup goroutine.
@@ -80,6 +124,7 @@ func (rl *RateLimiter) cleanup() {
 				}
 				if len(valid) == 0 {
 					delete(rl.attempts, key)
+					delete(rl.lastSeen, key)
 				} else {
 					rl.attempts[key] = valid
 				}

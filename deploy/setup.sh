@@ -660,7 +660,57 @@ main() {
     chmod 755 "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
+    render_valkey_config
+
     show_instructions
+}
+
+# render_valkey_config writes the deployment's valkey.conf from the
+# template (deploy/valkey.conf.template) with VALKEY_PASSWORD
+# substituted in. The rendered file is read-only-mounted into the
+# pm-valkey container so the password no longer appears in
+# /proc/<pid>/cmdline (audit F-03).
+render_valkey_config() {
+    local template="$SCRIPT_DIR/valkey.conf.template"
+    local rendered="$SCRIPT_DIR/valkey.conf"
+    if [[ ! -f "$template" ]]; then
+        log_error "valkey.conf.template missing at $template"
+        return 1
+    fi
+    # Literal substitution via a split-and-concatenate loop. Every
+    # other approach we tried interprets `&` as the matched text
+    # (awk's gsub, bash's ${var//pat/rep}, sed's s/// — all of
+    # them). Splitting the template at the placeholder and using
+    # ${pw} as the joiner keeps the password truly literal, so a
+    # password containing &, \, /, |, $, or newlines lands in the
+    # rendered config exactly as the operator generated it.
+    local template_contents
+    template_contents="$(<"$template")"
+    local rendered_contents=""
+    local remaining="$template_contents"
+    while [[ "$remaining" == *__VALKEY_PASSWORD__* ]]; do
+        rendered_contents+="${remaining%%__VALKEY_PASSWORD__*}${VALKEY_PASSWORD}"
+        remaining="${remaining#*__VALKEY_PASSWORD__}"
+    done
+    rendered_contents+="$remaining"
+    # Write atomically: render to a temp, fsync via mv. Use printf
+    # rather than echo so a password starting with `-` is not
+    # interpreted as a flag.
+    local tmp
+    tmp="$(mktemp "${rendered}.tmp.XXXXXX")"
+    printf '%s' "$rendered_contents" > "$tmp"
+    # 0644 keeps the file readable by the redis user inside the
+    # container (uid 999 in the redis-stack-server image) without
+    # needing the operator to chown to a specific uid. The bind-
+    # mount carries `ro,z` so the container cannot tamper, and the
+    # password is already on disk in .env (same protection level),
+    # so 0644 doesn't materially widen exposure beyond the existing
+    # secret-handling model. The audit-F-03 fix is the cmdline /
+    # /proc/cmdline scrubbing, which holds regardless of the
+    # rendered file's mode.
+    chmod 0644 "$tmp"
+    mv "$tmp" "$rendered"
+    log_info "Rendered valkey.conf from template"
 }
 
 # Run main only when executed directly. When this file is `source`d
