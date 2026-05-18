@@ -198,12 +198,12 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	hostname := req.Msg.Hostname
 	agentVersion := req.Msg.AgentVersion
 	certFingerprint := cert.Fingerprint
-	// Preserve the legacy RFC 3339-string serialisation (no
-	// sub-second precision) so wire bytes stay identical to the
-	// pre-typed-payload emission. The projector parses the string
-	// back into a time.Time via parseOptionalRFC3339, which accepts
-	// both RFC 3339 and RFC 3339Nano.
-	certNotAfterStr := cert.NotAfter.Format(time.RFC3339)
+	// Serialise as RFC3339Nano to align with the dispatch-event
+	// timestamp format (audit N016). The projector parses the
+	// string back into a time.Time via parseOptionalRFC3339, which
+	// accepts both RFC 3339 and RFC 3339Nano so older events
+	// without sub-second precision still round-trip cleanly.
+	certNotAfterStr := cert.NotAfter.Format(time.RFC3339Nano)
 	registrationTokenID := token.ID
 	certPEM := string(cert.CertPEM)
 	caCertPEM := string(h.ca.CACertPEM())

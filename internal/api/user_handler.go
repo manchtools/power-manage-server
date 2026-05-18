@@ -672,7 +672,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 
 	keyID := ulid.Make().String()
 	now := time.Now()
-	addedAt := now.Format(time.RFC3339)
+	addedAt := now.Format(time.RFC3339Nano)
 
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",

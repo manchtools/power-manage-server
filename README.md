@@ -80,9 +80,9 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 ## API Reference
 
-The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 RPC methods. The Gateway Server exposes `pm.v1.AgentService` with 3 methods.
+The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`); the Gateway Server exposes `pm.v1.AgentService`. The full proto definitions live in [`sdk/proto/pm/v1`](https://github.com/manchtools/power-manage-sdk/tree/main/proto/pm/v1). The section headings below are categorical, not exhaustive — refer to the proto for the authoritative method list.
 
-### Authentication (4 RPCs)
+### Authentication
 
 | Method | Description |
 |--------|-------------|
@@ -91,7 +91,7 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 | `Logout` | Revoke the presented refresh token. |
 | `GetCurrentUser` | Return the authenticated user's profile from JWT claims. |
 
-### Users (8 RPCs)
+### Users
 
 | Method | Description |
 |--------|-------------|
@@ -103,7 +103,7 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 | `SetUserDisabled` | Enable or disable a user account. |
 | `DeleteUser` | Soft-delete a user. |
 
-### Devices (10 RPCs)
+### Devices
 
 | Method | Description |
 |--------|-------------|
@@ -117,7 +117,7 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 | `DeleteDevice` | Remove a device. Admin-only. |
 | `GetDeviceLpsPasswords` | Retrieve current and historical LPS (Local Password Solution) passwords. |
 
-### Registration Tokens (6 RPCs)
+### Registration Tokens
 
 | Method | Description |
 |--------|-------------|
@@ -128,7 +128,7 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) with 136 R
 | `SetTokenDisabled` | Enable or disable a token. |
 | `DeleteToken` | Remove a token. |
 
-### Actions (7 RPCs)
+### Actions
 
 Manages action definitions. Supports the action types declared in
 `sdk/proto/pm/v1/actions.proto` (canonical list — keep that file as
@@ -150,7 +150,7 @@ the source of truth):
 | `UpdateActionParams` | Modify type-specific parameters. |
 | `DeleteAction` | Remove an action. |
 
-### Action Dispatch (9 RPCs)
+### Action Dispatch
 
 | Method | Description |
 |--------|-------------|
@@ -164,7 +164,7 @@ the source of truth):
 | `GetExecution` | Fetch execution status and results by ID. |
 | `ListExecutions` | Paginated execution history with device/action filters. |
 
-### Action Sets (8 RPCs)
+### Action Sets
 
 Ordered collections of actions that can be dispatched together.
 
@@ -180,7 +180,7 @@ Ordered collections of actions that can be dispatched together.
 | `RemoveActionFromSet` | Remove a member action. |
 | `ReorderActionInSet` | Change the sort order of a member. |
 
-### Definitions (8 RPCs)
+### Definitions
 
 Ordered collections of action sets forming a complete configuration policy.
 
@@ -196,7 +196,7 @@ Ordered collections of action sets forming a complete configuration policy.
 | `RemoveActionSetFromDefinition` | Remove a member. |
 | `ReorderActionSetInDefinition` | Change sort order. |
 
-### Device Groups (12 RPCs)
+### Device Groups
 
 Static groups with manual membership or dynamic groups with a query language.
 
@@ -216,7 +216,7 @@ Static groups with manual membership or dynamic groups with a query language.
 | `EvaluateDynamicGroup` | Manually trigger re-evaluation of dynamic group membership. |
 | `SetDeviceGroupSyncInterval` | Set sync interval for all devices in the group. |
 
-### Assignments (5 RPCs)
+### Assignments
 
 Link sources (actions, action sets, definitions, compliance policies) to targets (devices, device groups, users, user groups) with an assignment mode. Batch support: `CreateAssignment` and `DeleteAssignment` accept multiple assignments per call.
 
@@ -228,7 +228,7 @@ Link sources (actions, action sets, definitions, compliance policies) to targets
 | `GetDeviceAssignments` | Resolve all effective actions and compliance policies for a device (expands groups, definitions, sets, and user/user_group targets). |
 | `GetUserAssignments` | Resolve all assignments targeting a user or their user groups. |
 
-### User Selections (2 RPCs)
+### User Selections
 
 Allow users to opt in or out of `AVAILABLE`-mode assignments on their devices.
 
@@ -237,7 +237,7 @@ Allow users to opt in or out of `AVAILABLE`-mode assignments on their devices.
 | `SetUserSelection` | Accept or reject an available assignment for a device. |
 | `ListAvailableActions` | List available-mode items for a device with current selection state. |
 
-### TOTP Two-Factor Authentication (5 RPCs)
+### TOTP Two-Factor Authentication
 
 | Method | Description |
 |--------|-------------|
@@ -247,7 +247,7 @@ Allow users to opt in or out of `AVAILABLE`-mode assignments on their devices.
 | `GetTOTPStatus` | Check whether TOTP is enabled for the current user. |
 | `RegenerateBackupCodes` | Generate new backup codes (invalidates previous codes). |
 
-### Roles (8 RPCs)
+### Roles
 
 Dynamic role-based access control with per-permission granularity.
 
@@ -262,7 +262,7 @@ Dynamic role-based access control with per-permission granularity.
 | `RevokeRoleFromUser` | Revoke a role from a user. |
 | `ListPermissions` | List all available permissions with descriptions. |
 
-### User Groups (10 RPCs)
+### User Groups
 
 | Method | Description |
 |--------|-------------|
@@ -277,7 +277,7 @@ Dynamic role-based access control with per-permission granularity.
 | `RevokeRoleFromUserGroup` | Revoke a role from a user group. |
 | `ListUserGroupsForUser` | List all groups a user belongs to. |
 
-### Identity Providers (8 RPCs)
+### Identity Providers
 
 OIDC identity provider management for SSO authentication.
 
@@ -292,20 +292,20 @@ OIDC identity provider management for SSO authentication.
 | `DisableSCIM` | Disable SCIM provisioning for a provider. |
 | `RotateSCIMToken` | Generate a new SCIM bearer token (invalidates the old one). |
 
-### Identity Links (2 RPCs)
+### Identity Links
 
 | Method | Description |
 |--------|-------------|
 | `ListIdentityLinks` | List the current user's linked external identities. |
 | `UnlinkIdentity` | Remove a linked external identity. |
 
-### Audit (1 RPC)
+### Audit
 
 | Method | Description |
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
 
-### Search (2 RPCs)
+### Search
 
 Server-side full-text search across actions, action sets, and definitions. Backed by Valkey RediSearch (`FT.CREATE`/`FT.SEARCH`). The search index is managed by the **Indexer** service (`cmd/indexer/`), which reads from PostgreSQL and writes to Valkey. Incremental updates are processed via Asynq workers after every mutation. A periodic reconciliation rebuild runs every hour to correct any drift. Supports server-side date and tag filtering.
 
@@ -318,7 +318,7 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 | `Search` | Full-text search across actions, action sets, and definitions. Supports scoped queries and pagination. | `Search` |
 | `RebuildSearchIndex` | Force a full rebuild of the search index from PostgreSQL. Admin-only. | `RebuildSearchIndex` |
 
-### Compliance Policies (11 RPCs)
+### Compliance Policies
 
 | Method | Description |
 |--------|-------------|
@@ -334,14 +334,14 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 | `UpdateCompliancePolicyRule` | Update the grace period of an existing rule. |
 | `GetDeviceCompliancePolicyStatus` | Get per-policy, per-rule compliance evaluation status for a device, including grace period state. |
 
-### Registration & Certificates (2 RPCs)
+### Registration & Certificates
 
 | Method | Description |
 |--------|-------------|
 | `Register` | Agent registration. Validates token (hash, expiry, disabled, max uses), signs agent CSR to issue mTLS client certificate, generates device ID, auto-assigns to token owner. Returns device ID, CA cert, signed cert, gateway URL. |
 | `RenewCertificate` | Certificate renewal. Agent presents its current (still valid) certificate and a new CSR. Server verifies the certificate was issued by the CA, checks the fingerprint matches the database, signs the new CSR, and emits a `DeviceCertRenewed` event. No JWT required. |
 
-### Gateway — Agent Service (2 RPCs)
+### Gateway — Agent Service
 
 | Method | Description |
 |--------|-------------|
@@ -501,10 +501,10 @@ CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cm
 | `INDEXER_VALKEY_PASSWORD` | Valkey password |
 | `INDEXER_VALKEY_DB` | Valkey DB number (default `0`) |
 | `INDEXER_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` (default `info`) |
-| `INDEXER_LOG_FORMAT` | Log format: `text` or `json` (default `json`) |
+| `INDEXER_LOG_FORMAT` | Log format: `text` or `json` (default `text`) |
 | `INDEXER_RECONCILE_INTERVAL` | Periodic reconciliation cadence (Go duration, default `1h`) |
-| `INDEXER_CONCURRENCY` | Asynq worker concurrency (default `4`) |
-| `INDEXER_HEALTH_ADDR` | HTTP listen address for `/healthz` and `/readyz` (default `:8090`) |
+| `INDEXER_CONCURRENCY` | Asynq worker concurrency (default `5`) |
+| `INDEXER_HEALTH_ADDR` | HTTP listen address for `/health` (default `:8090`) |
 
 ## Running Locally
 
@@ -633,7 +633,9 @@ The `testutil` package provides shared helpers used across all integration tests
 
 ### Test Files
 
-#### Auth Unit Tests (7 files, ~79 tests)
+The per-file `Tests` counts below are approximate snapshots — they drift as tests are added or removed. For the current number, run `go test -count=1 -v ./... | grep -c '^=== RUN'`.
+
+#### Auth Unit Tests
 
 No database required. Test pure Go logic.
 
@@ -646,19 +648,19 @@ No database required. Test pure Go logic.
 | `internal/auth/opa_test.go` | 17 | Admin allows all 18 actions, user self-access vs. other-access, user denied admin actions, device own-resource vs. other |
 | `internal/auth/interceptor_test.go` | 8 | Public procedure list (Login, RefreshToken, Logout, Register), non-public procedures, interceptor creation, streaming passthrough |
 
-#### Connection Manager Unit Tests (1 file, 14 tests)
+#### Connection Manager Unit Tests
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/connection/manager_test.go` | 14 | Register/Get, replace existing connection, unregister, count, list, IsConnected, UpdateLastSeen, Send to disconnected agent, context cancellation, 100-goroutine concurrent access |
 
-#### Store Integration Tests (1 file, ~31 tests)
+#### Store Integration Tests
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/store/store_test.go` | ~31 | AppendEvent basics, auto-versioning (5 events), explicit version conflict, WithTx commit/rollback, Notify. Projection tests: UserCreated/EmailChanged/Disabled/Enabled/Deleted, DeviceRegistered/Heartbeat/LabelSet, ActionCreated, ActionSetWithMembers, DefinitionCreated, DeviceGroupCreated, TokenCreated, ExecutionLifecycle (created → dispatched → completed), AssignmentCreated |
 
-#### API Handler Integration Tests (18 files, ~178 tests)
+#### API Handler Integration Tests
 
 Each test spins up a PostgreSQL container and tests handler methods directly.
 
@@ -683,13 +685,13 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 | `internal/api/luks_action_test.go` | 7 | LUKS key management actions |
 | `internal/api/osquery_handler_test.go` | 11 | OSQuery dispatch, result retrieval, device inventory |
 
-#### SCIM Integration Tests (1 file, 21 tests)
+#### SCIM Integration Tests
 
 | File | Tests | What it covers |
 |------|-------|----------------|
 | `internal/scim/handler_test.go` | 21 | Auth (missing/invalid/non-existent/valid token), Discovery (ServiceProviderConfig, Schemas, ResourceTypes), Users (create, get, list, filter, replace, patch deactivate, delete), Groups (create, get, list, patch add member, replace members, delete) |
 
-#### Gateway Handler Tests (1 file, ~3 tests)
+#### Gateway Handler Tests
 
 | File | Tests | What it covers |
 |------|-------|----------------|

@@ -75,7 +75,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 		eventData["one_time"] = req.Msg.OneTime
 		eventData["max_uses"] = req.Msg.MaxUses
 		if req.Msg.ExpiresAt != nil && req.Msg.ExpiresAt.IsValid() {
-			eventData["expires_at"] = req.Msg.ExpiresAt.AsTime().Format(time.RFC3339)
+			eventData["expires_at"] = req.Msg.ExpiresAt.AsTime().Format(time.RFC3339Nano)
 		}
 		if req.Msg.OwnerId != "" {
 			if _, err := h.store.Repos().User.Get(ctx, req.Msg.OwnerId); err != nil {
@@ -89,7 +89,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 		// scope is for users minting tokens for their own devices.
 		eventData["one_time"] = true
 		eventData["max_uses"] = int32(1)
-		eventData["expires_at"] = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)
+		eventData["expires_at"] = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
 		eventData["owner_id"] = userCtx.ID
 	}
 
