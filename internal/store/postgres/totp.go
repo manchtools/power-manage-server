@@ -24,14 +24,15 @@ func (t *Totp) GetByUserID(ctx context.Context, userID string) (store.TotpRecord
 		return store.TotpRecord{}, fmt.Errorf("totp: get by user: %w", translateNotFound(err))
 	}
 	return store.TotpRecord{
-		UserID:          row.UserID,
-		SecretEncrypted: row.SecretEncrypted,
-		Verified:        row.Verified,
-		Enabled:         row.Enabled,
-		BackupCodesHash: row.BackupCodesHash,
-		BackupCodesUsed: row.BackupCodesUsed,
-		CreatedAt:       row.CreatedAt,
-		UpdatedAt:       row.UpdatedAt,
+		UserID:            row.UserID,
+		SecretEncrypted:   row.SecretEncrypted,
+		Verified:          row.Verified,
+		Enabled:           row.Enabled,
+		BackupCodesHash:   row.BackupCodesHash,
+		BackupCodesUsed:   row.BackupCodesUsed,
+		CreatedAt:         row.CreatedAt,
+		UpdatedAt:         row.UpdatedAt,
+		ProjectionVersion: row.ProjectionVersion,
 	}, nil
 }
 

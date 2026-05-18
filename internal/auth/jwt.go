@@ -44,9 +44,23 @@ type JWTManager struct {
 }
 
 // NewJWTManager creates a new JWT manager.
+//
+// AccessTokenExpiry defaults to 5 minutes (audit F-01 follow-up).
+// The shorter window bounds permission-revocation staleness: when an
+// admin revokes a user's permissions or disables their account, the
+// existing access token continues to authorise the embedded
+// permissions until it expires. 15 min was the prior default; 5 min
+// is the SOC2-compatible upper bound for "access propagation" without
+// needing a real-time revocation deny-list. Silent refresh on the
+// client side keeps the user experience unchanged.
+//
+// RefreshTokenExpiry stays at 7 days — the refresh path consults the
+// session-version table on every call, so revocation propagates to
+// every refresh within the same window regardless of access-token
+// TTL.
 func NewJWTManager(config JWTConfig) *JWTManager {
 	if config.AccessTokenExpiry == 0 {
-		config.AccessTokenExpiry = 15 * time.Minute
+		config.AccessTokenExpiry = 5 * time.Minute
 	}
 	if config.RefreshTokenExpiry == 0 {
 		config.RefreshTokenExpiry = 7 * 24 * time.Hour

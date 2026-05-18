@@ -341,32 +341,59 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	if !codeValid {
 		idx := totp.VerifyBackupCode(req.Msg.Code, totpRecord.BackupCodesHash, totpRecord.BackupCodesUsed)
 		if idx >= 0 {
-			codeValid = true
-			// Mark backup code as used. This is a primary CQRS
-			// mutation — the projection reads this event to know
-			// which codes are still valid. If the event fails to
-			// persist, the code is NOT consumed and can be used
-			// again (double-spend). Fail the RPC so the caller
-			// retries rather than silently leaving the code valid.
-			if err := h.store.AppendEvent(ctx, store.Event{
+			// Race-free consume (audit F-07). AppendEventWithVersion
+			// uses the event store's UNIQUE(stream_type, stream_id,
+			// stream_version) constraint to serialise concurrent
+			// attempts: two requests that both passed the in-memory
+			// VerifyBackupCode check above both target the same
+			// expected version (projection_version + 1), and the
+			// UNIQUE constraint lets only one of them land. The loser
+			// gets store.ErrVersionConflict, re-reads the projection,
+			// sees the code now marked used, and returns invalid —
+			// matching what the user would have seen if the requests
+			// had been serialised by the user.
+			//
+			// expectedVersion is int32(ProjectionVersion + 1). The
+			// projection_version on totp_projection tracks the
+			// stream_version of the last applied event (see the
+			// MarkTotpBackupCodeUsed query in queries/totp.sql), so
+			// projection_version + 1 IS the next stream_version a
+			// fresh event must land at.
+			expectedVersion := int32(totpRecord.ProjectionVersion) + 1
+			appendErr := h.store.AppendEventWithVersion(ctx, store.Event{
 				StreamType: "totp",
 				StreamID:   claims.UserID,
 				EventType:  string(eventtypes.TOTPBackupCodeUsed),
 				Data:       map[string]any{"index": idx},
 				ActorType:  "user",
 				ActorID:    claims.UserID,
-			}); err != nil {
+			}, expectedVersion)
+			switch {
+			case appendErr == nil:
+				codeValid = true
+				h.logger.Debug("event appended",
+					"request_id", middleware.RequestIDFromContext(ctx),
+					"stream_type", "totp",
+					"stream_id", claims.UserID,
+					"event_type", "TOTPBackupCodeUsed",
+				)
+			case store.IsVersionConflict(appendErr):
+				// Lost the race. The winner already consumed (this
+				// code or another event on the same stream); either
+				// way the user's claimed code is no longer valid
+				// from this caller's perspective. Treat as invalid
+				// rather than retrying — a retry might succeed if
+				// the winner consumed a *different* code, but the
+				// caller's submitted code is already accounted for.
+				h.logger.Warn("backup code consume lost OCC race",
+					"user_id", claims.UserID, "index", idx)
+				return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
+			default:
 				h.logger.Error("failed to consume backup code",
-					"user_id", claims.UserID, "index", idx, "error", err)
+					"user_id", claims.UserID, "index", idx, "error", appendErr)
 				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
 					"failed to consume backup code")
 			}
-			h.logger.Debug("event appended",
-				"request_id", middleware.RequestIDFromContext(ctx),
-				"stream_type", "totp",
-				"stream_id", claims.UserID,
-				"event_type", "TOTPBackupCodeUsed",
-			)
 		}
 	}
 
