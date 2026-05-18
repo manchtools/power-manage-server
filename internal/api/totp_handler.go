@@ -378,16 +378,61 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 					"event_type", "TOTPBackupCodeUsed",
 				)
 			case store.IsVersionConflict(appendErr):
-				// Lost the race. The winner already consumed (this
-				// code or another event on the same stream); either
-				// way the user's claimed code is no longer valid
-				// from this caller's perspective. Treat as invalid
-				// rather than retrying — a retry might succeed if
-				// the winner consumed a *different* code, but the
-				// caller's submitted code is already accounted for.
-				h.logger.Warn("backup code consume lost OCC race",
-					"user_id", claims.UserID, "index", idx)
-				return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
+				// Lost the OCC race. The conflicting event might be
+				// a different concurrent consumption of *the same*
+				// code (the loser case) OR an unrelated event on the
+				// same TOTP stream like RegenerateBackupCodes or
+				// TOTPDisabled (in which case the caller's code may
+				// still be valid against the post-conflict state).
+				// One-shot retry: re-read projection, re-verify the
+				// code against the new state, and try one more
+				// versioned append. A second conflict on the retry
+				// is a definitive loss — return invalid so a
+				// crafted attacker can't hold the call open forever.
+				latest, getErr := h.store.Repos().Totp.GetByUserID(ctx, claims.UserID)
+				if getErr != nil {
+					h.logger.Error("failed to reload TOTP after OCC conflict",
+						"user_id", claims.UserID, "error", getErr)
+					return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume backup code")
+				}
+				retryIdx := totp.VerifyBackupCode(req.Msg.Code, latest.BackupCodesHash, latest.BackupCodesUsed)
+				if retryIdx < 0 {
+					// Code is no longer valid post-conflict — either
+					// it was just consumed or backup codes were
+					// regenerated out from under us.
+					h.logger.Warn("backup code consume lost OCC race; code no longer valid",
+						"user_id", claims.UserID, "index", idx)
+					return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
+				}
+				retryExpectedVersion := int32(latest.ProjectionVersion) + 1
+				retryErr := h.store.AppendEventWithVersion(ctx, store.Event{
+					StreamType: "totp",
+					StreamID:   claims.UserID,
+					EventType:  string(eventtypes.TOTPBackupCodeUsed),
+					Data:       map[string]any{"index": retryIdx},
+					ActorType:  "user",
+					ActorID:    claims.UserID,
+				}, retryExpectedVersion)
+				if retryErr == nil {
+					codeValid = true
+					h.logger.Debug("event appended on retry",
+						"request_id", middleware.RequestIDFromContext(ctx),
+						"stream_type", "totp",
+						"stream_id", claims.UserID,
+						"event_type", "TOTPBackupCodeUsed",
+					)
+				} else if store.IsVersionConflict(retryErr) {
+					// Two conflicts back-to-back — bounded retry
+					// budget exhausted. The caller's code is
+					// effectively invalid from their perspective.
+					h.logger.Warn("backup code consume lost OCC race twice; declining further retry",
+						"user_id", claims.UserID, "index", retryIdx)
+					return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
+				} else {
+					h.logger.Error("failed to consume backup code on retry",
+						"user_id", claims.UserID, "index", retryIdx, "error", retryErr)
+					return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume backup code")
+				}
 			default:
 				h.logger.Error("failed to consume backup code",
 					"user_id", claims.UserID, "index", idx, "error", appendErr)
