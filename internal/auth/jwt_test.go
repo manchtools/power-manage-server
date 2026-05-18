@@ -19,7 +19,11 @@ func newTestJWTManager() *JWTManager {
 
 func TestNewJWTManager_Defaults(t *testing.T) {
 	m := NewJWTManager(JWTConfig{Secret: []byte("s")})
-	assert.Equal(t, 15*time.Minute, m.config.AccessTokenExpiry)
+	// Default access-token TTL is 5 min (audit F-01 follow-up —
+	// see NewJWTManager comment). The shorter window bounds
+	// permission-revocation staleness when SessionVersion isn't
+	// bumped explicitly.
+	assert.Equal(t, 5*time.Minute, m.config.AccessTokenExpiry)
 	assert.Equal(t, 7*24*time.Hour, m.config.RefreshTokenExpiry)
 	assert.Equal(t, "power-manage", m.config.Issuer)
 }
