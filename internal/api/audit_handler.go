@@ -121,27 +121,38 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 // actionRedactionSchemas maps an action's `params.type` value to the
 // redactionSchema that should be applied to its `params:` subtree.
 // The action-emit shape is `{ type: "...", name: "...", params: { ... } }`,
-// so each path is rooted at `params.`.
+// and `params:` is produced by serializeProtoParams (protojson with
+// UseProtoNames=false), so the path segments are camelCase to match
+// the wire format — NOT the proto field's snake_case schema name.
+// A path that uses snake_case here will silently miss the field in
+// production (audit F-34 — the prior schema had this exact bug for
+// every secret-bearing action type, leaking customConfig, gpgKey, and
+// presharedKey through the audit log).
 //
 // One schema per action type that carries secret-bearing parameters:
 //
-//   - SHELL  -> params.script (full shell body)
-//   - FILE   -> params.content (file body, may contain secrets)
-//   - SUDO   -> params.unit_content (sudoers fragment)
-//   - REPOSITORY -> params.gpg_key (GPG signing key material)
-//   - LPS    -> params.password / params.preshared_key (rotation seed)
-//   - LUKS   -> params.passphrase / params.preshared_key
+//   - SHELL        -> params.script + params.detectionScript
+//     (both can hold full shell bodies)
+//   - FILE         -> params.content (file body, may contain secrets)
+//   - ADMIN_POLICY -> params.customConfig (sudoers / doas.conf fragment;
+//     proto field renamed from unit_content)
+//   - REPOSITORY   -> params.gpgKey (GPG signing key material; URL form
+//     params.gpgKeyUrl is intentionally NOT scrubbed)
+//   - ENCRYPTION   -> params.presharedKey (LUKS bootstrap entropy)
 //
 // Action types not in this map have no params secrets to scrub
 // (PACKAGE, UPDATE, REBOOT, SYNC, USER, GROUP, SSH, SSHD,
-// SYSTEMD/SERVICE, DIRECTORY, APP_IMAGE, DEB, RPM, FLATPAK).
+// SYSTEMD/SERVICE, DIRECTORY, APP_IMAGE, DEB, RPM, FLATPAK, LPS).
+// LpsParams in particular looks like a hit but is not — the actual
+// rotated password is generated agent-side and surfaces via the
+// LpsPasswordRotated event (covered by eventRedactionSchemas), not
+// via the dispatch action_params.
 var actionRedactionSchemas = map[string]redactionSchema{
-	"ACTION_TYPE_SHELL":        {paths: []string{"params.script"}},
+	"ACTION_TYPE_SHELL":        {paths: []string{"params.script", "params.detectionScript"}},
 	"ACTION_TYPE_FILE":         {paths: []string{"params.content"}},
-	"ACTION_TYPE_ADMIN_POLICY": {paths: []string{"params.unit_content"}},
-	"ACTION_TYPE_REPOSITORY":   {paths: []string{"params.gpg_key"}},
-	"ACTION_TYPE_LPS":          {paths: []string{"params.password", "params.preshared_key"}},
-	"ACTION_TYPE_ENCRYPTION":   {paths: []string{"params.passphrase", "params.preshared_key"}},
+	"ACTION_TYPE_ADMIN_POLICY": {paths: []string{"params.customConfig"}},
+	"ACTION_TYPE_REPOSITORY":   {paths: []string{"params.gpgKey"}},
+	"ACTION_TYPE_ENCRYPTION":   {paths: []string{"params.presharedKey"}},
 }
 
 // redactEventData removes sensitive fields from a serialized event

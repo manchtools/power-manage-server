@@ -11,11 +11,16 @@ import (
 
 // TestRedactEventData_ActionParams locks the schema-aware contract:
 // each action type has its own redaction schema rooted at `params.`.
-// A SHELL action's `script`, a FILE action's `content`, a SUDO action's
-// `unit_content`, etc. must NOT appear verbatim in the redacted output.
+// A SHELL action's `script`, a FILE action's `content`, an
+// ADMIN_POLICY action's `customConfig`, etc. must NOT appear verbatim
+// in the redacted output.
 //
-// The test uses the action emit shape (`{name, type, params}`) that
-// every emit site in `internal/api/action_handler.go` produces.
+// The fixtures here use the **camelCase** keys the production wire
+// format actually produces — see audit F-34. Earlier versions of this
+// test used snake_case keys that matched a (broken) snake_case
+// schema, masking the production leak. The fixtures match what
+// `serializeProtoParams` in internal/api/action_params.go emits via
+// protojson (`UseProtoNames=false`).
 func TestRedactEventData_ActionParams(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -24,12 +29,13 @@ func TestRedactEventData_ActionParams(t *testing.T) {
 		secrets    []string
 	}{
 		{
-			name:       "SHELL params.script",
+			name:       "SHELL params.script + params.detectionScript",
 			actionType: "ACTION_TYPE_SHELL",
 			params: map[string]any{
-				"script": "echo SENTINEL_SHELL",
+				"script":          "echo SENTINEL_SHELL",
+				"detectionScript": "echo SENTINEL_DETECT",
 			},
-			secrets: []string{"SENTINEL_SHELL"},
+			secrets: []string{"SENTINEL_SHELL", "SENTINEL_DETECT"},
 		},
 		{
 			name:       "FILE params.content",
@@ -41,41 +47,30 @@ func TestRedactEventData_ActionParams(t *testing.T) {
 			secrets: []string{"SENTINEL_FILE"},
 		},
 		{
-			name:       "ADMIN_POLICY params.unit_content",
+			name:       "ADMIN_POLICY params.customConfig",
 			actionType: "ACTION_TYPE_ADMIN_POLICY",
 			params: map[string]any{
-				"unit_content": "SENTINEL_SUDO",
+				"customConfig": "SENTINEL_SUDO",
 			},
 			secrets: []string{"SENTINEL_SUDO"},
 		},
 		{
-			name:       "REPOSITORY params.gpg_key",
+			name:       "REPOSITORY params.gpgKey",
 			actionType: "ACTION_TYPE_REPOSITORY",
 			params: map[string]any{
-				"url":     "https://example.com/repo",
-				"gpg_key": "SENTINEL_GPG",
+				"url":    "https://example.com/repo",
+				"gpgKey": "SENTINEL_GPG",
 			},
 			secrets: []string{"SENTINEL_GPG"},
 		},
 		{
-			name:       "LPS params.password + params.preshared_key",
-			actionType: "ACTION_TYPE_LPS",
-			params: map[string]any{
-				"username":      "alice",
-				"password":      "SENTINEL_LPS_PWD",
-				"preshared_key": "SENTINEL_LPS_PSK",
-			},
-			secrets: []string{"SENTINEL_LPS_PWD", "SENTINEL_LPS_PSK"},
-		},
-		{
-			name:       "ENCRYPTION (LUKS) params.passphrase + params.preshared_key",
+			name:       "ENCRYPTION (LUKS) params.presharedKey",
 			actionType: "ACTION_TYPE_ENCRYPTION",
 			params: map[string]any{
-				"device_path":   "/dev/sda1",
-				"passphrase":    "SENTINEL_LUKS_PWD",
-				"preshared_key": "SENTINEL_LUKS_PSK",
+				"devicePath":   "/dev/sda1",
+				"presharedKey": "SENTINEL_LUKS_PSK",
 			},
-			secrets: []string{"SENTINEL_LUKS_PWD", "SENTINEL_LUKS_PSK"},
+			secrets: []string{"SENTINEL_LUKS_PSK"},
 		},
 	}
 
