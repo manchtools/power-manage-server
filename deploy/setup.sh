@@ -75,6 +75,32 @@ check_env() {
         missing=1
     fi
 
+    # AES-256-GCM key for at-rest secret encryption. Must be exactly
+    # 64 hex chars (32 bytes). Interactive mode's prompt_secret already
+    # length-checks this; the check_env mirror is what catches a
+    # --no-prompt run against a malformed .env. Empty is allowed only
+    # when the operator explicitly opted out via
+    # CONTROL_ENCRYPTION_KEY_REQUIRED=false (handled at control-server
+    # boot, not here).
+    if [[ -n "${CONTROL_ENCRYPTION_KEY:-}" ]] && [[ ! "$CONTROL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters when set"
+        missing=1
+    fi
+
+    # Asynq task-signing key — must be 64 hex chars (32 bytes). Without
+    # this, compose substitutes blank and HMAC verification fails
+    # silently across control/gateway/indexer. The placeholder in
+    # .env.example is intentionally not a valid hex string so this
+    # check fires loudly on a non-interactive run that forgot to
+    # generate one.
+    if [[ -z "${PM_TASK_SIGNING_KEY:-}" ]] || [[ "$PM_TASK_SIGNING_KEY" == "CHANGE_ME"* ]]; then
+        log_error "PM_TASK_SIGNING_KEY must be set in .env (generate with: openssl rand -hex 32)"
+        missing=1
+    elif [[ ! "$PM_TASK_SIGNING_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "PM_TASK_SIGNING_KEY must be exactly 64 hex characters"
+        missing=1
+    fi
+
     if [[ -z "$ADMIN_EMAIL" ]]; then
         log_error "ADMIN_EMAIL must be set in .env"
         missing=1

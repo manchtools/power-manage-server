@@ -33,7 +33,12 @@ GITHUB_REPO="manchtools/power-manage-server"
 # expands an out-of-scope name once the function returns, exploding
 # the trap with "tmpdir: unbound variable" — the rc1 install bug.
 PM_INSTALL_TMPDIR=""
-trap 'rm -rf "${PM_INSTALL_TMPDIR:-}"' EXIT
+# Guarded `rm` so an early exit (before download_deploy_tree assigned
+# a tempdir) doesn't trigger `rm -rf ""`, which on GNU rm errors with
+# "cannot remove '': No such file or directory" and overrides the
+# script's real exit status. The :+ test only fires `rm` when the var
+# is set AND non-empty.
+trap 'if [[ -n "${PM_INSTALL_TMPDIR:-}" ]]; then rm -rf "$PM_INSTALL_TMPDIR"; fi' EXIT
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
