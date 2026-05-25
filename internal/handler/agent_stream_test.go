@@ -35,7 +35,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
@@ -96,11 +95,18 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 		requireTLS:        requireTLS,
 	}
 
-	// 3) AgentService over h2c httptest server.
+	// 3) AgentService over h2c httptest server. h2c.NewHandler was
+	// deprecated in x/net v0.55 in favour of http.Server.Protocols; the
+	// Go 1.24+ replacement is to set Protocols.UnencryptedHTTP2 on the
+	// underlying Server before Start.
 	mux := http.NewServeMux()
 	path, hh := pmv1connect.NewAgentServiceHandler(h)
 	mux.Handle(path, hh)
-	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	srv := httptest.NewUnstartedServer(mux)
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	srv.Config.Protocols = protocols
+	srv.Start()
 	t.Cleanup(srv.Close)
 
 	httpClient := &http.Client{
