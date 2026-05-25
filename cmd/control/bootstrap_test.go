@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
@@ -67,4 +68,53 @@ func TestBootstrapAllDevicesGroup_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, firstGroup.ID, secondGroup.ID,
 		"second bootstrap invocation must not produce a new group — same row, same id")
+}
+
+// TestEnsureAdminUser_RequiresWireAllFirst guards against the #317
+// regression: ensureAdminUser emits a UserCreatedWithRoles event which
+// only materialises into users_projection when UserListener is already
+// registered. Production startup wires WireAll inside wireSystemActions
+// (cmd/control/main.go); ensureAdminUser must run AFTER that.
+//
+// The test uses SetupPostgresWithoutProjectors so the test fixture
+// doesn't paper over the production ordering — SetupPostgres's
+// auto-wire is what masked the original bug from CI for rc1.
+func TestEnsureAdminUser_RequiresWireAllFirst(t *testing.T) {
+	ctx := context.Background()
+	logger := quietLogger()
+
+	t.Run("CorrectOrder_WireAllThenEnsureAdmin", func(t *testing.T) {
+		st := testutil.SetupPostgresWithoutProjectors(t)
+		// Production order as of #317: listeners registered first.
+		projectors.WireAll(st, logger)
+
+		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
+		require.NoError(t, err, "ensureAdminUser succeeds")
+
+		user, err := st.Repos().User.GetByEmail(ctx, "admin@example.com")
+		require.NoError(t, err,
+			"with WireAll wired first, UserListener writes users_projection during AppendEvent")
+		assert.Equal(t, "admin@example.com", user.Email)
+		require.NotNil(t, user.PasswordHash)
+		assert.NotEmpty(t, *user.PasswordHash,
+			"projector must persist the bcrypt hash so Login can verify against it")
+	})
+
+	t.Run("BrokenOrder_EnsureAdminBeforeWireAll", func(t *testing.T) {
+		// Documents the rc1 broken order: with no listener registered
+		// at AppendEvent time, the event lands in `events` but the
+		// projection write is silently skipped — GetByEmail then misses.
+		// If main.go regresses to the pre-#317 ordering, this branch
+		// would pass and the production-correct branch above would fail.
+		st := testutil.SetupPostgresWithoutProjectors(t)
+
+		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
+		require.NoError(t, err,
+			"AppendEvent succeeds — the bug is the silent projection skip, not the emit")
+
+		_, err = st.Repos().User.GetByEmail(ctx, "admin@example.com")
+		require.True(t, store.IsNotFound(err),
+			"without WireAll first, the projection row never materialises; "+
+				"this is the rc1 race that left users_projection empty for the bootstrap admin")
+	})
 }

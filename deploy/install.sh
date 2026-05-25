@@ -27,6 +27,19 @@ RELEASE_TAG="${RELEASE_TAG:-latest-rc}"
 NO_PROMPT="${NO_PROMPT:-0}"
 GITHUB_REPO="manchtools/power-manage-server"
 
+# Holds the mktemp -d path used by download_deploy_tree so the EXIT
+# trap can clean it up. Declared at script scope (not `local` inside
+# the function) because `set -u` + a function-local trap reference
+# expands an out-of-scope name once the function returns, exploding
+# the trap with "tmpdir: unbound variable" — the rc1 install bug.
+PM_INSTALL_TMPDIR=""
+# Guarded `rm` so an early exit (before download_deploy_tree assigned
+# a tempdir) doesn't trigger `rm -rf ""`, which on GNU rm errors with
+# "cannot remove '': No such file or directory" and overrides the
+# script's real exit status. The :+ test only fires `rm` when the var
+# is set AND non-empty.
+trap 'if [[ -n "${PM_INSTALL_TMPDIR:-}" ]]; then rm -rf "$PM_INSTALL_TMPDIR"; fi' EXIT
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -35,6 +48,69 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
+
+# resolve_release_tag turns the floating-tag aliases :latest-rc and
+# :latest (the container-image contract names) into the actual git
+# tag they point at, by hitting the GitHub Releases API. The previous
+# code path treated them as git refs directly and failed with
+# "Could not resolve as tag or branch" because no such ref exists.
+#
+# An explicit tag (vYYYY.MM[-rcN]) is left untouched.
+resolve_release_tag() {
+    case "$RELEASE_TAG" in
+        latest-rc)
+            local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=30"
+            local resolved
+            resolved="$(curl -fsSL "$api_url" | _first_prerelease_tag)" || true
+            ;;
+        latest)
+            local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+            local resolved
+            resolved="$(curl -fsSL "$api_url" | _release_tag_name)" || true
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+    if [[ -z "${resolved:-}" || "$resolved" == "null" ]]; then
+        log_error "Could not resolve $RELEASE_TAG via the GitHub releases API on $GITHUB_REPO."
+        log_error "  Pass an explicit tag instead, e.g.: RELEASE_TAG=v2026.06-rc1 ./install.sh"
+        exit 1
+    fi
+    log_info "  Resolved $RELEASE_TAG → $resolved"
+    RELEASE_TAG="$resolved"
+}
+
+# JSON parsing helpers — python3 is the primary path (preinstalled on
+# every supported distro); jq is the fallback if the operator has
+# stripped python; failure mode is a clear "install one or pass an
+# explicit RELEASE_TAG" rather than a silent empty resolve.
+_first_prerelease_tag() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys
+data=json.load(sys.stdin)
+for r in data:
+    if r.get("prerelease") and not r.get("draft"):
+        print(r["tag_name"]); break'
+    elif command -v jq >/dev/null 2>&1; then
+        jq -r 'map(select(.prerelease==true and .draft==false))[0].tag_name'
+    else
+        log_error "Neither python3 nor jq is installed; cannot parse the GitHub releases API."
+        log_error "  Install one, or set an explicit RELEASE_TAG (e.g. v2026.06-rc1)."
+        exit 1
+    fi
+}
+
+_release_tag_name() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name",""))'
+    elif command -v jq >/dev/null 2>&1; then
+        jq -r '.tag_name // empty'
+    else
+        log_error "Neither python3 nor jq is installed; cannot parse the GitHub releases API."
+        exit 1
+    fi
+}
 
 ###############################################################################
 # Step 1 — preflight
@@ -96,14 +172,17 @@ preflight() {
 # tarball-download endpoint which accepts both.
 ###############################################################################
 download_deploy_tree() {
+    # Map :latest / :latest-rc to a real git tag before trying to
+    # download the source tarball.
+    resolve_release_tag
+
     log_info "Fetching deploy tree from $GITHUB_REPO@$RELEASE_TAG…"
 
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    # Single-quote so $tmpdir is expanded at trap-fire time, not now —
-    # SC2064. Works either way today (the var isn't reassigned), but
-    # the deferred-expansion form is the documented intent.
-    trap 'rm -rf "$tmpdir"' EXIT
+    # Use the script-scope var so the EXIT trap at the top of the
+    # script can clean it up without referencing an out-of-scope
+    # local. See PM_INSTALL_TMPDIR declaration up top.
+    PM_INSTALL_TMPDIR="$(mktemp -d)"
+    local tmpdir="$PM_INSTALL_TMPDIR"
 
     local tarball="$tmpdir/source.tar.gz"
 
@@ -209,6 +288,26 @@ run_setup() {
 ###############################################################################
 start_stack() {
     cd "$INSTALL_DIR"
+
+    # Defense-in-depth against the dockerd bind-mount footgun:
+    # compose.yml mounts ./valkey.conf into pm-valkey, and if the
+    # host path doesn't exist when compose runs, dockerd silently
+    # creates it as a DIRECTORY. Valkey then loads with no config,
+    # `requirepass` is unset, and every downstream auth fails with
+    # "AUTH called without any password configured". setup.sh
+    # render_valkey_config writes the real file, but if it failed
+    # or was skipped, surface that here rather than letting docker
+    # paper over it.
+    if [[ -d valkey.conf ]]; then
+        log_error "valkey.conf exists as a directory — docker auto-created the bind-mount source on a prior partial run."
+        log_error "  Remove it and re-run setup.sh: rm -rf valkey.conf && ./setup.sh --no-prompt"
+        exit 1
+    fi
+    if [[ ! -f valkey.conf ]]; then
+        log_error "valkey.conf is missing — setup.sh did not render it."
+        log_error "  Run: ./setup.sh   (or ./setup.sh --no-prompt for non-interactive mode)"
+        exit 1
+    fi
 
     log_info "Pulling images…"
     docker compose pull

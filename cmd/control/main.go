@@ -122,13 +122,12 @@ func main() {
 	st.SetRepos(postgres.NewRepos(st.Queries()))
 	logger.Info("database initialized", "url", maskDatabaseURL(cfg.DatabaseURL))
 
-	// Create admin user if specified and not exists
-	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
-		if err := ensureAdminUser(ctx, st, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
-			logger.Error("failed to create admin user", "error", err)
-			os.Exit(1)
-		}
-	}
+	// NOTE: bootstrap event emissions (ensureAdminUser, seedSSHAccessForAll,
+	// bootstrapAllDevicesGroup) live AFTER wireSystemActions below. Tracker
+	// #107 / #317: Go-side projector listeners only fire for new events, so
+	// any AppendEvent before WireAll silently skips the projection write —
+	// the canonical case being a fresh install where the admin user lands
+	// in events but not in users_projection, and login then fails.
 
 	// Initialize CA
 	certAuth, err := ca.New(cfg.CACertPath, cfg.CAKeyPath, cfg.CertValidity)
@@ -202,10 +201,9 @@ func main() {
 		SCIMBaseURL:         cfg.SCIMBaseURL,
 	})
 
-	// One-shot env-driven seed of the global SSH-access-for-all flag.
-	seedSSHAccessForAll(ctx, st, logger)
-
-	// Reconcile system roles (Admin/User) with current permission definitions
+	// Reconcile system roles (Admin/User) with current permission definitions.
+	// Bypasses the event store (direct UPDATE on roles_projection via sqlc),
+	// so the ordering vs WireAll doesn't matter for this call.
 	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
 		logger.Error("failed to reconcile system roles", "error", err)
 	}
@@ -213,7 +211,24 @@ func main() {
 	// rc11 #77: derived-projection wiring for system actions —
 	// projectors.WireAll + startup sweep + post-commit listener +
 	// periodic reconciler. See setup.go for the full rationale.
+	//
+	// Every bootstrap helper that emits events MUST run AFTER this call
+	// (#317). Go-side listeners are only registered here; an AppendEvent
+	// before WireAll persists the event but skips the projection write.
 	wireSystemActions(ctx, st, svc, cfg, logger)
+
+	// Bootstrap admin user (event-sourced via UserCreatedWithRoles).
+	// Runs after WireAll so UserListener materialises users_projection.
+	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
+		if err := ensureAdminUser(ctx, st, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
+			logger.Error("failed to create admin user", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	// One-shot env-driven seed of the global SSH-access-for-all flag.
+	// Emits ServerSettingUpdated; needs ServerSettingsListener registered.
+	seedSSHAccessForAll(ctx, st, logger)
 
 	// Boot-time seed of the "All Devices" dynamic group. Runs AFTER
 	// WireAll so the DeviceGroupCreated event flows through the

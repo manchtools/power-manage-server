@@ -75,6 +75,32 @@ check_env() {
         missing=1
     fi
 
+    # AES-256-GCM key for at-rest secret encryption. Must be exactly
+    # 64 hex chars (32 bytes). Interactive mode's prompt_secret already
+    # length-checks this; the check_env mirror is what catches a
+    # --no-prompt run against a malformed .env. Empty is allowed only
+    # when the operator explicitly opted out via
+    # CONTROL_ENCRYPTION_KEY_REQUIRED=false (handled at control-server
+    # boot, not here).
+    if [[ -n "${CONTROL_ENCRYPTION_KEY:-}" ]] && [[ ! "$CONTROL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters when set"
+        missing=1
+    fi
+
+    # Asynq task-signing key — must be 64 hex chars (32 bytes). Without
+    # this, compose substitutes blank and HMAC verification fails
+    # silently across control/gateway/indexer. The placeholder in
+    # .env.example is intentionally not a valid hex string so this
+    # check fires loudly on a non-interactive run that forgot to
+    # generate one.
+    if [[ -z "${PM_TASK_SIGNING_KEY:-}" ]] || [[ "$PM_TASK_SIGNING_KEY" == "CHANGE_ME"* ]]; then
+        log_error "PM_TASK_SIGNING_KEY must be set in .env (generate with: openssl rand -hex 32)"
+        missing=1
+    elif [[ ! "$PM_TASK_SIGNING_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "PM_TASK_SIGNING_KEY must be exactly 64 hex characters"
+        missing=1
+    fi
+
     if [[ -z "$ADMIN_EMAIL" ]]; then
         log_error "ADMIN_EMAIL must be set in .env"
         missing=1
@@ -585,7 +611,11 @@ guided_setup() {
     # the prompt loop ran (empty on a fresh install).
     ADMIN_EMAIL="$REPLY_VALUE"
 
-    prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -base64 24" "${ADMIN_PASSWORD:-}"
+    # Use hex (not base64) so the generated password is safe to paste
+    # into a web form. base64 emits '+' and '/' — '+' decodes as space
+    # under application/x-www-form-urlencoded so the bootstrap admin
+    # could not sign in through the UI without manual URL encoding.
+    prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -hex 24" "${ADMIN_PASSWORD:-}"
     write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
     local admin_pass="$REPLY_VALUE"
     local admin_pass_generated="$REPLY_GENERATED"
@@ -687,6 +717,17 @@ render_valkey_config() {
     if [[ ! -f "$template" ]]; then
         log_error "valkey.conf.template missing at $template"
         return 1
+    fi
+    # Docker bind-mount footgun: if compose ever starts before this
+    # function has rendered the file, dockerd silently creates the
+    # host-side path as a DIRECTORY (because the source of the bind
+    # mount doesn't exist). Valkey then loads without a config —
+    # `requirepass` not set, indexer's AUTH gets "no password
+    # configured", auth fails everywhere. Surface and fix the dir
+    # so the operator doesn't chase it through the indexer logs.
+    if [[ -d "$rendered" ]]; then
+        log_warn "valkey.conf is a directory (docker auto-created the bind-mount source); removing and re-rendering."
+        rm -rf "$rendered"
     fi
     # Literal substitution via a split-and-concatenate loop. Every
     # other approach we tried interprets `&` as the matched text
