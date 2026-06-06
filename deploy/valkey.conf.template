@@ -1,4 +1,4 @@
-# Valkey/Redis-stack server configuration (audit F-03).
+# Valkey server configuration (audit F-03).
 #
 # Rendered to ./valkey.conf at setup time by setup.sh — the only
 # value substituted in is ${VALKEY_PASSWORD}. The rendered file is
@@ -12,9 +12,13 @@
 # only the user that owns the deployment can read it; the bind-mount
 # carries those bits into the container.
 
-# Module loading (RediSearch ships in the redis-stack-server image at
-# the path below; keep this in sync with the image's --loadmodule arg).
-loadmodule /opt/redis-stack/lib/redisearch.so
+# Module loading: handled by the valkey-bundle entrypoint, not here.
+# `bundle-docker-entrypoint.sh` auto-discovers every .so under
+# /usr/lib/valkey/ (search, json, bloom, ldap) and appends them as
+# --loadmodule args at start. Adding an explicit `loadmodule` line
+# for one of them would make the entrypoint skip its auto-append for
+# that module (idempotent) — only add one to pin to a non-bundled
+# module path.
 
 # Authentication. setup.sh replaces __VALKEY_PASSWORD__ with the
 # operator-generated password from .env.

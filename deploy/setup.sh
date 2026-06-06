@@ -751,8 +751,8 @@ render_valkey_config() {
     local tmp
     tmp="$(mktemp "${rendered}.tmp.XXXXXX")"
     printf '%s' "$rendered_contents" > "$tmp"
-    # 0644 keeps the file readable by the redis user inside the
-    # container (uid 999 in the redis-stack-server image) without
+    # 0644 keeps the file readable by the valkey user inside the
+    # container (uid 999 in the valkey-bundle image) without
     # needing the operator to chown to a specific uid. The bind-
     # mount carries `ro,z` so the container cannot tamper, and the
     # password is already on disk in .env (same protection level),

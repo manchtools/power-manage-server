@@ -82,9 +82,12 @@ services:
 
   valkey:
     # Pinned to avoid silent upstream upgrades. Bump deliberately when
-    # you've verified the RediSearch module + data format still work
-    # for your deployment.
-    image: docker.io/redis/redis-stack-server:7.4.0-v0
+    # you've verified the valkey-search module + data format still
+    # work for your deployment. The bundle image carries valkey-server
+    # plus the search / json / bloom / ldap modules under
+    # /usr/lib/valkey/; its entrypoint auto-loads any .so it finds
+    # there that isn't already loaded by the config file.
+    image: docker.io/valkey/valkey-bundle:9.1.0
     container_name: pm-valkey
     restart: unless-stopped
     volumes:
@@ -99,10 +102,14 @@ services:
     # /proc/<pid>/cmdline. Now the password is in /etc/valkey/valkey.conf
     # (file permissions enforced by the bind-mount), and the health
     # check authenticates via REDISCLI_AUTH so the cmdline of the
-    # one-shot redis-cli probe stays clean too.
-    command: ["redis-server", "/etc/valkey/valkey.conf"]
+    # one-shot valkey-cli probe stays clean too.
+    #
+    # Command must invoke `valkey-server` (not its `redis-server`
+    # symlink) so the bundle's entrypoint takes the module-autoload
+    # branch — see bundle-docker-entrypoint.sh.
+    command: ["valkey-server", "/etc/valkey/valkey.conf"]
     healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" redis-cli ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$VALKEY_PASSWORD\" valkey-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 3

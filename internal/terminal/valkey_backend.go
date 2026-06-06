@@ -55,7 +55,8 @@ func (b *ValkeyBackend) Delete(ctx context.Context, sessionID string) error {
 
 // GetAndDelete atomically returns the payload and removes the key in a
 // single Valkey/Redis round-trip using GETDEL (available since Redis
-// 6.2; redis-stack-server ships well past that). This is the primitive
+// 6.2; both valkey-bundle and the legacy redis-stack-server image
+// ship well past that). This is the primitive
 // that makes terminal tokens single-use — two concurrent validators
 // cannot both observe the payload.
 func (b *ValkeyBackend) GetAndDelete(ctx context.Context, sessionID string) ([]byte, error) {
