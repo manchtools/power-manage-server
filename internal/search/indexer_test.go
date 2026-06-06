@@ -18,15 +18,18 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
-// setupRedis starts a Redis Stack container with RediSearch module and returns
-// a connected go-redis client. The container is stopped when the test completes.
+// setupRedis starts a valkey-bundle container (valkey-search module
+// auto-loaded by the bundle entrypoint) and returns a connected
+// go-redis client. The container is stopped when the test completes.
+// Image swap from redis-stack-server is part of #319 — test logic
+// itself is unchanged so a clean run validates the cutover.
 func setupRedis(t *testing.T) *redis.Client {
 	t.Helper()
 	ctx := context.Background()
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "redis/redis-stack-server:latest",
+			Image:        "valkey/valkey-bundle:9.1.0",
 			ExposedPorts: []string{"6379/tcp"},
 			WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(30 * time.Second),
 		},

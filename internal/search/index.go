@@ -132,7 +132,7 @@ func (idx *Index) FlushSearchData(ctx context.Context) error {
 	return nil
 }
 
-// EnsureIndexes creates the RediSearch FT indexes if they don't already exist.
+// EnsureIndexes creates the FT search indexes if they don't already exist.
 func (idx *Index) EnsureIndexes(ctx context.Context) error {
 	indexes := []struct {
 		name   string
@@ -264,7 +264,13 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 		args = append(args, ix.schema...)
 		err := idx.rdb.Do(ctx, args...).Err()
 		if err != nil {
-			if strings.Contains(err.Error(), "Index already exists") {
+			// "already exists" substring covers both backends used during
+			// the redis-stack → valkey-bundle cutover (#319). RediSearch
+			// emits "Index already exists"; valkey-search 1.2+ emits
+			// "Index <name> in database 0 already exists." — both
+			// contain the same anchor word, so a single substring
+			// works without per-backend branching.
+			if strings.Contains(err.Error(), "already exists") {
 				continue
 			}
 			return fmt.Errorf("create index %s: %w", ix.name, err)
