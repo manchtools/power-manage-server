@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"testing"
 
+	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -233,29 +237,54 @@ func TestLogQueryDispatchPayloadRoundtrip(t *testing.T) {
 	assert.Equal(t, original.Kernel, decoded.Kernel)
 }
 
+type recordingMessageSender struct {
+	deviceID string
+	messages []*pm.ServerMessage
+	err      error
+}
+
+func (r *recordingMessageSender) Send(deviceID string, msg *pm.ServerMessage) error {
+	if r.err != nil {
+		return r.err
+	}
+	r.deviceID = deviceID
+	r.messages = append(r.messages, msg)
+	return nil
+}
+
 func TestDeviceTaskHandler_BuildsActionMessage(t *testing.T) {
-	// Directly test the action building logic by constructing the Action
-	// exactly as handleActionDispatch does (minus the Send call).
 	payload := taskqueue.ActionDispatchPayload{
-		ExecutionID:    "exec-001",
-		ActionType:     int32(pm.ActionType_ACTION_TYPE_PACKAGE),
-		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		Params:         json.RawMessage(`{"name":"htop"}`),
-		TimeoutSeconds: 600,
+		ExecutionID:     "exec-001",
+		ActionType:      int32(pm.ActionType_ACTION_TYPE_PACKAGE),
+		DesiredState:    int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		Params:          json.RawMessage(`{"name":"htop"}`),
+		TimeoutSeconds:  600,
+		Signature:       []byte("sig"),
+		ParamsCanonical: []byte(`{"name":"htop"}`),
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	sender := &recordingMessageSender{}
+	h := &deviceTaskHandler{
+		deviceID: "device-1",
+		manager:  sender,
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	action := &pm.Action{
-		Id:             &pm.ActionId{Value: payload.ExecutionID},
-		Type:           pm.ActionType(payload.ActionType),
-		DesiredState:   pm.DesiredState(payload.DesiredState),
-		TimeoutSeconds: payload.TimeoutSeconds,
-	}
-	actionparams.PopulateAction(action, payload.ActionType, payload.Params)
+	err = h.handleActionDispatch(context.Background(), asynq.NewTask(taskqueue.TypeActionDispatch, data))
+	require.NoError(t, err)
 
+	require.Len(t, sender.messages, 1)
+	assert.Equal(t, "device-1", sender.deviceID)
+	action := sender.messages[0].GetAction().GetAction()
+	require.NotNil(t, action)
 	assert.Equal(t, "exec-001", action.Id.Value)
 	assert.Equal(t, pm.ActionType_ACTION_TYPE_PACKAGE, action.Type)
 	assert.Equal(t, pm.DesiredState_DESIRED_STATE_PRESENT, action.DesiredState)
 	assert.Equal(t, int32(600), action.TimeoutSeconds)
+	assert.Equal(t, []byte("sig"), action.Signature)
+	assert.Equal(t, []byte(`{"name":"htop"}`), action.ParamsCanonical)
 	require.NotNil(t, action.GetPackage())
 	assert.Equal(t, "htop", action.GetPackage().Name)
 }

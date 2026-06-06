@@ -312,18 +312,36 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 		"projection must survive the failed rebuild; finding zero rows means either the guard ran too late or the outer transaction failed to roll back a destructive op")
 }
 
-// TestRebuildAll_TransactionalAtomicity — if the projector function
-// fails partway through replay, the whole rebuild must roll back so
-// the projection is not left half-replayed against a TRUNCATE'd
-// table. We force a failure by swapping out the events table briefly,
-// then verify the projection returns to its pre-rebuild state.
-//
-// Skipped for now: the cleanest way to force a projector failure is
-// to inject a malformed event row, which requires write access to
-// the events table mid-test. Documented here as a follow-up since
-// the contract is critical but the test is fragile to set up.
+// TestRebuildAll_TransactionalAtomicity forces the roles applier to
+// fail after the target's TRUNCATE has executed. The outer rebuild
+// transaction must roll that destructive statement back, leaving the
+// pre-existing projection row intact.
 func TestRebuildAll_TransactionalAtomicity(t *testing.T) {
-	t.Skip("follow-up: inject a malformed event to force projector failure mid-replay")
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	roleID := testutil.CreateTestRole(t, st, actorID, "atomic-role-"+testutil.NewID(), []string{"GetDevice"})
+
+	var before int
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
+	).Scan(&before))
+	require.Equal(t, 1, before)
+
+	st.RegisterRebuildApply("roles", func(context.Context, *store.Queries, store.PersistedEvent) error {
+		return errors.New("forced roles replay failure")
+	})
+
+	_, err := st.RebuildAll(ctx, "roles")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced roles replay failure")
+
+	var after int
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
+	).Scan(&after))
+	assert.Equal(t, 1, after, "failed rebuild must roll back target TRUNCATE")
 }
 
 // TestRebuildAll_UserGroupsRebuildPreservesSCIMMappings pins the

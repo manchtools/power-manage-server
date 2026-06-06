@@ -136,6 +136,10 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 
 // ListUserGroups returns a paginated list of user groups.
 func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Request[pm.ListUserGroupsRequest]) (*connect.Response[pm.ListUserGroupsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

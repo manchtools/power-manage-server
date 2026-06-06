@@ -60,6 +60,10 @@ func (h *InternalHandler) SetTerminalTokenStore(s *terminal.TokenStore) {
 // VerifyDevice checks that a device exists and is not deleted.
 // Called by the gateway before registering an agent connection.
 func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request[pm.VerifyDeviceRequest]) (*connect.Response[pm.VerifyDeviceResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
@@ -76,6 +80,10 @@ func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request
 
 // ProxySyncActions resolves all assigned actions for a device.
 func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Request[pm.InternalSyncActionsRequest]) (*connect.Response[pm.SyncActionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
@@ -241,6 +249,10 @@ func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
 
 // ProxyValidateLuksToken validates and consumes a one-time LUKS token.
 func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *connect.Request[pm.InternalValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and token are required")
 	}
@@ -269,6 +281,10 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 
 // ProxyGetLuksKey retrieves and decrypts the current LUKS key for a device+action.
 func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Request[pm.InternalGetLuksKeyRequest]) (*connect.Response[pm.GetLuksKeyResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
@@ -290,6 +306,10 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 
 // ProxyStoreLuksKey encrypts and stores a new LUKS key.
 func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Request[pm.InternalStoreLuksKeyRequest]) (*connect.Response[pm.StoreLuksKeyResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || req.Msg.Passphrase == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and passphrase are required")
 	}
@@ -327,6 +347,10 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 
 // ProxyStoreLpsPasswords encrypts and stores LPS password rotation entries.
 func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *connect.Request[pm.InternalStoreLpsPasswordsRequest]) (*connect.Response[pm.InternalStoreLpsPasswordsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
@@ -460,6 +484,10 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 // store not configured' is Unavailable — operator misconfiguration,
 // not a client bug.
 func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *connect.Request[pm.InternalValidateTerminalTokenRequest]) (*connect.Response[pm.InternalValidateTerminalTokenResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if h.terminalTokenStore == nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
 			"remote terminal sessions are not configured on this control instance")

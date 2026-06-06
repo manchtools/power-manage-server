@@ -27,6 +27,10 @@ func NewIdentityLinkHandler(st *store.Store, logger *slog.Logger) *IdentityLinkH
 
 // ListIdentityLinks returns the current user's linked identities.
 func (h *IdentityLinkHandler) ListIdentityLinks(ctx context.Context, req *connect.Request[pm.ListIdentityLinksRequest]) (*connect.Response[pm.ListIdentityLinksResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err

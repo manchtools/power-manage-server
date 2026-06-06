@@ -233,6 +233,10 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 
 // GetCurrentUser returns the current authenticated user.
 func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[pm.GetCurrentUserRequest]) (*connect.Response[pm.GetCurrentUserResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err

@@ -120,6 +120,10 @@ func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string,
 // Register handles agent registration requests synchronously.
 // Validates the registration token, signs the CSR, emits events, and returns credentials.
 func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request[pm.RegisterRequest]) (*connect.Response[pm.RegisterResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	logger := h.logger.With("hostname", req.Msg.Hostname, "agent_version", req.Msg.AgentVersion)
 	logger.Info("processing registration request")
 

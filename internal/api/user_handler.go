@@ -227,6 +227,10 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 
 // ListUsers returns a paginated list of users.
 func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.ListUsersRequest]) (*connect.Response[pm.ListUsersResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

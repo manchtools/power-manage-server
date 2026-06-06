@@ -28,6 +28,10 @@ func NewComplianceHandler(st *store.Store, logger *slog.Logger) *ComplianceHandl
 
 // GetDeviceCompliance returns the compliance status and individual check results for a device.
 func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connect.Request[pm.GetDeviceComplianceRequest]) (*connect.Response[pm.GetDeviceComplianceResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	deviceID := req.Msg.DeviceId
 
 	results, err := h.store.Repos().Compliance.DeviceResults(ctx, deviceID)

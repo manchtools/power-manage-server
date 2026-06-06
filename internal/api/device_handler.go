@@ -41,6 +41,10 @@ func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logge
 // ListDevices returns a paginated list of devices.
 // Admins see all devices; regular users see only their assigned devices.
 func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm.ListDevicesRequest]) (*connect.Response[pm.ListDevicesResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

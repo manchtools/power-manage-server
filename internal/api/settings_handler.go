@@ -32,6 +32,10 @@ func NewSettingsHandler(st *store.Store, logger *slog.Logger, systemActions *Sys
 
 // GetServerSettings returns the current server settings.
 func (h *SettingsHandler) GetServerSettings(ctx context.Context, req *connect.Request[pm.GetServerSettingsRequest]) (*connect.Response[pm.GetServerSettingsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	settings, err := h.store.Repos().Settings.GetServer(ctx)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get server settings")
@@ -47,6 +51,10 @@ func (h *SettingsHandler) GetServerSettings(ctx context.Context, req *connect.Re
 
 // UpdateServerSettings updates global server settings and triggers a full resync.
 func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect.Request[pm.UpdateServerSettingsRequest]) (*connect.Response[pm.UpdateServerSettingsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "server_settings",
 		StreamID:   "global",

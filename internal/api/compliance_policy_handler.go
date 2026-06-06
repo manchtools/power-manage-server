@@ -91,6 +91,10 @@ func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *
 
 // ListCompliancePolicies returns a paginated list of compliance policies.
 func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, req *connect.Request[pm.ListCompliancePoliciesRequest]) (*connect.Response[pm.ListCompliancePoliciesResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

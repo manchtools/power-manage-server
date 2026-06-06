@@ -10,12 +10,9 @@ package handler
 //
 // Strategy: stand up a real Connect-RPC handler over h2c (HTTP/2 over
 // cleartext) on httptest.Server, and exercise it through a real
-// AgentServiceClient bidi stream. workerMgr is left nil on the handler —
-// every test case in here bails BEFORE Stream's manager.Register +
-// workerMgr.StartWorker block, so a nil workerMgr is safe for these
-// paths. A test that exercises the post-Register path would either
-// need workerMgr to become an interface or stand up miniredis; both
-// are out of scope here.
+// AgentServiceClient bidi stream. The fixture uses recording fakes for
+// the task queue and per-device worker manager so the post-register
+// happy path is covered without depending on Valkey.
 
 import (
 	"context"
@@ -62,6 +59,31 @@ func (r *recordingControlForStream) VerifyDevice(_ context.Context, req *connect
 	return connect.NewResponse(&pm.VerifyDeviceResponse{}), nil
 }
 
+type fakeStreamWorkerManager struct {
+	mu      sync.Mutex
+	started []string
+	stopped []string
+}
+
+func (f *fakeStreamWorkerManager) StartWorker(deviceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started = append(f.started, deviceID)
+	return nil
+}
+
+func (f *fakeStreamWorkerManager) StopWorker(deviceID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopped = append(f.stopped, deviceID)
+}
+
+func (f *fakeStreamWorkerManager) snapshot() (started, stopped []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.started...), append([]string(nil), f.stopped...)
+}
+
 // streamFixture wires AgentHandler into an h2c httptest.Server and
 // returns an AgentServiceClient pointed at it, plus the recording
 // control stub so tests can flip the VerifyDevice outcome.
@@ -69,6 +91,7 @@ type streamFixture struct {
 	client      pmv1connect.AgentServiceClient
 	internalSrv *httptest.Server
 	control     *recordingControlForStream
+	worker      *fakeStreamWorkerManager
 	server      *httptest.Server
 }
 
@@ -83,12 +106,16 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 	internalSrv := httptest.NewServer(internalMux)
 	t.Cleanup(internalSrv.Close)
 
-	// 2) Real ControlProxy + connection.Manager + nil workerMgr.
+	// 2) Real ControlProxy + connection.Manager + recording fakes for
+	// the queue and per-device worker manager.
 	proxy := NewControlProxy(internalSrv.Client(), internalSrv.URL)
 	mgr := connection.NewManager()
+	worker := &fakeStreamWorkerManager{}
 	h := &AgentHandler{
 		manager:           mgr,
+		aqClient:          &fakeEnqueuer{},
 		controlProxy:      proxy,
+		workerMgr:         worker,
 		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		serverVersion:     "test",
 		heartbeatInterval: 30 * time.Second,
@@ -124,6 +151,7 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 		client:      client,
 		internalSrv: internalSrv,
 		control:     control,
+		worker:      worker,
 		server:      srv,
 	}
 }
@@ -227,17 +255,8 @@ func TestStream_VerifyDeviceFailureRejectsConnection(t *testing.T) {
 		"VerifyDevice must be called with the Hello-supplied device_id")
 }
 
-func TestStream_HelloDeviceIDForwardedToVerifyDevice(t *testing.T) {
-	// Happy-path through VerifyDevice: the gate succeeds, but with
-	// workerMgr=nil the next call (h.workerMgr.StartWorker) panics.
-	// This is fine — recovering inside Stream() turns the panic into
-	// CodeInternal, which is what the test asserts. The point of the
-	// test is that VerifyDevice was called with the right ID, proving
-	// the Hello → VerifyDevice plumbing works.
+func TestStream_HappyPathRegistersStartsWorkerAndSendsWelcome(t *testing.T) {
 	f := newStreamFixture(t, false)
-	// VerifyDevice succeeds (no err). manager.Register is real, but
-	// workerMgr is nil so StartWorker will panic — Stream's defer
-	// recovers and surfaces CodeInternal.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -249,13 +268,20 @@ func TestStream_HelloDeviceIDForwardedToVerifyDevice(t *testing.T) {
 			AgentVersion: "happy",
 		}},
 	}))
-	require.NoError(t, stream.CloseRequest())
 
-	// We don't assert on the connection.Manager state because Register
-	// happens AFTER VerifyDevice but BEFORE the panic — the recovered
-	// error path doesn't unregister, so observed state would be racy.
-	// The point is the VerifyDevice call landed.
+	msg, err := stream.Receive()
+	require.NoError(t, err)
+	require.NotNil(t, msg.GetWelcome(), "successful stream setup must send Welcome to the agent")
+	assert.Equal(t, "test", msg.GetWelcome().ServerVersion)
+	assert.Equal(t, "01HZX9DEFGH000000000000000", f.control.lastVerifyDevice)
+
+	started, stopped := f.worker.snapshot()
+	assert.Equal(t, []string{"01HZX9DEFGH000000000000000"}, started)
+	assert.Empty(t, stopped)
+
+	require.NoError(t, stream.CloseRequest())
 	_ = recvErr(stream)
-	assert.Equal(t, "01HZX9DEFGH000000000000000", f.control.lastVerifyDevice,
-		"VerifyDevice MUST be called with the Hello device_id, even on the happy path")
+
+	_, stopped = f.worker.snapshot()
+	assert.Equal(t, []string{"01HZX9DEFGH000000000000000"}, stopped)
 }

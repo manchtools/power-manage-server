@@ -127,6 +127,10 @@ func (h *IDPHandler) GetIdentityProvider(ctx context.Context, req *connect.Reque
 
 // ListIdentityProviders returns a paginated list of identity providers.
 func (h *IDPHandler) ListIdentityProviders(ctx context.Context, req *connect.Request[pm.ListIdentityProvidersRequest]) (*connect.Response[pm.ListIdentityProvidersResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

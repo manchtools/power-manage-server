@@ -28,6 +28,10 @@ func NewAuditHandler(st *store.Store, logger *slog.Logger) *AuditHandler {
 
 // ListAuditEvents returns a paginated list of audit events.
 func (h *AuditHandler) ListAuditEvents(ctx context.Context, req *connect.Request[pm.ListAuditEventsRequest]) (*connect.Response[pm.ListAuditEventsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

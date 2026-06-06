@@ -104,6 +104,10 @@ func NewSSOHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMan
 
 // ListAuthMethods returns the available authentication methods.
 func (h *SSOHandler) ListAuthMethods(ctx context.Context, req *connect.Request[pm.ListAuthMethodsRequest]) (*connect.Response[pm.ListAuthMethodsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	resp := &pm.ListAuthMethodsResponse{
 		PasswordEnabled: h.passwordAuthEnabled,
 	}
