@@ -27,3 +27,22 @@ type TerminalSessionTerminated struct {
 	SessionID string `json:"session_id"`
 	Reason    string `json:"reason"`
 }
+
+// TerminalAdminMembershipRevoked is the wire shape for the
+// TerminalAdminMembershipRevoked event (#70). Emitted by the global
+// TerminalAdmin reconciler each time a previously-present
+// pm-tty-<linux_username> is removed from a global action's users[].
+// Carries enough context for audit consumers to render a meaningful
+// row without re-reading the action's params:
+//   - UserID identifies the human operator who lost membership.
+//   - LinuxUsername is the pm-tty-* string that was dropped (without
+//     the pm-tty- prefix so audit can compose the prefix itself).
+//   - ActionID points at the LIMITED or FULL global action row.
+//   - AccessLevel is the wire-string form of pm.AdminAccessLevel
+//     ("ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED" / "_FULL").
+type TerminalAdminMembershipRevoked struct {
+	UserID        string `json:"user_id"`
+	LinuxUsername string `json:"linux_username"`
+	ActionID      string `json:"action_id"`
+	AccessLevel   string `json:"access_level"`
+}

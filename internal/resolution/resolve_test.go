@@ -540,3 +540,143 @@ func TestResolveActions_TTYPermissionSource_FailsFastOnTtyError(t *testing.T) {
 	_, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), q, deviceID)
 	require.ErrorIs(t, err, sentinel, "TTY layer failure must propagate up, not degrade silently")
 }
+
+// =============================================================================
+// Global TerminalAdmin layer (#70).
+//
+// Two rows in actions_projection — system:terminal-admin-limited:global
+// and system:terminal-admin-full:global — are merged into every device's
+// resolved action list, exclusion-exempt and deduped against the
+// device/user layers, mirroring the TTY layer's shape.
+// =============================================================================
+
+// noOpSigner mirrors the api package's test-only NoOpSigner — a
+// deterministic dummy signer so the resolution-layer tests can stand
+// up a SystemActionManager without the real CA. api.NoOpSigner lives
+// in a _test.go file in the api package and isn't visible across
+// package boundaries, so we re-declare the minimal stub here.
+type noOpSigner struct{}
+
+func (noOpSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
+	_ = actionID
+	_ = actionType
+	_ = paramsJSON
+	return []byte("noop-test-signature"), nil
+}
+
+// bootstrapAndReconcileTerminalAdmin runs the manager's bootstrap +
+// reconcile against the test store so the two global actions exist
+// before the resolution-layer assertions run.
+func bootstrapAndReconcileTerminalAdmin(t *testing.T, st *store.Store) {
+	t.Helper()
+	mgr := api.NewSystemActionManager(st, noOpSigner{}, slog.Default())
+	require.NoError(t, mgr.BootstrapGlobalTerminalAdminActions(context.Background()))
+	require.NoError(t, mgr.ReconcileGlobalTerminalAdminActions(context.Background()))
+}
+
+func TestResolveActions_GlobalTerminalAdmin_IncludedForFreshDevice(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	bootstrapAndReconcileTerminalAdmin(t, st)
+	deviceID := testutil.CreateTestDevice(t, st, "fresh-host-with-admin")
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+
+	names := make(map[string]bool)
+	for _, a := range actions {
+		names[a.Name] = true
+	}
+	assert.True(t, names["system:terminal-admin-limited:global"],
+		"Limited global must reach a brand-new device without any assignment")
+	assert.True(t, names["system:terminal-admin-full:global"],
+		"Full global must reach a brand-new device without any assignment")
+}
+
+// Operator EXCLUDED on a global TerminalAdmin action must NOT lock
+// out the sudoers fragment — same property as the TTY layer. Terminal
+// admin policy is the system's escape hatch; revocation goes through
+// the role/permission system, not through per-device EXCLUDED.
+func TestResolveActions_GlobalTerminalAdmin_BypassesDeviceExcluded(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	bootstrapAndReconcileTerminalAdmin(t, st)
+	deviceID := testutil.CreateTestDevice(t, st, "excl-attempt-host")
+
+	limited, err := st.Queries().GetActionByName(context.Background(), "system:terminal-admin-limited:global")
+	require.NoError(t, err)
+
+	// Operator attempt: EXCLUDED assignment on the Limited global.
+	// The permission-derived layer must ignore it.
+	testutil.CreateTestAssignment(t, st, adminID, "action", limited.ID, "device", deviceID, 2)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+
+	found := false
+	for _, a := range actions {
+		if a.ID == limited.ID {
+			found = true
+		}
+	}
+	assert.True(t, found,
+		"device-layer EXCLUDED must NOT remove the global Limited TerminalAdmin action — escape-hatch property mirrors TTY layer")
+}
+
+// Dedupe: if some operator authored a REQUIRED assignment for one of
+// the globals (already-present-via-permission-layer), the action must
+// appear exactly once in the resolved list.
+func TestResolveActions_GlobalTerminalAdmin_DedupedAgainstDeviceLayer(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	bootstrapAndReconcileTerminalAdmin(t, st)
+	deviceID := testutil.CreateTestDevice(t, st, "dedup-attempt-host")
+
+	limited, err := st.Queries().GetActionByName(context.Background(), "system:terminal-admin-limited:global")
+	require.NoError(t, err)
+
+	testutil.CreateTestAssignment(t, st, adminID, "action", limited.ID, "device", deviceID, 0)
+
+	actions, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), st.Queries(), deviceID)
+	require.NoError(t, err)
+
+	hits := 0
+	for _, a := range actions {
+		if a.ID == limited.ID {
+			hits++
+		}
+	}
+	assert.Equal(t, 1, hits, "Limited global must appear exactly once even when also assigned directly to the device")
+}
+
+// Fail-fast: the global TerminalAdmin query must propagate errors up,
+// not degrade to an empty slice. The agent treats the server's action
+// list as authoritative — silent drop would tear down every device's
+// pm-sudo-* group on the next sync.
+type globalTerminalAdminFailingQuerier struct {
+	resolution.Querier
+	err error
+}
+
+func (q globalTerminalAdminFailingQuerier) ListGlobalTerminalAdminActions(ctx context.Context) ([]db.ListGlobalTerminalAdminActionsRow, error) {
+	return nil, q.err
+}
+
+func TestResolveActions_GlobalTerminalAdmin_FailsFastOnQueryError(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	bootstrapAndReconcileTerminalAdmin(t, st)
+	deviceID := testutil.CreateTestDevice(t, st, "global-failure-host")
+
+	sentinel := errors.New("simulated DB hiccup on terminal-admin lookup")
+	q := globalTerminalAdminFailingQuerier{
+		Querier: st.Queries(),
+		err:     sentinel,
+	}
+	_, err := resolution.ResolveActionsForDevice(testutil.AdminContext(adminID), q, deviceID)
+	require.ErrorIs(t, err, sentinel,
+		"global TerminalAdmin query failure must propagate, not degrade silently — agents revert membership on missing rows")
+}

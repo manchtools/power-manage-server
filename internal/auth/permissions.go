@@ -205,6 +205,8 @@ func AllPermissions() []PermissionInfo {
 		{"StopTerminal", "Remote Terminal", "Stop a remote terminal session you opened"},
 		{"ListActiveTerminalSessions", "Remote Terminal", "View active terminal sessions across all devices (admin)"},
 		{"TerminateTerminalSession", "Remote Terminal", "Forcibly terminate any terminal session (admin)"},
+		{"TerminalAdminLimited", "Remote Terminal", "Grant a passwordless LIMITED sudoers policy in remote terminal sessions"},
+		{"TerminalAdminFull", "Remote Terminal", "Grant a passwordless FULL sudoers policy in remote terminal sessions"},
 	}
 }
 

@@ -907,3 +907,26 @@ WHERE u.is_deleted = FALSE
         )
       )
   );
+
+-- Global TerminalAdmin AdminPolicy actions.
+--
+-- Two well-known rows in actions_projection — bootstrapped at startup
+-- (server BootstrapGlobalTerminalAdminActions) and re-signed in place
+-- by the reconciler when membership changes. The resolution layer
+-- merges these into every device's resolved action list so the
+-- pm-tty-* operators get their sudoers fragment regardless of
+-- assignment.
+--
+-- #70 ships with the two GLOBAL rows. #7 extends this design by adding
+-- per-scope variants; that PR will replace the IN-list filter with a
+-- scope-aware join. The shape of this query is intentionally simple
+-- so the #7 diff is isolated to the WHERE clause.
+-- name: ListGlobalTerminalAdminActions :many
+SELECT id, name, description, action_type, desired_state,
+       params, timeout_seconds, created_at, created_by,
+       is_deleted, projection_version,
+       signature, params_canonical, schedule
+FROM actions_projection
+WHERE is_deleted = FALSE
+  AND name IN ('system:terminal-admin-limited:global',
+               'system:terminal-admin-full:global');

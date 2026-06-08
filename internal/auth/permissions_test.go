@@ -137,3 +137,87 @@ func TestAdminPermissions_NoDuplicates(t *testing.T) {
 		seen[p] = true
 	}
 }
+
+// =============================================================================
+// TerminalAdmin (Limited / Full) — manchtools/power-manage-server#70
+//
+// Tests pin the public contract of the two new permission keys. The
+// keys are added to the registry; the reconciler in system_actions.go
+// keys on them by exact string match, so a typo here would silently
+// leave devices without a working terminal-admin sudoers fragment.
+// =============================================================================
+
+func TestAllPermissions_IncludesTerminalAdminLimited(t *testing.T) {
+	for _, p := range AllPermissions() {
+		if p.Key == "TerminalAdminLimited" {
+			return
+		}
+	}
+	t.Fatalf("TerminalAdminLimited not registered in AllPermissions()")
+}
+
+func TestAllPermissions_IncludesTerminalAdminFull(t *testing.T) {
+	for _, p := range AllPermissions() {
+		if p.Key == "TerminalAdminFull" {
+			return
+		}
+	}
+	t.Fatalf("TerminalAdminFull not registered in AllPermissions()")
+}
+
+func TestTerminalAdminPermissions_AreInRemoteTerminalGroup(t *testing.T) {
+	for _, p := range AllPermissions() {
+		if p.Key == "TerminalAdminLimited" || p.Key == "TerminalAdminFull" {
+			assert.Equal(t, "Remote Terminal", p.Group,
+				"TerminalAdmin permissions must live alongside StartTerminal in the Remote Terminal group so the role-builder UI surfaces them together")
+		}
+	}
+}
+
+func TestTerminalAdminPermissions_HaveNonEmptyDescription(t *testing.T) {
+	wanted := map[string]bool{"TerminalAdminLimited": true, "TerminalAdminFull": true}
+	for _, p := range AllPermissions() {
+		if wanted[p.Key] {
+			assert.NotEmpty(t, p.Description,
+				"%s must have a description (rendered in the role-builder UI)", p.Key)
+		}
+	}
+}
+
+func TestValidPermissionKeys_AcceptsTerminalAdminLimited(t *testing.T) {
+	assert.True(t, ValidPermissionKeys()["TerminalAdminLimited"])
+}
+
+func TestValidPermissionKeys_AcceptsTerminalAdminFull(t *testing.T) {
+	assert.True(t, ValidPermissionKeys()["TerminalAdminFull"])
+}
+
+func TestAdminPermissions_IncludesTerminalAdminLimited(t *testing.T) {
+	perms := make(map[string]bool)
+	for _, p := range AdminPermissions() {
+		perms[p] = true
+	}
+	assert.True(t, perms["TerminalAdminLimited"],
+		"the bootstrap Admin role must include TerminalAdminLimited so a fresh deployment can grant terminal-admin without seeding a custom role first")
+}
+
+func TestAdminPermissions_IncludesTerminalAdminFull(t *testing.T) {
+	perms := make(map[string]bool)
+	for _, p := range AdminPermissions() {
+		perms[p] = true
+	}
+	assert.True(t, perms["TerminalAdminFull"],
+		"the bootstrap Admin role must include TerminalAdminFull")
+}
+
+// TerminalAdmin keys are unscoped at the model layer — #7 will add a
+// scope dimension. Pin the unscoped shape here so a future :self /
+// :assigned variant can't be added without the test being updated.
+func TestTerminalAdminPermissions_AreUnscoped(t *testing.T) {
+	for _, p := range AllPermissions() {
+		if p.Key == "TerminalAdminLimited" || p.Key == "TerminalAdminFull" {
+			assert.False(t, strings.Contains(p.Key, ":"),
+				"%s must remain unscoped at the model layer; scope arrives via #7", p.Key)
+		}
+	}
+}

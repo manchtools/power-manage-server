@@ -42,19 +42,59 @@ func procedureName(procedure string) string {
 	return procedure
 }
 
+// reconcilerOnlyPermissions are intentionally not backed by an RPC.
+// They gate background server-side work (currently the TerminalAdmin
+// reconciler — see manchtools/power-manage-server#70) rather than a
+// handler call. Adding an entry here documents the intent so the
+// parity invariant below stays a meaningful drift-catcher for the
+// "I added a permission but forgot to add its RPC" mistake.
+//
+// To add to this set, the new permission MUST be consumed by a
+// server-side reconciler (not by a handler) and its role-builder
+// UX must make clear that holding it triggers server-managed state,
+// not an RPC the user can call directly.
+var reconcilerOnlyPermissions = map[string]bool{
+	"TerminalAdminLimited": true, // #70 — reconciler in system_actions.go materializes pm-sudo-* membership
+	"TerminalAdminFull":    true, // #70 — same shape, FULL access level
+}
+
 // TestEveryPermissionMatchesAnRPC asserts that every PermissionInfo
 // in AllPermissions() has a base key (sans :self/:assigned scope
 // suffix) that is the name of an actual RPC on
 // pmv1connect.ControlServiceHandler. A drift here means a permission
 // can be assigned to a role but no handler will ever consult it —
 // invisible-deadweight UX in the role builder.
+//
+// Reconciler-only permissions (see above) are skipped — they are
+// consumed off the request path.
 func TestEveryPermissionMatchesAnRPC(t *testing.T) {
 	rpcs := rpcMethodNames(t)
 	for _, p := range auth.AllPermissions() {
 		base := stripScope(p.Key)
+		if reconcilerOnlyPermissions[base] {
+			continue
+		}
 		if !rpcs[base] {
 			t.Errorf("permission %q references non-existent RPC %q (no method on ControlServiceHandler)",
 				p.Key, base)
+		}
+	}
+}
+
+// TestReconcilerOnlyPermissionsAreRegistered guards the inverse
+// invariant: every entry in reconcilerOnlyPermissions must actually
+// be a registered permission in AllPermissions(). Otherwise a
+// future rename of TerminalAdminLimited would leave a stale
+// exemption that quietly papers over a real parity violation.
+func TestReconcilerOnlyPermissionsAreRegistered(t *testing.T) {
+	registered := make(map[string]bool, len(auth.AllPermissions()))
+	for _, p := range auth.AllPermissions() {
+		registered[stripScope(p.Key)] = true
+	}
+	for key := range reconcilerOnlyPermissions {
+		if !registered[key] {
+			t.Errorf("reconcilerOnlyPermissions includes %q but it's not in AllPermissions() — exemption is stale",
+				key)
 		}
 	}
 }

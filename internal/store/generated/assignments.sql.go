@@ -1243,6 +1243,82 @@ func (q *Queries) ListSystemTtyActionsForPermissionHolders(ctx context.Context) 
 	return items, nil
 }
 
+const listGlobalTerminalAdminActions = `-- name: ListGlobalTerminalAdminActions :many
+SELECT id, name, description, action_type, desired_state,
+       params, timeout_seconds, created_at, created_by,
+       is_deleted, projection_version,
+       signature, params_canonical, schedule
+FROM actions_projection
+WHERE is_deleted = FALSE
+  AND name IN ('system:terminal-admin-limited:global',
+               'system:terminal-admin-full:global')
+`
+
+type ListGlobalTerminalAdminActionsRow struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	Description       *string    `json:"description"`
+	ActionType        int32      `json:"action_type"`
+	DesiredState      int32      `json:"desired_state"`
+	Params            []byte     `json:"params"`
+	TimeoutSeconds    int32      `json:"timeout_seconds"`
+	CreatedAt         *time.Time `json:"created_at"`
+	CreatedBy         string     `json:"created_by"`
+	IsDeleted         bool       `json:"is_deleted"`
+	ProjectionVersion int64      `json:"projection_version"`
+	Signature         []byte     `json:"signature"`
+	ParamsCanonical   []byte     `json:"params_canonical"`
+	Schedule          []byte     `json:"schedule"`
+}
+
+// Global TerminalAdmin AdminPolicy actions.
+//
+// Two well-known rows in actions_projection — bootstrapped at startup
+// (server BootstrapGlobalTerminalAdminActions) and re-signed in place
+// by the reconciler when membership changes. The resolution layer
+// merges these into every device's resolved action list so the
+// pm-tty-* operators get their sudoers fragment regardless of
+// assignment.
+//
+// #70 ships with the two GLOBAL rows. #7 extends this design by adding
+// per-scope variants; that PR will replace the IN-list filter with a
+// scope-aware join. The shape of this query is intentionally simple
+// so the #7 diff is isolated to the WHERE clause.
+func (q *Queries) ListGlobalTerminalAdminActions(ctx context.Context) ([]ListGlobalTerminalAdminActionsRow, error) {
+	rows, err := q.db.Query(ctx, listGlobalTerminalAdminActions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGlobalTerminalAdminActionsRow{}
+	for rows.Next() {
+		var i ListGlobalTerminalAdminActionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.ActionType,
+			&i.DesiredState,
+			&i.Params,
+			&i.TimeoutSeconds,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDeleted,
+			&i.ProjectionVersion,
+			&i.Signature,
+			&i.ParamsCanonical,
+			&i.Schedule,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserLayerResolvedActionsForDevice = `-- name: ListUserLayerResolvedActionsForDevice :many
 WITH device_owners AS (
   SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
