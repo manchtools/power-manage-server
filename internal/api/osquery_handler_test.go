@@ -192,7 +192,8 @@ func TestGetOSQueryResult_NotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.GetOSQueryResult(ctx, connect.NewRequest(&pm.GetOSQueryResultRequest{
-		QueryId: "nonexistent",
+		// Valid-format ULID that isn't in the osquery_results projection.
+		QueryId: testutil.NewID(),
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -320,7 +321,8 @@ func TestRefreshDeviceInventory_DeviceNotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.RefreshDeviceInventory(ctx, connect.NewRequest(&pm.RefreshDeviceInventoryRequest{
-		DeviceId: "nonexistent",
+		// Valid-format ULID that isn't in the devices_projection.
+		DeviceId: testutil.NewID(),
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))

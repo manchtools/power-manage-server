@@ -149,7 +149,8 @@ func TestStartTerminal_DeviceNotFound(t *testing.T) {
 	setLinuxUsername(t, st, userID, "alice")
 
 	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
-		DeviceId: "non-existent-device",
+		// Valid-format ULID that isn't in the devices_projection.
+		DeviceId: testutil.NewID(),
 	}))
 	require.Error(t, err)
 	var connectErr *connect.Error
@@ -263,7 +264,8 @@ func TestStopTerminal_UnknownSessionIsIdempotent(t *testing.T) {
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 
 	resp, err := h.StopTerminal(authedCtx(userID), connect.NewRequest(&pm.StopTerminalRequest{
-		SessionId: "no-such-session",
+		// Valid-format ULID that no session has minted.
+		SessionId: testutil.NewID(),
 	}))
 	require.NoError(t, err)
 	require.NotNil(t, resp)
@@ -274,7 +276,12 @@ func TestStopTerminal_NotAuthenticated(t *testing.T) {
 	h, _ := newTerminalHandler(t, st)
 
 	_, err := h.StopTerminal(context.Background(), connect.NewRequest(&pm.StopTerminalRequest{
-		SessionId: "any",
+		// Valid-format ULID — the test asserts the auth gate fires
+		// before any session-store lookup, so the request only needs
+		// to pass boundary validation. A malformed value would short-
+		// circuit at InvalidArgument and hide the auth check we're
+		// pinning.
+		SessionId: testutil.NewID(),
 	}))
 	require.Error(t, err)
 	var connectErr *connect.Error
@@ -296,7 +303,10 @@ func TestTerminateTerminalSession_NotAuthenticated(t *testing.T) {
 	h, _ := newTerminalHandler(t, st)
 
 	_, err := h.TerminateTerminalSession(context.Background(), connect.NewRequest(&pm.TerminateTerminalSessionRequest{
-		SessionId: "any",
+		// Valid-format ULID for the same reason as
+		// TestStopTerminal_NotAuthenticated above — the test is
+		// about the auth gate firing first, not the session lookup.
+		SessionId: testutil.NewID(),
 		Reason:    "test",
 	}))
 	require.Error(t, err)
