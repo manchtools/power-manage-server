@@ -111,6 +111,10 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 
 // ListActionSets returns a paginated list of action sets.
 func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Request[pm.ListActionSetsRequest]) (*connect.Response[pm.ListActionSetsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

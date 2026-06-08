@@ -109,6 +109,10 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 
 // ListDefinitions returns a paginated list of definitions.
 func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Request[pm.ListDefinitionsRequest]) (*connect.Response[pm.ListDefinitionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

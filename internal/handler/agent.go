@@ -18,7 +18,6 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/connection"
-	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -32,6 +31,13 @@ const (
 	DeviceIDContextKey contextKey = "device_id"
 )
 
+const registryDetachTimeout = 5 * time.Second
+
+type deviceWorkerManager interface {
+	StartWorker(deviceID string) error
+	StopWorker(deviceID string)
+}
+
 // AgentHandler implements the AgentService.
 type AgentHandler struct {
 	pmv1connect.UnimplementedAgentServiceHandler
@@ -43,7 +49,7 @@ type AgentHandler struct {
 	// implements the interface.
 	aqClient          taskqueue.Enqueuer
 	controlProxy      *ControlProxy
-	workerMgr         *gateway.DeviceWorkerManager
+	workerMgr         deviceWorkerManager
 	logger            *slog.Logger
 	serverVersion     string
 	heartbeatInterval time.Duration
@@ -70,7 +76,7 @@ func NewAgentHandler(
 	manager *connection.Manager,
 	aqClient taskqueue.Enqueuer,
 	controlProxy *ControlProxy,
-	workerMgr *gateway.DeviceWorkerManager,
+	workerMgr deviceWorkerManager,
 	serverVersion string,
 	heartbeatInterval time.Duration,
 	logger *slog.Logger,
@@ -92,7 +98,7 @@ func NewAgentHandlerWithTLS(
 	manager *connection.Manager,
 	aqClient taskqueue.Enqueuer,
 	controlProxy *ControlProxy,
-	workerMgr *gateway.DeviceWorkerManager,
+	workerMgr deviceWorkerManager,
 	serverVersion string,
 	heartbeatInterval time.Duration,
 	logger *slog.Logger,
@@ -354,10 +360,13 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 			// Detach from the registry too. Same race-aware pattern:
 			// only delete if we're still the current connection,
 			// otherwise we'd evict a freshly-attached entry from a
-			// reconnect that already happened. Use Background ctx
-			// because the request ctx is being torn down.
+			// reconnect that already happened. The detach context is
+			// derived from the stream context but detached from its
+			// cancellation so cleanup can finish after the RPC ends.
 			if h.registry != nil {
-				if err := h.registry.DetachDevice(context.Background(), deviceID, h.gatewayID); err != nil {
+				detachCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), registryDetachTimeout)
+				defer cancel()
+				if err := h.registry.DetachDevice(detachCtx, deviceID, h.gatewayID); err != nil {
 					h.logger.Warn("failed to remove device→gateway mapping",
 						"device_id", deviceID, "error", err)
 				}

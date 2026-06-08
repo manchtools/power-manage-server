@@ -21,7 +21,11 @@ func TestQueryDeviceLogs_DeviceNotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.QueryDeviceLogs(ctx, connect.NewRequest(&pm.QueryDeviceLogsRequest{
-		DeviceId: "nonexistent-device",
+		// Valid-format ULID that isn't in the devices_projection.
+		// Boundary validation accepts the request, the existence
+		// lookup returns NotFound — which is the contract this
+		// test pins.
+		DeviceId: testutil.NewID(),
 		Lines:    100,
 	}))
 	require.Error(t, err)
@@ -61,7 +65,8 @@ func TestGetDeviceLogResult_NotFound(t *testing.T) {
 	ctx := testutil.AdminContext(adminID)
 
 	_, err := h.GetDeviceLogResult(ctx, connect.NewRequest(&pm.GetDeviceLogResultRequest{
-		QueryId: "nonexistent-query-id",
+		// Valid-format ULID that isn't in the log_queries projection.
+		QueryId: testutil.NewID(),
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))

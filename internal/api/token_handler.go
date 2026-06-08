@@ -136,6 +136,10 @@ func (h *TokenHandler) GetToken(ctx context.Context, req *connect.Request[pm.Get
 
 // ListTokens returns a paginated list of tokens.
 func (h *TokenHandler) ListTokens(ctx context.Context, req *connect.Request[pm.ListTokensRequest]) (*connect.Response[pm.ListTokensResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

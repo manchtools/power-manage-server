@@ -136,6 +136,10 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 
 // ListActions returns a paginated list of actions.
 func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm.ListActionsRequest]) (*connect.Response[pm.ListActionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

@@ -108,6 +108,10 @@ func searchScopeFromString(s string) pm.SearchScope {
 }
 
 func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.SearchRequest]) (*connect.Response[pm.SearchResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if h.searchIdx == nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "search index is not configured on this control instance")
 	}
@@ -216,6 +220,10 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 }
 
 func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Request[pm.RebuildSearchIndexRequest]) (*connect.Response[pm.RebuildSearchIndexResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if h.searchIdx == nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "search index is not configured on this control instance")
 	}

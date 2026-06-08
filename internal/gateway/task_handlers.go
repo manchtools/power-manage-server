@@ -23,8 +23,12 @@ import (
 // round-trips cleanly. A nil signer disables verification — tests
 // only; production wiring in cmd/gateway/main.go refuses an empty
 // PM_TASK_SIGNING_KEY.
+type messageSender interface {
+	Send(deviceID string, msg *pm.ServerMessage) error
+}
+
 type TaskHandlerFactory struct {
-	manager    *connection.Manager
+	manager    messageSender
 	taskSigner *taskqueue.Signer
 	logger     *slog.Logger
 }
@@ -61,7 +65,7 @@ func (f *TaskHandlerFactory) NewMux(deviceID string) *asynq.ServeMux {
 // deviceTaskHandler processes tasks from a specific device's queue.
 type deviceTaskHandler struct {
 	deviceID string
-	manager  *connection.Manager
+	manager  messageSender
 	logger   *slog.Logger
 }
 

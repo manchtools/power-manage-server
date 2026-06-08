@@ -196,6 +196,10 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 
 // ListAssignments returns a paginated list of assignments.
 func (h *AssignmentHandler) ListAssignments(ctx context.Context, req *connect.Request[pm.ListAssignmentsRequest]) (*connect.Response[pm.ListAssignmentsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err

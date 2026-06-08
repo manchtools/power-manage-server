@@ -114,6 +114,10 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 
 // GetOSQueryResult polls for the result of a dispatched osquery.
 func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Request[pm.GetOSQueryResultRequest]) (*connect.Response[pm.GetOSQueryResultResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	result, err := h.store.Repos().OSQuery.GetResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
@@ -152,6 +156,10 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 
 // GetDeviceInventory returns cached inventory data for a device.
 func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Request[pm.GetDeviceInventoryRequest]) (*connect.Response[pm.GetDeviceInventoryResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	msg := req.Msg
 
 	var rows []store.InventoryTable
@@ -189,6 +197,10 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 
 // RefreshDeviceInventory requests the agent to re-collect and send inventory.
 func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connect.Request[pm.RefreshDeviceInventoryRequest]) (*connect.Response[pm.RefreshDeviceInventoryResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	msg := req.Msg
 
 	// Verify device exists

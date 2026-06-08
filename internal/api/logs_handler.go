@@ -32,6 +32,10 @@ func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
 
 // QueryDeviceLogs dispatches a journalctl log query to a connected device.
 func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[pm.QueryDeviceLogsRequest]) (*connect.Response[pm.QueryDeviceLogsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	msg := req.Msg
 
 	// Verify device exists
@@ -95,6 +99,10 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 
 // GetDeviceLogResult polls for the result of a dispatched log query.
 func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Request[pm.GetDeviceLogResultRequest]) (*connect.Response[pm.GetDeviceLogResultResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	result, err := h.store.Repos().Logs.GetQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")

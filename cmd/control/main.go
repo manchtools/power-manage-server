@@ -271,6 +271,7 @@ func main() {
 	interceptors := connect.WithInterceptors(
 		api.NewLoggingInterceptor(logger),
 		auth.NewAuthInterceptor(logger, jwtManager, rateLimiters),
+		api.NewValidationInterceptor(),
 		auth.NewAuthzInterceptor(),
 	)
 
@@ -314,7 +315,10 @@ func main() {
 		// ProxyValidateTerminalToken.
 		internalHandler.SetTerminalTokenStore(valkey.TerminalTokenStore)
 	}
-	internalPath, internalH := pmv1connect.NewInternalServiceHandler(internalHandler)
+	internalPath, internalH := pmv1connect.NewInternalServiceHandler(
+		internalHandler,
+		connect.WithInterceptors(api.NewValidationInterceptor()),
+	)
 
 	// Peer-class gate: InternalService handles credential-bearing
 	// proxy calls (LUKS keys, LPS passwords). A compromised agent

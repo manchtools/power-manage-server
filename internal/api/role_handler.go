@@ -118,6 +118,10 @@ func (h *RoleHandler) GetRole(ctx context.Context, req *connect.Request[pm.GetRo
 
 // ListRoles returns a paginated list of roles.
 func (h *RoleHandler) ListRoles(ctx context.Context, req *connect.Request[pm.ListRolesRequest]) (*connect.Response[pm.ListRolesResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err
@@ -403,6 +407,10 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 
 // ListPermissions returns all available permissions.
 func (h *RoleHandler) ListPermissions(ctx context.Context, req *connect.Request[pm.ListPermissionsRequest]) (*connect.Response[pm.ListPermissionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	allPerms := auth.AllPermissions()
 	protoPerms := make([]*pm.PermissionInfo, len(allPerms))
 	for i, p := range allPerms {

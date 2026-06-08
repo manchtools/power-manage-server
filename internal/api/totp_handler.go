@@ -42,6 +42,10 @@ func NewTOTPHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 
 // SetupTOTP generates a new TOTP secret and backup codes for the current user.
 func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.SetupTOTPRequest]) (*connect.Response[pm.SetupTOTPResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
@@ -228,6 +232,10 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 
 // GetTOTPStatus returns whether TOTP is enabled and how many backup codes remain.
 func (h *TOTPHandler) GetTOTPStatus(ctx context.Context, req *connect.Request[pm.GetTOTPStatusRequest]) (*connect.Response[pm.GetTOTPStatusResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err

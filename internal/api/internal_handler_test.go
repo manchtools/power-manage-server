@@ -345,8 +345,19 @@ func TestProxyValidateTerminalToken_IsSingleUse(t *testing.T) {
 func TestProxyValidateTerminalToken_UnknownSession(t *testing.T) {
 	h, _ := newInternalHandlerWithTokenStore(t)
 
+	// The probe-distinguishability defense protects against an
+	// attacker learning whether a session *exists*, not whether the
+	// session_id string is a syntactically valid ULID. A malformed
+	// session_id is rejected by the validation interceptor + the
+	// handler-level Validate() call with InvalidArgument before the
+	// token-store lookup, which is the right shape: anyone can tell
+	// a malformed input from "no session here" without probing. Use
+	// a valid-format-but-unminted ULID so the request reaches the
+	// token check and the comparison below pins the equal-message
+	// contract for the cases where it actually matters.
+	unknownSessionID := testutil.NewID()
 	_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
-		SessionId: "no-such-session",
+		SessionId: unknownSessionID,
 		Token:     "anything",
 	}))
 	require.Error(t, err)
@@ -416,11 +427,17 @@ func TestProxyValidateTerminalToken_StoreNotConfigured(t *testing.T) {
 	// instance running without TerminalGatewayURL), the RPC must
 	// return Unavailable so the gateway can degrade gracefully
 	// instead of returning a confusing 'method not found'.
+	//
+	// The session_id must be a syntactically valid ULID — the new
+	// boundary validation rejects malformed inputs with
+	// InvalidArgument before the store-not-configured check fires,
+	// which would hide the behavior we want to pin. Use a freshly
+	// minted ULID here.
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
 
 	_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
-		SessionId: "01ABC",
+		SessionId: testutil.NewID(),
 		Token:     "tok",
 	}))
 	require.Error(t, err)

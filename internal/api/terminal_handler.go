@@ -80,6 +80,10 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *r
 // key is "StartTerminal" — same convention as every other handler),
 // so this method only runs for callers that already hold it.
 func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Request[pm.StartTerminalRequest]) (*connect.Response[pm.StartTerminalResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
@@ -383,6 +387,10 @@ func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string
 // This matches the contract documented above StopTerminalRequest in
 // the SDK proto.
 func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request[pm.StopTerminalRequest]) (*connect.Response[pm.StopTerminalResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	userCtx, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
@@ -468,6 +476,10 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 // session snapshot; the control enriches with user/device metadata
 // from the database and returns the merged list.
 func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	if h.registry == nil || h.internalHTTPClient == nil {
 		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
 			"terminal admin RPCs require a configured registry and internal HTTP client")
@@ -529,6 +541,10 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 // (via the token store's device_id → registry lookup) and calls
 // TerminateGatewayTerminalSession on that gateway.
 func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
 	// Explicit auth check at the handler boundary, matching the pattern
 	// used by StartTerminal and StopTerminal above. The auth interceptor
 	// also enforces admin access to this RPC, but a missing auth context
