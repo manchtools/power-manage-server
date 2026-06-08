@@ -72,6 +72,13 @@ func TestClient_EnqueueToControlRoutesTerminalAuditToSerialQueue(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, auditTasks, 1)
 	assert.Equal(t, TypeTerminalAuditChunk, auditTasks[0].Type)
-	_, err = signer.Verify(auditTasks[0].Payload)
+	verified, err := signer.Verify(auditTasks[0].Payload)
 	require.NoError(t, err)
+	var got TerminalAuditChunkPayload
+	require.NoError(t, json.Unmarshal(verified, &got))
+	assert.Equal(t, "sess-1", got.SessionID)
+	assert.Equal(t, "device-1", got.DeviceID)
+	assert.Equal(t, "user-1", got.UserID)
+	assert.Equal(t, int64(1), got.Sequence)
+	assert.Equal(t, []byte("whoami\n"), got.Data)
 }

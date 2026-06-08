@@ -70,6 +70,12 @@ func TestValkeyBackend_ValkeyBundleGetAndDeleteRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping valkey-bundle integration test in short mode")
 	}
+	// Gracefully skip when Docker / the testcontainers provider isn't
+	// available so this test doesn't fail-stop the unit-test job on
+	// CI hosts that lack a healthy Docker daemon (or where docker.io
+	// rate-limits the image pull). The integration suite still runs
+	// this in environments that have Docker.
+	testcontainers.SkipIfProviderIsNotHealthy(t)
 	ctx := context.Background()
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{

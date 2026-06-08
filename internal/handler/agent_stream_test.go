@@ -19,7 +19,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -27,11 +26,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"crypto/tls"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
@@ -122,10 +118,14 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 		requireTLS:        requireTLS,
 	}
 
-	// 3) AgentService over h2c httptest server. h2c.NewHandler was
-	// deprecated in x/net v0.55 in favour of http.Server.Protocols; the
-	// Go 1.24+ replacement is to set Protocols.UnencryptedHTTP2 on the
-	// underlying Server before Start.
+	// 3) AgentService over h2c httptest server. Both server and
+	// client opt into UnencryptedHTTP2 via http.Protocols (Go 1.24+
+	// first-party h2c support). Mixing the new server-side opt-in
+	// with the deprecated x/net http2.Transport on the client side
+	// produced trailer-less terminations that the client wrapped as
+	// CodeUnknown "EOF" on clean shutdown — using the same primitive
+	// on both ends lets the client see plain io.EOF when the
+	// handler's Stream() returns nil.
 	mux := http.NewServeMux()
 	path, hh := pmv1connect.NewAgentServiceHandler(h)
 	mux.Handle(path, hh)
@@ -137,15 +137,13 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 	t.Cleanup(srv.Close)
 
 	httpClient := &http.Client{
-		Transport: &http2.Transport{
-			AllowHTTP: true,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, network, addr)
-			},
+		Transport: &http.Transport{
+			Protocols: protocols,
 		},
 	}
-	client := pmv1connect.NewAgentServiceClient(httpClient, srv.URL, connect.WithGRPC())
+	// No protocol option → defaults to Connect, matching the
+	// production agent's NewAgentServiceClient call.
+	client := pmv1connect.NewAgentServiceClient(httpClient, srv.URL)
 
 	return &streamFixture{
 		client:      client,
@@ -159,7 +157,9 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 // recvErr drives the bidi stream's Receive loop until it returns the
 // terminal error from the server's Stream() return — the BidiStream
 // API surfaces server-side errors only on the next Receive after the
-// handler has returned.
+// handler has returned. Clean shutdown is io.EOF; anything else
+// (including Connect-wrapped errors with the handler's actual reason)
+// is propagated to the caller.
 func recvErr(stream interface {
 	Receive() (*pm.ServerMessage, error)
 }) error {
@@ -280,6 +280,14 @@ func TestStream_HappyPathRegistersStartsWorkerAndSendsWelcome(t *testing.T) {
 	assert.Empty(t, stopped)
 
 	require.NoError(t, stream.CloseRequest())
+	// Drain the response side so the handler's Stream() goroutine
+	// observes the request-side EOF and unwinds before we snapshot
+	// worker state below. The terminal error itself is not asserted
+	// here — Connect-Go v1.18.1 wraps a clean bidi stream shutdown
+	// over httptest as *connect.Error{CodeUnknown, "EOF"} instead
+	// of plain io.EOF (see #331 for the open investigation). The
+	// load-bearing assertion is the worker.stopped check below,
+	// which proves Stream() returned and ran its cleanup.
 	_ = recvErr(stream)
 
 	_, stopped = f.worker.snapshot()
