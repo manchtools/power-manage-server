@@ -251,8 +251,23 @@ func SystemActionListener(mgr *SystemActionManager, logger *slog.Logger, syncTim
 							"user_id", uid, "event_type", e.EventType, "event_id", e.ID, "error", err)
 					}
 				}
+				// Also reconcile the global TerminalAdmin actions
+				// (#70). The user's permission set may have changed
+				// in a way that affects their LIMITED/FULL cohort
+				// membership; SyncUserSystemActions only touches
+				// per-user actions. Reconciler is no-op when the
+				// cohort hasn't changed, so the cost on most events
+				// is one SELECT + a slice compare.
+				if err := mgr.ReconcileGlobalTerminalAdminActions(ctx); err != nil {
+					logger.Error("system-action listener: reconcile global TerminalAdmin failed",
+						"event_type", e.EventType, "event_id", e.ID, "error", err)
+				}
 
 			case SyncOpSyncAll:
+				// SyncAllUsersSystemActions already ends with a
+				// ReconcileGlobalTerminalAdminActions call, so the
+				// fan-out path picks up cohort updates without a
+				// separate dispatch here.
 				if err := mgr.SyncAllUsersSystemActions(ctx); err != nil {
 					logger.Error("system-action listener: sync all users failed",
 						"event_type", e.EventType, "event_id", e.ID, "error", err)

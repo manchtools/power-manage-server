@@ -156,6 +156,15 @@ const (
 	TerminalSessionStopped    EventType = "TerminalSessionStopped"
 	TerminalSessionTerminated EventType = "TerminalSessionTerminated"
 
+	// terminal_admin stream — emitted by the global TerminalAdmin
+	// reconciler when a pm-tty-* operator is removed from the LIMITED
+	// or FULL action's users[] (server #70). Carries the human
+	// user_id, the pm-tty-<username> string that was dropped, the
+	// affected action_id, and the access_level so audit consumers can
+	// distinguish Limited vs Full revocations without re-reading the
+	// action's params.
+	TerminalAdminMembershipRevoked EventType = "TerminalAdminMembershipRevoked"
+
 	// token stream
 	TokenCreated  EventType = "TokenCreated"
 	TokenRenamed  EventType = "TokenRenamed"
@@ -242,6 +251,7 @@ func All() []EventType {
 		SecurityAlert, SecurityAlertAcknowledged,
 		ServerSettingUpdated,
 		TerminalSessionStarted, TerminalSessionStopped, TerminalSessionTerminated,
+		TerminalAdminMembershipRevoked,
 		TokenCreated, TokenRenamed, TokenUsed, TokenDisabled, TokenEnabled, TokenDeleted,
 		TOTPSetupInitiated, TOTPVerified, TOTPDisabled, TOTPBackupCodeUsed, TOTPBackupCodesRegenerated,
 		UserCreatedWithRoles, UserProfileUpdated, UserEmailChanged, UserPasswordChanged, UserRoleChanged,

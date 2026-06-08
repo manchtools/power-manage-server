@@ -12,6 +12,7 @@ type Querier interface {
 	ListDeviceLayerExcludedActionIDs(ctx context.Context, targetID string) ([]string, error)
 	ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]db.ListUserLayerResolvedActionsForDeviceRow, error)
 	ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]db.ListSystemTtyActionsForPermissionHoldersRow, error)
+	ListGlobalTerminalAdminActions(ctx context.Context) ([]db.ListGlobalTerminalAdminActionsRow, error)
 }
 
 // ResolveActionsForDevice queries device-layer assignments, user-layer
@@ -117,6 +118,25 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 	// 6. Merge permission-derived TTY actions: dedupe against everything
 	//    already in the result, but never honor device-layer exclusion.
 	for _, ta := range ttyActions {
+		if deviceActionSet[ta.ID] {
+			continue
+		}
+		deviceActions = append(deviceActions, db.ListResolvedActionsForDeviceRow(ta))
+		deviceActionSet[ta.ID] = true
+	}
+
+	// 7. Merge global TerminalAdmin actions (#70). Same exclusion-exempt
+	//    + dedupe semantics as the TTY layer above — these are
+	//    permission-derived too (the reconciler keys users[] off
+	//    StartTerminal ∩ TerminalAdmin*), so an operator's per-device
+	//    EXCLUDED must not be able to lock the admin sudoers fragment
+	//    out either. Fail-fast on query error for the same reason as
+	//    the TTY layer (see step 3's failure-mode note).
+	terminalAdminActions, err := q.ListGlobalTerminalAdminActions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, ta := range terminalAdminActions {
 		if deviceActionSet[ta.ID] {
 			continue
 		}

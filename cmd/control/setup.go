@@ -154,6 +154,15 @@ func wireSystemActions(ctx context.Context, st *store.Store, svc *api.ControlSer
 		return
 	}
 
+	// (0) Bootstrap the two global TerminalAdmin AdminPolicy actions
+	// (#70). Idempotent — creates the rows on a fresh DB, no-ops on a
+	// DB that already has them. Runs before the user-level sync so the
+	// reconciler (started in step 3 below) finds the action rows to
+	// update on its first tick.
+	if err := svc.SystemActions().BootstrapGlobalTerminalAdminActions(ctx); err != nil {
+		logger.Error("failed to bootstrap global TerminalAdmin actions at startup", "error", err)
+	}
+
 	// (1) Startup sweep — keeps the existing Info line so operators
 	// see the one-shot convergence in boot logs.
 	if err := svc.SystemActions().SyncAllUsersSystemActions(ctx); err != nil {
