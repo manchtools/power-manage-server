@@ -162,6 +162,13 @@ func TestSystemTtyUserActionParamsOutput(t *testing.T) {
 		t.Fatalf("serialize tty user params: %v", err)
 	}
 
+	// noPassword=true is load-bearing: pm-tty-* accounts are reached only
+	// via the agent's setuid terminal-session opener (which bypasses
+	// PAM), so the agent must NOT generate a temp password, push it
+	// through chpasswd, or report it as an lps.rotations row. The
+	// canary fails if a future refactor drops the flag — the symptom
+	// would be a re-introduced LPS row per pm-tty-* per device.
+	// Companion to sdk #77 + agent #94. Refs server#327.
 	want := map[string]any{
 		"username":          "pm-tty-alice",
 		"uid":               float64(101000),
@@ -175,6 +182,7 @@ func TestSystemTtyUserActionParamsOutput(t *testing.T) {
 		"disabled":          false,
 		"primaryGroup":      "",
 		"hidden":            true,
+		"noPassword":        true,
 	}
 
 	if len(params) != len(want) {

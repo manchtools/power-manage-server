@@ -469,6 +469,13 @@ func systemTtyUserParams(user store.User) *pm.UserParams {
 	ttyUsername := "pm-tty-" + user.LinuxUsername
 	ttyUID := int32(int(user.LinuxUID) + 100000) // terminal.DefaultUIDOffset
 
+	// NoPassword=true: the pm-tty-* account is reached only via the
+	// agent's setuid terminal-session opener (bypassing PAM), so the
+	// agent must NOT generate a temp password and must NOT report an
+	// lps.rotations row. Closes the LPS-leakage hole that the operator
+	// would otherwise see if they ever held GetDeviceLpsPasswords.
+	// Companion to sdk #77 + agent #94; precondition for TerminalAdmin
+	// in #70. Refs #327.
 	return &pm.UserParams{
 		Username:   ttyUsername,
 		Uid:        ttyUID,
@@ -477,6 +484,7 @@ func systemTtyUserParams(user store.User) *pm.UserParams {
 		Comment:    "Power Manage terminal user for " + user.LinuxUsername,
 		Hidden:     true,
 		Disabled:   user.Disabled,
+		NoPassword: true,
 	}
 }
 
