@@ -44,15 +44,21 @@ type UserGroupMemberRemoved struct {
 }
 
 // UserGroupRoleAssigned / UserGroupRoleRevoked share the same
-// (group_id, role_id) composite-key shape.
+// (group_id, role_id) composite-key shape plus the optional scope
+// tuple added in server #7 S2 / S5 (paired-or-neither, both nil =
+// unscoped grant for backward compat).
 type UserGroupRoleAssigned struct {
-	GroupID string `json:"group_id"`
-	RoleID  string `json:"role_id"`
+	GroupID   string  `json:"group_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind,omitempty"`
+	ScopeID   *string `json:"scope_id,omitempty"`
 }
 
 type UserGroupRoleRevoked struct {
-	GroupID string `json:"group_id"`
-	RoleID  string `json:"role_id"`
+	GroupID   string  `json:"group_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind,omitempty"`
+	ScopeID   *string `json:"scope_id,omitempty"`
 }
 
 // UserGroupQueryUpdated toggles a static group to dynamic (or back).

@@ -84,18 +84,33 @@ WHERE id = $1
 DELETE FROM user_roles_projection WHERE role_id = $1;
 
 -- name: InsertUserRoleProjection :exec
--- UserRoleAssigned handler. ON CONFLICT (user_id, role_id) DO NOTHING
--- preserves the PL/pgSQL projector's idempotency under reconciler
--- replays.
+-- UserRoleAssigned handler. Scope columns (scope_kind, scope_id)
+-- are NULL together for unscoped grants and both set for scoped
+-- grants (paired-or-neither, enforced by the DB CHECK as well as
+-- the projector). ON CONFLICT DO NOTHING (no target) catches both
+-- partial unique indexes — unscoped_unique and scoped_unique — so
+-- a reconciler replay of either shape no-ops cleanly. server #7 S2.
 INSERT INTO user_roles_projection (
-    user_id, role_id, assigned_at, assigned_by, projection_version
-) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (user_id, role_id) DO NOTHING;
+    user_id, role_id, scope_kind, scope_id,
+    assigned_at, assigned_by, projection_version
+) VALUES (
+    $1, $2,
+    sqlc.narg('scope_kind')::TEXT,
+    sqlc.narg('scope_id')::TEXT,
+    $3, $4, $5
+)
+ON CONFLICT DO NOTHING;
 
 -- name: DeleteUserRoleProjection :exec
--- UserRoleRevoked handler. Plain DELETE — silently no-op on a miss
--- matches the PL/pgSQL projector's behaviour under repeated revoke
--- events.
+-- UserRoleRevoked handler — 4-tuple revoke grammar (server #7 S5).
+-- IS NOT DISTINCT FROM gives NULL-aware equality: when the caller
+-- passes NULL for both scope_kind and scope_id the WHERE matches
+-- the row whose scope columns are also both NULL (the unscoped
+-- grant); when the caller passes concrete values it targets the
+-- specific scoped row. A miss is a silent no-op, matching the
+-- prior projector behaviour.
 DELETE FROM user_roles_projection
 WHERE user_id = $1
-  AND role_id = $2;
+  AND role_id = $2
+  AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
+  AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT;

@@ -679,10 +679,76 @@ func TestRoundtrip_UserRoleAssigned(t *testing.T) {
 	assert.Equal(t, in, out)
 }
 
+func TestRoundtrip_UserRoleAssigned_WithScope(t *testing.T) {
+	// server #7 S2: scoped grants carry both ScopeKind + ScopeID
+	// on the wire. The pointers must round-trip identically.
+	kind := "device_group"
+	id := "01H..."
+	in := payloads.UserRoleAssigned{
+		UserID:    "user-1",
+		RoleID:    "role-1",
+		ScopeKind: &kind,
+		ScopeID:   &id,
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserRoleAssigned
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+	// Pin that nil pointers round-trip as nil (not zero-value
+	// pointer-to-empty-string) so the omitempty contract works.
+	assert.Equal(t, "device_group", *out.ScopeKind)
+	assert.Equal(t, "01H...", *out.ScopeID)
+}
+
+func TestRoundtrip_UserRoleAssigned_LegacyEventWithoutScopeFields(t *testing.T) {
+	// Backward-compatibility guard: an event emitted before #7 has
+	// no scope_kind / scope_id keys in its JSON. Decoding it must
+	// produce nil pointers — NOT empty strings — so the projector
+	// classifies it as an unscoped grant.
+	raw := []byte(`{"user_id":"u1","role_id":"r1"}`)
+	var out payloads.UserRoleAssigned
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, "u1", out.UserID)
+	assert.Equal(t, "r1", out.RoleID)
+	assert.Nil(t, out.ScopeKind, "legacy events must decode to nil ScopeKind, not a pointer to empty string")
+	assert.Nil(t, out.ScopeID)
+}
+
+func TestRoundtrip_UserRoleAssigned_NoScope_OmitsKeysOnWire(t *testing.T) {
+	// omitempty contract: an unscoped grant must NOT write the
+	// scope keys to the wire, so a legacy decoder that doesn't
+	// know about scope still sees the historical shape.
+	in := payloads.UserRoleAssigned{UserID: "u1", RoleID: "r1"}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &asMap))
+	assert.NotContains(t, asMap, "scope_kind", "unscoped grant must omit scope_kind from the wire JSON")
+	assert.NotContains(t, asMap, "scope_id", "unscoped grant must omit scope_id from the wire JSON")
+}
+
 func TestRoundtrip_UserRoleRevoked(t *testing.T) {
 	in := payloads.UserRoleRevoked{
 		UserID: "user-1",
 		RoleID: "role-1",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserRoleRevoked
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserRoleRevoked_WithScope(t *testing.T) {
+	// server #7 S5 4-tuple revoke grammar.
+	kind := "user_group"
+	id := "01HXY..."
+	in := payloads.UserRoleRevoked{
+		UserID:    "user-1",
+		RoleID:    "role-1",
+		ScopeKind: &kind,
+		ScopeID:   &id,
 	}
 	raw, err := json.Marshal(in)
 	require.NoError(t, err)
@@ -759,6 +825,58 @@ func TestRoundtrip_UserGroupRoleAssignedRevoked(t *testing.T) {
 	var outR payloads.UserGroupRoleRevoked
 	require.NoError(t, json.Unmarshal(rawR, &outR))
 	assert.Equal(t, r, outR)
+}
+
+func TestRoundtrip_UserGroupRoleAssigned_WithScope(t *testing.T) {
+	kind := "device_group"
+	id := "01HXY..."
+	in := payloads.UserGroupRoleAssigned{
+		GroupID:   "g-1",
+		RoleID:    "r-1",
+		ScopeKind: &kind,
+		ScopeID:   &id,
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupRoleAssigned
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_UserGroupRoleAssigned_NoScope_OmitsKeys(t *testing.T) {
+	in := payloads.UserGroupRoleAssigned{GroupID: "g-1", RoleID: "r-1"}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &asMap))
+	assert.NotContains(t, asMap, "scope_kind")
+	assert.NotContains(t, asMap, "scope_id")
+}
+
+func TestRoundtrip_UserGroupRoleAssigned_LegacyEventDecodesAsUnscoped(t *testing.T) {
+	raw := []byte(`{"group_id":"g1","role_id":"r1"}`)
+	var out payloads.UserGroupRoleAssigned
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, "g1", out.GroupID)
+	assert.Equal(t, "r1", out.RoleID)
+	assert.Nil(t, out.ScopeKind)
+	assert.Nil(t, out.ScopeID)
+}
+
+func TestRoundtrip_UserGroupRoleRevoked_WithScope(t *testing.T) {
+	kind := "user_group"
+	id := "01HXY..."
+	in := payloads.UserGroupRoleRevoked{
+		GroupID:   "g-1",
+		RoleID:    "r-1",
+		ScopeKind: &kind,
+		ScopeID:   &id,
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.UserGroupRoleRevoked
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
 }
 
 func TestRoundtrip_UserGroupQueryUpdated(t *testing.T) {

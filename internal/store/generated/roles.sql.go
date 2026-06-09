@@ -36,18 +36,31 @@ const deleteUserRoleProjection = `-- name: DeleteUserRoleProjection :exec
 DELETE FROM user_roles_projection
 WHERE user_id = $1
   AND role_id = $2
+  AND scope_kind IS NOT DISTINCT FROM $3::TEXT
+  AND scope_id   IS NOT DISTINCT FROM $4::TEXT
 `
 
 type DeleteUserRoleProjectionParams struct {
-	UserID string `json:"user_id"`
-	RoleID string `json:"role_id"`
+	UserID    string  `json:"user_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind"`
+	ScopeID   *string `json:"scope_id"`
 }
 
-// UserRoleRevoked handler. Plain DELETE — silently no-op on a miss
-// matches the PL/pgSQL projector's behaviour under repeated revoke
-// events.
+// UserRoleRevoked handler — 4-tuple revoke grammar (server #7 S5).
+// IS NOT DISTINCT FROM gives NULL-aware equality: when the caller
+// passes NULL for both scope_kind and scope_id the WHERE matches
+// the row whose scope columns are also both NULL (the unscoped
+// grant); when the caller passes concrete values it targets the
+// specific scoped row. A miss is a silent no-op, matching the
+// prior projector behaviour.
 func (q *Queries) DeleteUserRoleProjection(ctx context.Context, arg DeleteUserRoleProjectionParams) error {
-	_, err := q.db.Exec(ctx, deleteUserRoleProjection, arg.UserID, arg.RoleID)
+	_, err := q.db.Exec(ctx, deleteUserRoleProjection,
+		arg.UserID,
+		arg.RoleID,
+		arg.ScopeKind,
+		arg.ScopeID,
+	)
 	return err
 }
 
@@ -210,9 +223,15 @@ func (q *Queries) InsertRoleProjection(ctx context.Context, arg InsertRoleProjec
 
 const insertUserRoleProjection = `-- name: InsertUserRoleProjection :exec
 INSERT INTO user_roles_projection (
-    user_id, role_id, assigned_at, assigned_by, projection_version
-) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (user_id, role_id) DO NOTHING
+    user_id, role_id, scope_kind, scope_id,
+    assigned_at, assigned_by, projection_version
+) VALUES (
+    $1, $2,
+    $6::TEXT,
+    $7::TEXT,
+    $3, $4, $5
+)
+ON CONFLICT DO NOTHING
 `
 
 type InsertUserRoleProjectionParams struct {
@@ -221,11 +240,16 @@ type InsertUserRoleProjectionParams struct {
 	AssignedAt        time.Time `json:"assigned_at"`
 	AssignedBy        string    `json:"assigned_by"`
 	ProjectionVersion int64     `json:"projection_version"`
+	ScopeKind         *string   `json:"scope_kind"`
+	ScopeID           *string   `json:"scope_id"`
 }
 
-// UserRoleAssigned handler. ON CONFLICT (user_id, role_id) DO NOTHING
-// preserves the PL/pgSQL projector's idempotency under reconciler
-// replays.
+// UserRoleAssigned handler. Scope columns (scope_kind, scope_id)
+// are NULL together for unscoped grants and both set for scoped
+// grants (paired-or-neither, enforced by the DB CHECK as well as
+// the projector). ON CONFLICT DO NOTHING (no target) catches both
+// partial unique indexes — unscoped_unique and scoped_unique — so
+// a reconciler replay of either shape no-ops cleanly. server #7 S2.
 func (q *Queries) InsertUserRoleProjection(ctx context.Context, arg InsertUserRoleProjectionParams) error {
 	_, err := q.db.Exec(ctx, insertUserRoleProjection,
 		arg.UserID,
@@ -233,6 +257,8 @@ func (q *Queries) InsertUserRoleProjection(ctx context.Context, arg InsertUserRo
 		arg.AssignedAt,
 		arg.AssignedBy,
 		arg.ProjectionVersion,
+		arg.ScopeKind,
+		arg.ScopeID,
 	)
 	return err
 }

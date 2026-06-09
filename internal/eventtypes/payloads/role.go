@@ -35,18 +35,34 @@ type RoleUpdated struct {
 	Permissions []string `json:"permissions"`
 }
 
-// UserRoleAssigned is the wire shape for UserRoleAssigned. Both
-// fields are required — they are the composite-key columns of the
-// user_roles_projection row this event projects.
+// UserRoleAssigned is the wire shape for UserRoleAssigned. UserID
+// and RoleID are required — they are the composite-key columns of
+// the user_roles_projection row this event projects.
+//
+// ScopeKind and ScopeID are paired optional fields added in
+// server #7 S2. Both nil means an unscoped/global grant
+// (backward-compatible with every pre-#7 event). Both populated
+// means the grant is constrained to the named group. Half-set is
+// invalid and rejected by the projector and the DB CHECK.
+// Pointer types preserve the absent-vs-empty distinction across
+// JSON round-trips so the projector can tell a legacy event from
+// one with an intentionally-empty scope value.
 type UserRoleAssigned struct {
-	UserID string `json:"user_id"`
-	RoleID string `json:"role_id"`
+	UserID    string  `json:"user_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind,omitempty"`
+	ScopeID   *string `json:"scope_id,omitempty"`
 }
 
 // UserRoleRevoked is the wire shape for UserRoleRevoked. Same
-// composite-key shape as UserRoleAssigned; the projector deletes the
-// matching row.
+// composite-key shape as UserRoleAssigned plus the optional
+// (ScopeKind, ScopeID) pair from #7 S5's 4-tuple revoke grammar.
+// Both nil = revoke the unscoped grant; both set = revoke the
+// matching scoped grant. The projector dispatches via
+// IS NOT DISTINCT FROM.
 type UserRoleRevoked struct {
-	UserID string `json:"user_id"`
-	RoleID string `json:"role_id"`
+	UserID    string  `json:"user_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind,omitempty"`
+	ScopeID   *string `json:"scope_id,omitempty"`
 }
