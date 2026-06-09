@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/go/maintenance"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -35,6 +36,15 @@ func NewDeviceGroupHandler(st *store.Store, logger *slog.Logger) *DeviceGroupHan
 }
 
 // CreateDeviceGroup creates a new device group.
+//
+// Permission dispatch (server #7 T-S2): the AuthzInterceptor passes
+// the caller through if they hold EITHER CreateStaticDeviceGroup or
+// CreateDynamicDeviceGroup (per ProcedureAlternatives). The handler
+// then narrows to the specific permission against the request
+// shape: a dynamic-query request requires the dynamic permission, a
+// non-dynamic request requires the static permission. Without this
+// narrowing, a static-only admin could create dynamic groups and
+// perturb other actors' scopes.
 func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect.Request[pm.CreateDeviceGroupRequest]) (*connect.Response[pm.CreateDeviceGroupResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -45,10 +55,19 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	wantsDynamic := req.Msg.IsDynamic && req.Msg.DynamicQuery != ""
+	requiredPerm := "CreateStaticDeviceGroup"
+	if wantsDynamic {
+		requiredPerm = "CreateDynamicDeviceGroup"
+	}
+	if !auth.HasPermission(ctx, requiredPerm) {
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "missing required permission for the requested device group shape")
+	}
+
 	id := ulid.Make().String()
 
 	// Validate dynamic query if provided
-	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+	if wantsDynamic {
 		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
 			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
 		}
@@ -388,6 +407,16 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 }
 
 // UpdateDeviceGroupQuery updates a device group's dynamic query.
+//
+// Defensive check (server #7 T-S2 update pathway): the target group
+// MUST currently be dynamic. This RPC does NOT promote a static
+// group to dynamic — that would let a holder of
+// UpdateDynamicDeviceGroupQuery silently convert a static group
+// into a dynamic one, bypassing the CreateDynamicDeviceGroup gate.
+// A separate (future) RPC owns the convert operation if anyone
+// needs it. Permission gating (via ProcedureAlternatives) is
+// already exclusively UpdateDynamicDeviceGroupQuery, so this check
+// belt-and-suspenders against accidental misuse.
 func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateDeviceGroupQueryRequest]) (*connect.Response[pm.UpdateDeviceGroupQueryResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -396,6 +425,16 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *co
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Defensive: the target group must already be dynamic.
+	current, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
+	}
+	if !current.IsDynamic {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeFailedPrecondition,
+			"cannot apply UpdateDeviceGroupQuery to a static device group; use a dedicated convert operation if you need to change the group's kind")
 	}
 
 	// Validate dynamic query if provided

@@ -36,6 +36,74 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/SSOCallback":      true,
 }
 
+// ProcedureAlternatives maps a Connect-RPC procedure path to the
+// set of permission keys that can authorize it. The AuthzInterceptor
+// passes the procedure if the actor holds ANY of the listed
+// alternatives — handler-level dispatch then narrows to the specific
+// permission based on the request shape.
+//
+// Used for RPCs whose authorization depends on a runtime property
+// of the request (e.g. CreateDeviceGroup is satisfied by either
+// CreateStaticDeviceGroup or CreateDynamicDeviceGroup depending on
+// whether the request carries a dynamic query). The handler MUST
+// re-check the specific permission against the request shape — the
+// interceptor only guarantees "actor holds at least one of these".
+//
+// Lookup precedence inside WrapUnary:
+//  1. PublicProcedures (bypass)
+//  2. Device context (separate authz path)
+//  3. ProcedureAlternatives (this map) — if a procedure has an
+//     entry, ONLY the alternatives are checked. The default
+//     base-key Authorize path is NOT a fallback.
+//  4. Default: Authorize with action derived from procedure name.
+//
+// server #7 T-S2.
+var ProcedureAlternatives = map[string][]string{
+	// CreateDeviceGroup splits authorization on req.IsDynamic.
+	"/pm.v1.ControlService/CreateDeviceGroup": {
+		"CreateStaticDeviceGroup",
+		"CreateDynamicDeviceGroup",
+	},
+	"/pm.v1.ControlService/CreateUserGroup": {
+		"CreateStaticUserGroup",
+		"CreateDynamicUserGroup",
+	},
+	// UpdateDeviceGroupQuery is dynamic-only. The legacy permission
+	// name was renamed to UpdateDynamicDeviceGroupQuery; the RPC
+	// name stays for backward compat. Static-only admins cannot
+	// satisfy this procedure because only the dynamic-update perm
+	// is listed.
+	"/pm.v1.ControlService/UpdateDeviceGroupQuery": {
+		"UpdateDynamicDeviceGroupQuery",
+	},
+	"/pm.v1.ControlService/UpdateUserGroupQuery": {
+		"UpdateDynamicUserGroupQuery",
+	},
+}
+
+// proceduresAcceptingAlternative builds the inverse of
+// ProcedureAlternatives: a permission key → true map of every
+// permission that appears as an alternative for SOME procedure.
+// Used by the parity tests to recognize split / renamed permissions
+// (CreateStaticDeviceGroup etc.) as RPC-backed via the alternatives
+// map even though no RPC has that literal name.
+func proceduresAcceptingAlternative() map[string]bool {
+	out := make(map[string]bool)
+	for _, alts := range ProcedureAlternatives {
+		for _, perm := range alts {
+			out[perm] = true
+		}
+	}
+	return out
+}
+
+// PermissionIsAlternative returns true if the given permission key
+// appears in ProcedureAlternatives as a satisfying alternative for
+// some procedure. Exported for parity-test consumption.
+func PermissionIsAlternative(permKey string) bool {
+	return proceduresAcceptingAlternative()[permKey]
+}
+
 // TrustedProxies is the set of IP addresses/CIDRs trusted to set
 // X-Forwarded-For / X-Real-IP headers. If empty, proxy headers are ignored
 // and the direct peer address is always used.
@@ -341,6 +409,25 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
 			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
+		}
+
+		// Procedures whose authorization depends on the request
+		// shape (e.g. CreateDeviceGroup → static vs dynamic) consult
+		// the ProcedureAlternatives map: ANY of the listed perms
+		// admits the caller. The handler then narrows to the
+		// specific permission against the request shape. The
+		// default Authorize path is NOT a fallback here — a
+		// procedure in the alternatives map is exclusively gated by
+		// that list. server #7 T-S2.
+		if alts, hasAlt := ProcedureAlternatives[procedure]; hasAlt {
+			for _, alt := range alts {
+				for _, perm := range userCtx.Permissions {
+					if perm == alt {
+						return next(ctx, req)
+					}
+				}
+			}
+			return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
 
 		input := AuthzInput{

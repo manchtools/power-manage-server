@@ -36,7 +36,7 @@ func TestAuthorize_AdminPermissionsAllowAll(t *testing.T) {
 		"CreateToken", "DeleteToken",
 		"CreateAction", "DispatchAction",
 		"CreateDefinition", "DeleteDefinition",
-		"CreateDeviceGroup", "DeleteDeviceGroup",
+		"CreateStaticDeviceGroup", "CreateDynamicDeviceGroup", "DeleteDeviceGroup",
 		"CreateAssignment", "DeleteAssignment",
 		"ListAuditEvents",
 		"CreateRole", "UpdateRole", "DeleteRole",

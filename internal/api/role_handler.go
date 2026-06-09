@@ -418,12 +418,26 @@ func (h *RoleHandler) ListPermissions(ctx context.Context, req *connect.Request[
 			Key:         p.Key,
 			Group:       p.Group,
 			Description: p.Description,
+			TargetKind:  targetKindToProto(p.TargetKind),
 		}
 	}
 
 	return connect.NewResponse(&pm.ListPermissionsResponse{
 		Permissions: protoPerms,
 	}), nil
+}
+
+// targetKindToProto maps the auth-package PermissionTargetKind to
+// its proto wire form. server #7.
+func targetKindToProto(k auth.PermissionTargetKind) pm.PermissionTargetKind {
+	switch k {
+	case auth.TargetDevice:
+		return pm.PermissionTargetKind_PERMISSION_TARGET_KIND_DEVICE
+	case auth.TargetUser:
+		return pm.PermissionTargetKind_PERMISSION_TARGET_KIND_USER
+	default:
+		return pm.PermissionTargetKind_PERMISSION_TARGET_KIND_UNSPECIFIED
+	}
 }
 
 // bumpUserSessionVersion increments a user's session_version to

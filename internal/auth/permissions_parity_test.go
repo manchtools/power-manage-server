@@ -42,20 +42,25 @@ func procedureName(procedure string) string {
 	return procedure
 }
 
-// reconcilerOnlyPermissions are intentionally not backed by an RPC.
-// They gate background server-side work (currently the TerminalAdmin
-// reconciler — see manchtools/power-manage-server#70) rather than a
-// handler call. Adding an entry here documents the intent so the
-// parity invariant below stays a meaningful drift-catcher for the
-// "I added a permission but forgot to add its RPC" mistake.
+// nonRPCBackedPermissions are intentionally not gated by an RPC of
+// the same name. Two sub-categories live here:
 //
-// To add to this set, the new permission MUST be consumed by a
-// server-side reconciler (not by a handler) and its role-builder
-// UX must make clear that holding it triggers server-managed state,
-// not an RPC the user can call directly.
-var reconcilerOnlyPermissions = map[string]bool{
-	"TerminalAdminLimited": true, // #70 — reconciler in system_actions.go materializes pm-sudo-* membership
-	"TerminalAdminFull":    true, // #70 — same shape, FULL access level
+//   - **Reconciler-only**: gate background server-side work
+//     (TerminalAdmin* — #70 reconciler in system_actions.go
+//     materializes pm-sudo-* membership). The reconciler reads the
+//     projection; no handler check fires.
+//   - **Gate-authority**: consulted as a precondition by ANOTHER
+//     permission's handler, not by an RPC of the same name
+//     (AssignRoleScope — #7 gates the scope_kind/scope_id args on
+//     AssignRoleToUser / AssignRoleToUserGroup).
+//
+// Adding an entry here documents the intent so the parity
+// invariant below stays a meaningful drift-catcher for the
+// "I added a permission but forgot to add its RPC" mistake.
+var nonRPCBackedPermissions = map[string]bool{
+	"TerminalAdminLimited": true, // #70 — reconciler-only
+	"TerminalAdminFull":    true, // #70 — reconciler-only
+	"AssignRoleScope":      true, // #7 — gate-authority for scoped grants
 }
 
 // TestEveryPermissionMatchesAnRPC asserts that every PermissionInfo
@@ -65,35 +70,41 @@ var reconcilerOnlyPermissions = map[string]bool{
 // can be assigned to a role but no handler will ever consult it —
 // invisible-deadweight UX in the role builder.
 //
-// Reconciler-only permissions (see above) are skipped — they are
-// consumed off the request path.
+// Three exemption paths:
+//   - nonRPCBackedPermissions (reconciler-only or gate-authority).
+//   - ProcedureAlternatives: a split / renamed permission that
+//     gates a procedure whose name differs (CreateStaticDeviceGroup
+//     gates /CreateDeviceGroup via the alternatives map).
 func TestEveryPermissionMatchesAnRPC(t *testing.T) {
 	rpcs := rpcMethodNames(t)
 	for _, p := range auth.AllPermissions() {
 		base := stripScope(p.Key)
-		if reconcilerOnlyPermissions[base] {
+		if nonRPCBackedPermissions[base] {
+			continue
+		}
+		if auth.PermissionIsAlternative(base) {
 			continue
 		}
 		if !rpcs[base] {
-			t.Errorf("permission %q references non-existent RPC %q (no method on ControlServiceHandler)",
+			t.Errorf("permission %q references non-existent RPC %q (no method on ControlServiceHandler, no alternatives entry, not in nonRPCBackedPermissions)",
 				p.Key, base)
 		}
 	}
 }
 
-// TestReconcilerOnlyPermissionsAreRegistered guards the inverse
-// invariant: every entry in reconcilerOnlyPermissions must actually
+// TestNonRPCBackedPermissionsAreRegistered guards the inverse
+// invariant: every entry in nonRPCBackedPermissions must actually
 // be a registered permission in AllPermissions(). Otherwise a
 // future rename of TerminalAdminLimited would leave a stale
 // exemption that quietly papers over a real parity violation.
-func TestReconcilerOnlyPermissionsAreRegistered(t *testing.T) {
+func TestNonRPCBackedPermissionsAreRegistered(t *testing.T) {
 	registered := make(map[string]bool, len(auth.AllPermissions()))
 	for _, p := range auth.AllPermissions() {
 		registered[stripScope(p.Key)] = true
 	}
-	for key := range reconcilerOnlyPermissions {
+	for key := range nonRPCBackedPermissions {
 		if !registered[key] {
-			t.Errorf("reconcilerOnlyPermissions includes %q but it's not in AllPermissions() — exemption is stale",
+			t.Errorf("nonRPCBackedPermissions includes %q but it's not in AllPermissions() — exemption is stale",
 				key)
 		}
 	}
@@ -123,10 +134,14 @@ func TestEveryPublicProcedureIsAnRPC(t *testing.T) {
 }
 
 // TestEveryRPCIsCoveredByPermissionOrPublic is the inverse of the
-// two checks above: for every RPC on the generated handler, EITHER
-// it's listed in PublicProcedures (auth bypass) OR there's at least
-// one permission whose base key matches it. Catches new RPCs added
-// without permission wiring.
+// two checks above: for every RPC on the generated handler, the RPC
+// must be covered by ONE of:
+//   - PublicProcedures (auth bypass)
+//   - A permission whose base key matches the RPC name
+//   - An entry in ProcedureAlternatives (one or more permissions
+//     gate the procedure via the alternatives map)
+//
+// Catches new RPCs added without permission wiring.
 func TestEveryRPCIsCoveredByPermissionOrPublic(t *testing.T) {
 	rpcs := rpcMethodNames(t)
 
@@ -137,6 +152,9 @@ func TestEveryRPCIsCoveredByPermissionOrPublic(t *testing.T) {
 	}
 
 	for procedure := range auth.PublicProcedures {
+		covered[procedureName(procedure)] = true
+	}
+	for procedure := range auth.ProcedureAlternatives {
 		covered[procedureName(procedure)] = true
 	}
 	for _, p := range auth.AllPermissions() {
@@ -150,6 +168,84 @@ func TestEveryRPCIsCoveredByPermissionOrPublic(t *testing.T) {
 		}
 	}
 	if len(uncovered) > 0 {
-		t.Errorf("RPCs with no permission and not in PublicProcedures (drift hazard — every new RPC needs one or the other): %v", uncovered)
+		t.Errorf("RPCs with no permission, not in PublicProcedures, and not in ProcedureAlternatives (drift hazard — every new RPC needs one of the three): %v", uncovered)
+	}
+}
+
+// TestProcedureAlternatives_Exact pins the exact set of procedures
+// gated via the alternatives map. Adding to or removing from this
+// map is intentional but consequential (it changes the interceptor
+// gating semantics), so the assertion lists the expected set
+// verbatim — a future PR that wants to widen the alternatives must
+// update this test consciously.
+func TestProcedureAlternatives_Exact(t *testing.T) {
+	expected := map[string][]string{
+		"/pm.v1.ControlService/CreateDeviceGroup": {
+			"CreateStaticDeviceGroup",
+			"CreateDynamicDeviceGroup",
+		},
+		"/pm.v1.ControlService/CreateUserGroup": {
+			"CreateStaticUserGroup",
+			"CreateDynamicUserGroup",
+		},
+		"/pm.v1.ControlService/UpdateDeviceGroupQuery": {
+			"UpdateDynamicDeviceGroupQuery",
+		},
+		"/pm.v1.ControlService/UpdateUserGroupQuery": {
+			"UpdateDynamicUserGroupQuery",
+		},
+	}
+	if len(expected) != len(auth.ProcedureAlternatives) {
+		t.Fatalf("ProcedureAlternatives length drifted: have %d, expected %d", len(auth.ProcedureAlternatives), len(expected))
+	}
+	for proc, wantAlts := range expected {
+		gotAlts, ok := auth.ProcedureAlternatives[proc]
+		if !ok {
+			t.Errorf("ProcedureAlternatives missing entry for %q", proc)
+			continue
+		}
+		if len(gotAlts) != len(wantAlts) {
+			t.Errorf("ProcedureAlternatives[%q] length mismatch: got %d, want %d", proc, len(gotAlts), len(wantAlts))
+			continue
+		}
+		for i, w := range wantAlts {
+			if gotAlts[i] != w {
+				t.Errorf("ProcedureAlternatives[%q][%d] = %q, want %q", proc, i, gotAlts[i], w)
+			}
+		}
+	}
+}
+
+// TestProcedureAlternatives_EveryAlternativeIsARegisteredPermission
+// pins that every permission listed as an alternative actually
+// exists in AllPermissions(). A typo here would silently leave the
+// procedure ungated for users who hold the typo'd permission name
+// (i.e. zero users) — effectively closed but invisible.
+func TestProcedureAlternatives_EveryAlternativeIsARegisteredPermission(t *testing.T) {
+	registered := make(map[string]bool, len(auth.AllPermissions()))
+	for _, p := range auth.AllPermissions() {
+		registered[stripScope(p.Key)] = true
+	}
+	for proc, alts := range auth.ProcedureAlternatives {
+		for _, alt := range alts {
+			if !registered[alt] {
+				t.Errorf("ProcedureAlternatives[%q] lists permission %q which is not in AllPermissions()", proc, alt)
+			}
+		}
+	}
+}
+
+// TestProcedureAlternatives_EveryKeyIsAnRPC pins that the procedure
+// path on the LHS of the alternatives map actually corresponds to
+// an RPC on the generated handler. A typo here would silently leave
+// the alternatives override inactive for the real procedure (which
+// would fall through to the default Authorize path).
+func TestProcedureAlternatives_EveryKeyIsAnRPC(t *testing.T) {
+	rpcs := rpcMethodNames(t)
+	for proc := range auth.ProcedureAlternatives {
+		method := procedureName(proc)
+		if !rpcs[method] {
+			t.Errorf("ProcedureAlternatives key %q references non-existent RPC %q", proc, method)
+		}
 	}
 }

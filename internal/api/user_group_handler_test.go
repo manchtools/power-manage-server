@@ -506,3 +506,111 @@ func TestEvaluateDynamicUserGroup_NotAuthenticated(t *testing.T) {
 	require.True(t, errors.As(err, &connectErr))
 	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }
+
+// =============================================================================
+// CreateUserGroup / UpdateUserGroupQuery handler dispatch — symmetric
+// with the device-group split. server #7 T-S2.
+// =============================================================================
+
+func TestCreateUserGroup_StaticRequest_StaticPermOnly_Succeeds(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AuthContext(userID, "static-only@test.com", []string{"CreateStaticUserGroup"})
+
+	resp, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name: "Static UG",
+	}))
+	require.NoError(t, err)
+	assert.False(t, resp.Msg.Group.IsDynamic)
+}
+
+func TestCreateUserGroup_DynamicRequest_StaticPermOnly_Denied(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AuthContext(userID, "static-only@test.com", []string{"CreateStaticUserGroup"})
+
+	_, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Sneaky Dyn UG",
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@corp.com")`,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"static-only admin must be denied when request asks for dynamic — T-S2 mitigation, user-group side")
+}
+
+func TestCreateUserGroup_DynamicRequest_DynamicPermOnly_Succeeds(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AuthContext(userID, "dynamic-only@test.com", []string{"CreateDynamicUserGroup"})
+
+	resp, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Dyn UG",
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@corp.com")`,
+	}))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.Group.IsDynamic)
+}
+
+func TestCreateUserGroup_StaticRequest_DynamicPermOnly_Denied(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AuthContext(userID, "dynamic-only@test.com", []string{"CreateDynamicUserGroup"})
+
+	_, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name: "Static UG Attempt",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+func TestUpdateUserGroupQuery_RejectsStaticGroup_FailedPrecondition(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	staticUGID := testutil.CreateTestUserGroup(t, st, adminID, "Static User Group Target")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.UpdateUserGroupQuery(ctx, connect.NewRequest(&pm.UpdateUserGroupQueryRequest{
+		Id:           staticUGID,
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@corp.com")`,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"applying UpdateUserGroupQuery to a static user group must FailedPrecondition — no implicit promotion (T-S2 update pathway)")
+}
+
+func TestUpdateUserGroupQuery_AcceptsDynamicGroup(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	created, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Dyn UG Target",
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@old.com")`,
+	}))
+	require.NoError(t, err)
+
+	resp, err := h.UpdateUserGroupQuery(ctx, connect.NewRequest(&pm.UpdateUserGroupQueryRequest{
+		Id:           created.Msg.Group.Id,
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@corp.com")`,
+	}))
+	require.NoError(t, err)
+	assert.True(t, resp.Msg.Group.IsDynamic)
+	assert.Contains(t, resp.Msg.Group.DynamicQuery, "corp")
+}
