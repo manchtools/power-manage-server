@@ -170,15 +170,29 @@ func TestDeviceGroupHandler_ListDeviceGroupsForDevice_ReturnsOnlyGroupsContainin
 	}
 }
 
-func TestDeviceGroupHandler_UpdateDeviceGroupQuery_FlipsToDynamicAndPersistsQuery(t *testing.T) {
+// TestDeviceGroupHandler_UpdateDeviceGroupQuery_UpdatesQueryOnDynamicGroup
+// pins the post-#7 contract: UpdateDeviceGroupQuery only operates on
+// groups that are ALREADY dynamic. The previous name
+// `FlipsToDynamicAndPersistsQuery` described the looser pre-#7
+// behaviour where the same RPC promoted static groups to dynamic —
+// that path was closed in #7 S1 to prevent a holder of
+// UpdateDynamicDeviceGroupQuery from silently bypassing the
+// CreateDynamicDeviceGroup gate (T-S2 update pathway). The static
+// rejection contract is pinned by the sibling test
+// TestUpdateDeviceGroupQuery_RejectsStaticGroup_FailedPrecondition.
+func TestDeviceGroupHandler_UpdateDeviceGroupQuery_UpdatesQueryOnDynamicGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewDeviceGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
-	created, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{Name: "To Become Dynamic"}))
+	created, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{
+		Name:         "Born Dynamic",
+		IsDynamic:    true,
+		DynamicQuery: `(device.hostname equals "initial-host")`,
+	}))
 	require.NoError(t, err)
-	require.False(t, created.Msg.Group.IsDynamic, "fresh groups must default to static")
+	require.True(t, created.Msg.Group.IsDynamic)
 
 	updated, err := h.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pm.UpdateDeviceGroupQueryRequest{
 		Id:           created.Msg.Group.Id,
@@ -198,10 +212,8 @@ func TestDeviceGroupHandler_EvaluateDynamicGroup_CountsMatchingDevices(t *testin
 	ctx := testutil.AdminContext(adminID)
 	testutil.CreateTestDevice(t, st, "dyn-host")          // matching
 	testutil.CreateTestDevice(t, st, "non-matching-host") // not matching
-	group, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{Name: "Dyn"}))
-	require.NoError(t, err)
-	_, err = h.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pm.UpdateDeviceGroupQueryRequest{
-		Id:           group.Msg.Group.Id,
+	group, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{
+		Name:         "Dyn",
 		IsDynamic:    true,
 		DynamicQuery: `(device.hostname equals "dyn-host")`,
 	}))
@@ -626,16 +638,26 @@ func TestDeviceHandler_ListDeviceAssignees_ListsAssignedUser(t *testing.T) {
 // UserGroupHandler — dynamic query + query validation
 // =============================================================================
 
-func TestUserGroupHandler_UpdateUserGroupQuery_FlipsToDynamicAndPersistsQuery(t *testing.T) {
+// TestUserGroupHandler_UpdateUserGroupQuery_UpdatesQueryOnDynamicGroup
+// — symmetric with the device-group rename. Renamed from
+// `FlipsToDynamicAndPersistsQuery` for the same reason: #7 S1
+// closed the static→dynamic promotion path through this RPC.
+func TestUserGroupHandler_UpdateUserGroupQuery_UpdatesQueryOnDynamicGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewUserGroupHandler(st, slog.Default())
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
-	groupID := testutil.CreateTestUserGroup(t, st, adminID, "Dynamic Users")
+	created, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Born Dynamic Users",
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@old.com")`,
+	}))
+	require.NoError(t, err)
+	require.True(t, created.Msg.Group.IsDynamic)
 
 	resp, err := h.UpdateUserGroupQuery(ctx, connect.NewRequest(&pm.UpdateUserGroupQueryRequest{
-		Id:           groupID,
+		Id:           created.Msg.Group.Id,
 		IsDynamic:    true,
 		DynamicQuery: `(user.email contains "@user.com")`,
 	}))
