@@ -154,7 +154,7 @@ func TestEveryRPCIsCoveredByPermissionOrPublic(t *testing.T) {
 	for procedure := range auth.PublicProcedures {
 		covered[procedureName(procedure)] = true
 	}
-	for procedure := range auth.ProcedureAlternatives {
+	for procedure := range auth.ProcedureAlternativesSnapshot() {
 		covered[procedureName(procedure)] = true
 	}
 	for _, p := range auth.AllPermissions() {
@@ -195,11 +195,12 @@ func TestProcedureAlternatives_Exact(t *testing.T) {
 			"UpdateDynamicUserGroupQuery",
 		},
 	}
-	if len(expected) != len(auth.ProcedureAlternatives) {
-		t.Fatalf("ProcedureAlternatives length drifted: have %d, expected %d", len(auth.ProcedureAlternatives), len(expected))
+	live := auth.ProcedureAlternativesSnapshot()
+	if len(expected) != len(live) {
+		t.Fatalf("ProcedureAlternatives length drifted: have %d, expected %d", len(live), len(expected))
 	}
 	for proc, wantAlts := range expected {
-		gotAlts, ok := auth.ProcedureAlternatives[proc]
+		gotAlts, ok := live[proc]
 		if !ok {
 			t.Errorf("ProcedureAlternatives missing entry for %q", proc)
 			continue
@@ -216,17 +217,60 @@ func TestProcedureAlternatives_Exact(t *testing.T) {
 	}
 }
 
+// TestProcedureAlternativesSnapshot_IsIndependentCopy guards the
+// hardening done in #333 review: a snapshot caller must not be able
+// to mutate the live authorization policy by writing into the
+// returned map. The interceptor reads `procedureAlternatives`
+// directly, so the snapshot must be a deep copy. Without this guard
+// the public accessor would be a thin alias on the policy and the
+// "immutability" benefit of unexporting the var would be lost.
+func TestProcedureAlternativesSnapshot_IsIndependentCopy(t *testing.T) {
+	first := auth.ProcedureAlternativesSnapshot()
+	// Pick any existing key for the smoke check; if the map is
+	// empty the matches-zero guard below catches it.
+	if len(first) == 0 {
+		t.Fatal("ProcedureAlternativesSnapshot returned empty — matches-zero guard")
+	}
+	var pickedProc string
+	for k := range first {
+		pickedProc = k
+		break
+	}
+	// Mutate the snapshot.
+	first[pickedProc] = append(first[pickedProc], "AttackerInjectedPermission")
+	first["/pm.v1.ControlService/Forged"] = []string{"AttackerInjectedPermission"}
+
+	// Re-snapshot and compare.
+	second := auth.ProcedureAlternativesSnapshot()
+	if len(second) != len(first)-1 {
+		t.Fatalf("snapshot accessor shared state with live policy: second size %d unexpectedly differs from first-1 size %d", len(second), len(first)-1)
+	}
+	if _, leaked := second["/pm.v1.ControlService/Forged"]; leaked {
+		t.Errorf("forged procedure leaked into the live policy via snapshot mutation")
+	}
+	for _, alt := range second[pickedProc] {
+		if alt == "AttackerInjectedPermission" {
+			t.Errorf("attacker-injected permission leaked into live policy on procedure %q via snapshot mutation", pickedProc)
+		}
+	}
+}
+
 // TestProcedureAlternatives_EveryAlternativeIsARegisteredPermission
 // pins that every permission listed as an alternative actually
 // exists in AllPermissions(). A typo here would silently leave the
 // procedure ungated for users who hold the typo'd permission name
 // (i.e. zero users) — effectively closed but invisible.
+//
+// Uses EXACT key matching (not stripScope) per #333 review: a
+// scoped variant like `Foo:self` must not satisfy a lookup for the
+// unscoped base `Foo`. The alternatives must reference the literal
+// permission key the actor would hold in their JWT.
 func TestProcedureAlternatives_EveryAlternativeIsARegisteredPermission(t *testing.T) {
 	registered := make(map[string]bool, len(auth.AllPermissions()))
 	for _, p := range auth.AllPermissions() {
-		registered[stripScope(p.Key)] = true
+		registered[p.Key] = true
 	}
-	for proc, alts := range auth.ProcedureAlternatives {
+	for proc, alts := range auth.ProcedureAlternativesSnapshot() {
 		for _, alt := range alts {
 			if !registered[alt] {
 				t.Errorf("ProcedureAlternatives[%q] lists permission %q which is not in AllPermissions()", proc, alt)
@@ -237,12 +281,19 @@ func TestProcedureAlternatives_EveryAlternativeIsARegisteredPermission(t *testin
 
 // TestProcedureAlternatives_EveryKeyIsAnRPC pins that the procedure
 // path on the LHS of the alternatives map actually corresponds to
-// an RPC on the generated handler. A typo here would silently leave
-// the alternatives override inactive for the real procedure (which
-// would fall through to the default Authorize path).
+// an RPC on the generated handler. A typo in the trailing method
+// name OR the service prefix would silently leave the alternatives
+// override inactive for the real procedure (which would fall through
+// to the default Authorize path). Per #333 review, both pieces are
+// asserted.
 func TestProcedureAlternatives_EveryKeyIsAnRPC(t *testing.T) {
 	rpcs := rpcMethodNames(t)
-	for proc := range auth.ProcedureAlternatives {
+	const wantPrefix = "/pm.v1.ControlService/"
+	for proc := range auth.ProcedureAlternativesSnapshot() {
+		if !strings.HasPrefix(proc, wantPrefix) {
+			t.Errorf("ProcedureAlternatives key %q does not start with the canonical Connect prefix %q", proc, wantPrefix)
+			continue
+		}
 		method := procedureName(proc)
 		if !rpcs[method] {
 			t.Errorf("ProcedureAlternatives key %q references non-existent RPC %q", proc, method)

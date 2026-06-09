@@ -362,6 +362,79 @@ func TestUpdateDeviceGroupQuery_RejectsStaticGroup_FailedPrecondition(t *testing
 		"applying UpdateDeviceGroupQuery to a static group must FailedPrecondition — no implicit promotion (T-S2 update pathway)")
 }
 
+// =============================================================================
+// CR-#333 regression: reject `IsDynamic=true` with an empty
+// `DynamicQuery`. Without this guard the handler's wantsDynamic
+// predicate evaluates false (because DynamicQuery is empty), letting
+// a holder of CreateStaticDeviceGroup pass the static permission
+// check while the event still persists IsDynamic=true with an empty
+// query. Empty queries match every device at evaluation time, so
+// the resulting group would scoop up the entire fleet — a T-S2
+// bypass in disguise.
+// =============================================================================
+
+func TestCreateDeviceGroup_IsDynamicTrueWithEmptyQuery_Rejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{
+		Name:         "Suspicious",
+		IsDynamic:    true,
+		DynamicQuery: "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"is_dynamic=true with empty dynamic_query must be rejected at the boundary — CR #333 T-S2 bypass guard")
+}
+
+func TestCreateDeviceGroup_IsDynamicTrueWithEmptyQuery_StaticOnlyActor_NotElevated(t *testing.T) {
+	// Threat lens: even a static-only admin must NOT be able to
+	// slip a `IsDynamic=true, DynamicQuery=""` payload past the
+	// permission check. The bypass guard rejects BEFORE the
+	// permission narrowing runs.
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.AuthContext(userID, "static-only@test.com", []string{"CreateStaticDeviceGroup"})
+
+	_, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{
+		Name:         "Bypass Attempt",
+		IsDynamic:    true,
+		DynamicQuery: "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"the bypass guard must fire BEFORE the permission narrowing — invalid request shape is rejected ahead of authz")
+}
+
+func TestUpdateDeviceGroupQuery_IsDynamicTrueWithEmptyQuery_Rejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewDeviceGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	created, err := h.CreateDeviceGroup(ctx, connect.NewRequest(&pm.CreateDeviceGroupRequest{
+		Name:         "Existing Dyn",
+		IsDynamic:    true,
+		DynamicQuery: `(device.labels.x equals "y")`,
+	}))
+	require.NoError(t, err)
+
+	_, err = h.UpdateDeviceGroupQuery(ctx, connect.NewRequest(&pm.UpdateDeviceGroupQueryRequest{
+		Id:           created.Msg.Group.Id,
+		IsDynamic:    true,
+		DynamicQuery: "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"clearing the dynamic query on an existing dynamic group via IsDynamic=true must be rejected — same all-devices-match bypass")
+}
+
 func TestUpdateDeviceGroupQuery_AcceptsDynamicGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewDeviceGroupHandler(st, slog.Default())

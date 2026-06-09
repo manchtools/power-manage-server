@@ -36,7 +36,7 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/SSOCallback":      true,
 }
 
-// ProcedureAlternatives maps a Connect-RPC procedure path to the
+// procedureAlternatives maps a Connect-RPC procedure path to the
 // set of permission keys that can authorize it. The AuthzInterceptor
 // passes the procedure if the actor holds ANY of the listed
 // alternatives — handler-level dispatch then narrows to the specific
@@ -52,13 +52,17 @@ var PublicProcedures = map[string]bool{
 // Lookup precedence inside WrapUnary:
 //  1. PublicProcedures (bypass)
 //  2. Device context (separate authz path)
-//  3. ProcedureAlternatives (this map) — if a procedure has an
+//  3. procedureAlternatives (this map) — if a procedure has an
 //     entry, ONLY the alternatives are checked. The default
 //     base-key Authorize path is NOT a fallback.
 //  4. Default: Authorize with action derived from procedure name.
 //
-// server #7 T-S2.
-var ProcedureAlternatives = map[string][]string{
+// Unexported by design: an exported mutable map of authorization
+// rules is a runtime-tampering surface. Out-of-package callers use
+// ProcedureAlternativesSnapshot for read-only access. Concurrent
+// reads inside WrapUnary are safe because the map is set once at
+// package init and never mutated. server #7 T-S2.
+var procedureAlternatives = map[string][]string{
 	// CreateDeviceGroup splits authorization on req.IsDynamic.
 	"/pm.v1.ControlService/CreateDeviceGroup": {
 		"CreateStaticDeviceGroup",
@@ -81,15 +85,27 @@ var ProcedureAlternatives = map[string][]string{
 	},
 }
 
+// ProcedureAlternativesSnapshot returns a deep copy of the
+// procedure-alternatives map for read-only inspection by tests and
+// out-of-package callers. The returned value is freshly allocated;
+// mutating it does NOT affect the live authorization policy.
+func ProcedureAlternativesSnapshot() map[string][]string {
+	out := make(map[string][]string, len(procedureAlternatives))
+	for k, v := range procedureAlternatives {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
 // proceduresAcceptingAlternative builds the inverse of
-// ProcedureAlternatives: a permission key → true map of every
+// procedureAlternatives: a permission key → true map of every
 // permission that appears as an alternative for SOME procedure.
 // Used by the parity tests to recognize split / renamed permissions
 // (CreateStaticDeviceGroup etc.) as RPC-backed via the alternatives
 // map even though no RPC has that literal name.
 func proceduresAcceptingAlternative() map[string]bool {
 	out := make(map[string]bool)
-	for _, alts := range ProcedureAlternatives {
+	for _, alts := range procedureAlternatives {
 		for _, perm := range alts {
 			out[perm] = true
 		}
@@ -98,7 +114,7 @@ func proceduresAcceptingAlternative() map[string]bool {
 }
 
 // PermissionIsAlternative returns true if the given permission key
-// appears in ProcedureAlternatives as a satisfying alternative for
+// appears in procedureAlternatives as a satisfying alternative for
 // some procedure. Exported for parity-test consumption.
 func PermissionIsAlternative(permKey string) bool {
 	return proceduresAcceptingAlternative()[permKey]
@@ -413,13 +429,13 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 
 		// Procedures whose authorization depends on the request
 		// shape (e.g. CreateDeviceGroup → static vs dynamic) consult
-		// the ProcedureAlternatives map: ANY of the listed perms
+		// the procedureAlternatives map: ANY of the listed perms
 		// admits the caller. The handler then narrows to the
 		// specific permission against the request shape. The
 		// default Authorize path is NOT a fallback here — a
 		// procedure in the alternatives map is exclusively gated by
 		// that list. server #7 T-S2.
-		if alts, hasAlt := ProcedureAlternatives[procedure]; hasAlt {
+		if alts, hasAlt := procedureAlternatives[procedure]; hasAlt {
 			for _, alt := range alts {
 				for _, perm := range userCtx.Permissions {
 					if perm == alt {

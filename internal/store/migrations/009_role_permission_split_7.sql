@@ -67,26 +67,50 @@ END $$;
 -- +goose StatementBegin
 DO $$
 BEGIN
-    -- Reverse the rename. The split-vs-combined re-collapse drops
-    -- the explicit dynamic permission and replaces the static one
-    -- with the legacy key. Loses information (a role granted ONLY
-    -- the dynamic capability post-#7 would collapse to the legacy
-    -- "both" key on downgrade) — acceptable for an undo of an
-    -- additive migration with no deployed callers.
+    -- Collapse the static/dynamic split back to the legacy single
+    -- key. Three cases per role:
+    --   1. Holds both Static AND Dynamic — replace Static with the
+    --      legacy key, drop the Dynamic key.
+    --   2. Holds only Static — replace Static with the legacy key.
+    --   3. Holds only Dynamic — replace Dynamic with the legacy key
+    --      (do NOT drop it; otherwise the role loses ALL create
+    --      capability, which is information loss).
+    --
+    -- Flagged in #333 review: the prior "unconditionally remove
+    -- Dynamic" shape silently stripped roles whose only create
+    -- capability was the dynamic variant.
 
     UPDATE roles_projection
-       SET permissions = array_remove(
-               array_replace(permissions, 'CreateStaticDeviceGroup', 'CreateDeviceGroup'),
-               'CreateDynamicDeviceGroup'
-           )
+       SET permissions =
+           CASE
+               WHEN 'CreateStaticDeviceGroup' = ANY(permissions) AND 'CreateDynamicDeviceGroup' = ANY(permissions) THEN
+                   array_remove(
+                       array_replace(permissions, 'CreateStaticDeviceGroup', 'CreateDeviceGroup'),
+                       'CreateDynamicDeviceGroup'
+                   )
+               WHEN 'CreateStaticDeviceGroup' = ANY(permissions) THEN
+                   array_replace(permissions, 'CreateStaticDeviceGroup', 'CreateDeviceGroup')
+               WHEN 'CreateDynamicDeviceGroup' = ANY(permissions) THEN
+                   array_replace(permissions, 'CreateDynamicDeviceGroup', 'CreateDeviceGroup')
+               ELSE permissions
+           END
      WHERE 'CreateStaticDeviceGroup' = ANY(permissions)
         OR 'CreateDynamicDeviceGroup' = ANY(permissions);
 
     UPDATE roles_projection
-       SET permissions = array_remove(
-               array_replace(permissions, 'CreateStaticUserGroup', 'CreateUserGroup'),
-               'CreateDynamicUserGroup'
-           )
+       SET permissions =
+           CASE
+               WHEN 'CreateStaticUserGroup' = ANY(permissions) AND 'CreateDynamicUserGroup' = ANY(permissions) THEN
+                   array_remove(
+                       array_replace(permissions, 'CreateStaticUserGroup', 'CreateUserGroup'),
+                       'CreateDynamicUserGroup'
+                   )
+               WHEN 'CreateStaticUserGroup' = ANY(permissions) THEN
+                   array_replace(permissions, 'CreateStaticUserGroup', 'CreateUserGroup')
+               WHEN 'CreateDynamicUserGroup' = ANY(permissions) THEN
+                   array_replace(permissions, 'CreateDynamicUserGroup', 'CreateUserGroup')
+               ELSE permissions
+           END
      WHERE 'CreateStaticUserGroup' = ANY(permissions)
         OR 'CreateDynamicUserGroup' = ANY(permissions);
 

@@ -591,6 +591,51 @@ func TestUpdateUserGroupQuery_RejectsStaticGroup_FailedPrecondition(t *testing.T
 		"applying UpdateUserGroupQuery to a static user group must FailedPrecondition — no implicit promotion (T-S2 update pathway)")
 }
 
+// =============================================================================
+// CR-#333 regression: reject `IsDynamic=true` with an empty
+// `DynamicQuery` — symmetric with the device-group guard.
+// =============================================================================
+
+func TestCreateUserGroup_IsDynamicTrueWithEmptyQuery_Rejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Suspicious",
+		IsDynamic:    true,
+		DynamicQuery: "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+		"is_dynamic=true with empty dynamic_query must be rejected at the boundary — CR #333 T-S2 bypass guard, user-group side")
+}
+
+func TestUpdateUserGroupQuery_IsDynamicTrueWithEmptyQuery_Rejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewUserGroupHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	created, err := h.CreateUserGroup(ctx, connect.NewRequest(&pm.CreateUserGroupRequest{
+		Name:         "Existing Dyn UG",
+		IsDynamic:    true,
+		DynamicQuery: `(user.email contains "@x.com")`,
+	}))
+	require.NoError(t, err)
+
+	_, err = h.UpdateUserGroupQuery(ctx, connect.NewRequest(&pm.UpdateUserGroupQueryRequest{
+		Id:           created.Msg.Group.Id,
+		IsDynamic:    true,
+		DynamicQuery: "",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
 func TestUpdateUserGroupQuery_AcceptsDynamicGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewUserGroupHandler(st, slog.Default())

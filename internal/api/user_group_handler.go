@@ -48,6 +48,22 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
+	// Same T-S2 bypass guard as CreateDeviceGroup — see comment
+	// there. Flagged in #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
+	}
+
+	// Authenticate BEFORE the permission narrowing and DB access.
+	// An unauthenticated caller should see Unauthenticated, not
+	// PermissionDenied (which would misclassify them as authenticated
+	// but unauthorized), and they should not even hit the
+	// name-uniqueness query. Matches the CreateDeviceGroup pattern.
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	wantsDynamic := req.Msg.IsDynamic && req.Msg.DynamicQuery != ""
 	requiredPerm := "CreateStaticUserGroup"
 	if wantsDynamic {
@@ -60,17 +76,12 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	// Check name uniqueness — distinguishing NotFound from a transient
 	// DB error matters: silently treating any error as "name available"
 	// would let a concurrent CreateUserGroup succeed twice on a flaky DB.
-	_, err := h.store.Repos().UserGroup.GetByName(ctx, req.Msg.Name)
+	_, err = h.store.Repos().UserGroup.GetByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
 	}
 	if !store.IsNotFound(err) {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check user group name uniqueness")
-	}
-
-	userCtx, err := requireAuth(ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	id := ulid.Make().String()
@@ -622,6 +633,12 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Same T-S2 bypass guard as CreateDeviceGroup. Flagged in
+	// #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
 	}
 
 	userCtx, err := requireAuth(ctx)

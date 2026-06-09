@@ -50,6 +50,19 @@ func (h *DeviceGroupHandler) CreateDeviceGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	// Reject the (IsDynamic=true, DynamicQuery="") combination
+	// BEFORE the permission narrowing: without this guard the
+	// `wantsDynamic` predicate below would compute false (because
+	// DynamicQuery is empty), letting a holder of
+	// CreateStaticDeviceGroup pass the static-perm check while the
+	// event still persists IsDynamic=true with an empty query —
+	// an empty query is treated as match-all at evaluation time,
+	// so the resulting "static" group would actually scoop up every
+	// device. T-S2 bypass; flagged in #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
@@ -420,6 +433,14 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 func (h *DeviceGroupHandler) UpdateDeviceGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateDeviceGroupQueryRequest]) (*connect.Response[pm.UpdateDeviceGroupQueryResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Same T-S2 bypass guard as CreateDeviceGroup: empty dynamic
+	// query evaluates as match-all, so an IsDynamic=true with an
+	// empty query would persist a group that scoops up every
+	// device. Reject at the boundary. Flagged in #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
 	}
 
 	userCtx, err := requireAuth(ctx)
