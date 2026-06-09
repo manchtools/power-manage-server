@@ -418,3 +418,151 @@ func TestAuthInterceptor_LogoutWithoutLimiter_PassesThrough(t *testing.T) {
 		require.NoError(t, err, "with no Logout limiter configured, every call must pass through")
 	}
 }
+
+// =============================================================================
+// AuthzInterceptor — ProcedureAlternatives path (server #7 T-S2).
+//
+// Drive both interceptors (auth + authz) against a real procedure
+// that's in the alternatives map. Tests prove the interceptor accepts
+// ANY alternative, rejects when none are held, and does NOT fall
+// through to the default Authorize path for a procedure in the map.
+// =============================================================================
+
+// setupAlternativesInterceptorTest wires AuthInterceptor +
+// AuthzInterceptor against the CreateDeviceGroup procedure, which
+// is in the ProcedureAlternatives map. Returns the server URL +
+// JWT manager so each test mints its own token with custom perms.
+func setupAlternativesInterceptorTest(t *testing.T) (string, *JWTManager) {
+	t.Helper()
+
+	jwtMgr := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-alternatives"),
+		AccessTokenExpiry: 15 * time.Minute,
+	})
+	authIc := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
+	authzIc := NewAuthzInterceptor()
+
+	mux := http.NewServeMux()
+	procedure := "/pm.v1.ControlService/CreateDeviceGroup"
+	handler := connect.NewUnaryHandler(
+		procedure,
+		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		},
+		connect.WithInterceptors(authIc, authzIc),
+	)
+	mux.Handle(procedure, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	return server.URL, jwtMgr
+}
+
+func TestAuthzInterceptor_AlternativesPath_StaticAltOnly_Accepts(t *testing.T) {
+	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateStaticDeviceGroup"}, 1)
+	require.NoError(t, err)
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
+		http.DefaultClient, serverURL+"/pm.v1.ControlService/CreateDeviceGroup",
+	)
+	req := connect.NewRequest(&emptypb.Empty{})
+	req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+
+	_, err = client.CallUnary(context.Background(), req)
+	require.NoError(t, err,
+		"holding ONE of the alternatives is sufficient to pass the interceptor — handler narrows on request shape")
+}
+
+func TestAuthzInterceptor_AlternativesPath_DynamicAltOnly_Accepts(t *testing.T) {
+	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDynamicDeviceGroup"}, 1)
+	require.NoError(t, err)
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
+		http.DefaultClient, serverURL+"/pm.v1.ControlService/CreateDeviceGroup",
+	)
+	req := connect.NewRequest(&emptypb.Empty{})
+	req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+
+	_, err = client.CallUnary(context.Background(), req)
+	require.NoError(t, err,
+		"the OTHER alternative is also sufficient — symmetry")
+}
+
+func TestAuthzInterceptor_AlternativesPath_NeitherAltHeld_Denied(t *testing.T) {
+	// Threat lens: even a user with a HUGE permission set that
+	// happens to omit BOTH split alternatives must be rejected. A
+	// future regression where the interceptor accidentally falls
+	// through to the default Authorize path would let through any
+	// permission whose base equals "CreateDeviceGroup" — but no
+	// such permission is registered post-#7. Belt-and-suspenders
+	// with the registry tests.
+	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{
+		// A grab-bag of unrelated perms — none satisfy the split.
+		"GetUser", "ListUsers", "GetDevice", "ListDevices",
+		"CreateAction", "RebuildSearchIndex",
+	}, 1)
+	require.NoError(t, err)
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
+		http.DefaultClient, serverURL+"/pm.v1.ControlService/CreateDeviceGroup",
+	)
+	req := connect.NewRequest(&emptypb.Empty{})
+	req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+
+	_, err = client.CallUnary(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+// TestAuthzInterceptor_AlternativesPath_LegacyKeyAlone_Denied pins
+// that holding the LEGACY base-key (e.g. "CreateDeviceGroup")
+// without any of the split alternatives does NOT satisfy a procedure
+// in the alternatives map. Forged-token threat: even if an attacker
+// somehow forged a JWT with the legacy claim, the interceptor's
+// alternatives-only gate refuses to fall through. Pins the
+// "alternatives are exclusive" contract for this procedure.
+func TestAuthzInterceptor_AlternativesPath_LegacyKeyAlone_Denied(t *testing.T) {
+	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
+	// Mint a token claiming the legacy "CreateDeviceGroup" perm —
+	// not registered post-#7, but a forged or stale token might
+	// carry it.
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDeviceGroup"}, 1)
+	require.NoError(t, err)
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
+		http.DefaultClient, serverURL+"/pm.v1.ControlService/CreateDeviceGroup",
+	)
+	req := connect.NewRequest(&emptypb.Empty{})
+	req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+
+	_, err = client.CallUnary(context.Background(), req)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"legacy CreateDeviceGroup key alone (no alternatives held) must be rejected — alternatives are exclusive for procedures in the map")
+}
+
+func TestPermissionIsAlternative_KnownAlt(t *testing.T) {
+	assert.True(t, PermissionIsAlternative("CreateStaticDeviceGroup"))
+	assert.True(t, PermissionIsAlternative("CreateDynamicDeviceGroup"))
+	assert.True(t, PermissionIsAlternative("CreateStaticUserGroup"))
+	assert.True(t, PermissionIsAlternative("CreateDynamicUserGroup"))
+	assert.True(t, PermissionIsAlternative("UpdateDynamicDeviceGroupQuery"))
+	assert.True(t, PermissionIsAlternative("UpdateDynamicUserGroupQuery"))
+}
+
+func TestPermissionIsAlternative_UnknownAlt(t *testing.T) {
+	// Negative case — a permission that is NOT in the alternatives
+	// map must NOT pass this check. A regression that lets
+	// PermissionIsAlternative return true for arbitrary keys would
+	// silently widen the parity test exemptions.
+	assert.False(t, PermissionIsAlternative("GetUser"))
+	assert.False(t, PermissionIsAlternative("CreateAction"))
+	assert.False(t, PermissionIsAlternative(""))
+	assert.False(t, PermissionIsAlternative("CreateDeviceGroup"),
+		"the legacy single-key permission MUST NOT register as an alternative — it was removed by #7")
+}

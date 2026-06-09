@@ -37,15 +37,46 @@ func NewUserGroupHandler(st *store.Store, logger *slog.Logger) *UserGroupHandler
 }
 
 // CreateUserGroup creates a new user group.
+//
+// Permission dispatch (server #7 T-S2): symmetric with
+// CreateDeviceGroup. The interceptor passes the caller if they hold
+// either CreateStaticUserGroup or CreateDynamicUserGroup; the
+// handler narrows to the specific permission against the request
+// shape.
 func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Request[pm.CreateUserGroupRequest]) (*connect.Response[pm.CreateUserGroupResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
+	// Same T-S2 bypass guard as CreateDeviceGroup — see comment
+	// there. Flagged in #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
+	}
+
+	// Authenticate BEFORE the permission narrowing and DB access.
+	// An unauthenticated caller should see Unauthenticated, not
+	// PermissionDenied (which would misclassify them as authenticated
+	// but unauthorized), and they should not even hit the
+	// name-uniqueness query. Matches the CreateDeviceGroup pattern.
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	wantsDynamic := req.Msg.IsDynamic && req.Msg.DynamicQuery != ""
+	requiredPerm := "CreateStaticUserGroup"
+	if wantsDynamic {
+		requiredPerm = "CreateDynamicUserGroup"
+	}
+	if !auth.HasPermission(ctx, requiredPerm) {
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "missing required permission for the requested user group shape")
+	}
+
 	// Check name uniqueness — distinguishing NotFound from a transient
 	// DB error matters: silently treating any error as "name available"
 	// would let a concurrent CreateUserGroup succeed twice on a flaky DB.
-	_, err := h.store.Repos().UserGroup.GetByName(ctx, req.Msg.Name)
+	_, err = h.store.Repos().UserGroup.GetByName(ctx, req.Msg.Name)
 	if err == nil {
 		return nil, apiErrorCtx(ctx, ErrUserGroupNameExists, connect.CodeAlreadyExists, "user group name already exists")
 	}
@@ -53,15 +84,10 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check user group name uniqueness")
 	}
 
-	userCtx, err := requireAuth(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	id := ulid.Make().String()
 
 	// Validate dynamic query if provided
-	if req.Msg.IsDynamic && req.Msg.DynamicQuery != "" {
+	if wantsDynamic {
 		if len(req.Msg.DynamicQuery) > maxDynamicQueryLength {
 			return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "dynamic_query exceeds maximum length")
 		}
@@ -600,14 +626,34 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 }
 
 // UpdateUserGroupQuery updates the dynamic query settings for a user group.
+//
+// Defensive check (server #7 T-S2 update pathway): symmetric with
+// UpdateDeviceGroupQuery. Target group MUST already be dynamic; no
+// implicit static→dynamic promotion through this RPC.
 func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pm.UpdateUserGroupQueryRequest]) (*connect.Response[pm.UpdateUserGroupQueryResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
+	// Same T-S2 bypass guard as CreateDeviceGroup. Flagged in
+	// #333 review.
+	if req.Msg.IsDynamic && req.Msg.DynamicQuery == "" {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeInvalidArgument, "is_dynamic=true requires a non-empty dynamic_query")
+	}
+
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Defensive: the target group must already be dynamic.
+	current, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
+	}
+	if !current.IsDynamic {
+		return nil, apiErrorCtx(ctx, ErrInvalidQuery, connect.CodeFailedPrecondition,
+			"cannot apply UpdateUserGroupQuery to a static user group; use a dedicated convert operation if you need to change the group's kind")
 	}
 
 	// Validate dynamic query if provided
