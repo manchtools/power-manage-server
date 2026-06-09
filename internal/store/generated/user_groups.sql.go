@@ -192,17 +192,27 @@ const deleteUserGroupRole = `-- name: DeleteUserGroupRole :exec
 DELETE FROM user_group_roles_projection
 WHERE group_id = $1
   AND role_id = $2
+  AND scope_kind IS NOT DISTINCT FROM $3::TEXT
+  AND scope_id   IS NOT DISTINCT FROM $4::TEXT
 `
 
 type DeleteUserGroupRoleParams struct {
-	GroupID string `json:"group_id"`
-	RoleID  string `json:"role_id"`
+	GroupID   string  `json:"group_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind"`
+	ScopeID   *string `json:"scope_id"`
 }
 
-// UserGroupRoleRevoked handler. Plain DELETE — silently no-op on a
-// miss matches the PL/pgSQL projector's behaviour.
+// UserGroupRoleRevoked handler — 4-tuple revoke grammar.
+// IS NOT DISTINCT FROM gives NULL-aware equality. See
+// DeleteUserRoleProjection for the dispatch contract.
 func (q *Queries) DeleteUserGroupRole(ctx context.Context, arg DeleteUserGroupRoleParams) error {
-	_, err := q.db.Exec(ctx, deleteUserGroupRole, arg.GroupID, arg.RoleID)
+	_, err := q.db.Exec(ctx, deleteUserGroupRole,
+		arg.GroupID,
+		arg.RoleID,
+		arg.ScopeKind,
+		arg.ScopeID,
+	)
 	return err
 }
 
@@ -487,9 +497,15 @@ func (q *Queries) InsertUserGroupProjection(ctx context.Context, arg InsertUserG
 
 const insertUserGroupRole = `-- name: InsertUserGroupRole :exec
 INSERT INTO user_group_roles_projection (
-    group_id, role_id, assigned_at, assigned_by, projection_version
-) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (group_id, role_id) DO NOTHING
+    group_id, role_id, scope_kind, scope_id,
+    assigned_at, assigned_by, projection_version
+) VALUES (
+    $1, $2,
+    $6::TEXT,
+    $7::TEXT,
+    $3, $4, $5
+)
+ON CONFLICT DO NOTHING
 `
 
 type InsertUserGroupRoleParams struct {
@@ -498,12 +514,13 @@ type InsertUserGroupRoleParams struct {
 	AssignedAt        time.Time `json:"assigned_at"`
 	AssignedBy        string    `json:"assigned_by"`
 	ProjectionVersion int64     `json:"projection_version"`
+	ScopeKind         *string   `json:"scope_kind"`
+	ScopeID           *string   `json:"scope_id"`
 }
 
-// UserGroupRoleAssigned handler. ON CONFLICT DO NOTHING preserves the
-// PL/pgSQL projector's idempotency under reconciler replays. The
-// composite PK (group_id, role_id) makes this safe. No parent-row
-// update — role assignments are independent of member_count.
+// UserGroupRoleAssigned handler. Scope-aware shape symmetric with
+// InsertUserRoleProjection — see that query for the paired-or-
+// neither + ON CONFLICT semantics. server #7 S2.
 func (q *Queries) InsertUserGroupRole(ctx context.Context, arg InsertUserGroupRoleParams) error {
 	_, err := q.db.Exec(ctx, insertUserGroupRole,
 		arg.GroupID,
@@ -511,6 +528,8 @@ func (q *Queries) InsertUserGroupRole(ctx context.Context, arg InsertUserGroupRo
 		arg.AssignedAt,
 		arg.AssignedBy,
 		arg.ProjectionVersion,
+		arg.ScopeKind,
+		arg.ScopeID,
 	)
 	return err
 }

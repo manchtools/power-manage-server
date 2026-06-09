@@ -251,16 +251,21 @@ func decodeUserGroupMember(e store.PersistedEvent, eventName string) (UserGroupM
 
 // UserGroupRolePayload covers UserGroupRoleAssigned and
 // UserGroupRoleRevoked. Both events carry the same (group_id, role_id)
-// pair from the payload (the projector indexes off `event.data->>...`
-// rather than the stream id, mirroring how the handler emits them).
+// pair from the payload, plus the optional (ScopeKind, ScopeID)
+// tuple from server #7 S2 / S5 for scoped grants and the 4-tuple
+// revoke grammar.
 type UserGroupRolePayload struct {
-	GroupID string
-	RoleID  string
+	GroupID   string
+	RoleID    string
+	ScopeKind *string
+	ScopeID   *string
 }
 
 type userGroupRoleRaw struct {
-	GroupID string `json:"group_id"`
-	RoleID  string `json:"role_id"`
+	GroupID   string  `json:"group_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind,omitempty"`
+	ScopeID   *string `json:"scope_id,omitempty"`
 }
 
 // UserGroupRoleAssignedFromEvent decodes UserGroupRoleAssigned.
@@ -292,6 +297,9 @@ func decodeUserGroupRole(e store.PersistedEvent, eventName string) (UserGroupRol
 		return UserGroupRolePayload{}, fmt.Errorf("projector: %s requires group_id", eventName)
 	case raw.RoleID == "":
 		return UserGroupRolePayload{}, fmt.Errorf("projector: %s requires role_id", eventName)
+	}
+	if err := validateScopePair(raw.ScopeKind, raw.ScopeID, eventName); err != nil {
+		return UserGroupRolePayload{}, err
 	}
 	return UserGroupRolePayload(raw), nil
 }

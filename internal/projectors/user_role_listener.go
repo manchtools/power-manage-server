@@ -49,6 +49,8 @@ func applyUserRoleAssigned(ctx context.Context, st *store.Store, logger *slog.Lo
 	if err := st.Queries().InsertUserRoleProjection(ctx, db.InsertUserRoleProjectionParams{
 		UserID:            payload.UserID,
 		RoleID:            payload.RoleID,
+		ScopeKind:         payload.ScopeKind,
+		ScopeID:           payload.ScopeID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        payload.AssignedBy,
 		ProjectionVersion: deref(e.SequenceNum),
@@ -72,8 +74,10 @@ func applyUserRoleRevoked(ctx context.Context, st *store.Store, logger *slog.Log
 		return
 	}
 	if err := st.Queries().DeleteUserRoleProjection(ctx, db.DeleteUserRoleProjectionParams{
-		UserID: payload.UserID,
-		RoleID: payload.RoleID,
+		UserID:    payload.UserID,
+		RoleID:    payload.RoleID,
+		ScopeKind: payload.ScopeKind,
+		ScopeID:   payload.ScopeID,
 	}); err != nil {
 		logger.Warn("user_role projector: failed to delete user_roles_projection row",
 			"event_id", e.ID,

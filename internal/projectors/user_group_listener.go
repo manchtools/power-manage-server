@@ -392,6 +392,8 @@ func applyUserGroupRoleAssigned(ctx context.Context, q *store.Queries, e store.P
 	return q.InsertUserGroupRole(ctx, db.InsertUserGroupRoleParams{
 		GroupID:           payload.GroupID,
 		RoleID:            payload.RoleID,
+		ScopeKind:         payload.ScopeKind,
+		ScopeID:           payload.ScopeID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        e.ActorID,
 		ProjectionVersion: deref(e.SequenceNum),
@@ -418,8 +420,10 @@ func applyUserGroupRoleRevoked(ctx context.Context, q *store.Queries, e store.Pe
 		return nil
 	}
 	return q.DeleteUserGroupRole(ctx, db.DeleteUserGroupRoleParams{
-		GroupID: payload.GroupID,
-		RoleID:  payload.RoleID,
+		GroupID:   payload.GroupID,
+		RoleID:    payload.RoleID,
+		ScopeKind: payload.ScopeKind,
+		ScopeID:   payload.ScopeID,
 	})
 }
 

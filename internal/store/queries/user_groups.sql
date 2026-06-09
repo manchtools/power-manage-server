@@ -367,18 +367,26 @@ WHERE group_id = $1
   AND user_id = $2;
 
 -- name: InsertUserGroupRole :exec
--- UserGroupRoleAssigned handler. ON CONFLICT DO NOTHING preserves the
--- PL/pgSQL projector's idempotency under reconciler replays. The
--- composite PK (group_id, role_id) makes this safe. No parent-row
--- update — role assignments are independent of member_count.
+-- UserGroupRoleAssigned handler. Scope-aware shape symmetric with
+-- InsertUserRoleProjection — see that query for the paired-or-
+-- neither + ON CONFLICT semantics. server #7 S2.
 INSERT INTO user_group_roles_projection (
-    group_id, role_id, assigned_at, assigned_by, projection_version
-) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (group_id, role_id) DO NOTHING;
+    group_id, role_id, scope_kind, scope_id,
+    assigned_at, assigned_by, projection_version
+) VALUES (
+    $1, $2,
+    sqlc.narg('scope_kind')::TEXT,
+    sqlc.narg('scope_id')::TEXT,
+    $3, $4, $5
+)
+ON CONFLICT DO NOTHING;
 
 -- name: DeleteUserGroupRole :exec
--- UserGroupRoleRevoked handler. Plain DELETE — silently no-op on a
--- miss matches the PL/pgSQL projector's behaviour.
+-- UserGroupRoleRevoked handler — 4-tuple revoke grammar.
+-- IS NOT DISTINCT FROM gives NULL-aware equality. See
+-- DeleteUserRoleProjection for the dispatch contract.
 DELETE FROM user_group_roles_projection
 WHERE group_id = $1
-  AND role_id = $2;
+  AND role_id = $2
+  AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
+  AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT;
