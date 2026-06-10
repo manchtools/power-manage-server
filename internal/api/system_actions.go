@@ -92,6 +92,11 @@ func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) err
 	if err := m.ReconcileGlobalTerminalAdminActions(ctx); err != nil {
 		m.logger.Error("failed to reconcile global TerminalAdmin actions during sync sweep", "error", err)
 	}
+	// Per-scope TerminalAdmin actions (#7) — same shape, keyed by
+	// device-group scope.
+	if err := m.ReconcileScopedTerminalAdminActions(ctx); err != nil {
+		m.logger.Error("failed to reconcile scoped TerminalAdmin actions during sync sweep", "error", err)
+	}
 
 	return nil
 }
@@ -540,12 +545,12 @@ const (
 // and a re-sign per-server-start would invalidate every agent's cached
 // copy on every restart of the server even when nothing changed.
 func (m *SystemActionManager) BootstrapGlobalTerminalAdminActions(ctx context.Context) error {
-	if err := m.bootstrapGlobalTerminalAdminAction(ctx,
+	if err := m.bootstrapTerminalAdminAction(ctx,
 		GlobalTerminalAdminLimitedActionName,
 		pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED); err != nil {
 		return fmt.Errorf("bootstrap %s: %w", GlobalTerminalAdminLimitedActionName, err)
 	}
-	if err := m.bootstrapGlobalTerminalAdminAction(ctx,
+	if err := m.bootstrapTerminalAdminAction(ctx,
 		GlobalTerminalAdminFullActionName,
 		pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_FULL); err != nil {
 		return fmt.Errorf("bootstrap %s: %w", GlobalTerminalAdminFullActionName, err)
@@ -586,18 +591,20 @@ func (m *SystemActionManager) ReconcileGlobalTerminalAdminActions(ctx context.Co
 		return fmt.Errorf("list users: %w", err)
 	}
 
-	limitedCohort, fullCohort := m.computeTerminalAdminCohorts(ctx, users)
+	cohorts := m.computeTerminalAdminCohorts(ctx, users)
 
-	if err := m.reconcileOneGlobalTerminalAdmin(ctx,
+	// The global actions consume only the unscoped (Scope=="") cohorts;
+	// per-scope cohorts are materialized by ReconcileScopedTerminalAdminActions.
+	if err := m.reconcileOneTerminalAdmin(ctx,
 		GlobalTerminalAdminLimitedActionName,
 		pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED,
-		limitedCohort); err != nil {
+		cohorts[cohortKey{Level: pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED}]); err != nil {
 		return fmt.Errorf("reconcile %s: %w", GlobalTerminalAdminLimitedActionName, err)
 	}
-	if err := m.reconcileOneGlobalTerminalAdmin(ctx,
+	if err := m.reconcileOneTerminalAdmin(ctx,
 		GlobalTerminalAdminFullActionName,
 		pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_FULL,
-		fullCohort); err != nil {
+		cohorts[cohortKey{Level: pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_FULL}]); err != nil {
 		return fmt.Errorf("reconcile %s: %w", GlobalTerminalAdminFullActionName, err)
 	}
 	return nil
@@ -618,9 +625,14 @@ func (m *SystemActionManager) ReconcileGlobalTerminalAdminActions(ctx context.Co
 // follow-up and are intentionally ignored by the global cohort. A
 // user_group-scoped TerminalAdmin grant has no device meaning and is
 // ignored everywhere.
-func (m *SystemActionManager) computeTerminalAdminCohorts(ctx context.Context, users []store.User) (limited, full []string) {
-	limitedSet := map[string]struct{}{}
-	fullSet := map[string]struct{}{}
+func (m *SystemActionManager) computeTerminalAdminCohorts(ctx context.Context, users []store.User) map[cohortKey][]string {
+	sets := map[cohortKey]map[string]struct{}{}
+	add := func(k cohortKey, ttyUser string) {
+		if sets[k] == nil {
+			sets[k] = map[string]struct{}{}
+		}
+		sets[k][ttyUser] = struct{}{}
+	}
 	for _, u := range users {
 		if u.Disabled || u.LinuxUsername == "" {
 			continue
@@ -637,36 +649,32 @@ func (m *SystemActionManager) computeTerminalAdminCohorts(ctx context.Context, u
 		}
 		ttyUser := "pm-tty-" + u.LinuxUsername
 		for _, g := range grants {
-			// Only UNSCOPED (global) grants feed the global actions.
-			// scope_kind != "" ⇒ a per-scope grant, handled by the
-			// per-scope reconciler (follow-up).
-			if g.ScopeKind != "" {
-				continue
+			scope, ok := terminalAdminScopeKey(g)
+			if !ok {
+				continue // user_group / unknown scope — no device meaning
 			}
 			switch g.Permission {
 			case "TerminalAdminLimited":
-				limitedSet[ttyUser] = struct{}{}
+				add(cohortKey{Level: pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED, Scope: scope}, ttyUser)
 			case "TerminalAdminFull":
-				fullSet[ttyUser] = struct{}{}
+				add(cohortKey{Level: pm.AdminAccessLevel_ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_FULL, Scope: scope}, ttyUser)
 			}
 		}
 	}
 
-	limited = make([]string, 0, len(limitedSet))
-	for u := range limitedSet {
-		limited = append(limited, u)
+	out := make(map[cohortKey][]string, len(sets))
+	for k, set := range sets {
+		cohort := make([]string, 0, len(set))
+		for u := range set {
+			cohort = append(cohort, u)
+		}
+		sort.Strings(cohort)
+		out[k] = cohort
 	}
-	sort.Strings(limited)
-
-	full = make([]string, 0, len(fullSet))
-	for u := range fullSet {
-		full = append(full, u)
-	}
-	sort.Strings(full)
-	return limited, full
+	return out
 }
 
-func (m *SystemActionManager) reconcileOneGlobalTerminalAdmin(ctx context.Context, name string, accessLevel pm.AdminAccessLevel, desiredUsers []string) error {
+func (m *SystemActionManager) reconcileOneTerminalAdmin(ctx context.Context, name string, accessLevel pm.AdminAccessLevel, desiredUsers []string) error {
 	row, err := m.store.Queries().GetActionByName(ctx, name)
 	if err != nil {
 		// Includes the not-found case: bootstrap was skipped.
@@ -709,7 +717,7 @@ func (m *SystemActionManager) reconcileOneGlobalTerminalAdmin(ctx context.Contex
 	if err := m.actions.SignActionByID(ctx, row.ID); err != nil {
 		return fmt.Errorf("re-sign action: %w", err)
 	}
-	m.logger.Info("reconciled global terminal-admin action",
+	m.logger.Info("reconciled terminal-admin action",
 		"name", name, "action_id", row.ID, "users_count", len(desiredUsers))
 	return nil
 }
@@ -782,7 +790,7 @@ func (m *SystemActionManager) lookupUserIDByLinuxUsername(ctx context.Context, l
 	return ""
 }
 
-func (m *SystemActionManager) bootstrapGlobalTerminalAdminAction(ctx context.Context, name string, accessLevel pm.AdminAccessLevel) error {
+func (m *SystemActionManager) bootstrapTerminalAdminAction(ctx context.Context, name string, accessLevel pm.AdminAccessLevel) error {
 	if _, err := m.store.Queries().GetActionByName(ctx, name); err == nil {
 		// Already exists — no-op. The reconciler owns subsequent
 		// mutations. NOT re-signing here is load-bearing: the agent
@@ -813,7 +821,7 @@ func (m *SystemActionManager) bootstrapGlobalTerminalAdminAction(ctx context.Con
 	if err := m.actions.SignActionByID(ctx, actionID); err != nil {
 		return fmt.Errorf("sign newly created action: %w", err)
 	}
-	m.logger.Info("created global terminal-admin action",
+	m.logger.Info("created terminal-admin action",
 		"name", name, "action_id", actionID, "access_level", accessLevel.String())
 	return nil
 }
