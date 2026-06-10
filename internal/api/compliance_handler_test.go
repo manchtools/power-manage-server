@@ -27,6 +27,27 @@ func newComplianceHandler(t *testing.T) (*api.ComplianceHandler, *store.Store) {
 	return api.NewComplianceHandler(st, slog.Default()), st
 }
 
+// TestGetDeviceCompliance_RejectsDeviceNotAssignedToCaller pins the #357 fix:
+// GetDeviceCompliance returned a device's compliance (including detection
+// script stdout/stderr) for ANY device_id, with no ownership/scope check —
+// unlike its sibling GetDevice. A stock User holds GetDeviceCompliance:assigned
+// (default role), so this was a cross-user disclosure IDOR. The handler must
+// resolve the assignment filter (mirroring GetDevice) and refuse a device not
+// assigned to the caller.
+func TestGetDeviceCompliance_RejectsDeviceNotAssignedToCaller(t *testing.T) {
+	h, st := newComplianceHandler(t)
+	deviceID := testutil.CreateTestDevice(t, st, "compliance-idor")
+	attacker := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	// UserContext holds GetDeviceCompliance:assigned but not the unrestricted
+	// permission, so the assignment filter resolves to the caller's id.
+	ctx := testutil.UserContext(attacker)
+
+	_, err := h.GetDeviceCompliance(ctx,
+		connect.NewRequest(&pm.GetDeviceComplianceRequest{DeviceId: deviceID}))
+	require.Error(t, err, "a user must not read compliance for a device not assigned to them")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
 func TestGetDeviceCompliance_NoResults_EmptyChecks(t *testing.T) {
 	h, st := newComplianceHandler(t)
 	deviceID := testutil.CreateTestDevice(t, st, "compliance-empty")

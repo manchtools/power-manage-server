@@ -406,6 +406,16 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 		return nil, err
 	}
 
+	// Mirror GetDevice's assignment/owner scope so a scoped user can't read
+	// another device's per-policy compliance (incl. detection output) by
+	// supplying an arbitrary device_id (#357).
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
+		ID:         req.Msg.DeviceId,
+		OwnerScope: userFilterID(ctx, "GetDeviceCompliancePolicyStatus"),
+	}); err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
+	}
+
 	evals, err := h.store.Repos().Compliance.ListDeviceEvaluations(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get compliance evaluations")
