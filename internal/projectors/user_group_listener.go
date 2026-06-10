@@ -154,7 +154,7 @@ func applyUserGroupCreated(ctx context.Context, q *store.Queries, e store.Persis
 		Description:       payload.Description,
 		CreatedAt:         createdAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 		IsDynamic:         payload.IsDynamic,
 		DynamicQuery:      payload.DynamicQuery,
 	}); err != nil {
@@ -186,7 +186,7 @@ func applyUserGroupUpdated(ctx context.Context, q *store.Queries, e store.Persis
 		Name:              payload.Name,
 		Description:       payload.Description,
 		UpdatedAt:         updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -206,7 +206,7 @@ func applyUserGroupQueryUpdated(ctx context.Context, q *store.Queries, e store.P
 		IsDynamic:         payload.IsDynamic,
 		DynamicQuery:      payload.DynamicQuery,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		// The inner UPDATE's :execrows guard reports not-found when
@@ -253,7 +253,7 @@ func applyUserGroupMaintenanceWindowSet(ctx context.Context, q *store.Queries, e
 		ID:                payload.ID,
 		MaintenanceWindow: payload.MaintenanceWindow,
 		UpdatedAt:         updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func applyUserGroupDeleted(ctx context.Context, q *store.Queries, e store.Persis
 	n, err := q.SoftDeleteUserGroupProjection(ctx, db.SoftDeleteUserGroupProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -310,7 +310,7 @@ func applyUserGroupMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
 		ID:                payload.GroupID,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -323,7 +323,7 @@ func applyUserGroupMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 		UserID:            payload.UserID,
 		AddedAt:           e.OccurredAt,
 		AddedBy:           e.ActorID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func applyUserGroupMemberRemoved(ctx context.Context, q *store.Queries, e store.
 	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
 		ID:                payload.GroupID,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -381,7 +381,7 @@ func applyUserGroupRoleAssigned(ctx context.Context, q *store.Queries, e store.P
 	n, err := q.ClaimUserGroupForRoleMutation(ctx, db.ClaimUserGroupForRoleMutationParams{
 		ID:                payload.GroupID,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -396,7 +396,7 @@ func applyUserGroupRoleAssigned(ctx context.Context, q *store.Queries, e store.P
 		ScopeID:           payload.ScopeID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        e.ActorID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -411,7 +411,7 @@ func applyUserGroupRoleRevoked(ctx context.Context, q *store.Queries, e store.Pe
 	n, err := q.ClaimUserGroupForRoleMutation(ctx, db.ClaimUserGroupForRoleMutationParams{
 		ID:                payload.GroupID,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -444,7 +444,7 @@ func applyUserGroupMembersRebuilt(ctx context.Context, q *store.Queries, e store
 	n, err := q.ClaimUserGroupForMembership(ctx, db.ClaimUserGroupForMembershipParams{
 		ID:                payload.GroupID,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -461,7 +461,7 @@ func applyUserGroupMembersRebuilt(ctx context.Context, q *store.Queries, e store
 			UserID:            userID,
 			AddedAt:           e.OccurredAt,
 			AddedBy:           "system",
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		}); err != nil {
 			return err
 		}

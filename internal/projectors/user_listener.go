@@ -165,7 +165,7 @@ func applyUserCreatedWithRoles(ctx context.Context, q *store.Queries, e store.Pe
 		PasswordHash:      &passwordHash,
 		Role:              payload.Role,
 		CreatedAt:         &occurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 		HasPassword:       hasPassword,
 		DisplayName:       payload.DisplayName,
 		GivenName:         payload.GivenName,
@@ -187,7 +187,7 @@ func applyUserCreatedWithRoles(ctx context.Context, q *store.Queries, e store.Pe
 			RoleID:            roleID,
 			AssignedAt:        occurredAt,
 			AssignedBy:        e.ActorID,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		}); err != nil {
 			return err
 		}
@@ -224,7 +224,7 @@ func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.Pers
 		Picture:           payload.Picture,
 		Locale:            payload.Locale,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -244,7 +244,7 @@ func applyUserEmailChanged(ctx context.Context, q *store.Queries, e store.Persis
 		ID:                payload.ID,
 		Email:             payload.Email,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func applyUserPasswordChanged(ctx context.Context, q *store.Queries, e store.Per
 		ID:                payload.ID,
 		PasswordHash:      &passwordHash,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func applyUserRoleChanged(ctx context.Context, q *store.Queries, e store.Persist
 		ID:                payload.ID,
 		Role:              payload.Role,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -297,7 +297,7 @@ func applyUserSessionInvalidated(ctx context.Context, q *store.Queries, e store.
 	if _, err := q.InvalidateUserSessionProjection(ctx, db.InvalidateUserSessionProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -309,7 +309,7 @@ func applyUserDisabled(ctx context.Context, q *store.Queries, e store.PersistedE
 	if _, err := q.DisableUserProjection(ctx, db.DisableUserProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -321,7 +321,7 @@ func applyUserEnabled(ctx context.Context, q *store.Queries, e store.PersistedEv
 	if _, err := q.EnableUserProjection(ctx, db.EnableUserProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -333,7 +333,7 @@ func applyUserLoggedIn(ctx context.Context, q *store.Queries, e store.PersistedE
 	if _, err := q.UpdateUserLoginProjection(ctx, db.UpdateUserLoginProjectionParams{
 		ID:                e.StreamID,
 		LastLoginAt:       &loggedInAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -345,7 +345,7 @@ func applyUserDeleted(ctx context.Context, q *store.Queries, e store.PersistedEv
 	n, err := q.SoftDeleteUserProjection(ctx, db.SoftDeleteUserProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -384,8 +384,8 @@ func applyUserSshKeyAdded(ctx context.Context, q *store.Queries, e store.Persist
 	updatedAt := payload.AddedAt
 	if _, err := q.TouchUserUpdatedAt(ctx, db.TouchUserUpdatedAtParams{
 		ID:                payload.ID,
-		UpdatedAt:         updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		UpdatedAt:         &updatedAt,
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -406,10 +406,11 @@ func applyUserSshKeyRemoved(ctx context.Context, q *store.Queries, e store.Persi
 	}); err != nil {
 		return err
 	}
+	occurredAt := e.OccurredAt
 	if _, err := q.TouchUserUpdatedAt(ctx, db.TouchUserUpdatedAtParams{
 		ID:                payload.ID,
-		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		UpdatedAt:         &occurredAt,
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -430,7 +431,7 @@ func applyUserSshSettingsUpdated(ctx context.Context, q *store.Queries, e store.
 		SshAllowPubkey:    payload.SshAllowPubkey,
 		SshAllowPassword:  payload.SshAllowPassword,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 		ID:                payload.ID,
 	}); err != nil {
 		return err
@@ -451,7 +452,7 @@ func applyUserLinuxUsernameChanged(ctx context.Context, q *store.Queries, e stor
 		ID:                payload.ID,
 		LinuxUsername:     payload.LinuxUsername,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -471,7 +472,7 @@ func applyUserSystemActionLinked(ctx context.Context, q *store.Queries, e store.
 		Field:             payload.Field,
 		ActionID:          payload.ActionID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 		ID:                payload.ID,
 	}); err != nil {
 		return err
@@ -491,7 +492,7 @@ func applyUserProvisioningSettingsUpdated(ctx context.Context, q *store.Queries,
 	if _, err := q.UpdateUserProvisioningSettingsProjection(ctx, db.UpdateUserProvisioningSettingsProjectionParams{
 		UserProvisioningEnabled: payload.UserProvisioningEnabled,
 		UpdatedAt:               &updatedAt,
-		ProjectionVersion:       deref(e.SequenceNum),
+		ProjectionVersion:       e.SequenceNum,
 		ID:                      payload.ID,
 	}); err != nil {
 		return err

@@ -120,7 +120,7 @@ func applyAssignmentCreated(ctx context.Context, q *store.Queries, e store.Persi
 		Mode:              payload.Mode,
 		CreatedAt:         &createdAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -150,7 +150,7 @@ func applyAssignmentModeChanged(ctx context.Context, q *store.Queries, e store.P
 	if _, err := q.UpdateAssignmentModeProjection(ctx, db.UpdateAssignmentModeProjectionParams{
 		ID:                payload.ID,
 		Mode:              payload.Mode,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -168,7 +168,7 @@ func applyAssignmentSortOrderChanged(ctx context.Context, q *store.Queries, e st
 	if _, err := q.UpdateAssignmentSortOrderProjection(ctx, db.UpdateAssignmentSortOrderProjectionParams{
 		ID:                payload.ID,
 		SortOrder:         payload.SortOrder,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func applyAssignmentSortOrderChanged(ctx context.Context, q *store.Queries, e st
 func applyAssignmentDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	row, err := q.SoftDeleteAssignmentProjection(ctx, db.SoftDeleteAssignmentProjectionParams{
 		ID:                e.StreamID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		if store.IsNotFound(err) {

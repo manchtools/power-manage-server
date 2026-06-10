@@ -46,7 +46,7 @@ func ServerSettingsListener(st *store.Store, logger *slog.Logger) store.EventLis
 			UserProvisioningEnabled: payload.UserProvisioningEnabled,
 			SshAccessForAll:         payload.SshAccessForAll,
 			OccurredAt:              e.OccurredAt,
-			ProjectionVersion:       deref(e.SequenceNum),
+			ProjectionVersion:       e.SequenceNum,
 		}); err != nil {
 			logger.Warn("server_settings projector: failed to apply ServerSettingUpdated",
 				"event_id", e.ID, "error", err)

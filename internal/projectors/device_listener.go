@@ -133,7 +133,7 @@ func applyDeviceRegistered(ctx context.Context, q *store.Queries, e store.Persis
 		CertNotAfter:        payload.CertNotAfter,
 		RegisteredAt:        &occurredAt,
 		RegistrationTokenID: payload.RegistrationTokenID,
-		ProjectionVersion:   deref(e.SequenceNum),
+		ProjectionVersion:   e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func applyDeviceRegistered(ctx context.Context, q *store.Queries, e store.Persis
 		UserID:            *payload.AssignedUserID,
 		AssignedAt:        occurredAt,
 		AssignedBy:        e.ActorID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -188,7 +188,7 @@ func applyDeviceSeen(ctx context.Context, q *store.Queries, e store.PersistedEve
 		LastSeenAt:        &occurredAt,
 		AgentVersion:      payload.AgentVersion,
 		Hostname:          payload.Hostname,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func applyDeviceHeartbeat(ctx context.Context, q *store.Queries, e store.Persist
 		ID:                payload.ID,
 		LastSeenAt:        &occurredAt,
 		AgentVersion:      payload.AgentVersion,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -228,7 +228,7 @@ func applyDeviceCertRenewed(ctx context.Context, q *store.Queries, e store.Persi
 		ID:                payload.ID,
 		CertFingerprint:   &certFingerprint,
 		CertNotAfter:      payload.CertNotAfter,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -316,10 +316,10 @@ func applyDeviceLabelRemoved(ctx context.Context, q *store.Queries, e store.Pers
 // Returns (false, nil) when the event is stale and must be skipped
 // (the corresponding label row would otherwise be overwritten by an
 // out-of-order replay).
-func advanceDeviceVersion(ctx context.Context, q *store.Queries, deviceID string, sequenceNum *int64) (bool, error) {
+func advanceDeviceVersion(ctx context.Context, q *store.Queries, deviceID string, sequenceNum int64) (bool, error) {
 	n, err := q.AdvanceDeviceProjectionVersion(ctx, db.AdvanceDeviceProjectionVersionParams{
 		ID:                deviceID,
-		ProjectionVersion: deref(sequenceNum),
+		ProjectionVersion: sequenceNum,
 	})
 	if err != nil {
 		return false, err
@@ -339,7 +339,7 @@ func enqueueDynamicDeviceGroupsForDevice(ctx context.Context, q *store.Queries, 
 func applyDeviceDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	n, err := q.SoftDeleteDeviceProjection(ctx, db.SoftDeleteDeviceProjectionParams{
 		ID:                e.StreamID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -391,7 +391,7 @@ func applyDeviceAssigned(ctx context.Context, q *store.Queries, e store.Persiste
 		UserID:            payload.UserID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        e.ActorID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -413,7 +413,7 @@ func applyDeviceUnassigned(ctx context.Context, q *store.Queries, e store.Persis
 	if _, err := q.DeleteDeviceAssignedUser(ctx, db.DeleteDeviceAssignedUserParams{
 		DeviceID:          payload.DeviceID,
 		UserID:            payload.UserID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -433,7 +433,7 @@ func applyDeviceGroupAssigned(ctx context.Context, q *store.Queries, e store.Per
 		GroupID:           payload.GroupID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        e.ActorID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -450,7 +450,7 @@ func applyDeviceGroupUnassigned(ctx context.Context, q *store.Queries, e store.P
 	if _, err := q.DeleteDeviceAssignedGroup(ctx, db.DeleteDeviceAssignedGroupParams{
 		DeviceID:          payload.DeviceID,
 		GroupID:           payload.GroupID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -468,7 +468,7 @@ func applyDeviceSyncIntervalSet(ctx context.Context, q *store.Queries, e store.P
 	if _, err := q.UpdateDeviceSyncIntervalProjection(ctx, db.UpdateDeviceSyncIntervalProjectionParams{
 		ID:                  payload.ID,
 		SyncIntervalMinutes: payload.SyncIntervalMinutes,
-		ProjectionVersion:   deref(e.SequenceNum),
+		ProjectionVersion:   e.SequenceNum,
 	}); err != nil {
 		return err
 	}

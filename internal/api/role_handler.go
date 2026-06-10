@@ -327,7 +327,7 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		// DO NOTHING (both partial unique indexes) makes a redundant scoped
 		// re-assign an idempotent no-op.
 		if scopeKind == "" {
-			hasRole, err := q.UserHasUnscopedRole(ctx, db.UserHasRoleParams{
+			hasRole, err := q.UserHasUnscopedRole(ctx, db.UserHasUnscopedRoleParams{
 				UserID: req.Msg.UserId,
 				RoleID: roleID,
 			})

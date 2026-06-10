@@ -354,7 +354,7 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 	listener := projectors.RoleListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "role",
 		StreamID:    roleID,
 		EventType:   "RoleDeleted",

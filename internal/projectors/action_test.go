@@ -467,7 +467,7 @@ func TestActionListener_StaleDeleteReplayDoesNotNukeCascade(t *testing.T) {
 	listener := projectors.ActionListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "action",
 		StreamID:    actionID,
 		EventType:   "ActionDeleted",

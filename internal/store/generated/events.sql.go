@@ -239,8 +239,8 @@ LIMIT $2
 `
 
 type LoadAllEventsParams struct {
-	SequenceNum *int64 `json:"sequence_num"`
-	Limit       int32  `json:"limit"`
+	SequenceNum int64 `json:"sequence_num"`
+	Limit       int32 `json:"limit"`
 }
 
 func (q *Queries) LoadAllEvents(ctx context.Context, arg LoadAllEventsParams) ([]Event, error) {

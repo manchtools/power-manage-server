@@ -639,7 +639,7 @@ func TestDeviceGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,
 		EventType:   "DeviceGroupDeleted",
@@ -693,7 +693,7 @@ func TestDeviceGroupListener_StaleQueryUpdatedDoesNotNukeMembers(t *testing.T) {
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,
 		EventType:   "DeviceGroupQueryUpdated",
@@ -759,7 +759,7 @@ func TestDeviceGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testin
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,
 		EventType:   "DeviceGroupMemberAdded",

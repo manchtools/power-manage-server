@@ -62,7 +62,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				SecretEncrypted:   payload.SecretEncrypted,
 				BackupCodesHash:   payload.BackupCodesHash,
 				CreatedAt:         updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to upsert TOTPSetupInitiated",
 					"event_id", e.ID, "user_id", userID, "error", err)
@@ -72,7 +72,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 			if err := q.VerifyTotpProjection(ctx, db.VerifyTotpProjectionParams{
 				UserID:            userID,
 				UpdatedAt:         updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to flip totp_projection to verified",
 					"event_id", e.ID, "user_id", userID, "error", err)
@@ -81,7 +81,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				ID:                userID,
 				TotpEnabled:       true,
 				UpdatedAt:         &updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=TRUE",
 					"event_id", e.ID, "user_id", userID, "error", err)
@@ -100,7 +100,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				ID:                userID,
 				TotpEnabled:       false,
 				UpdatedAt:         &updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=FALSE",
 					"event_id", e.ID, "user_id", userID, "error", err)
@@ -123,7 +123,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				UserID:            userID,
 				Column2:           int32(*payload.Index + 1),
 				UpdatedAt:         updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to mark backup code used",
 					"event_id", e.ID, "user_id", userID, "index", *payload.Index, "error", err)
@@ -134,7 +134,7 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 				UserID:            userID,
 				BackupCodesHash:   payload.BackupCodesHash,
 				UpdatedAt:         updatedAt,
-				ProjectionVersion: deref(e.SequenceNum),
+				ProjectionVersion: e.SequenceNum,
 			}); err != nil {
 				logger.Warn("totp projector: failed to regenerate backup codes",
 					"event_id", e.ID, "user_id", userID, "error", err)

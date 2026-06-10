@@ -563,7 +563,7 @@ func TestActionSetListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "action_set",
 		StreamID:    setID,
 		EventType:   "ActionSetDeleted",
@@ -637,7 +637,7 @@ func TestActionSetListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "action_set",
 		StreamID:    setID,
 		EventType:   "ActionSetMemberAdded",

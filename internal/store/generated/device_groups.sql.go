@@ -124,7 +124,7 @@ func (q *Queries) DeleteDynamicDeviceGroupEvaluationQueueRow(ctx context.Context
 const deleteDynamicDeviceGroupQueueBefore = `-- name: DeleteDynamicDeviceGroupQueueBefore :exec
 DELETE FROM dynamic_group_evaluation_queue
 WHERE group_id = $1::TEXT
-  AND queued_at <= $2::TIMESTAMPTZ
+  AND queued_at <= $2
 `
 
 type DeleteDynamicDeviceGroupQueueBeforeParams struct {

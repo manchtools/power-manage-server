@@ -199,7 +199,7 @@ func applyActionCreated(ctx context.Context, q *store.Queries, e store.Persisted
 		CreatedAt:         &occurredAt,
 		UpdatedAt:         &occurredAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 		IsSystem:          payload.IsSystem,
 		Schedule:          payload.Schedule,
 	})
@@ -218,7 +218,7 @@ func applyActionRenamed(ctx context.Context, q *store.Queries, e store.Persisted
 		ID:                payload.ID,
 		Name:              payload.Name,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -249,7 +249,7 @@ func applyActionDescriptionUpdated(ctx context.Context, q *store.Queries, e stor
 		ID:                payload.ID,
 		Description:       payload.Description,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -272,7 +272,7 @@ func applyActionParamsUpdated(ctx context.Context, q *store.Queries, e store.Per
 		DesiredState:      payload.DesiredState,
 		Schedule:          payload.Schedule,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func applyActionDeleted(ctx context.Context, q *store.Queries, e store.Persisted
 	n, err := q.SoftDeleteActionProjection(ctx, db.SoftDeleteActionProjectionParams{
 		ID:                streamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -398,7 +398,7 @@ func applyDefinitionCreated(ctx context.Context, q *store.Queries, e store.Persi
 			CreatedAt:         &occurredAt,
 			UpdatedAt:         &occurredAt,
 			CreatedBy:         payload.CreatedBy,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		})
 	}
 	// e.StreamType == "definition"
@@ -414,7 +414,7 @@ func applyDefinitionCreated(ctx context.Context, q *store.Queries, e store.Persi
 		CreatedAt:         &occurredAt,
 		UpdatedAt:         &occurredAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -439,7 +439,7 @@ func applyDefinitionRenamed(ctx context.Context, q *store.Queries, e store.Persi
 			ID:                payload.ID,
 			Name:              payload.Name,
 			UpdatedAt:         &updatedAt,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		}); err != nil {
 			return err
 		}
@@ -449,7 +449,7 @@ func applyDefinitionRenamed(ctx context.Context, q *store.Queries, e store.Persi
 		ID:                payload.ID,
 		Name:              payload.Name,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -475,7 +475,7 @@ func applyDefinitionDescriptionUpdated(ctx context.Context, q *store.Queries, e 
 			ID:                payload.ID,
 			Description:       payload.DescriptionPtr,
 			UpdatedAt:         &updatedAt,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		}); err != nil {
 			return err
 		}
@@ -485,7 +485,7 @@ func applyDefinitionDescriptionUpdated(ctx context.Context, q *store.Queries, e 
 		ID:                payload.ID,
 		Description:       payload.Description,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -505,7 +505,7 @@ func applyDefinitionScheduleUpdated(ctx context.Context, q *store.Queries, e sto
 		ID:                payload.ID,
 		Schedule:          payload.Schedule,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -529,7 +529,7 @@ func applyDefinitionDeleted(ctx context.Context, q *store.Queries, e store.Persi
 		if _, err := q.SoftDeleteActionProjection(ctx, db.SoftDeleteActionProjectionParams{
 			ID:                streamID,
 			UpdatedAt:         &updatedAt,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		}); err != nil {
 			return err
 		}
@@ -538,7 +538,7 @@ func applyDefinitionDeleted(ctx context.Context, q *store.Queries, e store.Persi
 	if _, err := q.SoftDeleteDefinitionProjection(ctx, db.SoftDeleteDefinitionProjectionParams{
 		ID:                streamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -564,7 +564,7 @@ func applyDefinitionMemberAdded(ctx context.Context, q *store.Queries, e store.P
 	n, err := q.ClaimDefinitionForMembership(ctx, db.ClaimDefinitionForMembershipParams{
 		ID:                payload.DefinitionID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -578,7 +578,7 @@ func applyDefinitionMemberAdded(ctx context.Context, q *store.Queries, e store.P
 		ActionSetID:       payload.ActionSetID,
 		SortOrder:         payload.SortOrder,
 		AddedAt:           &addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -597,7 +597,7 @@ func applyDefinitionMemberRemoved(ctx context.Context, q *store.Queries, e store
 	n, err := q.ClaimDefinitionForMembership(ctx, db.ClaimDefinitionForMembershipParams{
 		ID:                payload.DefinitionID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -626,7 +626,7 @@ func applyDefinitionMemberReordered(ctx context.Context, q *store.Queries, e sto
 	n, err := q.ClaimDefinitionForMembership(ctx, db.ClaimDefinitionForMembershipParams{
 		ID:                payload.DefinitionID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -640,7 +640,7 @@ func applyDefinitionMemberReordered(ctx context.Context, q *store.Queries, e sto
 		DefinitionID:      payload.DefinitionID,
 		ActionSetID:       payload.ActionSetID,
 		SortOrder:         payload.SortOrder,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}

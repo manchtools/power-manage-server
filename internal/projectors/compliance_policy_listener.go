@@ -139,7 +139,7 @@ func applyCompliancePolicyCreated(ctx context.Context, q *store.Queries, e store
 		Description:       payload.Description,
 		CreatedAt:         &createdAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -154,7 +154,7 @@ func applyCompliancePolicyRenamed(ctx context.Context, q *store.Queries, e store
 	if _, err := q.RenameCompliancePolicyProjection(ctx, db.RenameCompliancePolicyProjectionParams{
 		ID:                payload.ID,
 		Name:              payload.Name,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -172,7 +172,7 @@ func applyCompliancePolicyDescriptionUpdated(ctx context.Context, q *store.Queri
 	if _, err := q.UpdateCompliancePolicyDescriptionProjection(ctx, db.UpdateCompliancePolicyDescriptionProjectionParams{
 		ID:                payload.ID,
 		Description:       payload.Description,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func applyCompliancePolicyDescriptionUpdated(ctx context.Context, q *store.Queri
 func applyCompliancePolicyDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	n, err := q.SoftDeleteCompliancePolicyProjection(ctx, db.SoftDeleteCompliancePolicyProjectionParams{
 		ID:                e.StreamID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -228,7 +228,7 @@ func applyCompliancePolicyRuleAdded(ctx context.Context, q *store.Queries, e sto
 	// even when the parent guard would have rejected the version bump.
 	n, err := q.ClaimCompliancePolicyForRuleMutation(ctx, db.ClaimCompliancePolicyForRuleMutationParams{
 		ID:                payload.PolicyID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -243,7 +243,7 @@ func applyCompliancePolicyRuleAdded(ctx context.Context, q *store.Queries, e sto
 		ActionName:        payload.ActionName,
 		GracePeriodHours:  payload.GracePeriodHours,
 		AddedAt:           &addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -264,7 +264,7 @@ func applyCompliancePolicyRuleRemoved(ctx context.Context, q *store.Queries, e s
 	}
 	n, err := q.ClaimCompliancePolicyForRuleMutation(ctx, db.ClaimCompliancePolicyForRuleMutationParams{
 		ID:                payload.PolicyID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -300,7 +300,7 @@ func applyCompliancePolicyRuleUpdated(ctx context.Context, q *store.Queries, e s
 	}
 	n, err := q.ClaimCompliancePolicyForRuleMutation(ctx, db.ClaimCompliancePolicyForRuleMutationParams{
 		ID:                payload.PolicyID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -312,6 +312,6 @@ func applyCompliancePolicyRuleUpdated(ctx context.Context, q *store.Queries, e s
 		PolicyID:          payload.PolicyID,
 		ActionID:          payload.ActionID,
 		GracePeriodHours:  payload.GracePeriodHours,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }

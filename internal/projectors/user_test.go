@@ -747,7 +747,7 @@ func TestUserListener_StaleDeleteReplayDoesNotNukeIdentityLinks(t *testing.T) {
 	listener := projectors.UserListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "user",
 		StreamID:    userID,
 		EventType:   "UserDeleted",
@@ -821,7 +821,7 @@ func TestUserListener_StaleDisableAfterReEnableKeepsSessionMonotonic(t *testing.
 	listener := projectors.UserListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &staleVer,
+		SequenceNum: staleVer,
 		StreamType:  "user",
 		StreamID:    userID,
 		EventType:   "UserDisabled",

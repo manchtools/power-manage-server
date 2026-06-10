@@ -272,7 +272,7 @@ WHERE id = $1
 -- Stale-replay guard via projection_version.
 UPDATE devices_projection
 SET cert_fingerprint   = $2,
-    cert_not_after     = COALESCE(sqlc.narg('cert_not_after')::TIMESTAMPTZ, cert_not_after),
+    cert_not_after     = COALESCE(sqlc.narg('cert_not_after'), cert_not_after),
     projection_version = $3
 WHERE id = $1
   AND projection_version < $3;

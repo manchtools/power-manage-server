@@ -219,7 +219,7 @@ type DynamicUserGroupEvaluationQueue struct {
 
 type Event struct {
 	ID            uuid.UUID `json:"id"`
-	SequenceNum   *int64    `json:"sequence_num"`
+	SequenceNum   int64     `json:"sequence_num"`
 	StreamType    string    `json:"stream_type"`
 	StreamID      string    `json:"stream_id"`
 	StreamVersion int32     `json:"stream_version"`
@@ -361,16 +361,6 @@ type OsqueryResult struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
-// Captures errors raised inside PL/pgSQL projector functions invoked via the project_event() trigger. Go projectors registered through projectors.WireAll do NOT write here — they emit slog.Warn instead. An empty table means "no PL/pgSQL projector errors", not "no projector errors of any kind". Inspect slog output for the Go side.
-type PlpgsqlProjectionError struct {
-	ID           int64      `json:"id"`
-	EventID      *uuid.UUID `json:"event_id"`
-	EventType    *string    `json:"event_type"`
-	StreamType   *string    `json:"stream_type"`
-	ErrorMessage *string    `json:"error_message"`
-	OccurredAt   time.Time  `json:"occurred_at"`
-}
-
 type RevokedToken struct {
 	Jti       string    `json:"jti"`
 	RevokedAt time.Time `json:"revoked_at"`
@@ -481,6 +471,8 @@ type UserGroupRolesProjection struct {
 	AssignedAt        time.Time `json:"assigned_at"`
 	AssignedBy        string    `json:"assigned_by"`
 	ProjectionVersion int64     `json:"projection_version"`
+	ScopeKind         *string   `json:"scope_kind"`
+	ScopeID           *string   `json:"scope_id"`
 }
 
 type UserGroupsProjection struct {
@@ -504,6 +496,8 @@ type UserRolesProjection struct {
 	AssignedAt        time.Time `json:"assigned_at"`
 	AssignedBy        string    `json:"assigned_by"`
 	ProjectionVersion int64     `json:"projection_version"`
+	ScopeKind         *string   `json:"scope_kind"`
+	ScopeID           *string   `json:"scope_id"`
 }
 
 type UserSelectionsProjection struct {

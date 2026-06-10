@@ -272,7 +272,7 @@ DELETE FROM device_group_members_projection WHERE device_id = $1;
 -- running, the newer queue entry survives so the drain loop re-evaluates.
 DELETE FROM dynamic_group_evaluation_queue
 WHERE group_id = sqlc.arg(group_id)::TEXT
-  AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
+  AND queued_at <= sqlc.arg(before_ts);
 
 -- name: ListDynamicDeviceGroupQueueBatch :many
 -- Wave C.4: returns the next batch of queued group IDs for the

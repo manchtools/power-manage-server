@@ -73,7 +73,7 @@ func applyLuksKeyRotated(ctx context.Context, st *store.Store, logger *slog.Logg
 			"event_id", e.ID, "error", err)
 		return
 	}
-	projVer := deref(e.SequenceNum)
+	projVer := e.SequenceNum
 
 	if err := st.WithTx(ctx, func(q *store.Queries) error {
 		n, err := q.MarkLuksKeysNotCurrent(ctx, db.MarkLuksKeysNotCurrentParams{

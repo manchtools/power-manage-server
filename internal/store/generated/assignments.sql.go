@@ -1144,6 +1144,39 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 	return items, nil
 }
 
+const listScopedTerminalAdminActionNames = `-- name: ListScopedTerminalAdminActionNames :many
+SELECT name FROM actions_projection
+WHERE is_deleted = FALSE
+  AND (name LIKE 'system:terminal-admin-limited:%'
+       OR name LIKE 'system:terminal-admin-full:%')
+  AND name NOT IN ('system:terminal-admin-limited:global',
+                   'system:terminal-admin-full:global')
+`
+
+// Names of every PER-SCOPE terminal-admin action (excluding the two
+// :global actions), so the per-scope reconciler can empty the cohort of
+// any scope that no longer has a holder. Names are
+// system:terminal-admin-{limited,full}:<deviceGroupID> (#7).
+func (q *Queries) ListScopedTerminalAdminActionNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listScopedTerminalAdminActionNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSystemTtyActionsForDevice = `-- name: ListSystemTtyActionsForDevice :many
 SELECT DISTINCT ON (a.id)
        a.id, a.name, a.description, a.action_type, a.desired_state,
@@ -1218,6 +1251,13 @@ type ListSystemTtyActionsForDeviceRow struct {
 // Filtering rules: skip soft-deleted users, actions, roles, and
 // groups so stale projection rows can't leak through and surface a
 // TTY account that should have been cleaned up.
+// #7: scope-aware. Returns the tty action of every user who holds
+// StartTerminal GLOBAL or scoped to a device_group containing $1.
+// scope_kind/scope_id live on user_roles_projection /
+// user_group_roles_projection (the S2 columns inside migration 010's
+// DO-block) — sqlc can't resolve them, so the generated method is
+// HAND-MAINTAINED; keep it in sync. A user_group-scoped StartTerminal
+// grant has no device meaning and is excluded.
 func (q *Queries) ListSystemTtyActionsForDevice(ctx context.Context, deviceID string) ([]ListSystemTtyActionsForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, listSystemTtyActionsForDevice, deviceID)
 	if err != nil {
@@ -1300,10 +1340,11 @@ type ListTerminalAdminActionsForDeviceRow struct {
 // pm-tty-* operators get their sudoers fragment regardless of
 // assignment.
 //
-// #70 ships with the two GLOBAL rows. #7 extends this design by adding
-// per-scope variants; that PR will replace the IN-list filter with a
-// scope-aware join. The shape of this query is intentionally simple
-// so the #7 diff is isolated to the WHERE clause.
+// #70 ships with the two GLOBAL rows. #7 extends this to per-scope
+// actions: the two :global rows reach every device, PLUS any
+// system:terminal-admin-{limited,full}:<deviceGroupID> whose group
+// contains $1. split_part(name,':',3) extracts the device-group id
+// (ULIDs are colon-free).
 func (q *Queries) ListTerminalAdminActionsForDevice(ctx context.Context, deviceID string) ([]ListTerminalAdminActionsForDeviceRow, error) {
 	rows, err := q.db.Query(ctx, listTerminalAdminActionsForDevice, deviceID)
 	if err != nil {
@@ -1332,35 +1373,6 @@ func (q *Queries) ListTerminalAdminActionsForDevice(ctx context.Context, deviceI
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listScopedTerminalAdminActionNames = `-- name: ListScopedTerminalAdminActionNames :many
-SELECT name FROM actions_projection
-WHERE is_deleted = FALSE
-  AND (name LIKE 'system:terminal-admin-limited:%'
-       OR name LIKE 'system:terminal-admin-full:%')
-  AND name NOT IN ('system:terminal-admin-limited:global',
-                   'system:terminal-admin-full:global')
-`
-
-func (q *Queries) ListScopedTerminalAdminActionNames(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, listScopedTerminalAdminActionNames)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, err
-		}
-		items = append(items, name)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

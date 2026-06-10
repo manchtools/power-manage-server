@@ -557,7 +557,7 @@ func TestExecutionListener_StaleReplayRejected(t *testing.T) {
 	listener := projectors.ExecutionListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "execution",
 		StreamID:    execID,
 		EventType:   "ExecutionCompleted",

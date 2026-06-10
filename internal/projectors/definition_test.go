@@ -423,7 +423,7 @@ func TestDefinitionListener_StaleMemberAddedDoesNotRecreateMembership(t *testing
 	listener := projectors.ActionListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "definition",
 		StreamID:    defID,
 		EventType:   "DefinitionMemberAdded",
