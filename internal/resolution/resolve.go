@@ -11,8 +11,8 @@ type Querier interface {
 	ListResolvedActionsForDevice(ctx context.Context, targetID string) ([]db.ListResolvedActionsForDeviceRow, error)
 	ListDeviceLayerExcludedActionIDs(ctx context.Context, targetID string) ([]string, error)
 	ListUserLayerResolvedActionsForDevice(ctx context.Context, id string) ([]db.ListUserLayerResolvedActionsForDeviceRow, error)
-	ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]db.ListSystemTtyActionsForPermissionHoldersRow, error)
-	ListGlobalTerminalAdminActions(ctx context.Context) ([]db.ListGlobalTerminalAdminActionsRow, error)
+	ListSystemTtyActionsForDevice(ctx context.Context, deviceID string) ([]db.ListSystemTtyActionsForDeviceRow, error)
+	ListTerminalAdminActionsForDevice(ctx context.Context, deviceID string) ([]db.ListTerminalAdminActionsForDeviceRow, error)
 }
 
 // ResolveActionsForDevice queries device-layer assignments, user-layer
@@ -75,7 +75,7 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 	// error here makes ProxySyncActions fail fast; the agent retries
 	// on its sync interval and nothing on disk changes in the
 	// meantime.
-	ttyActions, err := q.ListSystemTtyActionsForPermissionHolders(ctx)
+	ttyActions, err := q.ListSystemTtyActionsForDevice(ctx, deviceID)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func ResolveActionsForDevice(ctx context.Context, q Querier, deviceID string) ([
 	//    EXCLUDED must not be able to lock the admin sudoers fragment
 	//    out either. Fail-fast on query error for the same reason as
 	//    the TTY layer (see step 3's failure-mode note).
-	terminalAdminActions, err := q.ListGlobalTerminalAdminActions(ctx)
+	terminalAdminActions, err := q.ListTerminalAdminActionsForDevice(ctx, deviceID)
 	if err != nil {
 		return nil, err
 	}

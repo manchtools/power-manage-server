@@ -879,7 +879,14 @@ ORDER BY created_at DESC;
 -- Filtering rules: skip soft-deleted users, actions, roles, and
 -- groups so stale projection rows can't leak through and surface a
 -- TTY account that should have been cleaned up.
--- name: ListSystemTtyActionsForPermissionHolders :many
+-- name: ListSystemTtyActionsForDevice :many
+-- #7: scope-aware. Returns the tty action of every user who holds
+-- StartTerminal GLOBAL or scoped to a device_group containing $1.
+-- scope_kind/scope_id live on user_roles_projection /
+-- user_group_roles_projection (the S2 columns inside migration 010's
+-- DO-block) — sqlc can't resolve them, so the generated method is
+-- HAND-MAINTAINED; keep it in sync. A user_group-scoped StartTerminal
+-- grant has no device meaning and is excluded.
 SELECT DISTINCT ON (a.id)
        a.id, a.name, a.description, a.action_type, a.desired_state,
        a.params, a.timeout_seconds, a.created_at, a.created_by,
@@ -891,20 +898,30 @@ JOIN actions_projection a
 WHERE u.is_deleted = FALSE
   AND u.system_tty_action_id <> ''
   AND EXISTS (
-    SELECT 1 FROM roles_projection r
-    WHERE r.is_deleted = FALSE
+    SELECT 1
+    FROM roles_projection r
+    JOIN user_roles_projection ur ON ur.role_id = r.id
+    WHERE ur.user_id = u.id AND r.is_deleted = FALSE
       AND 'StartTerminal' = ANY(r.permissions)
       AND (
-        r.id IN (
-          SELECT ur.role_id FROM user_roles_projection ur
-          WHERE ur.user_id = u.id
-        )
-        OR r.id IN (
-          SELECT ugr.role_id FROM user_group_roles_projection ugr
-          JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
-          JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
-          WHERE ugm.user_id = u.id
-        )
+        ur.scope_kind IS NULL
+        OR (ur.scope_kind = 'device_group'
+            AND EXISTS (SELECT 1 FROM device_group_members_projection m
+                        WHERE m.group_id = ur.scope_id AND m.device_id = $1))
+      )
+    UNION ALL
+    SELECT 1
+    FROM roles_projection r
+    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+    JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+    WHERE ugm.user_id = u.id AND r.is_deleted = FALSE
+      AND 'StartTerminal' = ANY(r.permissions)
+      AND (
+        ugr.scope_kind IS NULL
+        OR (ugr.scope_kind = 'device_group'
+            AND EXISTS (SELECT 1 FROM device_group_members_projection m
+                        WHERE m.group_id = ugr.scope_id AND m.device_id = $1))
       )
   );
 
@@ -917,19 +934,30 @@ WHERE u.is_deleted = FALSE
 -- pm-tty-* operators get their sudoers fragment regardless of
 -- assignment.
 --
--- #70 ships with the two GLOBAL rows. #7 extends this design by adding
--- per-scope variants; that PR will replace the IN-list filter with a
--- scope-aware join. The shape of this query is intentionally simple
--- so the #7 diff is isolated to the WHERE clause.
--- name: ListGlobalTerminalAdminActions :many
+-- #70 ships with the two GLOBAL rows. #7 extends this to per-scope
+-- actions: the two :global rows reach every device, PLUS any
+-- system:terminal-admin-{limited,full}:<deviceGroupID> whose group
+-- contains $1. split_part(name,':',3) extracts the device-group id
+-- (ULIDs are colon-free).
+-- name: ListTerminalAdminActionsForDevice :many
 SELECT id, name, description, action_type, desired_state,
        params, timeout_seconds, created_at, created_by,
        is_deleted, projection_version,
        signature, params_canonical, schedule
 FROM actions_projection
 WHERE is_deleted = FALSE
-  AND name IN ('system:terminal-admin-limited:global',
-               'system:terminal-admin-full:global');
+  AND (
+    name IN ('system:terminal-admin-limited:global',
+             'system:terminal-admin-full:global')
+    OR (
+      (name LIKE 'system:terminal-admin-limited:%'
+        OR name LIKE 'system:terminal-admin-full:%')
+      AND split_part(name, ':', 3) IN (
+        SELECT m.group_id FROM device_group_members_projection m
+        WHERE m.device_id = $1
+      )
+    )
+  );
 
 -- name: ListScopedTerminalAdminActionNames :many
 -- Names of every PER-SCOPE terminal-admin action (excluding the two
