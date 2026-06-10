@@ -11,7 +11,10 @@ SELECT * FROM roles_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 O
 SELECT count(*) FROM roles_projection WHERE is_deleted = FALSE;
 
 -- name: GetUserRoles :many
-SELECT r.* FROM roles_projection r
+-- DISTINCT because a role can now be granted to a user multiple times at
+-- different scopes (#7); this de-duplicated, scope-blind set backs the
+-- legacy User.roles field. The per-grant view is GetUserRoleGrants.
+SELECT DISTINCT r.* FROM roles_projection r
 JOIN user_roles_projection ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.is_deleted = FALSE
 ORDER BY r.name;
@@ -45,6 +48,44 @@ SELECT grants.permission, grants.scope_kind, grants.scope_id FROM (
     WHERE ugm.user_id = $1 AND r.is_deleted = FALSE
 ) grants;
 
+-- name: GetUserRoleGrants :many
+-- #7 scoped-grant round-trip. Returns the user's DIRECTLY-assigned role
+-- grants WITH each grant's scope (NOT de-duplicated — the same role
+-- granted globally and scoped to a device group yields two rows), and
+-- resolves scope_name from the device-/user-group projection (COALESCE to
+-- '' when unscoped or the group was deleted). Drives User.role_grants for
+-- scoped-grant display + revocation. Hand-maintained: scope_kind/scope_id
+-- live in migration 010's DO-block, which sqlc cannot resolve (#336).
+SELECT r.id, r.name, r.description, r.permissions, r.is_system,
+       r.created_at, r.created_by, r.updated_at,
+       ur.scope_kind, ur.scope_id,
+       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
+FROM roles_projection r
+JOIN user_roles_projection ur ON ur.role_id = r.id
+LEFT JOIN device_groups_projection dg
+       ON ur.scope_kind = 'device_group' AND dg.id = ur.scope_id AND dg.is_deleted = FALSE
+LEFT JOIN user_groups_projection ug
+       ON ur.scope_kind = 'user_group' AND ug.id = ur.scope_id AND ug.is_deleted = FALSE
+WHERE ur.user_id = $1 AND r.is_deleted = FALSE
+ORDER BY r.name, ur.scope_id NULLS FIRST;
+
+-- name: GetUserGroupRoleGrants :many
+-- #7 scoped-grant round-trip for a user group's own role grants. Same
+-- shape + scope_name resolution as GetUserRoleGrants; drives
+-- UserGroup.role_grants. Hand-maintained (DO-block scope columns).
+SELECT r.id, r.name, r.description, r.permissions, r.is_system,
+       r.created_at, r.created_by, r.updated_at,
+       ugr.scope_kind, ugr.scope_id,
+       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
+FROM roles_projection r
+JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+LEFT JOIN device_groups_projection dg
+       ON ugr.scope_kind = 'device_group' AND dg.id = ugr.scope_id AND dg.is_deleted = FALSE
+LEFT JOIN user_groups_projection ug
+       ON ugr.scope_kind = 'user_group' AND ug.id = ugr.scope_id AND ug.is_deleted = FALSE
+WHERE ugr.group_id = $1 AND r.is_deleted = FALSE
+ORDER BY r.name, ugr.scope_id NULLS FIRST;
+
 -- name: CountUsersWithRole :one
 SELECT count(*) FROM user_roles_projection WHERE role_id = $1;
 
@@ -53,6 +94,15 @@ SELECT user_id FROM user_roles_projection WHERE role_id = $1;
 
 -- name: UserHasRole :one
 SELECT EXISTS(SELECT 1 FROM user_roles_projection WHERE user_id = $1 AND role_id = $2) AS has_role;
+
+-- name: UserHasUnscopedRole :one
+-- Scope-aware variant: does the user hold this role as an UNSCOPED
+-- (global) grant specifically? The assign-role redundancy pre-check uses
+-- this so an unscoped assign isn't dropped when only a SCOPED grant of the
+-- same role exists (#7 grant independence). Hand-maintained: scope_id is a
+-- migration-010 DO-block column sqlc cannot resolve (#336).
+SELECT EXISTS(SELECT 1 FROM user_roles_projection
+              WHERE user_id = $1 AND role_id = $2 AND scope_id IS NULL) AS has_role;
 
 -- name: UserHasScopedRole :one
 -- Existence of a SPECIFIC (user, role, scope) grant. IS NOT DISTINCT

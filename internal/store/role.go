@@ -27,6 +27,20 @@ type ListRolesFilter struct {
 	Offset int32
 }
 
+// RoleGrant is a single, scoped role assignment (#7). Unlike
+// ListUserRoles (de-duplicated by role id), a RoleGrant preserves the
+// grant's scope, so the same role granted both globally and scoped to a
+// device group appears as two grants. ScopeKind is "" for an unscoped
+// (global) grant; otherwise "device_group" or "user_group", with ScopeID
+// the group id and ScopeName its resolved display name ("" when unscoped
+// or the group was deleted).
+type RoleGrant struct {
+	Role      Role
+	ScopeKind string
+	ScopeID   string
+	ScopeName string
+}
+
 // RoleRepo reads role definitions and per-user role membership from
 // the projection. Writes (RoleCreated / RoleUpdated / RoleDeleted /
 // UserRoleAssigned / UserRoleRevoked) flow through the event store.
@@ -55,6 +69,17 @@ type RoleRepo interface {
 	// directly and via groups, deduplicated. Empty slice when the
 	// user has no roles.
 	ListUserRoles(ctx context.Context, userID string) ([]Role, error)
+
+	// ListUserRoleGrants returns the user's DIRECTLY-assigned role
+	// grants WITH each grant's scope (#7), not de-duplicated — the same
+	// role granted globally and scoped to a device group yields two
+	// grants. Empty slice when the user has no direct grants.
+	ListUserRoleGrants(ctx context.Context, userID string) ([]RoleGrant, error)
+
+	// ListUserGroupRoleGrants returns a user group's role grants WITH
+	// each grant's scope (#7), not de-duplicated. Empty slice when the
+	// group has no role grants.
+	ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]RoleGrant, error)
 
 	// UserHasRole reports whether the user has the given role
 	// assigned, either directly or via a group membership.

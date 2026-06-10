@@ -118,7 +118,7 @@ func (h *UserGroupHandler) CreateUserGroup(ctx context.Context, req *connect.Req
 	}
 
 	return connect.NewResponse(&pm.CreateUserGroupResponse{
-		Group: userGroupToProto(group, nil, false),
+		Group: userGroupToProto(group, nil, nil, false),
 	}), nil
 }
 
@@ -155,7 +155,7 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.GetUserGroupResponse{
-		Group:   userGroupToProto(group, roles, isScimManaged),
+		Group:   userGroupToProto(group, roles, h.userGroupRoleGrants(ctx, group.ID), isScimManaged),
 		Members: protoMembers,
 	}), nil
 }
@@ -187,7 +187,7 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 	for i, g := range groups {
 		roles, _ := h.store.Queries().GetUserGroupRoles(ctx, g.ID)
 		isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, g.ID)
-		protoGroups[i] = userGroupToProto(g, roles, isScimManaged)
+		protoGroups[i] = userGroupToProto(g, roles, h.userGroupRoleGrants(ctx, g.ID), isScimManaged)
 	}
 
 	return connect.NewResponse(&pm.ListUserGroupsResponse{
@@ -237,7 +237,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.GroupId)
 
 	return connect.NewResponse(&pm.UpdateUserGroupResponse{
-		Group: userGroupToProto(updated, roles, isScimManaged),
+		Group: userGroupToProto(updated, roles, h.userGroupRoleGrants(ctx, updated.ID), isScimManaged),
 	}), nil
 }
 
@@ -285,7 +285,7 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.UpdateUserGroupResponse{
-		Group: userGroupToProto(updated, roles, isScimManaged),
+		Group: userGroupToProto(updated, roles, h.userGroupRoleGrants(ctx, updated.ID), isScimManaged),
 	}), nil
 }
 
@@ -669,7 +669,7 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	for i, g := range groups {
 		roles, _ := h.store.Queries().GetUserGroupRoles(ctx, g.ID)
 		isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, g.ID)
-		protoGroups[i] = userGroupToProto(g, roles, isScimManaged)
+		protoGroups[i] = userGroupToProto(g, roles, h.userGroupRoleGrants(ctx, g.ID), isScimManaged)
 	}
 
 	return connect.NewResponse(&pm.ListUserGroupsForUserResponse{
@@ -741,7 +741,7 @@ func (h *UserGroupHandler) UpdateUserGroupQuery(ctx context.Context, req *connec
 	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
 
 	return connect.NewResponse(&pm.UpdateUserGroupQueryResponse{
-		Group: userGroupToProto(group, roles, isScimManaged),
+		Group: userGroupToProto(group, roles, h.userGroupRoleGrants(ctx, group.ID), isScimManaged),
 	}), nil
 }
 
@@ -832,7 +832,7 @@ func (h *UserGroupHandler) EvaluateDynamicUserGroup(ctx context.Context, req *co
 	}
 
 	return connect.NewResponse(&pm.EvaluateDynamicUserGroupResponse{
-		Group:        userGroupToProto(group, roles, isScimManaged),
+		Group:        userGroupToProto(group, roles, h.userGroupRoleGrants(ctx, group.ID), isScimManaged),
 		UsersAdded:   usersAdded,
 		UsersRemoved: usersRemoved,
 	}), nil
@@ -888,8 +888,11 @@ func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context
 	return firstErr
 }
 
-// userGroupToProto converts a database user group projection to a protobuf UserGroup.
-func userGroupToProto(g store.UserGroup, roles []db.RolesProjection, isScimManaged bool) *pm.UserGroup {
+// userGroupToProto converts a database user group projection to a protobuf
+// UserGroup. roles is the scope-blind, de-duplicated role set (kept for
+// backward compatibility); grants is the per-grant view with each grant's
+// scope (#7), used for scoped-grant display + revocation.
+func userGroupToProto(g store.UserGroup, roles []db.RolesProjection, grants []store.RoleGrant, isScimManaged bool) *pm.UserGroup {
 	group := &pm.UserGroup{
 		Id:                g.ID,
 		Name:              g.Name,
@@ -922,7 +925,23 @@ func userGroupToProto(g store.UserGroup, roles []db.RolesProjection, isScimManag
 		}))
 	}
 
+	for _, g := range grants {
+		group.RoleGrants = append(group.RoleGrants, roleGrantToProto(g))
+	}
+
 	return group
+}
+
+// userGroupRoleGrants fetches a group's scoped role grants for
+// userGroupToProto, swallowing the error to nil (role_grants is a
+// best-effort enrichment, like the de-duplicated roles fetch).
+func (h *UserGroupHandler) userGroupRoleGrants(ctx context.Context, groupID string) []store.RoleGrant {
+	grants, err := h.store.Repos().Role.ListUserGroupRoleGrants(ctx, groupID)
+	if err != nil {
+		h.logger.Warn("failed to list user group role grants for proto enrichment", "group_id", groupID, "error", err)
+		return nil
+	}
+	return grants
 }
 
 // Suppress unused import warning
