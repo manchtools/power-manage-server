@@ -137,9 +137,21 @@ func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
+	// Owner-scope (:assigned) governs the self-service tier. For the
+	// unrestricted tier (ownerScope == nil) apply the #7 device-group
+	// scope: a device-group-scoped admin may only read devices in their
+	// groups. Checked before the read so an out-of-scope id is denied,
+	// not leaked via NotFound-vs-PermissionDenied. (#7 S6)
+	ownerScope := userFilterID(ctx, "GetDevice")
+	if ownerScope == nil {
+		if err := auth.EnforceDeviceScope(ctx, newScopeResolver(h.store), "GetDevice", req.Msg.Id); err != nil {
+			return nil, err
+		}
+	}
+
 	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
 		ID:         req.Msg.Id,
-		OwnerScope: userFilterID(ctx, "GetDevice"),
+		OwnerScope: ownerScope,
 	})
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
@@ -243,6 +255,12 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	// #7 device-group scope: a scoped admin may only delete devices in
+	// their groups (DeleteDevice has no :assigned tier — admin-only).
+	if err := auth.EnforceDeviceScope(ctx, newScopeResolver(h.store), "DeleteDevice", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -475,6 +493,12 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	// #7 device-group scope: a scoped admin may only set the interval on
+	// devices in their groups (admin-only handler, no :assigned tier).
+	if err := auth.EnforceDeviceScope(ctx, newScopeResolver(h.store), "SetDeviceSyncInterval", req.Msg.Id); err != nil {
 		return nil, err
 	}
 

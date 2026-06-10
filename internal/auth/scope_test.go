@@ -241,3 +241,37 @@ func TestEnforceUnscopedGrantAuthority(t *testing.T) {
 		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
 	})
 }
+
+func TestEnforceDeviceGroupScope(t *testing.T) {
+	t.Run("unauthenticated", func(t *testing.T) {
+		err := EnforceDeviceGroupScope(context.Background(), "RenameDeviceGroup", "dg1")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, codeOf(err))
+	})
+	t.Run("global grant may act on any group", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "RenameDeviceGroup"})
+		assert.NoError(t, EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", "dg-anything"))
+	})
+	t.Run("scoped grant may act on its own group (first-class id match)", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "RenameDeviceGroup", ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		assert.NoError(t, EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", "dg1"))
+	})
+	t.Run("scoped grant may NOT act on a different group", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "RenameDeviceGroup", ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		err := EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", "dg2")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+	t.Run("a user_group-scoped grant grants no device-group access", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "RenameDeviceGroup", ScopeKind: ScopeKindUserGroup, ScopeID: "ug1"})
+		err := EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", "ug1")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+	t.Run("no grant for the permission is denied", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "Other"})
+		err := EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", "dg1")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+}

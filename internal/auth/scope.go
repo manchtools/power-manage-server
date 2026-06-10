@@ -117,6 +117,30 @@ func EnforceDeviceScope(ctx context.Context, resolver ScopeResolver, permission,
 	return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 }
 
+// EnforceDeviceGroupScope authorizes an action on a device GROUP keyed by
+// its own id (e.g. RenameDeviceGroup, SetDeviceGroupMaintenanceWindow).
+// Unlike EnforceDeviceScope, the scope is matched FIRST-CLASS against the
+// group id itself — a caller holding `permission` scoped to device_group
+// X may act on X directly — so no ScopeResolver / membership lookup is
+// needed. Allows when the caller holds `permission` unscoped (global) OR
+// scoped to groupID; denies otherwise (including held only via a
+// user_group scope). #7 S6.
+func EnforceDeviceGroupScope(ctx context.Context, permission, groupID string) error {
+	if _, ok := UserFromContext(ctx); !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	f := DeviceScopeFilterFor(ctx, permission)
+	if f.Global {
+		return nil
+	}
+	for _, id := range f.GroupIDs {
+		if id == groupID {
+			return nil
+		}
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+}
+
 // EnforceUserScope authorizes a user-target action. It allows when the
 // caller holds `permission` unscoped OR scoped to a user group that
 // contains targetUserID; otherwise it denies.

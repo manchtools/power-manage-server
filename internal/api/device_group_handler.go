@@ -121,6 +121,13 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
+	// #7 device-group scope: first-class match on the group id (a scoped
+	// admin may act on the groups in their scope). Checked before the
+	// read so an out-of-scope id isn't leaked via NotFound.
+	if err := auth.EnforceDeviceGroupScope(ctx, "GetDeviceGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
@@ -219,6 +226,11 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	// #7 device-group scope: first-class match on the group id.
+	if err := auth.EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
@@ -253,6 +265,11 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		return nil, err
 	}
 
+	// #7 device-group scope: first-class match on the group id.
+	if err := auth.EnforceDeviceGroupScope(ctx, "UpdateDeviceGroupDescription", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
@@ -284,6 +301,11 @@ func (h *DeviceGroupHandler) DeleteDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	// #7 device-group scope: first-class match on the group id.
+	if err := auth.EnforceDeviceGroupScope(ctx, "DeleteDeviceGroup", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -574,6 +596,11 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		return nil, err
 	}
 
+	// #7 device-group scope: first-class match on the group id.
+	if err := auth.EnforceDeviceGroupScope(ctx, "SetDeviceGroupSyncInterval", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Validate interval (0 = default, max 1440 = 24 hours)
 	if req.Msg.SyncIntervalMinutes < 0 || req.Msg.SyncIntervalMinutes > 1440 {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "sync interval must be between 0 and 1440 minutes")
@@ -620,6 +647,11 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	// #7 device-group scope: first-class match on the group id.
+	if err := auth.EnforceDeviceGroupScope(ctx, "SetDeviceGroupMaintenanceWindow", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
