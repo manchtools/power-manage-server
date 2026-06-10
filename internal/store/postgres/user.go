@@ -67,6 +67,33 @@ func (u *User) Permissions(ctx context.Context, userID string) ([]string, error)
 	return perms, nil
 }
 
+func (u *User) ScopedGrants(ctx context.Context, userID string) ([]store.ScopedGrant, error) {
+	rows, err := u.q.GetUserScopedGrants(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("user: scoped grants: %w", err)
+	}
+	grants := make([]store.ScopedGrant, len(rows))
+	for i, r := range rows {
+		grants[i] = store.ScopedGrant{
+			Permission: r.Permission,
+			ScopeKind:  derefString(r.ScopeKind),
+			ScopeID:    derefString(r.ScopeID),
+		}
+	}
+	return grants, nil
+}
+
+// derefString returns the pointed-to string, or "" when the pointer is
+// nil. The scope columns are nullable TEXT (NULL = unscoped/global), and
+// the store contract represents that as an empty string rather than a
+// pointer.
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func (u *User) NextLinuxUID(ctx context.Context) (int32, error) {
 	uid, err := u.q.GetNextLinuxUID(ctx)
 	if err != nil {

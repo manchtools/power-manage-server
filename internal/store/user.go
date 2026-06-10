@@ -69,6 +69,16 @@ type ListUsersFilter struct {
 	Offset int32
 }
 
+// ScopedGrant is one (permission, scope) tuple a user holds. ScopeKind
+// and ScopeID are empty together for an unscoped (global) grant; when
+// set, ScopeKind is one of "device_group" / "user_group" and ScopeID is
+// the group's id. The permission is constrained to that scope (#7 S2b).
+type ScopedGrant struct {
+	Permission string
+	ScopeKind  string
+	ScopeID    string
+}
+
 // UserRepo reads user-projection state. Writes flow through events
 // (UserCreated / UserUpdated / UserDeleted / UserPasswordChanged /
 // UserDisabled / etc.) — there are no Set / Update / Delete methods
@@ -90,6 +100,15 @@ type UserRepo interface {
 	// user, combining direct role permissions with permissions
 	// inherited from user_group memberships.
 	Permissions(ctx context.Context, userID string) ([]string, error)
+
+	// ScopedGrants returns every (permission, scope) tuple the user
+	// holds — from direct role grants AND grants inherited via
+	// user-group membership — carrying each grant's scope. A grant with
+	// no scope (ScopeKind/ScopeID empty) is global. The cascade is a
+	// property of the GRANT: every permission a grant materializes
+	// inherits the grant's scope. Drives the JWT `sgrants` claim and the
+	// auth scope-enforcement primitives (#7 S2b).
+	ScopedGrants(ctx context.Context, userID string) ([]ScopedGrant, error)
 
 	// NextLinuxUID returns the next available Linux UID for new
 	// user provisioning. The underlying query is a SERIAL-style

@@ -147,6 +147,59 @@ func (q *Queries) GetUserPermissions(ctx context.Context, userID string) ([]stri
 	return items, nil
 }
 
+// NOTE: GetUserScopedGrants is HAND-MAINTAINED. sqlc cannot generate it
+// because migration 010 adds scope_kind/scope_id inside a `DO $$` block,
+// which sqlc's schema parser does not read, so it can't resolve those
+// columns as SELECT outputs (sqlc generate errors "column scope_kind
+// does not exist"). sqlc IS lenient on INSERT/DELETE column references
+// (the S2 hand-edited queries), but a SELECT output needs the column
+// type from the catalog. Keep this in sync with the GetUserScopedGrants
+// query in queries/roles.sql by hand. #7 S2b.
+const getUserScopedGrants = `-- name: GetUserScopedGrants :many
+SELECT grants.permission, grants.scope_kind, grants.scope_id FROM (
+    SELECT perm.permission::TEXT AS permission, ur.scope_kind, ur.scope_id
+    FROM roles_projection r
+    JOIN user_roles_projection ur ON ur.role_id = r.id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ur.user_id = $1 AND r.is_deleted = FALSE
+    UNION
+    SELECT perm.permission::TEXT AS permission, ugr.scope_kind, ugr.scope_id
+    FROM roles_projection r
+    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ugm.user_id = $1 AND r.is_deleted = FALSE
+) grants
+`
+
+// GetUserScopedGrantsRow is one (permission, scope) tuple. ScopeKind and
+// ScopeID are nil together for an unscoped (global) grant.
+type GetUserScopedGrantsRow struct {
+	Permission string  `json:"permission"`
+	ScopeKind  *string `json:"scope_kind"`
+	ScopeID    *string `json:"scope_id"`
+}
+
+func (q *Queries) GetUserScopedGrants(ctx context.Context, userID string) ([]GetUserScopedGrantsRow, error) {
+	rows, err := q.db.Query(ctx, getUserScopedGrants, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetUserScopedGrantsRow{}
+	for rows.Next() {
+		var i GetUserScopedGrantsRow
+		if err := rows.Scan(&i.Permission, &i.ScopeKind, &i.ScopeID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getUserRoles = `-- name: GetUserRoles :many
 SELECT r.id, r.name, r.description, r.permissions, r.is_system, r.created_at, r.created_by, r.updated_at, r.is_deleted, r.projection_version FROM roles_projection r
 JOIN user_roles_projection ur ON ur.role_id = r.id
