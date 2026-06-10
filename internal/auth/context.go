@@ -19,6 +19,7 @@ type UserContext struct {
 	ID             string
 	Email          string
 	Permissions    []string
+	ScopedGrants   []ScopedGrant
 	SessionVersion int32
 }
 

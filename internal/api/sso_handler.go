@@ -434,8 +434,12 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
+	scopedGrants, err := resolveScopedGrants(ctx, h.store.Repos().User, user.ID)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve scoped grants")
+	}
 
-	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, user.SessionVersion)
+	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, scopedGrants, user.SessionVersion)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}

@@ -358,11 +358,12 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid token")
 		}
 
-		// Add user context with permissions from JWT
+		// Add user context with permissions + scoped grants from JWT
 		userCtx := &UserContext{
 			ID:             claims.UserID,
 			Email:          claims.Email,
 			Permissions:    claims.Permissions,
+			ScopedGrants:   claims.ScopedGrants,
 			SessionVersion: claims.SessionVersion,
 		}
 		ctx = WithUser(ctx, userCtx)

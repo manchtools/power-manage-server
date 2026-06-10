@@ -21,6 +21,30 @@ SELECT DISTINCT unnest(r.permissions)::TEXT AS permission FROM roles_projection 
 JOIN user_roles_projection ur ON ur.role_id = r.id
 WHERE ur.user_id = $1 AND r.is_deleted = FALSE;
 
+-- name: GetUserScopedGrants :many
+-- Returns every (permission, scope) tuple the user holds — from direct
+-- role grants AND grants inherited via user-group membership — carrying
+-- the grant's (scope_kind, scope_id). Both are NULL for an unscoped
+-- (global) grant. DISTINCT collapses the same permission held at the
+-- same scope via multiple roles. Drives the JWT `sgrants` claim and the
+-- scope-enforcement primitives (#7 S2b). The cascade is a property of
+-- the GRANT: every permission a grant materializes inherits the grant's
+-- scope.
+SELECT grants.permission, grants.scope_kind, grants.scope_id FROM (
+    SELECT perm.permission::TEXT AS permission, ur.scope_kind, ur.scope_id
+    FROM roles_projection r
+    JOIN user_roles_projection ur ON ur.role_id = r.id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ur.user_id = $1 AND r.is_deleted = FALSE
+    UNION
+    SELECT perm.permission::TEXT AS permission, ugr.scope_kind, ugr.scope_id
+    FROM roles_projection r
+    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ugm.user_id = $1 AND r.is_deleted = FALSE
+) grants;
+
 -- name: CountUsersWithRole :one
 SELECT count(*) FROM user_roles_projection WHERE role_id = $1;
 

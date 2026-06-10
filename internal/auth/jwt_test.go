@@ -1,12 +1,26 @@
 package auth
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// decodeJWTPayload base64url-decodes the claims segment of a JWT so a
+// test can assert on the raw wire shape (e.g. an omitempty claim's
+// absence), not just the parsed struct.
+func decodeJWTPayload(t *testing.T, token string) string {
+	t.Helper()
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 3)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	require.NoError(t, err)
+	return string(payload)
+}
 
 func newTestJWTManager() *JWTManager {
 	return NewJWTManager(JWTConfig{
@@ -31,7 +45,7 @@ func TestNewJWTManager_Defaults(t *testing.T) {
 func TestGenerateTokens(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices", "GetUser:self"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices", "GetUser:self"}, nil, 0)
 	require.NoError(t, err)
 
 	assert.NotEmpty(t, pair.AccessToken)
@@ -45,7 +59,7 @@ func TestValidateToken_Access(t *testing.T) {
 	m := newTestJWTManager()
 
 	perms := []string{"ListDevices", "GetUser:self"}
-	pair, err := m.GenerateTokens("user-1", "a@b.com", perms, 5)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", perms, nil, 5)
 	require.NoError(t, err)
 
 	claims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)
@@ -61,10 +75,55 @@ func TestValidateToken_Access(t *testing.T) {
 	assert.NotEmpty(t, claims.ID)
 }
 
+func TestValidateToken_ScopedGrantsRoundTrip(t *testing.T) {
+	m := newTestJWTManager()
+
+	grants := []ScopedGrant{
+		{Permission: "StartTerminal"}, // global
+		{Permission: "StartTerminal", ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"}, // scoped
+		{Permission: "GetUser", ScopeKind: ScopeKindUserGroup, ScopeID: "ug2"},
+	}
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"StartTerminal", "GetUser"}, grants, 0)
+	require.NoError(t, err)
+
+	claims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Equal(t, grants, claims.ScopedGrants, "scoped grants must round-trip through the access token")
+}
+
+// An unscoped user (no scoped grants) gets a token with the claim
+// omitted entirely — backward compatible with pre-#7 tokens.
+func TestValidateToken_NoScopedGrantsOmitsClaim(t *testing.T) {
+	m := newTestJWTManager()
+
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
+	require.NoError(t, err)
+	assert.NotContains(t, decodeJWTPayload(t, pair.AccessToken), "sgrants",
+		"the sgrants claim must be omitted when there are no scoped grants")
+
+	claims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)
+	require.NoError(t, err)
+	assert.Nil(t, claims.ScopedGrants)
+}
+
+// Scoped grants, like permissions, must NOT be embedded in the refresh
+// token.
+func TestValidateToken_RefreshHasNoScopedGrants(t *testing.T) {
+	m := newTestJWTManager()
+
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"StartTerminal"},
+		[]ScopedGrant{{Permission: "StartTerminal", ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"}}, 0)
+	require.NoError(t, err)
+
+	claims, err := m.ValidateToken(pair.RefreshToken, TokenTypeRefresh)
+	require.NoError(t, err)
+	assert.Nil(t, claims.ScopedGrants, "refresh token must not carry scoped grants")
+}
+
 func TestValidateToken_RefreshHasNoPermissions(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	claims, err := m.ValidateToken(pair.RefreshToken, TokenTypeRefresh)
@@ -78,7 +137,7 @@ func TestValidateToken_RefreshHasNoPermissions(t *testing.T) {
 func TestValidateToken_WrongType(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	// Access token validated as refresh should fail
@@ -96,7 +155,7 @@ func TestValidateToken_WrongSecret(t *testing.T) {
 	m1 := newTestJWTManager()
 	m2 := NewJWTManager(JWTConfig{Secret: []byte("different-secret")})
 
-	pair, err := m1.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m1.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	_, err = m2.ValidateToken(pair.AccessToken, TokenTypeAccess)
@@ -110,7 +169,7 @@ func TestValidateToken_Expired(t *testing.T) {
 		RefreshTokenExpiry: 1 * time.Millisecond,
 	})
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	time.Sleep(10 * time.Millisecond)
@@ -132,7 +191,7 @@ func TestValidateToken_Garbage(t *testing.T) {
 func TestValidateRefreshToken_Success(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 3)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 3)
 	require.NoError(t, err)
 
 	neverRevoked := func(jti string) (bool, error) { return false, nil }
@@ -149,7 +208,7 @@ func TestValidateRefreshToken_Success(t *testing.T) {
 func TestValidateRefreshToken_Revoked(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	alwaysRevoked := func(jti string) (bool, error) { return true, nil }
@@ -162,7 +221,7 @@ func TestValidateRefreshToken_Revoked(t *testing.T) {
 func TestValidateRefreshToken_WithAccessToken(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	neverRevoked := func(jti string) (bool, error) { return false, nil }
@@ -174,7 +233,7 @@ func TestValidateRefreshToken_WithAccessToken(t *testing.T) {
 func TestValidateRefreshToken_NilCallback(t *testing.T) {
 	m := newTestJWTManager()
 
-	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+	pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 	require.NoError(t, err)
 
 	result, err := m.ValidateRefreshToken(pair.RefreshToken, nil)
@@ -187,7 +246,7 @@ func TestGenerateTokens_UniqueJTIs(t *testing.T) {
 
 	jtis := make(map[string]bool)
 	for i := 0; i < 10; i++ {
-		pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, 0)
+		pair, err := m.GenerateTokens("user-1", "a@b.com", []string{"ListDevices"}, nil, 0)
 		require.NoError(t, err)
 
 		accessClaims, err := m.ValidateToken(pair.AccessToken, TokenTypeAccess)

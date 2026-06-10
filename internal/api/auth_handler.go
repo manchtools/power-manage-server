@@ -93,13 +93,17 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		}), nil
 	}
 
-	// Resolve permissions from DB and embed in JWT
+	// Resolve permissions + scoped grants from DB and embed in JWT
 	permissions, err := h.store.Repos().User.Permissions(ctx, user.ID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
+	scopedGrants, err := resolveScopedGrants(ctx, h.store.Repos().User, user.ID)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve scoped grants")
+	}
 
-	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, user.SessionVersion)
+	tokens, err := h.jwtManager.GenerateTokens(user.ID, user.Email, permissions, scopedGrants, user.SessionVersion)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}
@@ -195,9 +199,13 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
+	scopedGrants, err := resolveScopedGrants(ctx, h.store.Repos().User, result.Claims.UserID)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve scoped grants")
+	}
 
-	// Generate new token pair with fresh permissions
-	tokens, err := h.jwtManager.GenerateTokens(result.Claims.UserID, result.Claims.Email, permissions, result.Claims.SessionVersion)
+	// Generate new token pair with fresh permissions + scoped grants
+	tokens, err := h.jwtManager.GenerateTokens(result.Claims.UserID, result.Claims.Email, permissions, scopedGrants, result.Claims.SessionVersion)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}
@@ -258,4 +266,20 @@ func (h *AuthHandler) GetCurrentUser(ctx context.Context, req *connect.Request[p
 	return connect.NewResponse(&pm.GetCurrentUserResponse{
 		User: protoUser,
 	}), nil
+}
+
+// resolveScopedGrants resolves the user's (permission, scope) grants and
+// maps them to the auth-layer ScopedGrant shape embedded in the JWT
+// `sgrants` claim. Empty result (no scoped grants) is fine — the claim
+// is omitempty, so an unscoped user's token is unchanged (#7 S2b).
+func resolveScopedGrants(ctx context.Context, users store.UserRepo, userID string) ([]auth.ScopedGrant, error) {
+	grants, err := users.ScopedGrants(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]auth.ScopedGrant, len(grants))
+	for i, g := range grants {
+		out[i] = auth.ScopedGrant{Permission: g.Permission, ScopeKind: g.ScopeKind, ScopeID: g.ScopeID}
+	}
+	return out, nil
 }

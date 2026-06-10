@@ -66,7 +66,7 @@ func newControlRPCFixture(t *testing.T) *controlRPCFixture {
 	t.Cleanup(srv.Close)
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
-	tokens, err := jwtManager.GenerateTokens(userID, "admin@example.com", auth.AdminPermissions(), 0)
+	tokens, err := jwtManager.GenerateTokens(userID, "admin@example.com", auth.AdminPermissions(), nil, 0)
 	require.NoError(t, err)
 
 	return &controlRPCFixture{
@@ -92,7 +92,7 @@ func TestControlRPCBoundaryValidationRejectsInvalidRequestBeforeHandler(t *testi
 
 func TestControlRPCBoundaryAuthzStillRunsAfterValidation(t *testing.T) {
 	f := newControlRPCFixture(t)
-	limited, err := f.jwtManager.GenerateTokens("user-no-device-list", "limited@example.com", []string{"GetCurrentUser"}, 0)
+	limited, err := f.jwtManager.GenerateTokens("user-no-device-list", "limited@example.com", []string{"GetCurrentUser"}, nil, 0)
 	require.NoError(t, err)
 
 	req := connect.NewRequest(&pm.ListDevicesRequest{PageSize: 1})
