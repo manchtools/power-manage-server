@@ -34,6 +34,18 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 
 	deviceID := req.Msg.DeviceId
 
+	// Enforce the same assignment/owner scope as GetDevice. Without this any
+	// user could read any device's compliance — including detection-script
+	// stdout/stderr — by supplying an arbitrary device_id (#357). An admin
+	// (unrestricted GetDeviceCompliance) gets a nil filter and sees all; a
+	// scoped user only sees devices assigned to them.
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
+		ID:         deviceID,
+		OwnerScope: userFilterID(ctx, "GetDeviceCompliance"),
+	}); err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
+	}
+
 	results, err := h.store.Repos().Compliance.DeviceResults(ctx, deviceID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to query compliance results")

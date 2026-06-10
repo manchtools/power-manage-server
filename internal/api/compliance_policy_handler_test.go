@@ -15,6 +15,23 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
+// TestGetDeviceCompliancePolicyStatus_RejectsDeviceNotAssignedToCaller pins the
+// #357 fix for the second IDOR site: per-policy compliance status (incl.
+// detection output) was returned for any device_id with no ownership/scope
+// check. A scoped user must be refused a device not assigned to them.
+func TestGetDeviceCompliancePolicyStatus_RejectsDeviceNotAssignedToCaller(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewCompliancePolicyHandler(st, slog.Default())
+	deviceID := testutil.CreateTestDevice(t, st, "policy-status-idor")
+	attacker := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
+	ctx := testutil.UserContext(attacker)
+
+	_, err := h.GetDeviceCompliancePolicyStatus(ctx,
+		connect.NewRequest(&pm.GetDeviceCompliancePolicyStatusRequest{DeviceId: deviceID}))
+	require.Error(t, err, "a user must not read per-policy compliance for a device not assigned to them")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
 // createComplianceShellAction creates a shell action with is_compliance=true
 // and returns its ID. This is needed because AddCompliancePolicyRule validates
 // the action type and params.
