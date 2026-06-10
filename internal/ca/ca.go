@@ -275,3 +275,45 @@ func DeviceIDFromPEM(certPEM []byte) (string, error) {
 
 	return cert.Subject.CommonName, nil
 }
+
+// AssertCSRMatchesCertKey verifies that the CSR's public key equals the
+// certificate's public key. On certificate renewal this is the
+// proof-of-possession: the renewer must hold the private key bound to the cert
+// it presented, which agents do because they reuse their keypair
+// (GenerateCSRFromKey). Without it, certificates are public material — returned
+// at registration and stored in the event log — so anyone who reads a device's
+// cert PEM could submit a CSR for a key they control and mint an impersonation
+// cert bound to that device id (#361).
+func AssertCSRMatchesCertKey(certPEM, csrPEM []byte) error {
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return fmt.Errorf("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse certificate: %w", err)
+	}
+
+	csrBlock, _ := pem.Decode(csrPEM)
+	if csrBlock == nil {
+		return fmt.Errorf("failed to decode CSR PEM")
+	}
+	csr, err := x509.ParseCertificateRequest(csrBlock.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse CSR: %w", err)
+	}
+
+	// crypto.PublicKey for ecdsa/rsa/ed25519 implements Equal; compare via it
+	// rather than re-encoding so a curve/parameter mismatch can't slip through.
+	type equalKey interface {
+		Equal(crypto.PublicKey) bool
+	}
+	certKey, ok := cert.PublicKey.(equalKey)
+	if !ok {
+		return fmt.Errorf("unsupported certificate public key type %T", cert.PublicKey)
+	}
+	if !certKey.Equal(csr.PublicKey) {
+		return fmt.Errorf("CSR public key does not match the current certificate")
+	}
+	return nil
+}

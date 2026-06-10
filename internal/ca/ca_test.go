@@ -69,6 +69,47 @@ func generateCSR(t *testing.T, deviceID string) (csrPEM []byte, key *ecdsa.Priva
 	return csrPEM, key
 }
 
+// csrForKey builds a CSR PEM for deviceID signed by the given key. Unlike
+// generateCSR it lets the caller reuse a key, which is what renewal does.
+func csrForKey(t *testing.T, deviceID string, key *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+}
+
+// TestAssertCSRMatchesCertKey covers the renewal proof-of-possession helper
+// (#361): a renewal CSR is accepted only when its public key equals the current
+// certificate's.
+func TestAssertCSRMatchesCertKey(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	deviceKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	issued, err := c.IssueCertificateFromCSR("device-001", csrForKey(t, "device-001", deviceKey))
+	require.NoError(t, err)
+
+	t.Run("matching key passes", func(t *testing.T) {
+		require.NoError(t, ca.AssertCSRMatchesCertKey(issued.CertPEM, csrForKey(t, "device-001", deviceKey)))
+	})
+	t.Run("mismatched key rejected", func(t *testing.T) {
+		other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		require.NoError(t, err)
+		err = ca.AssertCSRMatchesCertKey(issued.CertPEM, csrForKey(t, "device-001", other))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "does not match")
+	})
+	t.Run("malformed cert PEM rejected", func(t *testing.T) {
+		assert.Error(t, ca.AssertCSRMatchesCertKey([]byte("not a cert"), csrForKey(t, "device-001", deviceKey)))
+	})
+	t.Run("malformed CSR PEM rejected", func(t *testing.T) {
+		assert.Error(t, ca.AssertCSRMatchesCertKey(issued.CertPEM, []byte("not a csr")))
+	})
+}
+
 func TestNewFromPEM(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 
