@@ -10,6 +10,36 @@ import (
 // Permission-based user access
 // ============================================================================
 
+// TestAuthorize_UpdateUserLinuxUsername_AdminOnly pins the #354 fix at the
+// authorization layer: a stock User must NOT be authorized for
+// UpdateUserLinuxUsername, while an admin must be. The interceptor invokes
+// Authorize with an EMPTY ResourceID (it never extracts the target id), so a
+// :self grant would short-circuit to allowed here — which is exactly how the
+// bug let any user rewrite any user's linux_username. The fix removes the
+// :self variant, so the stock User role no longer authorizes the action.
+func TestAuthorize_UpdateUserLinuxUsername_AdminOnly(t *testing.T) {
+	// Stock User: denied (no linux_username permission of any kind).
+	deniedUser := Authorize(AuthzInput{
+		Permissions: DefaultUserPermissions(),
+		SubjectID:   "user-1",
+		Action:      "UpdateUserLinuxUsername",
+		ResourceID:  "", // interceptor shape: target id not threaded in
+	})
+	assert.False(t, deniedUser, "stock User must not be authorized for UpdateUserLinuxUsername")
+
+	// The :self variant being removed from the registry is asserted in
+	// reconcile_test (TestUpdateUserLinuxUsername_IsAdminOnly); here we pin the
+	// authorization outcome for the stock role and the admin.
+
+	// Admin: allowed via the base TargetUser permission.
+	allowedAdmin := Authorize(AuthzInput{
+		Permissions: []string{"UpdateUserLinuxUsername"},
+		SubjectID:   "admin-1",
+		Action:      "UpdateUserLinuxUsername",
+	})
+	assert.True(t, allowedAdmin, "an admin holding UpdateUserLinuxUsername must be authorized")
+}
+
 func TestAuthorize_UnrestrictedPermission(t *testing.T) {
 	allowed := Authorize(AuthzInput{
 		Permissions: []string{"CreateUser", "ListUsers", "DeleteUser"},

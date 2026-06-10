@@ -63,8 +63,13 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteUser", "Users", "Delete users", TargetUser},
 		{"UpdateUserSshSettings", "Users", "Update any user's SSH settings", TargetUser},
 		{"UpdateUserSshSettings:self", "Users", "Update own SSH settings", TargetUnspecified},
+		// linux_username keys pm-tty/sudo account naming on managed devices, so
+		// it is ADMIN-ONLY: there is intentionally NO :self variant (#354). The
+		// interceptor admits any :self holder (Authorize short-circuits :self
+		// when the interceptor passes an empty ResourceID), and the handler did
+		// not enforce self-scope — so a self grant let any user rewrite any
+		// user's linux_username. Only the base TargetUser permission gates it.
 		{"UpdateUserLinuxUsername", "Users", "Change any user's linux username", TargetUser},
-		{"UpdateUserLinuxUsername:self", "Users", "Change own linux username", TargetUnspecified},
 		{"AddUserSshKey", "Users", "Add SSH key to any user", TargetUser},
 		{"AddUserSshKey:self", "Users", "Add own SSH key", TargetUnspecified},
 		{"RemoveUserSshKey", "Users", "Remove SSH key from any user", TargetUser},
@@ -310,7 +315,7 @@ func DefaultUserPermissions() []string {
 		"UnlinkIdentity",
 		"GetDeviceCompliance:assigned",
 		"UpdateUserSshSettings:self",
-		"UpdateUserLinuxUsername:self",
+		// UpdateUserLinuxUsername is admin-only — no :self for the User role (#354).
 		"AddUserSshKey:self",
 		"RemoveUserSshKey:self",
 		"StopTerminal",
