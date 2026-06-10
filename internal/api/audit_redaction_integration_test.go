@@ -67,6 +67,37 @@ func TestListAuditEvents_RedactsActionSecrets(t *testing.T) {
 				},
 			},
 		},
+		{
+			// SERVICE/WIFI were among the leaks #352 found beyond the audit's
+			// list; cover them end-to-end through the real emit path too.
+			name:   "SERVICE unitContent (systemd unit body)",
+			secret: "SENTINEL_SERVICE_8a1f",
+			req: &pm.CreateActionRequest{
+				Name: "service-leak",
+				Type: pm.ActionType_ACTION_TYPE_SERVICE,
+				Params: &pm.CreateActionRequest_Service{
+					Service: &pm.ServiceParams{
+						UnitName:    "test.service",
+						UnitContent: "SENTINEL_SERVICE_8a1f",
+					},
+				},
+			},
+		},
+		{
+			name:   "WIFI psk (WPA pre-shared key)",
+			secret: "SENTINEL_WIFI_8a1f",
+			req: &pm.CreateActionRequest{
+				Name: "wifi-leak",
+				Type: pm.ActionType_ACTION_TYPE_WIFI,
+				Params: &pm.CreateActionRequest_Wifi{
+					Wifi: &pm.WifiParams{
+						Ssid:     "corp",
+						AuthType: pm.WifiAuthType(1),
+						Psk:      "SENTINEL_WIFI_8a1f",
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range cases {
