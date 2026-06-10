@@ -800,13 +800,15 @@ func (h *UserHandler) populateUserIdentityLinks(ctx context.Context, user *pm.Us
 
 // populateUserRoles loads roles for a user and attaches them to the proto User.
 func (h *UserHandler) populateUserRoles(ctx context.Context, user *pm.User) {
+	// roles and role_grants are independent best-effort enrichments — a
+	// failure of one must not suppress the other (CR #345).
 	roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.Id)
 	if err != nil {
 		h.logger.Warn("failed to list user roles for proto enrichment", "user_id", user.Id, "error", err)
-		return
-	}
-	for _, r := range roles {
-		user.Roles = append(user.Roles, roleToProto(r))
+	} else {
+		for _, r := range roles {
+			user.Roles = append(user.Roles, roleToProto(r))
+		}
 	}
 
 	// role_grants carries each DIRECT grant with its scope (#7), the
