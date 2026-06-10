@@ -41,14 +41,28 @@ func issueTestDeviceCert(t *testing.T, certAuth *ca.CA, deviceID string) (certPE
 	cert, err := certAuth.IssueCertificateFromCSR(deviceID, initialCSR)
 	require.NoError(t, err)
 
-	// Generate a new key + CSR for renewal
-	renewKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	require.NoError(t, err)
-	renewCSRDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, renewKey)
+	// Renewal CSR reuses the SAME key — this matches real agent behavior
+	// (cert_rotation.go calls GenerateCSRFromKey on the existing private key)
+	// and is required by the renewal proof-of-possession check (#361): the
+	// renewer must prove possession of the key bound to the current cert.
+	renewCSRDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, deviceKey)
 	require.NoError(t, err)
 	renewCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: renewCSRDER})
 
 	return cert.CertPEM, cert.Fingerprint, renewCSR
+}
+
+// genDeviceCSR builds a renewal CSR for deviceID with a FRESH, independent key
+// — i.e. a request that does NOT possess the current certificate's key. Used to
+// simulate the impersonation attempt the proof-of-possession check rejects.
+func genDeviceCSR(t *testing.T, deviceID string) []byte {
+	t.Helper()
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}, k)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
 // setDeviceCertFingerprint stores a cert fingerprint on a device via event.
@@ -85,6 +99,31 @@ func TestRenewCertificate_Success(t *testing.T) {
 	assert.NotEmpty(t, resp.Msg.Certificate)
 	assert.NotNil(t, resp.Msg.NotAfter)
 	assert.NotEmpty(t, resp.Msg.CaCertificate)
+}
+
+// TestRenewCertificate_RejectsKeyMismatch pins the #361 proof-of-possession
+// fix: a renewal whose CSR public key differs from the current certificate's
+// must be refused. Certificates are public (returned at registration + stored
+// in the event log), so without this an attacker who reads a device's cert PEM
+// could submit a CSR for a key they control and mint an impersonation cert
+// bound to that device id.
+func TestRenewCertificate_RejectsKeyMismatch(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewCertificateHandler(st, certAuth, slog.Default())
+
+	deviceID := testutil.CreateTestDevice(t, st, "renew-mismatch-host")
+	certPEM, fingerprint, _ := issueTestDeviceCert(t, certAuth, deviceID)
+	setDeviceCertFingerprint(t, st, deviceID, fingerprint)
+
+	// Valid current cert + correct fingerprint, but a CSR for a DIFFERENT key.
+	foreignCSR := genDeviceCSR(t, deviceID)
+	_, err := h.RenewCertificate(t.Context(), connect.NewRequest(&pm.RenewCertificateRequest{
+		CurrentCertificate: certPEM,
+		Csr:                foreignCSR,
+	}))
+	require.Error(t, err, "renewal must reject a CSR whose key differs from the current certificate")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
 func TestRenewCertificate_DeviceNotFound(t *testing.T) {

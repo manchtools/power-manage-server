@@ -78,6 +78,17 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
 	}
 
+	// Proof-of-possession: the CSR must carry the SAME public key as the
+	// current certificate. The current cert is an untrusted request field on a
+	// public (non-mTLS) listener and certs are public material, so without this
+	// anyone holding a device's cert PEM could renew it onto a key they control
+	// and impersonate the device (#361). Agents reuse their keypair on renewal,
+	// so this is behavior-compatible.
+	if err := ca.AssertCSRMatchesCertKey(req.Msg.CurrentCertificate, req.Msg.Csr); err != nil {
+		h.logger.Warn("certificate renewal proof-of-possession failed", "device_id", deviceID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "CSR key does not match current certificate")
+	}
+
 	// Sign the new CSR
 	newCert, err := h.ca.IssueCertificateFromCSR(deviceID, req.Msg.Csr)
 	if err != nil {
