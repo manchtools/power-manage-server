@@ -200,6 +200,24 @@ func TestAssignRoleToUser_ScopeAuthorityCheckedBeforeExistence(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
+// Revoking a role the user doesn't have at all is an idempotent no-op
+// (success) — aligned with RevokeRoleFromUserGroup. Pins the parity that
+// CodeRabbit flagged. The wrong-scope case stays FailedPrecondition (see
+// TestRevokeRoleFromUser_ScopeTargeted).
+func TestRevokeRoleFromUser_NotAssignedIsNoop(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewRoleHandler(st, slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	target := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "user")
+	role := testutil.CreateTestRole(t, st, adminID, "Unassigned Role", []string{"ListDevices"})
+
+	_, err := h.RevokeRoleFromUser(ctx, connect.NewRequest(&pm.RevokeRoleFromUserRequest{
+		UserId: target, RoleId: role,
+	}))
+	require.NoError(t, err)
+}
+
 func TestRevokeRoleFromUser_ScopeTargeted(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewRoleHandler(st, slog.Default())

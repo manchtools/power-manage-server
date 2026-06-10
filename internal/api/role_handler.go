@@ -442,8 +442,7 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	} else {
 		// The targeted grant doesn't exist. If the role IS assigned at a
 		// different scope, the caller targeted the wrong grant — surface
-		// that rather than silently no-op (#7 S5). If nothing exists at
-		// all, fall through as an idempotent no-op.
+		// that rather than silently no-op (#7 S5).
 		hasAny, err := h.store.Repos().Role.UserHasRole(ctx, req.Msg.UserId, req.Msg.RoleId)
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
@@ -452,9 +451,13 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeFailedPrecondition,
 				"role is not assigned at the specified scope (it is assigned at a different scope)")
 		}
+		// Nothing assigned anywhere — idempotent no-op: no event, and no
+		// session bump (nothing changed). Matches RevokeRoleFromUserGroup.
+		return connect.NewResponse(&pm.RevokeRoleFromUserResponse{}), nil
 	}
 
-	// Bump user's session version to invalidate cached permissions
+	// A grant was revoked — bump the user's session version to invalidate
+	// cached permissions.
 	if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role revocation")
 	}

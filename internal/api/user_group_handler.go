@@ -597,9 +597,9 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
 	if !hasScoped {
-		// The targeted grant is absent. Distinguish "assigned at a
-		// different scope" (caller targeted the wrong grant) from "not
-		// assigned at all" to surface ambiguity rather than no-op (#7 S5).
+		// The targeted grant is absent. If the role IS assigned at a
+		// different scope, the caller targeted the wrong grant — surface
+		// that rather than silently no-op (#7 S5).
 		hasAny, err := q.UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
 			GroupID: req.Msg.GroupId,
 			RoleID:  req.Msg.RoleId,
@@ -611,7 +611,9 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeFailedPrecondition,
 				"role is not assigned to this group at the specified scope (it is assigned at a different scope)")
 		}
-		return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "user group does not have this role")
+		// Not assigned anywhere — idempotent no-op: no event, and no
+		// session bump (nothing changed). Matches RevokeRoleFromUser.
+		return connect.NewResponse(&pm.RevokeRoleFromUserGroupResponse{}), nil
 	}
 
 	userCtx, err := requireAuth(ctx)
