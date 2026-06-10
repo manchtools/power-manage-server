@@ -218,7 +218,17 @@ services:
       control:
         condition: service_healthy
     volumes:
-      - ./certs:/certs:ro,z
+      # Mount ONLY the files the gateway actually uses (its own mTLS keypair +
+      # the CA cert for verifying peers). The gateway is the public,
+      # agent-facing mTLS endpoint — the most exposed component — and must NOT
+      # have the CA SIGNING key (ca.key) on disk. Mounting the whole ./certs
+      # dir put ca.key in the gateway, so a gateway compromise yielded the CA
+      # private key, which mints arbitrary device certs AND forges action
+      # signatures (the same key signs both). ca.key now lives only in the
+      # control service, which is the CA. (#363)
+      - ./certs/gateway.crt:/certs/gateway.crt:ro,z
+      - ./certs/gateway.key:/certs/gateway.key:ro,z
+      - ./certs/ca.crt:/certs/ca.crt:ro,z
     environment:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
