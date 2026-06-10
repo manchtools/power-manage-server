@@ -802,9 +802,23 @@ func (h *UserHandler) populateUserIdentityLinks(ctx context.Context, user *pm.Us
 func (h *UserHandler) populateUserRoles(ctx context.Context, user *pm.User) {
 	roles, err := h.store.Repos().Role.ListUserRoles(ctx, user.Id)
 	if err != nil {
+		h.logger.Warn("failed to list user roles for proto enrichment", "user_id", user.Id, "error", err)
 		return
 	}
 	for _, r := range roles {
 		user.Roles = append(user.Roles, roleToProto(r))
+	}
+
+	// role_grants carries each DIRECT grant with its scope (#7), the
+	// authoritative source for scoped-grant display + revocation. Group-
+	// inherited roles stay in `roles`/`inherited_roles` only — a scope on
+	// an inherited grant lives on the group, not the user.
+	grants, err := h.store.Repos().Role.ListUserRoleGrants(ctx, user.Id)
+	if err != nil {
+		h.logger.Warn("failed to list user role grants for proto enrichment", "user_id", user.Id, "error", err)
+		return
+	}
+	for _, g := range grants {
+		user.RoleGrants = append(user.RoleGrants, roleGrantToProto(g))
 	}
 }

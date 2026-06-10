@@ -319,12 +319,15 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		}
 
 		// Unscoped grants are unique per (user, role) — skip a redundant
-		// re-assign. Scoped grants skip the pre-check: the projector's
-		// INSERT ... ON CONFLICT DO NOTHING (both partial unique indexes)
-		// makes a redundant scoped re-assign an idempotent no-op, and the
-		// 2-tuple UserHasRole can't distinguish scopes.
+		// re-assign. Use the scope-aware UserHasUnscopedRole, NOT the
+		// 2-tuple UserHasRole: an UNSCOPED grant must still be created when
+		// a SCOPED grant of the same role already exists (#7 grants are
+		// independent — global and per-scope coexist). Scoped grants skip
+		// the pre-check entirely: the projector's INSERT ... ON CONFLICT
+		// DO NOTHING (both partial unique indexes) makes a redundant scoped
+		// re-assign an idempotent no-op.
 		if scopeKind == "" {
-			hasRole, err := q.UserHasRole(ctx, db.UserHasRoleParams{
+			hasRole, err := q.UserHasUnscopedRole(ctx, db.UserHasRoleParams{
 				UserID: req.Msg.UserId,
 				RoleID: roleID,
 			})

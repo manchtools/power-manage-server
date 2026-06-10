@@ -70,6 +70,45 @@ func (r *Role) ListUserRoles(ctx context.Context, userID string) ([]store.Role, 
 	return out, nil
 }
 
+func (r *Role) ListUserRoleGrants(ctx context.Context, userID string) ([]store.RoleGrant, error) {
+	rows, err := r.q.GetUserRoleGrants(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("role: list user role grants: %w", err)
+	}
+	return roleGrantsFromRows(rows), nil
+}
+
+func (r *Role) ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]store.RoleGrant, error) {
+	rows, err := r.q.GetUserGroupRoleGrants(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("role: list user group role grants: %w", err)
+	}
+	return roleGrantsFromRows(rows), nil
+}
+
+// roleGrantsFromRows maps the shared scoped-grant Row to store.RoleGrant.
+func roleGrantsFromRows(rows []generated.GetUserRoleGrantsRow) []store.RoleGrant {
+	out := make([]store.RoleGrant, len(rows))
+	for i, row := range rows {
+		out[i] = store.RoleGrant{
+			Role: store.Role{
+				ID:          row.ID,
+				Name:        row.Name,
+				Description: row.Description,
+				Permissions: row.Permissions,
+				IsSystem:    row.IsSystem,
+				CreatedAt:   row.CreatedAt,
+				CreatedBy:   row.CreatedBy,
+				UpdatedAt:   row.UpdatedAt,
+			},
+			ScopeKind: derefString(row.ScopeKind),
+			ScopeID:   derefString(row.ScopeID),
+			ScopeName: row.ScopeName,
+		}
+	}
+	return out
+}
+
 func (r *Role) UserHasRole(ctx context.Context, userID, roleID string) (bool, error) {
 	has, err := r.q.UserHasRole(ctx, generated.UserHasRoleParams{
 		UserID: userID,

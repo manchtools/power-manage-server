@@ -29,6 +29,32 @@ func scopeKindString(k pm.RoleGrantScopeKind) (string, bool) {
 	}
 }
 
+// scopeKindProto maps the store/auth scope-kind string back to the proto
+// enum for response messages (#7). An unrecognized value maps to
+// UNSPECIFIED (displayed as unscoped) — the store only ever persists the
+// two known kinds or "".
+func scopeKindProto(scopeKind string) pm.RoleGrantScopeKind {
+	switch scopeKind {
+	case auth.ScopeKindDeviceGroup:
+		return pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_DEVICE_GROUP
+	case auth.ScopeKindUserGroup:
+		return pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_USER_GROUP
+	default:
+		return pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_UNSPECIFIED
+	}
+}
+
+// roleGrantToProto converts a store.RoleGrant (role + scope) to its proto
+// form for User.role_grants / UserGroup.role_grants (#7).
+func roleGrantToProto(g store.RoleGrant) *pm.RoleGrant {
+	return &pm.RoleGrant{
+		Role:      roleToProto(g.Role),
+		ScopeKind: scopeKindProto(g.ScopeKind),
+		ScopeId:   g.ScopeID,
+		ScopeName: g.ScopeName,
+	}
+}
+
 // scopePtrs converts an empty-or-set (kind, id) pair to the nil-or-set
 // pointer pair the event payloads carry (nil together = unscoped).
 func scopePtrs(scopeKind, scopeID string) (*string, *string) {

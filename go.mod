@@ -106,4 +106,4 @@ require (
 // whatever happens to be in a local ../sdk checkout. Developers who
 // want to iterate against a local SDK override this with a per-dev
 // go.work at their workspace root — see server/README.md for setup.
-replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.4.1-0.20260609134833-73a636cdf6a3
+replace github.com/manchtools/power-manage/sdk => github.com/manchtools/power-manage-sdk v0.4.1-0.20260610161746-5136d8f059b3
