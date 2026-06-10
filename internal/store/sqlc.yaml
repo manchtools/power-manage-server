@@ -2,7 +2,7 @@ version: "2"
 sql:
   - engine: "postgresql"
     queries: "queries/"
-    schema: "migrations/"
+    schema: ["migrations/", "sqlc_schema_overlay.sql"]
     gen:
       go:
         package: "generated"
@@ -12,9 +12,9 @@ sql:
         emit_pointers_for_null_types: true
         sql_package: "pgx/v5"
         overrides:
-          - db_type: "timestamptz"
+          - db_type: "pg_catalog.timestamptz"
             go_type: "time.Time"
-          - db_type: "timestamptz"
+          - db_type: "pg_catalog.timestamptz"
             nullable: true
             go_type:
               import: "time"
