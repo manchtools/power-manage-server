@@ -968,7 +968,7 @@ func (q *Queries) SoftDeleteDeviceProjection(ctx context.Context, arg SoftDelete
 const updateDeviceCertRenewedProjection = `-- name: UpdateDeviceCertRenewedProjection :execrows
 UPDATE devices_projection
 SET cert_fingerprint   = $2,
-    cert_not_after     = COALESCE($4::TIMESTAMPTZ, cert_not_after),
+    cert_not_after     = COALESCE($4, cert_not_after),
     projection_version = $3
 WHERE id = $1
   AND projection_version < $3

@@ -98,7 +98,7 @@ func applyRoleCreated(ctx context.Context, q *store.Queries, e store.PersistedEv
 		IsSystem:          payload.IsSystem,
 		CreatedAt:         e.OccurredAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -117,7 +117,7 @@ func applyRoleUpdated(ctx context.Context, q *store.Queries, e store.PersistedEv
 		Description:       payload.Description,
 		Permissions:       derefSlice(payload.Permissions),
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -125,7 +125,7 @@ func applyRoleDeleted(ctx context.Context, q *store.Queries, e store.PersistedEv
 	n, err := q.SoftDeleteRoleProjection(ctx, db.SoftDeleteRoleProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err

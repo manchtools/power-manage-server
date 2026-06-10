@@ -101,7 +101,7 @@ func applyComplianceResultUpdated(ctx context.Context, q *store.Queries, e store
 		Compliant:         payload.Compliant,
 		DetectionOutput:   []byte(payload.DetectionOutput),
 		CheckedAt:         checkedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func applyComplianceResultRemoved(ctx context.Context, q *store.Queries, e store
 	n, err := q.DeleteComplianceResultProjection(ctx, db.DeleteComplianceResultProjectionParams{
 		DeviceID:          payload.DeviceID,
 		ActionID:          payload.ActionID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err

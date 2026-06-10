@@ -680,7 +680,7 @@ func TestDeviceListener_StaleDeleteReplayDoesNotNukeAssignments(t *testing.T) {
 	listener := projectors.DeviceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "device",
 		StreamID:    deviceID,
 		EventType:   "DeviceDeleted",
@@ -764,7 +764,7 @@ func TestDeviceListener_StaleUnassignedAfterReAssignDoesNotWipeRow(t *testing.T)
 	listener := projectors.DeviceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &stale,
+		SequenceNum: stale,
 		StreamType:  "device",
 		StreamID:    deviceID,
 		EventType:   "DeviceUnassigned",

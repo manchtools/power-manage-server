@@ -83,7 +83,14 @@ func (r *Role) ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]s
 	if err != nil {
 		return nil, fmt.Errorf("role: list user group role grants: %w", err)
 	}
-	return roleGrantsFromRows(rows), nil
+	// sqlc generates a distinct (but structurally identical) row type per
+	// query; convert so both share one mapper. Compile-time safe — drifts
+	// if the two scope-grant queries' column lists ever diverge.
+	conv := make([]generated.GetUserRoleGrantsRow, len(rows))
+	for i, row := range rows {
+		conv[i] = generated.GetUserRoleGrantsRow(row)
+	}
+	return roleGrantsFromRows(conv), nil
 }
 
 // roleGrantsFromRows maps the shared scoped-grant Row to store.RoleGrant.

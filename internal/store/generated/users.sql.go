@@ -283,7 +283,7 @@ VALUES (
     $2::TEXT,
     $3::TEXT,
     $4::TEXT,
-    $5::TIMESTAMPTZ
+    $5
 )
 ON CONFLICT (user_id, key_id) DO NOTHING
 `
@@ -664,16 +664,16 @@ func (q *Queries) SoftDeleteUserProjection(ctx context.Context, arg SoftDeleteUs
 
 const touchUserUpdatedAt = `-- name: TouchUserUpdatedAt :execrows
 UPDATE users_projection
-SET updated_at         = $1::TIMESTAMPTZ,
+SET updated_at         = $1,
     projection_version = $2
 WHERE id = $3
   AND projection_version < $2
 `
 
 type TouchUserUpdatedAtParams struct {
-	UpdatedAt         time.Time `json:"updated_at"`
-	ProjectionVersion int64     `json:"projection_version"`
-	ID                string    `json:"id"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+	ID                string     `json:"id"`
 }
 
 // Companion write for InsertUserSshKey + DeleteUserSshKey. The PL/pgSQL

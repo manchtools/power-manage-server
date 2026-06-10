@@ -103,7 +103,7 @@ func applyExecutionCreated(ctx context.Context, q *store.Queries, e store.Persis
 		CreatedAt:         &createdAt,
 		CreatedByType:     payload.CreatedByType,
 		CreatedByID:       payload.CreatedByID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -129,7 +129,7 @@ func applyExecutionScheduled(ctx context.Context, q *store.Queries, e store.Pers
 		CreatedAt:         &createdAt,
 		CreatedByType:     payload.CreatedByType,
 		CreatedByID:       payload.CreatedByID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -150,7 +150,7 @@ func applyExecutionDispatched(ctx context.Context, q *store.Queries, e store.Per
 	if _, err := q.UpdateExecutionDispatchedProjection(ctx, db.UpdateExecutionDispatchedProjectionParams{
 		ID:                id,
 		DispatchedAt:      &dispatchedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func applyExecutionStarted(ctx context.Context, q *store.Queries, e store.Persis
 	if _, err := q.UpdateExecutionStartedProjection(ctx, db.UpdateExecutionStartedProjectionParams{
 		ID:                id,
 		StartedAt:         &startedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -193,7 +193,7 @@ func applyExecutionCompleted(ctx context.Context, q *store.Queries, e store.Pers
 		Changed:           payload.Changed,
 		Compliant:         payload.Compliant,
 		DetectionOutput:   payload.DetectionOutput,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -218,7 +218,7 @@ func applyExecutionFailed(ctx context.Context, q *store.Queries, e store.Persist
 		Changed:           payload.Changed,
 		Compliant:         payload.Compliant,
 		DetectionOutput:   payload.DetectionOutput,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -240,7 +240,7 @@ func applyExecutionTimedOut(ctx context.Context, q *store.Queries, e store.Persi
 		Error:             payload.Error,
 		Output:            payload.Output,
 		DurationMs:        payload.DurationMs,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func applyExecutionSkipped(ctx context.Context, q *store.Queries, e store.Persis
 		ID:                payload.ID,
 		CompletedAt:       &completedAt,
 		Error:             payload.Reason,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func applyExecutionCancelled(ctx context.Context, q *store.Queries, e store.Pers
 		ID:                payload.ID,
 		CompletedAt:       &completedAt,
 		Error:             payload.Reason,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}

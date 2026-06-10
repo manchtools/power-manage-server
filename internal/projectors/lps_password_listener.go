@@ -58,7 +58,7 @@ func LpsPasswordListener(st *store.Store, logger *slog.Logger) store.EventListen
 			return
 		}
 
-		projVer := deref(e.SequenceNum)
+		projVer := e.SequenceNum
 
 		if err := st.WithTx(ctx, func(q *store.Queries) error {
 			n, err := q.MarkLpsPasswordsNotCurrent(ctx, db.MarkLpsPasswordsNotCurrentParams{

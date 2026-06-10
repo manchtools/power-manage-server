@@ -331,7 +331,7 @@ func TestComplianceListener_StaleUpdateRejected(t *testing.T) {
 	listener := projectors.ComplianceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "compliance",
 		StreamID:    deviceID + "_" + actionID,
 		EventType:   "ComplianceResultUpdated",
@@ -408,7 +408,7 @@ func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
 	listener := projectors.ComplianceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &staleRemovedSeq,
+		SequenceNum: staleRemovedSeq,
 		StreamType:  "compliance",
 		StreamID:    deviceID + "_" + actionID,
 		EventType:   "ComplianceResultRemoved",

@@ -645,7 +645,7 @@ func TestCompliancePolicyListener_StaleDeleteReplayDoesNotNukeRules(t *testing.T
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,
 		EventType:   "CompliancePolicyDeleted",
@@ -703,7 +703,7 @@ func TestCompliancePolicyListener_StaleRuleAddedDoesNotResurrectRemoved(t *testi
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,
 		EventType:   "CompliancePolicyRuleAdded",
@@ -755,7 +755,7 @@ func TestCompliancePolicyListener_StaleRuleUpdatedDoesNotChangeGrace(t *testing.
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,
 		EventType:   "CompliancePolicyRuleUpdated",

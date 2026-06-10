@@ -77,7 +77,7 @@ func applySCIMGroupMapped(ctx context.Context, q *store.Queries, e store.Persist
 		ScimDisplayName:   payload.SCIMDisplayName,
 		UserGroupID:       payload.UserGroupID,
 		CreatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return fmt.Errorf("upsert scim_group_mapping (mapping_id %s): %w", payload.ID, err)
 	}
@@ -108,7 +108,7 @@ func applySCIMGroupMappingUpdated(ctx context.Context, q *store.Queries, e store
 		ProviderID:        payload.ProviderID,
 		ScimGroupID:       payload.SCIMGroupID,
 		ScimDisplayName:   payload.SCIMDisplayName,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return fmt.Errorf("update scim_group_mapping display_name (provider_id %s, scim_group_id %s): %w",
 			payload.ProviderID, payload.SCIMGroupID, err)

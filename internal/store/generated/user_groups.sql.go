@@ -124,7 +124,7 @@ func (q *Queries) DeleteDynamicUserGroupEvaluationQueueRow(ctx context.Context, 
 const deleteDynamicUserGroupQueueBefore = `-- name: DeleteDynamicUserGroupQueueBefore :exec
 DELETE FROM dynamic_user_group_evaluation_queue
 WHERE group_id = $1::TEXT
-  AND queued_at <= $2::TIMESTAMPTZ
+  AND queued_at <= $2
 `
 
 type DeleteDynamicUserGroupQueueBeforeParams struct {
@@ -1063,10 +1063,6 @@ SELECT EXISTS(
 ) AS has_role
 `
 
-// UserGroupHasScopedRoleParams targets a specific (group, role, scope)
-// grant. ScopeKind/ScopeID nil together = the unscoped grant.
-// Hand-maintained alongside UserGroupHasRole; sync with
-// queries/user_groups.sql by hand (#7 S5).
 type UserGroupHasScopedRoleParams struct {
 	GroupID   string  `json:"group_id"`
 	RoleID    string  `json:"role_id"`
@@ -1074,8 +1070,17 @@ type UserGroupHasScopedRoleParams struct {
 	ScopeID   *string `json:"scope_id"`
 }
 
+// Existence of a SPECIFIC (group, role, scope) grant. NULL-aware via
+// IS NOT DISTINCT FROM: NULL scope params match the unscoped grant.
+// Used by RevokeRoleFromUserGroup to reject revoking a grant that
+// doesn't exist at the targeted scope (server #7 S5).
 func (q *Queries) UserGroupHasScopedRole(ctx context.Context, arg UserGroupHasScopedRoleParams) (bool, error) {
-	row := q.db.QueryRow(ctx, userGroupHasScopedRole, arg.GroupID, arg.RoleID, arg.ScopeKind, arg.ScopeID)
+	row := q.db.QueryRow(ctx, userGroupHasScopedRole,
+		arg.GroupID,
+		arg.RoleID,
+		arg.ScopeKind,
+		arg.ScopeID,
+	)
 	var has_role bool
 	err := row.Scan(&has_role)
 	return has_role, err

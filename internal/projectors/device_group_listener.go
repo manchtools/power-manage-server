@@ -151,7 +151,7 @@ func applyDeviceGroupCreated(ctx context.Context, q *store.Queries, e store.Pers
 		DynamicQuery:      payload.DynamicQuery,
 		CreatedAt:         &createdAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -178,7 +178,7 @@ func applyDeviceGroupRenamed(ctx context.Context, q *store.Queries, e store.Pers
 	if _, err := q.RenameDeviceGroupProjection(ctx, db.RenameDeviceGroupProjectionParams{
 		ID:                payload.ID,
 		Name:              payload.Name,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ func applyDeviceGroupDescriptionUpdated(ctx context.Context, q *store.Queries, e
 	if _, err := q.UpdateDeviceGroupDescriptionProjection(ctx, db.UpdateDeviceGroupDescriptionProjectionParams{
 		ID:                payload.ID,
 		Description:       payload.Description,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func applyDeviceGroupQueryUpdated(ctx context.Context, q *store.Queries, e store
 		ID:                payload.ID,
 		IsDynamic:         payload.IsDynamic,
 		DynamicQuery:      payload.DynamicQuery,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		// pgx surfaces ErrNoRows when the inner UPDATE's version
@@ -256,7 +256,7 @@ func applyDeviceGroupSyncIntervalSet(ctx context.Context, q *store.Queries, e st
 	if _, err := q.UpdateDeviceGroupSyncIntervalProjection(ctx, db.UpdateDeviceGroupSyncIntervalProjectionParams{
 		ID:                  payload.ID,
 		SyncIntervalMinutes: payload.SyncIntervalMinutes,
-		ProjectionVersion:   deref(e.SequenceNum),
+		ProjectionVersion:   e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func applyDeviceGroupMaintenanceWindowSet(ctx context.Context, q *store.Queries,
 	if _, err := q.UpdateDeviceGroupMaintenanceWindowProjection(ctx, db.UpdateDeviceGroupMaintenanceWindowProjectionParams{
 		ID:                payload.ID,
 		MaintenanceWindow: payload.MaintenanceWindow,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -298,7 +298,7 @@ func applyDeviceGroupMemberAdded(ctx context.Context, q *store.Queries, e store.
 	// the user_group port (PR #174).
 	n, err := q.ClaimDeviceGroupForMembership(ctx, db.ClaimDeviceGroupForMembershipParams{
 		ID:                payload.GroupID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -311,7 +311,7 @@ func applyDeviceGroupMemberAdded(ctx context.Context, q *store.Queries, e store.
 		GroupID:           payload.GroupID,
 		DeviceID:          payload.DeviceID,
 		AddedAt:           &addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -328,7 +328,7 @@ func applyDeviceGroupMemberRemoved(ctx context.Context, q *store.Queries, e stor
 	}
 	n, err := q.ClaimDeviceGroupForMembership(ctx, db.ClaimDeviceGroupForMembershipParams{
 		ID:                payload.GroupID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -348,7 +348,7 @@ func applyDeviceGroupMemberRemoved(ctx context.Context, q *store.Queries, e stor
 func applyDeviceGroupDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	n, err := q.SoftDeleteDeviceGroupProjection(ctx, db.SoftDeleteDeviceGroupProjectionParams{
 		ID:                e.StreamID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err

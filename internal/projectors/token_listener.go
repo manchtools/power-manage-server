@@ -47,7 +47,7 @@ func ApplyToken(ctx context.Context, q *store.Queries, e store.PersistedEvent) e
 	if e.StreamType != "token" {
 		return nil
 	}
-	ver := deref(e.SequenceNum)
+	ver := e.SequenceNum
 	switch e.EventType {
 	case string(eventtypes.TokenCreated):
 		return applyTokenCreated(ctx, q, e)
@@ -91,7 +91,7 @@ func applyTokenCreated(ctx context.Context, q *store.Queries, e store.PersistedE
 		CreatedAt:         &e.OccurredAt,
 		CreatedBy:         payload.CreatedBy,
 		OwnerID:           payload.OwnerID,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -106,6 +106,6 @@ func applyTokenRenamed(ctx context.Context, q *store.Queries, e store.PersistedE
 	return q.RenameTokenProjection(ctx, db.RenameTokenProjectionParams{
 		ID:                payload.ID,
 		Name:              payload.Name,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }

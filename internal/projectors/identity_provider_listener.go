@@ -90,7 +90,7 @@ func applyIdentityProviderCreated(ctx context.Context, st *store.Store, logger *
 		GroupMapping:             payload.GroupMapping,
 		CreatedAt:                e.OccurredAt,
 		CreatedBy:                payload.CreatedBy,
-		ProjectionVersion:        deref(e.SequenceNum),
+		ProjectionVersion:        e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to insert IdentityProviderCreated",
 			"event_id", e.ID, "idp_id", payload.ID, "error", err)
@@ -125,7 +125,7 @@ func applyIdentityProviderUpdated(ctx context.Context, st *store.Store, logger *
 		GroupClaim:               payload.GroupClaim,
 		GroupMapping:             payload.GroupMapping,
 		UpdatedAt:                e.OccurredAt,
-		ProjectionVersion:        deref(e.SequenceNum),
+		ProjectionVersion:        e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to apply IdentityProviderUpdated",
 			"event_id", e.ID, "idp_id", payload.ID, "error", err)
@@ -141,7 +141,7 @@ func applyIdentityProviderDeleted(ctx context.Context, st *store.Store, logger *
 		n, err := q.SoftDeleteIdentityProviderProjection(ctx, db.SoftDeleteIdentityProviderProjectionParams{
 			ID:                idpID,
 			UpdatedAt:         e.OccurredAt,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		})
 		if err != nil {
 			return err
@@ -173,7 +173,7 @@ func applyIdentityProviderSCIMEnabled(ctx context.Context, st *store.Store, logg
 		ID:                payload.ID,
 		ScimTokenHash:     payload.ScimTokenHash,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to enable SCIM",
 			"event_id", e.ID, "idp_id", payload.ID, "error", err)
@@ -188,7 +188,7 @@ func applyIdentityProviderSCIMDisabled(ctx context.Context, st *store.Store, log
 		n, err := q.SetIdentityProviderSCIMDisabled(ctx, db.SetIdentityProviderSCIMDisabledParams{
 			ID:                idpID,
 			UpdatedAt:         e.OccurredAt,
-			ProjectionVersion: deref(e.SequenceNum),
+			ProjectionVersion: e.SequenceNum,
 		})
 		if err != nil {
 			return err
@@ -217,7 +217,7 @@ func applyIdentityProviderSCIMTokenRotated(ctx context.Context, st *store.Store,
 		ID:                payload.ID,
 		ScimTokenHash:     payload.ScimTokenHash,
 		UpdatedAt:         e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to rotate SCIM token",
 			"event_id", e.ID, "idp_id", payload.ID, "error", err)
@@ -242,7 +242,7 @@ func applyIdentityLinked(ctx context.Context, st *store.Store, logger *slog.Logg
 		ExternalEmail:     payload.ExternalEmail,
 		ExternalName:      payload.ExternalName,
 		LinkedAt:          e.OccurredAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to upsert identity_link",
 			"event_id", e.ID, "link_id", payload.ID, "error", err)
@@ -266,7 +266,7 @@ func applyIdentityLinkLoginUpdated(ctx context.Context, st *store.Store, logger 
 		LastLoginAt:       &loginAt,
 		ExternalEmail:     payload.ExternalEmail,
 		ExternalName:      payload.ExternalName,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("identity_provider projector: failed to update identity_link login",
 			"event_id", e.ID, "provider_id", payload.ProviderID, "external_id", payload.ExternalID, "error", err)

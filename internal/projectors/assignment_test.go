@@ -473,7 +473,7 @@ func TestAssignmentListener_StaleDeleteReplayDoesNotCascade(t *testing.T) {
 	listener := projectors.AssignmentListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "assignment",
 		StreamID:    asnID,
 		EventType:   "AssignmentDeleted",

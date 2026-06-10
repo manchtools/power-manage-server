@@ -118,7 +118,7 @@ func applyActionSetCreated(ctx context.Context, q *store.Queries, e store.Persis
 		Schedule:          payload.Schedule,
 		CreatedAt:         &e.OccurredAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }
 
@@ -135,7 +135,7 @@ func applyActionSetRenamed(ctx context.Context, q *store.Queries, e store.Persis
 		ID:                payload.ID,
 		Name:              payload.Name,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -155,7 +155,7 @@ func applyActionSetDescriptionUpdated(ctx context.Context, q *store.Queries, e s
 		ID:                payload.ID,
 		Description:       payload.Description,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func applyActionSetScheduleUpdated(ctx context.Context, q *store.Queries, e stor
 		ID:                payload.ID,
 		Schedule:          payload.Schedule,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func applyActionSetMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
 		ID:                payload.SetID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -215,7 +215,7 @@ func applyActionSetMemberAdded(ctx context.Context, q *store.Queries, e store.Pe
 		ActionID:          payload.ActionID,
 		SortOrder:         payload.SortOrder,
 		AddedAt:           &addedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func applyActionSetMemberRemoved(ctx context.Context, q *store.Queries, e store.
 	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
 		ID:                payload.SetID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -265,7 +265,7 @@ func applyActionSetMemberReordered(ctx context.Context, q *store.Queries, e stor
 	n, err := q.ClaimActionSetForMembership(ctx, db.ClaimActionSetForMembershipParams{
 		ID:                payload.SetID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err
@@ -279,7 +279,7 @@ func applyActionSetMemberReordered(ctx context.Context, q *store.Queries, e stor
 		SetID:             payload.SetID,
 		ActionID:          payload.ActionID,
 		SortOrder:         payload.SortOrder,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		return err
 	}
@@ -291,7 +291,7 @@ func applyActionSetDeleted(ctx context.Context, q *store.Queries, e store.Persis
 	n, err := q.SoftDeleteActionSetProjection(ctx, db.SoftDeleteActionSetProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 	if err != nil {
 		return err

@@ -53,7 +53,7 @@ func applyUserRoleAssigned(ctx context.Context, st *store.Store, logger *slog.Lo
 		ScopeID:           payload.ScopeID,
 		AssignedAt:        e.OccurredAt,
 		AssignedBy:        payload.AssignedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("user_role projector: failed to insert UserRoleAssigned",
 			"event_id", e.ID,

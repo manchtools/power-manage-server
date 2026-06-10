@@ -178,7 +178,7 @@ VALUES (
     sqlc.arg(key_id)::TEXT,
     sqlc.narg(public_key)::TEXT,
     sqlc.narg(comment)::TEXT,
-    sqlc.arg(added_at)::TIMESTAMPTZ
+    sqlc.arg(added_at)
 )
 ON CONFLICT (user_id, key_id) DO NOTHING;
 
@@ -189,7 +189,7 @@ ON CONFLICT (user_id, key_id) DO NOTHING;
 -- still wants to mark the user row updated and bump the stale-replay
 -- version. Stale-replay guard via projection_version.
 UPDATE users_projection
-SET updated_at         = sqlc.arg(updated_at)::TIMESTAMPTZ,
+SET updated_at         = sqlc.arg(updated_at),
     projection_version = sqlc.arg(projection_version)
 WHERE id = sqlc.arg(id)
   AND projection_version < sqlc.arg(projection_version);

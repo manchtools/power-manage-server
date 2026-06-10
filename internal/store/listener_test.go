@@ -132,7 +132,7 @@ func TestEventListener_ReceivesPersistedRow(t *testing.T) {
 	assert.Equal(t, "PersistProbe", captured.EventType)
 	require.NotNil(t, captured.SequenceNum,
 		"persisted event must carry a non-nil SequenceNum — listeners depend on it for ordering")
-	assert.Greater(t, *captured.SequenceNum, int64(0))
+	assert.Greater(t, captured.SequenceNum, int64(0))
 	assert.NotZero(t, captured.OccurredAt,
 		"OccurredAt is set server-side; listeners receive the persisted value, not the caller's zero time")
 }

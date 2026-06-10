@@ -297,7 +297,7 @@ DELETE FROM dynamic_user_group_evaluation_queue WHERE group_id = $1;
 -- survives so the next drain pass re-evaluates.
 DELETE FROM dynamic_user_group_evaluation_queue
 WHERE group_id = sqlc.arg(group_id)::TEXT
-  AND queued_at <= sqlc.arg(before_ts)::TIMESTAMPTZ;
+  AND queued_at <= sqlc.arg(before_ts);
 
 -- name: ListDynamicUserGroupQueueBatch :many
 -- Wave C.4: returns the next batch of queued user-group IDs for the

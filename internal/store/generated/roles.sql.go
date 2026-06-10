@@ -121,6 +121,70 @@ func (q *Queries) GetRoleByName(ctx context.Context, name string) (RolesProjecti
 	return i, err
 }
 
+const getUserGroupRoleGrants = `-- name: GetUserGroupRoleGrants :many
+SELECT r.id, r.name, r.description, r.permissions, r.is_system,
+       r.created_at, r.created_by, r.updated_at,
+       ugr.scope_kind, ugr.scope_id,
+       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
+FROM roles_projection r
+JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+LEFT JOIN device_groups_projection dg
+       ON ugr.scope_kind = 'device_group' AND dg.id = ugr.scope_id AND dg.is_deleted = FALSE
+LEFT JOIN user_groups_projection ug
+       ON ugr.scope_kind = 'user_group' AND ug.id = ugr.scope_id AND ug.is_deleted = FALSE
+WHERE ugr.group_id = $1 AND r.is_deleted = FALSE
+ORDER BY r.name, ugr.scope_id NULLS FIRST
+`
+
+type GetUserGroupRoleGrantsRow struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Permissions []string   `json:"permissions"`
+	IsSystem    bool       `json:"is_system"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CreatedBy   string     `json:"created_by"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ScopeKind   *string    `json:"scope_kind"`
+	ScopeID     *string    `json:"scope_id"`
+	ScopeName   string     `json:"scope_name"`
+}
+
+// #7 scoped-grant round-trip for a user group's own role grants. Same
+// shape + scope_name resolution as GetUserRoleGrants; drives
+// UserGroup.role_grants. Hand-maintained (DO-block scope columns).
+func (q *Queries) GetUserGroupRoleGrants(ctx context.Context, groupID string) ([]GetUserGroupRoleGrantsRow, error) {
+	rows, err := q.db.Query(ctx, getUserGroupRoleGrants, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetUserGroupRoleGrantsRow{}
+	for rows.Next() {
+		var i GetUserGroupRoleGrantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Permissions,
+			&i.IsSystem,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.UpdatedAt,
+			&i.ScopeKind,
+			&i.ScopeID,
+			&i.ScopeName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getUserPermissions = `-- name: GetUserPermissions :many
 SELECT DISTINCT unnest(r.permissions)::TEXT AS permission FROM roles_projection r
 JOIN user_roles_projection ur ON ur.role_id = r.id
@@ -147,49 +211,64 @@ func (q *Queries) GetUserPermissions(ctx context.Context, userID string) ([]stri
 	return items, nil
 }
 
-// NOTE: GetUserScopedGrants is HAND-MAINTAINED. sqlc cannot generate it
-// because migration 010 adds scope_kind/scope_id inside a `DO $$` block,
-// which sqlc's schema parser does not read, so it can't resolve those
-// columns as SELECT outputs (sqlc generate errors "column scope_kind
-// does not exist"). sqlc IS lenient on INSERT/DELETE column references
-// (the S2 hand-edited queries), but a SELECT output needs the column
-// type from the catalog. Keep this in sync with the GetUserScopedGrants
-// query in queries/roles.sql by hand. #7 S2b.
-const getUserScopedGrants = `-- name: GetUserScopedGrants :many
-SELECT grants.permission, grants.scope_kind, grants.scope_id FROM (
-    SELECT perm.permission::TEXT AS permission, ur.scope_kind, ur.scope_id
-    FROM roles_projection r
-    JOIN user_roles_projection ur ON ur.role_id = r.id
-    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
-    WHERE ur.user_id = $1 AND r.is_deleted = FALSE
-    UNION
-    SELECT perm.permission::TEXT AS permission, ugr.scope_kind, ugr.scope_id
-    FROM roles_projection r
-    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
-    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
-    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
-    WHERE ugm.user_id = $1 AND r.is_deleted = FALSE
-) grants
+const getUserRoleGrants = `-- name: GetUserRoleGrants :many
+SELECT r.id, r.name, r.description, r.permissions, r.is_system,
+       r.created_at, r.created_by, r.updated_at,
+       ur.scope_kind, ur.scope_id,
+       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
+FROM roles_projection r
+JOIN user_roles_projection ur ON ur.role_id = r.id
+LEFT JOIN device_groups_projection dg
+       ON ur.scope_kind = 'device_group' AND dg.id = ur.scope_id AND dg.is_deleted = FALSE
+LEFT JOIN user_groups_projection ug
+       ON ur.scope_kind = 'user_group' AND ug.id = ur.scope_id AND ug.is_deleted = FALSE
+WHERE ur.user_id = $1 AND r.is_deleted = FALSE
+ORDER BY r.name, ur.scope_id NULLS FIRST
 `
 
-// GetUserScopedGrantsRow is one (permission, scope) tuple. ScopeKind and
-// ScopeID are nil together for an unscoped (global) grant.
-type GetUserScopedGrantsRow struct {
-	Permission string  `json:"permission"`
-	ScopeKind  *string `json:"scope_kind"`
-	ScopeID    *string `json:"scope_id"`
+type GetUserRoleGrantsRow struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	Permissions []string   `json:"permissions"`
+	IsSystem    bool       `json:"is_system"`
+	CreatedAt   time.Time  `json:"created_at"`
+	CreatedBy   string     `json:"created_by"`
+	UpdatedAt   *time.Time `json:"updated_at"`
+	ScopeKind   *string    `json:"scope_kind"`
+	ScopeID     *string    `json:"scope_id"`
+	ScopeName   string     `json:"scope_name"`
 }
 
-func (q *Queries) GetUserScopedGrants(ctx context.Context, userID string) ([]GetUserScopedGrantsRow, error) {
-	rows, err := q.db.Query(ctx, getUserScopedGrants, userID)
+// #7 scoped-grant round-trip. Returns the user's DIRECTLY-assigned role
+// grants WITH each grant's scope (NOT de-duplicated — the same role
+// granted globally and scoped to a device group yields two rows), and
+// resolves scope_name from the device-/user-group projection (COALESCE to
+// ” when unscoped or the group was deleted). Drives User.role_grants for
+// scoped-grant display + revocation. Hand-maintained: scope_kind/scope_id
+// live in migration 010's DO-block, which sqlc cannot resolve (#336).
+func (q *Queries) GetUserRoleGrants(ctx context.Context, userID string) ([]GetUserRoleGrantsRow, error) {
+	rows, err := q.db.Query(ctx, getUserRoleGrants, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetUserScopedGrantsRow{}
+	items := []GetUserRoleGrantsRow{}
 	for rows.Next() {
-		var i GetUserScopedGrantsRow
-		if err := rows.Scan(&i.Permission, &i.ScopeKind, &i.ScopeID); err != nil {
+		var i GetUserRoleGrantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Permissions,
+			&i.IsSystem,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.UpdatedAt,
+			&i.ScopeKind,
+			&i.ScopeID,
+			&i.ScopeName,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -207,6 +286,9 @@ WHERE ur.user_id = $1 AND r.is_deleted = FALSE
 ORDER BY r.name
 `
 
+// DISTINCT because a role can now be granted to a user multiple times at
+// different scopes (#7); this de-duplicated, scope-blind set backs the
+// legacy User.roles field. The per-grant view is GetUserRoleGrants.
 func (q *Queries) GetUserRoles(ctx context.Context, userID string) ([]RolesProjection, error) {
 	rows, err := q.db.Query(ctx, getUserRoles, userID)
 	if err != nil {
@@ -238,93 +320,47 @@ func (q *Queries) GetUserRoles(ctx context.Context, userID string) ([]RolesProje
 	return items, nil
 }
 
-const getUserRoleGrants = `-- name: GetUserRoleGrants :many
-SELECT r.id, r.name, r.description, r.permissions, r.is_system,
-       r.created_at, r.created_by, r.updated_at,
-       ur.scope_kind, ur.scope_id,
-       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
-FROM roles_projection r
-JOIN user_roles_projection ur ON ur.role_id = r.id
-LEFT JOIN device_groups_projection dg
-       ON ur.scope_kind = 'device_group' AND dg.id = ur.scope_id AND dg.is_deleted = FALSE
-LEFT JOIN user_groups_projection ug
-       ON ur.scope_kind = 'user_group' AND ug.id = ur.scope_id AND ug.is_deleted = FALSE
-WHERE ur.user_id = $1 AND r.is_deleted = FALSE
-ORDER BY r.name, ur.scope_id NULLS FIRST
+const getUserScopedGrants = `-- name: GetUserScopedGrants :many
+SELECT grants.permission, grants.scope_kind, grants.scope_id FROM (
+    SELECT perm.permission::TEXT AS permission, ur.scope_kind, ur.scope_id
+    FROM roles_projection r
+    JOIN user_roles_projection ur ON ur.role_id = r.id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ur.user_id = $1 AND r.is_deleted = FALSE
+    UNION
+    SELECT perm.permission::TEXT AS permission, ugr.scope_kind, ugr.scope_id
+    FROM roles_projection r
+    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+    CROSS JOIN LATERAL unnest(r.permissions) AS perm(permission)
+    WHERE ugm.user_id = $1 AND r.is_deleted = FALSE
+) grants
 `
 
-// GetUserRoleGrantsRow is one (role, scope) grant. ScopeKind and ScopeID
-// are nil together for an unscoped (global) grant; ScopeName is the
-// resolved group display name (” when unscoped or the group is deleted).
-// Hand-maintained — scope_kind/scope_id live in migration 010's DO-block,
-// which sqlc cannot resolve (#336).
-type GetUserRoleGrantsRow struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Description string     `json:"description"`
-	Permissions []string   `json:"permissions"`
-	IsSystem    bool       `json:"is_system"`
-	CreatedAt   time.Time  `json:"created_at"`
-	CreatedBy   string     `json:"created_by"`
-	UpdatedAt   *time.Time `json:"updated_at"`
-	ScopeKind   *string    `json:"scope_kind"`
-	ScopeID     *string    `json:"scope_id"`
-	ScopeName   string     `json:"scope_name"`
+type GetUserScopedGrantsRow struct {
+	Permission string  `json:"permission"`
+	ScopeKind  *string `json:"scope_kind"`
+	ScopeID    *string `json:"scope_id"`
 }
 
-func (q *Queries) GetUserRoleGrants(ctx context.Context, userID string) ([]GetUserRoleGrantsRow, error) {
-	rows, err := q.db.Query(ctx, getUserRoleGrants, userID)
+// Returns every (permission, scope) tuple the user holds — from direct
+// role grants AND grants inherited via user-group membership — carrying
+// the grant's (scope_kind, scope_id). Both are NULL for an unscoped
+// (global) grant. DISTINCT collapses the same permission held at the
+// same scope via multiple roles. Drives the JWT `sgrants` claim and the
+// scope-enforcement primitives (#7 S2b). The cascade is a property of
+// the GRANT: every permission a grant materializes inherits the grant's
+// scope.
+func (q *Queries) GetUserScopedGrants(ctx context.Context, userID string) ([]GetUserScopedGrantsRow, error) {
+	rows, err := q.db.Query(ctx, getUserScopedGrants, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetUserRoleGrantsRow{}
+	items := []GetUserScopedGrantsRow{}
 	for rows.Next() {
-		var i GetUserRoleGrantsRow
-		if err := rows.Scan(
-			&i.ID, &i.Name, &i.Description, &i.Permissions, &i.IsSystem,
-			&i.CreatedAt, &i.CreatedBy, &i.UpdatedAt,
-			&i.ScopeKind, &i.ScopeID, &i.ScopeName,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getUserGroupRoleGrants = `-- name: GetUserGroupRoleGrants :many
-SELECT r.id, r.name, r.description, r.permissions, r.is_system,
-       r.created_at, r.created_by, r.updated_at,
-       ugr.scope_kind, ugr.scope_id,
-       COALESCE(dg.name, ug.name, '')::TEXT AS scope_name
-FROM roles_projection r
-JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
-LEFT JOIN device_groups_projection dg
-       ON ugr.scope_kind = 'device_group' AND dg.id = ugr.scope_id AND dg.is_deleted = FALSE
-LEFT JOIN user_groups_projection ug
-       ON ugr.scope_kind = 'user_group' AND ug.id = ugr.scope_id AND ug.is_deleted = FALSE
-WHERE ugr.group_id = $1 AND r.is_deleted = FALSE
-ORDER BY r.name, ugr.scope_id NULLS FIRST
-`
-
-func (q *Queries) GetUserGroupRoleGrants(ctx context.Context, groupID string) ([]GetUserRoleGrantsRow, error) {
-	rows, err := q.db.Query(ctx, getUserGroupRoleGrants, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetUserRoleGrantsRow{}
-	for rows.Next() {
-		var i GetUserRoleGrantsRow
-		if err := rows.Scan(
-			&i.ID, &i.Name, &i.Description, &i.Permissions, &i.IsSystem,
-			&i.CreatedAt, &i.CreatedBy, &i.UpdatedAt,
-			&i.ScopeKind, &i.ScopeID, &i.ScopeName,
-		); err != nil {
+		var i GetUserScopedGrantsRow
+		if err := rows.Scan(&i.Permission, &i.ScopeKind, &i.ScopeID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -580,24 +616,6 @@ func (q *Queries) UserHasRole(ctx context.Context, arg UserHasRoleParams) (bool,
 	return has_role, err
 }
 
-const userHasUnscopedRole = `-- name: UserHasUnscopedRole :one
-SELECT EXISTS(SELECT 1 FROM user_roles_projection
-              WHERE user_id = $1 AND role_id = $2 AND scope_id IS NULL) AS has_role
-`
-
-// UserHasUnscopedRole reports whether the user holds the role as an
-// UNSCOPED (global) grant specifically — scope-aware, unlike UserHasRole
-// (2-tuple, counts scoped grants too). Used by the assign-role redundancy
-// pre-check so an unscoped assign isn't dropped just because a scoped
-// grant of the same role exists (#7 grant independence). Hand-maintained:
-// scope_id is a migration-010 DO-block column sqlc cannot resolve (#336).
-func (q *Queries) UserHasUnscopedRole(ctx context.Context, arg UserHasRoleParams) (bool, error) {
-	row := q.db.QueryRow(ctx, userHasUnscopedRole, arg.UserID, arg.RoleID)
-	var has_role bool
-	err := row.Scan(&has_role)
-	return has_role, err
-}
-
 const userHasScopedRole = `-- name: UserHasScopedRole :one
 SELECT EXISTS(
     SELECT 1 FROM user_roles_projection
@@ -607,9 +625,6 @@ SELECT EXISTS(
 ) AS has_role
 `
 
-// UserHasScopedRoleParams targets a specific (user, role, scope) grant.
-// ScopeKind/ScopeID nil together = the unscoped grant. Hand-maintained
-// alongside UserHasRole; sync with queries/roles.sql by hand (#7 S5).
 type UserHasScopedRoleParams struct {
 	UserID    string  `json:"user_id"`
 	RoleID    string  `json:"role_id"`
@@ -617,8 +632,40 @@ type UserHasScopedRoleParams struct {
 	ScopeID   *string `json:"scope_id"`
 }
 
+// Existence of a SPECIFIC (user, role, scope) grant. IS NOT DISTINCT
+// FROM is NULL-aware: NULL scope params match the unscoped grant; set
+// params match that exact scoped grant. Used by RevokeRoleFromUser to
+// reject "revoke a grant that doesn't exist" rather than silently
+// no-op (server #7 S5).
 func (q *Queries) UserHasScopedRole(ctx context.Context, arg UserHasScopedRoleParams) (bool, error) {
-	row := q.db.QueryRow(ctx, userHasScopedRole, arg.UserID, arg.RoleID, arg.ScopeKind, arg.ScopeID)
+	row := q.db.QueryRow(ctx, userHasScopedRole,
+		arg.UserID,
+		arg.RoleID,
+		arg.ScopeKind,
+		arg.ScopeID,
+	)
+	var has_role bool
+	err := row.Scan(&has_role)
+	return has_role, err
+}
+
+const userHasUnscopedRole = `-- name: UserHasUnscopedRole :one
+SELECT EXISTS(SELECT 1 FROM user_roles_projection
+              WHERE user_id = $1 AND role_id = $2 AND scope_id IS NULL) AS has_role
+`
+
+type UserHasUnscopedRoleParams struct {
+	UserID string `json:"user_id"`
+	RoleID string `json:"role_id"`
+}
+
+// Scope-aware variant: does the user hold this role as an UNSCOPED
+// (global) grant specifically? The assign-role redundancy pre-check uses
+// this so an unscoped assign isn't dropped when only a SCOPED grant of the
+// same role exists (#7 grant independence). Hand-maintained: scope_id is a
+// migration-010 DO-block column sqlc cannot resolve (#336).
+func (q *Queries) UserHasUnscopedRole(ctx context.Context, arg UserHasUnscopedRoleParams) (bool, error) {
+	row := q.db.QueryRow(ctx, userHasUnscopedRole, arg.UserID, arg.RoleID)
 	var has_role bool
 	err := row.Scan(&has_role)
 	return has_role, err

@@ -60,6 +60,6 @@ func ApplyUserSelection(ctx context.Context, q *store.Queries, e store.Persisted
 		Selected:          payload.Selected,
 		UpdatedAt:         e.OccurredAt,
 		CreatedBy:         payload.CreatedBy,
-		ProjectionVersion: deref(e.SequenceNum),
+		ProjectionVersion: e.SequenceNum,
 	})
 }

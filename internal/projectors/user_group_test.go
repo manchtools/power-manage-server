@@ -738,7 +738,7 @@ func TestUserGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID,
 		EventType:   "UserGroupDeleted",
@@ -796,7 +796,7 @@ func TestUserGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID + ":" + userID,
 		EventType:   "UserGroupMemberAdded",
@@ -850,7 +850,7 @@ func TestUserGroupListener_StaleMembersRebuiltDoesNotOverwrite(t *testing.T) {
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID,
 		EventType:   "UserGroupMembersRebuilt",
@@ -933,7 +933,7 @@ func TestUserGroupListener_StaleRoleAssignedDoesNotReinsertRevoked(t *testing.T)
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
 		ID:          uuid.New(),
-		SequenceNum: &older,
+		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID + ":role:" + roleID,
 		EventType:   "UserGroupRoleAssigned",
