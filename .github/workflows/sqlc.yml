@@ -1,0 +1,49 @@
+name: sqlc drift
+
+# Guards against the failure mode that caused #336: internal/store/generated/
+# silently diverging from `sqlc generate`. The check regenerates via the
+# pinned official image (make sqlc-check -> sqlc-generate) and fails if the
+# committed output differs.
+#
+# This needs its own path filter because the drift case is a `.sql`/.yaml
+# change WITHOUT a matching `.go` regen — lint.yml / test.yml only fire on
+# `**.go`, so they would miss exactly the divergence we're guarding against.
+on:
+  push:
+    branches: [main, 'v*']
+    paths:
+      - 'internal/store/queries/**'
+      - 'internal/store/migrations/**'
+      - 'internal/store/sqlc.yaml'
+      - 'internal/store/sqlc_schema_overlay.sql'
+      - 'internal/store/generated/**'
+      - 'Makefile'
+      - '.github/workflows/sqlc.yml'
+  pull_request:
+    paths:
+      - 'internal/store/queries/**'
+      - 'internal/store/migrations/**'
+      - 'internal/store/sqlc.yaml'
+      - 'internal/store/sqlc_schema_overlay.sql'
+      - 'internal/store/generated/**'
+      - 'Makefile'
+      - '.github/workflows/sqlc.yml'
+
+jobs:
+  drift:
+    name: generated/ matches sqlc generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # No setup-go: sqlc runs inside the pinned sqlc/sqlc image (Docker is
+      # preinstalled on ubuntu-latest), so the result does not depend on this
+      # runner's toolchain — same image the Makefile documents as the
+      # reproducible reference (#336).
+      - name: sqlc drift check
+        run: |
+          make sqlc-check || {
+            echo "::error::internal/store/generated/ is out of date. Run 'make sqlc-generate' and commit the result. See Makefile / #336."
+            git --no-pager diff internal/store/generated
+            exit 1
+          }
