@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -140,8 +141,20 @@ func (p *OIDCProvider) VerifyAndExtractClaims(ctx context.Context, oauth2Token *
 		Subject: idToken.Subject,
 	}
 
-	if email, ok := claims["email"].(string); ok {
-		userClaims.Email = email
+	// Only trust the email for linking / auto-create when the IdP asserts it
+	// is verified (#359). Without this gate, an attacker who can set an
+	// arbitrary, unverified email at the IdP (common with multi-tenant Azure
+	// AD or self-service IdPs) could set it to a local admin's address and,
+	// with AutoLinkByEmail on, receive that admin's session. The external
+	// identity is keyed on the subject regardless; only the email field —
+	// which the linker uses for auto-link/auto-create — is gated.
+	if email, ok := claims["email"].(string); ok && email != "" {
+		if claimIsTrue(claims["email_verified"]) {
+			userClaims.Email = email
+		} else {
+			slog.Warn("SSO: ignoring email claim because email_verified is not true; it will not be used for auto-link or auto-create",
+				"subject", idToken.Subject)
+		}
 	}
 	if name, ok := claims["name"].(string); ok {
 		userClaims.Name = name
@@ -168,6 +181,20 @@ func (p *OIDCProvider) VerifyAndExtractClaims(ctx context.Context, oauth2Token *
 	}
 
 	return userClaims, nil
+}
+
+// claimIsTrue interprets an OIDC boolean claim. The spec defines
+// email_verified as a JSON boolean, but some IdPs (and some proxies) emit it
+// as the string "true"/"false"; accept both. Anything else — including an
+// absent claim — is treated as not-true, which is the fail-closed default.
+func claimIsTrue(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return t == "true"
+	}
+	return false
 }
 
 // extractGroups extracts group names from claims.
