@@ -930,3 +930,15 @@ FROM actions_projection
 WHERE is_deleted = FALSE
   AND name IN ('system:terminal-admin-limited:global',
                'system:terminal-admin-full:global');
+
+-- name: ListScopedTerminalAdminActionNames :many
+-- Names of every PER-SCOPE terminal-admin action (excluding the two
+-- :global actions), so the per-scope reconciler can empty the cohort of
+-- any scope that no longer has a holder. Names are
+-- system:terminal-admin-{limited,full}:<deviceGroupID> (#7).
+SELECT name FROM actions_projection
+WHERE is_deleted = FALSE
+  AND (name LIKE 'system:terminal-admin-limited:%'
+       OR name LIKE 'system:terminal-admin-full:%')
+  AND name NOT IN ('system:terminal-admin-limited:global',
+                   'system:terminal-admin-full:global');

@@ -262,6 +262,12 @@ func SystemActionListener(mgr *SystemActionManager, logger *slog.Logger, syncTim
 					logger.Error("system-action listener: reconcile global TerminalAdmin failed",
 						"event_type", e.EventType, "event_id", e.ID, "error", err)
 				}
+				// Same for the per-scope TerminalAdmin actions (#7): a
+				// scoped grant change recomputes the per-scope cohorts.
+				if err := mgr.ReconcileScopedTerminalAdminActions(ctx); err != nil {
+					logger.Error("system-action listener: reconcile scoped TerminalAdmin failed",
+						"event_type", e.EventType, "event_id", e.ID, "error", err)
+				}
 
 			case SyncOpSyncAll:
 				// SyncAllUsersSystemActions already ends with a

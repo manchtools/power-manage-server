@@ -1319,6 +1319,35 @@ func (q *Queries) ListGlobalTerminalAdminActions(ctx context.Context) ([]ListGlo
 	return items, nil
 }
 
+const listScopedTerminalAdminActionNames = `-- name: ListScopedTerminalAdminActionNames :many
+SELECT name FROM actions_projection
+WHERE is_deleted = FALSE
+  AND (name LIKE 'system:terminal-admin-limited:%'
+       OR name LIKE 'system:terminal-admin-full:%')
+  AND name NOT IN ('system:terminal-admin-limited:global',
+                   'system:terminal-admin-full:global')
+`
+
+func (q *Queries) ListScopedTerminalAdminActionNames(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listScopedTerminalAdminActionNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserLayerResolvedActionsForDevice = `-- name: ListUserLayerResolvedActionsForDevice :many
 WITH device_owners AS (
   SELECT dau.user_id FROM device_assigned_users_projection dau WHERE dau.device_id = $1
