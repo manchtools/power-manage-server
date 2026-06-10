@@ -23,11 +23,12 @@ const (
 // Claims represents the JWT claims for user authentication.
 type Claims struct {
 	jwt.RegisteredClaims
-	UserID         string    `json:"uid"`
-	Email          string    `json:"email"`
-	Permissions    []string  `json:"perms,omitempty"`
-	TokenType      TokenType `json:"type"`
-	SessionVersion int32     `json:"sv,omitempty"`
+	UserID         string        `json:"uid"`
+	Email          string        `json:"email"`
+	Permissions    []string      `json:"perms,omitempty"`
+	ScopedGrants   []ScopedGrant `json:"sgrants,omitempty"`
+	TokenType      TokenType     `json:"type"`
+	SessionVersion int32         `json:"sv,omitempty"`
 }
 
 // JWTConfig holds JWT configuration.
@@ -79,8 +80,9 @@ type TokenPair struct {
 }
 
 // GenerateTokens creates a new access/refresh token pair.
-// Permissions are only embedded in the access token, not the refresh token.
-func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, sessionVersion int32) (*TokenPair, error) {
+// Permissions and scoped grants are only embedded in the access token,
+// not the refresh token.
+func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, scopedGrants []ScopedGrant, sessionVersion int32) (*TokenPair, error) {
 	now := time.Now()
 	accessExpiry := now.Add(m.config.AccessTokenExpiry)
 	entropy := ulid.Monotonic(rand.Reader, 0)
@@ -97,6 +99,7 @@ func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, 
 		UserID:         userID,
 		Email:          email,
 		Permissions:    permissions,
+		ScopedGrants:   scopedGrants,
 		TokenType:      TokenTypeAccess,
 		SessionVersion: sessionVersion,
 	}

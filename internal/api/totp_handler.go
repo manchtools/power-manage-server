@@ -466,13 +466,17 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrTokenExpired, connect.CodeUnauthenticated, "session invalidated, please log in again")
 	}
 
-	// Resolve permissions and generate real tokens
+	// Resolve permissions + scoped grants and generate real tokens
 	permissions, err := h.store.Repos().User.Permissions(ctx, claims.UserID)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve permissions")
 	}
+	scopedGrants, err := resolveScopedGrants(ctx, h.store.Repos().User, claims.UserID)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve scoped grants")
+	}
 
-	tokens, err := h.jwtManager.GenerateTokens(claims.UserID, claims.Email, permissions, claims.SessionVersion)
+	tokens, err := h.jwtManager.GenerateTokens(claims.UserID, claims.Email, permissions, scopedGrants, claims.SessionVersion)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate tokens")
 	}

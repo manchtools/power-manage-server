@@ -156,7 +156,7 @@ func setupInterceptorTest(t *testing.T) (string, *JWTManager) {
 func TestAuthInterceptor_BearerTokenAccepted(t *testing.T) {
 	serverURL, jwtMgr := setupInterceptorTest(t)
 
-	tokens, err := jwtMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, 1)
+	tokens, err := jwtMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
@@ -217,7 +217,7 @@ func TestAuthInterceptor_InvalidToken(t *testing.T) {
 func TestAuthInterceptor_CookieNoLongerAccepted(t *testing.T) {
 	serverURL, jwtMgr := setupInterceptorTest(t)
 
-	tokens, err := jwtMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, 1)
+	tokens, err := jwtMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
@@ -288,7 +288,7 @@ func TestAuthInterceptor_ExpiredToken(t *testing.T) {
 		AccessTokenExpiry: -1 * time.Second, // Already expired
 	})
 
-	tokens, err := expiredMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, 1)
+	tokens, err := expiredMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, nil, 1)
 	require.NoError(t, err)
 
 	serverURL, _ := setupInterceptorTest(t)
@@ -317,7 +317,7 @@ func TestAuthInterceptor_WrongSecret(t *testing.T) {
 		Secret:            []byte("other-secret-key"),
 		AccessTokenExpiry: 15 * time.Minute,
 	})
-	tokens, err := otherMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, 1)
+	tokens, err := otherMgr.GenerateTokens("user123", "test@example.com", []string{"GetUser"}, nil, 1)
 	require.NoError(t, err)
 
 	serverURL, _ := setupInterceptorTest(t)
@@ -461,7 +461,7 @@ func setupAlternativesInterceptorTest(t *testing.T) (string, *JWTManager) {
 
 func TestAuthzInterceptor_AlternativesPath_StaticAltOnly_Accepts(t *testing.T) {
 	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
-	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateStaticDeviceGroup"}, 1)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateStaticDeviceGroup"}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
@@ -477,7 +477,7 @@ func TestAuthzInterceptor_AlternativesPath_StaticAltOnly_Accepts(t *testing.T) {
 
 func TestAuthzInterceptor_AlternativesPath_DynamicAltOnly_Accepts(t *testing.T) {
 	serverURL, jwtMgr := setupAlternativesInterceptorTest(t)
-	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDynamicDeviceGroup"}, 1)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDynamicDeviceGroup"}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
@@ -504,7 +504,7 @@ func TestAuthzInterceptor_AlternativesPath_NeitherAltHeld_Denied(t *testing.T) {
 		// A grab-bag of unrelated perms — none satisfy the split.
 		"GetUser", "ListUsers", "GetDevice", "ListDevices",
 		"CreateAction", "RebuildSearchIndex",
-	}, 1)
+	}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
@@ -531,7 +531,7 @@ func TestAuthzInterceptor_AlternativesPath_LegacyKeyAlone_Denied(t *testing.T) {
 	// Mint a token claiming the legacy "CreateDeviceGroup" perm —
 	// not registered post-#7, but a forged or stale token might
 	// carry it.
-	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDeviceGroup"}, 1)
+	tokens, err := jwtMgr.GenerateTokens("u1", "alice@test", []string{"CreateDeviceGroup"}, nil, 1)
 	require.NoError(t, err)
 
 	client := connect.NewClient[emptypb.Empty, emptypb.Empty](
