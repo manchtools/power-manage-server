@@ -37,10 +37,22 @@ already in production:
 
 **What #70 actually adds** is the role-driven layer that connects
 them: when a user holds the new `TerminalAdminLimited` (or `Full`)
-permission, their `pm-tty-<username>` account is automatically added
-to the LIMITED (or FULL) system-managed AdminPolicy action's
-`users` list on every device they have `StartTerminal` on. Same
+permission, their `pm-tty-<username>` account is added to the LIMITED
+(or FULL) system-managed AdminPolicy action's `users` list. Same
 fan-out shape as the existing tty-user action.
+
+> **#7 model update (2026-06-10, "Model Y"):** the sudo cohort is
+> driven by `TerminalAdmin{Limited,Full}` **alone** — `StartTerminal`
+> is **not** required. `StartTerminal` drives the separate `pm-tty`
+> account; the LIMITED/FULL sudo policy is harmless/inert on a device
+> where the account doesn't exist (group rule, empty membership; the
+> agent SKIPs gracefully). Each permission is scoped independently —
+> the LIMITED/FULL action reaches a device when the holder's
+> `TerminalAdmin*` scope covers it; the account reaches a device when
+> the holder's `StartTerminal` scope covers it. This replaces the
+> earlier `StartTerminal ∩ TerminalAdmin` cohort. (PR1 decoupled the
+> global cohort; PR2 adds the per-scope actions + scope-aware
+> delivery.)
 
 The catch is one small but load-bearing detail: **the existing
 LIMITED/FULL templates require a password**, and `pm-tty-*` accounts
@@ -69,7 +81,8 @@ mitigations are small additions to existing files.
 │   TerminalAdminLimited / TerminalAdminFull                      │
 │   Held by user U → resolution layer adds "pm-tty-U" to the      │
 │   users list of the LIMITED/FULL system action on each device   │
-│   where U has StartTerminal AND is in scope.                    │
+│   in U's TerminalAdmin* scope (StartTerminal NOT required —      │
+│   it drives the separate pm-tty account; #7 Model Y).           │
 └─────────────────────────────────────────────────────────────────┘
                               ▲
 ┌─────────────────────────────────────────────────────────────────┐
@@ -442,9 +455,12 @@ can do.
 - #70's PR may not merge while any `GAP` marker above is unresolved.
 - **Two new permissions** land in
   [`server/internal/auth/permissions.go`](../../../server/internal/auth/permissions.go):
-  `TerminalAdminLimited` and `TerminalAdminFull`. Each implies
-  `StartTerminal` (so the resolution layer's existing `pm-tty-*`
-  fan-out still fires for these holders).
+  `TerminalAdminLimited` and `TerminalAdminFull`. They do **not** imply
+  `StartTerminal` (#7 Model Y, 2026-06-10) — the sudo cohort is driven
+  by `TerminalAdmin*` alone, while `StartTerminal` independently drives
+  the `pm-tty` account. A holder without `StartTerminal` gets the sudo
+  policy listed but inert (no account), which the agent SKIPs
+  gracefully.
 - **Two new system-managed AdminPolicy actions** delivered the same
   way the existing `system:tty-user:*` actions are delivered — one
   for LIMITED, one for FULL. Their `users` list is computed by a

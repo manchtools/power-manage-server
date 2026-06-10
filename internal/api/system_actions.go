@@ -604,9 +604,20 @@ func (m *SystemActionManager) ReconcileGlobalTerminalAdminActions(ctx context.Co
 }
 
 // computeTerminalAdminCohorts walks the user list and returns the two
-// sorted, deduped pm-tty-* cohorts. The sort makes signature stability
-// deterministic across runs; the dedup is defensive against a future
-// permission backend that double-counts a user.
+// sorted, deduped pm-tty-* cohorts for the GLOBAL LIMITED/FULL sudo
+// actions. The sort makes signature stability deterministic across runs;
+// the dedup is defensive against a future permission backend that
+// double-counts a user.
+//
+// #7 model (Model Y): the sudo cohort is driven by TerminalAdmin{Limited,
+// Full} ALONE — StartTerminal is NO LONGER required (it drives the
+// pm-tty account, a separate concern; the agent's sudo policy is inert
+// and harmless when no account exists). This walks the user's scoped
+// grants and counts only UNSCOPED (global) TerminalAdmin grants here;
+// device-group-scoped grants drive the per-scope actions added in a
+// follow-up and are intentionally ignored by the global cohort. A
+// user_group-scoped TerminalAdmin grant has no device meaning and is
+// ignored everywhere.
 func (m *SystemActionManager) computeTerminalAdminCohorts(ctx context.Context, users []store.User) (limited, full []string) {
 	limitedSet := map[string]struct{}{}
 	fullSet := map[string]struct{}{}
@@ -614,33 +625,30 @@ func (m *SystemActionManager) computeTerminalAdminCohorts(ctx context.Context, u
 		if u.Disabled || u.LinuxUsername == "" {
 			continue
 		}
-		perms, err := m.store.Repos().User.Permissions(ctx, u.ID)
+		grants, err := m.store.Repos().User.ScopedGrants(ctx, u.ID)
 		if err != nil {
 			// Skip the user this tick — the next tick will retry.
 			// Aborting the whole reconcile on a single user's
 			// transient DB error would block every other user from
 			// landing on devices.
-			m.logger.Error("perm lookup failed during terminal-admin reconcile; skipping user",
+			m.logger.Error("scoped-grant lookup failed during terminal-admin reconcile; skipping user",
 				"user_id", u.ID, "error", err)
 			continue
 		}
-		hasStart, hasLimited, hasFull := false, false, false
-		for _, p := range perms {
-			switch p {
-			case "StartTerminal":
-				hasStart = true
-			case "TerminalAdminLimited":
-				hasLimited = true
-			case "TerminalAdminFull":
-				hasFull = true
-			}
-		}
 		ttyUser := "pm-tty-" + u.LinuxUsername
-		if hasStart && hasLimited {
-			limitedSet[ttyUser] = struct{}{}
-		}
-		if hasStart && hasFull {
-			fullSet[ttyUser] = struct{}{}
+		for _, g := range grants {
+			// Only UNSCOPED (global) grants feed the global actions.
+			// scope_kind != "" ⇒ a per-scope grant, handled by the
+			// per-scope reconciler (follow-up).
+			if g.ScopeKind != "" {
+				continue
+			}
+			switch g.Permission {
+			case "TerminalAdminLimited":
+				limitedSet[ttyUser] = struct{}{}
+			case "TerminalAdminFull":
+				fullSet[ttyUser] = struct{}{}
+			}
 		}
 	}
 
