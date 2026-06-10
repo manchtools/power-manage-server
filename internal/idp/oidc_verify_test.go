@@ -123,9 +123,12 @@ func TestVerifyAndExtractClaims_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	idToken := f.signIDToken(t, "test-client", "the-expected-nonce", map[string]any{
-		"email":      "alice@example.com",
-		"name":       "Alice Test",
-		"given_name": "Alice",
+		"email": "alice@example.com",
+		// email_verified gates whether the email is usable for linking /
+		// auto-create (#359). The happy path is a verified email.
+		"email_verified": true,
+		"name":           "Alice Test",
+		"given_name":     "Alice",
 	})
 	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": idToken})
 
@@ -135,6 +138,58 @@ func TestVerifyAndExtractClaims_HappyPath(t *testing.T) {
 	assert.Equal(t, "alice@example.com", claims.Email)
 	assert.Equal(t, "Alice Test", claims.Name)
 	assert.Equal(t, "Alice", claims.GivenName)
+}
+
+// TestVerifyAndExtractClaims_EmailVerifiedGate pins the #359 fix: an email
+// claim is only populated (and thus usable for auto-link / auto-create) when
+// email_verified is true. An attacker who can set an arbitrary, UNVERIFIED
+// email at the IdP (common with multi-tenant Azure AD / self-service IdPs)
+// must not be able to drive account linking by claiming a victim's address.
+// The subject is always populated — identity is keyed on sub, not email.
+func TestVerifyAndExtractClaims_EmailVerifiedGate(t *testing.T) {
+	cases := []struct {
+		name            string
+		email           string
+		emailPresent    bool
+		emailVerified   any
+		verifiedPresent bool
+		wantEmail       string
+	}{
+		{name: "verified (bool true)", email: "alice@example.com", emailPresent: true, emailVerified: true, verifiedPresent: true, wantEmail: "alice@example.com"},
+		{name: "verified (string \"true\")", email: "alice@example.com", emailPresent: true, emailVerified: "true", verifiedPresent: true, wantEmail: "alice@example.com"},
+		{name: "unverified (bool false)", email: "alice@example.com", emailPresent: true, emailVerified: false, verifiedPresent: true, wantEmail: ""},
+		{name: "unverified (string \"false\")", email: "alice@example.com", emailPresent: true, emailVerified: "false", verifiedPresent: true, wantEmail: ""},
+		{name: "email_verified claim absent", email: "alice@example.com", emailPresent: true, verifiedPresent: false, wantEmail: ""},
+		{name: "email claim absent (verified true)", emailPresent: false, emailVerified: true, verifiedPresent: true, wantEmail: ""},
+		{name: "email empty string (verified true)", email: "", emailPresent: true, emailVerified: true, verifiedPresent: true, wantEmail: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSignedOIDCFixture(t)
+			p, err := idp.NewOIDCProvider(context.Background(), idp.ProviderConfig{
+				IssuerURL:   f.srv.URL,
+				ClientID:    "test-client",
+				RedirectURL: "https://app.example.com/cb",
+			})
+			require.NoError(t, err)
+
+			extra := map[string]any{}
+			if tc.emailPresent {
+				extra["email"] = tc.email
+			}
+			if tc.verifiedPresent {
+				extra["email_verified"] = tc.emailVerified
+			}
+			idToken := f.signIDToken(t, "test-client", "n", extra)
+			tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": idToken})
+
+			claims, err := p.VerifyAndExtractClaims(context.Background(), tok, "n")
+			require.NoError(t, err)
+			assert.Equal(t, "test-subject-123", claims.Subject, "subject is always populated")
+			assert.Equalf(t, tc.wantEmail, claims.Email,
+				"email must be populated only when email_verified is true")
+		})
+	}
 }
 
 func TestVerifyAndExtractClaims_NonceMismatch(t *testing.T) {
