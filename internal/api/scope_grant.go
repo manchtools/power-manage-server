@@ -12,15 +12,20 @@ import (
 )
 
 // scopeKindString maps the proto RoleGrantScopeKind to the store/auth
-// scope-kind string. UNSPECIFIED (and any unknown) → "" = unscoped.
-func scopeKindString(k pm.RoleGrantScopeKind) string {
+// scope-kind string. ok=false for an out-of-range / future enum value so
+// callers fail CLOSED — only the explicit UNSPECIFIED maps to "" (the
+// unscoped grant). Mapping an unknown value to "" would silently turn a
+// malformed scoped request into a fleet-wide grant.
+func scopeKindString(k pm.RoleGrantScopeKind) (string, bool) {
 	switch k {
+	case pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_UNSPECIFIED:
+		return "", true
 	case pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_DEVICE_GROUP:
-		return auth.ScopeKindDeviceGroup
+		return auth.ScopeKindDeviceGroup, true
 	case pm.RoleGrantScopeKind_ROLE_GRANT_SCOPE_KIND_USER_GROUP:
-		return auth.ScopeKindUserGroup
+		return auth.ScopeKindUserGroup, true
 	default:
-		return ""
+		return "", false
 	}
 }
 
@@ -44,7 +49,11 @@ func scopePtrs(scopeKind, scopeID string) (*string, *string) {
 // accept this scope kind) is the CALLER's responsibility — it has each
 // role's permission list. Use rejectUnscopableRole for that.
 func validateAssignGrantScope(ctx context.Context, q *db.Queries, scopeKindEnum pm.RoleGrantScopeKind, scopeID string) (string, string, error) {
-	scopeKind := scopeKindString(scopeKindEnum)
+	scopeKind, ok := scopeKindString(scopeKindEnum)
+	if !ok {
+		// Unknown / future enum value — fail closed.
+		return "", "", apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "unknown scope_kind")
+	}
 
 	// Paired-or-neither: both set or both absent.
 	if (scopeKind == "") != (scopeID == "") {
@@ -65,12 +74,15 @@ func validateAssignGrantScope(ctx context.Context, q *db.Queries, scopeKindEnum 
 		return "", "", apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied,
 			"AssignRoleScope permission is required to scope a role grant")
 	}
-	// The scope group must exist.
-	if err := scopeGroupExists(ctx, q, scopeKind, scopeID); err != nil {
+	// Escalation bound: the actor's own scope authority must cover the
+	// requested scope. Checked BEFORE existence so a scope-limited caller
+	// can't use group-existence (NotFound vs PermissionDenied) as an
+	// oracle for scope ids outside its authority.
+	if err := auth.EnforceGrantScopeAuthority(ctx, scopeKind, scopeID); err != nil {
 		return "", "", err
 	}
-	// Escalation bound: the actor's own scope authority must cover it.
-	if err := auth.EnforceGrantScopeAuthority(ctx, scopeKind, scopeID); err != nil {
+	// The scope group must exist.
+	if err := scopeGroupExists(ctx, q, scopeKind, scopeID); err != nil {
 		return "", "", err
 	}
 	return scopeKind, scopeID, nil

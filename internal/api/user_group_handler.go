@@ -578,7 +578,10 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	}
 
 	// Resolve the scope tuple identifying WHICH grant to revoke.
-	scopeKind := scopeKindString(req.Msg.ScopeKind)
+	scopeKind, ok := scopeKindString(req.Msg.ScopeKind)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "unknown scope_kind")
+	}
 	scopeID := req.Msg.ScopeId
 	if (scopeKind == "") != (scopeID == "") {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "scope_kind and scope_id must be set together")

@@ -152,6 +152,54 @@ func TestAssignRoleToUser_ScopeLimitedAdminCannotGrantUnscoped(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 
+// An out-of-range / future scope_kind enum must fail closed as
+// InvalidArgument, never silently degrade to an unscoped (fleet-wide)
+// grant. Regression for CodeRabbit #337 finding 1.
+func TestAssignRoleToUser_UnknownScopeKindRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewRoleHandler(st, slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	target := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "user")
+	role := testutil.CreateTestRole(t, st, adminID, "Device Role", []string{"ListDevices"})
+
+	// An unknown enum value with no scope_id must NOT become an unscoped grant.
+	_, err := h.AssignRoleToUser(ctx, connect.NewRequest(&pm.AssignRoleToUserRequest{
+		UserId: target, RoleId: role, ScopeKind: pm.RoleGrantScopeKind(99),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	// No grant must have been created.
+	grants, gErr := st.Repos().User.ScopedGrants(context.Background(), target)
+	require.NoError(t, gErr)
+	for _, g := range grants {
+		assert.NotEqual(t, "ListDevices", g.Permission, "an unknown scope_kind must not create any grant")
+	}
+}
+
+// A scope-limited caller probing a scope_id outside its authority must
+// get PermissionDenied regardless of whether that group exists — the
+// authority check must precede the existence check so group existence
+// isn't an oracle. Regression for CodeRabbit #337 finding 2.
+func TestAssignRoleToUser_ScopeAuthorityCheckedBeforeExistence(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewRoleHandler(st, slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "admin")
+	target := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "user")
+	role := testutil.CreateTestRole(t, st, adminID, "Device Role", []string{"ListDevices"})
+	dg1 := testutil.CreateTestDeviceGroup(t, st, adminID, "Plant 1")
+
+	// Admin scoped to dg1 targets a group it has no authority over AND
+	// which does not exist — must be PermissionDenied, not NotFound.
+	ctx := scopeLimitedAdminCtx(adminID, dg1)
+	_, err := h.AssignRoleToUser(ctx, connect.NewRequest(&pm.AssignRoleToUserRequest{
+		UserId: target, RoleId: role, ScopeKind: deviceGroupScope, ScopeId: testutil.NewID(),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
 func TestRevokeRoleFromUser_ScopeTargeted(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewRoleHandler(st, slog.Default())
