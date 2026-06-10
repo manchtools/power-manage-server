@@ -1144,7 +1144,7 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 	return items, nil
 }
 
-const listSystemTtyActionsForPermissionHolders = `-- name: ListSystemTtyActionsForPermissionHolders :many
+const listSystemTtyActionsForDevice = `-- name: ListSystemTtyActionsForDevice :many
 SELECT DISTINCT ON (a.id)
        a.id, a.name, a.description, a.action_type, a.desired_state,
        a.params, a.timeout_seconds, a.created_at, a.created_by,
@@ -1156,25 +1156,35 @@ JOIN actions_projection a
 WHERE u.is_deleted = FALSE
   AND u.system_tty_action_id <> ''
   AND EXISTS (
-    SELECT 1 FROM roles_projection r
-    WHERE r.is_deleted = FALSE
+    SELECT 1
+    FROM roles_projection r
+    JOIN user_roles_projection ur ON ur.role_id = r.id
+    WHERE ur.user_id = u.id AND r.is_deleted = FALSE
       AND 'StartTerminal' = ANY(r.permissions)
       AND (
-        r.id IN (
-          SELECT ur.role_id FROM user_roles_projection ur
-          WHERE ur.user_id = u.id
-        )
-        OR r.id IN (
-          SELECT ugr.role_id FROM user_group_roles_projection ugr
-          JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
-          JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
-          WHERE ugm.user_id = u.id
-        )
+        ur.scope_kind IS NULL
+        OR (ur.scope_kind = 'device_group'
+            AND EXISTS (SELECT 1 FROM device_group_members_projection m
+                        WHERE m.group_id = ur.scope_id AND m.device_id = $1))
+      )
+    UNION ALL
+    SELECT 1
+    FROM roles_projection r
+    JOIN user_group_roles_projection ugr ON ugr.role_id = r.id
+    JOIN user_group_members_projection ugm ON ugm.group_id = ugr.group_id
+    JOIN user_groups_projection ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+    WHERE ugm.user_id = u.id AND r.is_deleted = FALSE
+      AND 'StartTerminal' = ANY(r.permissions)
+      AND (
+        ugr.scope_kind IS NULL
+        OR (ugr.scope_kind = 'device_group'
+            AND EXISTS (SELECT 1 FROM device_group_members_projection m
+                        WHERE m.group_id = ugr.scope_id AND m.device_id = $1))
       )
   )
 `
 
-type ListSystemTtyActionsForPermissionHoldersRow struct {
+type ListSystemTtyActionsForDeviceRow struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
 	Description       *string    `json:"description"`
@@ -1208,15 +1218,15 @@ type ListSystemTtyActionsForPermissionHoldersRow struct {
 // Filtering rules: skip soft-deleted users, actions, roles, and
 // groups so stale projection rows can't leak through and surface a
 // TTY account that should have been cleaned up.
-func (q *Queries) ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]ListSystemTtyActionsForPermissionHoldersRow, error) {
-	rows, err := q.db.Query(ctx, listSystemTtyActionsForPermissionHolders)
+func (q *Queries) ListSystemTtyActionsForDevice(ctx context.Context, deviceID string) ([]ListSystemTtyActionsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listSystemTtyActionsForDevice, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListSystemTtyActionsForPermissionHoldersRow{}
+	items := []ListSystemTtyActionsForDeviceRow{}
 	for rows.Next() {
-		var i ListSystemTtyActionsForPermissionHoldersRow
+		var i ListSystemTtyActionsForDeviceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -1243,18 +1253,28 @@ func (q *Queries) ListSystemTtyActionsForPermissionHolders(ctx context.Context) 
 	return items, nil
 }
 
-const listGlobalTerminalAdminActions = `-- name: ListGlobalTerminalAdminActions :many
+const listTerminalAdminActionsForDevice = `-- name: ListTerminalAdminActionsForDevice :many
 SELECT id, name, description, action_type, desired_state,
        params, timeout_seconds, created_at, created_by,
        is_deleted, projection_version,
        signature, params_canonical, schedule
 FROM actions_projection
 WHERE is_deleted = FALSE
-  AND name IN ('system:terminal-admin-limited:global',
-               'system:terminal-admin-full:global')
+  AND (
+    name IN ('system:terminal-admin-limited:global',
+             'system:terminal-admin-full:global')
+    OR (
+      (name LIKE 'system:terminal-admin-limited:%'
+        OR name LIKE 'system:terminal-admin-full:%')
+      AND split_part(name, ':', 3) IN (
+        SELECT m.group_id FROM device_group_members_projection m
+        WHERE m.device_id = $1
+      )
+    )
+  )
 `
 
-type ListGlobalTerminalAdminActionsRow struct {
+type ListTerminalAdminActionsForDeviceRow struct {
 	ID                string     `json:"id"`
 	Name              string     `json:"name"`
 	Description       *string    `json:"description"`
@@ -1284,15 +1304,15 @@ type ListGlobalTerminalAdminActionsRow struct {
 // per-scope variants; that PR will replace the IN-list filter with a
 // scope-aware join. The shape of this query is intentionally simple
 // so the #7 diff is isolated to the WHERE clause.
-func (q *Queries) ListGlobalTerminalAdminActions(ctx context.Context) ([]ListGlobalTerminalAdminActionsRow, error) {
-	rows, err := q.db.Query(ctx, listGlobalTerminalAdminActions)
+func (q *Queries) ListTerminalAdminActionsForDevice(ctx context.Context, deviceID string) ([]ListTerminalAdminActionsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listTerminalAdminActionsForDevice, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListGlobalTerminalAdminActionsRow{}
+	items := []ListTerminalAdminActionsForDeviceRow{}
 	for rows.Next() {
-		var i ListGlobalTerminalAdminActionsRow
+		var i ListTerminalAdminActionsForDeviceRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,

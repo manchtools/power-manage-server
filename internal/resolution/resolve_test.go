@@ -513,12 +513,12 @@ type ttyFailingQuerier struct {
 	err error
 }
 
-func (q ttyFailingQuerier) ListSystemTtyActionsForPermissionHolders(ctx context.Context) ([]db.ListSystemTtyActionsForPermissionHoldersRow, error) {
+func (q ttyFailingQuerier) ListSystemTtyActionsForDevice(ctx context.Context, deviceID string) ([]db.ListSystemTtyActionsForDeviceRow, error) {
 	return nil, q.err
 }
 
 // TestResolveActions_TTYPermissionSource_FailsFastOnTtyError locks in
-// the rc13 safety contract: when ListSystemTtyActionsForPermissionHolders
+// the rc13 safety contract: when ListSystemTtyActionsForDevice
 // fails, ResolveActionsForDevice MUST surface the error rather than
 // quietly continuing without TTY rows. ProxySyncActions then fails
 // the sync, the agent retries on its interval, and nothing on disk
@@ -661,7 +661,7 @@ type globalTerminalAdminFailingQuerier struct {
 	err error
 }
 
-func (q globalTerminalAdminFailingQuerier) ListGlobalTerminalAdminActions(ctx context.Context) ([]db.ListGlobalTerminalAdminActionsRow, error) {
+func (q globalTerminalAdminFailingQuerier) ListTerminalAdminActionsForDevice(ctx context.Context, deviceID string) ([]db.ListTerminalAdminActionsForDeviceRow, error) {
 	return nil, q.err
 }
 
