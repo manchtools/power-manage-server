@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sort"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -111,9 +112,12 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 		string(eventtypes.UserCreatedWithRoles): {paths: []string{"password_hash"}},
 	},
 	"lps_password": {
-		// LPS rotations carry an array of {username, password}
-		// records under "rotations[].password".
-		"LpsPasswordRotated": {paths: []string{"rotations[].password"}},
+		// One LpsPasswordRotated event is emitted PER rotation
+		// (internal_handler.go), each a flat payloads.LpsPasswordRotated
+		// with the credential at top-level "password" — NOT an array under
+		// "rotations[].password" (the prior path matched nothing, so the
+		// encrypted credential was exposed). #352.
+		"LpsPasswordRotated": {paths: []string{"password"}},
 	},
 	"luks_key": {
 		// LUKS rotations are emitted via the internal handler with
@@ -135,28 +139,41 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 //
 // One schema per action type that carries secret-bearing parameters:
 //
-//   - SHELL        -> params.script + params.detectionScript
-//     (both can hold full shell bodies)
+//   - SHELL / SCRIPT_RUN -> params.script + params.detectionScript
+//     (both can hold full shell bodies; SCRIPT_RUN reuses ShellParams)
 //   - FILE         -> params.content (file body, may contain secrets)
+//   - SERVICE      -> params.unitContent (systemd/openrc unit body; can
+//     embed Environment= credentials)
 //   - ADMIN_POLICY -> params.customConfig (sudoers / doas.conf fragment;
 //     proto field renamed from unit_content)
 //   - REPOSITORY   -> params.gpgKey (GPG signing key material; URL form
 //     params.gpgKeyUrl is intentionally NOT scrubbed)
 //   - ENCRYPTION   -> params.presharedKey (LUKS bootstrap entropy)
+//   - WIFI         -> params.psk (WPA pre-shared key) + params.clientKey
+//     (EAP-TLS client private key PEM; caCert/clientCert are public, not
+//     scrubbed)
 //
-// Action types not in this map have no params secrets to scrub
-// (PACKAGE, UPDATE, REBOOT, SYNC, USER, GROUP, SSH, SSHD,
-// SYSTEMD/SERVICE, DIRECTORY, APP_IMAGE, DEB, RPM, FLATPAK, LPS).
-// LpsParams in particular looks like a hit but is not — the actual
-// rotated password is generated agent-side and surfaces via the
-// LpsPasswordRotated event (covered by eventRedactionSchemas), not
-// via the dispatch action_params.
+// SCRIPT_RUN, SERVICE and WIFI were absent from the original schema and
+// leaked (#352); the self-discovering TestActionParamsSecretFieldsCovered
+// walks the proto and fails if any sensitive params field lacks a path.
+//
+// Action types not in this map have no params secrets to scrub (PACKAGE,
+// UPDATE, REBOOT, SYNC, USER, GROUP, SSH, SSHD, DIRECTORY, APP_IMAGE, DEB,
+// RPM, FLATPAK, LPS, AGENT_UPDATE) — and even so, actionSchemaFor applies
+// the union of all the paths below as a fail-safe to any action/execution
+// event whose action_type is missing or unrecognised. LpsParams in
+// particular looks like a hit but is not — the rotated password is
+// generated agent-side and surfaces via the LpsPasswordRotated event
+// (covered by eventRedactionSchemas), not via the dispatch action_params.
 var actionRedactionSchemas = map[string]redactionSchema{
 	"ACTION_TYPE_SHELL":        {paths: []string{"params.script", "params.detectionScript"}},
+	"ACTION_TYPE_SCRIPT_RUN":   {paths: []string{"params.script", "params.detectionScript"}},
 	"ACTION_TYPE_FILE":         {paths: []string{"params.content"}},
+	"ACTION_TYPE_SERVICE":      {paths: []string{"params.unitContent"}},
 	"ACTION_TYPE_ADMIN_POLICY": {paths: []string{"params.customConfig"}},
 	"ACTION_TYPE_REPOSITORY":   {paths: []string{"params.gpgKey"}},
 	"ACTION_TYPE_ENCRYPTION":   {paths: []string{"params.presharedKey"}},
+	"ACTION_TYPE_WIFI":         {paths: []string{"params.psk", "params.clientKey"}},
 }
 
 // redactEventData removes sensitive fields from a serialized event
@@ -207,15 +224,15 @@ func redactEventData(streamType, eventType string, data []byte) string {
 	return string(out)
 }
 
-// schemaFor selects the redactionSchema for an event. For action
-// streams it dispatches on the action-type code embedded at
-// `payload.type`; for every other stream it looks up
-// (streamType, eventType) directly.
+// schemaFor selects the redactionSchema for an event. Action AND
+// execution streams both embed action params under `params.` and carry the
+// action type as the integer `action_type` field (NOT a top-level `type`
+// string — that key never existed in the emit, which is why the redactor
+// was dead before #352). Every other stream looks up (streamType, eventType)
+// directly.
 func schemaFor(streamType, eventType string, payload map[string]any) (redactionSchema, bool) {
-	if streamType == "action" {
-		typeCode, _ := payload["type"].(string)
-		s, ok := actionRedactionSchemas[typeCode]
-		return s, ok
+	if streamType == "action" || streamType == "execution" {
+		return actionSchemaFor(payload)
 	}
 	if streamSchemas, ok := eventRedactionSchemas[streamType]; ok {
 		s, ok := streamSchemas[eventType]
@@ -223,6 +240,80 @@ func schemaFor(streamType, eventType string, payload map[string]any) (redactionS
 	}
 	return redactionSchema{}, false
 }
+
+// actionSchemaFor resolves the redaction schema for an action/execution
+// event from its integer `action_type`. When that names a known
+// secret-bearing type, the precise per-type schema is returned (the design's
+// intent — scrub only that type's secret paths, never over-scrub). For a
+// known non-secret type (PACKAGE, …) there is nothing to scrub. In every
+// remaining case — `action_type` absent (a legacy ActionParamsUpdated, or an
+// execution result event), ACTION_TYPE_UNSPECIFIED (e.g. a COALESCE'd
+// replay), or an unrecognised enum from a newer server — it falls back to the
+// UNION of all known action-secret paths. Each union entry is an exact
+// `params.<key>` leaf, so the fallback is a no-op on any payload that does
+// not carry that secret, but it guarantees an event holding secret params can
+// never slip through unclassified.
+func actionSchemaFor(payload map[string]any) (redactionSchema, bool) {
+	if code, ok := actionTypeName(payload); ok && code != pm.ActionType_ACTION_TYPE_UNSPECIFIED.String() {
+		if s, known := actionRedactionSchemas[code]; known {
+			return s, true
+		}
+		if _, valid := pm.ActionType_value[code]; valid {
+			return redactionSchema{}, false // recognised type with no secret params
+		}
+	}
+	return allActionSecretPaths, true
+}
+
+// actionTypeName reads the integer `action_type` field from a decoded event
+// payload and maps it to its proto enum name (e.g. 200 ->
+// "ACTION_TYPE_SHELL"). encoding/json decodes numbers as float64; json.Number
+// and the native integer types are accepted defensively. Returns ("", false)
+// when the field is absent or not a number.
+func actionTypeName(payload map[string]any) (string, bool) {
+	v, present := payload["action_type"]
+	if !present {
+		return "", false
+	}
+	var n int32
+	switch t := v.(type) {
+	case float64:
+		n = int32(t)
+	case json.Number:
+		i, err := t.Int64()
+		if err != nil {
+			return "", false
+		}
+		n = int32(i)
+	case int32:
+		n = t
+	case int:
+		n = int32(t)
+	default:
+		return "", false
+	}
+	return pm.ActionType(n).String(), true
+}
+
+// allActionSecretPaths is the union of every action-redaction path, used as
+// the fail-safe in actionSchemaFor when an action/execution event lacks a
+// usable action_type. Built from actionRedactionSchemas so a newly-added
+// secret type's paths are included automatically; sorted for deterministic
+// redaction ordering.
+var allActionSecretPaths = func() redactionSchema {
+	seen := map[string]bool{}
+	var paths []string
+	for _, s := range actionRedactionSchemas {
+		for _, p := range s.paths {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	sort.Strings(paths)
+	return redactionSchema{paths: paths}
+}()
 
 // redactPath descends the dot-separated path inside a decoded JSON
 // payload and replaces the leaf with "[REDACTED]". The "[]" segment

@@ -308,6 +308,11 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	}
 
 	eventData := map[string]any{
+		// action_type lets the audit redactor classify the updated params
+		// (and keeps the event self-describing for replay). The action's
+		// type is immutable, so the existing projection value is authoritative
+		// (#352).
+		"action_type":   existing.ActionType,
 		"params":        params,
 		"desired_state": int32(req.Msg.DesiredState),
 	}
