@@ -44,9 +44,25 @@ jobs:
       - name: Run unit tests
         run: go test -count=1 ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/... ./internal/eventtypes/...
 
-  integration:
-    name: Integration Tests
+  # Integration tests are sharded across parallel runners so wall-clock is
+  # the slowest shard (api) rather than the sum of all packages (#338). Each
+  # shard brings up its own testcontainers, so a Docker-registry flake (or a
+  # failure) only re-runs that one shard, not the whole suite. The `api`
+  # package dominates, so it gets its own shard; the rest are balanced into
+  # two. When you add a new internal/<pkg>, drop it in the smallest shard.
+  integration-shard:
+    name: Integration Tests (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: api
+            packages: ./internal/api/...
+          - name: store-projectors
+            packages: ./internal/store/... ./internal/projectors/...
+          - name: handlers-services
+            packages: ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/...
     steps:
       - uses: actions/checkout@v5
 
@@ -58,5 +74,23 @@ jobs:
       # spins up a Postgres testcontainer to wire the store + the
       # listener factory; covered here so the 23 listener files +
       # 14 sibling test files get exercised on every push.
-      - name: Run integration tests
-        run: go test -count=1 -timeout 30m ./internal/store/... ./internal/api/... ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/... ./internal/projectors/...
+      - name: Run integration tests (${{ matrix.shard.name }})
+        run: go test -count=1 -timeout 30m ${{ matrix.shard.packages }}
+
+  # Stable aggregate check: branch protection requires "Integration Tests"
+  # (the shard jobs carry per-shard suffixes), so this gate fails unless
+  # every shard succeeded. `if: always()` so a shard failure still resolves
+  # this gate (to failed) instead of leaving it skipped/pending.
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    needs: integration-shard
+    if: always()
+    steps:
+      - name: Require all integration shards to pass
+        run: |
+          if [ "${{ needs.integration-shard.result }}" != "success" ]; then
+            echo "One or more integration shards failed: ${{ needs.integration-shard.result }}"
+            exit 1
+          fi
+          echo "All integration shards passed."
