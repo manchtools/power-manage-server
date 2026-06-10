@@ -164,3 +164,80 @@ func TestEnforceUserScope(t *testing.T) {
 		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
 	})
 }
+
+func TestTargetKindFor(t *testing.T) {
+	assert.Equal(t, TargetDevice, TargetKindFor("ListDevices"))
+	assert.Equal(t, TargetUser, TargetKindFor("GetUser"))
+	assert.Equal(t, TargetUnspecified, TargetKindFor("GetCurrentUser"))
+	assert.Equal(t, TargetUnspecified, TargetKindFor("NoSuchPermission"), "unknown key is the safe non-scopable default")
+}
+
+func TestRolePermissionsScopableWith(t *testing.T) {
+	t.Run("all device perms scopable with device_group", func(t *testing.T) {
+		_, ok := RolePermissionsScopableWith([]string{"ListDevices", "GetDevice", "StartTerminal"}, ScopeKindDeviceGroup)
+		assert.True(t, ok)
+	})
+	t.Run("a non-device perm rejects a device_group scope", func(t *testing.T) {
+		bad, ok := RolePermissionsScopableWith([]string{"ListDevices", "GetUser"}, ScopeKindDeviceGroup)
+		assert.False(t, ok)
+		assert.Equal(t, "GetUser", bad)
+	})
+	t.Run("a TargetUnspecified perm is never scopable", func(t *testing.T) {
+		bad, ok := RolePermissionsScopableWith([]string{"GetCurrentUser"}, ScopeKindDeviceGroup)
+		assert.False(t, ok)
+		assert.Equal(t, "GetCurrentUser", bad)
+	})
+	t.Run("user perms scopable with user_group", func(t *testing.T) {
+		_, ok := RolePermissionsScopableWith([]string{"GetUser"}, ScopeKindUserGroup)
+		assert.True(t, ok)
+	})
+	t.Run("device perm not scopable with user_group", func(t *testing.T) {
+		bad, ok := RolePermissionsScopableWith([]string{"ListDevices"}, ScopeKindUserGroup)
+		assert.False(t, ok)
+		assert.Equal(t, "ListDevices", bad)
+	})
+	t.Run("unknown scope kind is not scopable", func(t *testing.T) {
+		_, ok := RolePermissionsScopableWith([]string{"ListDevices"}, "garbage")
+		assert.False(t, ok)
+	})
+}
+
+func TestEnforceGrantScopeAuthority(t *testing.T) {
+	t.Run("global AssignRoleScope may grant any scope", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission})
+		assert.NoError(t, EnforceGrantScopeAuthority(ctx, ScopeKindDeviceGroup, "dg-anything"))
+	})
+	t.Run("scoped AssignRoleScope may grant its own scope", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission, ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		assert.NoError(t, EnforceGrantScopeAuthority(ctx, ScopeKindDeviceGroup, "dg1"))
+	})
+	t.Run("scoped AssignRoleScope may NOT grant a different scope", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission, ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		err := EnforceGrantScopeAuthority(ctx, ScopeKindDeviceGroup, "dg2")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+	t.Run("device-scoped authority does not authorize a user_group grant", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission, ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		err := EnforceGrantScopeAuthority(ctx, ScopeKindUserGroup, "dg1")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+}
+
+func TestEnforceUnscopedGrantAuthority(t *testing.T) {
+	t.Run("no scope authority (ordinary admin) may grant unscoped", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: "AssignRoleToUser"})
+		assert.NoError(t, EnforceUnscopedGrantAuthority(ctx))
+	})
+	t.Run("global AssignRoleScope (org admin) may grant unscoped", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission})
+		assert.NoError(t, EnforceUnscopedGrantAuthority(ctx))
+	})
+	t.Run("scope-limited admin may NOT grant unscoped", func(t *testing.T) {
+		ctx := ctxWithGrants(ScopedGrant{Permission: AssignRoleScopePermission, ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		err := EnforceUnscopedGrantAuthority(ctx)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+}

@@ -54,6 +54,19 @@ SELECT user_id FROM user_roles_projection WHERE role_id = $1;
 -- name: UserHasRole :one
 SELECT EXISTS(SELECT 1 FROM user_roles_projection WHERE user_id = $1 AND role_id = $2) AS has_role;
 
+-- name: UserHasScopedRole :one
+-- Existence of a SPECIFIC (user, role, scope) grant. IS NOT DISTINCT
+-- FROM is NULL-aware: NULL scope params match the unscoped grant; set
+-- params match that exact scoped grant. Used by RevokeRoleFromUser to
+-- reject "revoke a grant that doesn't exist" rather than silently
+-- no-op (server #7 S5).
+SELECT EXISTS(
+    SELECT 1 FROM user_roles_projection
+    WHERE user_id = $1 AND role_id = $2
+      AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
+      AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT
+) AS has_role;
+
 -- name: UpdateSystemRolePermissions :execrows
 UPDATE roles_projection SET permissions = $1, updated_at = NOW() WHERE id = $2 AND is_system = TRUE;
 

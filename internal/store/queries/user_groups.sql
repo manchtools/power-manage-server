@@ -35,6 +35,18 @@ SELECT EXISTS(
     WHERE group_id = $1 AND role_id = $2
 ) AS has_role;
 
+-- name: UserGroupHasScopedRole :one
+-- Existence of a SPECIFIC (group, role, scope) grant. NULL-aware via
+-- IS NOT DISTINCT FROM: NULL scope params match the unscoped grant.
+-- Used by RevokeRoleFromUserGroup to reject revoking a grant that
+-- doesn't exist at the targeted scope (server #7 S5).
+SELECT EXISTS(
+    SELECT 1 FROM user_group_roles_projection
+    WHERE group_id = $1 AND role_id = $2
+      AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
+      AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT
+) AS has_role;
+
 -- name: ListUserGroupsForUser :many
 SELECT ug.* FROM user_groups_projection ug
 JOIN user_group_members_projection ugm ON ugm.group_id = ug.id

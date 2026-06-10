@@ -506,9 +506,15 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
+	// Validate the optional grant scope (#7 S5).
+	scopeKind, scopeID, err := validateAssignGrantScope(ctx, q, req.Msg.ScopeKind, req.Msg.ScopeId)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, roleID := range roleIDs {
 		// Verify role exists
-		_, err = q.GetRoleByID(ctx, roleID)
+		role, err := q.GetRoleByID(ctx, roleID)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
@@ -516,26 +522,40 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
 		}
 
-		// Check if already assigned — skip silently in batch
-		hasRole, err := q.UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
-			GroupID: req.Msg.GroupId,
-			RoleID:  roleID,
-		})
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
-		}
-		if hasRole {
-			continue
+		if err := rejectUnscopableRole(ctx, scopeKind, role.Permissions); err != nil {
+			return nil, err
 		}
 
+		// Unscoped grants are unique per (group, role) — skip a redundant
+		// re-assign. Scoped grants rely on the idempotent projector insert
+		// (the 2-tuple check can't distinguish scopes).
+		if scopeKind == "" {
+			hasRole, err := q.UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
+				GroupID: req.Msg.GroupId,
+				RoleID:  roleID,
+			})
+			if err != nil {
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+			}
+			if hasRole {
+				continue
+			}
+		}
+
+		sk, si := scopePtrs(scopeKind, scopeID)
 		streamID := req.Msg.GroupId + ":role:" + roleID
+		if scopeKind != "" {
+			streamID += ":" + scopeID
+		}
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupRoleAssigned),
 			Data: payloads.UserGroupRoleAssigned{
-				GroupID: req.Msg.GroupId,
-				RoleID:  roleID,
+				GroupID:   req.Msg.GroupId,
+				RoleID:    roleID,
+				ScopeKind: sk,
+				ScopeID:   si,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -557,15 +577,37 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 		return nil, err
 	}
 
-	// Check if the role is assigned
-	hasRole, err := h.store.Queries().UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
-		GroupID: req.Msg.GroupId,
-		RoleID:  req.Msg.RoleId,
+	// Resolve the scope tuple identifying WHICH grant to revoke.
+	scopeKind := scopeKindString(req.Msg.ScopeKind)
+	scopeID := req.Msg.ScopeId
+	if (scopeKind == "") != (scopeID == "") {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "scope_kind and scope_id must be set together")
+	}
+	sk, si := scopePtrs(scopeKind, scopeID)
+
+	q := h.store.Queries()
+	// Does the SPECIFIC targeted grant exist?
+	hasScoped, err := q.UserGroupHasScopedRole(ctx, db.UserGroupHasScopedRoleParams{
+		GroupID: req.Msg.GroupId, RoleID: req.Msg.RoleId, ScopeKind: sk, ScopeID: si,
 	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
-	if !hasRole {
+	if !hasScoped {
+		// The targeted grant is absent. Distinguish "assigned at a
+		// different scope" (caller targeted the wrong grant) from "not
+		// assigned at all" to surface ambiguity rather than no-op (#7 S5).
+		hasAny, err := q.UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
+			GroupID: req.Msg.GroupId,
+			RoleID:  req.Msg.RoleId,
+		})
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+		}
+		if hasAny {
+			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeFailedPrecondition,
+				"role is not assigned to this group at the specified scope (it is assigned at a different scope)")
+		}
 		return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "user group does not have this role")
 	}
 
@@ -575,13 +617,18 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	}
 
 	streamID := req.Msg.GroupId + ":role:" + req.Msg.RoleId
+	if scopeKind != "" {
+		streamID += ":" + scopeID
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "user_group",
 		StreamID:   streamID,
 		EventType:  string(eventtypes.UserGroupRoleRevoked),
 		Data: payloads.UserGroupRoleRevoked{
-			GroupID: req.Msg.GroupId,
-			RoleID:  req.Msg.RoleId,
+			GroupID:   req.Msg.GroupId,
+			RoleID:    req.Msg.RoleId,
+			ScopeKind: sk,
+			ScopeID:   si,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

@@ -325,3 +325,21 @@ func ValidPermissionKeys() map[string]bool {
 	}
 	return m
 }
+
+// permTargetKinds indexes permission key -> target kind, built once from
+// AllPermissions so the role-assignment handler can validate scopability
+// without rescanning the slice per call.
+var permTargetKinds = func() map[string]PermissionTargetKind {
+	m := make(map[string]PermissionTargetKind)
+	for _, p := range AllPermissions() {
+		m[p.Key] = p.TargetKind
+	}
+	return m
+}()
+
+// TargetKindFor returns the target kind of a permission key. An unknown
+// key (or the zero value) is TargetUnspecified — not scopable — which is
+// the safe default for the self-discovering scopability check (#7 S5).
+func TargetKindFor(key string) PermissionTargetKind {
+	return permTargetKinds[key]
+}
