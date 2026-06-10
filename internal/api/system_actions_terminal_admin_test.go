@@ -23,6 +23,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
@@ -153,9 +154,12 @@ func TestBootstrapGlobalTerminalAdminActions_ActionTypeIsAdminPolicy(t *testing.
 // ReconcileGlobalTerminalAdminActions — S3 of #70.
 //
 // Recomputes users[] on both globals based on the permission cohort.
-// A user enters the LIMITED cohort iff they hold StartTerminal AND
-// TerminalAdminLimited AND are non-disabled / non-deleted / have a
-// linux_username. FULL is the same shape against TerminalAdminFull.
+// #7 Model Y: a user enters the LIMITED cohort iff they hold an UNSCOPED
+// TerminalAdminLimited grant AND are non-disabled / non-deleted / have a
+// linux_username. StartTerminal is NOT required — it drives the pm-tty
+// account (a separate concern); the sudo policy is inert/harmless when
+// no account exists. FULL is the same shape against TerminalAdminFull.
+// (Device-group-scoped grants drive the per-scope actions, not these.)
 //
 // The reconciler MUST be a no-op when nothing has changed — repeated
 // ticks under a steady population must not churn the signature, or
@@ -202,11 +206,12 @@ func TestReconcileGlobalTerminalAdmin_AddsHolderWithBothPerms(t *testing.T) {
 		"user holding StartTerminal + TerminalAdminLimited must be in the Limited cohort as pm-tty-<linuxusername>")
 }
 
-// THE GATE: a user with TerminalAdminLimited alone (no StartTerminal)
-// must NOT enter the Limited cohort. This is the "no implies" design
-// decision — admins can grant either permission independently; the
-// reconciler enforces the AND at materialization time.
-func TestReconcileGlobalTerminalAdmin_ExcludesHolderMissingStartTerminal(t *testing.T) {
+// #7 Model Y: a user with TerminalAdminLimited alone (no StartTerminal)
+// MUST enter the Limited cohort — the sudo cohort is driven by
+// TerminalAdmin alone (StartTerminal drives only the pm-tty account, a
+// separate concern). The sudo policy is harmless/inert on devices where
+// the account doesn't exist. This reverses the pre-#7 intersection gate.
+func TestReconcileGlobalTerminalAdmin_IncludesHolderWithoutStartTerminal(t *testing.T) {
 	m, st := newManagerForTest(t)
 	require.NoError(t, m.BootstrapGlobalTerminalAdminActions(context.Background()))
 
@@ -219,8 +224,54 @@ func TestReconcileGlobalTerminalAdmin_ExcludesHolderMissingStartTerminal(t *test
 	require.NoError(t, m.ReconcileGlobalTerminalAdminActions(context.Background()))
 
 	limited := loadAdminPolicy(t, st, globalTerminalAdminLimitedActionName)
-	assert.Empty(t, limited.Users,
-		"user with TerminalAdminLimited but no StartTerminal must NOT enter the cohort")
+	assert.Equal(t, []string{"pm-tty-alice"}, limited.Users,
+		"user with TerminalAdminLimited (even without StartTerminal) must enter the cohort")
+}
+
+// A user with StartTerminal alone (no TerminalAdmin*) must NOT enter any
+// sudo cohort — StartTerminal grants the account/session, not sudo.
+func TestReconcileGlobalTerminalAdmin_ExcludesStartTerminalOnly(t *testing.T) {
+	m, st := newManagerForTest(t)
+	require.NoError(t, m.BootstrapGlobalTerminalAdminActions(context.Background()))
+
+	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "viewer")
+	setLinuxUsername(t, st, userID, "alice")
+	grantPermsViaRole(t, st, actorID, userID, "TerminalOnly", []string{"StartTerminal"})
+
+	require.NoError(t, m.ReconcileGlobalTerminalAdminActions(context.Background()))
+
+	assert.Empty(t, loadAdminPolicy(t, st, globalTerminalAdminLimitedActionName).Users,
+		"StartTerminal alone grants no sudo cohort membership")
+	assert.Empty(t, loadAdminPolicy(t, st, globalTerminalAdminFullActionName).Users)
+}
+
+// A device-group-SCOPED TerminalAdmin grant must NOT enter the GLOBAL
+// cohort — it drives the per-scope action (follow-up). Only unscoped
+// (global) grants feed the global actions.
+func TestReconcileGlobalTerminalAdmin_ExcludesScopedGrant(t *testing.T) {
+	m, st := newManagerForTest(t)
+	require.NoError(t, m.BootstrapGlobalTerminalAdminActions(context.Background()))
+
+	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "viewer")
+	setLinuxUsername(t, st, userID, "alice")
+	roleID := testutil.CreateTestRole(t, st, actorID, "ScopedTA", []string{"TerminalAdminLimited"})
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "user_role",
+		StreamID:   userID + ":" + roleID + ":dg-1",
+		EventType:  string(eventtypes.UserRoleAssigned),
+		Data: map[string]any{
+			"user_id": userID, "role_id": roleID,
+			"scope_kind": "device_group", "scope_id": "dg-1",
+		},
+		ActorType: "user", ActorID: actorID,
+	}))
+
+	require.NoError(t, m.ReconcileGlobalTerminalAdminActions(context.Background()))
+
+	assert.Empty(t, loadAdminPolicy(t, st, globalTerminalAdminLimitedActionName).Users,
+		"a device-group-scoped TerminalAdmin grant must NOT enter the global cohort")
 }
 
 func TestReconcileGlobalTerminalAdmin_RemovesRevokedHolder(t *testing.T) {
