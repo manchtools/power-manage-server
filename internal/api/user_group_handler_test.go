@@ -325,6 +325,9 @@ func TestRevokeRoleFromUserGroup(t *testing.T) {
 	assert.Empty(t, resp.Msg.Group.Roles)
 }
 
+// Revoking a role the group doesn't have at all is an idempotent no-op
+// (success), aligned with RevokeRoleFromUser. The wrong-scope case still
+// errors with FailedPrecondition (see the scope handler tests).
 func TestRevokeRoleFromUserGroup_NotAssigned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewUserGroupHandler(st, slog.Default())
@@ -338,8 +341,7 @@ func TestRevokeRoleFromUserGroup_NotAssigned(t *testing.T) {
 		GroupId: groupID,
 		RoleId:  roleID,
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	require.NoError(t, err)
 }
 
 func TestListUserGroupsForUser(t *testing.T) {

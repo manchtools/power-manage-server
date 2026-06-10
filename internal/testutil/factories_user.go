@@ -59,9 +59,32 @@ func AuthContext(id, email string, permissions []string) context.Context {
 	})
 }
 
+// AuthContextScoped returns a context carrying both a flat permission
+// list and the detailed scoped grants the #7 scope-enforcement helpers
+// read (DeviceScopeFilterFor, EnforceGrantScopeAuthority, etc.). Use
+// this to model a scope-limited admin in handler tests.
+func AuthContextScoped(id, email string, permissions []string, grants []auth.ScopedGrant) context.Context {
+	return auth.WithUser(context.Background(), &auth.UserContext{
+		ID:           id,
+		Email:        email,
+		Permissions:  permissions,
+		ScopedGrants: grants,
+	})
+}
+
 // AdminContext returns a context with an admin user (all permissions).
+// To mirror production — where the flat permission list is DERIVED from
+// the user's grants — every admin permission is also carried as an
+// unscoped (global) scoped grant, so the #7 scope-authority checks see
+// the admin as globally unrestricted rather than as having no scope
+// authority.
 func AdminContext(id string) context.Context {
-	return AuthContext(id, fmt.Sprintf("admin-%s@test.com", id[:8]), auth.AdminPermissions())
+	perms := auth.AdminPermissions()
+	grants := make([]auth.ScopedGrant, len(perms))
+	for i, p := range perms {
+		grants[i] = auth.ScopedGrant{Permission: p}
+	}
+	return AuthContextScoped(id, fmt.Sprintf("admin-%s@test.com", id[:8]), perms, grants)
 }
 
 // UserContext returns a context with a regular user (default permissions).

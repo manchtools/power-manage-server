@@ -294,10 +294,17 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
+	// Validate the optional grant scope (paired-or-neither, AssignRoleScope
+	// gate + escalation bound, group existence). Role-independent (#7 S5).
+	scopeKind, scopeID, err := validateAssignGrantScope(ctx, q, req.Msg.ScopeKind, req.Msg.ScopeId)
+	if err != nil {
+		return nil, err
+	}
+
 	assignedAny := false
 	for _, roleID := range roleIDs {
 		// Verify role exists
-		_, err = q.GetRoleByID(ctx, roleID)
+		role, err := q.GetRoleByID(ctx, roleID)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
@@ -305,26 +312,44 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
 		}
 
-		// Check if already assigned — skip silently in batch
-		hasRole, err := q.UserHasRole(ctx, db.UserHasRoleParams{
-			UserID: req.Msg.UserId,
-			RoleID: roleID,
-		})
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
-		}
-		if hasRole {
-			continue
+		// Every permission in a scoped grant's role must accept this
+		// scope kind (target_kind match) — a no-op for unscoped grants.
+		if err := rejectUnscopableRole(ctx, scopeKind, role.Permissions); err != nil {
+			return nil, err
 		}
 
+		// Unscoped grants are unique per (user, role) — skip a redundant
+		// re-assign. Scoped grants skip the pre-check: the projector's
+		// INSERT ... ON CONFLICT DO NOTHING (both partial unique indexes)
+		// makes a redundant scoped re-assign an idempotent no-op, and the
+		// 2-tuple UserHasRole can't distinguish scopes.
+		if scopeKind == "" {
+			hasRole, err := q.UserHasRole(ctx, db.UserHasRoleParams{
+				UserID: req.Msg.UserId,
+				RoleID: roleID,
+			})
+			if err != nil {
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+			}
+			if hasRole {
+				continue
+			}
+		}
+
+		sk, si := scopePtrs(scopeKind, scopeID)
 		streamID := req.Msg.UserId + ":" + roleID
+		if scopeKind != "" {
+			streamID += ":" + scopeID
+		}
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_role",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserRoleAssigned),
 			Data: payloads.UserRoleAssigned{
-				UserID: req.Msg.UserId,
-				RoleID: roleID,
+				UserID:    req.Msg.UserId,
+				RoleID:    roleID,
+				ScopeKind: sk,
+				ScopeID:   si,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
@@ -374,30 +399,65 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	// Check if the user currently has the role — skip the event on retry/idempotent call
-	hasRole, err := h.store.Repos().Role.UserHasRole(ctx, req.Msg.UserId, req.Msg.RoleId)
+	// Resolve the scope tuple identifying WHICH grant to revoke.
+	scopeKind, ok := scopeKindString(req.Msg.ScopeKind)
+	if !ok {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "unknown scope_kind")
+	}
+	scopeID := req.Msg.ScopeId
+	if (scopeKind == "") != (scopeID == "") {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "scope_kind and scope_id must be set together")
+	}
+	sk, si := scopePtrs(scopeKind, scopeID)
+
+	q := h.store.Queries()
+	// Does the SPECIFIC targeted grant exist?
+	hasScoped, err := q.UserHasScopedRole(ctx, db.UserHasScopedRoleParams{
+		UserID: req.Msg.UserId, RoleID: req.Msg.RoleId, ScopeKind: sk, ScopeID: si,
+	})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
 	}
 
-	if hasRole {
+	if hasScoped {
 		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
+		if scopeKind != "" {
+			streamID += ":" + scopeID
+		}
 		if err := appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_role",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserRoleRevoked),
 			Data: payloads.UserRoleRevoked{
-				UserID: req.Msg.UserId,
-				RoleID: req.Msg.RoleId,
+				UserID:    req.Msg.UserId,
+				RoleID:    req.Msg.RoleId,
+				ScopeKind: sk,
+				ScopeID:   si,
 			},
 			ActorType: "user",
 			ActorID:   userCtx.ID,
 		}, "failed to revoke role"); err != nil {
 			return nil, err
 		}
+	} else {
+		// The targeted grant doesn't exist. If the role IS assigned at a
+		// different scope, the caller targeted the wrong grant — surface
+		// that rather than silently no-op (#7 S5).
+		hasAny, err := h.store.Repos().Role.UserHasRole(ctx, req.Msg.UserId, req.Msg.RoleId)
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check role assignment")
+		}
+		if hasAny {
+			return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeFailedPrecondition,
+				"role is not assigned at the specified scope (it is assigned at a different scope)")
+		}
+		// Nothing assigned anywhere — idempotent no-op: no event, and no
+		// session bump (nothing changed). Matches RevokeRoleFromUserGroup.
+		return connect.NewResponse(&pm.RevokeRoleFromUserResponse{}), nil
 	}
 
-	// Bump user's session version to invalidate cached permissions
+	// A grant was revoked — bump the user's session version to invalidate
+	// cached permissions.
 	if err := h.bumpUserSessionVersion(ctx, req.Msg.UserId, userCtx.ID); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to invalidate user session after role revocation")
 	}

@@ -1054,6 +1054,33 @@ func (q *Queries) UserGroupHasRole(ctx context.Context, arg UserGroupHasRolePara
 	return has_role, err
 }
 
+const userGroupHasScopedRole = `-- name: UserGroupHasScopedRole :one
+SELECT EXISTS(
+    SELECT 1 FROM user_group_roles_projection
+    WHERE group_id = $1 AND role_id = $2
+      AND scope_kind IS NOT DISTINCT FROM $3::TEXT
+      AND scope_id   IS NOT DISTINCT FROM $4::TEXT
+) AS has_role
+`
+
+// UserGroupHasScopedRoleParams targets a specific (group, role, scope)
+// grant. ScopeKind/ScopeID nil together = the unscoped grant.
+// Hand-maintained alongside UserGroupHasRole; sync with
+// queries/user_groups.sql by hand (#7 S5).
+type UserGroupHasScopedRoleParams struct {
+	GroupID   string  `json:"group_id"`
+	RoleID    string  `json:"role_id"`
+	ScopeKind *string `json:"scope_kind"`
+	ScopeID   *string `json:"scope_id"`
+}
+
+func (q *Queries) UserGroupHasScopedRole(ctx context.Context, arg UserGroupHasScopedRoleParams) (bool, error) {
+	row := q.db.QueryRow(ctx, userGroupHasScopedRole, arg.GroupID, arg.RoleID, arg.ScopeKind, arg.ScopeID)
+	var has_role bool
+	err := row.Scan(&has_role)
+	return has_role, err
+}
+
 const wipeUserGroupMembers = `-- name: WipeUserGroupMembers :exec
 DELETE FROM user_group_members_projection WHERE group_id = $1
 `
