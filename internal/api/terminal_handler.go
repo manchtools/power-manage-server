@@ -129,6 +129,17 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	// `StartTerminal:self` scope that checks the device's
 	// linux_username matches userCtx.LinuxUsername.
 	filterUserID := userFilterID(ctx, "StartTerminal")
+	// #7 device-group scope: a StartTerminal:scope=dgX holder may open a
+	// session only on devices in dgX. Applies to the unrestricted tier
+	// (filterUserID == nil means the caller holds the base StartTerminal
+	// permission — scoped or global); the :assigned tier is governed by
+	// the owner filter below. Checked before the lookup so an out-of-scope
+	// device is denied, not leaked via NotFound-vs-PermissionDenied.
+	if filterUserID == nil {
+		if err := auth.EnforceDeviceScope(ctx, newScopeResolver(h.store), "StartTerminal", req.Msg.DeviceId); err != nil {
+			return nil, err
+		}
+	}
 	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId, OwnerScope: filterUserID}); err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found")
