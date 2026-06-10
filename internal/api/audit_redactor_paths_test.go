@@ -40,7 +40,7 @@ import (
 func fullyPopulatedParamsFor(t *testing.T, actionType string) proto.Message {
 	t.Helper()
 	switch actionType {
-	case "ACTION_TYPE_SHELL":
+	case "ACTION_TYPE_SHELL", "ACTION_TYPE_SCRIPT_RUN":
 		return &pm.ShellParams{
 			Script:           "S",
 			DetectionScript:  "D",
@@ -48,6 +48,20 @@ func fullyPopulatedParamsFor(t *testing.T, actionType string) proto.Message {
 			RunAsRoot:        true,
 			Environment:      map[string]string{"K": "V"},
 			WorkingDirectory: "/tmp",
+		}
+	case "ACTION_TYPE_SERVICE":
+		return &pm.ServiceParams{
+			UnitName:    "foo.service",
+			UnitContent: "U",
+		}
+	case "ACTION_TYPE_WIFI":
+		return &pm.WifiParams{
+			Ssid:       "corp",
+			AuthType:   pm.WifiAuthType(1),
+			Psk:        "P",
+			ClientKey:  "K",
+			ClientCert: "C",
+			CaCert:     "CA",
 		}
 	case "ACTION_TYPE_FILE":
 		return &pm.FileParams{
