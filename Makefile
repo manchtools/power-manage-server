@@ -32,17 +32,20 @@ help:
 #     pgtype.Timestamptz. Drop the no-op cast and sqlc infers the param
 #     type from the bound column.
 #
-# NOTE (#336): the committed generated/ has accumulated hand-maintenance
-# that diverges from a clean regen — most notably Event.SequenceNum is
+# HISTORY (#336): the committed generated/ had years of hand-maintenance
+# that diverged from a clean regen — most notably Event.SequenceNum was
 # *int64 (the column is `bigint NOT NULL`, so sqlc emits int64) with ~131
-# deref() call sites built around it, plus the hand-written #7 scope-grant
-# queries. A first full regen therefore surfaces a real reconciliation,
-# not a no-op — review the diff before committing.
+# deref() call sites built around it, plus hand-written #7 scope-grant
+# queries. That divergence was fully reconciled in #349, so a regen is now
+# a no-op against committed main — and the sqlc-drift CI job keeps it that
+# way. If sqlc-generate produces a diff, the queries/config changed: commit
+# the regenerated output, never hand-edit generated/.
 sqlc-generate:
 	cd internal/store && docker run --rm \
 		-v "$$(pwd)":/src:Z -w /src $(SQLC_IMAGE) generate
 
-# Fail if generated code is out of date. NOT wired into CI yet — the
-# historical divergence above must be reconciled first (#336 follow-up).
+# Fail if generated code is out of date. Wired into CI as the "sqlc drift"
+# workflow (.github/workflows/sqlc.yml), which runs on any change to
+# queries/, migrations/, sqlc.yaml, the overlay, generated/, or this file.
 sqlc-check: sqlc-generate
 	git diff --exit-code internal/store/generated
