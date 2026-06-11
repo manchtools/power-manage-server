@@ -9,27 +9,35 @@ import (
 	"context"
 )
 
-const completeLogQueryResult = `-- name: CompleteLogQueryResult :exec
+const completeLogQueryResult = `-- name: CompleteLogQueryResult :execrows
 UPDATE log_query_results
 SET completed = TRUE, success = $2, error = $3, logs = $4, completed_at = NOW()
-WHERE query_id = $1
+WHERE query_id = $1 AND device_id = $5
 `
 
 type CompleteLogQueryResultParams struct {
-	QueryID string `json:"query_id"`
-	Success bool   `json:"success"`
-	Error   string `json:"error"`
-	Logs    string `json:"logs"`
+	QueryID  string `json:"query_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error"`
+	Logs     string `json:"logs"`
+	DeviceID string `json:"device_id"`
 }
 
-func (q *Queries) CompleteLogQueryResult(ctx context.Context, arg CompleteLogQueryResultParams) error {
-	_, err := q.db.Exec(ctx, completeLogQueryResult,
+// device_id is matched so a compromised agent can't complete another device's
+// query result by supplying its (non-secret) query_id. :execrows lets the
+// caller detect a 0-row update (unknown query or wrong device) and drop it.
+func (q *Queries) CompleteLogQueryResult(ctx context.Context, arg CompleteLogQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeLogQueryResult,
 		arg.QueryID,
 		arg.Success,
 		arg.Error,
 		arg.Logs,
+		arg.DeviceID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createLogQueryResult = `-- name: CreateLogQueryResult :exec

@@ -208,6 +208,16 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	existingExec, err := w.store.Repos().Execution.Get(ctx, resultID)
 	if err == nil {
+		// The reporting device must OWN this execution. resultID (an execution
+		// ID) is non-secret, so without this a compromised agent could write
+		// forged results onto another device's execution by supplying its ID
+		// (cross-device result spoofing). The agent-scheduled path below is
+		// already device-safe — its execution ID is derived from deviceID.
+		if existingExec.DeviceID != deviceID {
+			logger.Warn("rejecting execution result: execution belongs to a different device",
+				"execution_device_id", existingExec.DeviceID)
+			return fmt.Errorf("execution %s does not belong to reporting device %s", resultID, deviceID)
+		}
 		executionID = existingExec.ID
 		if existingExec.ActionID != nil {
 			actionID = *existingExec.ActionID
@@ -466,12 +476,24 @@ func (w *InboxWorker) handleOSQueryResult(ctx context.Context, t *asynq.Task) er
 		"success", payload.Success,
 	)
 
-	return w.store.Queries().CompleteOSQueryResult(ctx, db.CompleteOSQueryResultParams{
-		QueryID: payload.QueryID,
-		Success: payload.Success,
-		Error:   payload.Error,
-		Rows:    payload.RowsJSON,
+	n, err := w.store.Queries().CompleteOSQueryResult(ctx, db.CompleteOSQueryResultParams{
+		QueryID:  payload.QueryID,
+		Success:  payload.Success,
+		Error:    payload.Error,
+		Rows:     payload.RowsJSON,
+		DeviceID: payload.DeviceID,
 	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		// No matching pending query for THIS device — either an unknown/expired
+		// query, or a result reported for a query owned by a different device
+		// (cross-device spoofing). Drop it; a retry won't change the match.
+		w.logger.Warn("dropping osquery result: no matching pending query for this device",
+			"query_id", payload.QueryID, "device_id", payload.DeviceID)
+	}
+	return nil
 }
 
 func (w *InboxWorker) handleLogQueryResult(ctx context.Context, t *asynq.Task) error {
@@ -486,12 +508,21 @@ func (w *InboxWorker) handleLogQueryResult(ctx context.Context, t *asynq.Task) e
 		"success", payload.Success,
 	)
 
-	return w.store.Queries().CompleteLogQueryResult(ctx, db.CompleteLogQueryResultParams{
-		QueryID: payload.QueryID,
-		Success: payload.Success,
-		Error:   payload.Error,
-		Logs:    payload.Logs,
+	n, err := w.store.Queries().CompleteLogQueryResult(ctx, db.CompleteLogQueryResultParams{
+		QueryID:  payload.QueryID,
+		Success:  payload.Success,
+		Error:    payload.Error,
+		Logs:     payload.Logs,
+		DeviceID: payload.DeviceID,
 	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		w.logger.Warn("dropping log query result: no matching pending query for this device",
+			"query_id", payload.QueryID, "device_id", payload.DeviceID)
+	}
+	return nil
 }
 
 func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) error {
