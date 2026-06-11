@@ -310,3 +310,9 @@ func TestTrustPool(t *testing.T) {
 	pool := c.TrustPool()
 	assert.NotNil(t, pool)
 }
+
+// TestFingerprintFromCert_NilSafe pins the defensive nil guard — the gateway
+// mTLS path must never panic computing a revocation fingerprint.
+func TestFingerprintFromCert_NilSafe(t *testing.T) {
+	assert.Empty(t, ca.FingerprintFromCert(nil))
+}

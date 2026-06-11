@@ -17,6 +17,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
@@ -31,12 +32,18 @@ type DeviceHandler struct {
 	store     *store.Store
 	logger    *slog.Logger
 	encryptor *crypto.Encryptor
+	// crl, when set, receives a deleted device's cert fingerprint so the cert
+	// stops working at the gateway. nil disables it (no Valkey / tests).
+	crl *crl.Store
 }
 
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
 	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
 }
+
+// SetCRLStore wires the certificate revocation list (post-construction).
+func (h *DeviceHandler) SetCRLStore(s *crl.Store) { h.crl = s }
 
 // ListDevices returns a paginated list of devices.
 // Admins see all devices; regular users see only their assigned devices.
@@ -246,6 +253,23 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
+	// Capture the device's cert fingerprint BEFORE deletion so we can revoke it
+	// — otherwise a deleted device's still-valid cert keeps connecting at the
+	// gateway until its 1-year expiry. Only loaded when a CRL is configured.
+	var revokeFP string
+	var revokeUntil time.Time
+	if h.crl != nil {
+		dev, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
+		if err != nil {
+			// Best-effort: don't fail the delete, but log — a swallowed lookup
+			// error would leave the deleted device's cert unrevoked silently.
+			h.logger.Warn("failed to load device for CRL revocation; its cert may stay valid until expiry", "device_id", req.Msg.Id, "error", err)
+		} else if dev.CertFingerprint != nil && dev.CertNotAfter != nil {
+			revokeFP = *dev.CertFingerprint
+			revokeUntil = *dev.CertNotAfter
+		}
+	}
+
 	// Emit DeviceDeleted event
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device",
@@ -256,6 +280,14 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 		ActorID:    userCtx.ID,
 	}, "failed to delete device"); err != nil {
 		return nil, err
+	}
+
+	// Revoke the deleted device's cert (best-effort — a CRL failure must not
+	// undo the deletion that already committed).
+	if revokeFP != "" {
+		if err := h.crl.Revoke(ctx, revokeFP, revokeUntil); err != nil {
+			h.logger.Error("failed to revoke deleted device cert in CRL", "device_id", req.Msg.Id, "error", err)
+		}
 	}
 
 	// Search-index removal is handled by api.SearchListener (post-commit
