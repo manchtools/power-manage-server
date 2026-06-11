@@ -451,33 +451,33 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		// doesn't confer global admin, and a non-existent grant is a no-op, so
 		// neither threatens lockout. Counts group-inherited admins and ignores
 		// disabled/deleted ones — which the old CountUsersWithRole check did not
-		// (#365). NOTE: this is a read-side preflight, not atomic with the
-		// revoke event; two concurrent admin removals can still race to zero
-		// admins (recoverable via the bootstrap admin on restart). Atomic
-		// enforcement in the projector is a follow-up.
-		if role.IsSystem && role.Name == "Admin" && scopeKind == "" {
-			if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.UserId); err != nil {
-				return nil, err
-			}
-		}
-
+		// (#365). The guard + revoke append run under one advisory lock so two
+		// concurrent admin removals can't both pass and race to zero (#369).
 		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
 		if scopeKind != "" {
 			streamID += ":" + scopeID
 		}
-		if err := appendEvent(ctx, h.store, h.logger, store.Event{
-			StreamType: "user_role",
-			StreamID:   streamID,
-			EventType:  string(eventtypes.UserRoleRevoked),
-			Data: payloads.UserRoleRevoked{
-				UserID:    req.Msg.UserId,
-				RoleID:    req.Msg.RoleId,
-				ScopeKind: sk,
-				ScopeID:   si,
-			},
-			ActorType: "user",
-			ActorID:   userCtx.ID,
-		}, "failed to revoke role"); err != nil {
+		appendRevoke := func() error {
+			return appendEvent(ctx, h.store, h.logger, store.Event{
+				StreamType: "user_role",
+				StreamID:   streamID,
+				EventType:  string(eventtypes.UserRoleRevoked),
+				Data: payloads.UserRoleRevoked{
+					UserID:    req.Msg.UserId,
+					RoleID:    req.Msg.RoleId,
+					ScopeKind: sk,
+					ScopeID:   si,
+				},
+				ActorType: "user",
+				ActorID:   userCtx.ID,
+			}, "failed to revoke role")
+		}
+
+		if role.IsSystem && role.Name == "Admin" && scopeKind == "" {
+			if err := guardedAdminMutation(ctx, h.store, req.Msg.UserId, appendRevoke); err != nil {
+				return nil, err
+			}
+		} else if err := appendRevoke(); err != nil {
 			return nil, err
 		}
 	} else {

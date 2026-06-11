@@ -405,29 +405,36 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	// Disabling the last enabled administrator would lock everyone out (#365).
-	if req.Msg.Disabled {
-		if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.Id); err != nil {
-			return nil, err
-		}
-	}
-
 	// Emit appropriate event
 	eventType := string(eventtypes.UserEnabled)
 	if req.Msg.Disabled {
 		eventType = string(eventtypes.UserDisabled)
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   req.Msg.Id,
-		EventType:  eventType,
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
-	})
+	appendDisable := func() error {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   req.Msg.Id,
+			EventType:  eventType,
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}); err != nil {
+			return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update disabled status")
+		}
+		return nil
+	}
+
+	// Disabling the last enabled administrator would lock everyone out (#365);
+	// run the guard + append under one advisory lock so two concurrent disables
+	// can't both pass and race to zero admins (#369). Enabling needs no guard.
+	if req.Msg.Disabled {
+		err = guardedAdminMutation(ctx, h.store, req.Msg.Id, appendDisable)
+	} else {
+		err = appendDisable()
+	}
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update disabled status")
+		return nil, err
 	}
 
 	// Read back from projection
@@ -460,23 +467,24 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
 	}
 
-	// Refuse to delete the last enabled administrator (#365). A no-op for
-	// non-admins (other admins still exist).
-	if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.Id); err != nil {
-		return nil, err
-	}
-
-	// Emit UserDeleted event
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   req.Msg.Id,
-		EventType:  string(eventtypes.UserDeleted),
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
+	// Refuse to delete the last enabled administrator (#365); run the guard +
+	// UserDeleted append under one advisory lock so concurrent deletes can't
+	// both pass and race to zero admins (#369). A no-op for non-admins.
+	err = guardedAdminMutation(ctx, h.store, req.Msg.Id, func() error {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "user",
+			StreamID:   req.Msg.Id,
+			EventType:  string(eventtypes.UserDeleted),
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}); err != nil {
+			return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user")
+		}
+		return nil
 	})
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to delete user")
+		return nil, err
 	}
 
 	// Search-index removal is handled by api.SearchListener (post-commit

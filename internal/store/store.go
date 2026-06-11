@@ -407,6 +407,38 @@ func (s *Store) LoadStreamByType(ctx context.Context, streamType string, limit, 
 	})
 }
 
+// WithAdvisoryLock runs fn while holding a session-level PostgreSQL advisory
+// lock on key, serializing every caller that uses the same key on this
+// database. The lock is held across the ENTIRE fn — including any synchronous
+// post-commit projector writes triggered by an AppendEvent inside fn — so a
+// read-side guard that checks a projection and then appends an event is atomic
+// against a concurrent caller: the next caller blocks until this one's
+// projection write has landed, rather than racing on a stale read.
+//
+// The lock is taken on a dedicated pooled connection and explicitly released
+// (a pooled connection is not closed on Release, so a session lock would
+// otherwise leak). The release is detached from ctx so a cancelled request
+// still frees the lock, and surfaces as the returned error only when fn itself
+// succeeded.
+func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func() error) (err error) {
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for advisory lock: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+		return fmt.Errorf("acquire advisory lock %d: %w", key, err)
+	}
+	defer func() {
+		if _, uerr := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key); uerr != nil && err == nil {
+			err = fmt.Errorf("release advisory lock %d: %w", key, uerr)
+		}
+	}()
+
+	return fn()
+}
+
 // WithTx runs a function within a transaction.
 func (s *Store) WithTx(ctx context.Context, fn func(*Queries) error) error {
 	tx, err := s.pool.Begin(ctx)

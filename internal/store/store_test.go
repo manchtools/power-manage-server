@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -523,4 +524,39 @@ func TestProjection_AssignmentCreated(t *testing.T) {
 	assert.Equal(t, actionID, sourceID)
 	assert.Equal(t, "device", targetType)
 	assert.Equal(t, deviceID, targetID)
+}
+
+// TestWithAdvisoryLock_SerializesSameKey verifies the lock actually serializes
+// same-key critical sections — the property the last-admin TOCTOU fix (#369)
+// relies on. Five goroutines run an overlapping-by-design critical section
+// (each sleeps while "inside"); with the lock, at most one is ever inside.
+func TestWithAdvisoryLock_SerializesSameKey(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	const key int64 = 0x5151
+
+	var mu sync.Mutex
+	concurrent, maxConcurrent := 0, 0
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := st.WithAdvisoryLock(context.Background(), key, func() error {
+				mu.Lock()
+				concurrent++
+				if concurrent > maxConcurrent {
+					maxConcurrent = concurrent
+				}
+				mu.Unlock()
+				time.Sleep(25 * time.Millisecond)
+				mu.Lock()
+				concurrent--
+				mu.Unlock()
+				return nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, maxConcurrent, "same-key advisory lock must serialize critical sections (no overlap)")
 }
