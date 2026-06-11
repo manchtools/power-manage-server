@@ -95,15 +95,33 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up user")
 	}
 
-	// Check password eligibility
+	// Check password eligibility. An SSO-only account (no password) must be
+	// INDISTINGUISHABLE from a non-existent account or a wrong password to an
+	// unauthenticated caller — same timing (dummy bcrypt), same per-account
+	// throttle accounting, same generic error. The prior fast-path + distinct
+	// "password login is not available" error was a user-enumeration oracle
+	// (audit). The login UI learns the right method from the (now rate-limited)
+	// ListAuthMethods, not from this error.
 	if !user.HasPassword {
-		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is not available for this account")
+		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		h.loginAccountLimiter.Allow(acctKey)
+		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
 
-	// Check if any linked provider disables password login
+	// A linked provider that disables password login gets the SAME enumeration-
+	// safe response — no provider-name disclosure to an unauthenticated caller.
+	// Fail CLOSED on a query error: the prior `if err == nil` swallowed a
+	// transient DB failure and fell through to password verification, letting a
+	// provider-disabled account authenticate. A lookup error denies login.
 	disablingProviders, err := h.store.Queries().GetLinkedProvidersDisablingPassword(ctx, user.ID)
-	if err == nil && len(disablingProviders) > 0 {
-		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is disabled; use "+disablingProviders[0].Name+" to sign in")
+	if err != nil {
+		h.logger.Error("failed to check provider password restrictions", "user_id", user.ID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify login eligibility")
+	}
+	if len(disablingProviders) > 0 {
+		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		h.loginAccountLimiter.Allow(acctKey)
+		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {

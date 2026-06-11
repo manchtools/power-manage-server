@@ -394,14 +394,18 @@ func TestLogin_PasswordDisabledByProvider(t *testing.T) {
 	// Link the user to this provider
 	testutil.CreateTestIdentityLink(t, st, userID, providerID, "corp-ext-123", email)
 
-	// Login with correct password should still be rejected
+	// Login with the correct password is still rejected — but enumeration-safely:
+	// the SAME generic error as a wrong password / non-existent account, with NO
+	// disclosure that the account exists or which provider disables it.
 	_, err = h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
 		Email:    email,
 		Password: "password",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "password login is disabled")
+	assert.Contains(t, err.Error(), "invalid credentials")
+	assert.NotContains(t, err.Error(), "Corporate SSO", "must not disclose the provider name")
+	assert.NotContains(t, err.Error(), "disabled", "must not disclose that the account exists / is provider-disabled")
 }
 
 func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
@@ -414,14 +418,54 @@ func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
 	err := st.AppendEvent(context.Background(), testutil.SSOOnlyUserEvent(userID, email))
 	require.NoError(t, err)
 
-	// Login attempt should fail because user has no password
+	// Login fails because the user has no password — but enumeration-safely: the
+	// SAME generic error as a wrong password / non-existent account, so an
+	// SSO-only account can't be distinguished from one that doesn't exist.
 	_, err = h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
 		Email:    email,
 		Password: "anything",
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "password login is not available")
+	assert.Contains(t, err.Error(), "invalid credentials")
+	assert.NotContains(t, err.Error(), "not available", "must not disclose that the account is SSO-only")
+}
+
+// TestLogin_EnumerationSafe_IdenticalErrors pins that an unauthenticated caller
+// cannot tell a non-existent account, an SSO-only account, and a real account
+// with a wrong password apart: all three return the IDENTICAL Unauthenticated
+// "invalid credentials" error (audit user-enumeration fix). Timing parity comes
+// from the dummy bcrypt each path runs.
+func TestLogin_EnumerationSafe_IdenticalErrors(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
+
+	// Real account with a password (we'll send a wrong one).
+	pwEmail := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, pwEmail, "correct-password", "user")
+
+	// SSO-only account (no password).
+	ssoEmail := testutil.NewID() + "@test.com"
+	require.NoError(t, st.AppendEvent(context.Background(), testutil.SSOOnlyUserEvent(testutil.NewID(), ssoEmail)))
+
+	// Non-existent account.
+	missingEmail := testutil.NewID() + "@test.com"
+
+	errFor := func(email string) error {
+		_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{Email: email, Password: "wrong-password"}))
+		return err
+	}
+	wrongPw := errFor(pwEmail)
+	ssoOnly := errFor(ssoEmail)
+	missing := errFor(missingEmail)
+
+	for _, e := range []error{wrongPw, ssoOnly, missing} {
+		require.Error(t, e)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(e))
+	}
+	assert.Equal(t, wrongPw.Error(), ssoOnly.Error(), "SSO-only must be indistinguishable from a wrong password")
+	assert.Equal(t, wrongPw.Error(), missing.Error(), "non-existent must be indistinguishable from a wrong password")
 }
 
 func TestLogin_UserHasPassword(t *testing.T) {
