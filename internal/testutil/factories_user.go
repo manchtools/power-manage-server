@@ -31,6 +31,22 @@ func CreateTestUser(t *testing.T, st *store.Store, email, password, role string)
 		}
 	}
 
+	// Resolve the named role to a real user_roles_projection assignment so an
+	// "admin" test user is a genuine RBAC principal. The last-admin guard (and
+	// anything reading user_roles) depends on the role assignment, NOT the
+	// legacy `role` column — without this the guard sees zero admins. Only the
+	// seeded "Admin" role is mapped; "user"/"viewer" keep the prior
+	// legacy-field-only behaviour (empty role_ids) so non-admin call sites are
+	// unaffected.
+	roleIDs := []string{}
+	if role == "admin" {
+		adminRole, err := st.Repos().Role.GetByName(ctx, "Admin")
+		if err != nil {
+			t.Fatalf("look up Admin role: %v", err)
+		}
+		roleIDs = []string{adminRole.ID}
+	}
+
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,
@@ -39,7 +55,7 @@ func CreateTestUser(t *testing.T, st *store.Store, email, password, role string)
 			"email":         email,
 			"password_hash": hash,
 			"role":          role,
-			"role_ids":      []string{},
+			"role_ids":      roleIDs,
 		},
 		ActorType: "system",
 		ActorID:   "test",

@@ -403,6 +403,13 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
+	// Disabling the last enabled administrator would lock everyone out (#365).
+	if req.Msg.Disabled {
+		if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.Id); err != nil {
+			return nil, err
+		}
+	}
+
 	// Emit appropriate event
 	eventType := string(eventtypes.UserEnabled)
 	if req.Msg.Disabled {
@@ -449,6 +456,12 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserNotFound, "user not found")
+	}
+
+	// Refuse to delete the last enabled administrator (#365). A no-op for
+	// non-admins (other admins still exist).
+	if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.Id); err != nil {
+		return nil, err
 	}
 
 	// Emit UserDeleted event
