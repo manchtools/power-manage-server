@@ -246,12 +246,17 @@ func clientIP(req connect.AnyRequest) string {
 //   - Register                              → Register
 //   - Logout                                → Logout
 //   - RenewCertificate                      → RenewCert
+//   - ListAuthMethods                       → AuthMethods
 type RateLimiters struct {
 	Login     *RateLimiter
 	Refresh   *RateLimiter
 	Register  *RateLimiter
 	Logout    *RateLimiter
 	RenewCert *RateLimiter
+	// AuthMethods throttles the unauthenticated ListAuthMethods lookup, which
+	// reflects whether an email exists and its auth config — an enumeration
+	// oracle if left unthrottled (audit). Keyed by client IP.
+	AuthMethods *RateLimiter
 }
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.
@@ -322,6 +327,19 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			if !i.limiters.RenewCert.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "renew_cert", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many certificate renewal attempts, try again later")
+			}
+		}
+
+		// Rate limit ListAuthMethods — public, unauthenticated procedure. It
+		// reflects whether an email exists and its auth config (password / TOTP /
+		// linked providers) to drive the login UI, which makes it an enumeration
+		// oracle. Throttling by IP bounds bulk enumeration without removing the
+		// legitimate single-email lookup the login page needs (audit).
+		if procedure == "/pm.v1.ControlService/ListAuthMethods" && i.limiters.AuthMethods != nil {
+			ip := clientIP(req)
+			if !i.limiters.AuthMethods.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "auth_methods", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
 			}
 		}
 

@@ -566,3 +566,39 @@ func TestPermissionIsAlternative_UnknownAlt(t *testing.T) {
 	assert.False(t, PermissionIsAlternative("CreateDeviceGroup"),
 		"the legacy single-key permission MUST NOT register as an alternative — it was removed by #7")
 }
+
+// TestAuthInterceptor_ListAuthMethodsThrottled pins that the unauthenticated
+// ListAuthMethods lookup is rate-limited by IP (audit user-enumeration fix):
+// it reflects whether an email exists + its auth config, so an unthrottled
+// caller could bulk-enumerate accounts. Drives the real interceptor over an
+// httptest server so the per-IP throttle (clientIP from the peer) is exercised.
+func TestAuthInterceptor_ListAuthMethodsThrottled(t *testing.T) {
+	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test-secret"), AccessTokenExpiry: 15 * time.Minute})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{
+		AuthMethods: NewRateLimiter(3, time.Minute),
+	})
+
+	procedure := "/pm.v1.ControlService/ListAuthMethods"
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, srv.URL+procedure)
+
+	// The first 3 (the configured limit) succeed; the 4th from the same IP is throttled.
+	for i := 0; i < 3; i++ {
+		_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+		require.NoError(t, err, "request %d within the limit should succeed", i+1)
+	}
+	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many", "must trip the AuthMethods limiter, not some other gate")
+}

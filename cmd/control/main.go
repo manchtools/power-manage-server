@@ -261,11 +261,12 @@ func main() {
 	// share one limiter — they're all auth-attempt vectors that a
 	// defender treats as one logical "attempt" per IP.
 	rateLimiters := auth.RateLimiters{
-		Login:     auth.NewRateLimiter(10, 1*time.Minute), // credential-spray defense
-		Refresh:   auth.NewRateLimiter(60, 1*time.Minute), // legitimate refreshes are frequent
-		Register:  auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
-		Logout:    auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
-		RenewCert: auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
+		Login:       auth.NewRateLimiter(10, 1*time.Minute), // credential-spray defense
+		Refresh:     auth.NewRateLimiter(60, 1*time.Minute), // legitimate refreshes are frequent
+		Register:    auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
+		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
+		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
+		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
 	}
 
 	interceptors := connect.WithInterceptors(
