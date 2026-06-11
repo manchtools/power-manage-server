@@ -17,6 +17,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -138,7 +139,14 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 // does not carry the "agent" peer-class URI SAN — the AgentService
 // listener is for managed devices only, and a leaked gateway or
 // control cert must not be usable here.
-func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
+// RevocationChecker reports whether an agent cert (by SHA-256 fingerprint) has
+// been revoked. The gateway's crl.Cache satisfies it; a nil checker disables the
+// revocation gate (e.g. when no Valkey is configured).
+type RevocationChecker interface {
+	IsRevoked(fingerprint string) bool
+}
+
+func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
 		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
@@ -187,6 +195,22 @@ func MTLSMiddleware(next http.Handler, logger *slog.Logger) http.Handler {
 			)
 			http.Error(w, "peer class not allowed", http.StatusForbidden)
 			return
+		}
+
+		// Reject revoked certs. The chain already verified against the CA above;
+		// this is the revocation gate that makes a leaked or superseded cert stop
+		// working before its (1-year) natural expiry. r.TLS.PeerCertificates[0]
+		// is the same leaf the peer-class check used, so it's non-nil here.
+		if revocation != nil {
+			fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
+			if revocation.IsRevoked(fp) {
+				logger.Warn("mTLS rejected: certificate revoked",
+					"device_id", deviceID,
+					"remote_addr", r.RemoteAddr,
+				)
+				http.Error(w, "client certificate revoked", http.StatusForbidden)
+				return
+			}
 		}
 
 		// Add device ID to context

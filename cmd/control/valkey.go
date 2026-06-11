@@ -34,6 +34,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -64,6 +65,11 @@ type valkeySubsystem struct {
 	// one instance so ProxyValidateTerminalToken can validate tokens
 	// minted by the same control replica.
 	TerminalTokenStore *terminal.TokenStore
+
+	// CRLStore is the Valkey-backed certificate revocation list. main() hands
+	// it to the ControlService so renewal/device-deletion revoke the old cert;
+	// gateways read the same Valkey key to enforce it on mTLS connections.
+	CRLStore *crl.Store
 }
 
 // Close stops the Asynq servers and closes the Valkey clients.
@@ -136,6 +142,8 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
 
 	v.TerminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(v.rdb))
+	v.CRLStore = crl.NewStore(v.rdb)
+	svc.SetCRLStore(v.CRLStore)
 	gatewayReg := registry.New(registry.NewValkeyBackend(v.rdb), logger.With("component", "gateway_registry"))
 	termHandler := api.NewTerminalHandler(
 		st,

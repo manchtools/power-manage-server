@@ -11,6 +11,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -21,6 +22,10 @@ type CertificateHandler struct {
 	store  *store.Store
 	ca     *ca.CA
 	logger *slog.Logger
+	// crl, when set, receives the superseded fingerprint on renewal so the
+	// old cert stops working at the gateway (revocation). nil disables it
+	// (no Valkey configured / tests).
+	crl *crl.Store
 }
 
 // NewCertificateHandler creates a new certificate handler.
@@ -31,6 +36,10 @@ func NewCertificateHandler(st *store.Store, certAuth *ca.CA, logger *slog.Logger
 		logger: logger,
 	}
 }
+
+// SetCRLStore wires the certificate revocation list (post-construction, after
+// the Valkey subsystem comes up).
+func (h *CertificateHandler) SetCRLStore(s *crl.Store) { h.crl = s }
 
 // RenewCertificate renews a device certificate.
 // The agent authenticates by presenting its current (still valid) certificate.
@@ -112,6 +121,20 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	}); err != nil {
 		h.logger.Error("failed to append cert renewed event", "error", err, "device_id", deviceID)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record certificate renewal")
+	}
+
+	// Revoke the superseded cert: add its fingerprint to the CRL until its own
+	// expiry, so a gateway stops admitting the old cert immediately (it would
+	// otherwise stay valid for its full year). Best-effort — a CRL failure must
+	// not fail the renewal the agent already committed to; it's logged and the
+	// next renewal/the periodic refresh re-converge. The DB fingerprint was
+	// already advanced by the DeviceCertRenewed event above.
+	if h.crl != nil {
+		if oldNotAfter, err := ca.NotAfterFromPEM(req.Msg.CurrentCertificate); err != nil {
+			h.logger.Warn("could not parse old cert expiry for CRL; superseded cert not revoked", "device_id", deviceID, "error", err)
+		} else if err := h.crl.Revoke(ctx, currentFP, oldNotAfter); err != nil {
+			h.logger.Error("failed to revoke superseded cert in CRL", "device_id", deviceID, "error", err)
+		}
 	}
 
 	h.logger.Info("certificate renewed", "device_id", deviceID, "not_after", newCert.NotAfter)

@@ -261,6 +261,38 @@ func FingerprintFromPEM(certPEM []byte) (string, error) {
 	return hex.EncodeToString(fingerprint[:]), nil
 }
 
+// NotAfterFromPEM returns the expiry of a PEM-encoded certificate. Used to set
+// the CRL entry's TTL to the revoked cert's own lifetime — a revoked cert never
+// needs to outlive its expiry on the list (mTLS rejects an expired cert anyway).
+func NotAfterFromPEM(certPEM []byte) (time.Time, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return time.Time{}, fmt.Errorf("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse certificate: %w", err)
+	}
+	return cert.NotAfter, nil
+}
+
+// FingerprintFromCert computes the fingerprint of an already-parsed
+// certificate. It is byte-for-byte identical to FingerprintFromPEM /
+// IssueCertificateFromCSR (hex of SHA-256 over the DER), so a fingerprint the
+// control server stored or revoked matches one the gateway derives from the
+// cert presented on an mTLS connection. cert.Raw is the DER encoding.
+func FingerprintFromCert(cert *x509.Certificate) string {
+	// Defensive: callers reach this from the gateway mTLS path where the leaf is
+	// already verified non-nil, but never panic on a hot request path. An empty
+	// fingerprint matches no revoked entry — a nil cert is already rejected by
+	// the peer-class / TLS checks upstream, so this fails safe, not open.
+	if cert == nil {
+		return ""
+	}
+	fingerprint := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(fingerprint[:])
+}
+
 // DeviceIDFromPEM extracts the device ID from a PEM-encoded certificate.
 func DeviceIDFromPEM(certPEM []byte) (string, error) {
 	block, _ := pem.Decode(certPEM)

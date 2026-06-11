@@ -26,6 +26,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/go/logging"
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/handler"
@@ -45,6 +46,12 @@ var version = "dev"
 // at 8 MiB, and inventory/osquery payloads are at most a few MiB — while
 // bounding the blast radius of a hostile peer.
 const maxAgentMessageBytes = 64 << 20
+
+// crlRefreshInterval is how often the gateway reloads the cert-revocation list
+// from Valkey into its in-memory cache. A revocation takes at most this long to
+// propagate to a gateway — acceptable for cert revocation, and far better than
+// the cert's 1-year natural expiry.
+const crlRefreshInterval = 30 * time.Second
 
 func main() {
 	// Parse flags — TLS is always required for mTLS agent connections
@@ -541,12 +548,30 @@ func main() {
 	agentHandler.SetTerminalSessions(terminalSessions)
 	path, h := pmv1connect.NewAgentServiceHandler(agentHandler, connect.WithReadMaxBytes(maxAgentMessageBytes))
 
+	// Certificate revocation: the control server publishes superseded/deleted
+	// agent-cert fingerprints to a shared Valkey CRL. Cache it in memory (loaded
+	// now, refreshed on a ticker) so the per-connection check below is a local
+	// map lookup that survives a Valkey blip. The gateway always has Valkey
+	// (required above), so this is always on.
+	crlRDB := redis.NewClient(&redis.Options{
+		Addr:     cfg.ValkeyAddr,
+		Password: cfg.ValkeyPassword,
+		DB:       cfg.ValkeyDB,
+		Protocol: 2,
+	})
+	defer crlRDB.Close()
+	crlCache := crl.NewCache(crl.NewStore(crlRDB), logger.With("component", "crl"))
+	if err := crlCache.Refresh(shutdownCtx); err != nil {
+		logger.Warn("initial CRL load failed; starting with empty revocation list (will retry)", "error", err)
+	}
+	go crlCache.Run(shutdownCtx, crlRefreshInterval)
+
 	// Compose middlewares (innermost first):
 	//   pmv1connect handler
-	//     ↑ MTLSMiddleware (extracts device ID from client cert)
+	//     ↑ MTLSMiddleware (extracts device ID, rejects revoked certs)
 	//     ↑ BootstrapRedirectMiddleware (returns 307 to assignedHost
 	//       when the request landed on the wildcard root via LB)
-	mtlsHandler := handler.MTLSMiddleware(h, logger)
+	mtlsHandler := handler.MTLSMiddleware(h, crlCache, logger)
 	bootstrappedHandler := handler.BootstrapRedirectMiddleware(mtlsHandler, bootstrapHost, assignedHost, logger)
 	mux.Handle(path, bootstrappedHandler)
 

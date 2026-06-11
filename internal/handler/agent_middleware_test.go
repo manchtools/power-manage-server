@@ -176,7 +176,7 @@ func TestMTLSMiddleware_HealthBypassesAllChecks(t *testing.T) {
 	// don't present client certs and a 401 here would mark the
 	// gateway pod unhealthy and trigger a flap-restart loop.
 	called := false
-	mw := MTLSMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true }), newTestLogger())
+	mw := MTLSMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true }), nil, newTestLogger())
 
 	for _, path := range []string{"/health", "/ready"} {
 		t.Run(path, func(t *testing.T) {
@@ -191,7 +191,7 @@ func TestMTLSMiddleware_HealthBypassesAllChecks(t *testing.T) {
 }
 
 func TestMTLSMiddleware_NoTLSState_Returns401(t *testing.T) {
-	mw := MTLSMiddleware(newOKHandler(), newTestLogger())
+	mw := MTLSMiddleware(newOKHandler(), nil, newTestLogger())
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	req.TLS = nil
 	rec := httptest.NewRecorder()
@@ -201,7 +201,7 @@ func TestMTLSMiddleware_NoTLSState_Returns401(t *testing.T) {
 }
 
 func TestMTLSMiddleware_PeerClassMissing_Returns403(t *testing.T) {
-	mw := MTLSMiddleware(newOKHandler(), newTestLogger())
+	mw := MTLSMiddleware(newOKHandler(), nil, newTestLogger())
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	req.TLS = fakeTLSStateWithPeerClass(t, "device-1", nil)
 	rec := httptest.NewRecorder()
@@ -215,7 +215,7 @@ func TestMTLSMiddleware_GatewayClassRejectedOnAgentService(t *testing.T) {
 	// The agent listener is for managed devices only; admitting a
 	// gateway cert would let one gateway impersonate every connected
 	// agent simultaneously.
-	mw := MTLSMiddleware(newOKHandler(), newTestLogger())
+	mw := MTLSMiddleware(newOKHandler(), nil, newTestLogger())
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	gw := mtls.PeerClassGateway
 	req.TLS = fakeTLSStateWithPeerClass(t, "gateway-1", &gw)
@@ -234,7 +234,7 @@ func TestMTLSMiddleware_AgentClassReachesInnerWithDeviceIDInContext(t *testing.T
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotDeviceID, gotOK = DeviceIDFromContext(r.Context())
 	})
-	mw := MTLSMiddleware(inner, newTestLogger())
+	mw := MTLSMiddleware(inner, nil, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	agent := mtls.PeerClassAgent
@@ -264,4 +264,39 @@ func TestBootstrapRedirectMiddleware_IPv6HostHeaderHandledCorrectly(t *testing.T
 	mw.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusTemporaryRedirect, rec.Code,
 		"IPv6 bracketed authority MUST match — the strings.IndexByte(':') bug truncated host at the first internal colon, leaving reqHost = '['")
+}
+
+// fakeRevocation is a RevocationChecker whose verdict is fixed, so a CRL test
+// doesn't have to predict the synthetic cert's fingerprint.
+type fakeRevocation struct{ revoked bool }
+
+func (f fakeRevocation) IsRevoked(string) bool { return f.revoked }
+
+// TestMTLSMiddleware_RevokedCertRejected pins the CRL gate (audit #6): an
+// agent cert whose fingerprint is on the revocation list is rejected at the
+// mTLS layer (403, never reaches AgentService), while a non-revoked one passes.
+func TestMTLSMiddleware_RevokedCertRejected(t *testing.T) {
+	agent := mtls.PeerClassAgent
+
+	called := false
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
+
+	// Revoked → 403, inner not reached.
+	mw := MTLSMiddleware(inner, fakeRevocation{revoked: true}, newTestLogger())
+	req := httptest.NewRequest(http.MethodGet, "/api", nil)
+	req.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code, "a revoked agent cert MUST be rejected at the mTLS layer")
+	assert.False(t, called, "a revoked cert must not reach AgentService")
+
+	// Not revoked → reaches inner.
+	called = false
+	mw2 := MTLSMiddleware(inner, fakeRevocation{revoked: false}, newTestLogger())
+	req2 := httptest.NewRequest(http.MethodGet, "/api", nil)
+	req2.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
+	rec2 := httptest.NewRecorder()
+	mw2.ServeHTTP(rec2, req2)
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	assert.True(t, called, "a non-revoked agent cert must reach AgentService")
 }

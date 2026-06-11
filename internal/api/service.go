@@ -10,6 +10,7 @@ import (
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -101,6 +102,15 @@ func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 	s.osquery.SetTaskQueueClient(c)
 	s.logs.SetTaskQueueClient(c)
 	s.device.SetTaskQueueClient(c)
+}
+
+// SetCRLStore wires the Valkey-backed certificate revocation list into the
+// handlers that supersede or remove agent certs (renewal, device deletion).
+// Called from main.go after the Valkey subsystem comes up; nil-safe (the
+// handlers skip revocation when unset).
+func (s *ControlService) SetCRLStore(store *crl.Store) {
+	s.certificate.SetCRLStore(store)
+	s.device.SetCRLStore(store)
 }
 
 // SetTerminalHandler wires the terminal session RPC handler. Called
