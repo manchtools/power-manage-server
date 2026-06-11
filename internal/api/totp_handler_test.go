@@ -327,6 +327,43 @@ func TestVerifyLoginTOTP_WrongCodeStillConsumesChallenge(t *testing.T) {
 	assert.Contains(t, err.Error(), "already used")
 }
 
+// TestVerifyLoginTOTP_PerAccountFailedAttemptLimit pins the per-account 2FA
+// brute-force ceiling (#381): after totpAccountFailLimit (10) failed
+// VerifyLoginTOTP attempts the account is throttled, independent of source IP
+// and even with a fresh valid challenge. Uses a no-backup-code TOTP user so the
+// 11 failed attempts don't each run the bcrypt backup-code loop.
+func TestVerifyLoginTOTP_PerAccountFailedAttemptLimit(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	enc := testutil.NewEncryptor(t)
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+	testutil.SetupTOTPCheapBackup(t, st, enc, userID, email)
+
+	for i := 0; i < 10; i++ {
+		challenge, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+		require.NoError(t, err)
+		_, err = h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+			Challenge: challenge,
+			Code:      "000000",
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "attempt %d should be invalid TOTP, not yet throttled", i+1)
+	}
+
+	// 11th: a fresh, valid challenge — but the account is now throttled.
+	challenge, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+	require.NoError(t, err)
+	_, err = h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+		Challenge: challenge,
+		Code:      "000000",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "account should be throttled after 10 failed TOTP attempts")
+}
+
 func TestVerifyLoginTOTP_InvalidCode(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()

@@ -24,6 +24,15 @@ import (
 // otherwise the single-use guard would silently lapse near the token's expiry.
 const totpChallengeConsumeWindow = 6 * time.Minute
 
+// Per-account TOTP throttle: at most totpAccountFailLimit FAILED VerifyLoginTOTP
+// attempts per account within totpAccountFailWindow, independent of source IP.
+// Defence-in-depth alongside the single-use challenge — bounds 2FA-bypass
+// guessing against a targeted account even across rotating IPs/challenges.
+const (
+	totpAccountFailLimit  = 10
+	totpAccountFailWindow = 15 * time.Minute
+)
+
 // TOTPHandler handles TOTP two-factor authentication RPCs.
 type TOTPHandler struct {
 	store      *store.Store
@@ -37,6 +46,9 @@ type TOTPHandler struct {
 	// code) is rejected. Without it the challenge JWT is replayable for its full
 	// 5-min life — unlimited TOTP guesses per single password step.
 	challengeConsumer *auth.RateLimiter
+	// totpAccountLimiter throttles FAILED TOTP login attempts per account
+	// (keyed by user ID), independent of source IP.
+	totpAccountLimiter *auth.RateLimiter
 }
 
 // NewTOTPHandler creates a new TOTP handler.
@@ -45,12 +57,13 @@ func NewTOTPHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 		issuer = totp.DefaultIssuer
 	}
 	return &TOTPHandler{
-		store:             st,
-		logger:            logger,
-		jwtManager:        jwtManager,
-		encryptor:         enc,
-		issuer:            issuer,
-		challengeConsumer: auth.NewRateLimiter(1, totpChallengeConsumeWindow),
+		store:              st,
+		logger:             logger,
+		jwtManager:         jwtManager,
+		encryptor:          enc,
+		issuer:             issuer,
+		challengeConsumer:  auth.NewRateLimiter(1, totpChallengeConsumeWindow),
+		totpAccountLimiter: auth.NewRateLimiter(totpAccountFailLimit, totpAccountFailWindow),
 	}
 }
 
@@ -337,6 +350,14 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrTOTPChallengeExpired, connect.CodeFailedPrecondition, "invalid or expired TOTP challenge")
 	}
 
+	// Per-account brute-force ceiling. Checked before the challenge is consumed
+	// so a blocked account neither burns its challenge nor does TOTP work. Only
+	// failed attempts are counted (below), independent of source IP.
+	totpAcctKey := "totp:" + claims.UserID
+	if h.totpAccountLimiter.Blocked(totpAcctKey) {
+		return nil, apiErrorCtx(ctx, ErrRateLimited, connect.CodeResourceExhausted, "too many failed TOTP attempts for this account, try again later")
+	}
+
 	// Single-use: consume the challenge by its JTI as soon as it validates, so a
 	// challenge is worth exactly ONE VerifyLoginTOTP attempt. Without this the
 	// challenge JWT is replayable for its full 5-minute life — unlimited TOTP
@@ -475,6 +496,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	}
 
 	if !codeValid {
+		h.totpAccountLimiter.Allow(totpAcctKey) // count the failed 2FA attempt
 		return nil, apiErrorCtx(ctx, ErrTOTPInvalid, connect.CodeInvalidArgument, "invalid TOTP code")
 	}
 

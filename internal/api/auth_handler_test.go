@@ -53,6 +53,67 @@ func TestLogin_WrongPassword(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
+// TestLogin_PerAccountFailedAttemptLimit pins the per-account brute-force
+// ceiling (#381): after loginAccountFailLimit (10) failed password attempts the
+// account is throttled regardless of source IP — and the throttle is by
+// ACCOUNT, not credentials, so even a subsequent CORRECT password is rejected.
+func TestLogin_PerAccountFailedAttemptLimit(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "correct-password", "user")
+
+	for i := 0; i < 10; i++ {
+		_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+			Email:    email,
+			Password: "wrong-password",
+		}))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "failed attempt %d should be invalid-credentials, not yet throttled", i+1)
+	}
+
+	// 11th: blocked even with the CORRECT password (throttle is account-level).
+	_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    email,
+		Password: "correct-password",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "account should be throttled after 10 failures")
+
+	// A different account has an independent budget.
+	other := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, other, "correct-password", "user")
+	resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    other,
+		Password: "correct-password",
+	}))
+	require.NoError(t, err, "a different account must not be affected by another account's failures")
+	assert.NotEmpty(t, resp.Msg.AccessToken)
+}
+
+// TestLogin_SuccessfulLoginsNotThrottled pins that ONLY failures accrue toward
+// the per-account ceiling: repeated SUCCESSFUL logins (more than the failure
+// limit) are never throttled, so a legitimate user is unaffected (#381).
+func TestLogin_SuccessfulLoginsNotThrottled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
+
+	email := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, email, "correct-password", "user")
+
+	for i := 0; i < 12; i++ {
+		resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+			Email:    email,
+			Password: "correct-password",
+		}))
+		require.NoError(t, err, "successful login %d must not be throttled", i+1)
+		assert.NotEmpty(t, resp.Msg.AccessToken)
+	}
+}
+
 func TestLogin_NonexistentUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
