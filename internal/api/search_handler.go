@@ -198,7 +198,8 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 			if strings.Contains(errMsg, "Unknown index") || strings.Contains(errMsg, "Unknown Index") || strings.Contains(errMsg, "not found") {
 				continue
 			}
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("search index query failed for scope %s: %v", scope, err))
+			h.logger.Error("search index query failed", "scope", scope, "error", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "search index query failed")
 		}
 
 		parsed, count := parseFTSearchResult(raw, scope)
@@ -229,7 +230,8 @@ func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Req
 	}
 
 	if err := h.searchIdx.Rebuild(ctx); err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, fmt.Sprintf("search index rebuild failed: %v", err))
+		h.logger.Error("search index rebuild failed", "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "search index rebuild failed")
 	}
 
 	return connect.NewResponse(&pm.RebuildSearchIndexResponse{}), nil
