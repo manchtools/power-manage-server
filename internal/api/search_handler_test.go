@@ -23,8 +23,9 @@ func TestBuildFTQuery_EmptyReturnsWildcard(t *testing.T) {
 
 func TestBuildFTQuery_TextWithSpecialChars(t *testing.T) {
 	q := buildFTQuery("user@example.com", nil, nil)
-	// The query escaper escapes @ but NOT dots (dots are only in the tag value escaper)
-	assert.Contains(t, q, "user\\@example.com")
+	// The escaper now neutralises every RediSearch metacharacter (incl. @ and .)
+	// so user input is matched literally rather than parsed as query syntax.
+	assert.Contains(t, q, "user\\@example\\.com")
 }
 
 func TestBuildFTQuery_DateFilterOnly(t *testing.T) {
@@ -130,6 +131,14 @@ func TestEscapeRediSearchQuery(t *testing.T) {
 		{"a:b", "a\\:b"},
 		{"a;b", "a\\;b"},
 		{"a~b", "a\\~b"},
+		// Injection vectors the prior escaper left live (audit). Backslash is
+		// escaped first, so an attacker can't smuggle an operator through.
+		{"a\\b", "a\\\\b"},         // bare backslash -> doubled
+		{"\\|", "\\\\\\|"},         // \| -> escaped backslash + escaped pipe (no live OR)
+		{"\\(", "\\\\\\("},         // \( -> no live group
+		{"%%x%%", "\\%\\%x\\%\\%"}, // fuzzy-match operators neutralised
+		{"a*", "a\\*"},             // user wildcard neutralised
+		{"\"hi\"", "\\\"hi\\\""},   // exact-phrase quotes neutralised
 	}
 
 	for _, tt := range tests {
