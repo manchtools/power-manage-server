@@ -177,6 +177,13 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 		return nil, apiErrorCtx(ctx, ErrCannotRenameSystemRole, connect.CodeFailedPrecondition, "cannot rename system role")
 	}
 
+	// The Admin system role's permissions are immutable: it must remain the
+	// all-permissions role. Allowing them to be stripped would disable every
+	// administrator at once and lock the operator out (#365).
+	if role.IsSystem && role.Name == "Admin" && !permissionSetsEqual(req.Msg.Permissions, role.Permissions) {
+		return nil, apiErrorCtx(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "the Admin role's permissions cannot be changed")
+	}
+
 	// Validate permissions
 	validPerms := auth.ValidPermissionKeys()
 	for _, p := range req.Msg.Permissions {
@@ -413,17 +420,6 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		return nil, handleGetError(ctx, err, ErrRoleNotFound, "role not found")
 	}
 
-	// Prevent removing the last user from the Admin system role
-	if role.IsSystem && role.Name == "Admin" {
-		userCount, err := h.store.Repos().Role.CountUsersWithRole(ctx, req.Msg.RoleId)
-		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
-		}
-		if userCount <= 1 {
-			return nil, apiErrorCtx(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove last user from Admin role")
-		}
-	}
-
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
@@ -450,6 +446,21 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 	}
 
 	if hasScoped {
+		// Prevent removing the last enabled administrator. Checked only when an
+		// UNSCOPED Admin grant will actually be removed: a scoped Admin grant
+		// doesn't confer global admin, and a non-existent grant is a no-op, so
+		// neither threatens lockout. Counts group-inherited admins and ignores
+		// disabled/deleted ones — which the old CountUsersWithRole check did not
+		// (#365). NOTE: this is a read-side preflight, not atomic with the
+		// revoke event; two concurrent admin removals can still race to zero
+		// admins (recoverable via the bootstrap admin on restart). Atomic
+		// enforcement in the projector is a follow-up.
+		if role.IsSystem && role.Name == "Admin" && scopeKind == "" {
+			if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.UserId); err != nil {
+				return nil, err
+			}
+		}
+
 		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
 		if scopeKind != "" {
 			streamID += ":" + scopeID
