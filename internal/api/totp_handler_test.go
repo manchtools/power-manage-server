@@ -249,6 +249,84 @@ func TestVerifyLoginTOTP_Success(t *testing.T) {
 	assert.Equal(t, email, resp.Msg.User.Email)
 }
 
+// TestVerifyLoginTOTP_ChallengeIsSingleUse pins that a TOTP login challenge is
+// usable exactly once: after a successful verification the same challenge JWT
+// (still well within its 5-min TTL) is rejected, even with a fresh valid code.
+// Without this the challenge is replayable for its whole life.
+func TestVerifyLoginTOTP_ChallengeIsSingleUse(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	enc := testutil.NewEncryptor(t)
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+	secret := testutil.SetupTOTP(t, st, enc, userID, email)
+
+	challenge, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+	require.NoError(t, err)
+
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+
+	// First use succeeds.
+	_, err = h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+		Challenge: challenge,
+		Code:      code,
+	}))
+	require.NoError(t, err)
+
+	// Reusing the SAME challenge is rejected, even with a fresh valid code.
+	freshCode, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	_, err = h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+		Challenge: challenge,
+		Code:      freshCode,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "already used")
+}
+
+// TestVerifyLoginTOTP_WrongCodeStillConsumesChallenge pins consume-on-
+// presentation: even a FAILED first attempt burns the challenge, so an attacker
+// cannot brute-force multiple codes against one challenge. The wrong guess
+// burns it; a subsequent correct code on the same challenge is rejected, NOT
+// accepted.
+func TestVerifyLoginTOTP_WrongCodeStillConsumesChallenge(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	enc := testutil.NewEncryptor(t)
+	h := api.NewTOTPHandler(st, slog.Default(), jwtMgr, enc, "TestApp")
+
+	email := testutil.NewID() + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "password", "user")
+	secret := testutil.SetupTOTP(t, st, enc, userID, email)
+
+	challenge, err := jwtMgr.GenerateTOTPChallenge(userID, email, 0)
+	require.NoError(t, err)
+
+	// First attempt with a wrong code fails (and consumes the challenge).
+	_, err = h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+		Challenge: challenge,
+		Code:      "000000",
+	}))
+	require.Error(t, err)
+
+	// A correct code on the SAME challenge must now be rejected as already used,
+	// not accepted — proving the wrong guess burned the one allowed attempt.
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	resp, err := h.VerifyLoginTOTP(context.Background(), connect.NewRequest(&pm.VerifyLoginTOTPRequest{
+		Challenge: challenge,
+		Code:      code,
+	}))
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "already used")
+}
+
 func TestVerifyLoginTOTP_InvalidCode(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
