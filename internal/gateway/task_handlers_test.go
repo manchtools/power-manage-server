@@ -20,7 +20,7 @@ import (
 func TestParseActionParams_Package(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"name":"vim"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_PACKAGE), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_PACKAGE), []byte(params)))
 
 	require.NotNil(t, action.GetPackage())
 	assert.Equal(t, "vim", action.GetPackage().Name)
@@ -29,7 +29,7 @@ func TestParseActionParams_Package(t *testing.T) {
 func TestParseActionParams_Shell(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"script":"echo hello","runAsRoot":true}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte(params)))
 
 	require.NotNil(t, action.GetShell())
 	assert.Equal(t, "echo hello", action.GetShell().Script)
@@ -39,7 +39,7 @@ func TestParseActionParams_Shell(t *testing.T) {
 func TestParseActionParams_ScriptRun(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"script":"#!/bin/bash\nexit 0"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SCRIPT_RUN), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SCRIPT_RUN), []byte(params)))
 
 	require.NotNil(t, action.GetShell())
 	assert.Contains(t, action.GetShell().Script, "exit 0")
@@ -48,7 +48,7 @@ func TestParseActionParams_ScriptRun(t *testing.T) {
 func TestParseActionParams_Systemd(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"unitName":"nginx.service","enable":true}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SERVICE), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SERVICE), []byte(params)))
 
 	require.NotNil(t, action.GetService())
 	assert.Equal(t, "nginx.service", action.GetService().UnitName)
@@ -58,7 +58,7 @@ func TestParseActionParams_Systemd(t *testing.T) {
 func TestParseActionParams_File(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"path":"/etc/test.conf","content":"key=value"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_FILE), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_FILE), []byte(params)))
 
 	require.NotNil(t, action.GetFile())
 	assert.Equal(t, "/etc/test.conf", action.GetFile().Path)
@@ -67,7 +67,7 @@ func TestParseActionParams_File(t *testing.T) {
 func TestParseActionParams_Directory(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"path":"/opt/myapp"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_DIRECTORY), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_DIRECTORY), []byte(params)))
 
 	require.NotNil(t, action.GetDirectory())
 	assert.Equal(t, "/opt/myapp", action.GetDirectory().Path)
@@ -76,7 +76,7 @@ func TestParseActionParams_Directory(t *testing.T) {
 func TestParseActionParams_Update(t *testing.T) {
 	action := &pm.Action{}
 	params := `{}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_UPDATE), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_UPDATE), []byte(params)))
 
 	require.NotNil(t, action.GetUpdate())
 }
@@ -84,7 +84,7 @@ func TestParseActionParams_Update(t *testing.T) {
 func TestParseActionParams_Repository(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"name":"myrepo"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_REPOSITORY), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_REPOSITORY), []byte(params)))
 
 	require.NotNil(t, action.GetRepository())
 	assert.Equal(t, "myrepo", action.GetRepository().Name)
@@ -93,7 +93,7 @@ func TestParseActionParams_Repository(t *testing.T) {
 func TestParseActionParams_Flatpak(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"appId":"org.gnome.Calculator"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_FLATPAK), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_FLATPAK), []byte(params)))
 
 	require.NotNil(t, action.GetFlatpak())
 	assert.Equal(t, "org.gnome.Calculator", action.GetFlatpak().AppId)
@@ -102,7 +102,7 @@ func TestParseActionParams_Flatpak(t *testing.T) {
 func TestParseActionParams_User(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"username":"testuser"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_USER), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_USER), []byte(params)))
 
 	require.NotNil(t, action.GetUser())
 	assert.Equal(t, "testuser", action.GetUser().Username)
@@ -111,7 +111,7 @@ func TestParseActionParams_User(t *testing.T) {
 func TestParseActionParams_Group(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"name":"developers"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_GROUP), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_GROUP), []byte(params)))
 
 	require.NotNil(t, action.GetGroup())
 	assert.Equal(t, "developers", action.GetGroup().Name)
@@ -119,23 +119,22 @@ func TestParseActionParams_Group(t *testing.T) {
 
 func TestParseActionParams_InvalidJSON(t *testing.T) {
 	action := &pm.Action{}
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_PACKAGE), []byte("not json"))
-
-	// Should not panic and params should remain nil
+	// Malformed params now FAIL CLOSED (#368): an error so the dispatch
+	// handler retries/dead-letters instead of sending empty params.
+	require.Error(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_PACKAGE), []byte("not json")))
 	assert.Nil(t, action.Params)
 }
 
 func TestParseActionParams_UnknownType(t *testing.T) {
 	action := &pm.Action{}
-	actionparams.PopulateAction(action, 9999, []byte(`{"name":"test"}`))
-
-	// Should not panic and params should remain nil for unknown types
+	// An unhandled action type now errors rather than silently no-op'ing (#368).
+	require.Error(t, actionparams.PopulateAction(action, 9999, []byte(`{"name":"test"}`)))
 	assert.Nil(t, action.Params)
 }
 
 func TestParseActionParams_EmptyParams(t *testing.T) {
 	action := &pm.Action{}
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte("{}"))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_SHELL), []byte("{}")))
 
 	// Should parse without error, Shell should be set (with empty fields)
 	require.NotNil(t, action.GetShell())
@@ -144,7 +143,7 @@ func TestParseActionParams_EmptyParams(t *testing.T) {
 func TestParseActionParams_AppImage(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"url":"https://example.com/app.AppImage"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_APP_IMAGE), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_APP_IMAGE), []byte(params)))
 
 	require.NotNil(t, action.GetApp())
 }
@@ -152,7 +151,7 @@ func TestParseActionParams_AppImage(t *testing.T) {
 func TestParseActionParams_Deb(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"url":"https://example.com/app.deb"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_DEB), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_DEB), []byte(params)))
 
 	require.NotNil(t, action.GetApp())
 }
@@ -160,7 +159,7 @@ func TestParseActionParams_Deb(t *testing.T) {
 func TestParseActionParams_Rpm(t *testing.T) {
 	action := &pm.Action{}
 	params := `{"url":"https://example.com/app.rpm"}`
-	actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_RPM), []byte(params))
+	require.NoError(t, actionparams.PopulateAction(action, int32(pm.ActionType_ACTION_TYPE_RPM), []byte(params)))
 
 	require.NotNil(t, action.GetApp())
 }

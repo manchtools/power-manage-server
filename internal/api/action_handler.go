@@ -89,7 +89,11 @@ func (h *ActionHandler) actionToProto(a store.Action) *pm.ManagedAction {
 	}
 
 	if len(a.Params) > 0 {
-		actionparams.PopulateManagedAction(action, pm.ActionType(a.ActionType), a.Params)
+		if err := actionparams.PopulateManagedAction(action, pm.ActionType(a.ActionType), a.Params); err != nil {
+			// Read path: log and return the action without params rather than
+			// failing the whole list/get response (#368).
+			h.logger.Warn("action params failed to parse for API response", "action_id", a.ID, "error", err)
+		}
 	}
 
 	if len(a.Schedule) > 0 {

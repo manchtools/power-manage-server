@@ -90,9 +90,13 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 		ParamsCanonical: payload.ParamsCanonical,
 	}
 
-	// Parse params
+	// Parse params. Fail closed on a parse error or an unhandled action type:
+	// return the error so Asynq retries / dead-letters instead of dispatching an
+	// action to the agent with empty/nil params (#368).
 	if len(payload.Params) > 0 && string(payload.Params) != "null" && string(payload.Params) != "{}" {
-		actionparams.PopulateAction(action, payload.ActionType, payload.Params)
+		if err := actionparams.PopulateAction(action, payload.ActionType, payload.Params); err != nil {
+			return fmt.Errorf("populate action params (type %d): %w", payload.ActionType, err)
+		}
 	}
 
 	// Wrap in ServerMessage
