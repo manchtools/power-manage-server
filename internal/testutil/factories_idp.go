@@ -78,6 +78,58 @@ func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, ema
 	return key.Secret()
 }
 
+// SetupTOTPCheapBackup enables TOTP for a user with a SINGLE backup code whose
+// hash uses bcrypt.MinCost, and returns the plaintext secret. Use it in tests
+// that drive many FAILED VerifyLoginTOTP attempts: SetupTOTP provisions
+// BackupCodeCount codes at the production bcrypt cost, so every failed attempt
+// runs that many slow bcrypt compares (~seconds each). One MinCost code keeps
+// the backup-code path valid — an empty array fails the TOTP projection's
+// NOT NULL array column — while making each failed attempt cheap.
+func SetupTOTPCheapBackup(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, email string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	key, err := totp.GenerateKey("Test", email)
+	if err != nil {
+		t.Fatalf("generate TOTP key: %v", err)
+	}
+	encryptedSecret, err := enc.Encrypt(key.Secret())
+	if err != nil {
+		t.Fatalf("encrypt TOTP secret: %v", err)
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte("unused-test-backup-code"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash backup code: %v", err)
+	}
+
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   userID,
+		EventType:  string(eventtypes.TOTPSetupInitiated),
+		Data: map[string]any{
+			"secret_encrypted":  encryptedSecret,
+			"backup_codes_hash": []string{string(hash)},
+		},
+		ActorType: "user",
+		ActorID:   userID,
+	}); err != nil {
+		t.Fatalf("setup TOTP (cheap backup): %v", err)
+	}
+	if err := st.AppendEvent(ctx, store.Event{
+		StreamType: "totp",
+		StreamID:   userID,
+		EventType:  string(eventtypes.TOTPVerified),
+		Data:       map[string]any{},
+		ActorType:  "user",
+		ActorID:    userID,
+	}); err != nil {
+		t.Fatalf("verify TOTP (cheap backup): %v", err)
+	}
+
+	return key.Secret()
+}
+
 // CreateTestIdentityProvider creates an identity provider via events and returns the provider ID.
 func CreateTestIdentityProvider(t *testing.T, st *store.Store, enc *crypto.Encryptor, actorID, name, slug string) string {
 	t.Helper()

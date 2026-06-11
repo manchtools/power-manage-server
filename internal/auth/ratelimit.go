@@ -82,6 +82,25 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return true
 }
 
+// Blocked reports whether key is already at or over the limit within the
+// current window, WITHOUT recording an attempt. Use it to gate an action up
+// front, then call Allow only on the outcomes you want to count (e.g. record
+// only failed logins, so successful logins never accrue toward a per-account
+// brute-force ceiling).
+func (rl *RateLimiter) Blocked(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	cutoff := time.Now().Add(-rl.window)
+	valid := 0
+	for _, t := range rl.attempts[key] {
+		if t.After(cutoff) {
+			valid++
+		}
+	}
+	return valid >= rl.limit
+}
+
 // evictEldestLocked removes the single key with the oldest lastSeen
 // timestamp. Caller must hold rl.mu. O(n) scan — only called on the
 // rare path where the map is at the key ceiling, so the cost lives in

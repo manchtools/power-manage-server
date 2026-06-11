@@ -4,6 +4,8 @@ package api
 import (
 	"context"
 	"log/slog"
+	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -15,12 +17,26 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// Per-account login throttle: at most loginAccountFailLimit FAILED password
+// attempts per account within loginAccountFailWindow, independent of source IP.
+// The interceptor's IP limiter is bypassable by rotating IPs, so a targeted
+// admin needs an account-keyed ceiling too. Only FAILURES are counted, so a
+// legitimate user's normal/successful logins never accrue toward it.
+const (
+	loginAccountFailLimit  = 10
+	loginAccountFailWindow = 15 * time.Minute
+)
+
 // AuthHandler handles authentication RPCs.
 type AuthHandler struct {
 	store               *store.Store
 	logger              *slog.Logger
 	jwtManager          *auth.JWTManager
 	passwordAuthEnabled bool
+	// loginAccountLimiter throttles FAILED password attempts per account
+	// (keyed by normalised email), closing the IP-rotation bypass on the
+	// interceptor's per-IP login limiter.
+	loginAccountLimiter *auth.RateLimiter
 }
 
 // NewAuthHandler creates a new auth handler. The passwordAuthEnabled flag
@@ -35,6 +51,7 @@ func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 		logger:              logger,
 		jwtManager:          jwtManager,
 		passwordAuthEnabled: passwordAuthEnabled,
+		loginAccountLimiter: auth.NewRateLimiter(loginAccountFailLimit, loginAccountFailWindow),
 	}
 }
 
@@ -52,11 +69,27 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is disabled on this server")
 	}
 
+	// Per-account brute-force ceiling. Checked BEFORE the user lookup so the
+	// response is identical whether or not the account exists (no enumeration
+	// signal) and so a blocked account spends no bcrypt cycles. Keyed by
+	// normalised email; only failed attempts are counted (below), so it never
+	// throttles a legitimate user's successful logins. This closes the
+	// IP-rotation bypass on the interceptor's per-IP login limiter (#381).
+	acctKey := "login:" + strings.ToLower(strings.TrimSpace(req.Msg.Email))
+	if h.loginAccountLimiter.Blocked(acctKey) {
+		return nil, apiErrorCtx(ctx, ErrRateLimited, connect.CodeResourceExhausted, "too many failed login attempts for this account, try again later")
+	}
+
 	user, err := h.store.Repos().User.GetByEmail(ctx, req.Msg.Email)
 	if err != nil {
 		if store.IsNotFound(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based user enumeration
 			auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+			// Count the failure for the per-account ceiling. Recording for a
+			// non-existent email too keeps the behaviour identical to a real
+			// account (no enumeration), and an attacker spraying one address is
+			// still throttled.
+			h.loginAccountLimiter.Allow(acctKey)
 			return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up user")
@@ -74,6 +107,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	}
 
 	if !auth.VerifyPassword(req.Msg.Password, derefPasswordHash(user.PasswordHash)) {
+		h.loginAccountLimiter.Allow(acctKey) // count the failed attempt
 		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
 
