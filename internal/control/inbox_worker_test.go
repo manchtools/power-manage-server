@@ -579,3 +579,74 @@ func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
 	assert.JSONEq(t, `{"username":"test"}`, string(calls[0].ParamsJSON),
 		"signer must receive the canonical params from the action")
 }
+
+// createPendingExecutionAt emits an ExecutionCreated event whose created_at is
+// backdated to `at` (the projection takes created_at from executed_at), so
+// time-based expiry can be tested deterministically. Returns the execution ID.
+func createPendingExecutionAt(t *testing.T, st *store.Store, deviceID, actionID string, at time.Time) string {
+	t.Helper()
+	id := testutil.NewID()
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "execution",
+		StreamID:   id,
+		EventType:  "ExecutionCreated",
+		Data: map[string]any{
+			"device_id":       deviceID,
+			"action_id":       actionID,
+			"action_type":     int(pm.ActionType_ACTION_TYPE_SHELL),
+			"desired_state":   0,
+			"params":          map[string]any{},
+			"timeout_seconds": 300,
+			"executed_at":     at.Format(time.RFC3339Nano),
+		},
+		ActorType: "user",
+		ActorID:   "test",
+	}))
+	return id
+}
+
+// TestListStaleExecutions_ExpiresStalePending pins the audit fix: a 'pending'
+// execution older than the 24h max-age is now surfaced by ListStale (so the
+// expiry sweep times it out), while a fresh pending one is left alone. Without
+// this a months-offline device runs its whole stale backlog on reconnect.
+func TestListStaleExecutions_ExpiresStalePending(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "stale-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Stale Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+
+	stale := createPendingExecutionAt(t, st, deviceID, actionID, time.Now().Add(-25*time.Hour))
+	fresh := createPendingExecutionAt(t, st, deviceID, actionID, time.Now())
+
+	staleRows, err := st.Repos().Execution.ListStale(context.Background())
+	require.NoError(t, err)
+	ids := map[string]bool{}
+	for _, r := range staleRows {
+		ids[r.ID] = true
+	}
+	assert.True(t, ids[stale], "a pending execution older than 24h must be timed out")
+	assert.False(t, ids[fresh], "a fresh pending execution must NOT be timed out")
+}
+
+// TestListPendingForDevice_SkipsStalePending pins that dispatchPendingActions
+// (via ListPendingForDevice) does NOT re-dispatch a stale pending execution on
+// reconnect — only fresh ones — so a long-offline device can't run stale,
+// possibly destructive actions when it comes back.
+func TestListPendingForDevice_SkipsStalePending(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "reconnect-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Backlog Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+
+	stale := createPendingExecutionAt(t, st, deviceID, actionID, time.Now().Add(-25*time.Hour))
+	fresh := createPendingExecutionAt(t, st, deviceID, actionID, time.Now())
+
+	pending, err := st.Repos().Execution.ListPendingForDevice(context.Background(), deviceID)
+	require.NoError(t, err)
+	ids := map[string]bool{}
+	for _, e := range pending {
+		ids[e.ID] = true
+	}
+	assert.False(t, ids[stale], "a stale (>24h) pending execution must not be re-dispatched on reconnect")
+	assert.True(t, ids[fresh], "a fresh pending execution must still be dispatched")
+}

@@ -263,20 +263,30 @@ WHERE ($1::TEXT = '' OR device_id = $1)
 
 -- name: ListPendingExecutionsForDevice :many
 -- Include both 'pending' and 'dispatched' statuses, since dispatched executions
--- may need to be re-sent if the agent disconnected before receiving them
+-- may need to be re-sent if the agent disconnected before receiving them.
+-- Skip executions older than the 24h max-age: a long-offline device must NOT
+-- run its entire stale backlog (possibly destructive) on reconnect. Stale ones
+-- are timed out by ListStaleExecutions instead — keep the 24h here in sync with
+-- the pending branch there (audit).
 SELECT * FROM executions_projection
 WHERE device_id = $1 AND status IN ('pending', 'dispatched')
+  AND created_at > NOW() - INTERVAL '24 hours'
 ORDER BY created_at ASC;
 
 -- name: ListStaleExecutions :many
--- Find dispatched executions that exceeded their timeout + grace period.
--- Only expires 'dispatched' status — 'pending' executions are left alone
--- because they represent assigned actions waiting for an offline device
--- to reconnect. dispatchPendingActions will dispatch them on reconnect.
+-- Find executions that must be timed out:
+--   - 'dispatched' rows past their per-action timeout + grace (agent didn't
+--     respond), and
+--   - 'pending' rows older than the 24h max-age — assigned to a device that
+--     never came online in time. Without this they wait forever and run as a
+--     stale, possibly destructive action when the device finally reconnects
+--     (audit). Keep the 24h in sync with ListPendingExecutionsForDevice.
 SELECT id, device_id, timeout_seconds, status, created_at, dispatched_at
 FROM executions_projection
-WHERE status = 'dispatched'
-  AND dispatched_at < NOW() - make_interval(secs => GREATEST(timeout_seconds, 300) + 300)
+WHERE (status = 'dispatched'
+       AND dispatched_at < NOW() - make_interval(secs => GREATEST(timeout_seconds, 300) + 300))
+   OR (status = 'pending'
+       AND created_at <= NOW() - INTERVAL '24 hours')
 LIMIT 100;
 
 -- name: ListRecentExecutionsForDevice :many
