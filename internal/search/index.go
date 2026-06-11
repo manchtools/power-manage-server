@@ -132,136 +132,168 @@ func (idx *Index) FlushSearchData(ctx context.Context) error {
 	return nil
 }
 
-// EnsureIndexes creates the FT search indexes if they don't already exist.
-func (idx *Index) EnsureIndexes(ctx context.Context) error {
-	indexes := []struct {
-		name   string
-		prefix string
-		schema []any
-	}{
-		{
-			name:   idxActions,
-			prefix: prefixAction,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"type", "TAG",
-				"is_compliance", "TAG",
-				"created_at", "NUMERIC", "SORTABLE",
-				"updated_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxActionSets,
-			prefix: prefixActionSet,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"member_count", "NUMERIC",
-				"action_names", "TEXT",
-				"created_at", "NUMERIC", "SORTABLE",
-				"updated_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxDefinitions,
-			prefix: prefixDefinition,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"member_count", "NUMERIC",
-				"set_names", "TEXT",
-				"action_names", "TEXT",
-				"created_at", "NUMERIC", "SORTABLE",
-				"updated_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxCompliancePolicies,
-			prefix: prefixCompliancePolicy,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"action_names", "TEXT",
-			},
-		},
-		{
-			name:   idxDevices,
-			prefix: prefixDevice,
-			schema: []any{
-				"hostname", "TEXT",
-				"agent_version", "TAG",
-				"labels", "TEXT",
-				"os_name", "TEXT",
-				"os_version", "TEXT",
-				"os_arch", "TAG",
-				"kernel", "TEXT",
-				"compliance_status", "TAG",
-				"registered_at", "NUMERIC", "SORTABLE",
-				"last_seen_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxUsers,
-			prefix: prefixUser,
-			schema: []any{
-				"email", "TEXT",
-				"display_name", "TEXT",
-				"linux_username", "TEXT",
-				"disabled", "TAG",
-				"created_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxDeviceGroups,
-			prefix: prefixDeviceGroup,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"is_dynamic", "TAG",
-				"member_count", "NUMERIC",
-				"created_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxUserGroups,
-			prefix: prefixUserGroup,
-			schema: []any{
-				"name", "TEXT",
-				"description", "TEXT",
-				"is_dynamic", "TAG",
-				"member_count", "NUMERIC",
-				"created_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxExecutions,
-			prefix: prefixExecution,
-			schema: []any{
-				"action_name", "TEXT",
-				"device_hostname", "TEXT",
-				"status", "TAG",
-				"action_type", "TAG",
-				"device_id", "TAG",
-				"created_at", "NUMERIC", "SORTABLE",
-			},
-		},
-		{
-			name:   idxAuditEvents,
-			prefix: prefixAuditEvent,
-			schema: []any{
-				"event_type", "TEXT",
-				"stream_type", "TAG",
-				"actor_type", "TAG",
-				"actor_id", "TAG",
-				"occurred_at", "NUMERIC", "SORTABLE",
-			},
-		},
-	}
+// IndexSchema is one RediSearch (FT.CREATE) index definition. Exported so a
+// test can assert that the api-layer scopeFilterFields mirror the TAG/NUMERIC
+// fields actually declared here — the two must stay in lockstep, since a tag
+// filter on a field the index never declared makes RediSearch reject the whole
+// query (server#158).
+type IndexSchema struct {
+	Name   string // e.g. "idx:devices"
+	Prefix string
+	Schema []any // field, type, [modifier...] exactly as passed to FT.CREATE SCHEMA
+}
 
-	for _, ix := range indexes {
-		args := []any{"FT.CREATE", ix.name, "ON", "HASH", "PREFIX", "1", ix.prefix, "SCHEMA"}
-		args = append(args, ix.schema...)
+// Scope returns the search scope string this index backs — the index name with
+// the "idx:" prefix stripped (e.g. "idx:devices" → "devices"). This is the key
+// used in the api-layer scopeFilterFields map.
+func (s IndexSchema) Scope() string { return strings.TrimPrefix(s.Name, "idx:") }
+
+// FilterableFields returns the field names declared TAG or NUMERIC — the only
+// kinds a structured (@field:{...} / range) filter can target. TEXT fields are
+// full-text only and are intentionally excluded. Derived by pairing each type
+// token with its preceding field name, so SORTABLE and other modifiers are
+// ignored.
+func (s IndexSchema) FilterableFields() map[string]bool {
+	out := map[string]bool{}
+	for i := 1; i < len(s.Schema); i++ {
+		t, _ := s.Schema[i].(string)
+		if t != "TAG" && t != "NUMERIC" {
+			continue
+		}
+		if field, ok := s.Schema[i-1].(string); ok {
+			out[field] = true
+		}
+	}
+	return out
+}
+
+// IndexSchemas is the canonical set of RediSearch indexes EnsureIndexes creates.
+var IndexSchemas = []IndexSchema{
+	{
+		Name:   idxActions,
+		Prefix: prefixAction,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"type", "TAG",
+			"is_compliance", "TAG",
+			"created_at", "NUMERIC", "SORTABLE",
+			"updated_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxActionSets,
+		Prefix: prefixActionSet,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"member_count", "NUMERIC",
+			"action_names", "TEXT",
+			"created_at", "NUMERIC", "SORTABLE",
+			"updated_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxDefinitions,
+		Prefix: prefixDefinition,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"member_count", "NUMERIC",
+			"set_names", "TEXT",
+			"action_names", "TEXT",
+			"created_at", "NUMERIC", "SORTABLE",
+			"updated_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxCompliancePolicies,
+		Prefix: prefixCompliancePolicy,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"action_names", "TEXT",
+		},
+	},
+	{
+		Name:   idxDevices,
+		Prefix: prefixDevice,
+		Schema: []any{
+			"hostname", "TEXT",
+			"agent_version", "TAG",
+			"labels", "TEXT",
+			"os_name", "TEXT",
+			"os_version", "TEXT",
+			"os_arch", "TAG",
+			"kernel", "TEXT",
+			"compliance_status", "TAG",
+			"registered_at", "NUMERIC", "SORTABLE",
+			"last_seen_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxUsers,
+		Prefix: prefixUser,
+		Schema: []any{
+			"email", "TEXT",
+			"display_name", "TEXT",
+			"linux_username", "TEXT",
+			"disabled", "TAG",
+			"created_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxDeviceGroups,
+		Prefix: prefixDeviceGroup,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"is_dynamic", "TAG",
+			"member_count", "NUMERIC",
+			"created_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxUserGroups,
+		Prefix: prefixUserGroup,
+		Schema: []any{
+			"name", "TEXT",
+			"description", "TEXT",
+			"is_dynamic", "TAG",
+			"member_count", "NUMERIC",
+			"created_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxExecutions,
+		Prefix: prefixExecution,
+		Schema: []any{
+			"action_name", "TEXT",
+			"device_hostname", "TEXT",
+			"status", "TAG",
+			"action_type", "TAG",
+			"device_id", "TAG",
+			"created_at", "NUMERIC", "SORTABLE",
+		},
+	},
+	{
+		Name:   idxAuditEvents,
+		Prefix: prefixAuditEvent,
+		Schema: []any{
+			"event_type", "TEXT",
+			"stream_type", "TAG",
+			"actor_type", "TAG",
+			"actor_id", "TAG",
+			"occurred_at", "NUMERIC", "SORTABLE",
+		},
+	},
+}
+
+// EnsureIndexes creates the FT search indexes if they do not already exist.
+func (idx *Index) EnsureIndexes(ctx context.Context) error {
+	for _, ix := range IndexSchemas {
+		args := []any{"FT.CREATE", ix.Name, "ON", "HASH", "PREFIX", "1", ix.Prefix, "SCHEMA"}
+		args = append(args, ix.Schema...)
 		err := idx.rdb.Do(ctx, args...).Err()
 		if err != nil {
 			// "already exists" substring covers both backends used during
@@ -273,7 +305,7 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 			if strings.Contains(err.Error(), "already exists") {
 				continue
 			}
-			return fmt.Errorf("create index %s: %w", ix.name, err)
+			return fmt.Errorf("create index %s: %w", ix.Name, err)
 		}
 	}
 
