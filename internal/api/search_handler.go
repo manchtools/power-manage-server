@@ -444,27 +444,35 @@ func parseFTSearchResult(raw any, scope string) ([]*pm.SearchResult, int32) {
 	return results, int32(total)
 }
 
-// escapeRediSearchQuery escapes special characters that have meaning in RediSearch query syntax.
-func escapeRediSearchQuery(query string) string {
-	special := []string{
-		"@", "!", "{", "}", "(", ")", "|", "-", "=", ">", "[", "]", ":", ";", "~",
-	}
-	result := query
-	for _, ch := range special {
-		result = strings.ReplaceAll(result, ch, "\\"+ch)
-	}
-	return result
+// rediSearchSpecialChars is the full set of characters RediSearch treats
+// specially in query / TAG syntax. Backslash is NOT in this list — it is
+// escaped separately and FIRST in escapeRediSearch.
+var rediSearchSpecialChars = []string{
+	",", ".", "<", ">", "{", "}", "[", "]", "\"", "'", ":", ";", "!", "@",
+	"#", "$", "%", "^", "&", "*", "(", ")", "-", "+", "=", "~", "|", "/",
 }
 
-// escapeRediSearchTagValue escapes special characters in a RediSearch TAG value.
-func escapeRediSearchTagValue(val string) string {
-	special := []string{
-		",", ".", "<", ">", "{", "}", "[", "]", "\"", "'", ":", ";", "!", "@", "#",
-		"$", "%", "^", "&", "*", "(", ")", "-", "+", "=", "~",
+// escapeRediSearch escapes every character RediSearch treats specially so a
+// user-supplied string is matched literally rather than parsed as query syntax.
+//
+// Backslash is escaped FIRST. Otherwise escaping another metacharacter (which
+// inserts a backslash) is re-interpreted and leaves a LIVE operator: the prior
+// code turned `\|` into `\\|` — a literal backslash followed by a live OR — and
+// omitted `% * "` entirely, so a Search-permission holder could manipulate the
+// query scope / build an error oracle. Whitespace is intentionally left alone:
+// in the query path the result is a prefix term (`escaped*`) where spaces are
+// the token separators a multi-word search relies on.
+func escapeRediSearch(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	for _, ch := range rediSearchSpecialChars {
+		s = strings.ReplaceAll(s, ch, "\\"+ch)
 	}
-	result := val
-	for _, ch := range special {
-		result = strings.ReplaceAll(result, ch, "\\"+ch)
-	}
-	return result
+	return s
 }
+
+// escapeRediSearchQuery escapes a free-text query before it is embedded in a
+// RediSearch query string.
+func escapeRediSearchQuery(query string) string { return escapeRediSearch(query) }
+
+// escapeRediSearchTagValue escapes a RediSearch TAG field value.
+func escapeRediSearchTagValue(val string) string { return escapeRediSearch(val) }
