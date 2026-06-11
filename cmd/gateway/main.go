@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
@@ -35,6 +36,15 @@ import (
 
 // version is set at build time via -ldflags.
 var version = "dev"
+
+// maxAgentMessageBytes caps how many bytes the gateway will read from a single
+// agent message on the mTLS bidi stream. Without a ceiling, a compromised or
+// malicious agent could stream an arbitrarily large message and OOM the
+// gateway. 64 MiB is comfortably above any legitimate single message — agent
+// command output is truncated to 1 MiB control-side, terminal input is capped
+// at 8 MiB, and inventory/osquery payloads are at most a few MiB — while
+// bounding the blast radius of a hostile peer.
+const maxAgentMessageBytes = 64 << 20
 
 func main() {
 	// Parse flags — TLS is always required for mTLS agent connections
@@ -529,7 +539,7 @@ func main() {
 	agentHandler := handler.NewAgentHandlerWithTLS(manager, aqClient, controlProxy, workerMgr, version, cfg.HeartbeatInterval, logger)
 	agentHandler.SetGatewayRouting(gatewayReg, gatewayID)
 	agentHandler.SetTerminalSessions(terminalSessions)
-	path, h := pmv1connect.NewAgentServiceHandler(agentHandler)
+	path, h := pmv1connect.NewAgentServiceHandler(agentHandler, connect.WithReadMaxBytes(maxAgentMessageBytes))
 
 	// Compose middlewares (innermost first):
 	//   pmv1connect handler
