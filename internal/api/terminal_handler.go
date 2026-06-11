@@ -678,6 +678,45 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 }
 
+// TerminateUserSessions force-closes every LIVE terminal session belonging to
+// userID across all gateways. It's the revocation path (audit l.174): a disabled
+// or deleted user's already-open, root-capable shell must be killed, not left
+// running until they happen to disconnect. The single-use token already blocks
+// NEW sessions and pending tokens expire within the token TTL, so this closes
+// the gap of an ALREADY-ACCEPTED session.
+//
+// Best-effort and non-fatal: per-session failures are logged so one stuck
+// gateway can't strand the others. Reuses the admin RPCs — ListActiveTerminal
+// Sessions has no in-method auth gate, and Terminate is invoked under a
+// synthetic system actor so the audit event is correctly attributed to the
+// system, not an admin. Intended to run on a background goroutine (see
+// TerminalRevocationListener) so it never blocks the disable/delete that
+// triggered it.
+func (h *TerminalHandler) TerminateUserSessions(ctx context.Context, userID string) {
+	listResp, err := h.ListActiveTerminalSessions(ctx, connect.NewRequest(&pm.ListActiveTerminalSessionsRequest{}))
+	if err != nil {
+		h.logger.Error("revocation: failed to list terminal sessions", "user_id", userID, "error", err)
+		return
+	}
+
+	sysCtx := auth.WithUser(ctx, &auth.UserContext{ID: "system", Email: "system@power-manage"})
+	for _, s := range listResp.Msg.Sessions {
+		if s.UserId != userID {
+			continue
+		}
+		if _, err := h.TerminateTerminalSession(sysCtx, connect.NewRequest(&pm.TerminateTerminalSessionRequest{
+			SessionId: s.SessionId,
+			Reason:    "user access revoked",
+		})); err != nil {
+			h.logger.Error("revocation: failed to terminate terminal session",
+				"user_id", userID, "session_id", s.SessionId, "error", err)
+		} else {
+			h.logger.Info("revocation: terminated terminal session",
+				"user_id", userID, "session_id", s.SessionId)
+		}
+	}
+}
+
 // GatewayBaseURL normalises the configured gateway URL into the
 // token-free form returned by StartTerminalResponse.gateway_url:
 // any query string, fragment, or trailing slash is stripped so the
