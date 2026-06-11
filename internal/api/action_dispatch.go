@@ -138,7 +138,8 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		inputs.desiredState = action.DesiredState
 		serialized, err := serializeProtoParams(extractActionParamsMsg(action))
 		if err != nil {
-			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("failed to serialize inline action params: %v", err))
+			h.logger.Warn("failed to serialize inline action params", "error", err)
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "failed to serialize inline action params")
 		}
 		inputs.params = serialized
 		inputs.timeoutSeconds = action.TimeoutSeconds
