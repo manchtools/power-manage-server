@@ -139,8 +139,11 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		if !ok {
 			continue
 		}
-		wire := dbActionToWireAction(raw)
-		if wire == nil {
+		wire, err := dbActionToWireAction(raw)
+		if err != nil {
+			// Fail closed: skip an action whose params don't parse rather than
+			// sync it to the agent with empty params (#368).
+			h.logger.Warn("skipping standalone action with unparseable params", "action_id", raw.ID, "error", err)
 			continue
 		}
 		if sa.Mode == resolution.ModeUninstall {
@@ -156,10 +159,13 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		if covered[dbAction.ID] {
 			continue
 		}
-		action := dbResolvedActionToWireAction(dbAction)
-		if action != nil {
-			standalone = append(standalone, action)
+		action, err := dbResolvedActionToWireAction(dbAction)
+		if err != nil {
+			// Fail closed: skip rather than sync empty params (#368).
+			h.logger.Warn("skipping resolved action with unparseable params", "action_id", dbAction.ID, "error", err)
+			continue
 		}
+		standalone = append(standalone, action)
 	}
 
 	// Group emission: walk the tree's group list, hydrate proto Actions,
@@ -173,8 +179,10 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 			if !ok {
 				continue
 			}
-			wire := dbActionToWireAction(raw)
-			if wire == nil {
+			wire, err := dbActionToWireAction(raw)
+			if err != nil {
+				// Fail closed: skip rather than sync empty params (#368).
+				h.logger.Warn("skipping group action with unparseable params", "action_id", raw.ID, "error", err)
 				continue
 			}
 			if g.Mode == resolution.ModeUninstall {
@@ -229,7 +237,7 @@ func windowEntryCount(w *pm.MaintenanceWindow) int {
 // format. Mirrors dbResolvedActionToWireAction but operates on the
 // projection row directly so the tree resolver doesn't have to detour
 // through the per-action mode-collapse query for every member action.
-func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
+func dbActionToWireAction(a db.ActionsProjection) (*pm.Action, error) {
 	action := &pm.Action{
 		Id:              &pm.ActionId{Value: a.ID},
 		Type:            pm.ActionType(a.ActionType),
@@ -239,12 +247,14 @@ func dbActionToWireAction(a db.ActionsProjection) *pm.Action {
 		ParamsCanonical: a.ParamsCanonical,
 	}
 	if len(a.Params) > 0 {
-		actionparams.PopulateAction(action, a.ActionType, a.Params)
+		if err := actionparams.PopulateAction(action, a.ActionType, a.Params); err != nil {
+			return nil, err
+		}
 	}
 	if len(a.Schedule) > 0 {
 		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
-	return action
+	return action, nil
 }
 
 // ProxyValidateLuksToken validates and consumes a one-time LUKS token.
@@ -539,7 +549,7 @@ func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *c
 // dbResolvedActionToWireAction converts a resolved action row to wire format.
 // Note: This is also defined in handler/agent.go — when the gateway migration
 // is complete, only this version will remain.
-func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Action {
+func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) (*pm.Action, error) {
 	action := &pm.Action{
 		Id:              &pm.ActionId{Value: a.ID},
 		Type:            pm.ActionType(a.ActionType),
@@ -550,14 +560,16 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) *pm.Acti
 	}
 
 	if len(a.Params) > 0 {
-		actionparams.PopulateAction(action, a.ActionType, a.Params)
+		if err := actionparams.PopulateAction(action, a.ActionType, a.Params); err != nil {
+			return nil, err
+		}
 	}
 
 	if len(a.Schedule) > 0 {
 		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
 
-	return action
+	return action, nil
 }
 
 // rotationReasonToString converts the wire enum into the lowercase
