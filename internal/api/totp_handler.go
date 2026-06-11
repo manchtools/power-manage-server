@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -17,6 +18,12 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// totpChallengeConsumeWindow is how long a consumed TOTP-login-challenge JTI is
+// remembered. It MUST exceed the challenge JWT's 5-minute TTL (jwt.go) so a
+// still-valid challenge can never outlive its "already consumed" marker —
+// otherwise the single-use guard would silently lapse near the token's expiry.
+const totpChallengeConsumeWindow = 6 * time.Minute
+
 // TOTPHandler handles TOTP two-factor authentication RPCs.
 type TOTPHandler struct {
 	store      *store.Store
@@ -24,6 +31,12 @@ type TOTPHandler struct {
 	jwtManager *auth.JWTManager
 	encryptor  *crypto.Encryptor
 	issuer     string
+	// challengeConsumer enforces single-use of the TOTP login challenge: a
+	// limit-1 sliding window keyed by challenge JTI, so the first VerifyLoginTOTP
+	// for a given challenge is admitted and every later one (even with a valid
+	// code) is rejected. Without it the challenge JWT is replayable for its full
+	// 5-min life — unlimited TOTP guesses per single password step.
+	challengeConsumer *auth.RateLimiter
 }
 
 // NewTOTPHandler creates a new TOTP handler.
@@ -32,11 +45,12 @@ func NewTOTPHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 		issuer = totp.DefaultIssuer
 	}
 	return &TOTPHandler{
-		store:      st,
-		logger:     logger,
-		jwtManager: jwtManager,
-		encryptor:  enc,
-		issuer:     issuer,
+		store:             st,
+		logger:            logger,
+		jwtManager:        jwtManager,
+		encryptor:         enc,
+		issuer:            issuer,
+		challengeConsumer: auth.NewRateLimiter(1, totpChallengeConsumeWindow),
 	}
 }
 
@@ -321,6 +335,16 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 	claims, err := h.jwtManager.ValidateToken(req.Msg.Challenge, auth.TokenTypeTOTPChallenge)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrTOTPChallengeExpired, connect.CodeFailedPrecondition, "invalid or expired TOTP challenge")
+	}
+
+	// Single-use: consume the challenge by its JTI as soon as it validates, so a
+	// challenge is worth exactly ONE VerifyLoginTOTP attempt. Without this the
+	// challenge JWT is replayable for its full 5-minute life — unlimited TOTP
+	// guesses per single password step. Fail closed: any later presentation
+	// (even with a valid code) is rejected and the user must re-authenticate
+	// with their password (which is IP-rate-limited).
+	if !h.challengeConsumer.Allow(claims.ID) {
+		return nil, apiErrorCtx(ctx, ErrTOTPChallengeExpired, connect.CodeFailedPrecondition, "TOTP challenge already used")
 	}
 
 	// Get TOTP record
