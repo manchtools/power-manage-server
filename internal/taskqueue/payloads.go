@@ -48,6 +48,16 @@ type LogQueryDispatchPayload struct {
 // === Gateway → Control payloads (control:inbox queue) ===
 
 // DeviceHelloPayload is the payload for TypeDeviceHello tasks.
+//
+// The proto Hello message also carries arch (field 5), but it is deliberately
+// NOT forwarded here: the control terminus (handleDeviceHello) only emits a
+// DeviceHeartbeat (agent_version + hostname), and os_arch is sourced from the
+// inventory/osquery pipeline — nothing consumes a hello-time arch. Per audit
+// N008 (see DeviceHeartbeatPayload) we don't transport bytes with no consumer.
+// If a future feature wants arch known at connect time (before the first
+// inventory), add it here AND give it a projector that writes os_arch, rather
+// than carrying an unread field. TestDeviceHelloPayload_WireContract pins the
+// exact wire shape so this stays a conscious choice, not silent twin drift.
 type DeviceHelloPayload struct {
 	DeviceID     string `json:"device_id"`
 	Hostname     string `json:"hostname"`
