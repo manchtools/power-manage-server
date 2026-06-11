@@ -9,27 +9,35 @@ import (
 	"context"
 )
 
-const completeOSQueryResult = `-- name: CompleteOSQueryResult :exec
+const completeOSQueryResult = `-- name: CompleteOSQueryResult :execrows
 UPDATE osquery_results
 SET completed = TRUE, success = $2, error = $3, rows = $4, completed_at = NOW()
-WHERE query_id = $1
+WHERE query_id = $1 AND device_id = $5
 `
 
 type CompleteOSQueryResultParams struct {
-	QueryID string `json:"query_id"`
-	Success bool   `json:"success"`
-	Error   string `json:"error"`
-	Rows    []byte `json:"rows"`
+	QueryID  string `json:"query_id"`
+	Success  bool   `json:"success"`
+	Error    string `json:"error"`
+	Rows     []byte `json:"rows"`
+	DeviceID string `json:"device_id"`
 }
 
-func (q *Queries) CompleteOSQueryResult(ctx context.Context, arg CompleteOSQueryResultParams) error {
-	_, err := q.db.Exec(ctx, completeOSQueryResult,
+// device_id is matched so a compromised agent can't complete another device's
+// query result by supplying its (non-secret) query_id. :execrows lets the
+// caller detect a 0-row update (unknown query or wrong device) and drop it.
+func (q *Queries) CompleteOSQueryResult(ctx context.Context, arg CompleteOSQueryResultParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeOSQueryResult,
 		arg.QueryID,
 		arg.Success,
 		arg.Error,
 		arg.Rows,
+		arg.DeviceID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const createOSQueryResult = `-- name: CreateOSQueryResult :exec

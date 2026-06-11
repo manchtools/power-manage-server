@@ -202,6 +202,95 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 	assert.Equal(t, "success", exec.Status)
 }
 
+// TestHandleExecutionResult_RejectsCrossDeviceSpoof pins the fix for
+// cross-device result spoofing: an execution ID is non-secret, so a compromised
+// agent must not be able to write a forged result onto ANOTHER device's
+// execution by supplying its ID. The reporting device must own the execution.
+func TestHandleExecutionResult_RejectsCrossDeviceSpoof(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
+	mux := worker.NewMux()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	victimDevice := testutil.CreateTestDevice(t, st, "victim-host")
+	attackerDevice := testutil.CreateTestDevice(t, st, "attacker-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "Test Action", int(pm.ActionType_ACTION_TYPE_SHELL))
+
+	// Execution owned by the VICTIM device.
+	executionID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "execution",
+		StreamID:   executionID,
+		EventType:  "ExecutionCreated",
+		Data: map[string]any{
+			"device_id":       victimDevice,
+			"action_id":       actionID,
+			"action_type":     int(pm.ActionType_ACTION_TYPE_SHELL),
+			"desired_state":   0,
+			"params":          map[string]any{},
+			"timeout_seconds": 300,
+			"executed_at":     time.Now().Format(time.RFC3339Nano),
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	}))
+
+	// The ATTACKER device reports a forged result for the victim's execution.
+	result := &pm.ActionResult{
+		ActionId:    &pm.ActionId{Value: executionID},
+		Status:      pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
+		CompletedAt: timestamppb.Now(),
+		Output:      &pm.CommandOutput{Stdout: "FORGED", ExitCode: 0},
+	}
+	resultJSON, err := protojson.Marshal(result)
+	require.NoError(t, err)
+	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+		DeviceID:         attackerDevice,
+		ActionResultJSON: resultJSON,
+	})
+
+	err = mux.ProcessTask(context.Background(), task)
+	require.Error(t, err, "a device must not complete another device's execution")
+
+	// The victim's execution must NOT have been completed by the forged result.
+	exec, err := st.Queries().GetExecutionByID(context.Background(), executionID)
+	require.NoError(t, err)
+	assert.NotEqual(t, "success", exec.Status, "forged result must not update the victim's execution")
+}
+
+// TestHandleOSQueryResult_RejectsCrossDeviceSpoof pins that the device_id WHERE
+// clause prevents a compromised agent from completing another device's pending
+// osquery result by supplying its (non-secret) query_id.
+func TestHandleOSQueryResult_RejectsCrossDeviceSpoof(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())
+	mux := worker.NewMux()
+
+	victimDevice := testutil.CreateTestDevice(t, st, "victim-osq")
+	attackerDevice := testutil.CreateTestDevice(t, st, "attacker-osq")
+	queryID := testutil.NewID()
+	require.NoError(t, st.Queries().CreateOSQueryResult(context.Background(), db.CreateOSQueryResultParams{
+		QueryID:   queryID,
+		DeviceID:  victimDevice,
+		TableName: "processes",
+	}))
+
+	// The attacker device reports a forged result for the victim's query.
+	task := newTask(t, taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
+		DeviceID: attackerDevice,
+		QueryID:  queryID,
+		Success:  true,
+		RowsJSON: []byte(`[{"forged":"1"}]`),
+	})
+	// Dropped (0 rows), not a retryable error.
+	require.NoError(t, mux.ProcessTask(context.Background(), task))
+
+	// The victim's query result must remain NOT completed.
+	res, err := st.Queries().GetOSQueryResult(context.Background(), queryID)
+	require.NoError(t, err)
+	assert.False(t, res.Completed, "forged osquery result for another device must be dropped")
+}
+
 func TestHandleExecutionResult_Failed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default())

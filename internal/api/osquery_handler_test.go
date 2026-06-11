@@ -128,11 +128,12 @@ func TestGetOSQueryResult_Completed(t *testing.T) {
 	rowsJSON, err := json.Marshal(rows)
 	require.NoError(t, err)
 
-	err = st.Queries().CompleteOSQueryResult(ctx, generated.CompleteOSQueryResultParams{
-		QueryID: queryID,
-		Success: true,
-		Error:   "",
-		Rows:    rowsJSON,
+	_, err = st.Queries().CompleteOSQueryResult(ctx, generated.CompleteOSQueryResultParams{
+		QueryID:  queryID,
+		Success:  true,
+		Error:    "",
+		Rows:     rowsJSON,
+		DeviceID: deviceID,
 	})
 	require.NoError(t, err)
 
@@ -165,11 +166,12 @@ func TestGetOSQueryResult_CompletedWithError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate agent error
-	err = st.Queries().CompleteOSQueryResult(ctx, generated.CompleteOSQueryResultParams{
-		QueryID: dispatchResp.Msg.QueryId,
-		Success: false,
-		Error:   "table not found: nonexistent_table",
-		Rows:    []byte("[]"),
+	_, err = st.Queries().CompleteOSQueryResult(ctx, generated.CompleteOSQueryResultParams{
+		QueryID:  dispatchResp.Msg.QueryId,
+		Success:  false,
+		Error:    "table not found: nonexistent_table",
+		Rows:     []byte("[]"),
+		DeviceID: deviceID,
 	})
 	require.NoError(t, err)
 
