@@ -94,6 +94,7 @@ type RegistrationHandler struct {
 	ca         *ca.CA
 	gatewayURL string
 	logger     *slog.Logger
+	now        func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewRegistrationHandler creates a new registration handler. Panics
@@ -114,6 +115,7 @@ func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string,
 		ca:         certAuth,
 		gatewayURL: gatewayURL,
 		logger:     logger,
+		now:        time.Now,
 	}
 }
 
@@ -166,7 +168,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	}
 
 	// Check if token is expired
-	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+	if token.ExpiresAt != nil && h.now().After(*token.ExpiresAt) {
 		logger.Warn("token is expired")
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has expired")
 	}

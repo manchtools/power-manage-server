@@ -74,6 +74,7 @@ const (
 
 // Index manages the RediSearch full-text search indexes in Valkey.
 type Index struct {
+	now      func() time.Time // clock seam; defaults to time.Now, overridden in tests
 	rdb      *redis.Client
 	store    *store.Store
 	aqClient *taskqueue.Client
@@ -86,6 +87,7 @@ type Index struct {
 // New creates a new search Index.
 func New(rdb *redis.Client, st *store.Store, aqClient *taskqueue.Client, logger *slog.Logger) *Index {
 	return &Index{
+		now:      time.Now,
 		rdb:      rdb,
 		store:    st,
 		aqClient: aqClient,
@@ -316,7 +318,7 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 // This is the only operation that reads from PG for search purposes.
 func (idx *Index) Warm(ctx context.Context) error {
 	idx.logger.Info("warming search index from database")
-	start := time.Now()
+	start := idx.now()
 
 	// 1. Index all actions. Returns the action_id → name map so the
 	// downstream warm passes (action sets + definitions) can build
@@ -396,7 +398,7 @@ func (idx *Index) Warm(ctx context.Context) error {
 		"user_groups", userGroupCount,
 		"executions", execCount,
 		"audit_events", auditCount,
-		"duration", time.Since(start),
+		"duration", idx.now().Sub(start),
 	)
 	return nil
 }

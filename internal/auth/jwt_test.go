@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,33 @@ func newTestJWTManager() *JWTManager {
 		RefreshTokenExpiry: 1 * time.Hour,
 		Issuer:             "test",
 	})
+}
+
+// TestGenerateTokens_TimestampsFromClock pins that token issue/expiry
+// timestamps derive from the injected clock, not the wall clock. The
+// clock is fixed in the PAST so the resulting tokens are already expired
+// today — impossible if issuance read time.Now().
+func TestGenerateTokens_TimestampsFromClock(t *testing.T) {
+	fixed := time.Date(2020, 6, 1, 12, 0, 0, 0, time.UTC)
+	m := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-for-jwt"),
+		AccessTokenExpiry: 15 * time.Minute,
+		Issuer:            "test",
+		Now:               func() time.Time { return fixed },
+	})
+
+	pair, err := m.GenerateTokens("uid", "e@x", nil, nil, 0)
+	require.NoError(t, err)
+
+	assert.True(t, pair.ExpiresAt.Equal(fixed.Add(15*time.Minute)),
+		"access expiry must be clock+TTL; got %s want %s", pair.ExpiresAt, fixed.Add(15*time.Minute))
+	assert.True(t, pair.ExpiresAt.Before(time.Now()),
+		"tokens minted under a past clock are already expired, proving the timestamp is not from the wall clock")
+
+	// The iat claim equals the injected clock. Decoded without validation,
+	// since a past-clock token would otherwise fail expiry validation.
+	payload := decodeJWTPayload(t, pair.AccessToken)
+	assert.Contains(t, payload, fmt.Sprintf(`"iat":%d`, fixed.Unix()))
 }
 
 func TestNewJWTManager_Defaults(t *testing.T) {

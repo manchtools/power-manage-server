@@ -37,6 +37,9 @@ type JWTConfig struct {
 	AccessTokenExpiry  time.Duration
 	RefreshTokenExpiry time.Duration
 	Issuer             string
+	// Now is the clock seam. Defaults to time.Now when nil; tests
+	// inject a fixed clock to pin token issue/expiry timestamps.
+	Now func() time.Time
 }
 
 // JWTManager handles JWT token generation and validation.
@@ -69,6 +72,9 @@ func NewJWTManager(config JWTConfig) *JWTManager {
 	if config.Issuer == "" {
 		config.Issuer = "power-manage"
 	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
 	return &JWTManager{config: config}
 }
 
@@ -83,7 +89,7 @@ type TokenPair struct {
 // Permissions and scoped grants are only embedded in the access token,
 // not the refresh token.
 func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, scopedGrants []ScopedGrant, sessionVersion int32) (*TokenPair, error) {
-	now := time.Now()
+	now := m.config.Now()
 	accessExpiry := now.Add(m.config.AccessTokenExpiry)
 	entropy := ulid.Monotonic(rand.Reader, 0)
 
@@ -140,7 +146,7 @@ func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, 
 
 // GenerateTOTPChallenge creates a short-lived JWT (5 minutes) for TOTP verification during login.
 func (m *JWTManager) GenerateTOTPChallenge(userID, email string, sessionVersion int32) (string, error) {
-	now := time.Now()
+	now := m.config.Now()
 	entropy := ulid.Monotonic(rand.Reader, 0)
 	jti := ulid.MustNew(ulid.Timestamp(now), entropy).String()
 

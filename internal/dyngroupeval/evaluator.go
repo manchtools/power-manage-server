@@ -35,6 +35,7 @@ import (
 // once per server boot (alongside the handlers / inbox worker) and call
 // EvaluateDeviceGroup / EvaluateUserGroup per group.
 type Evaluator struct {
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 	store  *store.Store
 	logger *slog.Logger
 }
@@ -43,7 +44,7 @@ type Evaluator struct {
 // diagnostic output during eval — pass the same logger the surrounding
 // handler / worker uses.
 func New(s *store.Store, lg *slog.Logger) *Evaluator {
-	return &Evaluator{store: s, logger: lg}
+	return &Evaluator{store: s, logger: lg, now: time.Now}
 }
 
 // EvaluateDeviceGroup re-computes the membership of the dynamic device
@@ -51,7 +52,7 @@ func New(s *store.Store, lg *slog.Logger) *Evaluator {
 // no-op for missing / soft-deleted / non-dynamic groups (and clears the
 // stale queue entry in that case).
 func (e *Evaluator) EvaluateDeviceGroup(ctx context.Context, groupID string) error {
-	evalStart := time.Now()
+	evalStart := e.now()
 	q := e.store.Queries()
 
 	group, err := e.store.Repos().DeviceGroup.Get(ctx, groupID)
@@ -134,7 +135,7 @@ func (e *Evaluator) EvaluateDeviceGroup(ctx context.Context, groupID string) err
 // EvaluateUserGroup re-computes the membership of the dynamic user
 // group identified by groupID. Mirrors evaluate_dynamic_user_group.
 func (e *Evaluator) EvaluateUserGroup(ctx context.Context, groupID string) error {
-	evalStart := time.Now()
+	evalStart := e.now()
 	q := e.store.Queries()
 
 	group, err := e.store.Repos().UserGroup.Get(ctx, groupID)

@@ -36,6 +36,7 @@ import (
 // HMAC-verified payload before its JSON-unmarshal call. nil means
 // "verification disabled" (tests only).
 type InboxWorker struct {
+	now        func() time.Time // clock seam; defaults to time.Now, overridden in tests
 	store      *store.Store
 	aqClient   *taskqueue.Client
 	signer     ca.ActionSigner
@@ -46,6 +47,7 @@ type InboxWorker struct {
 // NewInboxWorker creates a new inbox worker.
 func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
+		now:        time.Now,
 		store:      st,
 		aqClient:   aqClient,
 		signer:     signer,
@@ -258,7 +260,7 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 	if completedAt.IsZero() {
-		completedAt = time.Now()
+		completedAt = w.now()
 		executedAt = completedAt.Add(-time.Duration(result.DurationMs) * time.Millisecond)
 	}
 
@@ -678,7 +680,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 			Data: payloads.LuksDeviceKeyRevoked{
 				DeviceID:  payload.DeviceID,
 				ActionID:  payload.ActionID,
-				RevokedAt: time.Now().UTC().Format(time.RFC3339Nano),
+				RevokedAt: w.now().UTC().Format(time.RFC3339Nano),
 			},
 			ActorType: "device",
 			ActorID:   payload.DeviceID,
@@ -693,7 +695,7 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 			DeviceID: payload.DeviceID,
 			ActionID: payload.ActionID,
 			Error:    payload.Error,
-			FailedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			FailedAt: w.now().UTC().Format(time.RFC3339Nano),
 		},
 		ActorType: "device",
 		ActorID:   payload.DeviceID,
@@ -758,7 +760,7 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 							Data: payloads.ExecutionFailedReason{
 								Error:       "action was deleted before the device came online",
 								DurationMs:  0,
-								CompletedAt: time.Now().UTC().Format(time.RFC3339Nano),
+								CompletedAt: w.now().UTC().Format(time.RFC3339Nano),
 							},
 							ActorType: "system",
 							ActorID:   "dispatcher",

@@ -23,8 +23,15 @@ type CA struct {
 	cert      *x509.Certificate
 	key       crypto.Signer
 	validity  time.Duration
-	trustPool *x509.CertPool // trust bundle for verification (supports CA rotation)
+	trustPool *x509.CertPool   // trust bundle for verification (supports CA rotation)
+	now       func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
+
+// Option configures a CA.
+type Option func(*CA)
+
+// WithClock overrides the time source (tests). The default is time.Now.
+func WithClock(now func() time.Time) Option { return func(c *CA) { c.now = now } }
 
 // Certificate holds a PEM-encoded certificate and private key.
 type Certificate struct {
@@ -35,7 +42,7 @@ type Certificate struct {
 }
 
 // New creates a new CA from PEM-encoded certificate and key files.
-func New(certPath, keyPath string, validity time.Duration) (*CA, error) {
+func New(certPath, keyPath string, validity time.Duration, opts ...Option) (*CA, error) {
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("read CA certificate: %w", err)
@@ -46,11 +53,11 @@ func New(certPath, keyPath string, validity time.Duration) (*CA, error) {
 		return nil, fmt.Errorf("read CA key: %w", err)
 	}
 
-	return NewFromPEM(certPEM, keyPEM, validity)
+	return NewFromPEM(certPEM, keyPEM, validity, opts...)
 }
 
 // NewFromPEM creates a new CA from PEM-encoded certificate and key bytes.
-func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration) (*CA, error) {
+func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration, opts ...Option) (*CA, error) {
 	certBlock, _ := pem.Decode(certPEM)
 	if certBlock == nil {
 		return nil, fmt.Errorf("failed to decode CA certificate PEM")
@@ -74,12 +81,17 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration) (*CA, error) {
 	pool := x509.NewCertPool()
 	pool.AddCert(cert)
 
-	return &CA{
+	c := &CA{
 		cert:      cert,
 		key:       key,
 		validity:  validity,
 		trustPool: pool,
-	}, nil
+		now:       time.Now,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c, nil
 }
 
 // IssueCertificateFromCSR signs a Certificate Signing Request and returns the certificate.
@@ -118,7 +130,7 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 		return nil, fmt.Errorf("generate serial number: %w", err)
 	}
 
-	now := time.Now()
+	now := ca.now()
 	notAfter := now.Add(ca.validity)
 
 	// Stamp the SPIFFE URI SAN that marks this as an "agent" peer

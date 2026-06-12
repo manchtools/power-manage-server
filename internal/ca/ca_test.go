@@ -149,6 +149,41 @@ func TestIssueCertificateFromCSR_Success(t *testing.T) {
 	assert.True(t, cert.NotAfter.After(time.Now()))
 }
 
+// TestIssueCertificateFromCSR_ValidityWindowFromClock pins that the
+// issued certificate's validity window derives from the injected clock,
+// not the wall clock: NotBefore = clock - 1m (skew allowance) and
+// NotAfter = clock + validity. Using a clock fixed in the PAST proves the
+// window cannot have come from time.Now() — the cert would be expired
+// today, which a wall-clock implementation could never produce.
+func TestIssueCertificateFromCSR_ValidityWindowFromClock(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	fixed := time.Date(2020, 6, 1, 12, 0, 0, 0, time.UTC)
+	const validity = 24 * time.Hour
+	c, err := ca.NewFromPEM(certPEM, keyPEM, validity, ca.WithClock(func() time.Time { return fixed }))
+	require.NoError(t, err)
+
+	csrPEM, _ := generateCSR(t, "device-001")
+	cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+	require.NoError(t, err)
+
+	// NotAfter is exposed on the Certificate struct at full precision.
+	assert.True(t, cert.NotAfter.Equal(fixed.Add(validity)),
+		"NotAfter must be clock+validity; got %s want %s", cert.NotAfter, fixed.Add(validity))
+	assert.True(t, cert.NotAfter.Before(time.Now()),
+		"a cert issued under a past clock must already be expired, proving the window is not from the wall clock")
+
+	// NotBefore lives on the encoded cert; ASN.1 truncates to the second,
+	// which is lossless here (fixed has zero sub-second component).
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.True(t, parsed.NotBefore.Equal(fixed.Add(-1*time.Minute)),
+		"NotBefore must be clock-1m (skew); got %s want %s", parsed.NotBefore, fixed.Add(-1*time.Minute))
+	assert.True(t, parsed.NotAfter.Equal(fixed.Add(validity)),
+		"encoded NotAfter must be clock+validity; got %s want %s", parsed.NotAfter, fixed.Add(validity))
+}
+
 func TestIssueCertificateFromCSR_InvalidCSR(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)

@@ -130,7 +130,7 @@ func startDynamicGroupWorker(ctx context.Context, st *store.Store, interval time
 // ExecutionTimedOut events for each. The 1-minute cadence is fixed —
 // there's no operator knob today and the prior inline goroutine in
 // main.go didn't expose one either; this is a straight extraction.
-func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slog.Logger) {
+func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slog.Logger, now func() time.Time) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
@@ -144,7 +144,7 @@ func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slo
 				}
 				for _, exec := range stale {
 					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
-					completedAt := time.Now().UTC().Format(time.RFC3339Nano)
+					completedAt := now().UTC().Format(time.RFC3339Nano)
 					if err := st.AppendEvent(ctx, store.Event{
 						StreamType: "execution",
 						StreamID:   exec.ID,

@@ -16,6 +16,26 @@ func TestRateLimiter_AllowWithinLimit(t *testing.T) {
 	}
 }
 
+// TestRateLimiter_WindowUsesInjectedClock pins the sliding window against
+// the injected clock: attempts age out exactly when the injected time
+// advances past the window, with no dependency on the wall clock.
+func TestRateLimiter_WindowUsesInjectedClock(t *testing.T) {
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	rl := NewRateLimiter(2, 1*time.Minute, WithClock(func() time.Time { return now }))
+	defer rl.Stop()
+
+	assert.True(t, rl.Allow("k"), "1st attempt within window")
+	assert.True(t, rl.Allow("k"), "2nd attempt within window")
+	assert.False(t, rl.Allow("k"), "3rd attempt exceeds the limit within the window")
+
+	// Advance the injected clock past the window; the earlier attempts
+	// must expire by that clock, not by real elapsed time.
+	now = now.Add(2 * time.Minute)
+	assert.True(t, rl.Allow("k"), "attempts before the window expire by the injected clock")
+	assert.True(t, rl.Allow("k"), "second post-window attempt still within new limit")
+	assert.False(t, rl.Allow("k"), "limit re-applies in the new window")
+}
+
 func TestRateLimiter_BlockAfterLimit(t *testing.T) {
 	rl := NewRateLimiter(3, 1*time.Minute)
 

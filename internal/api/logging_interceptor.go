@@ -16,21 +16,22 @@ import (
 // Successful requests are logged at Debug level.
 type LoggingInterceptor struct {
 	logger *slog.Logger
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewLoggingInterceptor creates a new logging interceptor.
 func NewLoggingInterceptor(logger *slog.Logger) *LoggingInterceptor {
-	return &LoggingInterceptor{logger: logger}
+	return &LoggingInterceptor{logger: logger, now: time.Now}
 }
 
 // WrapUnary implements connect.Interceptor.
 func (i *LoggingInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		start := time.Now()
+		start := i.now()
 
 		resp, err := next(ctx, req)
 
-		duration := time.Since(start)
+		duration := i.now().Sub(start)
 		hdrs := req.Header()
 		attrs := []any{
 			"procedure", req.Spec().Procedure,
@@ -69,12 +70,12 @@ func (i *LoggingInterceptor) WrapStreamingClient(next connect.StreamingClientFun
 // WrapStreamingHandler implements connect.Interceptor.
 func (i *LoggingInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
 	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		start := time.Now()
+		start := i.now()
 		reqID := middleware.RequestIDFromContext(ctx)
 
 		err := next(ctx, conn)
 
-		duration := time.Since(start)
+		duration := i.now().Sub(start)
 		attrs := []any{
 			"procedure", conn.Spec().Procedure,
 			"request_id", reqID,
