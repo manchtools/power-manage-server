@@ -13,6 +13,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -33,7 +34,7 @@ func (h *ActionHandler) CreateAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	params, err := serializeProtoParams(extractCreateActionParamsMsg(req.Msg))
+	params, err := serializeProtoParams(actionparams.ExtractParamsMsg(req.Msg))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}
@@ -275,7 +276,7 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
-	params, err := serializeProtoParams(extractUpdateActionParamsMsg(req.Msg))
+	params, err := serializeProtoParams(actionparams.ExtractParamsMsg(req.Msg))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, err.Error())
 	}

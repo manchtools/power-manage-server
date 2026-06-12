@@ -3,15 +3,18 @@ package control
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"log/slog"
 	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
@@ -232,13 +235,11 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		// retries of the same result don't create duplicates, but separate
 		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
-		// Use CompletedAt for per-run uniqueness. Fall back to DurationMs+Status
-		// (stable across retries of the same result) when CompletedAt is absent.
-		completedStr := fmt.Sprintf("%d:%s", result.DurationMs, result.Status.String())
-		if result.CompletedAt != nil && result.CompletedAt.IsValid() {
-			completedStr = result.CompletedAt.AsTime().Format(time.RFC3339Nano)
-		}
-		executionID = stableExecutionID(deviceID, actionID, completedStr)
+		// Use CompletedAt (seconds+nanos) for per-run uniqueness; fall back to
+		// DurationMs+Status — stable across retries of the same result — when
+		// CompletedAt is absent. stableExecutionID frames + domain-separates the
+		// two variants internally.
+		executionID = stableExecutionID(deviceID, actionID, result.CompletedAt, result.DurationMs, result.Status)
 
 		// Check if this derived execution already exists (retry of a previously processed result)
 		_, checkErr := w.store.Repos().Execution.Get(ctx, executionID)
@@ -940,11 +941,59 @@ func optStrEmpty(s string) *string {
 	return &s
 }
 
-func stableExecutionID(deviceID, actionID, completedAt string) string {
-	h := sha256.Sum256([]byte("exec:" + deviceID + ":" + actionID + ":" + completedAt))
+// stableExecutionIDDomain is the domain separator prefixed onto every
+// derived-execution-id pre-image, so this hash space can never collide another
+// SHA-256 use elsewhere in the system.
+const stableExecutionIDDomain = "pm-derived-execution-id"
+
+// stableExecutionID derives a deterministic execution id for an agent-scheduled
+// action result, so retries of the SAME result dedup to one row while distinct
+// runs stay unique. The pre-image is length-prefixed (each component framed by
+// a big-endian uint32 length, mirroring the signing digest's sha256Tree) and
+// domain-separated, which fixes two latent ambiguities of the old
+// ':'-concatenated string:
+//
+//   - Field-boundary collision: ("a:b","c") and ("a","b:c") hashed identically
+//     because ':' was both the delimiter AND a legal id character. Framing each
+//     field by its length removes the ambiguity.
+//   - Mixed pre-image domains: completion was a single formatted string that was
+//     EITHER an RFC3339Nano timestamp OR a `dur:status` fallback, with nothing
+//     marking which. Each variant now carries a distinct tag, and the timestamp
+//     variant keys off the proto Timestamp's (seconds, nanos) rather than a
+//     formatted string whose precision/format could drift.
+func stableExecutionID(deviceID, actionID string, completedAt *timestamppb.Timestamp, durationMs int64, status pm.ExecutionStatus) string {
+	h := sha256.New()
+	writeFramed(h, []byte(stableExecutionIDDomain))
+	writeFramed(h, []byte(deviceID))
+	writeFramed(h, []byte(actionID))
+	if completedAt != nil && completedAt.IsValid() {
+		writeFramed(h, []byte("completed-at"))
+		var buf [12]byte
+		binary.BigEndian.PutUint64(buf[0:8], uint64(completedAt.GetSeconds()))
+		binary.BigEndian.PutUint32(buf[8:12], uint32(completedAt.GetNanos()))
+		writeFramed(h, buf[:])
+	} else {
+		writeFramed(h, []byte("duration-status"))
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(durationMs))
+		writeFramed(h, buf[:])
+		writeFramed(h, []byte(status.String()))
+	}
+	sum := h.Sum(nil)
 	var id ulid.ULID
-	copy(id[:], h[:16])
+	copy(id[:], sum[:16])
 	return id.String()
+}
+
+// writeFramed writes a length-prefixed component into the running hash:
+// a big-endian uint32 of len(b) followed by b. Prefixing every field with its
+// length makes the concatenation injective, so no field's bytes can shift
+// across a boundary to alias a different field arrangement.
+func writeFramed(h hash.Hash, b []byte) {
+	var lp [4]byte
+	binary.BigEndian.PutUint32(lp[:], uint32(len(b)))
+	h.Write(lp[:])
+	h.Write(b)
 }
 
 // handleTerminalAuditChunk appends a stdin chunk to the owning

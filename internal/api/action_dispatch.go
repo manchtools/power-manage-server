@@ -67,11 +67,14 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		// follows the inline action's explicit desired_state on the
 		// inline branch.
 		desiredState pm.DesiredState
-		// params is dual-shaped on purpose: map[string]any when we
-		// could decode the stored JSON cleanly, or the raw string
-		// fallback for malformed-but-still-dispatchable rows. Both
-		// shapes round-trip through json.Marshal at the sign site.
-		params any
+		// params is the action-params JSON carried verbatim into the
+		// signed envelope and the typed ExecutionCreated/Scheduled
+		// payload (json.RawMessage so the bytes are emitted as-is, no
+		// re-encode). Stored branch lifts the projection row's JSONB
+		// directly; inline branch marshals the request's params oneof.
+		// An empty / malformed source defaults to `{}` so the sign site
+		// never produces an unverifiable empty-params signature.
+		params json.RawMessage
 		// timeoutSeconds is clamped to a 300s default on the inline
 		// branch when the request omits it; the stored branch trusts
 		// whatever was persisted at create time.
@@ -96,13 +99,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 		inputs.actionType = pm.ActionType(action.ActionType)
 		inputs.desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
-		// Parse params JSON to avoid double-encoding when storing the event
-		var parsedParams map[string]any
-		if err := json.Unmarshal(action.Params, &parsedParams); err == nil {
-			inputs.params = parsedParams
-		} else {
-			inputs.params = string(action.Params) // Fallback to string if parsing fails
-		}
+		// The stored params JSONB is carried verbatim into the envelope
+		// and the typed event payload. Guard against an empty / malformed
+		// row so the sign site can't produce an empty-params signature.
+		inputs.params = rawParamsOrEmpty(action.Params)
 		inputs.timeoutSeconds = action.TimeoutSeconds
 		inputs.actionID = &source.ActionId
 		// Contract (closes #137 audit F002): always re-sign every
@@ -128,14 +128,14 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		// Run the same per-oneof validation Create applies, plus
 		// the outer Action invariants (Type non-unspecified, timeout
 		// bounds, schedule, params-match-type). validateInlineAction
-		// also rejects nil — important, otherwise extractActionParamsMsg
+		// also rejects nil — important, otherwise ExtractParamsMsg
 		// below would panic on the typed-nil inner message.
 		if err := validateInlineAction(ctx, action); err != nil {
 			return nil, err
 		}
 		inputs.actionType = action.Type
 		inputs.desiredState = action.DesiredState
-		serialized, err := serializeProtoParams(extractActionParamsMsg(action))
+		serialized, err := marshalInlineParams(actionparams.ExtractParamsMsg(action))
 		if err != nil {
 			h.logger.Warn("failed to serialize inline action params", "error", err)
 			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "failed to serialize inline action params")
@@ -165,19 +165,6 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		}
 	}
 
-	eventData := map[string]any{
-		"device_id":       req.Msg.DeviceId,
-		"action_type":     int32(inputs.actionType),
-		"desired_state":   int32(inputs.desiredState),
-		"params":          inputs.params,
-		"timeout_seconds": inputs.timeoutSeconds,
-	}
-	if inputs.actionID != nil {
-		eventData["action_id"] = *inputs.actionID
-	}
-	if dispatchDelay > 0 {
-		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
-	}
 	// Note: req.Msg.RespectMaintenanceWindow used to be persisted on the
 	// dispatch event under the comment "reserved for #58", but #58
 	// (per-group maintenance windows) shipped via a separate enforcement
@@ -257,9 +244,31 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	// the caller asked for a deferred dispatch. The two events are
 	// projected to status='scheduled' / status='pending' respectively
 	// and the row only diverges from there on the dispatch's outcome.
+	// Both carry the typed payloads.Execution* shape (not an ad-hoc map)
+	// so the emitted keys cannot drift from the projector contract.
+	actionType := int32(inputs.actionType)
+	desiredState := int32(inputs.desiredState)
+	timeoutSeconds := inputs.timeoutSeconds
 	initialEventType := string(eventtypes.ExecutionCreated)
+	var eventData any = payloads.ExecutionCreated{
+		DeviceID:       req.Msg.DeviceId,
+		ActionID:       inputs.actionID,
+		ActionType:     &actionType,
+		DesiredState:   &desiredState,
+		Params:         inputs.params,
+		TimeoutSeconds: &timeoutSeconds,
+	}
 	if dispatchDelay > 0 {
 		initialEventType = string(eventtypes.ExecutionScheduled)
+		eventData = payloads.ExecutionScheduled{
+			DeviceID:       req.Msg.DeviceId,
+			ActionID:       inputs.actionID,
+			ActionType:     &actionType,
+			DesiredState:   &desiredState,
+			Params:         inputs.params,
+			TimeoutSeconds: &timeoutSeconds,
+			ScheduledFor:   req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano),
+		}
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",
@@ -732,16 +741,6 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		}
 	}
 
-	eventData := map[string]any{
-		"device_id":       req.Msg.DeviceId,
-		"action_type":     int32(req.Msg.InstantAction),
-		"desired_state":   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		"params":          map[string]any{},
-		"timeout_seconds": timeoutSeconds,
-	}
-	if dispatchDelay > 0 {
-		eventData["scheduled_for"] = req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano)
-	}
 	// Note: req.Msg.RespectMaintenanceWindow is intentionally not
 	// persisted — see DispatchAction above for the audit-N009 reasoning.
 
@@ -752,9 +751,29 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "instant dispatch unavailable: task queue not configured")
 	}
 
+	// Typed payload (not an ad-hoc map). Instant actions are parameterless,
+	// so params is the empty-object JSON `{}`.
+	instantActionType := int32(req.Msg.InstantAction)
+	instantDesiredState := int32(pm.DesiredState_DESIRED_STATE_PRESENT)
+	instantTimeout := timeoutSeconds
 	initialEventType := string(eventtypes.ExecutionCreated)
+	var eventData any = payloads.ExecutionCreated{
+		DeviceID:       req.Msg.DeviceId,
+		ActionType:     &instantActionType,
+		DesiredState:   &instantDesiredState,
+		Params:         json.RawMessage("{}"),
+		TimeoutSeconds: &instantTimeout,
+	}
 	if dispatchDelay > 0 {
 		initialEventType = string(eventtypes.ExecutionScheduled)
+		eventData = payloads.ExecutionScheduled{
+			DeviceID:       req.Msg.DeviceId,
+			ActionType:     &instantActionType,
+			DesiredState:   &instantDesiredState,
+			Params:         json.RawMessage("{}"),
+			TimeoutSeconds: &instantTimeout,
+			ScheduledFor:   req.Msg.RunAt.AsTime().UTC().Format(time.RFC3339Nano),
+		}
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "execution",

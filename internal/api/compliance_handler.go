@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -64,20 +63,7 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 			Compliant:  r.Compliant,
 		}
 		check.CheckedAt = timestamppb.New(r.CheckedAt)
-		if len(r.DetectionOutput) > 0 {
-			var output struct {
-				Stdout   string `json:"stdout"`
-				Stderr   string `json:"stderr"`
-				ExitCode int32  `json:"exit_code"`
-			}
-			if json.Unmarshal(r.DetectionOutput, &output) == nil {
-				check.DetectionOutput = &pm.CommandOutput{
-					Stdout:   output.Stdout,
-					Stderr:   output.Stderr,
-					ExitCode: output.ExitCode,
-				}
-			}
-		}
+		check.DetectionOutput = decodeCommandOutput(r.DetectionOutput)
 		checks[i] = check
 	}
 

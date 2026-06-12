@@ -52,8 +52,14 @@ func (h *ActionSetHandler) CreateActionSet(ctx context.Context, req *connect.Req
 	// non-empty so a zero-value request can't bypass the projection's
 	// default-schedule fallback by emitting an empty `{}` blob.
 	if req.Msg.Schedule != nil {
-		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
-			data["schedule"] = schedule
+		raw, err := actionparams.ScheduleToRaw(req.Msg.Schedule)
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to serialize schedule")
+		}
+		// raw is nil for an all-empty schedule — omit the key so the
+		// projector applies the {interval_hours:8} drift default.
+		if raw != nil {
+			data["schedule"] = raw
 		}
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
@@ -193,8 +199,14 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 
 	data := map[string]any{}
 	if req.Msg.Schedule != nil {
-		if schedule := actionparams.ScheduleToMap(req.Msg.Schedule); len(schedule) > 0 {
-			data["schedule"] = schedule
+		raw, err := actionparams.ScheduleToRaw(req.Msg.Schedule)
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to serialize schedule")
+		}
+		// raw is nil for an all-empty schedule — omit the key so the
+		// projector applies the {interval_hours:8} drift default.
+		if raw != nil {
+			data["schedule"] = raw
 		}
 	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{

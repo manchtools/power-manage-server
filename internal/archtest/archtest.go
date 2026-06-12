@@ -33,6 +33,8 @@
 //   - TestNoDynamicSQL .................... no_dynamic_sql_test.go
 //   - TestSecretComparesAreConstantTime ... secret_compare_test.go
 //   - TestProjectionTablesWrittenOnlyByProjectors ... projection_writes_test.go
+//   - TestNoUnabstractedTimeNow ........... time_now_test.go
+//   - TestNoStdlibJSONOfProtoMessage ...... proto_json_test.go
 //
 // RPC classification (every ControlService RPC is in exactly one of
 // {public allow-list, permission, procedure-alternative}, both
@@ -41,12 +43,14 @@
 // InternalService classification belongs to the gateway↔control trust
 // stream, not to these module-wide guards.
 //
-// The unabstracted-clock guard (TestNoUnabstractedTimeNow) is
-// intentionally NOT shipped here yet: the server has ~44 direct
-// time.Now() call sites and only ad-hoc per-package clock seams, so a
-// blanket guard would either need a large blessing allowlist (smoke and
-// mirrors) or a clock-seam refactor first. It is tracked as a cleanup
-// item, not pinned as current good state.
+// The unabstracted-clock guard (TestNoUnabstractedTimeNow) landed with
+// the module-wide clock-seam refactor (WS0): every time.Now() call site
+// now routes through an injected seam, so the guard pins that good state
+// rather than needing a blessing allowlist.
+//
+// The proto-representation guard (TestNoStdlibJSONOfProtoMessage) landed
+// with the action/event representation cleanup (WS1b): proto messages are
+// (de)serialised with protojson, never stdlib encoding/json.
 package archtest
 
 import (
