@@ -1,11 +1,10 @@
-// Package api file action_params.go — proto-message extraction
-// helpers split out of action_handler.go (audit F005). Single
-// responsibility: turn the per-RPC oneof params off Create/Update
-// requests (and ManagedAction read paths) into the proto.Message
-// the actionparams library knows how to marshal canonically. Keep
-// the dispatch table here so adding a new action type touches one
-// file (this) instead of three (Create handler, Update handler,
-// inline-action validator).
+// Package api file action_params.go — params serialization helper
+// split out of action_handler.go (audit F005). The per-RPC oneof
+// extraction that used to live here (extractActionParamsMsg and its
+// Create/Update siblings) collapsed into the single reflective
+// actionparams.ExtractParamsMsg walk — the params oneof is identical
+// across Action / CreateActionRequest / UpdateActionParamsRequest, so
+// one WhichOneof replaces three hand-maintained switches.
 package api
 
 import (
@@ -14,11 +13,14 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 )
 
-// rationale.
+// serializeProtoParams renders a params proto message into the
+// map[string]any shape used by event-payload JSONB. A nil message
+// (no params oneof set) serialises to an empty object, never a bare
+// "null". Marshalling goes through actionparams.MarshalActionParams so
+// the canonical protojson options (EmitUnpopulated) apply uniformly.
 func serializeProtoParams(msg proto.Message) (map[string]any, error) {
 	if msg == nil {
 		return map[string]any{}, nil
@@ -34,134 +36,29 @@ func serializeProtoParams(msg proto.Message) (map[string]any, error) {
 	return params, nil
 }
 
-// extractCreateActionParamsMsg returns the concrete proto.Message from a CreateActionRequest oneof.
-func extractCreateActionParamsMsg(req *pm.CreateActionRequest) proto.Message {
-	switch p := req.Params.(type) {
-	case *pm.CreateActionRequest_Package:
-		return p.Package
-	case *pm.CreateActionRequest_App:
-		return p.App
-	case *pm.CreateActionRequest_Flatpak:
-		return p.Flatpak
-	case *pm.CreateActionRequest_Shell:
-		return p.Shell
-	case *pm.CreateActionRequest_Service:
-		return p.Service
-	case *pm.CreateActionRequest_File:
-		return p.File
-	case *pm.CreateActionRequest_Update:
-		return p.Update
-	case *pm.CreateActionRequest_Repository:
-		return p.Repository
-	case *pm.CreateActionRequest_Directory:
-		return p.Directory
-	case *pm.CreateActionRequest_User:
-		return p.User
-	case *pm.CreateActionRequest_Ssh:
-		return p.Ssh
-	case *pm.CreateActionRequest_Sshd:
-		return p.Sshd
-	case *pm.CreateActionRequest_AdminPolicy:
-		return p.AdminPolicy
-	case *pm.CreateActionRequest_Lps:
-		return p.Lps
-	case *pm.CreateActionRequest_Encryption:
-		return p.Encryption
-	case *pm.CreateActionRequest_Group:
-		return p.Group
-	case *pm.CreateActionRequest_Wifi:
-		return p.Wifi
-	case *pm.CreateActionRequest_AgentUpdate:
-		return p.AgentUpdate
-	default:
-		return nil
+// rawParamsOrEmpty returns the stored params JSONB as a json.RawMessage,
+// substituting `{}` for empty or malformed input. The stored column is JSONB
+// so it is normally valid; the guard is defence-in-depth so the dispatch sign
+// site never carries empty/invalid params into a signature the agent rejects.
+func rawParamsOrEmpty(data []byte) json.RawMessage {
+	if !json.Valid(data) {
+		return json.RawMessage("{}")
 	}
+	return json.RawMessage(data)
 }
 
-// extractUpdateActionParamsMsg returns the concrete proto.Message from an UpdateActionParamsRequest oneof.
-func extractUpdateActionParamsMsg(req *pm.UpdateActionParamsRequest) proto.Message {
-	switch p := req.Params.(type) {
-	case *pm.UpdateActionParamsRequest_Package:
-		return p.Package
-	case *pm.UpdateActionParamsRequest_App:
-		return p.App
-	case *pm.UpdateActionParamsRequest_Flatpak:
-		return p.Flatpak
-	case *pm.UpdateActionParamsRequest_Shell:
-		return p.Shell
-	case *pm.UpdateActionParamsRequest_Service:
-		return p.Service
-	case *pm.UpdateActionParamsRequest_File:
-		return p.File
-	case *pm.UpdateActionParamsRequest_Update:
-		return p.Update
-	case *pm.UpdateActionParamsRequest_Repository:
-		return p.Repository
-	case *pm.UpdateActionParamsRequest_Directory:
-		return p.Directory
-	case *pm.UpdateActionParamsRequest_User:
-		return p.User
-	case *pm.UpdateActionParamsRequest_Ssh:
-		return p.Ssh
-	case *pm.UpdateActionParamsRequest_Sshd:
-		return p.Sshd
-	case *pm.UpdateActionParamsRequest_AdminPolicy:
-		return p.AdminPolicy
-	case *pm.UpdateActionParamsRequest_Lps:
-		return p.Lps
-	case *pm.UpdateActionParamsRequest_Encryption:
-		return p.Encryption
-	case *pm.UpdateActionParamsRequest_Group:
-		return p.Group
-	case *pm.UpdateActionParamsRequest_Wifi:
-		return p.Wifi
-	case *pm.UpdateActionParamsRequest_AgentUpdate:
-		return p.AgentUpdate
-	default:
-		return nil
+// marshalInlineParams serialises an inline-action params oneof message into the
+// json.RawMessage form carried by the signed envelope and the typed
+// ExecutionCreated/Scheduled payload. A nil message (e.g. ACTION_TYPE_UPDATE
+// with no params) marshals to `{}` rather than erroring — matching the
+// historical empty-params shape — so the inline-update path stays valid.
+func marshalInlineParams(msg proto.Message) (json.RawMessage, error) {
+	if msg == nil {
+		return json.RawMessage("{}"), nil
 	}
-}
-
-// extractActionParamsMsg returns the concrete proto.Message from an Action oneof.
-func extractActionParamsMsg(action *pm.Action) proto.Message {
-	switch p := action.Params.(type) {
-	case *pm.Action_Package:
-		return p.Package
-	case *pm.Action_App:
-		return p.App
-	case *pm.Action_Flatpak:
-		return p.Flatpak
-	case *pm.Action_Shell:
-		return p.Shell
-	case *pm.Action_Service:
-		return p.Service
-	case *pm.Action_File:
-		return p.File
-	case *pm.Action_Update:
-		return p.Update
-	case *pm.Action_Repository:
-		return p.Repository
-	case *pm.Action_Directory:
-		return p.Directory
-	case *pm.Action_User:
-		return p.User
-	case *pm.Action_Ssh:
-		return p.Ssh
-	case *pm.Action_Sshd:
-		return p.Sshd
-	case *pm.Action_AdminPolicy:
-		return p.AdminPolicy
-	case *pm.Action_Lps:
-		return p.Lps
-	case *pm.Action_Encryption:
-		return p.Encryption
-	case *pm.Action_Group:
-		return p.Group
-	case *pm.Action_Wifi:
-		return p.Wifi
-	case *pm.Action_AgentUpdate:
-		return p.AgentUpdate
-	default:
-		return nil
+	b, err := actionparams.MarshalActionParams(msg)
+	if err != nil {
+		return nil, err
 	}
+	return json.RawMessage(b), nil
 }

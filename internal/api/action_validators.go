@@ -1,8 +1,14 @@
 // Package api file action_validators.go — Create / Update request
-// validators + the action-type ↔ params message dispatch table,
-// extracted from action_handler.go (audit F005). All validators
-// take a context for log/error correlation and return a
+// validators, extracted from action_handler.go (audit F005). All
+// validators take a context for log/error correlation and return a
 // connect.Error so handlers can return them straight through.
+//
+// The per-oneof params validation that used to be three near-identical
+// switch tables (Create / Update / inline) collapsed into one
+// validateParamsMsg keyed off actionparams.ExtractParamsMsg — the
+// reflective oneof walk — with the two type-specific extras (shell
+// script-choice, agent-update arch/HTTPS) the only remaining special
+// cases.
 package api
 
 import (
@@ -10,90 +16,46 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 )
 
-// validateCreateActionParams validates params for CreateActionRequest using struct tags.
-func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest) error {
-	switch p := req.Params.(type) {
-	case *pm.CreateActionRequest_Package:
-		if p.Package != nil {
-			return Validate(ctx, p.Package)
-		}
-	case *pm.CreateActionRequest_Shell:
-		if p.Shell != nil {
-			if err := Validate(ctx, p.Shell); err != nil {
-				return err
-			}
-			return validateShellScriptChoice(ctx, p.Shell)
-		}
-	case *pm.CreateActionRequest_Service:
-		if p.Service != nil {
-			return Validate(ctx, p.Service)
-		}
-	case *pm.CreateActionRequest_File:
-		if p.File != nil {
-			return Validate(ctx, p.File)
-		}
-	case *pm.CreateActionRequest_App:
-		if p.App != nil {
-			return Validate(ctx, p.App)
-		}
-	case *pm.CreateActionRequest_Flatpak:
-		if p.Flatpak != nil {
-			return Validate(ctx, p.Flatpak)
-		}
-	case *pm.CreateActionRequest_Update:
-		if p.Update != nil {
-			return Validate(ctx, p.Update)
-		}
-	case *pm.CreateActionRequest_Repository:
-		if p.Repository != nil {
-			return Validate(ctx, p.Repository)
-		}
-	case *pm.CreateActionRequest_Directory:
-		if p.Directory != nil {
-			return Validate(ctx, p.Directory)
-		}
-	case *pm.CreateActionRequest_User:
-		if p.User != nil {
-			return Validate(ctx, p.User)
-		}
-	case *pm.CreateActionRequest_Ssh:
-		if p.Ssh != nil {
-			return Validate(ctx, p.Ssh)
-		}
-	case *pm.CreateActionRequest_Sshd:
-		if p.Sshd != nil {
-			return Validate(ctx, p.Sshd)
-		}
-	case *pm.CreateActionRequest_AdminPolicy:
-		if p.AdminPolicy != nil {
-			return Validate(ctx, p.AdminPolicy)
-		}
-	case *pm.CreateActionRequest_Lps:
-		if p.Lps != nil {
-			return Validate(ctx, p.Lps)
-		}
-	case *pm.CreateActionRequest_Encryption:
-		if p.Encryption != nil {
-			return Validate(ctx, p.Encryption)
-		}
-	case *pm.CreateActionRequest_Group:
-		if p.Group != nil {
-			return Validate(ctx, p.Group)
-		}
-	case *pm.CreateActionRequest_Wifi:
-		if p.Wifi != nil {
-			return Validate(ctx, p.Wifi)
-		}
-	case *pm.CreateActionRequest_AgentUpdate:
-		if p.AgentUpdate != nil {
-			return validateAgentUpdateParams(ctx, p.AgentUpdate)
-		}
+// validateParamsMsg runs the struct-tag validation plus the two
+// type-specific extra checks for a params sub-message extracted from a
+// Create / Update / inline request. A nil message (no params oneof set)
+// is a no-op — the outer handler decides whether absent params is an
+// error for the declared type. This is the single source the Create,
+// Update, and inline validators share, so a rule added for one applies
+// to all three (the inline path "cannot do anything a Create-path
+// action cannot").
+//
+//   - ShellParams: struct-tag validation THEN the "at least one of
+//     script / detection_script" rule.
+//   - AgentUpdateParams: validateAgentUpdateParams (which runs its own
+//     struct-tag validation plus the arch + HTTPS-URL checks).
+//   - everything else: struct-tag validation only.
+func validateParamsMsg(ctx context.Context, msg proto.Message) error {
+	if msg == nil {
+		return nil
 	}
-	return nil
+	switch p := msg.(type) {
+	case *pm.ShellParams:
+		if err := Validate(ctx, p); err != nil {
+			return err
+		}
+		return validateShellScriptChoice(ctx, p)
+	case *pm.AgentUpdateParams:
+		return validateAgentUpdateParams(ctx, p)
+	default:
+		return Validate(ctx, msg)
+	}
+}
+
+// validateCreateActionParams validates the params oneof of a CreateActionRequest.
+func validateCreateActionParams(ctx context.Context, req *pm.CreateActionRequest) error {
+	return validateParamsMsg(ctx, actionparams.ExtractParamsMsg(req))
 }
 
 // validateShellScriptChoice enforces the Create-time rule that a
@@ -150,7 +112,7 @@ func validateInlineAction(ctx context.Context, action *pm.Action) error {
 		}
 	}
 
-	params := extractActionParamsMsg(action)
+	params := actionparams.ExtractParamsMsg(action)
 	if params == nil {
 		// ACTION_TYPE_UPDATE has no params payload — that one
 		// matches `nil` legitimately. Every other type must
@@ -160,173 +122,15 @@ func validateInlineAction(ctx context.Context, action *pm.Action) error {
 		}
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params are required")
 	}
-	if !actionParamsMatchType(action.Type, action.Params) {
+	if !actionparams.ParamsMatchType(action, action.Type) {
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inline_action params do not match action.Type")
 	}
-	if err := Validate(ctx, params); err != nil {
-		return err
-	}
-	if shell, ok := params.(*pm.ShellParams); ok {
-		return validateShellScriptChoice(ctx, shell)
-	}
-	if agentUpdate, ok := params.(*pm.AgentUpdateParams); ok {
-		return validateAgentUpdateParams(ctx, agentUpdate)
-	}
-	return nil
+	return validateParamsMsg(ctx, params)
 }
 
-// actionParamsMatchType returns true when the populated params oneof
-// matches the declared action.Type. The dispatch path trusts both
-// fields independently — without this guard, a caller could route a
-// Type=USER action through the Action_Ssh oneof and the agent would
-// receive a USER action whose params bytes are an Ssh proto, leading
-// to silent param corruption.
-func actionParamsMatchType(t pm.ActionType, params interface{}) bool {
-	switch t {
-	case pm.ActionType_ACTION_TYPE_PACKAGE:
-		_, ok := params.(*pm.Action_Package)
-		return ok
-	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
-		_, ok := params.(*pm.Action_App)
-		return ok
-	case pm.ActionType_ACTION_TYPE_FLATPAK:
-		_, ok := params.(*pm.Action_Flatpak)
-		return ok
-	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
-		_, ok := params.(*pm.Action_Shell)
-		return ok
-	case pm.ActionType_ACTION_TYPE_SERVICE:
-		_, ok := params.(*pm.Action_Service)
-		return ok
-	case pm.ActionType_ACTION_TYPE_FILE:
-		_, ok := params.(*pm.Action_File)
-		return ok
-	case pm.ActionType_ACTION_TYPE_UPDATE:
-		// ACTION_TYPE_UPDATE may carry either *pm.Action_Update or
-		// nil params (kicks off whatever the agent's package
-		// manager considers an update). Both shapes are valid.
-		if params == nil {
-			return true
-		}
-		_, ok := params.(*pm.Action_Update)
-		return ok
-	case pm.ActionType_ACTION_TYPE_REPOSITORY:
-		_, ok := params.(*pm.Action_Repository)
-		return ok
-	case pm.ActionType_ACTION_TYPE_DIRECTORY:
-		_, ok := params.(*pm.Action_Directory)
-		return ok
-	case pm.ActionType_ACTION_TYPE_USER:
-		_, ok := params.(*pm.Action_User)
-		return ok
-	case pm.ActionType_ACTION_TYPE_GROUP:
-		_, ok := params.(*pm.Action_Group)
-		return ok
-	case pm.ActionType_ACTION_TYPE_SSH:
-		_, ok := params.(*pm.Action_Ssh)
-		return ok
-	case pm.ActionType_ACTION_TYPE_SSHD:
-		_, ok := params.(*pm.Action_Sshd)
-		return ok
-	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
-		_, ok := params.(*pm.Action_AdminPolicy)
-		return ok
-	case pm.ActionType_ACTION_TYPE_LPS:
-		_, ok := params.(*pm.Action_Lps)
-		return ok
-	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
-		_, ok := params.(*pm.Action_Encryption)
-		return ok
-	case pm.ActionType_ACTION_TYPE_WIFI:
-		_, ok := params.(*pm.Action_Wifi)
-		return ok
-	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
-		_, ok := params.(*pm.Action_AgentUpdate)
-		return ok
-	}
-	return false
-}
-
-// validateUpdateActionParams validates params for UpdateActionParamsRequest using struct tags.
+// validateUpdateActionParams validates the params oneof of an UpdateActionParamsRequest.
 func validateUpdateActionParams(ctx context.Context, req *pm.UpdateActionParamsRequest) error {
-	switch p := req.Params.(type) {
-	case *pm.UpdateActionParamsRequest_Package:
-		if p.Package != nil {
-			return Validate(ctx, p.Package)
-		}
-	case *pm.UpdateActionParamsRequest_Shell:
-		if p.Shell != nil {
-			if err := Validate(ctx, p.Shell); err != nil {
-				return err
-			}
-			return validateShellScriptChoice(ctx, p.Shell)
-		}
-	case *pm.UpdateActionParamsRequest_Service:
-		if p.Service != nil {
-			return Validate(ctx, p.Service)
-		}
-	case *pm.UpdateActionParamsRequest_File:
-		if p.File != nil {
-			return Validate(ctx, p.File)
-		}
-	case *pm.UpdateActionParamsRequest_App:
-		if p.App != nil {
-			return Validate(ctx, p.App)
-		}
-	case *pm.UpdateActionParamsRequest_Flatpak:
-		if p.Flatpak != nil {
-			return Validate(ctx, p.Flatpak)
-		}
-	case *pm.UpdateActionParamsRequest_Update:
-		if p.Update != nil {
-			return Validate(ctx, p.Update)
-		}
-	case *pm.UpdateActionParamsRequest_Repository:
-		if p.Repository != nil {
-			return Validate(ctx, p.Repository)
-		}
-	case *pm.UpdateActionParamsRequest_Directory:
-		if p.Directory != nil {
-			return Validate(ctx, p.Directory)
-		}
-	case *pm.UpdateActionParamsRequest_User:
-		if p.User != nil {
-			return Validate(ctx, p.User)
-		}
-	case *pm.UpdateActionParamsRequest_Ssh:
-		if p.Ssh != nil {
-			return Validate(ctx, p.Ssh)
-		}
-	case *pm.UpdateActionParamsRequest_Sshd:
-		if p.Sshd != nil {
-			return Validate(ctx, p.Sshd)
-		}
-	case *pm.UpdateActionParamsRequest_AdminPolicy:
-		if p.AdminPolicy != nil {
-			return Validate(ctx, p.AdminPolicy)
-		}
-	case *pm.UpdateActionParamsRequest_Lps:
-		if p.Lps != nil {
-			return Validate(ctx, p.Lps)
-		}
-	case *pm.UpdateActionParamsRequest_Encryption:
-		if p.Encryption != nil {
-			return Validate(ctx, p.Encryption)
-		}
-	case *pm.UpdateActionParamsRequest_Group:
-		if p.Group != nil {
-			return Validate(ctx, p.Group)
-		}
-	case *pm.UpdateActionParamsRequest_Wifi:
-		if p.Wifi != nil {
-			return Validate(ctx, p.Wifi)
-		}
-	case *pm.UpdateActionParamsRequest_AgentUpdate:
-		if p.AgentUpdate != nil {
-			return validateAgentUpdateParams(ctx, p.AgentUpdate)
-		}
-	}
-	return nil
+	return validateParamsMsg(ctx, actionparams.ExtractParamsMsg(req))
 }
 
 // validateAgentUpdateParams checks that at least one arch is set and all URLs are HTTPS.

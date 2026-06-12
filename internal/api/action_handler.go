@@ -40,6 +40,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
@@ -121,12 +122,7 @@ func (h *ActionHandler) executionToProto(e store.Execution) *pm.ActionExecution 
 		exec.Error = *e.Error
 	}
 
-	if len(e.Output) > 0 {
-		var output pm.CommandOutput
-		if err := json.Unmarshal(e.Output, &output); err == nil {
-			exec.Output = &output
-		}
-	}
+	exec.Output = decodeCommandOutput(e.Output)
 
 	if e.DurationMs != nil {
 		exec.DurationMs = *e.DurationMs
@@ -151,14 +147,35 @@ func (h *ActionHandler) executionToProto(e store.Execution) *pm.ActionExecution 
 	}
 
 	exec.Compliant = e.Compliant
-	if len(e.DetectionOutput) > 0 {
-		var detOutput pm.CommandOutput
-		if err := json.Unmarshal(e.DetectionOutput, &detOutput); err == nil {
-			exec.DetectionOutput = &detOutput
-		}
-	}
+	exec.DetectionOutput = decodeCommandOutput(e.DetectionOutput)
 
 	return exec
+}
+
+// commandOutputUnmarshal is the protojson codec for CommandOutput JSONB blobs.
+// DiscardUnknown tolerates schema additions; protojson accepts BOTH the
+// camelCase names a proto-native writer emits and the snake_case names the
+// legacy stdlib-json writers produced, so existing rows still decode after the
+// codec switch.
+var commandOutputUnmarshal = protojson.UnmarshalOptions{DiscardUnknown: true}
+
+// decodeCommandOutput decodes a CommandOutput JSONB blob with protojson — the
+// correct codec for a proto message. stdlib encoding/json works only by
+// snake-case-tag luck and silently breaks on any future enum/oneof/int64 field;
+// it is forbidden on proto messages by TestNoStdlibJSONOfProtoMessage. Returns
+// nil for empty or malformed input: a corrupt output blob must not fail the
+// whole execution / compliance read. Single source for every CommandOutput
+// decode in this package (replaces two stdlib-into-proto sites and two
+// anonymous-struct re-declarations).
+func decodeCommandOutput(data []byte) *pm.CommandOutput {
+	if len(data) == 0 {
+		return nil
+	}
+	var out pm.CommandOutput
+	if err := commandOutputUnmarshal.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return &out
 }
 
 func statusToString(s pm.ExecutionStatus) string {

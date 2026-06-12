@@ -54,7 +54,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 | Package | Purpose |
 |---------|---------|
-| `internal/actionparams` | Per-action-type parameter validation, schedule serialization, and proto/wire conversion shared by the action and dispatch handlers |
+| `internal/actionparams` | Per-action-type parameter validation, schedule serialization, and proto/wire conversion shared by the action and dispatch handlers. A single proto-reflection registry (`paramsFieldByActionType` + `ExtractParamsMsg`/`ParamsMatchType`) is the one source of the `ActionType → params-oneof` mapping — adding an action type touches one entry, not six switches. Event payloads are proto-native (typed `payloads.*`, protojson for proto-derived JSONB); see ADR 0004 |
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, compliance, etc.) |
 | `internal/asynqutil` | Asynq task-queue helpers shared between the control inbox worker and the per-device gateway dispatchers |
 | `internal/auth` | JWT bearer authentication, dynamic-RBAC permission map (Go authorizer in `authorizer.go`), TOTP 2FA, rate limiting, self-scope enforcement |

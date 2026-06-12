@@ -469,19 +469,8 @@ func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Co
 		}
 
 		// Add detection output if available
-		if r, ok := resultMap[e.ActionID]; ok && len(r.DetectionOutput) > 0 {
-			var output struct {
-				Stdout   string `json:"stdout"`
-				Stderr   string `json:"stderr"`
-				ExitCode int32  `json:"exit_code"`
-			}
-			if json.Unmarshal(r.DetectionOutput, &output) == nil {
-				ruleEval.DetectionOutput = &pm.CommandOutput{
-					Stdout:   output.Stdout,
-					Stderr:   output.Stderr,
-					ExitCode: output.ExitCode,
-				}
-			}
+		if r, ok := resultMap[e.ActionID]; ok {
+			ruleEval.DetectionOutput = decodeCommandOutput(r.DetectionOutput)
 		}
 
 		pe := policyMap[e.PolicyID]
