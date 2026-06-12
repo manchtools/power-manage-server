@@ -359,26 +359,36 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	}), nil
 }
 
-// computeActionSignature produces a signature over (id, actionType,
-// paramsJSON). Pure compute — no DB access. Fail-closed on nil
-// signer. Split out of the legacy signAction() so Create/Update
-// can compute the signature BEFORE writing the ActionCreated /
-// ActionParamsUpdated event, so a sign failure never produces an
-// unsigned row in the projection.
+// computeActionSignature NO LONGER signs at create/update time.
+//
+// Action-signing rewrite: a dispatch-grade signature is now produced at
+// EVERY dispatch (api.DispatchAction / DispatchInstantAction and the inbox
+// reconnect re-dispatch) over the full SignedActionEnvelope, bound to the
+// execution id and target device. Persisting a signature at create time is
+// pointless and actively misleading: it was computed over a different
+// pre-image (the old (id, type, params) tuple, keyed on the ACTION id not
+// the EXECUTION id), would not verify against a dispatch envelope, and goes
+// stale on key rotation. We therefore stop writing a dispatch-grade
+// signature here and persist nil.
+//
+// We DO still persist the params blob (paramsJSON) in the ParamsCanonical
+// column: it is the immutable record of exactly what JSON the action
+// carries, kept for audit/history. The projection signature column stays in
+// place (no migration); it simply holds nil for newly created/updated rows.
+//
+// Pure compute, no DB access, no signer dependency — kept as a thin shim so
+// the Create / UpdateActionParams call sites need no structural change. The
+// _ = ctx, _ = actionType params are retained for signature stability.
 func (h *ActionHandler) computeActionSignature(ctx context.Context, id string, actionType int32, paramsJSON []byte) ([]byte, []byte, error) {
-	if h.signer == nil {
-		h.logger.Error("computeActionSignature called with nil signer — wiring bug", "action_id", id)
-		return nil, nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
-	}
+	_ = ctx
+	_ = id
+	_ = actionType
 	if paramsJSON == nil {
 		paramsJSON = []byte("{}")
 	}
-	sig, err := h.signer.Sign(id, actionType, paramsJSON)
-	if err != nil {
-		h.logger.Error("failed to sign action", "action_id", id, "error", err)
-		return nil, nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign action")
-	}
-	return sig, paramsJSON, nil
+	// Signature is intentionally nil: signing happens at dispatch, never
+	// at create/update time.
+	return nil, paramsJSON, nil
 }
 
 // persistActionSignature writes a precomputed signature to the

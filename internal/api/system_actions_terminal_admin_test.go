@@ -45,12 +45,17 @@ func TestBootstrapGlobalTerminalAdminActions_CreatesBothActions(t *testing.T) {
 	limited, err := st.Queries().GetActionByName(context.Background(), globalTerminalAdminLimitedActionName)
 	require.NoError(t, err, "Limited global action must be created at bootstrap")
 	assert.True(t, limited.IsSystem, "global TerminalAdmin actions MUST set is_system=true")
-	assert.NotEmpty(t, limited.Signature, "global TerminalAdmin actions MUST be signed at create time — agents reject unsigned actions on dispatch")
+	// Action-signing rewrite: signing happens at DISPATCH over the full
+	// SignedActionEnvelope, not at create time. The bootstrap pins the params
+	// blob (so dispatch/audit has it) but persists no dispatch-grade signature.
+	assert.NotEmpty(t, limited.ParamsCanonical, "global TerminalAdmin actions MUST pin their params blob at create time")
+	assert.Empty(t, limited.Signature, "no dispatch-grade signature is persisted at create time — signing happens at dispatch")
 
 	full, err := st.Queries().GetActionByName(context.Background(), globalTerminalAdminFullActionName)
 	require.NoError(t, err, "Full global action must be created at bootstrap")
 	assert.True(t, full.IsSystem)
-	assert.NotEmpty(t, full.Signature)
+	assert.NotEmpty(t, full.ParamsCanonical)
+	assert.Empty(t, full.Signature)
 
 	assert.NotEqual(t, limited.ID, full.ID, "Limited and Full actions must have distinct IDs")
 }

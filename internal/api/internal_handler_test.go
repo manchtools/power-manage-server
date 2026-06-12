@@ -17,7 +17,7 @@ import (
 
 func TestVerifyDevice_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	deviceID := testutil.CreateTestDevice(t, st, "verify-host")
 
@@ -30,7 +30,7 @@ func TestVerifyDevice_Success(t *testing.T) {
 
 func TestVerifyDevice_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.VerifyDevice(context.Background(), connect.NewRequest(&pm.VerifyDeviceRequest{
 		DeviceId: testutil.NewID(),
@@ -41,7 +41,7 @@ func TestVerifyDevice_NotFound(t *testing.T) {
 
 func TestVerifyDevice_EmptyID(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.VerifyDevice(context.Background(), connect.NewRequest(&pm.VerifyDeviceRequest{
 		DeviceId: "",
@@ -52,7 +52,7 @@ func TestVerifyDevice_EmptyID(t *testing.T) {
 
 func TestProxySyncActions_EmptyDeviceID(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: "",
@@ -63,7 +63,7 @@ func TestProxySyncActions_EmptyDeviceID(t *testing.T) {
 
 func TestProxySyncActions_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: testutil.NewID(),
@@ -74,7 +74,7 @@ func TestProxySyncActions_DeviceNotFound(t *testing.T) {
 
 func TestProxySyncActions_NoAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	deviceID := testutil.CreateTestDevice(t, st, "sync-host")
 
@@ -87,7 +87,7 @@ func TestProxySyncActions_NoAssignments(t *testing.T) {
 
 func TestProxySyncActions_WithAssignment(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-assigned-host")
@@ -106,7 +106,7 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 
 func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-uninstall-host")
@@ -127,7 +127,7 @@ func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 // rather than appearing on standalone_actions (#45 grouped sync wire).
 func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-set-host")
@@ -157,7 +157,7 @@ func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
 // to ABSENT regardless of how the action itself was configured.
 func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-set-uninstall-host")
@@ -180,7 +180,7 @@ func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
 func TestProxyStoreLuksKey(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, slog.Default())
+	h := api.NewInternalHandler(st, enc, slog.Default(), api.NoOpSigner{})
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-store-host")
 
@@ -197,7 +197,7 @@ func TestProxyStoreLuksKey(t *testing.T) {
 
 func TestProxyStoreLuksKey_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxyStoreLuksKey(context.Background(), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
 		DeviceId: "",
@@ -209,7 +209,7 @@ func TestProxyStoreLuksKey_MissingFields(t *testing.T) {
 
 func TestProxyValidateLuksToken_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxyValidateLuksToken(context.Background(), connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
 		DeviceId: "",
@@ -221,7 +221,7 @@ func TestProxyValidateLuksToken_MissingFields(t *testing.T) {
 
 func TestProxyGetLuksKey_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxyGetLuksKey(context.Background(), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
 		DeviceId: testutil.NewID(),
@@ -234,7 +234,7 @@ func TestProxyGetLuksKey_NotFound(t *testing.T) {
 func TestProxyStoreLpsPasswords(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, slog.Default())
+	h := api.NewInternalHandler(st, enc, slog.Default(), api.NoOpSigner{})
 
 	deviceID := testutil.CreateTestDevice(t, st, "lps-host")
 
@@ -256,7 +256,7 @@ func TestProxyStoreLpsPasswords(t *testing.T) {
 
 func TestProxyStoreLpsPasswords_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxyStoreLpsPasswords(context.Background(), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId: "",
@@ -273,7 +273,7 @@ func TestProxyStoreLpsPasswords_MissingFields(t *testing.T) {
 func newInternalHandlerWithTokenStore(t *testing.T) (*api.InternalHandler, *terminal.TokenStore) {
 	t.Helper()
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
 	h.SetTerminalTokenStore(tokenStore)
 	return h, tokenStore
@@ -434,7 +434,7 @@ func TestProxyValidateTerminalToken_StoreNotConfigured(t *testing.T) {
 	// which would hide the behavior we want to pin. Use a freshly
 	// minted ULID here.
 	st := testutil.SetupPostgres(t)
-	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	_, err := h.ProxyValidateTerminalToken(context.Background(), connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
 		SessionId: testutil.NewID(),

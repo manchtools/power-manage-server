@@ -10,7 +10,6 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -77,26 +76,24 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 
 	h.logger.Info("dispatching action to agent",
 		"execution_id", payload.ExecutionID,
-		"action_type", payload.ActionType,
 	)
 
-	// Build Action message
-	action := &pm.Action{
-		Id:              &pm.ActionId{Value: payload.ExecutionID},
-		Type:            pm.ActionType(payload.ActionType),
-		DesiredState:    pm.DesiredState(payload.DesiredState),
-		TimeoutSeconds:  payload.TimeoutSeconds,
-		Signature:       payload.Signature,
-		ParamsCanonical: payload.ParamsCanonical,
+	// Clean break (action-signing rewrite): the control server already
+	// built and signed the full SignedActionEnvelope. The gateway no
+	// longer reconstructs a typed Action or re-serialises params — that
+	// re-marshal was the exact gap a compromised gateway could exploit to
+	// rewrite the executed action under a still-valid signature. Forward
+	// the signed bytes + signature verbatim; the agent verifies the
+	// signature over THESE bytes and unmarshals THESE bytes to execute.
+	//
+	// Fail closed if the producer somehow enqueued an empty envelope or
+	// signature (a wiring bug) rather than sending the agent a message it
+	// would reject anyway.
+	if len(payload.EnvelopeBytes) == 0 {
+		return fmt.Errorf("action dispatch %s: empty envelope bytes", payload.ExecutionID)
 	}
-
-	// Parse params. Fail closed on a parse error or an unhandled action type:
-	// return the error so Asynq retries / dead-letters instead of dispatching an
-	// action to the agent with empty/nil params (#368).
-	if len(payload.Params) > 0 && string(payload.Params) != "null" && string(payload.Params) != "{}" {
-		if err := actionparams.PopulateAction(action, payload.ActionType, payload.Params); err != nil {
-			return fmt.Errorf("populate action params (type %d): %w", payload.ActionType, err)
-		}
+	if len(payload.Signature) == 0 {
+		return fmt.Errorf("action dispatch %s: empty signature", payload.ExecutionID)
 	}
 
 	// Wrap in ServerMessage
@@ -104,7 +101,8 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_Action{
 			Action: &pm.ActionDispatch{
-				Action: action,
+				Envelope:  payload.EnvelopeBytes,
+				Signature: payload.Signature,
 			},
 		},
 	}
@@ -115,7 +113,6 @@ func (h *deviceTaskHandler) handleActionDispatch(_ context.Context, t *asynq.Tas
 
 	h.logger.Info("action dispatched successfully",
 		"execution_id", payload.ExecutionID,
-		"action_type", pm.ActionType(payload.ActionType).String(),
 	)
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/sdk/go/verify"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -165,15 +166,15 @@ func TestParseActionParams_Rpm(t *testing.T) {
 }
 
 // TestActionDispatchPayloadRoundtrip verifies that the payload JSON
-// correctly round-trips through marshal/unmarshal.
+// correctly round-trips through marshal/unmarshal. Post-rewrite the payload
+// carries only the signed envelope bytes + signature (and the correlation
+// ExecutionID) — type/desired_state/timeout/params all live INSIDE the
+// signed envelope bytes, so they are not separate payload fields.
 func TestActionDispatchPayloadRoundtrip(t *testing.T) {
 	original := taskqueue.ActionDispatchPayload{
-		ExecutionID:    "exec-123",
-		ActionType:     int32(pm.ActionType_ACTION_TYPE_SHELL),
-		DesiredState:   int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		Params:         json.RawMessage(`{"script":"echo hi"}`),
-		TimeoutSeconds: 300,
-		Signature:      []byte("sig"),
+		ExecutionID:   "exec-123",
+		EnvelopeBytes: []byte{0x0a, 0x05, 'h', 'e', 'l', 'l', 'o'},
+		Signature:     []byte("sig"),
 	}
 
 	data, err := json.Marshal(original)
@@ -184,9 +185,8 @@ func TestActionDispatchPayloadRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, original.ExecutionID, decoded.ExecutionID)
-	assert.Equal(t, original.ActionType, decoded.ActionType)
-	assert.Equal(t, original.TimeoutSeconds, decoded.TimeoutSeconds)
-	assert.JSONEq(t, `{"script":"echo hi"}`, string(decoded.Params))
+	assert.Equal(t, original.EnvelopeBytes, decoded.EnvelopeBytes)
+	assert.Equal(t, original.Signature, decoded.Signature)
 }
 
 // TestOSQueryDispatchPayloadRoundtrip verifies osquery payload round-trips.
@@ -251,15 +251,32 @@ func (r *recordingMessageSender) Send(deviceID string, msg *pm.ServerMessage) er
 	return nil
 }
 
-func TestDeviceTaskHandler_BuildsActionMessage(t *testing.T) {
+// TestDeviceTaskHandler_ForwardsEnvelopeVerbatim pins the post-rewrite gateway
+// contract: the gateway no longer reconstructs a typed Action or re-serialises
+// params. It forwards the signed envelope bytes + signature into
+// ActionDispatch.{envelope,signature} BYTE-FOR-BYTE. That verbatim forwarding
+// is the whole point — the agent verifies the signature over THESE bytes and
+// unmarshals THESE bytes, so a gateway re-marshal could never diverge from
+// what was signed.
+func TestDeviceTaskHandler_ForwardsEnvelopeVerbatim(t *testing.T) {
+	// A representative signed envelope's bytes (the gateway treats them as
+	// opaque — it does not unmarshal them — so deterministic-marshalling a
+	// real envelope here is sufficient).
+	env := &pm.SignedActionEnvelope{
+		ActionId:       &pm.ActionId{Value: "exec-001"},
+		ActionType:     pm.ActionType_ACTION_TYPE_PACKAGE,
+		DesiredState:   pm.DesiredState_DESIRED_STATE_PRESENT,
+		TimeoutSeconds: 600,
+		TargetDeviceId: "device-1",
+		Params:         &pm.SignedActionEnvelope_Package{Package: &pm.PackageParams{Name: "htop"}},
+	}
+	envBytes, err := verify.MarshalEnvelope(env)
+	require.NoError(t, err)
+
 	payload := taskqueue.ActionDispatchPayload{
-		ExecutionID:     "exec-001",
-		ActionType:      int32(pm.ActionType_ACTION_TYPE_PACKAGE),
-		DesiredState:    int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		Params:          json.RawMessage(`{"name":"htop"}`),
-		TimeoutSeconds:  600,
-		Signature:       []byte("sig"),
-		ParamsCanonical: []byte(`{"name":"htop"}`),
+		ExecutionID:   "exec-001",
+		EnvelopeBytes: envBytes,
+		Signature:     []byte("ca-sig-bytes"),
 	}
 	data, err := json.Marshal(payload)
 	require.NoError(t, err)
@@ -276,14 +293,138 @@ func TestDeviceTaskHandler_BuildsActionMessage(t *testing.T) {
 
 	require.Len(t, sender.messages, 1)
 	assert.Equal(t, "device-1", sender.deviceID)
-	action := sender.messages[0].GetAction().GetAction()
-	require.NotNil(t, action)
-	assert.Equal(t, "exec-001", action.Id.Value)
-	assert.Equal(t, pm.ActionType_ACTION_TYPE_PACKAGE, action.Type)
-	assert.Equal(t, pm.DesiredState_DESIRED_STATE_PRESENT, action.DesiredState)
-	assert.Equal(t, int32(600), action.TimeoutSeconds)
-	assert.Equal(t, []byte("sig"), action.Signature)
-	assert.Equal(t, []byte(`{"name":"htop"}`), action.ParamsCanonical)
-	require.NotNil(t, action.GetPackage())
-	assert.Equal(t, "htop", action.GetPackage().Name)
+	dispatch := sender.messages[0].GetAction()
+	require.NotNil(t, dispatch)
+	assert.Equal(t, envBytes, dispatch.GetEnvelope(), "envelope bytes must be forwarded verbatim")
+	assert.Equal(t, []byte("ca-sig-bytes"), dispatch.GetSignature(), "signature must be forwarded verbatim")
+}
+
+// TestDeviceTaskHandler_RejectsEmptyEnvelope pins the fail-closed guard: a
+// dispatch task with no envelope (a producer wiring bug) must error rather
+// than hand the agent a message it would reject anyway.
+func TestDeviceTaskHandler_RejectsEmptyEnvelope(t *testing.T) {
+	payload := taskqueue.ActionDispatchPayload{
+		ExecutionID: "exec-002",
+		Signature:   []byte("sig"),
+		// EnvelopeBytes intentionally empty.
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	sender := &recordingMessageSender{}
+	h := &deviceTaskHandler{deviceID: "device-1", manager: sender, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	err = h.handleActionDispatch(context.Background(), asynq.NewTask(taskqueue.TypeActionDispatch, data))
+	require.Error(t, err)
+	assert.Empty(t, sender.messages, "nothing must be sent to the agent for an empty envelope")
+}
+
+// TestDeviceTaskHandler_RejectsEmptySignature pins the symmetric guard for a
+// missing signature.
+func TestDeviceTaskHandler_RejectsEmptySignature(t *testing.T) {
+	payload := taskqueue.ActionDispatchPayload{
+		ExecutionID:   "exec-003",
+		EnvelopeBytes: []byte{0x0a, 0x01, 'x'},
+		// Signature intentionally empty.
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	sender := &recordingMessageSender{}
+	h := &deviceTaskHandler{deviceID: "device-1", manager: sender, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	err = h.handleActionDispatch(context.Background(), asynq.NewTask(taskqueue.TypeActionDispatch, data))
+	require.Error(t, err)
+	assert.Empty(t, sender.messages, "nothing must be sent to the agent for an empty signature")
+}
+
+// TestGatewayMux_RejectsUnsignedTask exercises the taskqueue HMAC envelope
+// layer (UNCHANGED by this rewrite) end-to-end through the real device mux:
+// only a correctly-wrapped task reaches handleActionDispatch; an unsigned, a
+// wrong-key, and a byte-tampered task are all rejected by VerifyMiddleware
+// BEFORE the handler runs. This is the second, independent signing layer (the
+// CA action signature is the other) — the test pins that the mux still gates
+// on it and that the gate fails closed.
+func TestGatewayMux_RejectsUnsignedTask(t *testing.T) {
+	const keyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	const wrongKeyHex = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+
+	taskSigner, err := taskqueue.NewSigner(keyHex)
+	require.NoError(t, err)
+	require.NotNil(t, taskSigner)
+	wrongSigner, err := taskqueue.NewSigner(wrongKeyHex)
+	require.NoError(t, err)
+
+	// A valid signed envelope so a correctly-wrapped task reaches and passes
+	// the inner handler.
+	env := &pm.SignedActionEnvelope{
+		ActionId:       &pm.ActionId{Value: "exec-hmac"},
+		ActionType:     pm.ActionType_ACTION_TYPE_SHELL,
+		TargetDeviceId: "device-hmac",
+		Params:         &pm.SignedActionEnvelope_Shell{Shell: &pm.ShellParams{Script: "echo ok"}},
+	}
+	envBytes, err := verify.MarshalEnvelope(env)
+	require.NoError(t, err)
+	innerPayload, err := json.Marshal(taskqueue.ActionDispatchPayload{
+		ExecutionID:   "exec-hmac",
+		EnvelopeBytes: envBytes,
+		Signature:     []byte("ca-sig"),
+	})
+	require.NoError(t, err)
+
+	newMux := func(sender messageSender) *asynq.ServeMux {
+		f := NewTaskHandlerFactory(nil, taskSigner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		// NewMux wires the same VerifyMiddleware + handler registration as
+		// production; we only swap the message sender so we can observe
+		// whether the inner handler ran.
+		mux := asynq.NewServeMux()
+		mux.Use(taskSigner.VerifyMiddleware())
+		h := &deviceTaskHandler{deviceID: "device-hmac", manager: sender, logger: f.logger}
+		mux.HandleFunc(taskqueue.TypeActionDispatch, h.handleActionDispatch)
+		return mux
+	}
+
+	// queue context so VerifyMiddleware's queueOf has a name.
+	ctxWithQueue := func() context.Context {
+		return context.Background()
+	}
+
+	t.Run("correctly wrapped task reaches the handler", func(t *testing.T) {
+		sender := &recordingMessageSender{}
+		mux := newMux(sender)
+		wrapped := taskSigner.Wrap(innerPayload)
+		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, wrapped))
+		require.NoError(t, err)
+		require.Len(t, sender.messages, 1, "a correctly HMAC-wrapped task must reach handleActionDispatch")
+	})
+
+	t.Run("unsigned task is rejected before the handler", func(t *testing.T) {
+		sender := &recordingMessageSender{}
+		mux := newMux(sender)
+		// Raw inner payload, NOT wrapped — too short / no HMAC prefix.
+		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, innerPayload))
+		require.Error(t, err)
+		assert.Empty(t, sender.messages, "unsigned task must NOT reach the handler")
+	})
+
+	t.Run("wrong-key task is rejected before the handler", func(t *testing.T) {
+		sender := &recordingMessageSender{}
+		mux := newMux(sender)
+		wrapped := wrongSigner.Wrap(innerPayload) // HMAC under the wrong key
+		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, wrapped))
+		require.Error(t, err)
+		assert.Empty(t, sender.messages, "wrong-key task must NOT reach the handler")
+	})
+
+	t.Run("byte-tampered task is rejected before the handler", func(t *testing.T) {
+		sender := &recordingMessageSender{}
+		mux := newMux(sender)
+		wrapped := taskSigner.Wrap(innerPayload)
+		// Flip a byte in the payload region (after the 32-byte HMAC prefix).
+		tampered := append([]byte(nil), wrapped...)
+		tampered[len(tampered)-1] ^= 0xff
+		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, tampered))
+		require.Error(t, err)
+		assert.Empty(t, sender.messages, "byte-tampered task must NOT reach the handler")
+	})
 }

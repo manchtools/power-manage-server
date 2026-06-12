@@ -557,10 +557,8 @@ func TestResolveActions_TTYPermissionSource_FailsFastOnTtyError(t *testing.T) {
 // package boundaries, so we re-declare the minimal stub here.
 type noOpSigner struct{}
 
-func (noOpSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
-	_ = actionID
-	_ = actionType
-	_ = paramsJSON
+func (noOpSigner) Sign(envelopeBytes []byte) ([]byte, error) {
+	_ = envelopeBytes
 	return []byte("noop-test-signature"), nil
 }
 

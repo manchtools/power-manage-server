@@ -23,12 +23,12 @@ package api
 // produce unsigned actions in the DB.
 type NoOpSigner struct{}
 
-// Sign returns a deterministic dummy signature. The bytes are
-// distinguishable from real signatures so an accidental escape into
-// production logs is greppable.
-func (NoOpSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
-	_ = actionID
-	_ = actionType
-	_ = paramsJSON
+// Sign returns a deterministic, fixed, non-empty dummy signature over
+// whatever envelope bytes it is handed. The bytes are distinguishable
+// from real signatures so an accidental escape into production logs is
+// greppable. The envelope is ignored — NoOpSigner exists only so test
+// fixtures can satisfy the non-nil signer contract without a real CA.
+func (NoOpSigner) Sign(envelopeBytes []byte) ([]byte, error) {
+	_ = envelopeBytes
 	return []byte("noop-test-signature"), nil
 }

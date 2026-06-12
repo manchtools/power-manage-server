@@ -309,7 +309,7 @@ func main() {
 
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"))
+	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"), actionSigner)
 	if valkey != nil && valkey.TerminalTokenStore != nil {
 		// Shared with the ControlService.StartTerminal handler so the
 		// gateway can validate tokens minted on this instance via

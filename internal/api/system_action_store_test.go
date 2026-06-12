@@ -169,22 +169,26 @@ func TestSystemActionStore_LinkAction_EmitsUserSystemActionLinked(t *testing.T) 
 }
 
 // =============================================================================
-// SignActionByID — fail-closed on nil signer
+// SignActionByID — pins the params blob, never a dispatch-grade signature
 // =============================================================================
+//
+// Contract after the action-signing rewrite: SignActionByID no longer
+// persists a dispatch-grade signature (signing happens at dispatch over the
+// full SignedActionEnvelope). It still pins the action's params blob into the
+// params_canonical column and stays fail-closed on a missing/unloadable
+// action, so a sync caller surfaces a failure rather than half-provisioning.
 
-func TestSystemActionStore_SignActionByID_NilSignerHardFails(t *testing.T) {
-	// nil signer is a wiring bug; the store must reject the call
-	// rather than silently land an unsigned action that the agent
-	// would drop on dispatch (audit F033's #137 reference).
+func TestSystemActionStore_SignActionByID_FailsOnMissingAction(t *testing.T) {
+	// A nonexistent action must error so the caller (syncUserProvisionAction
+	// et al.) surfaces it as a sync failure rather than silently succeeding.
 	st := testutil.SetupPostgres(t)
-	s := newSystemActionStore(st, nil)
+	s := newSystemActionStore(st, NoOpSigner{})
 
 	err := s.SignActionByID(context.Background(), "nonexistent-action")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "signer not configured")
 }
 
-func TestSystemActionStore_SignActionByID_HappyPath(t *testing.T) {
+func TestSystemActionStore_SignActionByID_PinsParamsBlobNotSignature(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	s := newSystemActionStore(st, NoOpSigner{})
 
@@ -193,9 +197,13 @@ func TestSystemActionStore_SignActionByID_HappyPath(t *testing.T) {
 
 	require.NoError(t, s.SignActionByID(context.Background(), id))
 
-	// Projection must now have a non-empty signature column.
 	row, err := st.Queries().GetActionByID(context.Background(), id)
 	require.NoError(t, err)
-	assert.NotEmpty(t, row.Signature, "SignActionByID must persist the signature on the action row")
-	assert.NotEmpty(t, row.ParamsCanonical, "ParamsCanonical must be set so the agent can verify")
+	// The params blob is pinned so audit/dispatch has an immutable record.
+	assert.NotEmpty(t, row.ParamsCanonical, "params blob must be pinned into params_canonical")
+	assert.JSONEq(t, `{"x":1}`, string(row.ParamsCanonical))
+	// No dispatch-grade signature is persisted at sign-time any more —
+	// signing happens at dispatch over the full envelope.
+	assert.Empty(t, row.Signature,
+		"SignActionByID must NOT persist a dispatch-grade signature; signing happens at dispatch")
 }
