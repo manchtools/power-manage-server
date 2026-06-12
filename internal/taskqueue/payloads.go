@@ -1,18 +1,31 @@
 package taskqueue
 
-import "encoding/json"
-
 // === Control → Gateway payloads (device queues) ===
 
 // ActionDispatchPayload is the payload for TypeActionDispatch tasks.
+//
+// Clean break (action-signing rewrite): the payload now carries only the
+// signed SignedActionEnvelope bytes and the CA signature over them. The
+// action type, desired state, timeout, schedule, target device, and typed
+// params all live INSIDE the signed envelope, so the gateway no longer
+// reconstructs a typed Action or re-serialises params — it forwards
+// EnvelopeBytes + Signature verbatim and the agent verifies+unmarshals the
+// same bytes. This closes the gap where a compromised gateway/Valkey could
+// rewrite the executed action (desired_state, params, type, device) under a
+// signature that covered only (id, type, paramsJSON).
+//
+// ExecutionID is kept OUTSIDE the signed bytes purely for gateway logging /
+// task correlation; it is also bound inside the envelope as ActionId, which
+// is the authoritative copy the agent trusts.
 type ActionDispatchPayload struct {
-	ExecutionID     string          `json:"execution_id"`
-	ActionType      int32           `json:"action_type"`
-	DesiredState    int32           `json:"desired_state"`
-	Params          json.RawMessage `json:"params"`
-	TimeoutSeconds  int32           `json:"timeout_seconds"`
-	Signature       []byte          `json:"signature,omitempty"`
-	ParamsCanonical []byte          `json:"params_canonical,omitempty"`
+	ExecutionID string `json:"execution_id"`
+	// EnvelopeBytes is the deterministic wire encoding of the signed
+	// SignedActionEnvelope (verify.MarshalEnvelope). Transported verbatim
+	// to the agent as ActionDispatch.envelope — the exact bytes the
+	// signature covers.
+	EnvelopeBytes []byte `json:"envelope_bytes"`
+	// Signature is the CA signature over EnvelopeBytes.
+	Signature []byte `json:"signature"`
 }
 
 // OSQueryDispatchPayload is the payload for TypeOSQueryDispatch tasks.

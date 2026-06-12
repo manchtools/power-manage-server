@@ -144,26 +144,27 @@ func (s *systemActionStore) LinkAction(ctx context.Context, userID, field, actio
 	})
 }
 
-// SignActionByID loads an action from the DB and signs it.
+// SignActionByID NO LONGER persists a dispatch-grade signature.
 //
-// Fail-closed: every outcome other than "signed and stored" returns
-// an error so the caller (syncUserProvisionAction, syncSshAccessAction,
-// syncTtyUserAction) surfaces it as a sync failure. A missing signer
-// is a wiring mistake, not a soft condition — letting an unsigned
-// system-managed action land in the DB means the agent silently
-// drops it on dispatch and the operator has no projection state to
-// debug from. Turning nil-signer into a hard error here forces main.go
-// to construct SystemActionManager with a real signer (or a
-// deterministic NoOpSigner in tests) instead of accidentally
-// producing silent no-ops.
+// Action-signing rewrite: a system action is signed at DISPATCH, over the
+// full SignedActionEnvelope bound to the execution id and target device —
+// not at sync time. Persisting a create/sign-time signature here was
+// misleading: it covered a different pre-image (the action id, not the
+// execution id) and could never verify against a dispatch envelope.
+//
+// What this method still does — and why it is NOT a pure no-op — is pin
+// the action's params blob into the params_canonical column so there is an
+// immutable record of exactly what JSON the system action carries. It keeps
+// its fail-closed contract on a missing/unloadable action so the callers
+// (syncUserProvisionAction, syncSshAccessAction, syncTtyUserAction) still
+// surface a sync failure rather than leaving a half-provisioned row.
+//
+// The signature column is written nil (the projection column stays; no
+// migration). No signer is required any more.
 func (s *systemActionStore) SignActionByID(ctx context.Context, actionID string) error {
-	if s.signer == nil {
-		return fmt.Errorf("sign system action %s: signer not configured", actionID)
-	}
-
 	action, err := s.store.Repos().Action.Get(ctx, actionID)
 	if err != nil {
-		return fmt.Errorf("load system action %s for signing: %w", actionID, err)
+		return fmt.Errorf("load system action %s for params pinning: %w", actionID, err)
 	}
 
 	paramsJSON := action.Params
@@ -171,13 +172,9 @@ func (s *systemActionStore) SignActionByID(ctx context.Context, actionID string)
 		paramsJSON = []byte("{}")
 	}
 
-	sig, err := s.signer.Sign(action.ID, action.ActionType, paramsJSON)
-	if err != nil {
-		return fmt.Errorf("sign system action %s: %w", actionID, err)
-	}
-
-	if err := s.store.Repos().Action.UpdateSignature(ctx, store.UpdateActionSignatureParams{ID: action.ID, Signature: sig, ParamsCanonical: paramsJSON}); err != nil {
-		return fmt.Errorf("store system action %s signature: %w", actionID, err)
+	// Signature intentionally nil: signing happens at dispatch, never here.
+	if err := s.store.Repos().Action.UpdateSignature(ctx, store.UpdateActionSignatureParams{ID: action.ID, Signature: nil, ParamsCanonical: paramsJSON}); err != nil {
+		return fmt.Errorf("store system action %s params blob: %w", actionID, err)
 	}
 
 	return nil

@@ -117,7 +117,12 @@ func TestSyncUserSystemActions_GlobalProvisioning_CreatesUserAction(t *testing.T
 	action, err := st.Queries().GetActionByID(context.Background(), user.SystemUserActionID)
 	require.NoError(t, err)
 	assert.Equal(t, "system:user-provision:"+userID, action.Name)
-	assert.NotEmpty(t, action.Signature, "system actions MUST be signed at create time")
+	// Action-signing rewrite: signing happens at DISPATCH over the full
+	// SignedActionEnvelope, not at create/sign time. The sync path pins the
+	// params blob (so dispatch/audit has an immutable record) but persists
+	// NO dispatch-grade signature on the row.
+	assert.NotEmpty(t, action.ParamsCanonical, "system actions MUST pin their params blob at create time")
+	assert.Empty(t, action.Signature, "no dispatch-grade signature is persisted at create time — signing happens at dispatch")
 }
 
 // =============================================================================

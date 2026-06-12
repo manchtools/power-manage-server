@@ -16,8 +16,15 @@ import "github.com/manchtools/power-manage/sdk/go/verify"
 // Previously declared independently in internal/api/action_handler.go
 // and internal/control/inbox_worker.go; consolidated here so the two
 // can't drift.
+//
+// Sign takes the DETERMINISTIC wire bytes of a pm.SignedActionEnvelope
+// (built via verify.MarshalEnvelope) and returns the CA signature over
+// those exact bytes. The caller MUST transport the SAME bytes it signed
+// (ActionDispatch.envelope) so the agent verifies and unmarshals one
+// representation — there is no separate (id, type, paramsJSON) tuple
+// any more. See the verify package docs for the full-envelope binding.
 type ActionSigner interface {
-	Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error)
+	Sign(envelopeBytes []byte) ([]byte, error)
 }
 
 // NewActionSigner creates a new action signer using the CA's private key.

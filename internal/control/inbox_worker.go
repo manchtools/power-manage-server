@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -715,92 +716,97 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 
 	logger.Debug("found pending executions", "count", len(executions))
 
-	// Cache action lookups — multiple executions may reference the same
-	// action (e.g., system actions assigned to many devices).
-	actionCache := make(map[string][]byte) // actionID → paramsCanonical
-
 	var enqueueErrs []error
 	for _, exec := range executions {
-		// Parse params from []byte to avoid base64 encoding
-		var params json.RawMessage
-		if len(exec.Params) > 0 {
-			params = exec.Params
+		// Every dispatch — whether it references a stored action or is an
+		// inline/compliance execution with no action row — now ships a
+		// fully signed SignedActionEnvelope. The gateway forwards those
+		// bytes verbatim and the agent verifies+executes them, so an empty
+		// envelope/signature is never acceptable. A nil signer is therefore
+		// fatal to dispatch regardless of ActionID.
+		if w.signer == nil {
+			logger.Error("cannot dispatch execution without signer",
+				"execution_id", exec.ID)
+			continue
 		}
 
-		// Re-sign the action with the execution ID. The gateway sets
-		// Action.Id = executionID, so the agent verifies the signature
-		// against the execution ID — not the original action ID the
-		// action was signed with. This mirrors the API dispatch handler.
-		//
-		// Signing failures are permanent (missing signer, deleted action,
-		// broken key) — skip silently rather than returning an error that
-		// would cause Asynq to retry the entire hello handler.
-		var signature, paramsCanonical []byte
+		// When the execution references a stored action, detect the
+		// action-deleted-before-reconnect race and fail the orphan so it
+		// leaves the pending state. The action row is NOT a params source
+		// any more — the envelope params come from the execution's own
+		// stored params (exec.Params), which are authoritative for THIS
+		// execution. (Create-time no longer persists a dispatch-grade
+		// signature/canonical blob; the dispatcher rebuilds the envelope
+		// here.)
 		if exec.ActionID != nil {
-			if w.signer == nil {
-				logger.Error("cannot dispatch execution without signer",
-					"execution_id", exec.ID, "action_id", *exec.ActionID)
-				continue
-			}
-			cached, ok := actionCache[*exec.ActionID]
-			if !ok {
-				action, err := w.store.Repos().Action.Get(ctx, *exec.ActionID)
-				if err != nil {
-					if store.IsNotFound(err) {
-						// Action was deleted after the execution was created.
-						// Mark the execution failed so it leaves the "pending"
-						// state — otherwise every reconnect retries dispatch
-						// and re-logs the same error forever.
-						logger.Warn("action for pending execution no longer exists; failing execution",
-							"execution_id", exec.ID, "action_id", *exec.ActionID)
-						if appendErr := w.store.AppendEvent(ctx, store.Event{
-							StreamType: "execution",
-							StreamID:   exec.ID,
-							EventType:  string(eventtypes.ExecutionFailed),
-							Data: payloads.ExecutionFailedReason{
-								Error:       "action was deleted before the device came online",
-								DurationMs:  0,
-								CompletedAt: w.now().UTC().Format(time.RFC3339Nano),
-							},
-							ActorType: "system",
-							ActorID:   "dispatcher",
-						}); appendErr != nil {
-							logger.Error("failed to mark orphaned execution as failed",
-								"execution_id", exec.ID, "error", appendErr)
-						}
-						continue
+			if _, err := w.store.Repos().Action.Get(ctx, *exec.ActionID); err != nil {
+				if store.IsNotFound(err) {
+					// Action was deleted after the execution was created.
+					// Mark the execution failed so it leaves the "pending"
+					// state — otherwise every reconnect retries dispatch
+					// and re-logs the same error forever.
+					logger.Warn("action for pending execution no longer exists; failing execution",
+						"execution_id", exec.ID, "action_id", *exec.ActionID)
+					if appendErr := w.store.AppendEvent(ctx, store.Event{
+						StreamType: "execution",
+						StreamID:   exec.ID,
+						EventType:  string(eventtypes.ExecutionFailed),
+						Data: payloads.ExecutionFailedReason{
+							Error:       "action was deleted before the device came online",
+							DurationMs:  0,
+							CompletedAt: w.now().UTC().Format(time.RFC3339Nano),
+						},
+						ActorType: "system",
+						ActorID:   "dispatcher",
+					}); appendErr != nil {
+						logger.Error("failed to mark orphaned execution as failed",
+							"execution_id", exec.ID, "error", appendErr)
 					}
-					logger.Error("failed to look up action for re-signing, skipping dispatch",
-						"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 					continue
 				}
-				cached = action.ParamsCanonical
-				actionCache[*exec.ActionID] = cached
-			}
-			paramsCanonical = cached
-			if paramsCanonical == nil {
-				paramsCanonical = exec.Params
-			}
-			sig, err := w.signer.Sign(exec.ID, exec.ActionType, paramsCanonical)
-			if err != nil {
-				logger.Error("failed to re-sign action for dispatch, skipping",
+				logger.Error("failed to look up action for dispatch, skipping",
 					"execution_id", exec.ID, "action_id", *exec.ActionID, "error", err)
 				continue
 			}
-			signature = sig
+		}
+
+		// Build and sign the full envelope, binding it to the execution id
+		// and target device. The gateway sets nothing — the agent verifies
+		// the signature over these exact bytes and unmarshals them, so the
+		// envelope's ActionId == execution id is the identity the agent
+		// trusts. Reconnect re-dispatch signs the SAME executed semantics
+		// (desired_state / timeout / params / device) the API originally
+		// committed, so a compromised relay can't rewrite them.
+		//
+		// Reconnect re-dispatch carries no schedule (nil): a pending one-shot
+		// dispatch is not an autonomous scheduled action.
+		paramsJSON := exec.Params
+		if len(paramsJSON) == 0 {
+			paramsJSON = []byte("{}")
+		}
+		envelopeBytes, signature, err := actionparams.BuildAndSignEnvelope(
+			w.signer,
+			exec.ID,
+			exec.ActionType,
+			paramsJSON,
+			exec.DesiredState,
+			exec.TimeoutSeconds,
+			nil, // reconnect re-dispatch is one-shot, no schedule
+			deviceID,
+		)
+		if err != nil {
+			logger.Error("failed to build/sign action envelope for dispatch, skipping",
+				"execution_id", exec.ID, "error", err)
+			continue
 		}
 
 		// Enqueue to device queue first — only record the event after the
 		// task is durably queued so we never mark "dispatched" without delivery.
 		// Use a stable TaskID so retries don't create duplicate tasks.
 		if err := w.aqClient.EnqueueToDevice(deviceID, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-			ExecutionID:     exec.ID,
-			ActionType:      exec.ActionType,
-			DesiredState:    exec.DesiredState,
-			Params:          params,
-			TimeoutSeconds:  exec.TimeoutSeconds,
-			Signature:       signature,
-			ParamsCanonical: paramsCanonical,
+			ExecutionID:   exec.ID,
+			EnvelopeBytes: envelopeBytes,
+			Signature:     signature,
 		}, asynq.MaxRetry(3), asynq.TaskID("dispatch:"+exec.ID)); err != nil {
 			if errors.Is(err, asynq.ErrTaskIDConflict) {
 				// Task already in queue — still need to record the dispatch event

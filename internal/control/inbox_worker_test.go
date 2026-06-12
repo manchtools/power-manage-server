@@ -2,9 +2,15 @@ package control_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"log/slog"
-	"sync"
+	"math/big"
 	"testing"
 	"time"
 
@@ -13,9 +19,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/sdk/go/verify"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -23,34 +32,37 @@ import (
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
 
-// fakeSigner records Sign calls so tests can verify the signer
-// was invoked with the correct arguments (execution ID, not action ID).
-type fakeSigner struct {
-	mu    sync.Mutex
-	calls []fakeSignCall
-}
+// newTestCASignerVerifier mints a fresh self-signed CA and returns a real
+// ca.ActionSigner over its private key plus a verify.ActionVerifier over the
+// matching certificate's public key. Using the REAL signer + verifier (not a
+// fake) is the point of the re-dispatch charter test: we prove the enqueued
+// envelope verifies under the agent-side verifier and that mutating any bound
+// field breaks verification.
+func newTestCASignerVerifier(t *testing.T) (ca.ActionSigner, *verify.ActionVerifier) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	keyDER, err := x509.MarshalECPrivateKey(caKey)
+	require.NoError(t, err)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-type fakeSignCall struct {
-	ActionID   string
-	ActionType int32
-	ParamsJSON []byte
-}
-
-func (s *fakeSigner) Sign(actionID string, actionType int32, paramsJSON []byte) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.calls = append(s.calls, fakeSignCall{
-		ActionID:   actionID,
-		ActionType: actionType,
-		ParamsJSON: append([]byte(nil), paramsJSON...),
-	})
-	return []byte("fake-sig-for-" + actionID), nil
-}
-
-func (s *fakeSigner) getCalls() []fakeSignCall {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]fakeSignCall(nil), s.calls...)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+	verifier, err := verify.NewActionVerifier(certPEM)
+	require.NoError(t, err)
+	return ca.NewActionSigner(c), verifier
 }
 
 func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
@@ -505,37 +517,45 @@ func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// TestDispatchPendingActions_ReSignsWithExecutionID verifies that when
-// dispatchPendingActions dispatches a pending execution, it re-signs
-// the action payload with the execution ID (not the original action ID).
-// This is critical because the gateway sets Action.Id = executionID,
-// so the agent verifies the signature against the execution ID.
-func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
+// TestDispatchPendingActions_ResignsFullEnvelope pins the reconnect
+// re-dispatch path (signing site #3). On device hello, dispatchPendingActions
+// builds and signs the FULL SignedActionEnvelope for each pending execution
+// and enqueues {EnvelopeBytes, Signature}. The contract restated:
+//
+//   - the enqueued EnvelopeBytes verify under the agent-side verifier built
+//     from the same CA cert (real signer, real verifier — no fake);
+//   - the envelope is bound to the EXECUTION id (not the action id), the
+//     target device, and the committed execution semantics
+//     (desired_state / timeout / params);
+//   - mutating ANY bound field of the unmarshalled envelope and re-marshalling
+//     breaks verification — proving the binding is real, not decorative.
+func TestDispatchPendingActions_ResignsFullEnvelope(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	mr := miniredis.RunT(t)
 	aqClient := taskqueue.NewClient(mr.Addr(), "", 0)
 	defer aqClient.Close()
 
-	signer := &fakeSigner{}
+	signer, verifier := newTestCASignerVerifier(t)
 	worker := control.NewInboxWorker(st, aqClient, signer, nil, slog.Default())
 	mux := worker.NewMux()
 
 	ctx := context.Background()
 
-	// Setup: create user, device, action, and a pending execution
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "resign-host")
 	actionID := testutil.CreateTestAction(t, st, adminID, "Resign Test", int(pm.ActionType_ACTION_TYPE_USER))
 
-	// Sign the action with the action ID (as the real system does)
+	// The action row carries only the params blob now (no dispatch-grade
+	// signature persisted at create/sign time).
 	err := st.Queries().UpdateActionSignature(ctx, db.UpdateActionSignatureParams{
 		ID:              actionID,
-		Signature:       []byte("original-sig-for-action"),
+		Signature:       nil,
 		ParamsCanonical: []byte(`{"username":"test"}`),
 	})
 	require.NoError(t, err)
 
-	// Create a pending execution for this device+action
+	// A pending execution with explicit ABSENT desired state and a non-default
+	// timeout, so the binding test below mutates a value that actually differs.
 	executionID := testutil.NewID()
 	err = st.AppendEvent(ctx, store.Event{
 		StreamType: "execution",
@@ -545,9 +565,9 @@ func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
 			"device_id":       deviceID,
 			"action_id":       actionID,
 			"action_type":     int(pm.ActionType_ACTION_TYPE_USER),
-			"desired_state":   0,
+			"desired_state":   int(pm.DesiredState_DESIRED_STATE_ABSENT),
 			"params":          map[string]any{"username": "test"},
-			"timeout_seconds": 300,
+			"timeout_seconds": 321,
 			"executed_at":     time.Now().Format(time.RFC3339Nano),
 		},
 		ActorType: "user",
@@ -555,29 +575,70 @@ func TestDispatchPendingActions_ReSignsWithExecutionID(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Verify execution is pending
 	exec, err := st.Queries().GetExecutionByID(ctx, executionID)
 	require.NoError(t, err)
 	assert.Equal(t, "pending", exec.Status)
 
-	// Trigger device hello — this calls dispatchPendingActions internally
+	// Trigger device hello — calls dispatchPendingActions internally.
 	task := newTask(t, taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
 		DeviceID:     deviceID,
 		Hostname:     "resign-host",
 		AgentVersion: "1.0.0",
 	})
-	err = mux.ProcessTask(ctx, task)
-	require.NoError(t, err)
+	require.NoError(t, mux.ProcessTask(ctx, task))
 
-	// Verify the signer was called with the EXECUTION ID, not the action ID,
-	// and with the correct canonical params and action type.
-	calls := signer.getCalls()
-	require.Len(t, calls, 1, "signer should be called exactly once for the pending execution")
-	assert.Equal(t, executionID, calls[0].ActionID,
-		"signer must be called with the execution ID (not action ID %s)", actionID)
-	assert.Equal(t, int32(pm.ActionType_ACTION_TYPE_USER), calls[0].ActionType)
-	assert.JSONEq(t, `{"username":"test"}`, string(calls[0].ParamsJSON),
-		"signer must receive the canonical params from the action")
+	// Read the enqueued task back out of the device queue (no HMAC wrap: the
+	// worker was constructed with a nil taskSigner).
+	payload := readEnqueuedDispatch(t, mr.Addr(), deviceID)
+	require.Equal(t, executionID, payload.ExecutionID)
+	require.NotEmpty(t, payload.EnvelopeBytes)
+	require.NotEmpty(t, payload.Signature)
+
+	// The transported envelope verifies under the agent-side verifier.
+	require.NoError(t, verifier.Verify(payload.EnvelopeBytes, payload.Signature),
+		"the enqueued envelope must verify under the matching CA verifier")
+
+	// And it is bound to the execution id + device + committed semantics.
+	var env pm.SignedActionEnvelope
+	require.NoError(t, proto.Unmarshal(payload.EnvelopeBytes, &env))
+	assert.Equal(t, executionID, env.GetActionId().GetValue(),
+		"envelope must bind the EXECUTION id, not the action id %s", actionID)
+	assert.Equal(t, deviceID, env.GetTargetDeviceId())
+	assert.Equal(t, pm.ActionType_ACTION_TYPE_USER, env.GetActionType())
+	assert.Equal(t, pm.DesiredState_DESIRED_STATE_ABSENT, env.GetDesiredState())
+	assert.Equal(t, int32(321), env.GetTimeoutSeconds())
+	require.NotNil(t, env.GetUser())
+	assert.Equal(t, "test", env.GetUser().Username)
+
+	// Binding proof: flip desired_state ABSENT -> PRESENT, re-marshal, and the
+	// original signature must NOT verify the tampered bytes. A compromised
+	// relay cannot rewrite the executed state under a still-valid signature.
+	env.DesiredState = pm.DesiredState_DESIRED_STATE_PRESENT
+	tampered, err := verify.MarshalEnvelope(&env)
+	require.NoError(t, err)
+	require.Error(t, verifier.Verify(tampered, payload.Signature),
+		"mutating desired_state must break verification (full-envelope binding)")
+}
+
+// readEnqueuedDispatch pulls the single pending ActionDispatch task off a
+// device's asynq queue and decodes its payload. Fails the test if there isn't
+// exactly one.
+func readEnqueuedDispatch(t *testing.T, addr, deviceID string) taskqueue.ActionDispatchPayload {
+	t.Helper()
+	insp := asynq.NewInspector(asynq.RedisClientOpt{Addr: addr})
+	defer insp.Close()
+	tasks, err := insp.ListPendingTasks(taskqueue.DeviceQueue(deviceID))
+	require.NoError(t, err)
+	var dispatches []*asynq.TaskInfo
+	for _, ti := range tasks {
+		if ti.Type == taskqueue.TypeActionDispatch {
+			dispatches = append(dispatches, ti)
+		}
+	}
+	require.Len(t, dispatches, 1, "expected exactly one ActionDispatch task enqueued")
+	var payload taskqueue.ActionDispatchPayload
+	require.NoError(t, json.Unmarshal(dispatches[0].Payload, &payload))
+	return payload
 }
 
 // createPendingExecutionAt emits an ExecutionCreated event whose created_at is

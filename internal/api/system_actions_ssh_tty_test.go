@@ -52,7 +52,10 @@ func TestSyncUserSystemActions_SshAccessEnabled_CreatesSshAction(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "system:ssh-access:"+userID, action.Name,
 		"system SSH action name pattern is 'system:ssh-access:<userID>' — the listener + audit redactor key on this prefix")
-	assert.NotEmpty(t, action.Signature, "system SSH actions MUST be signed at create time")
+	// Action-signing rewrite: signed at DISPATCH, not at create time — pin
+	// the params blob, persist no dispatch-grade signature.
+	assert.NotEmpty(t, action.ParamsCanonical, "system SSH actions MUST pin their params blob at create time")
+	assert.Empty(t, action.Signature, "no dispatch-grade signature is persisted at create time — signing happens at dispatch")
 }
 
 func TestSyncUserSystemActions_SshAccessDisabled_CleansUpPriorSshAction(t *testing.T) {
@@ -109,7 +112,10 @@ func TestSyncUserSystemActions_StartTerminalPerm_CreatesTtyAction(t *testing.T) 
 	require.NoError(t, err)
 	assert.Equal(t, "system:tty-user:"+userID, action.Name,
 		"TTY action name is 'system:tty-user:<userID>' — the resolution engine keys on this prefix")
-	assert.NotEmpty(t, action.Signature, "system TTY actions MUST be signed at create time")
+	// Action-signing rewrite: signed at DISPATCH, not at create time — pin
+	// the params blob, persist no dispatch-grade signature.
+	assert.NotEmpty(t, action.ParamsCanonical, "system TTY actions MUST pin their params blob at create time")
+	assert.Empty(t, action.Signature, "no dispatch-grade signature is persisted at create time — signing happens at dispatch")
 }
 
 func TestSyncUserSystemActions_NoStartTerminalPerm_CleansUpPriorTtyAction(t *testing.T) {

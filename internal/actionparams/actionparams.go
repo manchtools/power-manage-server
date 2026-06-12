@@ -201,6 +201,140 @@ func PopulateAction(action *pm.Action, actionType int32, paramsJSON []byte) erro
 	return nil
 }
 
+// PopulateEnvelope deserializes params JSON into a SignedActionEnvelope's
+// params oneof — the signed/transported representation the agent verifies
+// and unmarshals to execute. Used by the dispatch signing path
+// (api.buildAndSignEnvelope) so the bytes the CA signs carry exactly the
+// typed params that run.
+//
+// Fail-closed identically to PopulateAction: a protojson parse failure OR
+// an unhandled action type returns an error so the caller never signs (and
+// transports) an envelope with empty/nil params. Param-less instant types
+// (REBOOT/SYNC) and the zero value leave the oneof unset and return nil.
+//
+// TODO(WS1b #1): collapse via proto reflection — this duplicates the
+// PopulateAction switch one-for-one. The two MUST stay in lockstep until
+// the reflection-based collapse lands; a new ACTION_TYPE_* added to one
+// switch but not the other is a fail-closed dispatch bug.
+func PopulateEnvelope(env *pm.SignedActionEnvelope, actionType int32, paramsJSON []byte) error {
+	switch pm.ActionType(actionType) {
+	case pm.ActionType_ACTION_TYPE_PACKAGE:
+		var p pm.PackageParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal PACKAGE params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Package{Package: &p}
+	case pm.ActionType_ACTION_TYPE_APP_IMAGE, pm.ActionType_ACTION_TYPE_DEB, pm.ActionType_ACTION_TYPE_RPM:
+		var p pm.AppInstallParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal APP_INSTALL params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_App{App: &p}
+	case pm.ActionType_ACTION_TYPE_FLATPAK:
+		var p pm.FlatpakParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal FLATPAK params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Flatpak{Flatpak: &p}
+	case pm.ActionType_ACTION_TYPE_SHELL, pm.ActionType_ACTION_TYPE_SCRIPT_RUN:
+		var p pm.ShellParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal SHELL params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Shell{Shell: &p}
+	case pm.ActionType_ACTION_TYPE_SERVICE:
+		var p pm.ServiceParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal SERVICE params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Service{Service: &p}
+	case pm.ActionType_ACTION_TYPE_FILE:
+		var p pm.FileParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal FILE params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_File{File: &p}
+	case pm.ActionType_ACTION_TYPE_UPDATE:
+		var p pm.UpdateParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal UPDATE params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Update{Update: &p}
+	case pm.ActionType_ACTION_TYPE_REPOSITORY:
+		var p pm.RepositoryParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal REPOSITORY params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Repository{Repository: &p}
+	case pm.ActionType_ACTION_TYPE_DIRECTORY:
+		var p pm.DirectoryParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal DIRECTORY params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Directory{Directory: &p}
+	case pm.ActionType_ACTION_TYPE_USER:
+		var p pm.UserParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal USER params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_User{User: &p}
+	case pm.ActionType_ACTION_TYPE_GROUP:
+		var p pm.GroupParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal GROUP params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Group{Group: &p}
+	case pm.ActionType_ACTION_TYPE_SSH:
+		var p pm.SshParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal SSH params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Ssh{Ssh: &p}
+	case pm.ActionType_ACTION_TYPE_SSHD:
+		var p pm.SshdParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal SSHD params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Sshd{Sshd: &p}
+	case pm.ActionType_ACTION_TYPE_ADMIN_POLICY:
+		var p pm.AdminPolicyParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal ADMIN_POLICY params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_AdminPolicy{AdminPolicy: &p}
+	case pm.ActionType_ACTION_TYPE_LPS:
+		var p pm.LpsParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal LPS params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Lps{Lps: &p}
+	case pm.ActionType_ACTION_TYPE_ENCRYPTION:
+		var p pm.EncryptionParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal ENCRYPTION params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Encryption{Encryption: &p}
+	case pm.ActionType_ACTION_TYPE_WIFI:
+		var p pm.WifiParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal WIFI params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_Wifi{Wifi: &p}
+	case pm.ActionType_ACTION_TYPE_AGENT_UPDATE:
+		var p pm.AgentUpdateParams
+		if err := unmarshalOpts.Unmarshal(paramsJSON, &p); err != nil {
+			return fmt.Errorf("actionparams: unmarshal AGENT_UPDATE params: %w", err)
+		}
+		env.Params = &pm.SignedActionEnvelope_AgentUpdate{AgentUpdate: &p}
+	default:
+		if isNoParamsActionType(pm.ActionType(actionType)) {
+			return nil
+		}
+		return fmt.Errorf("actionparams: unhandled action type %d (%s)", actionType, pm.ActionType(actionType))
+	}
+	return nil
+}
+
 // PopulateManagedAction deserializes params JSON into an API-format
 // ManagedAction proto. Used by the control server API (action list/get
 // responses). Returns an error on a protojson parse failure OR an unhandled

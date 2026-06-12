@@ -13,6 +13,7 @@ import (
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
@@ -31,6 +32,15 @@ type InternalHandler struct {
 	encryptor *crypto.Encryptor
 	logger    *slog.Logger
 
+	// signer signs the SignedActionEnvelope for each action delivered by
+	// the autonomous SYNC path (ProxySyncActions). The PUSH/dispatch
+	// rewrite stopped create-time signing, so the sync path re-signs at
+	// DELIVERY, device-bound to the syncing device. A nil signer is a
+	// wiring bug: ProxySyncActions fails closed rather than hand the agent
+	// an unsigned action it would reject. main.go passes the real
+	// internal/ca signer; tests pass a CA-backed ca.ActionSigner.
+	signer ca.ActionSigner
+
 	// terminalTokenStore is set via SetTerminalTokenStore after the
 	// Valkey-backed store is constructed in main.go. nil when terminal
 	// sessions are not configured on this control instance, in which
@@ -43,11 +53,17 @@ type InternalHandler struct {
 }
 
 // NewInternalHandler creates a new internal service handler.
-func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *InternalHandler {
+//
+// signer is the CA-backed action signer used by ProxySyncActions to sign
+// each delivered SignedActionEnvelope device-bound. It is required for the
+// sync path; a nil signer makes ProxySyncActions fail closed rather than
+// deliver unsigned actions the agent would reject.
+func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger, signer ca.ActionSigner) *InternalHandler {
 	return &InternalHandler{
 		store:     st,
 		encryptor: enc,
 		logger:    logger,
+		signer:    signer,
 		now:       time.Now,
 	}
 }
@@ -90,6 +106,16 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
+	}
+
+	// Fail closed on a missing signer. Synced actions are signed at
+	// DELIVERY device-bound (the dispatch rewrite stopped create-time
+	// signing); without a signer every Action would ship with an empty
+	// signature the offline agent rejects. A nil signer is a wiring bug —
+	// surface it loudly rather than silently sync unverifiable actions.
+	if h.signer == nil {
+		h.logger.Error("sync actions: nil signer — wiring bug", "device_id", deviceID)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
 
 	// Verify the device exists and is not deleted.
@@ -142,15 +168,20 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		if !ok {
 			continue
 		}
-		wire, err := dbActionToWireAction(raw)
-		if err != nil {
-			// Fail closed: skip an action whose params don't parse rather than
-			// sync it to the agent with empty params (#368).
-			h.logger.Warn("skipping standalone action with unparseable params", "action_id", raw.ID, "error", err)
-			continue
-		}
+		// Fold UNINSTALL → ABSENT into the desired state we SIGN, not just
+		// the advisory wire field: the agent executes the verified envelope,
+		// so the container's uninstall intent must ride in the signed bytes.
+		desiredState := raw.DesiredState
 		if sa.Mode == resolution.ModeUninstall {
-			wire.DesiredState = pm.DesiredState_DESIRED_STATE_ABSENT
+			desiredState = int32(pm.DesiredState_DESIRED_STATE_ABSENT)
+		}
+		wire, err := dbActionToWireAction(raw, h.signer, deviceID, desiredState)
+		if err != nil {
+			// Fail closed: skip an action whose params don't parse (or
+			// whose envelope can't be signed) rather than sync it to the
+			// agent with empty/invalid params or an empty signature (#368).
+			h.logger.Warn("skipping standalone action with unparseable params or unsignable envelope", "action_id", raw.ID, "error", err)
+			continue
 		}
 		standalone = append(standalone, wire)
 	}
@@ -162,10 +193,11 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		if covered[dbAction.ID] {
 			continue
 		}
-		action, err := dbResolvedActionToWireAction(dbAction)
+		action, err := dbResolvedActionToWireAction(dbAction, h.signer, deviceID)
 		if err != nil {
-			// Fail closed: skip rather than sync empty params (#368).
-			h.logger.Warn("skipping resolved action with unparseable params", "action_id", dbAction.ID, "error", err)
+			// Fail closed: skip rather than sync empty params or an
+			// unsignable envelope (#368).
+			h.logger.Warn("skipping resolved action with unparseable params or unsignable envelope", "action_id", dbAction.ID, "error", err)
 			continue
 		}
 		standalone = append(standalone, action)
@@ -182,14 +214,20 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 			if !ok {
 				continue
 			}
-			wire, err := dbActionToWireAction(raw)
-			if err != nil {
-				// Fail closed: skip rather than sync empty params (#368).
-				h.logger.Warn("skipping group action with unparseable params", "action_id", raw.ID, "error", err)
-				continue
-			}
+			// Fold the group container's UNINSTALL → ABSENT into the signed
+			// desired state (see the standalone path above): the agent
+			// executes the verified envelope, so the override must be inside
+			// the signed bytes, not just the advisory wire field.
+			desiredState := raw.DesiredState
 			if g.Mode == resolution.ModeUninstall {
-				wire.DesiredState = pm.DesiredState_DESIRED_STATE_ABSENT
+				desiredState = int32(pm.DesiredState_DESIRED_STATE_ABSENT)
+			}
+			wire, err := dbActionToWireAction(raw, h.signer, deviceID, desiredState)
+			if err != nil {
+				// Fail closed: skip rather than sync empty params or an
+				// unsignable envelope (#368).
+				h.logger.Warn("skipping group action with unparseable params or unsignable envelope", "action_id", raw.ID, "error", err)
+				continue
 			}
 			groupActions = append(groupActions, wire)
 		}
@@ -240,14 +278,32 @@ func windowEntryCount(w *pm.MaintenanceWindow) int {
 // format. Mirrors dbResolvedActionToWireAction but operates on the
 // projection row directly so the tree resolver doesn't have to detour
 // through the per-action mode-collapse query for every member action.
-func dbActionToWireAction(a db.ActionsProjection) (*pm.Action, error) {
+//
+// SYNC-path device-bound signing (WS1 SERVER): the PUSH/dispatch rewrite
+// stopped create-time signing, so the autonomous SYNC path re-signs each
+// action at DELIVERY, bound to the SYNCING DEVICE. The built Action carries
+// signed_envelope (the deterministic bytes the agent verifies + executes)
+// and signature (the CA signature over those exact bytes). The typed-params
+// oneof + schedule stay populated as advisory metadata for the offline
+// scheduler — the agent executes the VERIFIED envelope, not the advisory
+// fields, so the signed envelope is the source of truth.
+//
+// effectiveDesiredState lets the caller fold the container-mode override
+// (UNINSTALL → ABSENT) INTO the signed envelope rather than only the
+// advisory wire field. The agent honours UNINSTALL only if it rides in the
+// signed bytes it executes — flipping the wire field alone would be a no-op
+// the verifier never sees.
+//
+// executionID = a.ID: synced actions have no execution id yet (the agent
+// mints the execution when it runs the action offline), so the action's own
+// id binds the envelope. This mirrors the dispatch path, where the freshly
+// minted execution id binds the envelope.
+func dbActionToWireAction(a db.ActionsProjection, signer ca.ActionSigner, deviceID string, effectiveDesiredState int32) (*pm.Action, error) {
 	action := &pm.Action{
-		Id:              &pm.ActionId{Value: a.ID},
-		Type:            pm.ActionType(a.ActionType),
-		DesiredState:    pm.DesiredState(a.DesiredState),
-		TimeoutSeconds:  a.TimeoutSeconds,
-		Signature:       a.Signature,
-		ParamsCanonical: a.ParamsCanonical,
+		Id:             &pm.ActionId{Value: a.ID},
+		Type:           pm.ActionType(a.ActionType),
+		DesiredState:   pm.DesiredState(effectiveDesiredState),
+		TimeoutSeconds: a.TimeoutSeconds,
 	}
 	if len(a.Params) > 0 {
 		if err := actionparams.PopulateAction(action, a.ActionType, a.Params); err != nil {
@@ -257,6 +313,22 @@ func dbActionToWireAction(a db.ActionsProjection) (*pm.Action, error) {
 	if len(a.Schedule) > 0 {
 		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
+
+	envelopeBytes, signature, err := actionparams.BuildAndSignEnvelope(
+		signer,
+		a.ID,
+		a.ActionType,
+		a.Params,
+		effectiveDesiredState,
+		a.TimeoutSeconds,
+		action.Schedule,
+		deviceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	action.SignedEnvelope = envelopeBytes
+	action.Signature = signature
 	return action, nil
 }
 
@@ -552,14 +624,18 @@ func (h *InternalHandler) ProxyValidateTerminalToken(ctx context.Context, req *c
 // dbResolvedActionToWireAction converts a resolved action row to wire format.
 // Note: This is also defined in handler/agent.go — when the gateway migration
 // is complete, only this version will remain.
-func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) (*pm.Action, error) {
+//
+// SYNC-path device-bound signing: like dbActionToWireAction, the delivered
+// Action carries a freshly signed, device-bound SignedActionEnvelope so the
+// offline agent can verify it. The flat resolver already collapsed this row
+// to its effective desired_state, so a.DesiredState is what we sign — there
+// is no separate container override to fold here.
+func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow, signer ca.ActionSigner, deviceID string) (*pm.Action, error) {
 	action := &pm.Action{
-		Id:              &pm.ActionId{Value: a.ID},
-		Type:            pm.ActionType(a.ActionType),
-		DesiredState:    pm.DesiredState(a.DesiredState),
-		TimeoutSeconds:  a.TimeoutSeconds,
-		Signature:       a.Signature,
-		ParamsCanonical: a.ParamsCanonical,
+		Id:             &pm.ActionId{Value: a.ID},
+		Type:           pm.ActionType(a.ActionType),
+		DesiredState:   pm.DesiredState(a.DesiredState),
+		TimeoutSeconds: a.TimeoutSeconds,
 	}
 
 	if len(a.Params) > 0 {
@@ -571,6 +647,22 @@ func dbResolvedActionToWireAction(a db.ListResolvedActionsForDeviceRow) (*pm.Act
 	if len(a.Schedule) > 0 {
 		action.Schedule = actionparams.ScheduleFromJSON(a.Schedule)
 	}
+
+	envelopeBytes, signature, err := actionparams.BuildAndSignEnvelope(
+		signer,
+		a.ID,
+		a.ActionType,
+		a.Params,
+		a.DesiredState,
+		a.TimeoutSeconds,
+		action.Schedule,
+		deviceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	action.SignedEnvelope = envelopeBytes
+	action.Signature = signature
 
 	return action, nil
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -83,8 +84,6 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}
 
 	var inputs dispatchInputs
-	var signature []byte
-	var paramsCanonical []byte
 
 	switch source := req.Msg.ActionSource.(type) {
 	case *pm.DispatchActionRequest_ActionId:
@@ -233,13 +232,26 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			"execution_id", id, "error", marshalErr)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to marshal dispatch params")
 	}
-	sig, signErr := h.signer.Sign(id, int32(inputs.actionType), paramsJSON)
+	// Build and sign the full SignedActionEnvelope. The bytes we sign are
+	// the bytes we transport (envelopeBytes -> ActionDispatchPayload.
+	// EnvelopeBytes) — the agent verifies and unmarshals the same bytes.
+	// Ad-hoc dispatch carries no schedule (nil): the schedule field is
+	// authoritative only on the autonomous sync path, not on a one-shot
+	// dispatch.
+	envelopeBytes, signature, signErr := actionparams.BuildAndSignEnvelope(
+		h.signer,
+		id,
+		int32(inputs.actionType),
+		paramsJSON,
+		int32(inputs.desiredState),
+		inputs.timeoutSeconds,
+		nil, // schedule: not part of an ad-hoc dispatch
+		req.Msg.DeviceId,
+	)
 	if signErr != nil {
-		h.logger.Error("dispatch: failed to sign action", "execution_id", id, "error", signErr)
+		h.logger.Error("dispatch: failed to build/sign action envelope", "execution_id", id, "error", signErr)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign dispatched action")
 	}
-	signature = sig
-	paramsCanonical = paramsJSON
 
 	// Choose ExecutionScheduled vs ExecutionCreated based on whether
 	// the caller asked for a deferred dispatch. The two events are
@@ -277,13 +289,9 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 		enqueueOpts = append(enqueueOpts, asynq.TaskID(id), asynq.ProcessIn(dispatchDelay))
 	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-		ExecutionID:     id,
-		ActionType:      int32(inputs.actionType),
-		DesiredState:    int32(inputs.desiredState),
-		Params:          paramsJSON,
-		TimeoutSeconds:  inputs.timeoutSeconds,
-		Signature:       signature,
-		ParamsCanonical: paramsCanonical,
+		ExecutionID:   id,
+		EnvelopeBytes: envelopeBytes,
+		Signature:     signature,
 	}, enqueueOpts...); err != nil {
 		h.logger.Error("failed to enqueue action dispatch; emitting ExecutionFailed",
 			"error", err, "execution_id", id)
@@ -789,21 +797,31 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 		h.logger.Error("instant dispatch: nil signer — wiring bug", "execution_id", id)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
-	canonicalParams := []byte("{}")
-	instantSig, sigErr := h.signer.Sign(id, int32(req.Msg.InstantAction), canonicalParams)
+	// Build and sign the full envelope for the instant action. REBOOT /
+	// SYNC carry no params, so the empty-object JSON `{}` is the params
+	// source — PopulateEnvelope classifies these as param-less and leaves
+	// the oneof unset. The action_type is bound inside the signed bytes so
+	// a compromised relay can't lift a REBOOT signature onto SYNC (or vice
+	// versa) or retarget the device.
+	envelopeBytes, instantSig, sigErr := actionparams.BuildAndSignEnvelope(
+		h.signer,
+		id,
+		int32(req.Msg.InstantAction),
+		[]byte("{}"),
+		int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		timeoutSeconds,
+		nil, // instant actions are one-shot, no schedule
+		req.Msg.DeviceId,
+	)
 	if sigErr != nil {
-		h.logger.Error("failed to sign instant action; refusing dispatch",
+		h.logger.Error("failed to build/sign instant action envelope; refusing dispatch",
 			"execution_id", id, "action_type", req.Msg.InstantAction.String(), "error", sigErr)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign instant action")
 	}
 	if err := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeActionDispatch, taskqueue.ActionDispatchPayload{
-		ExecutionID:     id,
-		ActionType:      int32(req.Msg.InstantAction),
-		DesiredState:    int32(pm.DesiredState_DESIRED_STATE_PRESENT),
-		Params:          json.RawMessage("{}"),
-		ParamsCanonical: canonicalParams,
-		Signature:       instantSig,
-		TimeoutSeconds:  timeoutSeconds,
+		ExecutionID:   id,
+		EnvelopeBytes: envelopeBytes,
+		Signature:     instantSig,
 	}, enqueueOpts...); err != nil {
 		h.logger.Error("failed to enqueue instant action dispatch; emitting ExecutionFailed",
 			"error", err, "execution_id", id)
