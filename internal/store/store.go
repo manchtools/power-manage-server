@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
@@ -76,6 +77,7 @@ type RebuildApply func(ctx context.Context, q *Queries, ev PersistedEvent) error
 
 // Store wraps the database connection and provides access to queries.
 type Store struct {
+	now     func() time.Time // clock seam; defaults to time.Now, overridden in tests
 	pool    *pgxpool.Pool
 	queries *Queries
 
@@ -283,6 +285,7 @@ func New(ctx context.Context, connString string) (*Store, error) {
 	}
 
 	return &Store{
+		now:     time.Now,
 		pool:    pool,
 		queries: generated.New(pool),
 	}, nil
@@ -305,6 +308,7 @@ func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error
 	}
 
 	return &Store{
+		now:     time.Now,
 		pool:    pool,
 		queries: generated.New(pool),
 	}, nil

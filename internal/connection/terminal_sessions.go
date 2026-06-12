@@ -29,10 +29,13 @@ type TerminalSession struct {
 
 	mu             sync.Mutex
 	lastActivityAt time.Time
+	now            func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewTerminalSession constructs a session with a buffered output channel.
 func NewTerminalSession(sessionID, deviceID, userID, ttyUser string, cols, rows uint32) *TerminalSession {
+	clock := time.Now
+	startedAt := clock()
 	return &TerminalSession{
 		SessionID:      sessionID,
 		DeviceID:       deviceID,
@@ -40,16 +43,17 @@ func NewTerminalSession(sessionID, deviceID, userID, ttyUser string, cols, rows 
 		TtyUser:        ttyUser,
 		Cols:           cols,
 		Rows:           rows,
-		StartedAt:      time.Now(),
-		lastActivityAt: time.Now(),
+		StartedAt:      startedAt,
+		lastActivityAt: startedAt,
 		OutputCh:       make(chan *pm.AgentMessage, 64),
+		now:            clock,
 	}
 }
 
 // Touch updates the last activity timestamp.
 func (s *TerminalSession) Touch() {
 	s.mu.Lock()
-	s.lastActivityAt = time.Now()
+	s.lastActivityAt = s.now()
 	s.mu.Unlock()
 }
 

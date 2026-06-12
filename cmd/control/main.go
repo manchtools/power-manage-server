@@ -168,7 +168,7 @@ func main() {
 		logger.Info("dynamic group evaluation worker disabled")
 	}
 
-	startStaleExecutionExpiry(ctx, st, logger)
+	startStaleExecutionExpiry(ctx, st, logger, time.Now)
 
 	// Start periodic cleanup of stale OSQuery results
 	go runPeriodic(ctx, 5*time.Minute, func() {

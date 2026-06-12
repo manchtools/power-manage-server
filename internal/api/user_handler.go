@@ -21,6 +21,7 @@ type UserHandler struct {
 	store         *store.Store
 	logger        *slog.Logger
 	systemActions *SystemActionManager
+	now           func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewUserHandler creates a new user handler.
@@ -29,6 +30,7 @@ func NewUserHandler(st *store.Store, logger *slog.Logger, systemActions *SystemA
 		store:         st,
 		logger:        logger,
 		systemActions: systemActions,
+		now:           time.Now,
 	}
 }
 
@@ -688,7 +690,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 	}
 
 	keyID := ulid.Make().String()
-	now := time.Now()
+	now := h.now()
 	addedAt := now.Format(time.RFC3339Nano)
 
 	err = h.store.AppendEvent(ctx, store.Event{

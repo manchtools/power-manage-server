@@ -43,6 +43,8 @@ type TerminalHandler struct {
 	// via SetInternalHTTPClient at startup. nil means admin RPCs
 	// return Unavailable.
 	internalHTTPClient *http.Client
+
+	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // SetInternalHTTPClient configures the mTLS HTTP client used for
@@ -68,6 +70,7 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *r
 		registry:    reg,
 		fallbackURL: GatewayBaseURL(fallbackURL),
 		logger:      logger,
+		now:         time.Now,
 	}
 }
 
@@ -230,7 +233,7 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		DeviceID:  req.Msg.DeviceId,
 		UserID:    user.ID,
 		TtyUser:   ttyUser,
-		StartedAt: time.Now(),
+		StartedAt: h.now(),
 		Cols:      int32(cols),
 		Rows:      int32(rows),
 	}); err != nil {
@@ -451,7 +454,7 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 	// authorization record of truth; a DB hiccup here just means the
 	// history row is slightly incomplete. No exit code at this call
 	// site; the session ended on user request, not on shell exit.
-	now := time.Now()
+	now := h.now()
 	if err := h.store.Repos().TerminalSession.MarkStopped(ctx, store.StopTerminalSession{
 		SessionID: session.SessionID,
 		StoppedAt: &now,
@@ -658,7 +661,7 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 	// rc7: finalize the terminal_sessions row. Upsert form so a row
 	// materialises even if neither the Start upsert nor any chunk
 	// landed first — see rationale in StopTerminal.
-	now := time.Now()
+	now := h.now()
 	terminatedBy := actorID
 	// The terminated session may have been opened by a different
 	// user than the admin calling Terminate, so use the session's

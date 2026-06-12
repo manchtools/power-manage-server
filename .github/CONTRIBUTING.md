@@ -44,6 +44,30 @@ Database migrations live in `internal/store/migrations/` (Goose, embedded). See 
 - Always handle errors -- never silently ignore them.
 - Wrap PL/pgSQL functions in `-- +goose StatementBegin` / `-- +goose StatementEnd` in migrations.
 
+## Guardrails (architectural fitness functions)
+
+`internal/archtest/` holds build-failing invariant tests. They run in the
+normal `go test ./...` path, so you may hit one before you expect a review
+comment. Current guards:
+
+- **`TestNoDynamicSQL`** — DB query/exec args must be a string literal or a
+  named string constant. Build queries with sqlc or parameterized literals;
+  never `fmt.Sprintf`/concatenate SQL.
+- **`TestSecretComparesAreConstantTime`** — compare secrets/MACs/tokens/
+  signatures/fingerprints with `subtle.ConstantTimeCompare`/`hmac.Equal`,
+  never `==`/`bytes.Equal`.
+- **`TestProjectionTablesWrittenOnlyByProjectors`** — request handlers append
+  events; they must not write `*_projection` tables directly.
+- **`TestNoUnabstractedTimeNow`** — no direct `time.Now()` calls in runtime
+  code. Read the clock through an injected `now func() time.Time` seam
+  (defaulting to `time.Now`) and call `t.now()`, so time-dependent logic is
+  testable with a fixed clock.
+
+Each guard ships a documented, no-stale-guarded allowlist for genuine
+exceptions. **Prefer fixing the code over adding an allowlist entry**; an
+entry is a reviewed decision needing a justification of *why the flagged shape
+is safe here*. See [`docs/adr/0002-architectural-fitness-functions.md`](../docs/adr/0002-architectural-fitness-functions.md).
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the AGPL-3.0 license.

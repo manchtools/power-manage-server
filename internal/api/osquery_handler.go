@@ -26,11 +26,12 @@ type OSQueryHandler struct {
 	taskQueueHolder
 	store  *store.Store
 	logger *slog.Logger
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewOSQueryHandler creates a new OSQuery handler.
 func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
-	return &OSQueryHandler{store: st, logger: logger}
+	return &OSQueryHandler{store: st, logger: logger, now: time.Now}
 }
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
@@ -91,7 +92,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		RawSQL:  msg.RawSql,
 	},
 		asynq.MaxRetry(3),
-		asynq.Deadline(time.Now().Add(2*time.Minute)),
+		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {
 		h.logger.Error("osquery enqueue failed; marking result expired",
 			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
@@ -221,7 +222,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	// Dispatch inventory request to device via Asynq task queue
 	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
 		asynq.MaxRetry(3),
-		asynq.Deadline(time.Now().Add(2*time.Minute)),
+		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to dispatch inventory request")
 	}

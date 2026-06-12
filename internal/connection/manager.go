@@ -47,6 +47,7 @@ func (a *Agent) Close() {
 
 // Manager manages connected agents.
 type Manager struct {
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 	mu     sync.RWMutex
 	agents map[string]*Agent // deviceID -> agent
 }
@@ -54,6 +55,7 @@ type Manager struct {
 // NewManager creates a new connection manager.
 func NewManager() *Manager {
 	return &Manager{
+		now:    time.Now,
 		agents: make(map[string]*Agent),
 	}
 }
@@ -69,8 +71,8 @@ func (m *Manager) Register(parentCtx context.Context, deviceID, hostname, versio
 		DeviceID:    deviceID,
 		Hostname:    hostname,
 		Version:     version,
-		ConnectedAt: time.Now(),
-		LastSeen:    time.Now(),
+		ConnectedAt: m.now(),
+		LastSeen:    m.now(),
 		Stream:      stream,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -111,7 +113,7 @@ func (m *Manager) UpdateLastSeen(deviceID string) {
 	m.mu.Lock()
 	agent, ok := m.agents[deviceID]
 	if ok {
-		agent.LastSeen = time.Now()
+		agent.LastSeen = m.now()
 	}
 	m.mu.Unlock()
 }

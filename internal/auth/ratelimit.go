@@ -28,18 +28,31 @@ type RateLimiter struct {
 	limit    int
 	window   time.Duration
 	stopCh   chan struct{}
+	now      func() time.Time // clock seam; defaults to time.Now, overridden in tests
+}
+
+// RateLimiterOption configures a RateLimiter.
+type RateLimiterOption func(*RateLimiter)
+
+// WithClock overrides the time source (tests). The default is time.Now.
+func WithClock(now func() time.Time) RateLimiterOption {
+	return func(rl *RateLimiter) { rl.now = now }
 }
 
 // NewRateLimiter creates a new rate limiter that allows limit attempts
 // per key within the given time window. A background goroutine cleans
 // up stale entries periodically.
-func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
+func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) *RateLimiter {
 	rl := &RateLimiter{
 		attempts: make(map[string][]time.Time),
 		lastSeen: make(map[string]time.Time),
 		limit:    limit,
 		window:   window,
 		stopCh:   make(chan struct{}),
+		now:      time.Now,
+	}
+	for _, opt := range opts {
+		opt(rl)
 	}
 	go rl.cleanup()
 	return rl
@@ -51,7 +64,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	now := rl.now()
 	cutoff := now.Add(-rl.window)
 
 	// Remove expired entries
@@ -91,7 +104,7 @@ func (rl *RateLimiter) Blocked(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	cutoff := time.Now().Add(-rl.window)
+	cutoff := rl.now().Add(-rl.window)
 	valid := 0
 	for _, t := range rl.attempts[key] {
 		if t.After(cutoff) {
@@ -133,7 +146,7 @@ func (rl *RateLimiter) cleanup() {
 		select {
 		case <-ticker.C:
 			rl.mu.Lock()
-			cutoff := time.Now().Add(-rl.window)
+			cutoff := rl.now().Add(-rl.window)
 			for key, attempts := range rl.attempts {
 				valid := attempts[:0]
 				for _, t := range attempts {

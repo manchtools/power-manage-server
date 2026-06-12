@@ -23,11 +23,12 @@ type LogsHandler struct {
 	taskQueueHolder
 	store  *store.Store
 	logger *slog.Logger
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewLogsHandler creates a new logs handler.
 func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
-	return &LogsHandler{store: st, logger: logger}
+	return &LogsHandler{store: st, logger: logger, now: time.Now}
 }
 
 // QueryDeviceLogs dispatches a journalctl log query to a connected device.
@@ -77,7 +78,7 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		Kernel:   msg.Kernel,
 	},
 		asynq.MaxRetry(3),
-		asynq.Deadline(time.Now().Add(2*time.Minute)),
+		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {
 		h.logger.Error("log query enqueue failed; marking result expired",
 			"query_id", queryID, "device_id", msg.DeviceId, "error", err)

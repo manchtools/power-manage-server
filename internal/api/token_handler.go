@@ -24,6 +24,7 @@ import (
 type TokenHandler struct {
 	store  *store.Store
 	logger *slog.Logger
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewTokenHandler creates a new token handler.
@@ -31,6 +32,7 @@ func NewTokenHandler(st *store.Store, logger *slog.Logger) *TokenHandler {
 	return &TokenHandler{
 		store:  st,
 		logger: logger,
+		now:    time.Now,
 	}
 }
 
@@ -89,7 +91,7 @@ func (h *TokenHandler) CreateToken(ctx context.Context, req *connect.Request[pm.
 		// scope is for users minting tokens for their own devices.
 		eventData["one_time"] = true
 		eventData["max_uses"] = int32(1)
-		eventData["expires_at"] = time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
+		eventData["expires_at"] = h.now().Add(7 * 24 * time.Hour).Format(time.RFC3339Nano)
 		eventData["owner_id"] = userCtx.ID
 	}
 

@@ -259,12 +259,12 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 		return RebuildResult{}, err
 	}
 
-	start := time.Now()
+	start := s.now()
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(targets))}
 
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		for _, t := range targets {
-			tStart := time.Now()
+			tStart := s.now()
 			applied, runErr := s.runOneTarget(ctx, tx, t)
 			if runErr != nil {
 				return fmt.Errorf("rebuild target %q: %w", t.Name, runErr)
@@ -272,7 +272,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 			result.Targets = append(result.Targets, TargetResult{
 				Name:          t.Name,
 				EventsApplied: applied,
-				Duration:      time.Since(tStart),
+				Duration:      s.now().Sub(tStart),
 			})
 		}
 		return nil
@@ -281,7 +281,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 		return RebuildResult{}, err
 	}
 
-	result.TotalDuration = time.Since(start)
+	result.TotalDuration = s.now().Sub(start)
 	return result, nil
 }
 

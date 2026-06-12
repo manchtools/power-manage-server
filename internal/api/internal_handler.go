@@ -38,6 +38,8 @@ type InternalHandler struct {
 	// gateway gets a clean error rather than the InternalService
 	// default 'method not implemented'.
 	terminalTokenStore *terminal.TokenStore
+
+	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewInternalHandler creates a new internal service handler.
@@ -46,6 +48,7 @@ func NewInternalHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Log
 		store:     st,
 		encryptor: enc,
 		logger:    logger,
+		now:       time.Now,
 	}
 }
 
@@ -340,7 +343,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 			ActionID:       req.Msg.ActionId,
 			DevicePath:     req.Msg.DevicePath,
 			Passphrase:     encPassphrase,
-			RotatedAt:      time.Now().UTC(),
+			RotatedAt:      h.now().UTC(),
 			RotationReason: rotationReasonToString(req.Msg.RotationReason),
 		},
 		ActorType: "device",
@@ -399,7 +402,7 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 			if rotatedAt, err = time.Parse(time.RFC3339, r.RotatedAt); err != nil {
 				h.logger.Warn("LpsPasswordRotation rotated_at unparseable; falling back to now",
 					"raw", r.RotatedAt, "error", err)
-				rotatedAt = time.Now().UTC()
+				rotatedAt = h.now().UTC()
 			}
 		}
 		lpsStreamID := ulid.Make().String()

@@ -88,6 +88,7 @@ type SSOHandler struct {
 	enc                 *crypto.Encryptor
 	passwordAuthEnabled bool
 	callbackBaseURL     string
+	now                 func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewSSOHandler creates a new SSO handler.
@@ -99,6 +100,7 @@ func NewSSOHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMan
 		enc:                 enc,
 		passwordAuthEnabled: passwordAuthEnabled,
 		callbackBaseURL:     callbackBaseURL,
+		now:                 time.Now,
 	}
 }
 
@@ -203,7 +205,7 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 	}
 
 	// Store auth state (10 min expiry)
-	expiresAt := time.Now().Add(10 * time.Minute)
+	expiresAt := h.now().Add(10 * time.Minute)
 	err = h.store.Repos().AuthState.Create(ctx, store.CreateAuthStateParams{
 		State:        state,
 		ProviderID:   provider.ID,

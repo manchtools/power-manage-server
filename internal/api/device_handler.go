@@ -35,11 +35,12 @@ type DeviceHandler struct {
 	// crl, when set, receives a deleted device's cert fingerprint so the cert
 	// stops working at the gateway. nil disables it (no Valkey / tests).
 	crl *crl.Store
+	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
-	return &DeviceHandler{store: st, encryptor: enc, logger: logger}
+	return &DeviceHandler{store: st, encryptor: enc, logger: logger, now: time.Now}
 }
 
 // SetCRLStore wires the certificate revocation list (post-construction).
@@ -955,7 +956,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	// projector already does that, but the audit log loses the
 	// "these three rows are one revocation attempt" invariant.
 	luksStreamID := newULID()
-	reqAt := time.Now().UTC().Format(time.RFC3339Nano)
+	reqAt := h.now().UTC().Format(time.RFC3339Nano)
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "luks_key",
 		StreamID:   luksStreamID,
@@ -990,7 +991,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 				DeviceID: req.Msg.DeviceId,
 				ActionID: req.Msg.ActionId,
 				Error:    fmt.Sprintf("dispatch enqueue failed: %v", enqErr),
-				FailedAt: time.Now().UTC().Format(time.RFC3339Nano),
+				FailedAt: h.now().UTC().Format(time.RFC3339Nano),
 			},
 			ActorType: "system",
 			ActorID:   "system",
@@ -1014,7 +1015,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		Data: payloads.LuksDeviceKeyRevocationDispatched{
 			DeviceID:     req.Msg.DeviceId,
 			ActionID:     req.Msg.ActionId,
-			DispatchedAt: time.Now().UTC().Format(time.RFC3339Nano),
+			DispatchedAt: h.now().UTC().Format(time.RFC3339Nano),
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,
