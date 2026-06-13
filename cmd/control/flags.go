@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -114,16 +115,51 @@ func clampDurations(cfg *Config) {
 // successful boot into a usable server. Logs a FATAL line and exits
 // rather than returning err, matching the pre-extract main() shape.
 func mustValidateConfig(cfg *Config) {
-	if cfg.JWTSecret == "" {
-		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET (or -jwt-secret) is required")
+	if err := validateConfig(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "FATAL: "+err.Error())
 		os.Exit(1)
+	}
+}
+
+// validateConfig is the pure, testable core of mustValidateConfig: it returns
+// the first invariant violation as an error instead of exiting, so the boot
+// guards can be unit-tested.
+func validateConfig(cfg *Config) error {
+	if cfg.JWTSecret == "" {
+		return fmt.Errorf("CONTROL_JWT_SECRET (or -jwt-secret) is required")
 	}
 	if len(cfg.JWTSecret) < 32 {
-		fmt.Fprintln(os.Stderr, "FATAL: CONTROL_JWT_SECRET must be at least 32 characters")
-		os.Exit(1)
+		return fmt.Errorf("CONTROL_JWT_SECRET must be at least 32 characters")
 	}
 	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
-		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert and -tls-key are required when TLS is enabled")
-		os.Exit(1)
+		return fmt.Errorf("-tls-cert and -tls-key are required when TLS is enabled")
+	}
+	// WS5 #7 — CORS allow-all is a development-only convenience. Refuse to boot
+	// with it in any production-shaped deployment (TLS terminated here, or the
+	// server binds a non-localhost address) so an operator can't accidentally
+	// expose a credential-less reflect-any-origin CORS policy to the internet.
+	if cfg.CORSAllowAll && (cfg.TLSEnabled || !listenAddrIsLocalhost(cfg.ListenAddr)) {
+		return fmt.Errorf("CONTROL_CORS_ALLOW_ALL is development-only and must not be set when TLS is enabled or the listen address is not localhost (got %q); set CONTROL_CORS_ORIGINS to an explicit allow-list instead", cfg.ListenAddr)
+	}
+	return nil
+}
+
+// listenAddrIsLocalhost reports whether addr binds ONLY the loopback
+// interface. An empty host (":8081"), 0.0.0.0, or :: binds all interfaces and
+// is therefore NOT localhost-only. Used to gate the dev-only CORS allow-all.
+func listenAddrIsLocalhost(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// No port form — treat the whole string as the host.
+		host = addr
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		if ip := net.ParseIP(host); ip != nil {
+			return ip.IsLoopback()
+		}
+		return false
 	}
 }

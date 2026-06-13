@@ -46,7 +46,7 @@ func (q *Queries) DeleteSCIMGroupMappingsByProvider(ctx context.Context, provide
 }
 
 const getIdentityProviderByID = `-- name: GetIdentityProviderByID :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash, trust_email_assertions FROM identity_providers_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -80,12 +80,13 @@ func (q *Queries) GetIdentityProviderByID(ctx context.Context, id string) (Ident
 		&i.ProjectionVersion,
 		&i.ScimEnabled,
 		&i.ScimTokenHash,
+		&i.TrustEmailAssertions,
 	)
 	return i, err
 }
 
 const getIdentityProviderBySlug = `-- name: GetIdentityProviderBySlug :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash, trust_email_assertions FROM identity_providers_projection
 WHERE slug = $1 AND is_deleted = FALSE
 `
 
@@ -119,12 +120,13 @@ func (q *Queries) GetIdentityProviderBySlug(ctx context.Context, slug string) (I
 		&i.ProjectionVersion,
 		&i.ScimEnabled,
 		&i.ScimTokenHash,
+		&i.TrustEmailAssertions,
 	)
 	return i, err
 }
 
 const getLinkedProvidersDisablingPassword = `-- name: GetLinkedProvidersDisablingPassword :many
-SELECT ip.id, ip.name, ip.slug, ip.provider_type, ip.enabled, ip.client_id, ip.client_secret_encrypted, ip.issuer_url, ip.authorization_url, ip.token_url, ip.userinfo_url, ip.scopes, ip.auto_create_users, ip.auto_link_by_email, ip.default_role_id, ip.attribute_mapping, ip.disable_password_for_linked, ip.group_claim, ip.group_mapping, ip.created_at, ip.created_by, ip.updated_at, ip.is_deleted, ip.projection_version, ip.scim_enabled, ip.scim_token_hash FROM identity_providers_projection ip
+SELECT ip.id, ip.name, ip.slug, ip.provider_type, ip.enabled, ip.client_id, ip.client_secret_encrypted, ip.issuer_url, ip.authorization_url, ip.token_url, ip.userinfo_url, ip.scopes, ip.auto_create_users, ip.auto_link_by_email, ip.default_role_id, ip.attribute_mapping, ip.disable_password_for_linked, ip.group_claim, ip.group_mapping, ip.created_at, ip.created_by, ip.updated_at, ip.is_deleted, ip.projection_version, ip.scim_enabled, ip.scim_token_hash, ip.trust_email_assertions FROM identity_providers_projection ip
 JOIN identity_links_projection il ON il.provider_id = ip.id
 WHERE il.user_id = $1
   AND ip.is_deleted = FALSE
@@ -168,6 +170,7 @@ func (q *Queries) GetLinkedProvidersDisablingPassword(ctx context.Context, userI
 			&i.ProjectionVersion,
 			&i.ScimEnabled,
 			&i.ScimTokenHash,
+			&i.TrustEmailAssertions,
 		); err != nil {
 			return nil, err
 		}
@@ -187,8 +190,9 @@ INSERT INTO identity_providers_projection (
     scopes, auto_create_users, auto_link_by_email,
     default_role_id, disable_password_for_linked,
     group_claim, group_mapping,
-    created_at, created_by, updated_at, projection_version
-) VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $18, $20)
+    created_at, created_by, updated_at, projection_version,
+    trust_email_assertions
+) VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $18, $20, $21)
 ON CONFLICT (id) DO NOTHING
 `
 
@@ -213,6 +217,7 @@ type InsertIdentityProviderProjectionParams struct {
 	CreatedAt                time.Time `json:"created_at"`
 	CreatedBy                string    `json:"created_by"`
 	ProjectionVersion        int64     `json:"projection_version"`
+	TrustEmailAssertions     bool      `json:"trust_email_assertions"`
 }
 
 // IdentityProviderCreated handler. ON CONFLICT DO NOTHING for replay
@@ -240,12 +245,13 @@ func (q *Queries) InsertIdentityProviderProjection(ctx context.Context, arg Inse
 		arg.CreatedAt,
 		arg.CreatedBy,
 		arg.ProjectionVersion,
+		arg.TrustEmailAssertions,
 	)
 	return err
 }
 
 const listEnabledIdentityProviders = `-- name: ListEnabledIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash, trust_email_assertions FROM identity_providers_projection
 WHERE is_deleted = FALSE AND enabled = TRUE
 ORDER BY name ASC
 `
@@ -286,6 +292,7 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 			&i.ProjectionVersion,
 			&i.ScimEnabled,
 			&i.ScimTokenHash,
+			&i.TrustEmailAssertions,
 		); err != nil {
 			return nil, err
 		}
@@ -298,7 +305,7 @@ func (q *Queries) ListEnabledIdentityProviders(ctx context.Context) ([]IdentityP
 }
 
 const listIdentityProviders = `-- name: ListIdentityProviders :many
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash, trust_email_assertions FROM identity_providers_projection
 WHERE is_deleted = FALSE
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
@@ -345,6 +352,7 @@ func (q *Queries) ListIdentityProviders(ctx context.Context, arg ListIdentityPro
 			&i.ProjectionVersion,
 			&i.ScimEnabled,
 			&i.ScimTokenHash,
+			&i.TrustEmailAssertions,
 		); err != nil {
 			return nil, err
 		}
@@ -487,10 +495,11 @@ SET name = COALESCE($1::TEXT, name),
     disable_password_for_linked = COALESCE($13::BOOLEAN, disable_password_for_linked),
     group_claim = COALESCE($14::TEXT, group_claim),
     group_mapping = COALESCE($15::JSONB, group_mapping),
-    updated_at = $16,
-    projection_version = $17
-WHERE id = $18
-  AND projection_version < $17
+    trust_email_assertions = COALESCE($16::BOOLEAN, trust_email_assertions),
+    updated_at = $17,
+    projection_version = $18
+WHERE id = $19
+  AND projection_version < $18
 `
 
 type UpdateIdentityProviderProjectionParams struct {
@@ -509,6 +518,7 @@ type UpdateIdentityProviderProjectionParams struct {
 	DisablePasswordForLinked *bool     `json:"disable_password_for_linked"`
 	GroupClaim               *string   `json:"group_claim"`
 	GroupMapping             []byte    `json:"group_mapping"`
+	TrustEmailAssertions     *bool     `json:"trust_email_assertions"`
 	UpdatedAt                time.Time `json:"updated_at"`
 	ProjectionVersion        int64     `json:"projection_version"`
 	ID                       string    `json:"id"`
@@ -536,6 +546,7 @@ func (q *Queries) UpdateIdentityProviderProjection(ctx context.Context, arg Upda
 		arg.DisablePasswordForLinked,
 		arg.GroupClaim,
 		arg.GroupMapping,
+		arg.TrustEmailAssertions,
 		arg.UpdatedAt,
 		arg.ProjectionVersion,
 		arg.ID,

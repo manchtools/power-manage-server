@@ -1,6 +1,10 @@
 -- name: GetIdentityProviderBySlugForSCIM :one
+-- WS5 #5: SCIM follows the provider login switch. A provider disabled for
+-- login (enabled = FALSE) must also reject SCIM, even with a valid bearer —
+-- otherwise an operator who "turned off" an IdP leaves its automated
+-- provisioning channel wide open. SCIM additionally requires scim_enabled.
 SELECT * FROM identity_providers_projection
-WHERE slug = $1 AND is_deleted = FALSE AND scim_enabled = TRUE;
+WHERE slug = $1 AND is_deleted = FALSE AND scim_enabled = TRUE AND enabled = TRUE;
 
 -- name: GetSCIMGroupMapping :one
 SELECT * FROM scim_group_mapping_projection

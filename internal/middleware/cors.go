@@ -39,10 +39,22 @@ func CORS(allowedOrigins []string, allowAll bool, logger *slog.Logger) func(http
 			origin := r.Header.Get("Origin")
 
 			if origin != "" {
-				if allowAll || originSet[origin] {
+				switch {
+				case originSet[origin]:
+					// Explicitly allow-listed origin: safe to reflect WITH
+					// credentials (the operator named this exact origin).
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Access-Control-Allow-Credentials", "true")
-				} else {
+				case allowAll:
+					// WS5 #7 — dev allow-all reflects the Origin but MUST NOT
+					// also send Access-Control-Allow-Credentials: the
+					// reflect-any-origin + allow-credentials combination lets
+					// ANY site make credentialed cross-origin requests (CSRF /
+					// token theft). Reflecting the origin without credentials
+					// keeps allow-all usable for local dev tooling that doesn't
+					// rely on cookies, while closing the credentialed hole.
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+				default:
 					// Origin not allowed - do not set CORS headers
 					if r.Method == http.MethodOptions {
 						w.WriteHeader(http.StatusForbidden)

@@ -162,6 +162,9 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		if member.Value == "" {
 			continue
 		}
+		if !h.mayAddMemberToGroup(ctx, provider.ID, userGroupID, member.Value) {
+			continue
+		}
 		streamID := userGroupID + ":" + member.Value
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",

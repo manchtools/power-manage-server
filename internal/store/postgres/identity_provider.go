@@ -98,6 +98,7 @@ func identityProviderFromRow(r generated.IdentityProvidersProjection) store.Iden
 		Scopes:                   r.Scopes,
 		AutoCreateUsers:          r.AutoCreateUsers,
 		AutoLinkByEmail:          r.AutoLinkByEmail,
+		TrustEmailAssertions:     r.TrustEmailAssertions,
 		DefaultRoleID:            r.DefaultRoleID,
 		AttributeMapping:         json.RawMessage(r.AttributeMapping),
 		DisablePasswordForLinked: r.DisablePasswordForLinked,

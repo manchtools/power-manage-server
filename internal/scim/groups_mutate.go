@@ -187,6 +187,9 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.Identi
 
 	members := extractMembers(op.Value)
 	for _, userID := range members {
+		if !h.mayAddMemberToGroup(ctx, provider.ID, groupID, userID) {
+			continue
+		}
 		streamID := groupID + ":" + userID
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
@@ -304,6 +307,9 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 		// Add new members
 		for _, userID := range members {
 			if !currentSet[userID] {
+				if !h.mayAddMemberToGroup(ctx, provider.ID, groupID, userID) {
+					continue
+				}
 				h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
 				h.appendEvent(ctx, store.Event{

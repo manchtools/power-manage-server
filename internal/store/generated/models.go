@@ -295,6 +295,7 @@ type IdentityProvidersProjection struct {
 	ProjectionVersion        int64     `json:"projection_version"`
 	ScimEnabled              bool      `json:"scim_enabled"`
 	ScimTokenHash            string    `json:"scim_token_hash"`
+	TrustEmailAssertions     bool      `json:"trust_email_assertions"`
 }
 
 type LogQueryResult struct {

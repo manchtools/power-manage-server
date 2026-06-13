@@ -72,12 +72,22 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 
-		// Look up provider by slug with SCIM enabled
+		// Look up provider by slug, restricted to SCIM-enabled AND
+		// login-enabled providers (WS5 #5). Unknown slug, SCIM-disabled, and
+		// login-disabled all return ErrNotFound here.
+		//
+		// WS5 #9/#11 — no existence/timing oracle. The unknown-provider,
+		// token-not-configured, and wrong-token branches ALL return one
+		// identical 401 ("invalid credentials") AND perform a bcrypt compare,
+		// so a client cannot distinguish "this slug exists" from "wrong token"
+		// by response message or wall-clock. Distinct Warn lines stay
+		// server-side for operators.
 		provider, err := h.store.Repos().IdentityProvider.GetBySlugForSCIM(r.Context(), slug)
 		if err != nil {
 			if store.IsNotFound(err) {
-				h.logger.Warn("SCIM auth failed: unknown provider or SCIM not enabled", "slug", slug)
-				writeError(w, http.StatusUnauthorized, "unknown provider or SCIM not enabled")
+				h.logger.Warn("SCIM auth failed: unknown provider, SCIM not enabled, or provider disabled", "slug", slug)
+				_ = bcrypt.CompareHashAndPassword([]byte(auth.DummyHash), []byte(token))
+				writeError(w, http.StatusUnauthorized, "invalid credentials")
 				return
 			}
 			h.logger.Error("failed to look up SCIM provider", "slug", slug, "error", err)
@@ -85,16 +95,17 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// Verify bearer token against stored bcrypt hash
+		// Verify bearer token against stored bcrypt hash.
 		if provider.ScimTokenHash == "" {
 			h.logger.Warn("SCIM auth failed: token not configured", "slug", slug, "provider_id", provider.ID)
-			writeError(w, http.StatusUnauthorized, "SCIM token not configured")
+			_ = bcrypt.CompareHashAndPassword([]byte(auth.DummyHash), []byte(token))
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(provider.ScimTokenHash), []byte(token)); err != nil {
 			h.logger.Warn("SCIM auth failed: invalid bearer token", "slug", slug, "provider_id", provider.ID)
-			writeError(w, http.StatusUnauthorized, "invalid bearer token")
+			writeError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
 

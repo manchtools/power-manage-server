@@ -102,6 +102,19 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		// Check if user exists but is not yet linked
 		existingUser, err := h.store.Repos().User.GetByEmail(ctx, email)
 		if err == nil {
+			// WS5 #2 — account-takeover guard. A SCIM provider can assert any
+			// email; binding an asserted email to a pre-existing LOCAL PASSWORD
+			// account would let a compromised/over-trusted IdP seize that
+			// account (e.g. a local admin). Refuse unless the operator has
+			// knowingly delegated identity to this provider via
+			// trust_email_assertions. Passwordless / already-SSO-provisioned
+			// accounts are fine to link (no local credential to hijack).
+			if existingUser.HasPassword && !provider.TrustEmailAssertions {
+				h.logger.Warn("SCIM: refusing auto-link to local password account by unverified email",
+					"user_id", existingUser.ID, "provider_id", provider.ID)
+				writeError(w, http.StatusConflict, "email already belongs to a local account; cannot auto-link")
+				return
+			}
 			// User exists — create identity link
 			h.logger.Debug("SCIM createUser: linking existing user by email", "user_id", existingUser.ID, "email", email)
 			linkID := newULID()
