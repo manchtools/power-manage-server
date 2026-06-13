@@ -129,6 +129,10 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetOSQueryResult", result.DeviceID); err != nil {
+		return nil, err
+	}
+
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && time.Since(result.CreatedAt) > osqueryResultTimeout {
 		timeoutErr := "query timed out: device did not respond within 5 minutes"

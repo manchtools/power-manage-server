@@ -114,6 +114,10 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceLogResult", result.DeviceID); err != nil {
+		return nil, err
+	}
+
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && time.Since(result.CreatedAt) > logQueryResultTimeout {
 		timeoutErr := "log query timed out: device did not respond within 5 minutes"
