@@ -48,6 +48,8 @@ All state changes are recorded as immutable events in a single `events` table. P
 
 Inter-service communication uses **Asynq** (Valkey-backed task queue) — when the Control Server dispatches an action, it enqueues an Asynq task to the device's queue (`device:<id>`). The Gateway runs per-device Asynq workers that pick up tasks and stream them to connected agents. Agent responses flow back via the `control:inbox` queue. Credential-bearing operations (LUKS keys, LPS passwords) are proxied via Connect-RPC (`InternalService`) to avoid plaintext secrets in the queue.
 
+**Device-origin binding** (ADR 0005): the gateway peer cert is shared and carries no per-gateway identity, so every device-origin request (`InternalService`) and event (`control:inbox`) self-asserts a `gateway_id` that control cross-checks against the device→gateway routing registry the agent's own mTLS heartbeat populated (`registry.CheckDeviceGatewayBinding`, fail-closed). A compromised gateway therefore cannot pull another device's secrets or forge its events; the `events` audit trail is DB-enforced append-only (migration 011). The binding is bypassed only when no resolver is wired (single-gateway / non-HA).
+
 See the [Control Server README](cmd/control/) for details on the event model, API endpoints, and authorization policies.
 
 ## Internal Packages
