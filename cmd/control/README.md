@@ -622,9 +622,13 @@ curl http://localhost:8081/health
 
 The Control Server uses **dynamic role-based access control** with:
 
-1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only). Scoped permissions are enforced at the handler level via `auth.EnforceSelfScope()`, which verifies the resource ID matches the caller's user ID.
+1. **Custom Roles** — Administrators define roles as collections of permissions (e.g., "Help Desk" = `GetUser`, `SetUserDisabled`, `ListDevices`). Permissions support scoped variants like `GetUser:self` (own profile only) and `ListDevices:assigned` (assigned devices only), enforced at the handler level via `auth.EnforceUserScopeOrSelf()` / the owner SQL filter.
 
 2. **User Groups** — Users can be organized into groups. Roles assigned to a group are inherited by all members. Permissions are additive — a user's effective permissions are the union of all directly assigned roles and group-inherited roles.
+
+   **Scoped grants (server#7).** A role assignment may carry a scope — `device_group:<id>` or `user_group:<id>` — confining every permission in that role to the devices/users in that group. Scope is enforced **uniformly on every scopable permission** at the handler layer (single-resource gates, group-id direct-match gates, list-row filters, dispatch fan-out, and the TerminalAdmin reconciler cohort). "Scopable == enforced" is pinned by a self-discovering parity test — no advisory scope. A scope-limited admin is confined to their groups on every read, list, mutation, dispatch, and terminal op. Group *creation* is org-tier (nothing to confine at create time); member-add additionally requires each added device/user to already be in the caller's scope, preventing a scope escape. See `server/docs/adr/0006-scope-enforcement-handler-level-uniform.md`.
+
+   **Grant authority is the role-management permission alone.** Holding `AssignRoleToUser` / `AssignRoleToUserGroup` / `AddUserToGroup` / `CreateRole` / `CreateUser` authorizes assigning or defining **any** role, including Admin — there is no grant-only-what-you-hold ceiling. What remains enforced: scope authority (a scope-limited admin grants only within their own scope) and the atomic last-admin lockout invariant (server#369).
 
 3. **Built-in Roles** — `Admin` (all permissions) and `User` (self-service permissions) are created automatically but can be customized.
 
