@@ -51,6 +51,17 @@ func TestEnforceUserScopeOrSelf(t *testing.T) {
 		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
 	})
 
+	// Defense-in-depth: a base holder with a scoped grant of the WRONG kind
+	// (a device_group grant on a user-target perm) must fail CLOSED, not be
+	// treated as unrestricted. rejectUnscopableRole should prevent creating
+	// such a grant, but this layer must never read it as fleet-wide access.
+	t.Run("wrong-kind scoped grant fails closed (not unrestricted)", func(t *testing.T) {
+		ctx := ctxWith([]string{"GetUser"}, ScopedGrant{Permission: "GetUser", ScopeKind: ScopeKindDeviceGroup, ScopeID: "dg1"})
+		err := EnforceUserScopeOrSelf(ctx, res, "GetUser", "userX")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
+	})
+
 	t.Run("self tier allows only own id", func(t *testing.T) {
 		ctx := ctxWith([]string{"GetUser:self"})
 		assert.NoError(t, EnforceUserScopeOrSelf(ctx, res, "GetUser", "caller"))
@@ -102,6 +113,15 @@ func TestEnforceDeviceScopeOnBaseTier(t *testing.T) {
 	t.Run("assigned-only tier passes through (owner filter handles it)", func(t *testing.T) {
 		ctx := ctxWith([]string{"GetDevice:assigned"})
 		assert.NoError(t, EnforceDeviceScopeOnBaseTier(ctx, res, "GetDevice", "devY"))
+	})
+
+	// Defense-in-depth: a base holder with a wrong-kind scoped grant (a
+	// user_group grant on a device-target perm) fails CLOSED.
+	t.Run("wrong-kind scoped grant fails closed (not unrestricted)", func(t *testing.T) {
+		ctx := ctxWith([]string{"GetDevice"}, ScopedGrant{Permission: "GetDevice", ScopeKind: ScopeKindUserGroup, ScopeID: "ug1"})
+		err := EnforceDeviceScopeOnBaseTier(ctx, res, "GetDevice", "devX")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, codeOf(err))
 	})
 
 	t.Run("unauthenticated is denied", func(t *testing.T) {
