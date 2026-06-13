@@ -407,7 +407,7 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrLuksKeyNotFound, connect.CodeNotFound, "no LUKS key found for this action")
 	}
 
-	passphrase, err := h.encryptor.Decrypt(key.Passphrase)
+	passphrase, err := h.encryptor.DecryptWithContext(key.Passphrase, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "luks"))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt passphrase")
 	}
@@ -430,7 +430,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	encPassphrase, err := h.encryptor.Encrypt(req.Msg.Passphrase)
+	encPassphrase, err := h.encryptor.EncryptWithContext(req.Msg.Passphrase, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "luks"))
 	if err != nil {
 		h.logger.Error("failed to encrypt LUKS passphrase", "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt passphrase")
@@ -492,7 +492,7 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		firstErr  error
 	)
 	for _, r := range req.Msg.Rotations {
-		encPassword, err := h.encryptor.Encrypt(r.Password)
+		encPassword, err := h.encryptor.EncryptWithContext(r.Password, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "lps"))
 		if err != nil {
 			h.logger.Error("failed to encrypt LPS password", "error", err, "username", r.Username)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")
