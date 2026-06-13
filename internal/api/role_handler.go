@@ -61,13 +61,6 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, err
 	}
 
-	// Privilege ceiling: a caller can only create a role with permissions they
-	// themselves hold, else any role-management holder could mint an Admin-level
-	// role and escalate (#365).
-	if err := assertCanGrant(ctx, req.Msg.Permissions); err != nil {
-		return nil, err
-	}
-
 	id := ulid.Make().String()
 
 	perms := req.Msg.Permissions
@@ -194,13 +187,6 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
-		return nil, err
-	}
-
-	// Privilege ceiling: a caller can only set a role's permissions to ones
-	// they themselves hold, else a role-management holder could rewrite a role
-	// to confer Admin-level permissions and escalate (#365).
-	if err := assertCanGrant(ctx, req.Msg.Permissions); err != nil {
 		return nil, err
 	}
 
@@ -333,19 +319,6 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
 		}
 
-		// Privilege ceiling (UNSCOPED/global grants only): a caller can only
-		// globally assign a role whose permissions they hold, else any
-		// AssignRoleToUser holder could grant themselves an Admin-level role and
-		// escalate (#365). SCOPED grants are governed by the #7 device-group
-		// scope model (AssignRoleScope + escalation bound); their full
-		// enforcement lands in 2026.08, so the ceiling does not further restrict
-		// them here.
-		if scopeKind == "" {
-			if err := assertCanGrant(ctx, role.Permissions); err != nil {
-				return nil, err
-			}
-		}
-
 		// Every permission in a scoped grant's role must accept this
 		// scope kind (target_kind match) — a no-op for unscoped grants.
 		if err := rejectUnscopableRole(ctx, scopeKind, role.Permissions); err != nil {
@@ -451,33 +424,33 @@ func (h *RoleHandler) RevokeRoleFromUser(ctx context.Context, req *connect.Reque
 		// doesn't confer global admin, and a non-existent grant is a no-op, so
 		// neither threatens lockout. Counts group-inherited admins and ignores
 		// disabled/deleted ones — which the old CountUsersWithRole check did not
-		// (#365). NOTE: this is a read-side preflight, not atomic with the
-		// revoke event; two concurrent admin removals can still race to zero
-		// admins (recoverable via the bootstrap admin on restart). Atomic
-		// enforcement in the projector is a follow-up.
-		if role.IsSystem && role.Name == "Admin" && scopeKind == "" {
-			if err := assertOtherEnabledAdminExists(ctx, h.store, req.Msg.UserId); err != nil {
-				return nil, err
-			}
-		}
-
+		// (#365). The guard + revoke append run under one advisory lock so two
+		// concurrent admin removals can't both pass and race to zero (#369).
 		streamID := req.Msg.UserId + ":" + req.Msg.RoleId
 		if scopeKind != "" {
 			streamID += ":" + scopeID
 		}
-		if err := appendEvent(ctx, h.store, h.logger, store.Event{
-			StreamType: "user_role",
-			StreamID:   streamID,
-			EventType:  string(eventtypes.UserRoleRevoked),
-			Data: payloads.UserRoleRevoked{
-				UserID:    req.Msg.UserId,
-				RoleID:    req.Msg.RoleId,
-				ScopeKind: sk,
-				ScopeID:   si,
-			},
-			ActorType: "user",
-			ActorID:   userCtx.ID,
-		}, "failed to revoke role"); err != nil {
+		appendRevoke := func() error {
+			return appendEvent(ctx, h.store, h.logger, store.Event{
+				StreamType: "user_role",
+				StreamID:   streamID,
+				EventType:  string(eventtypes.UserRoleRevoked),
+				Data: payloads.UserRoleRevoked{
+					UserID:    req.Msg.UserId,
+					RoleID:    req.Msg.RoleId,
+					ScopeKind: sk,
+					ScopeID:   si,
+				},
+				ActorType: "user",
+				ActorID:   userCtx.ID,
+			}, "failed to revoke role")
+		}
+
+		if role.IsSystem && role.Name == "Admin" && scopeKind == "" {
+			if err := guardedAdminMutation(ctx, h.store, req.Msg.UserId, appendRevoke); err != nil {
+				return nil, err
+			}
+		} else if err := appendRevoke(); err != nil {
 			return nil, err
 		}
 	} else {

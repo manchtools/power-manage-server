@@ -299,13 +299,21 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 			continue
 		}
 		if remaining == 0 {
-			if err := h.store.AppendEvent(ctx, store.Event{
-				StreamType: "user",
-				StreamID:   link.UserID,
-				EventType:  string(eventtypes.UserDeleted),
-				Data:       map[string]any{},
-				ActorType:  "user",
-				ActorID:    userCtx.ID,
+			// Auto-deleting an orphaned passwordless user must not orphan the
+			// deployment: route it through the same last-admin advisory lock as
+			// the direct delete path, so unlinking an IdP can never remove the
+			// final administrator (#5/#369). On the guard's refusal (or any
+			// error) we leave the user in place rather than fail the whole
+			// provider deletion — best-effort, matching the surrounding loop.
+			if err := guardedAdminMutation(ctx, h.store, link.UserID, func() error {
+				return h.store.AppendEvent(ctx, store.Event{
+					StreamType: "user",
+					StreamID:   link.UserID,
+					EventType:  string(eventtypes.UserDeleted),
+					Data:       map[string]any{},
+					ActorType:  "user",
+					ActorID:    userCtx.ID,
+				})
 			}); err != nil {
 				h.logger.Error("failed to auto-delete orphaned user", "user_id", link.UserID, "error", err)
 			} else {

@@ -81,6 +81,15 @@ type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
 
+	// advisoryMu serializes LOCAL goroutines competing for an advisory lock
+	// BEFORE they acquire a pooled connection (see WithAdvisoryLock). Without
+	// it, N concurrent callers each grab a conn and block on pg_advisory_lock,
+	// so when N >= pool size the lock-holder's callback can't get the extra
+	// conns it needs and the whole set deadlocks (this kept the api CI shard at
+	// its 30m timeout). One mutex is correct for the current single advisory
+	// key; switch to a per-key map if a second hot key is added.
+	advisoryMu sync.Mutex
+
 	// listenersMu guards listeners + OnEventAppended +
 	// rebuildAppliers. Documented usage is "register at boot, then
 	// start serving", but Go's race detector won't catch a future
@@ -405,6 +414,48 @@ func (s *Store) LoadStreamByType(ctx context.Context, streamType string, limit, 
 		Limit:      limit,
 		Offset:     offset,
 	})
+}
+
+// WithAdvisoryLock runs fn while holding a session-level PostgreSQL advisory
+// lock on key, serializing every caller that uses the same key on this
+// database. The lock is held across the ENTIRE fn — including any synchronous
+// post-commit projector writes triggered by an AppendEvent inside fn — so a
+// read-side guard that checks a projection and then appends an event is atomic
+// against a concurrent caller: the next caller blocks until this one's
+// projection write has landed, rather than racing on a stale read.
+//
+// The lock is taken on a dedicated pooled connection and explicitly released
+// (a pooled connection is not closed on Release, so a session lock would
+// otherwise leak). The release is detached from ctx so a cancelled request
+// still frees the lock, and surfaces as the returned error only when fn itself
+// succeeded.
+func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func() error) (err error) {
+	// Serialize local goroutines BEFORE taking a pooled connection. Otherwise N
+	// concurrent callers each acquire a conn and block on pg_advisory_lock
+	// below; once N reaches the pool size, the one goroutine that won the lock
+	// can't acquire the additional conns its fn() needs (guard reads + append),
+	// and the whole set deadlocks. With the mutex, waiters hold NO connection
+	// while they queue, so the lock-holder always has the rest of the pool. The
+	// pg_advisory_lock still serializes across PROCESSES (HA / multi-instance).
+	s.advisoryMu.Lock()
+	defer s.advisoryMu.Unlock()
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection for advisory lock: %w", err)
+	}
+	defer conn.Release()
+
+	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", key); err != nil {
+		return fmt.Errorf("acquire advisory lock %d: %w", key, err)
+	}
+	defer func() {
+		if _, uerr := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key); uerr != nil && err == nil {
+			err = fmt.Errorf("release advisory lock %d: %w", key, uerr)
+		}
+	}()
+
+	return fn()
 }
 
 // WithTx runs a function within a transaction.

@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"testing"
 
@@ -9,8 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+// failingReconciler / zeroRowsReconciler model the two ways the reconcile can
+// fail: a query error and a "system role not found" (0 rows updated).
+type failingReconciler struct{}
+
+func (failingReconciler) UpdateSystemRolePermissions(context.Context, db.UpdateSystemRolePermissionsParams) (int64, error) {
+	return 0, errors.New("db unavailable")
+}
+
+type zeroRowsReconciler struct{}
+
+func (zeroRowsReconciler) UpdateSystemRolePermissions(context.Context, db.UpdateSystemRolePermissionsParams) (int64, error) {
+	return 0, nil
+}
 
 func TestAdminPermissions_IncludesAllPermissions(t *testing.T) {
 	all := auth.AllPermissions()
@@ -42,6 +58,32 @@ func TestReconcileSystemRoles_UpdatesDB(t *testing.T) {
 	userRole, err := st.Queries().GetRoleByID(ctx, auth.UserRoleID)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, auth.DefaultUserPermissions(), userRole.Permissions)
+}
+
+// TestUserSeedRole_MatchesDefaultPermissions pins the RAW migration seed (before
+// any reconcile) against the code-defined set, so a fresh install is correct
+// even in the window before the first boot reconcile. The seed previously
+// granted UpdateUserLinuxUsername:self (admin-only, #354) and omitted
+// StopTerminal — masked only by the non-fatal reconciler (#16).
+func TestUserSeedRole_MatchesDefaultPermissions(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	userRole, err := st.Queries().GetRoleByID(context.Background(), auth.UserRoleID)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, auth.DefaultUserPermissions(), userRole.Permissions,
+		"the User-role seed literal must match DefaultUserPermissions()")
+	assert.NotContains(t, userRole.Permissions, "UpdateUserLinuxUsername:self",
+		"linux_username is admin-only — the seed must not self-service it (#354/#16)")
+}
+
+// TestReconcileSystemRoles_FailClosedOnError pins that the reconcile SURFACES
+// failures (a query error or a missing system role) so the boot caller can fail
+// closed rather than serve traffic with drifted system-role permissions (#16).
+func TestReconcileSystemRoles_FailClosedOnError(t *testing.T) {
+	err := auth.ReconcileSystemRoles(context.Background(), failingReconciler{}, slog.Default())
+	require.Error(t, err, "a query failure must be returned, not swallowed")
+
+	err = auth.ReconcileSystemRoles(context.Background(), zeroRowsReconciler{}, slog.Default())
+	require.Error(t, err, "a missing system role (0 rows) must be a fail-closed error")
 }
 
 // TestUpdateUserLinuxUsername_IsAdminOnly pins the intent that changing a

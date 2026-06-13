@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -523,4 +524,75 @@ func TestProjection_AssignmentCreated(t *testing.T) {
 	assert.Equal(t, actionID, sourceID)
 	assert.Equal(t, "device", targetType)
 	assert.Equal(t, deviceID, targetID)
+}
+
+// TestWithAdvisoryLock_SerializesSameKey verifies the lock actually serializes
+// same-key critical sections — the property the last-admin TOCTOU fix (#369)
+// relies on. Five goroutines run an overlapping-by-design critical section
+// (each sleeps while "inside"); with the lock, at most one is ever inside.
+func TestWithAdvisoryLock_SerializesSameKey(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	const key int64 = 0x5151
+
+	var mu sync.Mutex
+	concurrent, maxConcurrent := 0, 0
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := st.WithAdvisoryLock(context.Background(), key, func() error {
+				mu.Lock()
+				concurrent++
+				if concurrent > maxConcurrent {
+					maxConcurrent = concurrent
+				}
+				mu.Unlock()
+				time.Sleep(25 * time.Millisecond)
+				mu.Lock()
+				concurrent--
+				mu.Unlock()
+				return nil
+			})
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 1, maxConcurrent, "same-key advisory lock must serialize critical sections (no overlap)")
+}
+
+// TestWithAdvisoryLock_NoDeadlockUnderPoolPressure pins that WithAdvisoryLock
+// does not deadlock when more goroutines contend for the lock than the pool has
+// connections. Each callback does real pool work (like the guard reads + append
+// it wraps). Without serializing entry, the waiters hold every pooled connection
+// blocked on pg_advisory_lock, so the lock-holder's callback can't get a
+// connection and the whole set hangs — the failure that pinned #397's api CI
+// shard at its 30m timeout. With a 2-connection pool and 8 callers it must still
+// complete.
+func TestWithAdvisoryLock_NoDeadlockUnderPoolPressure(t *testing.T) {
+	st := testutil.SetupPostgresPool(t, 2)
+	const key int64 = 0x6e6f6465
+
+	const goroutines = 8
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			errs <- st.WithAdvisoryLock(context.Background(), key, func() error {
+				// Acquire-and-release a pooled connection inside the lock — the
+				// extra connection the real guard+append needs.
+				_, err := st.TestingPool().Exec(context.Background(), "SELECT 1")
+				return err
+			})
+		}()
+	}
+
+	timeout := time.After(60 * time.Second)
+	for i := 0; i < goroutines; i++ {
+		select {
+		case err := <-errs:
+			require.NoError(t, err)
+		case <-timeout:
+			t.Fatal("WithAdvisoryLock deadlocked: concurrent callers exceeded the pool size and starved the lock-holder of connections")
+		}
+	}
 }

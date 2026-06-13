@@ -2,12 +2,20 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
+
+// permStartTerminal is the permission that lets a user open a terminal session.
+// Losing it across every role/group is what ends terminal access. Matches the
+// literal used throughout the handlers (there is no exported constant).
+const permStartTerminal = "StartTerminal"
 
 // userSessionTerminator closes a user's live terminal sessions. *TerminalHandler
 // implements it; the interface keeps TerminalRevocationListener unit-testable
@@ -16,35 +24,59 @@ type userSessionTerminator interface {
 	TerminateUserSessions(ctx context.Context, userID string)
 }
 
+// userPermissionChecker returns a user's flattened effective permissions
+// (direct + group). store.Repos().User satisfies it; the interface keeps the
+// listener unit-testable.
+type userPermissionChecker interface {
+	Permissions(ctx context.Context, userID string) ([]string, error)
+}
+
 // terminalRevocationCloseTimeout bounds the background close fan-out.
 const terminalRevocationCloseTimeout = 30 * time.Second
 
 // TerminalRevocationListener returns a post-commit event listener that closes a
-// user's LIVE terminal sessions when their access is revoked — on UserDisabled
-// or UserDeleted. The close (a gateway fan-out) runs on a background goroutine
-// with its own timeout context, so it NEVER blocks the disable/delete RPC that
-// triggered it and survives that request's context being cancelled when the RPC
-// returns. Best-effort by design (audit l.174: a revoked user's already-open
-// root shell must be killed, not left running until they disconnect).
+// user's LIVE terminal sessions when their terminal access is revoked:
 //
-// Scope: disable + delete only. Role-revoke is intentionally excluded — a user
-// may retain terminal access via another role, so closing on every role-revoke
-// could be wrong; that needs a "does the user still have terminal access?"
-// recompute and is tracked separately.
-func TerminalRevocationListener(term userSessionTerminator, logger *slog.Logger) store.EventListener {
+//   - UserDisabled / UserDeleted — all access is gone; close unconditionally.
+//   - UserRoleRevoked — close ONLY if the revoke removed the user's last
+//     StartTerminal grant. They may still hold it via another role or group, so
+//     closing on every role-revoke would be wrong; this rechecks effective
+//     permissions first (#391). A scoped revoke that leaves StartTerminal intact
+//     is therefore a no-op.
+//
+// The close (a gateway fan-out) and the permission recheck run on a background
+// goroutine with their own timeout context, so they never block the
+// disable/delete/revoke RPC and survive that request's context being cancelled
+// when it returns. Best-effort and panic-recovered — an unrecovered panic in a
+// spawned goroutine would crash control. Audit l.174 / #391.
+func TerminalRevocationListener(term userSessionTerminator, perms userPermissionChecker, logger *slog.Logger) store.EventListener {
 	return func(_ context.Context, ev store.PersistedEvent) {
-		if ev.StreamType != "user" {
+		var userID string
+		recheckStartTerminal := false
+
+		switch ev.EventType {
+		case string(eventtypes.UserDisabled), string(eventtypes.UserDeleted):
+			if ev.StreamType != "user" {
+				return
+			}
+			userID = ev.StreamID
+		case string(eventtypes.UserRoleRevoked):
+			var p payloads.UserRoleRevoked
+			if err := json.Unmarshal(ev.Data, &p); err != nil {
+				logger.Error("terminal revocation: malformed UserRoleRevoked payload", "error", err)
+				return
+			}
+			userID = p.UserID
+			recheckStartTerminal = true
+		default:
 			return
 		}
-		if ev.EventType != string(eventtypes.UserDisabled) && ev.EventType != string(eventtypes.UserDeleted) {
+		if userID == "" {
 			return
 		}
-		userID := ev.StreamID
-		logger.Info("revoking terminal access: closing user's live sessions", "user_id", userID, "event", ev.EventType)
+		eventType := ev.EventType
+
 		go func() {
-			// Recover: an unrecovered panic in a spawned goroutine crashes the
-			// whole control process — a best-effort session close must never do
-			// that. Also log completion (with any context error) for observability.
 			defer func() {
 				if r := recover(); r != nil {
 					logger.Error("panic while closing terminal sessions for a revoked user", "user_id", userID, "panic", r)
@@ -52,6 +84,23 @@ func TerminalRevocationListener(term userSessionTerminator, logger *slog.Logger)
 			}()
 			bgCtx, cancel := context.WithTimeout(context.Background(), terminalRevocationCloseTimeout)
 			defer cancel()
+
+			if recheckStartTerminal {
+				// A role-revoke ends terminal access only if the user no longer
+				// holds StartTerminal via ANY remaining role/group. Reading the
+				// projection here (post-commit) reflects the revoke already
+				// applied, so a stale grant can't keep a session alive.
+				userPerms, err := perms.Permissions(bgCtx, userID)
+				if err != nil {
+					logger.Error("terminal revocation: failed to recheck StartTerminal", "user_id", userID, "error", err)
+					return
+				}
+				if slices.Contains(userPerms, permStartTerminal) {
+					return // still has terminal access — leave live sessions running
+				}
+			}
+
+			logger.Info("revoking terminal access: closing user's live sessions", "user_id", userID, "event", eventType)
 			term.TerminateUserSessions(bgCtx, userID)
 			logger.Info("closed terminal sessions for a revoked user", "user_id", userID, "context_error", bgCtx.Err())
 		}()

@@ -45,11 +45,14 @@ jobs:
         run: go test -count=1 ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/... ./internal/eventtypes/...
 
   # Integration tests are sharded across parallel runners so wall-clock is
-  # the slowest shard (api) rather than the sum of all packages (#338). Each
-  # shard brings up its own testcontainers, so a Docker-registry flake (or a
+  # the slowest shard rather than the sum of all packages (#338). Each shard
+  # brings up its own testcontainers, so a Docker-registry flake (or a
   # failure) only re-runs that one shard, not the whole suite. The `api`
-  # package dominates, so it gets its own shard; the rest are balanced into
-  # two. When you add a new internal/<pkg>, drop it in the smallest shard.
+  # package dominates and on CI a full run approaches the 30m timeout, so it
+  # is split into two name-partitioned sub-shards (^Test[A-L] / the rest,
+  # ~balanced) that run in parallel; the `run` filter is `.` (everything) for
+  # the others. When you add a new internal/<pkg>, put it in the smallest
+  # non-api shard.
   integration-shard:
     name: Integration Tests (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
@@ -57,12 +60,18 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          - name: api
+          - name: api-1
             packages: ./internal/api/...
+            run: '^Test[A-L]'
+          - name: api-2
+            packages: ./internal/api/...
+            run: '^Test[^A-L]'
           - name: store-projectors
             packages: ./internal/store/... ./internal/projectors/...
+            run: '.'
           - name: handlers-services
             packages: ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/...
+            run: '.'
     steps:
       - uses: actions/checkout@v5
 
@@ -75,7 +84,7 @@ jobs:
       # listener factory; covered here so the 23 listener files +
       # 14 sibling test files get exercised on every push.
       - name: Run integration tests (${{ matrix.shard.name }})
-        run: go test -count=1 -timeout 30m ${{ matrix.shard.packages }}
+        run: go test -count=1 -timeout 30m -run '${{ matrix.shard.run }}' ${{ matrix.shard.packages }}
 
   # Stable aggregate check: branch protection requires "Integration Tests"
   # (the shard jobs carry per-shard suffixes), so this gate fails unless

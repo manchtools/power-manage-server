@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -300,8 +299,13 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
-	// Prevent deletion of SCIM-managed groups
-	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	// Prevent deletion of SCIM-managed groups. Fail CLOSED: this is a security
+	// guard, not best-effort display enrichment, so a failed check must reject
+	// the delete rather than silently treat the group as unmanaged (#14).
+	isScimManaged, err := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify SCIM-managed status")
+	}
 	if isScimManaged {
 		return nil, apiErrorCtx(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
 	}
@@ -311,14 +315,32 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   req.Msg.Id,
-		EventType:  string(eventtypes.UserGroupDeleted),
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
-	}, "failed to delete user group"); err != nil {
+	appendDelete := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   req.Msg.Id,
+			EventType:  string(eventtypes.UserGroupDeleted),
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}, "failed to delete user group")
+	}
+	// Last-admin guard: deleting an admin-bearing group strips that admin path
+	// from every member at once — refuse if it would leave no enabled admin, and
+	// run the check + delete under the shared advisory lock so it is atomic
+	// against a concurrent admin removal (#5/#369).
+	confersAdmin, err := h.groupConfersAdmin(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check group admin role")
+	}
+	if confersAdmin {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterGroupRoleRemoved(ctx, h.store, req.Msg.Id)
+		}, appendDelete)
+	} else {
+		err = appendDelete()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -364,28 +386,6 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 
 	if group.IsDynamic {
 		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
-	}
-
-	// Privilege ceiling: adding a user to a group confers ALL of the group's
-	// roles' permissions to that member, so a caller may only add members to a
-	// group whose conferred permissions they themselves hold — otherwise a
-	// role-management holder could add themselves (or anyone) to an
-	// Admin-bearing group and escalate (#365).
-	grants, err := h.store.Repos().Role.ListUserGroupRoleGrants(ctx, req.Msg.GroupId)
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve group permissions")
-	}
-	var groupPerms []string
-	for _, g := range grants {
-		// Only globally-effective (unscoped) grants gate the ceiling; scoped
-		// grants follow the #7 device-group scope model (full enforcement
-		// 2026.08).
-		if g.ScopeKind == "" {
-			groupPerms = append(groupPerms, g.Role.Permissions...)
-		}
-	}
-	if err := assertCanGrant(ctx, groupPerms); err != nil {
-		return nil, err
 	}
 
 	for _, userID := range userIDs {
@@ -473,17 +473,34 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	}
 
 	streamID := req.Msg.GroupId + ":" + req.Msg.UserId
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  string(eventtypes.UserGroupMemberRemoved),
-		Data: payloads.UserGroupMemberRemoved{
-			GroupID: req.Msg.GroupId,
-			UserID:  req.Msg.UserId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to remove user from group"); err != nil {
+	appendRemove := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  string(eventtypes.UserGroupMemberRemoved),
+			Data: payloads.UserGroupMemberRemoved{
+				GroupID: req.Msg.GroupId,
+				UserID:  req.Msg.UserId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to remove user from group")
+	}
+	// Last-admin guard: if this group confers Admin, removing the member could
+	// strip their only admin path — refuse if it would leave no enabled admin,
+	// under the shared advisory lock for atomicity (#5/#369).
+	confersAdmin, err := h.groupConfersAdmin(ctx, req.Msg.GroupId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check group admin role")
+	}
+	if confersAdmin {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterMemberRemoved(ctx, h.store, req.Msg.GroupId, req.Msg.UserId)
+		}, appendRemove)
+	} else {
+		err = appendRemove()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -542,18 +559,6 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
-		}
-
-		// Privilege ceiling (UNSCOPED/global grants only): a caller can only
-		// grant a group a role whose permissions they hold — a group's roles are
-		// additive to every member, so this prevents escalating members past the
-		// caller's own grant (#365). SCOPED grants follow the #7 device-group
-		// scope model (full enforcement 2026.08), so the ceiling does not further
-		// restrict them here.
-		if scopeKind == "" {
-			if err := assertCanGrant(ctx, role.Permissions); err != nil {
-				return nil, err
-			}
 		}
 
 		if err := rejectUnscopableRole(ctx, scopeKind, role.Permissions); err != nil {
@@ -659,19 +664,37 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	if scopeKind != "" {
 		streamID += ":" + scopeID
 	}
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  string(eventtypes.UserGroupRoleRevoked),
-		Data: payloads.UserGroupRoleRevoked{
-			GroupID:   req.Msg.GroupId,
-			RoleID:    req.Msg.RoleId,
-			ScopeKind: sk,
-			ScopeID:   si,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to revoke role from user group"); err != nil {
+	appendRevoke := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  string(eventtypes.UserGroupRoleRevoked),
+			Data: payloads.UserGroupRoleRevoked{
+				GroupID:   req.Msg.GroupId,
+				RoleID:    req.Msg.RoleId,
+				ScopeKind: sk,
+				ScopeID:   si,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to revoke role from user group")
+	}
+	// Last-admin guard: revoking the UNSCOPED Admin grant from a group strips
+	// admin from every member that held it only via this group — refuse if no
+	// enabled admin would survive, under the shared advisory lock (#5/#369). A
+	// scoped grant never confers global admin, so it skips the guard.
+	adminRevoke, err := h.revokingUnscopedAdminRole(ctx, req.Msg.RoleId, scopeKind)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check revoked role")
+	}
+	if adminRevoke {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterGroupRoleRemoved(ctx, h.store, req.Msg.GroupId)
+		}, appendRevoke)
+	} else {
+		err = appendRevoke()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -922,6 +945,36 @@ func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context
 	return firstErr
 }
 
+// groupConfersAdmin reports whether the user group currently grants the Admin
+// system role (unscoped). Gates the last-admin guard on member-remove / delete.
+func (h *UserGroupHandler) groupConfersAdmin(ctx context.Context, groupID string) (bool, error) {
+	adminRole, err := h.store.Repos().Role.GetByName(ctx, "Admin")
+	if err != nil {
+		return false, err
+	}
+	return h.store.Queries().UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
+		GroupID: groupID,
+		RoleID:  adminRole.ID,
+	})
+}
+
+// revokingUnscopedAdminRole reports whether a revoke targets the UNSCOPED Admin
+// system-role grant — the only grant that confers global admin and so the only
+// one the last-admin guard applies to.
+func (h *UserGroupHandler) revokingUnscopedAdminRole(ctx context.Context, roleID, scopeKind string) (bool, error) {
+	if scopeKind != "" {
+		return false, nil
+	}
+	role, err := h.store.Queries().GetRoleByID(ctx, roleID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return role.IsSystem && role.Name == "Admin", nil
+}
+
 // userGroupToProto converts a database user group projection to a protobuf
 // UserGroup. roles is the scope-blind, de-duplicated role set (kept for
 // backward compatibility); grants is the per-grant view with each grant's
@@ -979,4 +1032,3 @@ func (h *UserGroupHandler) userGroupRoleGrants(ctx context.Context, groupID stri
 }
 
 // Suppress unused import warning
-var _ = fmt.Sprintf

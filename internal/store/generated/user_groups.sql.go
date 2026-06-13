@@ -800,6 +800,50 @@ func (q *Queries) ListUserIDsWithGroupRole(ctx context.Context, roleID string) (
 	return items, nil
 }
 
+const listUserIDsWithRoleExcludingGroup = `-- name: ListUserIDsWithRoleExcludingGroup :many
+SELECT DISTINCT user_id FROM (
+    SELECT ur.user_id
+    FROM user_roles_projection ur
+    WHERE ur.role_id = $1
+    UNION
+    SELECT ugm.user_id
+    FROM user_group_members_projection ugm
+    JOIN user_group_roles_projection ugr ON ugr.group_id = ugm.group_id
+    WHERE ugr.role_id = $1 AND ugm.group_id <> $2
+) AS admins
+`
+
+type ListUserIDsWithRoleExcludingGroupParams struct {
+	RoleID         string `json:"role_id"`
+	ExcludeGroupID string `json:"exclude_group_id"`
+}
+
+// Users who hold the role via a DIRECT grant OR via membership in any user
+// group OTHER than the excluded one. The last-admin guard on the group-demotion
+// paths uses this to compute the admin set that SURVIVES removing one group's
+// role grant (revoke-role-from-group / delete-group): a user who is admin only
+// via the excluded group is correctly dropped, while one who also holds Admin
+// directly or via another group is retained.
+func (q *Queries) ListUserIDsWithRoleExcludingGroup(ctx context.Context, arg ListUserIDsWithRoleExcludingGroupParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listUserIDsWithRoleExcludingGroup, arg.RoleID, arg.ExcludeGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsersForDynamicEvaluation = `-- name: ListUsersForDynamicEvaluation :many
 SELECT id, email, disabled, totp_enabled, has_password,
        display_name, preferred_username, locale

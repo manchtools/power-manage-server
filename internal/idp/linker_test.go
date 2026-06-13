@@ -15,7 +15,16 @@ import (
 
 // mockQuerier implements the Querier interface for testing.
 type mockQuerier struct {
-	linuxUID int32
+	linuxUID      int32
+	groupRoles    map[string][]db.RolesProjection
+	groupRolesErr error
+}
+
+func (m *mockQuerier) GetUserGroupRoles(_ context.Context, groupID string) ([]db.RolesProjection, error) {
+	if m.groupRolesErr != nil {
+		return nil, m.groupRolesErr
+	}
+	return m.groupRoles[groupID], nil
 }
 
 func (m *mockQuerier) GetIdentityLinkByProviderAndExternalID(_ context.Context, _ db.GetIdentityLinkByProviderAndExternalIDParams) (db.IdentityLinksProjection, error) {
@@ -41,6 +50,34 @@ func (m *mockQuerier) GetNextLinuxUID(_ context.Context) (int32, error) {
 // mockAppender captures appended events for inspection.
 type mockAppender struct {
 	events []EventInput
+}
+
+// TestGroupIsAdminBearing pins the SSO admin-group audit decision (#9): only a
+// group carrying the SYSTEM Admin role triggers the privileged-grant audit, and
+// a lookup failure is best-effort (false) so it never blocks the SSO sync.
+func TestGroupIsAdminBearing(t *testing.T) {
+	adminRole := db.RolesProjection{ID: "r-admin", Name: "Admin", IsSystem: true}
+	plainRole := db.RolesProjection{ID: "r-ops", Name: "Ops", IsSystem: false}
+	namedAdmin := db.RolesProjection{ID: "r-x", Name: "Admin", IsSystem: false} // coincidental name
+
+	cases := []struct {
+		name  string
+		q     *mockQuerier
+		group string
+		want  bool
+	}{
+		{"system Admin role → audited", &mockQuerier{groupRoles: map[string][]db.RolesProjection{"g": {plainRole, adminRole}}}, "g", true},
+		{"plain role only → not audited", &mockQuerier{groupRoles: map[string][]db.RolesProjection{"g": {plainRole}}}, "g", false},
+		{"non-system role named Admin → not audited (keys on IsSystem)", &mockQuerier{groupRoles: map[string][]db.RolesProjection{"g": {namedAdmin}}}, "g", false},
+		{"no roles → not audited", &mockQuerier{groupRoles: map[string][]db.RolesProjection{}}, "g", false},
+		{"lookup error → false, never blocks sync", &mockQuerier{groupRolesErr: assert.AnError}, "g", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := NewLinker(tc.q, &mockAppender{})
+			assert.Equal(t, tc.want, l.groupIsAdminBearing(context.Background(), tc.group))
+		})
+	}
 }
 
 func (m *mockAppender) AppendEvent(_ context.Context, event EventInput) error {

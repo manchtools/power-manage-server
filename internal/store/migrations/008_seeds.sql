@@ -41,7 +41,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, updated_at, projection_version)
 VALUES (
     '00000000000000000000000002', 'User', 'Basic user access',
-    '{GetCurrentUser,GetUser:self,UpdateUserEmail:self,UpdateUserPassword:self,UpdateUserProfile:self,UpdateUserSshSettings:self,UpdateUserLinuxUsername:self,SetupTOTP,VerifyTOTP,DisableTOTP,GetTOTPStatus,RegenerateBackupCodes,ListDevices:assigned,GetDevice:assigned,CreateToken:self,SetUserSelection,ListAvailableActions,ListIdentityLinks,UnlinkIdentity,GetDeviceCompliance:assigned,AddUserSshKey:self,RemoveUserSshKey:self}',
+    '{GetCurrentUser,GetUser:self,UpdateUserEmail:self,UpdateUserPassword:self,UpdateUserProfile:self,UpdateUserSshSettings:self,SetupTOTP,VerifyTOTP,DisableTOTP,GetTOTPStatus,RegenerateBackupCodes,ListDevices:assigned,GetDevice:assigned,CreateToken:self,SetUserSelection,ListAvailableActions,ListIdentityLinks,UnlinkIdentity,GetDeviceCompliance:assigned,AddUserSshKey:self,RemoveUserSshKey:self,StopTerminal}',
     TRUE, NOW(), NOW(), 0
 )
 ON CONFLICT (id) DO NOTHING;
