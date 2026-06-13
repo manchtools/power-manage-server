@@ -29,6 +29,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -141,10 +142,12 @@ func databaseURL(base *url.URL, dbName string) string {
 	return u.String()
 }
 
-// setupTestStore is the shared bootstrap used by both public helpers. It
-// clones the migrated template into a fresh per-test database and returns a
-// connected Store; callers decide whether to wire projectors.
-func setupTestStore(t *testing.T) *store.Store {
+// setupTestStore is the shared bootstrap used by the public helpers. It clones
+// the migrated template into a fresh per-test database and returns a connected
+// Store; callers decide whether to wire projectors. maxConns caps the pgx pool
+// size (0 = pgx default); a small cap is used to exercise pool-pressure paths
+// such as the advisory-lock deadlock guard.
+func setupTestStore(t *testing.T, maxConns int) *store.Store {
 	t.Helper()
 	sharedOnce.Do(initShared)
 	if sharedErr != nil {
@@ -183,7 +186,15 @@ func setupTestStore(t *testing.T) *store.Store {
 
 	// Schema is already present (cloned from the migrated template), so skip
 	// migrations — re-running goose here would be redundant work on every test.
-	st, err := store.NewWithoutMigrations(ctx, databaseURL(shared.baseURL, dbName))
+	connStr := databaseURL(shared.baseURL, dbName)
+	if maxConns > 0 {
+		sep := "?"
+		if strings.Contains(connStr, "?") {
+			sep = "&"
+		}
+		connStr += sep + fmt.Sprintf("pool_max_conns=%d", maxConns)
+	}
+	st, err := store.NewWithoutMigrations(ctx, connStr)
 	if err != nil {
 		t.Fatalf("testutil: connect test database %s: %v", dbName, err)
 	}
@@ -197,7 +208,7 @@ func setupTestStore(t *testing.T) *store.Store {
 // completes.
 func SetupPostgres(t *testing.T) *store.Store {
 	t.Helper()
-	st := setupTestStore(t)
+	st := setupTestStore(t, 0)
 
 	// Wire the same Go-side projector listeners that production boot wires in
 	// cmd/control/main.go. Without this, handlers emit events but the
@@ -219,5 +230,16 @@ func SetupPostgres(t *testing.T) *store.Store {
 // tests that read projection state.
 func SetupPostgresWithoutProjectors(t *testing.T) *store.Store {
 	t.Helper()
-	return setupTestStore(t)
+	return setupTestStore(t, 0)
+}
+
+// SetupPostgresPool returns a connected Store (with projectors wired) whose pgx
+// pool is capped at maxConns. Used to exercise pool-pressure behavior — e.g.
+// that WithAdvisoryLock does not deadlock when concurrent callers exceed the
+// pool size.
+func SetupPostgresPool(t *testing.T, maxConns int) *store.Store {
+	t.Helper()
+	st := setupTestStore(t, maxConns)
+	projectors.WireAll(st, nil)
+	return st
 }

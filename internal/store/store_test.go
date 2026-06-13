@@ -560,3 +560,39 @@ func TestWithAdvisoryLock_SerializesSameKey(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, 1, maxConcurrent, "same-key advisory lock must serialize critical sections (no overlap)")
 }
+
+// TestWithAdvisoryLock_NoDeadlockUnderPoolPressure pins that WithAdvisoryLock
+// does not deadlock when more goroutines contend for the lock than the pool has
+// connections. Each callback does real pool work (like the guard reads + append
+// it wraps). Without serializing entry, the waiters hold every pooled connection
+// blocked on pg_advisory_lock, so the lock-holder's callback can't get a
+// connection and the whole set hangs — the failure that pinned #397's api CI
+// shard at its 30m timeout. With a 2-connection pool and 8 callers it must still
+// complete.
+func TestWithAdvisoryLock_NoDeadlockUnderPoolPressure(t *testing.T) {
+	st := testutil.SetupPostgresPool(t, 2)
+	const key int64 = 0x6e6f6465
+
+	const goroutines = 8
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			errs <- st.WithAdvisoryLock(context.Background(), key, func() error {
+				// Acquire-and-release a pooled connection inside the lock — the
+				// extra connection the real guard+append needs.
+				_, err := st.TestingPool().Exec(context.Background(), "SELECT 1")
+				return err
+			})
+		}()
+	}
+
+	timeout := time.After(60 * time.Second)
+	for i := 0; i < goroutines; i++ {
+		select {
+		case err := <-errs:
+			require.NoError(t, err)
+		case <-timeout:
+			t.Fatal("WithAdvisoryLock deadlocked: concurrent callers exceeded the pool size and starved the lock-holder of connections")
+		}
+	}
+}

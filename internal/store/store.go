@@ -81,6 +81,15 @@ type Store struct {
 	pool    *pgxpool.Pool
 	queries *Queries
 
+	// advisoryMu serializes LOCAL goroutines competing for an advisory lock
+	// BEFORE they acquire a pooled connection (see WithAdvisoryLock). Without
+	// it, N concurrent callers each grab a conn and block on pg_advisory_lock,
+	// so when N >= pool size the lock-holder's callback can't get the extra
+	// conns it needs and the whole set deadlocks (this kept the api CI shard at
+	// its 30m timeout). One mutex is correct for the current single advisory
+	// key; switch to a per-key map if a second hot key is added.
+	advisoryMu sync.Mutex
+
 	// listenersMu guards listeners + OnEventAppended +
 	// rebuildAppliers. Documented usage is "register at boot, then
 	// start serving", but Go's race detector won't catch a future
@@ -421,6 +430,16 @@ func (s *Store) LoadStreamByType(ctx context.Context, streamType string, limit, 
 // still frees the lock, and surfaces as the returned error only when fn itself
 // succeeded.
 func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func() error) (err error) {
+	// Serialize local goroutines BEFORE taking a pooled connection. Otherwise N
+	// concurrent callers each acquire a conn and block on pg_advisory_lock
+	// below; once N reaches the pool size, the one goroutine that won the lock
+	// can't acquire the additional conns its fn() needs (guard reads + append),
+	// and the whole set deadlocks. With the mutex, waiters hold NO connection
+	// while they queue, so the lock-holder always has the rest of the pool. The
+	// pg_advisory_lock still serializes across PROCESSES (HA / multi-instance).
+	s.advisoryMu.Lock()
+	defer s.advisoryMu.Unlock()
+
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire connection for advisory lock: %w", err)
