@@ -88,6 +88,7 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 			// victim's email address. Document this in operator
 			// guidance before flipping the default.
 			AutoLinkByEmail:          req.Msg.AutoLinkByEmail,
+			TrustEmailAssertions:     req.Msg.TrustEmailAssertions,
 			DefaultRoleID:            req.Msg.DefaultRoleId,
 			DisablePasswordForLinked: req.Msg.DisablePasswordForLinked,
 			GroupClaim:               req.Msg.GroupClaim,
@@ -185,6 +186,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 		"enabled":                     req.Msg.Enabled,
 		"auto_create_users":           req.Msg.AutoCreateUsers,
 		"auto_link_by_email":          req.Msg.AutoLinkByEmail,
+		"trust_email_assertions":      req.Msg.TrustEmailAssertions,
 		"default_role_id":             req.Msg.DefaultRoleId,
 		"disable_password_for_linked": req.Msg.DisablePasswordForLinked,
 		"group_claim":                 req.Msg.GroupClaim,
@@ -484,6 +486,7 @@ func (h *IDPHandler) idpToProto(p store.IdentityProvider) *pm.IdentityProvider {
 		Scopes:                   p.Scopes,
 		AutoCreateUsers:          p.AutoCreateUsers,
 		AutoLinkByEmail:          p.AutoLinkByEmail,
+		TrustEmailAssertions:     p.TrustEmailAssertions,
 		DefaultRoleId:            p.DefaultRoleID,
 		DisablePasswordForLinked: p.DisablePasswordForLinked,
 		GroupClaim:               p.GroupClaim,
