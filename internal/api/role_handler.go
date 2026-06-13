@@ -61,13 +61,6 @@ func (h *RoleHandler) CreateRole(ctx context.Context, req *connect.Request[pm.Cr
 		return nil, err
 	}
 
-	// Privilege ceiling: a caller can only create a role with permissions they
-	// themselves hold, else any role-management holder could mint an Admin-level
-	// role and escalate (#365).
-	if err := assertCanGrant(ctx, req.Msg.Permissions); err != nil {
-		return nil, err
-	}
-
 	id := ulid.Make().String()
 
 	perms := req.Msg.Permissions
@@ -194,13 +187,6 @@ func (h *RoleHandler) UpdateRole(ctx context.Context, req *connect.Request[pm.Up
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
-		return nil, err
-	}
-
-	// Privilege ceiling: a caller can only set a role's permissions to ones
-	// they themselves hold, else a role-management holder could rewrite a role
-	// to confer Admin-level permissions and escalate (#365).
-	if err := assertCanGrant(ctx, req.Msg.Permissions); err != nil {
 		return nil, err
 	}
 
@@ -331,19 +317,6 @@ func (h *RoleHandler) AssignRoleToUser(ctx context.Context, req *connect.Request
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
-		}
-
-		// Privilege ceiling (UNSCOPED/global grants only): a caller can only
-		// globally assign a role whose permissions they hold, else any
-		// AssignRoleToUser holder could grant themselves an Admin-level role and
-		// escalate (#365). SCOPED grants are governed by the #7 device-group
-		// scope model (AssignRoleScope + escalation bound); their full
-		// enforcement lands in 2026.08, so the ceiling does not further restrict
-		// them here.
-		if scopeKind == "" {
-			if err := assertCanGrant(ctx, role.Permissions); err != nil {
-				return nil, err
-			}
 		}
 
 		// Every permission in a scoped grant's role must accept this

@@ -366,28 +366,6 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
 	}
 
-	// Privilege ceiling: adding a user to a group confers ALL of the group's
-	// roles' permissions to that member, so a caller may only add members to a
-	// group whose conferred permissions they themselves hold — otherwise a
-	// role-management holder could add themselves (or anyone) to an
-	// Admin-bearing group and escalate (#365).
-	grants, err := h.store.Repos().Role.ListUserGroupRoleGrants(ctx, req.Msg.GroupId)
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve group permissions")
-	}
-	var groupPerms []string
-	for _, g := range grants {
-		// Only globally-effective (unscoped) grants gate the ceiling; scoped
-		// grants follow the #7 device-group scope model (full enforcement
-		// 2026.08).
-		if g.ScopeKind == "" {
-			groupPerms = append(groupPerms, g.Role.Permissions...)
-		}
-	}
-	if err := assertCanGrant(ctx, groupPerms); err != nil {
-		return nil, err
-	}
-
 	for _, userID := range userIDs {
 		// Verify user exists
 		_, err = q.GetUserByID(ctx, userID)
@@ -542,18 +520,6 @@ func (h *UserGroupHandler) AssignRoleToUserGroup(ctx context.Context, req *conne
 				return nil, apiErrorCtx(ctx, ErrRoleNotFound, connect.CodeNotFound, "role not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get role")
-		}
-
-		// Privilege ceiling (UNSCOPED/global grants only): a caller can only
-		// grant a group a role whose permissions they hold — a group's roles are
-		// additive to every member, so this prevents escalating members past the
-		// caller's own grant (#365). SCOPED grants follow the #7 device-group
-		// scope model (full enforcement 2026.08), so the ceiling does not further
-		// restrict them here.
-		if scopeKind == "" {
-			if err := assertCanGrant(ctx, role.Permissions); err != nil {
-				return nil, err
-			}
 		}
 
 		if err := rejectUnscopableRole(ctx, scopeKind, role.Permissions); err != nil {
