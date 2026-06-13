@@ -167,11 +167,13 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	}
 	svc.SetTerminalHandler(termHandler)
 
-	// Close a user's live terminal sessions when their access is revoked
-	// (UserDisabled / UserDeleted) — otherwise a disabled/deleted user keeps a
-	// root-capable shell until they disconnect (audit l.174). Runs the gateway
-	// fan-out in the background so it never blocks the disable/delete.
-	st.RegisterEventListener(api.TerminalRevocationListener(termHandler, logger.With("component", "terminal_revocation")))
+	// Close a user's live terminal sessions when their terminal access is
+	// revoked — UserDisabled/UserDeleted (all access gone), or a UserRoleRevoked
+	// that removed their last StartTerminal grant (#391) — otherwise a revoked
+	// user keeps a root-capable shell until they disconnect (audit l.174). The
+	// gateway fan-out (and the permission recheck) run in the background so they
+	// never block the disable/delete/revoke.
+	st.RegisterEventListener(api.TerminalRevocationListener(termHandler, st.Repos().User, logger.With("component", "terminal_revocation")))
 
 	if cfg.TerminalGatewayURL != "" {
 		logger.Info("remote terminal sessions enabled",
