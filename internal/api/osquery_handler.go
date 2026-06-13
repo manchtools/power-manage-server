@@ -14,6 +14,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -27,12 +28,13 @@ type OSQueryHandler struct {
 	taskQueueHolder
 	store  *store.Store
 	logger *slog.Logger
+	signer ca.ActionSigner  // signs osquery/inventory dispatches (WS4)
 	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewOSQueryHandler creates a new OSQuery handler.
-func NewOSQueryHandler(st *store.Store, logger *slog.Logger) *OSQueryHandler {
-	return &OSQueryHandler{store: st, logger: logger, now: time.Now}
+func NewOSQueryHandler(st *store.Store, logger *slog.Logger, signer ca.ActionSigner) *OSQueryHandler {
+	return &OSQueryHandler{store: st, logger: logger, signer: signer, now: time.Now}
 }
 
 // DispatchOSQuery dispatches an on-demand osquery to a connected device.
@@ -81,6 +83,28 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create query result")
 	}
 
+	// Build the dispatch payload and sign it (WS4) so the agent verifies the
+	// CA signature before running osquery as root — incl. raw SQL. Signing is
+	// fail-closed: a signing failure (or nil signer) expires the pending row
+	// and returns an error rather than shipping an unsigned task the agent
+	// would drop.
+	payload := taskqueue.OSQueryDispatchPayload{
+		QueryID: queryID,
+		Table:   msg.Table,
+		Columns: msg.Columns,
+		Limit:   msg.Limit,
+		RawSQL:  msg.RawSql,
+	}
+	if err := signOSQueryDispatch(h.signer, &payload); err != nil {
+		h.logger.Error("osquery dispatch signing failed; marking result expired",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		if expireErr := h.store.Repos().OSQuery.ExpirePendingResult(ctx, queryID, "dispatch signing failed"); expireErr != nil {
+			h.logger.Error("failed to mark sign-failed osquery result as expired",
+				"query_id", queryID, "error", expireErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign osquery dispatch")
+	}
+
 	// Dispatch osquery to device via Asynq task queue.
 	// Limit retries and set a deadline so queries to offline devices fail quickly
 	// rather than sitting in the queue indefinitely.
@@ -89,13 +113,7 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	// it as expired with an explicit error so callers polling
 	// GetOSQueryResult see a terminal failure rather than waiting
 	// the full 5-minute timeout on a task that never shipped.
-	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, taskqueue.OSQueryDispatchPayload{
-		QueryID: queryID,
-		Table:   msg.Table,
-		Columns: msg.Columns,
-		Limit:   msg.Limit,
-		RawSQL:  msg.RawSql,
-	},
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeOSQueryDispatch, payload,
 		asynq.MaxRetry(3),
 		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {
@@ -236,8 +254,18 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "inventory refresh unavailable: task queue not configured")
 	}
 
+	// Build + sign the inventory request (WS4): a query_id makes it bindable,
+	// and the agent verifies the CA signature before running osquery as root.
+	// Fail closed on a signing error.
+	payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String()}
+	if err := signInventoryRequest(h.signer, &payload); err != nil {
+		h.logger.Error("inventory request signing failed",
+			"device_id", msg.DeviceId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign inventory request")
+	}
+
 	// Dispatch inventory request to device via Asynq task queue
-	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, taskqueue.InventoryRequestPayload{},
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeInventoryRequest, payload,
 		asynq.MaxRetry(3),
 		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {

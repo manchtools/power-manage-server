@@ -15,7 +15,7 @@ import (
 
 func TestQueryDeviceLogs_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewLogsHandler(st, slog.Default())
+	h := api.NewLogsHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -41,7 +41,7 @@ func TestQueryDeviceLogs_DeviceNotFound(t *testing.T) {
 // operator knows the deployment is misconfigured.
 func TestQueryDeviceLogs_NoTaskQueue_RefusesWithPrecondition(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewLogsHandler(st, slog.Default())
+	h := api.NewLogsHandler(st, slog.Default(), api.NoOpSigner{})
 	// Intentionally do NOT call h.SetTaskQueueClient.
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -59,7 +59,7 @@ func TestQueryDeviceLogs_NoTaskQueue_RefusesWithPrecondition(t *testing.T) {
 
 func TestGetDeviceLogResult_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewLogsHandler(st, slog.Default())
+	h := api.NewLogsHandler(st, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -74,7 +74,7 @@ func TestGetDeviceLogResult_NotFound(t *testing.T) {
 
 func TestGetDeviceLogResult_PendingResult(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewLogsHandler(st, slog.Default())
+	h := api.NewLogsHandler(st, slog.Default(), api.NoOpSigner{})
 	// Wire a no-op enqueuer so QueryDeviceLogs actually dispatches
 	// and creates the pending row this test reads back. Without it
 	// the new FailedPrecondition gate rejects the dispatch.

@@ -32,3 +32,12 @@ func (NoOpSigner) Sign(envelopeBytes []byte) ([]byte, error) {
 	_ = envelopeBytes
 	return []byte("noop-test-signature"), nil
 }
+
+// SignDomain returns a deterministic dummy signature that varies by domain so
+// a test asserting cross-surface disjointness still sees distinct bytes per
+// surface. Like Sign, the payload is ignored — NoOpSigner only satisfies the
+// non-nil signer contract for fixtures that don't exercise real verification.
+func (NoOpSigner) SignDomain(domain string, payload []byte) ([]byte, error) {
+	_ = payload
+	return []byte("noop-test-signature:" + domain), nil
+}

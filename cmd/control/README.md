@@ -640,6 +640,26 @@ The Control Server uses **dynamic role-based access control** with:
    - Automatically filters query results based on user identity
    - Defense in depth - protects data even if application code has bugs
 
+### Root Stream-RPC Signing (WS4)
+
+Beyond actions (ADR 0003), the Control Server **CA-signs the four root
+stream-RPC dispatches** so the agent can verify they originated here — not from
+a compromised Gateway/Valkey relay — before running them as root:
+
+| Dispatch | Signs over | Domain |
+|----------|-----------|--------|
+| `DispatchOSQuery` (incl. raw SQL) | the OSQuery canonical | `power-manage-osquery` |
+| `QueryDeviceLogs` | the LogQuery canonical | `power-manage-logquery` |
+| `RefreshDeviceInventory` | the RequestInventory canonical (`query_id`) | `power-manage-inventory` |
+| `RevokeLuksDeviceKey` | the RevokeLuksDeviceKey canonical (`action_id`) | `power-manage-luks-revoke` |
+
+Signing is **fail-closed-loud**: a nil signer or signing error refuses the
+dispatch rather than enqueueing an unsigned task the agent would drop. Raw-SQL
+osquery is signed like any other query (not removed) — a signed raw query from
+an RBAC-authorized operator still runs; an unsigned one is refused at the agent.
+The Gateway relays the signature opaquely and never originates it. See
+`server/docs/adr/0007-stream-rpc-signing.md`.
+
 ### Self-Service Device Registration
 
 Users can register their own devices without admin involvement:

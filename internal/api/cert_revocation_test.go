@@ -57,7 +57,7 @@ func TestDeleteDevice_RevokesCert(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
 	enc := testutil.NewEncryptor(t)
-	h := api.NewDeviceHandler(st, enc, slog.Default())
+	h := api.NewDeviceHandler(st, enc, slog.Default(), api.NoOpSigner{})
 
 	crlStore := testCRLStore(t)
 	h.SetCRLStore(crlStore)

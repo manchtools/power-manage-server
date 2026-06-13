@@ -1,5 +1,7 @@
 package taskqueue
 
+import pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+
 // === Control → Gateway payloads (device queues) ===
 
 // ActionDispatchPayload is the payload for TypeActionDispatch tasks.
@@ -29,33 +31,98 @@ type ActionDispatchPayload struct {
 }
 
 // OSQueryDispatchPayload is the payload for TypeOSQueryDispatch tasks.
+//
+// Signature is the CA signature over the canonical bytes of ToProto() under
+// verify.OSQuerySignatureDomain (WS4). The control server computes it; the
+// gateway copies it onto the wire OSQuery verbatim and NEVER originates it.
 type OSQueryDispatchPayload struct {
-	QueryID string   `json:"query_id"`
-	Table   string   `json:"table"`
-	Columns []string `json:"columns,omitempty"`
-	Limit   int32    `json:"limit,omitempty"`
-	RawSQL  string   `json:"raw_sql,omitempty"`
+	QueryID   string   `json:"query_id"`
+	Table     string   `json:"table"`
+	Columns   []string `json:"columns,omitempty"`
+	Limit     int32    `json:"limit,omitempty"`
+	RawSQL    string   `json:"raw_sql,omitempty"`
+	Signature []byte   `json:"signature,omitempty"`
+}
+
+// ToProto builds the wire OSQuery from the payload (signature excluded). It is
+// the SINGLE construction site shared by the control server (which signs
+// ToProto()'s canonical bytes) and the gateway (which sends ToProto() with the
+// carried signature attached) — so the bytes the agent verifies are
+// byte-for-byte the bytes the server signed, with no field-mapping drift.
+func (p OSQueryDispatchPayload) ToProto() *pm.OSQuery {
+	return &pm.OSQuery{
+		QueryId: p.QueryID,
+		Table:   p.Table,
+		Columns: p.Columns,
+		Limit:   p.Limit,
+		RawSql:  p.RawSQL,
+	}
 }
 
 // InventoryRequestPayload is the payload for TypeInventoryRequest tasks.
-// Currently empty — the agent just needs the signal.
-type InventoryRequestPayload struct{}
+//
+// query_id makes a server-originated collection request bindable; Signature is
+// the CA signature over ToProto()'s canonical bytes under
+// verify.InventorySignatureDomain (WS4).
+type InventoryRequestPayload struct {
+	QueryID   string `json:"query_id"`
+	Signature []byte `json:"signature,omitempty"`
+}
+
+// ToProto builds the wire RequestInventory (signature excluded). Shared
+// construction site for sign (control) and send (gateway) — see
+// OSQueryDispatchPayload.ToProto.
+func (p InventoryRequestPayload) ToProto() *pm.RequestInventory {
+	return &pm.RequestInventory{QueryId: p.QueryID}
+}
 
 // RevokeLuksDeviceKeyPayload is the payload for TypeRevokeLuksDeviceKey tasks.
+//
+// Signature is the CA signature over ToProto()'s canonical bytes under
+// verify.LuksRevokeSignatureDomain (WS4) — binding action_id so a compromised
+// gateway cannot forge or replay the destructive slot-7 wipe.
 type RevokeLuksDeviceKeyPayload struct {
-	ActionID string `json:"action_id"`
+	ActionID  string `json:"action_id"`
+	Signature []byte `json:"signature,omitempty"`
+}
+
+// ToProto builds the wire RevokeLuksDeviceKey (signature excluded). Shared
+// construction site for sign (control) and send (gateway).
+func (p RevokeLuksDeviceKeyPayload) ToProto() *pm.RevokeLuksDeviceKey {
+	return &pm.RevokeLuksDeviceKey{ActionId: p.ActionID}
 }
 
 // LogQueryDispatchPayload is the payload for TypeLogQueryDispatch tasks.
+//
+// Signature is the CA signature over ToProto()'s canonical bytes under
+// verify.LogQuerySignatureDomain (WS4).
 type LogQueryDispatchPayload struct {
-	QueryID  string `json:"query_id"`
-	Lines    int32  `json:"lines,omitempty"`
-	Unit     string `json:"unit,omitempty"`
-	Since    string `json:"since,omitempty"`
-	Until    string `json:"until,omitempty"`
-	Priority string `json:"priority,omitempty"`
-	Grep     string `json:"grep,omitempty"`
-	Kernel   bool   `json:"kernel,omitempty"`
+	QueryID   string `json:"query_id"`
+	Lines     int32  `json:"lines,omitempty"`
+	Unit      string `json:"unit,omitempty"`
+	Since     string `json:"since,omitempty"`
+	Until     string `json:"until,omitempty"`
+	Priority  string `json:"priority,omitempty"`
+	Grep      string `json:"grep,omitempty"`
+	Kernel    bool   `json:"kernel,omitempty"`
+	Signature []byte `json:"signature,omitempty"`
+}
+
+// ToProto builds the wire LogQuery (signature excluded). Shared construction
+// site for sign (control) and send (gateway). NOTE: it must set EXACTLY the
+// fields the gateway sends — Source is intentionally omitted here and at the
+// gateway, so the canonical bytes match on both sides.
+func (p LogQueryDispatchPayload) ToProto() *pm.LogQuery {
+	return &pm.LogQuery{
+		QueryId:  p.QueryID,
+		Lines:    p.Lines,
+		Unit:     p.Unit,
+		Since:    p.Since,
+		Until:    p.Until,
+		Priority: p.Priority,
+		Grep:     p.Grep,
+		Kernel:   p.Kernel,
+	}
 }
 
 // === Gateway → Control payloads (control:inbox queue) ===

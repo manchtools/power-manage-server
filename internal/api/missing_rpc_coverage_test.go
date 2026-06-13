@@ -349,7 +349,7 @@ func TestActionHandler_DispatchToGroup_FansOutAcrossEveryGroupMember(t *testing.
 
 func TestDeviceHandler_GetDeviceLpsPasswords_EmptyForNewDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")
 	deviceID := testutil.CreateTestDevice(t, st, "lps-device")
@@ -364,7 +364,7 @@ func TestDeviceHandler_GetDeviceLpsPasswords_EmptyForNewDevice(t *testing.T) {
 
 func TestDeviceHandler_GetDeviceLuksKeys_EmptyForNewDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")
 	deviceID := testutil.CreateTestDevice(t, st, "luks-device")
@@ -379,7 +379,7 @@ func TestDeviceHandler_GetDeviceLuksKeys_EmptyForNewDevice(t *testing.T) {
 
 func TestDeviceHandler_CreateLuksToken_ReturnsTokenAndCliCommand(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")
 	deviceID := testutil.CreateTestDevice(t, st, "luks-device")
@@ -620,7 +620,7 @@ func TestDefinitionHandler_RemoveActionSetFromDefinition_ReturnsDefinitionWithou
 
 func TestDeviceHandler_ListDeviceAssignees_ListsAssignedUser(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default())
+	h := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")

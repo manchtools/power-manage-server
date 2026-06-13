@@ -17,7 +17,7 @@ import (
 
 func TestListDevices_Empty(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -30,7 +30,7 @@ func TestListDevices_Empty(t *testing.T) {
 
 func TestListDevices_WithDevices(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -46,7 +46,7 @@ func TestListDevices_WithDevices(t *testing.T) {
 
 func TestGetDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -61,7 +61,7 @@ func TestGetDevice(t *testing.T) {
 
 func TestGetDevice_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -73,7 +73,7 @@ func TestGetDevice_NotFound(t *testing.T) {
 
 func TestSetDeviceLabel(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -91,7 +91,7 @@ func TestSetDeviceLabel(t *testing.T) {
 
 func TestRemoveDeviceLabel(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -117,7 +117,7 @@ func TestRemoveDeviceLabel(t *testing.T) {
 
 func TestDeleteDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -134,7 +134,7 @@ func TestDeleteDevice(t *testing.T) {
 
 func TestAssignDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -152,7 +152,7 @@ func TestAssignDevice(t *testing.T) {
 
 func TestUnassignDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "user")
@@ -178,7 +178,7 @@ func TestUnassignDevice(t *testing.T) {
 
 func TestSetDeviceSyncInterval(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	ctx := testutil.AdminContext(adminID)
@@ -204,7 +204,7 @@ func TestSetDeviceSyncInterval(t *testing.T) {
 // CodeUnauthenticated at the boundary; this test pins that.
 func TestRevokeLuksDeviceKey_NotAuthenticated(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 
 	_, err := h.RevokeLuksDeviceKey(context.Background(), connect.NewRequest(&pm.RevokeLuksDeviceKeyRequest{
 		DeviceId: "any",
