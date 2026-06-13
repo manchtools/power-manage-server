@@ -334,6 +334,29 @@ SCIM endpoints are mounted at `/scim/v2/{provider-slug}/` and use Bearer token a
 | `/Groups` | GET, POST | List/create groups |
 | `/Groups/{id}` | GET, PUT, PATCH, DELETE | Get/replace/patch/delete group |
 
+**Identity-boundary invariants (WS5, ADR 0008):**
+
+- **Provider-scoped.** A SCIM provider may only add/read/modify users it owns
+  (has an identity link to). Cross-provider member-adds are skipped; cross-provider
+  user reads/writes 404.
+- **SCIM follows the login switch.** A provider disabled for login (`enabled=false`)
+  rejects SCIM even with a valid bearer; SCIM requires both `scim_enabled` and `enabled`.
+- **AutoLinkByEmail trust gate.** With AutoLinkByEmail on, an IdP-asserted email
+  matching a pre-existing **local password** account is refused (409) unless the
+  provider's `trust_email_assertions` flag is set — the operator's explicit opt-in
+  to delegate identity to that IdP (e.g. when migrating password users to SSO).
+  Passwordless/already-SSO accounts link freely.
+- **No auth oracle.** Unknown-slug, no-token, and wrong-token all return one
+  identical `401 invalid credentials` with a constant-time compare.
+
+#### CORS
+
+`CONTROL_CORS_ORIGINS` is the explicit allow-list (credentialed). `CONTROL_CORS_ALLOW_ALL`
+is **development-only**: it reflects any Origin but never sends
+`Access-Control-Allow-Credentials`, and the server **refuses to boot** with it when TLS
+is enabled or the listen address is non-localhost. Use the explicit allow-list in
+production.
+
 ## Action Types
 
 The Control Server supports various action types:

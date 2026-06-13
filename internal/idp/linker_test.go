@@ -13,11 +13,22 @@ import (
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
-// mockQuerier implements the Querier interface for testing.
+// mockQuerier implements the Querier interface for testing. Optional override
+// fields make each lookup branch reachable; unset fields keep the default
+// ErrNotFound so existing tests are unaffected (WS5 #3).
 type mockQuerier struct {
 	linuxUID      int32
 	groupRoles    map[string][]db.RolesProjection
 	groupRolesErr error
+
+	// linkByExternalID, when non-nil, is returned by
+	// GetIdentityLinkByProviderAndExternalID (the existing-link branch).
+	linkByExternalID *db.IdentityLinksProjection
+	// userByEmail, when non-nil, is returned by GetUserByEmail (auto-link branch).
+	userByEmail *db.UsersProjection
+	// userByID, when non-nil, is returned by GetUserByID (live-user check after
+	// finding an existing link). Leave nil to simulate a soft-deleted user.
+	userByID *db.UsersProjection
 }
 
 func (m *mockQuerier) GetUserGroupRoles(_ context.Context, groupID string) ([]db.RolesProjection, error) {
@@ -28,14 +39,23 @@ func (m *mockQuerier) GetUserGroupRoles(_ context.Context, groupID string) ([]db
 }
 
 func (m *mockQuerier) GetIdentityLinkByProviderAndExternalID(_ context.Context, _ db.GetIdentityLinkByProviderAndExternalIDParams) (db.IdentityLinksProjection, error) {
+	if m.linkByExternalID != nil {
+		return *m.linkByExternalID, nil
+	}
 	return db.IdentityLinksProjection{}, store.ErrNotFound
 }
 
 func (m *mockQuerier) GetUserByEmail(_ context.Context, _ string) (db.UsersProjection, error) {
+	if m.userByEmail != nil {
+		return *m.userByEmail, nil
+	}
 	return db.UsersProjection{}, store.ErrNotFound
 }
 
 func (m *mockQuerier) GetUserByID(_ context.Context, _ string) (db.UsersProjection, error) {
+	if m.userByID != nil {
+		return *m.userByID, nil
+	}
 	return db.UsersProjection{}, store.ErrNotFound
 }
 
@@ -177,4 +197,110 @@ func TestLinkOrCreate_AutoCreateUserDeriveUsernameFromEmail(t *testing.T) {
 	assert.Equal(t, "jane.doe", *created.LinuxUsername)
 	require.NotNil(t, created.LinuxUID)
 	assert.Equal(t, int32(10002), *created.LinuxUID)
+}
+
+// eventTypes lists the EventType of every appended event (WS5 #3 helpers).
+func eventTypes(a *mockAppender) []string {
+	out := make([]string, 0, len(a.events))
+	for _, e := range a.events {
+		out = append(out, e.EventType)
+	}
+	return out
+}
+
+func countEventsOfType(a *mockAppender, eventType string) int {
+	n := 0
+	for _, e := range a.events {
+		if e.EventType == eventType {
+			n++
+		}
+	}
+	return n
+}
+
+// TestLinkOrCreate_AutoLinkByEmail_EmitsLinkForExistingUser pins WS5 #3: with
+// AutoLinkByEmail on and a matching existing user, exactly one IdentityLinked
+// event is emitted for that user and the result is not new.
+func TestLinkOrCreate_AutoLinkByEmail_EmitsLinkForExistingUser(t *testing.T) {
+	existing := db.UsersProjection{ID: "user-existing", Email: "match@example.com"}
+	querier := &mockQuerier{userByEmail: &existing}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp", AutoLinkByEmail: true}
+	claims := &UserClaims{Subject: "ext-1", Email: "match@example.com"}
+
+	result, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.IsNew)
+	assert.Equal(t, "user-existing", result.UserID)
+
+	require.Equal(t, 1, countEventsOfType(appender, "IdentityLinked"),
+		"exactly one IdentityLinked, got events: %v", eventTypes(appender))
+	for _, e := range appender.events {
+		if e.EventType == "IdentityLinked" {
+			linked, ok := e.Data.(payloads.IdentityLinked)
+			require.True(t, ok)
+			assert.Equal(t, "user-existing", linked.UserID)
+		}
+	}
+}
+
+// TestLinkOrCreate_AutoLinkDisabled_NoLink pins WS5 #3: with AutoLinkByEmail
+// AND AutoCreateUsers off, an existing-by-email user is NOT linked — the
+// rejection path returns ErrNoMatchingAccount and emits no IdentityLinked.
+func TestLinkOrCreate_AutoLinkDisabled_NoLink(t *testing.T) {
+	existing := db.UsersProjection{ID: "user-x", Email: "x@example.com"}
+	querier := &mockQuerier{userByEmail: &existing}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp", AutoLinkByEmail: false, AutoCreateUsers: false}
+	claims := &UserClaims{Subject: "ext-2", Email: "x@example.com"}
+
+	_, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.ErrorIs(t, err, ErrNoMatchingAccount)
+	assert.Equal(t, 0, countEventsOfType(appender, "IdentityLinked"),
+		"no link may be emitted when auto-link is off")
+}
+
+// TestLinkOrCreate_ExistingLink_UpdatesLogin pins WS5 #3: a live existing link
+// updates the login timestamp (IdentityLinkLoginUpdated), not a new link.
+func TestLinkOrCreate_ExistingLink_UpdatesLogin(t *testing.T) {
+	link := db.IdentityLinksProjection{ID: "link-1", UserID: "user-1", ProviderID: "p1", ExternalID: "ext-3"}
+	user := db.UsersProjection{ID: "user-1", Email: "u1@example.com"}
+	querier := &mockQuerier{linkByExternalID: &link, userByID: &user}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp"}
+	claims := &UserClaims{Subject: "ext-3", Email: "u1@example.com"}
+
+	result, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.NoError(t, err)
+	assert.False(t, result.IsNew)
+	assert.Equal(t, "user-1", result.UserID)
+	assert.Equal(t, 1, countEventsOfType(appender, "IdentityLinkLoginUpdated"),
+		"existing live link must update login, got: %v", eventTypes(appender))
+	assert.Equal(t, 0, countEventsOfType(appender, "IdentityLinked"),
+		"must not emit a fresh IdentityLinked for an already-linked user")
+}
+
+// TestLinkOrCreate_SoftDeletedLinkedUser_CleansUpAndFallsThrough pins WS5 #3: a
+// link whose user was soft-deleted emits IdentityUnlinked and then falls
+// through (auto-link/create off → ErrNoMatchingAccount).
+func TestLinkOrCreate_SoftDeletedLinkedUser_CleansUpAndFallsThrough(t *testing.T) {
+	link := db.IdentityLinksProjection{ID: "link-2", UserID: "ghost", ProviderID: "p1", ExternalID: "ext-4"}
+	querier := &mockQuerier{linkByExternalID: &link /* userByID nil → soft-deleted */}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp", AutoLinkByEmail: false, AutoCreateUsers: false}
+	claims := &UserClaims{Subject: "ext-4", Email: "ghost@example.com"}
+
+	_, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.ErrorIs(t, err, ErrNoMatchingAccount)
+	assert.Equal(t, 1, countEventsOfType(appender, "IdentityUnlinked"),
+		"a soft-deleted linked user must be cleaned up, got: %v", eventTypes(appender))
 }

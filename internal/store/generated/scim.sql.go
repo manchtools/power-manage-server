@@ -217,10 +217,14 @@ func (q *Queries) FindSCIMUserByExternalID(ctx context.Context, arg FindSCIMUser
 }
 
 const getIdentityProviderBySlugForSCIM = `-- name: GetIdentityProviderBySlugForSCIM :one
-SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash FROM identity_providers_projection
-WHERE slug = $1 AND is_deleted = FALSE AND scim_enabled = TRUE
+SELECT id, name, slug, provider_type, enabled, client_id, client_secret_encrypted, issuer_url, authorization_url, token_url, userinfo_url, scopes, auto_create_users, auto_link_by_email, default_role_id, attribute_mapping, disable_password_for_linked, group_claim, group_mapping, created_at, created_by, updated_at, is_deleted, projection_version, scim_enabled, scim_token_hash, trust_email_assertions FROM identity_providers_projection
+WHERE slug = $1 AND is_deleted = FALSE AND scim_enabled = TRUE AND enabled = TRUE
 `
 
+// WS5 #5: SCIM follows the provider login switch. A provider disabled for
+// login (enabled = FALSE) must also reject SCIM, even with a valid bearer —
+// otherwise an operator who "turned off" an IdP leaves its automated
+// provisioning channel wide open. SCIM additionally requires scim_enabled.
 func (q *Queries) GetIdentityProviderBySlugForSCIM(ctx context.Context, slug string) (IdentityProvidersProjection, error) {
 	row := q.db.QueryRow(ctx, getIdentityProviderBySlugForSCIM, slug)
 	var i IdentityProvidersProjection
@@ -251,6 +255,7 @@ func (q *Queries) GetIdentityProviderBySlugForSCIM(ctx context.Context, slug str
 		&i.ProjectionVersion,
 		&i.ScimEnabled,
 		&i.ScimTokenHash,
+		&i.TrustEmailAssertions,
 	)
 	return i, err
 }

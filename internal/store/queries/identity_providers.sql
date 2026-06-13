@@ -40,8 +40,9 @@ INSERT INTO identity_providers_projection (
     scopes, auto_create_users, auto_link_by_email,
     default_role_id, disable_password_for_linked,
     group_claim, group_mapping,
-    created_at, created_by, updated_at, projection_version
-) VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $18, $20)
+    created_at, created_by, updated_at, projection_version,
+    trust_email_assertions
+) VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $18, $20, $21)
 ON CONFLICT (id) DO NOTHING;
 
 -- name: UpdateIdentityProviderProjection :exec
@@ -66,6 +67,7 @@ SET name = COALESCE(sqlc.narg('name')::TEXT, name),
     disable_password_for_linked = COALESCE(sqlc.narg('disable_password_for_linked')::BOOLEAN, disable_password_for_linked),
     group_claim = COALESCE(sqlc.narg('group_claim')::TEXT, group_claim),
     group_mapping = COALESCE(sqlc.narg('group_mapping')::JSONB, group_mapping),
+    trust_email_assertions = COALESCE(sqlc.narg('trust_email_assertions')::BOOLEAN, trust_email_assertions),
     updated_at = sqlc.arg('updated_at'),
     projection_version = sqlc.arg('projection_version')
 WHERE id = sqlc.arg('id')

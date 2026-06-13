@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,5 +265,86 @@ func TestVerifyAndExtractClaims_InvalidSignature(t *testing.T) {
 	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": raw})
 	_, err = p.VerifyAndExtractClaims(context.Background(), tok, "n")
 	require.Error(t, err, "id_token signed by a non-JWKS key MUST fail verification")
+	assert.Contains(t, err.Error(), "verify id_token")
+}
+
+// verifyProviderForFixture builds a provider bound to the fixture for the WS5
+// #12 rejection tests.
+func verifyProviderForFixture(t *testing.T, f *signedOIDCFixture) *idp.OIDCProvider {
+	t.Helper()
+	p, err := idp.NewOIDCProvider(context.Background(), idp.ProviderConfig{
+		IssuerURL:   f.srv.URL,
+		ClientID:    "test-client",
+		RedirectURL: "https://app.example.com/cb",
+	})
+	require.NoError(t, err)
+	return p
+}
+
+// TestVerifyAndExtractClaims_RejectsWrongAudience pins WS5 #12: an id_token
+// minted for a DIFFERENT client (aud != ClientID) must be rejected — otherwise
+// a token issued to another relying party could be replayed here.
+func TestVerifyAndExtractClaims_RejectsWrongAudience(t *testing.T) {
+	f := newSignedOIDCFixture(t)
+	p := verifyProviderForFixture(t, f)
+	idToken := f.signIDToken(t, "some-other-client", "n", map[string]any{"email_verified": true})
+	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": idToken})
+	_, err := p.VerifyAndExtractClaims(context.Background(), tok, "n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify id_token")
+}
+
+// TestVerifyAndExtractClaims_RejectsExpired pins WS5 #12: an expired id_token is
+// rejected (exp in the past).
+func TestVerifyAndExtractClaims_RejectsExpired(t *testing.T) {
+	f := newSignedOIDCFixture(t)
+	p := verifyProviderForFixture(t, f)
+	idToken := f.signIDToken(t, "test-client", "n", map[string]any{
+		"exp": time.Now().Add(-1 * time.Hour).Unix(), // overrides the standard claim
+	})
+	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": idToken})
+	_, err := p.VerifyAndExtractClaims(context.Background(), tok, "n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify id_token")
+}
+
+// TestVerifyAndExtractClaims_RejectsWrongIssuer pins WS5 #12: an id_token whose
+// iss is not this provider's issuer is rejected.
+func TestVerifyAndExtractClaims_RejectsWrongIssuer(t *testing.T) {
+	f := newSignedOIDCFixture(t)
+	p := verifyProviderForFixture(t, f)
+	idToken := f.signIDToken(t, "test-client", "n", map[string]any{
+		"iss": "https://evil.example", // overrides the standard claim
+	})
+	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": idToken})
+	_, err := p.VerifyAndExtractClaims(context.Background(), tok, "n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "verify id_token")
+}
+
+// TestVerifyAndExtractClaims_ByteTamperedSignature pins WS5 #12: flipping a
+// single character of a validly-signed token's signature segment is rejected —
+// proving the signature BYTES are checked, not just the kid/structure (distinct
+// from the wrong-key case above).
+func TestVerifyAndExtractClaims_ByteTamperedSignature(t *testing.T) {
+	f := newSignedOIDCFixture(t)
+	p := verifyProviderForFixture(t, f)
+	idToken := f.signIDToken(t, "test-client", "n", map[string]any{"email_verified": true})
+
+	// JWS is header.payload.signature; tamper one char of the signature.
+	parts := strings.Split(idToken, ".")
+	require.Len(t, parts, 3)
+	sig := []byte(parts[2])
+	if sig[len(sig)-1] == 'A' {
+		sig[len(sig)-1] = 'B'
+	} else {
+		sig[len(sig)-1] = 'A'
+	}
+	parts[2] = string(sig)
+	tampered := strings.Join(parts, ".")
+
+	tok := (&oauth2.Token{}).WithExtra(map[string]any{"id_token": tampered})
+	_, err := p.VerifyAndExtractClaims(context.Background(), tok, "n")
+	require.Error(t, err, "a byte-tampered signature MUST fail verification")
 	assert.Contains(t, err.Error(), "verify id_token")
 }

@@ -15,20 +15,26 @@ import (
 // bearer tokens against this column. Treat with the same care as
 // ClientSecretEncrypted (don't log; don't return to clients).
 type IdentityProvider struct {
-	ID                       string
-	Name                     string
-	Slug                     string
-	ProviderType             string
-	Enabled                  bool
-	ClientID                 string
-	ClientSecretEncrypted    string
-	IssuerURL                string
-	AuthorizationURL         string
-	TokenURL                 string
-	UserinfoURL              string
-	Scopes                   []string
-	AutoCreateUsers          bool
-	AutoLinkByEmail          bool
+	ID                    string
+	Name                  string
+	Slug                  string
+	ProviderType          string
+	Enabled               bool
+	ClientID              string
+	ClientSecretEncrypted string
+	IssuerURL             string
+	AuthorizationURL      string
+	TokenURL              string
+	UserinfoURL           string
+	Scopes                []string
+	AutoCreateUsers       bool
+	AutoLinkByEmail       bool
+	// TrustEmailAssertions: when true, the operator has knowingly delegated
+	// email-identity assertion to this IdP, so SCIM AutoLinkByEmail may bind an
+	// asserted email to a pre-existing LOCAL PASSWORD account. Default false —
+	// without it, auto-link to a password account is refused (account-takeover
+	// guard). See WS5 #2 / migration 012.
+	TrustEmailAssertions     bool
 	DefaultRoleID            string
 	AttributeMapping         json.RawMessage
 	DisablePasswordForLinked bool

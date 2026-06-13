@@ -156,3 +156,45 @@ func TestSSOCallback_StateIsSingleUse(t *testing.T) {
 	require.ErrorAs(t, err, &connectErr)
 	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }
+
+// TestSSOCallback_SlugMismatchRejected pins WS5 #10: a state issued for
+// provider A cannot be redeemed at provider B's callback. The handler loads the
+// provider by the STATE's provider_id, then rejects when the request slug names
+// a different provider — so a captured state can't be replayed against another
+// (enabled) provider. The state is consumed regardless (single-use).
+func TestSSOCallback_SlugMismatchRejected(t *testing.T) {
+	h, st := newSSOHandler(t)
+	enc := testutil.NewEncryptor(t)
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	// Provider A owns the state; provider B is a different real enabled provider.
+	providerA := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Provider A", "slug-a-"+testutil.NewID()[:6])
+	slugB := "slug-b-" + testutil.NewID()[:6]
+	_ = testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Provider B", slugB)
+
+	state := "mismatch-state-" + testutil.NewID()
+	ctx := context.Background()
+	_, err := st.TestingPool().Exec(ctx,
+		`INSERT INTO auth_states (state, provider_id, nonce, code_verifier, redirect_uri, expires_at)
+		 VALUES ($1, $2, 'n', 'cv', '', NOW() + INTERVAL '5 minutes')`,
+		state, providerA,
+	)
+	require.NoError(t, err)
+
+	_, err = h.SSOCallback(ctx, connect.NewRequest(&pm.SSOCallbackRequest{
+		Slug:  slugB, // redeem provider A's state at provider B's callback
+		Code:  "code",
+		State: state,
+	}))
+	require.Error(t, err)
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code(), "slug mismatch must be CodeInvalidArgument")
+	assert.Contains(t, connectErr.Message(), "slug mismatch")
+
+	// State must have been consumed (single-use), even on the mismatch path.
+	var count int
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		`SELECT count(*) FROM auth_states WHERE state = $1`, state).Scan(&count))
+	assert.Equal(t, 0, count, "the state row must be consumed regardless of the mismatch")
+}

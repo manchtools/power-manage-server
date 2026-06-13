@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -19,6 +22,31 @@ type OIDCProvider struct {
 	Verifier    *oidc.IDTokenVerifier
 	GroupClaim  string
 	UserinfoURL string
+	// httpClient bounds every outbound OIDC call (discovery, token exchange,
+	// lazy JWKS keyset fetch) with connect/handshake/response timeouts (WS5
+	// #6/#14). Without it go-oidc falls back to http.DefaultClient, which has
+	// no timeout — a slow/hung IdP (or an attacker-controlled one reached via a
+	// public SSOCallback) could hang a request indefinitely. Threaded into
+	// every call via oidc.ClientContext.
+	httpClient *http.Client
+}
+
+// oidcHTTPTimeout is the overall per-request ceiling for outbound OIDC calls.
+// A package var (not a const) so tests can shrink it to assert the timeout
+// fires without a multi-second wait.
+var oidcHTTPTimeout = 12 * time.Second
+
+// newBoundedOIDCClient returns an *http.Client with connect, TLS-handshake,
+// response-header and overall timeouts so no outbound OIDC call can hang.
+func newBoundedOIDCClient() *http.Client {
+	return &http.Client{
+		Timeout: oidcHTTPTimeout,
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 8 * time.Second,
+		},
+	}
 }
 
 // ProviderConfig holds the configuration needed to create an OIDC provider.
@@ -36,6 +64,11 @@ type ProviderConfig struct {
 
 // NewOIDCProvider creates a new OIDC provider by performing discovery.
 func NewOIDCProvider(ctx context.Context, cfg ProviderConfig) (*OIDCProvider, error) {
+	httpClient := newBoundedOIDCClient()
+	// Inject the bounded client BEFORE discovery; go-oidc stores it
+	// (getClient(ctx)) and threads it into the lazy keyset fetch the Verifier
+	// uses, so the JWKS GET inherits the same timeout.
+	ctx = oidc.ClientContext(ctx, httpClient)
 	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("oidc discovery: %w", err)
@@ -83,7 +116,17 @@ func NewOIDCProvider(ctx context.Context, cfg ProviderConfig) (*OIDCProvider, er
 		Verifier:    verifier,
 		GroupClaim:  cfg.GroupClaim,
 		UserinfoURL: userinfoURL,
+		httpClient:  httpClient,
 	}, nil
+}
+
+// clientCtx threads the bounded HTTP client onto ctx so token exchange and the
+// lazy JWKS keyset fetch (during Verify) inherit the connect/response timeouts.
+func (p *OIDCProvider) clientCtx(ctx context.Context) context.Context {
+	if p.httpClient == nil {
+		return ctx
+	}
+	return oidc.ClientContext(ctx, p.httpClient)
 }
 
 // AuthCodeURL generates the authorization URL with PKCE and nonce.
@@ -100,7 +143,7 @@ func (p *OIDCProvider) ExchangeCode(ctx context.Context, code, codeVerifier stri
 	opts := []oauth2.AuthCodeOption{
 		oauth2.VerifierOption(codeVerifier),
 	}
-	return p.OAuth2Cfg.Exchange(ctx, code, opts...)
+	return p.OAuth2Cfg.Exchange(p.clientCtx(ctx), code, opts...)
 }
 
 // UserClaims holds the extracted claims from an OIDC id_token or userinfo.
@@ -123,7 +166,7 @@ func (p *OIDCProvider) VerifyAndExtractClaims(ctx context.Context, oauth2Token *
 		return nil, fmt.Errorf("no id_token in token response")
 	}
 
-	idToken, err := p.Verifier.Verify(ctx, rawIDToken)
+	idToken, err := p.Verifier.Verify(p.clientCtx(ctx), rawIDToken)
 	if err != nil {
 		return nil, fmt.Errorf("verify id_token: %w", err)
 	}

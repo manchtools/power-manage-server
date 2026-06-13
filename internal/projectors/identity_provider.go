@@ -28,6 +28,7 @@ type IdentityProviderCreatedPayload struct {
 	Scopes                   []string
 	AutoCreateUsers          bool
 	AutoLinkByEmail          bool
+	TrustEmailAssertions     bool
 	DefaultRoleID            string
 	DisablePasswordForLinked bool
 	GroupClaim               string
@@ -69,6 +70,7 @@ type IdentityProviderUpdatedPayload struct {
 	Scopes                   *[]string
 	AutoCreateUsers          *bool
 	AutoLinkByEmail          *bool
+	TrustEmailAssertions     *bool
 	DefaultRoleID            *string
 	DisablePasswordForLinked *bool
 	GroupClaim               *string
@@ -121,6 +123,7 @@ type idpCreatedRaw struct {
 	Scopes                   *[]string       `json:"scopes,omitempty"`
 	AutoCreateUsers          *bool           `json:"auto_create_users,omitempty"`
 	AutoLinkByEmail          *bool           `json:"auto_link_by_email,omitempty"`
+	TrustEmailAssertions     *bool           `json:"trust_email_assertions,omitempty"`
 	DefaultRoleID            *string         `json:"default_role_id,omitempty"`
 	DisablePasswordForLinked *bool           `json:"disable_password_for_linked,omitempty"`
 	GroupClaim               *string         `json:"group_claim,omitempty"`
@@ -185,6 +188,9 @@ func IdentityProviderCreatedFromEvent(e store.PersistedEvent) (IdentityProviderC
 	if raw.AutoLinkByEmail != nil {
 		out.AutoLinkByEmail = *raw.AutoLinkByEmail
 	}
+	if raw.TrustEmailAssertions != nil {
+		out.TrustEmailAssertions = *raw.TrustEmailAssertions
+	}
 	if raw.DefaultRoleID != nil {
 		out.DefaultRoleID = *raw.DefaultRoleID
 	}
@@ -212,6 +218,7 @@ type idpUpdatedRaw struct {
 	Scopes                   *[]string       `json:"scopes,omitempty"`
 	AutoCreateUsers          *bool           `json:"auto_create_users,omitempty"`
 	AutoLinkByEmail          *bool           `json:"auto_link_by_email,omitempty"`
+	TrustEmailAssertions     *bool           `json:"trust_email_assertions,omitempty"`
 	DefaultRoleID            *string         `json:"default_role_id,omitempty"`
 	DisablePasswordForLinked *bool           `json:"disable_password_for_linked,omitempty"`
 	GroupClaim               *string         `json:"group_claim,omitempty"`
@@ -245,6 +252,7 @@ func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderU
 	out.Scopes = raw.Scopes
 	out.AutoCreateUsers = raw.AutoCreateUsers
 	out.AutoLinkByEmail = raw.AutoLinkByEmail
+	out.TrustEmailAssertions = raw.TrustEmailAssertions
 	out.DefaultRoleID = raw.DefaultRoleID
 	out.DisablePasswordForLinked = raw.DisablePasswordForLinked
 	out.GroupClaim = raw.GroupClaim

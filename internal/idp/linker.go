@@ -140,7 +140,12 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 			return &LinkResult{UserID: link.UserID, IsNew: false}, nil
 		}
 	}
-	if !store.IsNotFound(err) {
+	// Only a REAL lookup error (non-nil, non-NotFound) aborts. When err == nil
+	// we took the existing-link branch above: either it already returned
+	// (user-exists / other-error) or it cleaned up a soft-deleted user's stale
+	// link and intends to fall through to Step 2/3 — in that case err is still
+	// nil and must NOT be re-wrapped as a bogus "lookup identity link: <nil>".
+	if err != nil && !store.IsNotFound(err) {
 		return nil, fmt.Errorf("lookup identity link: %w", err)
 	}
 	slog.Debug("SSO linker: no existing identity link found", "provider_id", provider.ID, "subject", claims.Subject)

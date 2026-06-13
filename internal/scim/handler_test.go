@@ -472,8 +472,10 @@ func TestListGroups_Empty(t *testing.T) {
 func TestPatchGroup_AddMember(t *testing.T) {
 	env := setupSCIM(t)
 
-	// Create a user to be a member
+	// Create a user to be a member, owned by this provider (WS5 #1: only a
+	// provider's own users may be added to its groups).
 	userID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, env.st, userID, env.providerID, "ext-"+userID, "u@example.com")
 
 	// Create group
 	group := map[string]any{
@@ -594,6 +596,7 @@ func TestReplaceGroup_ReconcilesMembersAfterServerDeletion(t *testing.T) {
 	env := setupSCIM(t)
 
 	userID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, env.st, userID, env.providerID, "ext-"+userID, "u@example.com")
 
 	// Create group with member
 	group := map[string]any{
@@ -641,6 +644,7 @@ func TestReplaceGroup_PutWithoutMembersPreservesMembers(t *testing.T) {
 	env := setupSCIM(t)
 
 	userID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, env.st, userID, env.providerID, "ext-"+userID, "u@example.com")
 
 	// Create group with member
 	group := map[string]any{
@@ -676,9 +680,11 @@ func TestReplaceGroup_PutWithoutMembersPreservesMembers(t *testing.T) {
 func TestReplaceGroup_UpdateMembers(t *testing.T) {
 	env := setupSCIM(t)
 
-	// Create users
+	// Create users, both owned by this provider (WS5 #1).
 	user1ID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, env.st, user1ID, env.providerID, "ext-"+user1ID, "u1@example.com")
 	user2ID := testutil.CreateTestUser(t, env.st, testutil.NewID()+"@example.com", "pass", "user")
+	testutil.CreateTestIdentityLink(t, env.st, user2ID, env.providerID, "ext-"+user2ID, "u2@example.com")
 
 	// Create group with user1
 	group := map[string]any{

@@ -14,6 +14,24 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// mayAddMemberToGroup reports whether the calling SCIM provider OWNS userID
+// (has an identity link to it) and may therefore add it to one of its groups.
+// A SCIM client may only add users it provisioned — adding a user owned by
+// ANOTHER provider is a cross-provider IDOR that could grant that user roles
+// via group membership. Unowned members are skipped (logged at Warn), not
+// rejected with 400, to mirror SCIM's idempotent member-set semantics. Applied
+// at every member-ADD sink (reconcile / patch-add / patch-replace / create);
+// the REMOVE path is unaffected (removing an unowned member is harmless and
+// only operates on members already in the group).
+func (h *Handler) mayAddMemberToGroup(ctx context.Context, providerID, groupID, userID string) bool {
+	if err := h.verifyProviderOwnership(ctx, providerID, userID); err != nil {
+		h.logger.Warn("SCIM: skipping cross-provider group member add",
+			"provider_id", providerID, "group_id", groupID, "user_id", userID)
+		return false
+	}
+	return true
+}
+
 // reconcileGroupMembers diff's the requested member set against the
 // current member set and emits per-user UserGroupMemberAdded /
 // UserGroupMemberRemoved events. Idempotent — calling with the same
@@ -42,6 +60,9 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 	// Add new members
 	for userID := range requestedSet {
 		if !currentSet[userID] {
+			if !h.mayAddMemberToGroup(ctx, provider.ID, groupID, userID) {
+				continue
+			}
 			h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 			streamID := groupID + ":" + userID
 			h.appendEvent(ctx, store.Event{
