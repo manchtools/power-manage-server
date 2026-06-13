@@ -41,6 +41,7 @@ type Querier interface {
 	GetUserByID(ctx context.Context, id string) (db.UsersProjection, error)
 	GetServerSettings(ctx context.Context) (db.ServerSettingsProjection, error)
 	GetNextLinuxUID(ctx context.Context) (int32, error)
+	GetUserGroupRoles(ctx context.Context, groupID string) ([]db.RolesProjection, error)
 }
 
 // EventAppender is the interface for appending events.
@@ -349,6 +350,13 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 				ActorID:   "sso",
 			}); err != nil {
 				slog.Warn("failed to add user to SSO group", "user_id", userID, "group_id", groupID, "error", err)
+			} else if l.groupIsAdminBearing(ctx, groupID) {
+				// Defense-in-depth audit (#9): a forged or misconfigured IdP
+				// group claim can confer admin via group membership. The mapping
+				// is admin-configured (it is the gate), but a privileged grant
+				// driven by an external claim must be visible in the audit trail.
+				slog.Warn("SSO group claim placed a user in an ADMIN-bearing group",
+					"user_id", userID, "group_id", groupID, "source", "sso_group_mapping")
 			}
 		} else {
 			// Remove user from group
@@ -369,6 +377,23 @@ func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, extern
 	}
 
 	return nil
+}
+
+// groupIsAdminBearing reports whether the user group currently carries the
+// Admin system role. Best-effort: a lookup failure logs and returns false so it
+// never blocks the SSO sync (it only gates an audit log).
+func (l *Linker) groupIsAdminBearing(ctx context.Context, groupID string) bool {
+	roles, err := l.queries.GetUserGroupRoles(ctx, groupID)
+	if err != nil {
+		slog.Warn("failed to check SSO group roles for audit", "group_id", groupID, "error", err)
+		return false
+	}
+	for _, r := range roles {
+		if r.IsSystem && r.Name == "Admin" {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseGroupMapping parses the JSONB group_mapping from the database into a map.
