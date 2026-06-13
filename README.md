@@ -447,7 +447,25 @@ Certificate renewal is handled via the `RenewCertificate` RPC — agents present
 
 ### Self-Scope Enforcement (`internal/auth/context.go`)
 
-RPCs with `:self` scoped permissions (e.g., `GetUser:self`, `UpdateUserEmail:self`) enforce that the resource ID matches the caller's user ID. The `auth.EnforceSelfScope()` helper is called in each affected handler after validation. Users with the unrestricted permission (e.g., `GetUser`) can access any resource.
+RPCs with `:self` scoped permissions (e.g., `GetUser:self`, `UpdateUserEmail:self`) enforce that the resource ID matches the caller's user ID. The `auth.EnforceUserScopeOrSelf()` helper is called in each affected user handler after validation (it generalises the old `EnforceSelfScope` to also apply user-group scope — see below). Users with the unrestricted permission (e.g., `GetUser`) can access any resource, subject to group scope.
+
+### Device/User-Group Scope Enforcement (`internal/auth/scope.go`, server#7)
+
+A role grant may carry a **scope** — `device_group:<id>` or `user_group:<id>` — confining every permission in that role to the devices/users in that group. Scope is enforced **uniformly at the handler layer on every scopable permission** (a permission is scopable iff it carries a `TargetKind` of `TargetDevice` / `TargetUser` in `permissions.go`). "Scopable == enforced" is kept honest: there is no advisory-scope allowlist, and `TestScopablePermissions_AllEnforced` (a self-discovering AST parity test in `internal/api`) fails the build if a scopable permission is ever left unenforced, or a non-scopable one is enforced.
+
+Model: the flat permission set is the AUTHORITY (does the caller hold the base permission?), the scoped grants only CONFINE (which targets?). A base holder with no scoping grant is unrestricted; with a same-kind scoped grant, confined to it; with only a wrong-kind grant, denied (fail closed). Five mechanisms cover the surface:
+
+- **Single-resource gates** — `EnforceDeviceScopeOnBaseTier` / `EnforceUserScopeOrSelf` for handlers acting on one device/user id; the `:assigned` / `:self` tier falls through to the existing owner SQL filter.
+- **Group-id direct-match gates** — `EnforceDeviceGroupScope` / `EnforceUserGroupScope` for group-management handlers (the group id itself must be in the caller's scope).
+- **List-row filters** — `DeviceScopeListFilter` / `UserScopeListFilter` confine list rows (by membership for devices/users/executions, by direct id-match for group lists); the matching COUNT query takes the same restriction so pagination totals don't leak the out-of-scope count.
+- **Dispatch fan-out** — `enforceDeviceScopeAll` checks every target device and fails the whole request closed if any is out of scope.
+- **Reconciler cohort** — `TerminalAdminLimited` / `TerminalAdminFull` drive the per-scope pm-tty sudo cohort in `system_actions.go` rather than a request-time gate.
+
+Two safeguards: group **creation** (`CreateStaticDeviceGroup` / `CreateStaticUserGroup`) is org-tier (not scopable) — a brand-new group has no id/members to confine, so it is enforced on the downstream management/membership ops instead of being advisory. And **member-add** (`AddDeviceToGroup` / `AddUserToGroup`) checks both the target group *and* that each member is already in the caller's scope, so a scope-limited admin cannot pull an out-of-scope device/user into a group they control and thereby expand their own reach. See ADR 0006.
+
+### Grant authority: the role-management permission is the sole gate
+
+Assigning or defining roles is gated **solely** by holding the relevant role-management permission (`AssignRoleToUser`, `AssignRoleToUserGroup`, `AddUserToGroup`, `CreateRole`, `UpdateRole`, `CreateUser`). There is **no** grant-only-what-you-hold privilege ceiling: a holder of `AssignRoleToUser` may assign any role, including Admin, without personally holding every permission that role confers. These permissions are powerful by design and meant to be handed out deliberately. What remains enforced and orthogonal: **scope authority** (a scope-limited admin may only grant *within their own scope* — `EnforceGrantScopeAuthority` / `EnforceUnscopedGrantAuthority`), the **atomic last-admin** lockout invariant (server#369), and **scope enforcement at call time** (above).
 
 ### HTTP Server Hardening
 

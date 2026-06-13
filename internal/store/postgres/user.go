@@ -104,8 +104,10 @@ func (u *User) NextLinuxUID(ctx context.Context) (int32, error) {
 
 func (u *User) List(ctx context.Context, filter store.ListUsersFilter) ([]store.User, error) {
 	rows, err := u.q.ListUsers(ctx, generated.ListUsersParams{
-		Limit:  filter.Limit,
-		Offset: filter.Offset,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("user: list: %w", err)
@@ -122,8 +124,11 @@ func (u *User) List(ctx context.Context, filter store.ListUsersFilter) ([]store.
 	return out, nil
 }
 
-func (u *User) Count(ctx context.Context) (int64, error) {
-	n, err := u.q.CountUsers(ctx)
+func (u *User) Count(ctx context.Context, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := u.q.CountUsers(ctx, generated.CountUsersParams{
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("user: count: %w", translateNotFound(err))
 	}

@@ -45,6 +45,9 @@ type UserGroupMember struct {
 type ListUserGroupsFilter struct {
 	Limit  int32
 	Offset int32
+	// Scope is the #3 user-group restriction: a direct id-match — when
+	// Restricted, only groups whose id is in GroupIDs are listed.
+	Scope ScopeGroupFilter
 }
 
 // UserGroupRepo reads user-group state from the projection. Writes
@@ -69,8 +72,9 @@ type UserGroupRepo interface {
 	// List returns a page of groups.
 	List(ctx context.Context, filter ListUserGroupsFilter) ([]UserGroup, error)
 
-	// Count returns the total non-deleted group count.
-	Count(ctx context.Context) (int64, error)
+	// Count returns the total non-deleted group count, scoped to the
+	// caller's user-group scope when restricted.
+	Count(ctx context.Context, scope ScopeGroupFilter) (int64, error)
 
 	// ListForUser returns every group the user belongs to (direct
 	// membership only — dynamic-group membership is materialized

@@ -58,6 +58,9 @@ type ListExecutionsFilter struct {
 	Search           string
 	Limit            int32
 	Offset           int32
+	// Scope is the #3 device-group restriction: when Restricted, only
+	// executions whose device is a member of a scope group are returned.
+	Scope ScopeGroupFilter
 }
 
 // CountExecutionsFilter mirrors ListExecutionsFilter's filter
@@ -68,6 +71,7 @@ type CountExecutionsFilter struct {
 	Status           string
 	ActionTypeFilter int32
 	Search           string
+	Scope            ScopeGroupFilter
 }
 
 // WarmFilter is the narrow pagination shape used by the search

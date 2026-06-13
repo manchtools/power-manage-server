@@ -137,13 +137,18 @@ func AllPermissions() []PermissionInfo {
 		// Device Groups
 		//
 		// CreateDeviceGroup was split into a static and a dynamic
-		// variant in server #7. Static-group creation is safe to
-		// scope (the scoped admin can only organize devices already
-		// within their scope into sub-groups). Dynamic-group
-		// creation stays unscopable because the query language
-		// matches arbitrary device sets and could perturb other
-		// actors' scopes — see T-S2 in the #7 design.
-		{"CreateStaticDeviceGroup", "Device Groups", "Create static device groups", TargetDevice},
+		// variant in server #7. BOTH creation permissions are
+		// org-tier (TargetUnspecified, NOT scopable): a brand-new
+		// group has no id and no members, so there is nothing for a
+		// scope to confine at create time. Making create "scopable"
+		// would be advisory-only — exactly the dishonesty the
+		// scopable==enforced rule forbids. Scope is enforced on the
+		// downstream group-management + membership operations instead
+		// (GetDeviceGroup, RenameDeviceGroup, AddDeviceToGroup, …).
+		// Dynamic-group creation additionally stays org-tier because
+		// the query language matches arbitrary device sets and could
+		// perturb other actors' scopes — see T-S2 in the #7 design.
+		{"CreateStaticDeviceGroup", "Device Groups", "Create static device groups", TargetUnspecified},
 		{"CreateDynamicDeviceGroup", "Device Groups", "Create dynamic device groups", TargetUnspecified},
 		{"GetDeviceGroup", "Device Groups", "View device groups", TargetDevice},
 		{"ListDeviceGroups", "Device Groups", "List device groups", TargetDevice},
@@ -232,8 +237,11 @@ func AllPermissions() []PermissionInfo {
 		// User Groups
 		//
 		// CreateUserGroup split into static + dynamic variants in
-		// server #7, same rationale as CreateDeviceGroup. T-S2.
-		{"CreateStaticUserGroup", "User Groups", "Create static user groups", TargetUser},
+		// server #7. BOTH are org-tier (TargetUnspecified, NOT
+		// scopable), same rationale as CreateDeviceGroup: nothing to
+		// confine at create time; scope is enforced on the downstream
+		// group-management + membership operations. T-S2.
+		{"CreateStaticUserGroup", "User Groups", "Create static user groups", TargetUnspecified},
 		{"CreateDynamicUserGroup", "User Groups", "Create dynamic user groups", TargetUnspecified},
 		{"GetUserGroup", "User Groups", "View user groups", TargetUser},
 		{"ListUserGroups", "User Groups", "List user groups", TargetUser},

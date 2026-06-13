@@ -301,6 +301,107 @@ func EnforceDeviceScopeOnBaseTier(ctx context.Context, resolver ScopeResolver, p
 	return nil
 }
 
+// EnforceDeviceGroupScope authorizes a group-management action on a SPECIFIC
+// device GROUP (rename, delete, description, membership, windows). Unlike
+// EnforceDeviceScope — which asks "is this DEVICE in one of my scope groups" —
+// this asks "is this device GROUP itself one of my device-group scope ids": a
+// DIRECT scope-id match, no membership lookup. Group-management permissions have
+// no :assigned tier, so a caller lacking the base permission is denied outright.
+//
+//   - unauthenticated                  → Unauthenticated
+//   - lacks the base permission        → PermissionDenied (no owner-filter fallback)
+//   - base, unscoped (Global)          → allowed (any group)
+//   - base, no scoping grant at all    → allowed (fixture / unrestricted)
+//   - base, device_group-scoped        → allowed iff groupID is among the scope ids
+//   - base, only wrong-kind scope      → PermissionDenied (fail closed)
+func EnforceDeviceGroupScope(ctx context.Context, permission, groupID string) error {
+	return enforceGroupScope(ctx, DeviceScopeFilterFor(ctx, permission), permission, groupID)
+}
+
+// EnforceUserGroupScope is the user-group symmetric of EnforceDeviceGroupScope:
+// a direct scope-id match of groupID against the caller's user-group scope ids.
+func EnforceUserGroupScope(ctx context.Context, permission, groupID string) error {
+	return enforceGroupScope(ctx, UserScopeFilterFor(ctx, permission), permission, groupID)
+}
+
+// enforceGroupScope is the shared body for the device/user group-id gates. f is
+// the same-kind ScopeFilter for permission (already reduced to the relevant scope
+// kind by the caller).
+func enforceGroupScope(ctx context.Context, f ScopeFilter, permission, groupID string) error {
+	if _, ok := UserFromContext(ctx); !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if !HasPermission(ctx, permission) {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	if f.Global {
+		return nil
+	}
+	if len(f.GroupIDs) > 0 {
+		for _, id := range f.GroupIDs {
+			if id == groupID {
+				return nil
+			}
+		}
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	// Base holder with no same-kind scoped grant: a wrong-kind grant fails CLOSED;
+	// only a complete absence of scoping grants is unrestricted (fixture / prod
+	// unscoped grant already produced Global above).
+	if hasScopedGrant(ctx, permission) {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	return nil
+}
+
+// DeviceScopeListFilter reduces the caller's device-group scope for a device-row
+// LIST permission to (groupIDs, restricted), mirroring EnforceDeviceScopeOnBaseTier's
+// tier logic for the list path:
+//   - restricted=false ⇒ NO device-group row filtering — the caller is global, has
+//     no scoping grant, or holds only the :assigned tier (the assigned-owner SQL
+//     filter confines that case separately);
+//   - restricted=true  ⇒ restrict rows to devices in groupIDs; groupIDs may be
+//     empty (a wrong-kind/irrelevant grant, or no authenticated caller) ⇒ restrict
+//     to NOTHING (fail closed).
+//
+// The query keys its membership/id check off `restricted` (a boolean), not off
+// groupIDs being nil-vs-empty, so the SQL is unambiguous and pgx array encoding
+// never decides access.
+func DeviceScopeListFilter(ctx context.Context, permission string) (groupIDs []string, restricted bool) {
+	return scopeListFilter(ctx, permission, DeviceScopeFilterFor)
+}
+
+// UserScopeListFilter is the user-group symmetric of DeviceScopeListFilter.
+func UserScopeListFilter(ctx context.Context, permission string) (groupIDs []string, restricted bool) {
+	return scopeListFilter(ctx, permission, UserScopeFilterFor)
+}
+
+// scopeListFilter is the shared body for the device/user list filters. filterFor
+// selects the relevant scope kind (DeviceScopeFilterFor / UserScopeFilterFor).
+func scopeListFilter(ctx context.Context, permission string, filterFor func(context.Context, string) ScopeFilter) (groupIDs []string, restricted bool) {
+	if _, ok := UserFromContext(ctx); !ok {
+		// No caller to resolve — fail closed (no rows), never fail open. List
+		// handlers run behind the auth interceptor, so this is defensive.
+		return nil, true
+	}
+	if !HasPermission(ctx, permission) {
+		// :assigned tier (owner SQL filter confines) or no access at all — no
+		// device/user-group row filter applies here.
+		return nil, false
+	}
+	f := filterFor(ctx, permission)
+	if f.Global {
+		return nil, false
+	}
+	if len(f.GroupIDs) > 0 {
+		return f.GroupIDs, true
+	}
+	if hasScopedGrant(ctx, permission) {
+		return nil, true // wrong-kind grant → restrict to nothing
+	}
+	return nil, false // no scoping grant → unrestricted (fixture / prod unscoped)
+}
+
 // hasScopedGrant reports whether the caller holds ANY scoped grant for the
 // permission, regardless of scope kind. The base-tier scope checks use it to
 // fail closed when a base holder has a grant of a non-matching kind, rather than

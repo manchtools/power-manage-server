@@ -351,6 +351,25 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 	}), nil
 }
 
+// enforceDeviceScopeAll confines a fan-out dispatch to the caller's device-group
+// scope: every target device must be reachable under `perm` (base-tier scope),
+// or the WHOLE request fails closed with the first denial. Dispatch is a
+// mutating, potentially destructive action, so a partial/silent execution is
+// worse than a clear denial — a scope-limited admin must target devices/groups
+// fully within their scope. The per-device DispatchAction gate the fan-outs
+// delegate to is NOT sufficient: it keys off the "DispatchAction" permission,
+// which a holder of (say) DispatchToMultiple need not have, so it would wave the
+// fan-out through unconfined.
+func (h *ActionHandler) enforceDeviceScopeAll(ctx context.Context, perm string, deviceIDs []string) error {
+	resolver := newScopeResolver(h.store)
+	for _, deviceID := range deviceIDs {
+		if err := auth.EnforceDeviceScopeOnBaseTier(ctx, resolver, perm, deviceID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // dispatchTask is a single fan-out element consumed by dispatchEach:
 // the wire request to issue and the structured log fields that
 // identify it on the failure path. Extracted to deduplicate the
@@ -386,6 +405,10 @@ func (h *ActionHandler) dispatchEach(ctx context.Context, rpc string, tasks []di
 // DispatchToMultiple dispatches an action to multiple devices.
 func (h *ActionHandler) DispatchToMultiple(ctx context.Context, req *connect.Request[pm.DispatchToMultipleRequest]) (*connect.Response[pm.DispatchToMultipleResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := h.enforceDeviceScopeAll(ctx, "DispatchToMultiple", req.Msg.DeviceIds); err != nil {
 		return nil, err
 	}
 
@@ -457,6 +480,10 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
+	if err := h.enforceDeviceScopeAll(ctx, "DispatchActionSet", []string{req.Msg.DeviceId}); err != nil {
+		return nil, err
+	}
+
 	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get actions in set")
@@ -485,6 +512,10 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 // DispatchDefinition dispatches all actions from a definition to a device.
 func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Request[pm.DispatchDefinitionRequest]) (*connect.Response[pm.DispatchDefinitionResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := h.enforceDeviceScopeAll(ctx, "DispatchDefinition", []string{req.Msg.DeviceId}); err != nil {
 		return nil, err
 	}
 
@@ -533,6 +564,18 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 	devices, err := h.store.Queries().ListDevicesInGroup(ctx, req.Msg.GroupId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get devices in group")
+	}
+
+	// Scope (#3): every member device must be within the caller's DispatchToGroup
+	// scope — fail the whole fan-out closed otherwise. The delegated DispatchAction
+	// gate keys off "DispatchAction" (which a DispatchToGroup holder need not have)
+	// and so would not confine this fan-out on its own.
+	memberIDs := make([]string, len(devices))
+	for i, d := range devices {
+		memberIDs[i] = d.ID
+	}
+	if err := h.enforceDeviceScopeAll(ctx, "DispatchToGroup", memberIDs); err != nil {
+		return nil, err
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
@@ -659,12 +702,18 @@ func (h *ActionHandler) ListExecutions(ctx context.Context, req *connect.Request
 	typeFilter := int32(req.Msg.TypeFilter)
 	searchQuery := strings.TrimSpace(req.Msg.Search)
 
-	execs, err := h.store.Repos().Execution.List(ctx, store.ListExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery, Limit: pageSize, Offset: offset})
+	// Device-group scope (#3): a scope-limited ListExecutions holder sees only
+	// executions whose device is in their scope groups. Same restriction drives
+	// the count so pagination totals stay honest.
+	scopeGroups, scopeRestricted := auth.DeviceScopeListFilter(ctx, "ListExecutions")
+	scope := store.ScopeGroupFilter{Restricted: scopeRestricted, GroupIDs: scopeGroups}
+
+	execs, err := h.store.Repos().Execution.List(ctx, store.ListExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery, Limit: pageSize, Offset: offset, Scope: scope})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list executions")
 	}
 
-	count, err := h.store.Repos().Execution.Count(ctx, store.CountExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery})
+	count, err := h.store.Repos().Execution.Count(ctx, store.CountExecutionsFilter{DeviceID: req.Msg.DeviceId, Status: statusFilter, ActionTypeFilter: typeFilter, Search: searchQuery, Scope: scope})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count executions")
 	}

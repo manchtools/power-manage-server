@@ -32,12 +32,14 @@ func (e *Execution) Get(ctx context.Context, id string) (store.Execution, error)
 
 func (e *Execution) List(ctx context.Context, filter store.ListExecutionsFilter) ([]store.Execution, error) {
 	rows, err := e.q.ListExecutions(ctx, generated.ListExecutionsParams{
-		Column1: filter.DeviceID,
-		Column2: filter.Status,
-		Column3: filter.ActionTypeFilter,
-		Column4: filter.Search,
-		Limit:   filter.Limit,
-		Offset:  filter.Offset,
+		Column1:         filter.DeviceID,
+		Column2:         filter.Status,
+		Column3:         filter.ActionTypeFilter,
+		Column4:         filter.Search,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("execution: list: %w", err)
@@ -51,10 +53,12 @@ func (e *Execution) List(ctx context.Context, filter store.ListExecutionsFilter)
 
 func (e *Execution) Count(ctx context.Context, filter store.CountExecutionsFilter) (int64, error) {
 	n, err := e.q.CountExecutions(ctx, generated.CountExecutionsParams{
-		Column1: filter.DeviceID,
-		Column2: filter.Status,
-		Column3: filter.ActionTypeFilter,
-		Column4: filter.Search,
+		Column1:         filter.DeviceID,
+		Column2:         filter.Status,
+		Column3:         filter.ActionTypeFilter,
+		Column4:         filter.Search,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("execution: count: %w", translateNotFound(err))

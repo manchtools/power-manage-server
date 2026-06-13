@@ -121,6 +121,10 @@ func (h *DeviceGroupHandler) GetDeviceGroup(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
+	if err := auth.EnforceDeviceGroupScope(ctx, "GetDeviceGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
@@ -163,12 +167,18 @@ func (h *DeviceGroupHandler) ListDeviceGroups(ctx context.Context, req *connect.
 		return nil, err
 	}
 
-	groups, err := h.store.Repos().DeviceGroup.List(ctx, store.ListDeviceGroupsFilter{Limit: pageSize, Offset: offset})
+	// Device-group scope (#3): a scope-limited ListDeviceGroups holder sees only
+	// the groups in their scope (direct id-match); a global holder is unrestricted.
+	// Same restriction drives the count so pagination totals stay honest.
+	scopeGroups, scopeRestricted := auth.DeviceScopeListFilter(ctx, "ListDeviceGroups")
+	scope := store.ScopeGroupFilter{Restricted: scopeRestricted, GroupIDs: scopeGroups}
+
+	groups, err := h.store.Repos().DeviceGroup.List(ctx, store.ListDeviceGroupsFilter{Limit: pageSize, Offset: offset, Scope: scope})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list device groups")
 	}
 
-	count, err := h.store.Repos().DeviceGroup.Count(ctx)
+	count, err := h.store.Repos().DeviceGroup.Count(ctx, scope)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count device groups")
 	}
@@ -198,6 +208,23 @@ func (h *DeviceGroupHandler) ListDeviceGroupsForDevice(ctx context.Context, req 
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list groups for device")
 	}
 
+	// Device-group scope (#3): restrict the returned groups to the caller's scope
+	// in Go — the underlying ListForDevice query is shared with the scope resolver
+	// and must stay unfiltered there. A global holder keeps all groups.
+	if scopeGroups, restricted := auth.DeviceScopeListFilter(ctx, "ListDeviceGroupsForDevice"); restricted {
+		allowed := make(map[string]struct{}, len(scopeGroups))
+		for _, id := range scopeGroups {
+			allowed[id] = struct{}{}
+		}
+		kept := groups[:0]
+		for _, g := range groups {
+			if _, ok := allowed[g.ID]; ok {
+				kept = append(kept, g)
+			}
+		}
+		groups = kept
+	}
+
 	protoGroups := make([]*pm.DeviceGroup, len(groups))
 	for i, g := range groups {
 		protoGroups[i] = h.deviceGroupToProto(g)
@@ -216,6 +243,10 @@ func (h *DeviceGroupHandler) RenameDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceGroupScope(ctx, "RenameDeviceGroup", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -253,6 +284,10 @@ func (h *DeviceGroupHandler) UpdateDeviceGroupDescription(ctx context.Context, r
 		return nil, err
 	}
 
+	if err := auth.EnforceDeviceGroupScope(ctx, "UpdateDeviceGroupDescription", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "device_group",
 		StreamID:   req.Msg.Id,
@@ -284,6 +319,10 @@ func (h *DeviceGroupHandler) DeleteDeviceGroup(ctx context.Context, req *connect
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceGroupScope(ctx, "DeleteDeviceGroup", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -325,6 +364,22 @@ func (h *DeviceGroupHandler) AddDeviceToGroup(ctx context.Context, req *connect.
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Scope (#3): the target group must be in the caller's device-group scope
+	// (direct id-match), AND every device being added must already be within the
+	// caller's scope (membership). The device check is load-bearing: without it a
+	// device-group-scoped admin could pull any fleet device into a group they
+	// control and thereby expand their own scope — a scope escape. RemoveDevice
+	// needs only the group check (removal cannot expand scope).
+	if err := auth.EnforceDeviceGroupScope(ctx, "AddDeviceToGroup", req.Msg.GroupId); err != nil {
+		return nil, err
+	}
+	resolver := newScopeResolver(h.store)
+	for _, deviceID := range deviceIDs {
+		if err := auth.EnforceDeviceScopeOnBaseTier(ctx, resolver, "AddDeviceToGroup", deviceID); err != nil {
+			return nil, err
+		}
 	}
 
 	q := h.store.Queries()
@@ -382,6 +437,10 @@ func (h *DeviceGroupHandler) RemoveDeviceFromGroup(ctx context.Context, req *con
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceGroupScope(ctx, "RemoveDeviceFromGroup", req.Msg.GroupId); err != nil {
 		return nil, err
 	}
 
@@ -574,6 +633,10 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 		return nil, err
 	}
 
+	if err := auth.EnforceDeviceGroupScope(ctx, "SetDeviceGroupSyncInterval", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Validate interval (0 = default, max 1440 = 24 hours)
 	if req.Msg.SyncIntervalMinutes < 0 || req.Msg.SyncIntervalMinutes > 1440 {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "sync interval must be between 0 and 1440 minutes")
@@ -620,6 +683,10 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceGroupScope(ctx, "SetDeviceGroupMaintenanceWindow", req.Msg.Id); err != nil {
 		return nil, err
 	}
 

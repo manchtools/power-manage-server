@@ -426,6 +426,13 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 			"only the session owner may stop a terminal session; admins must use TerminateTerminalSession")
 	}
 
+	// Scope (#3): a device-group-scoped StopTerminal holder may stop only sessions
+	// on devices within their scope. Ordinary users hold StopTerminal unscoped, so
+	// this is a no-op for them.
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "StopTerminal", session.DeviceID); err != nil {
+		return nil, err
+	}
+
 	// CQRS: event first (source of truth), then Valkey revoke
 	// (derived state). If the event fails, the session stays active
 	// — no silent stop without an audit trail. If the revoke fails,
@@ -542,13 +549,54 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 	}
 	wg.Wait()
 
+	// Scope (#3): confine the merged list to sessions on devices in the caller's
+	// ListActiveTerminalSessions device-group scope. A global holder sees all.
+	scoped, err := h.scopedSessions(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
 	// TODO: enrich with user email / device hostname from DB for
 	// the admin view. For now the IDs are returned directly.
 
 	return connect.NewResponse(&pm.ListActiveTerminalSessionsResponse{
-		Sessions:   all,
-		TotalCount: int32(len(all)),
+		Sessions:   scoped,
+		TotalCount: int32(len(scoped)),
 	}), nil
+}
+
+// scopedSessions filters a merged terminal-session list to those on devices
+// within the caller's ListActiveTerminalSessions device-group scope. A global (or
+// no-scoping-grant) caller is unrestricted; a scope-limited caller keeps only
+// sessions whose device is a member of one of their scope groups; a caller with
+// only a wrong-kind grant or no auth context sees nothing (fail closed).
+func (h *TerminalHandler) scopedSessions(ctx context.Context, sessions []*pm.TerminalSessionInfo) ([]*pm.TerminalSessionInfo, error) {
+	groupIDs, restricted := auth.DeviceScopeListFilter(ctx, "ListActiveTerminalSessions")
+	if !restricted {
+		return sessions, nil
+	}
+	if len(groupIDs) == 0 {
+		return nil, nil // wrong-kind grant / no auth → restrict to nothing
+	}
+	scopeSet := make(map[string]struct{}, len(groupIDs))
+	for _, id := range groupIDs {
+		scopeSet[id] = struct{}{}
+	}
+	resolver := newScopeResolver(h.store)
+	out := make([]*pm.TerminalSessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		devGroups, err := resolver.DeviceGroupsForDevice(ctx, s.DeviceId)
+		if err != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to resolve session device scope")
+		}
+		for _, g := range devGroups {
+			if _, ok := scopeSet[g]; ok {
+				out = append(out, s)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 // TerminateTerminalSession finds which gateway hosts the session
@@ -569,12 +617,9 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 	}
 
-	if h.registry == nil || h.internalHTTPClient == nil {
-		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
-			"terminal admin RPCs require a configured registry and internal HTTP client")
-	}
-
-	// Look up the session to find the device, then the gateway.
+	// Look up the session to find the device, then authorize the scope BEFORE the
+	// infra-config check below — a caller must be told "denied" for an
+	// out-of-scope session regardless of whether the gateway plumbing is wired.
 	session, err := h.tokenStore.Lookup(ctx, req.Msg.SessionId)
 	if err != nil {
 		if errors.Is(err, terminal.ErrTokenNotFound) {
@@ -583,6 +628,17 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
 			"failed to look up session")
+	}
+
+	// Scope (#3): a device-group-scoped TerminateTerminalSession holder may
+	// terminate only sessions on devices within their scope.
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "TerminateTerminalSession", session.DeviceID); err != nil {
+		return nil, err
+	}
+
+	if h.registry == nil || h.internalHTTPClient == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"terminal admin RPCs require a configured registry and internal HTTP client")
 	}
 
 	gatewayID, err := h.registry.LookupDeviceGateway(ctx, session.DeviceID)

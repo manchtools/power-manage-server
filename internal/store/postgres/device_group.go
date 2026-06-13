@@ -39,8 +39,10 @@ func (g *DeviceGroup) GetByName(ctx context.Context, name string) (store.DeviceG
 
 func (g *DeviceGroup) List(ctx context.Context, filter store.ListDeviceGroupsFilter) ([]store.DeviceGroup, error) {
 	rows, err := g.q.ListDeviceGroups(ctx, generated.ListDeviceGroupsParams{
-		Limit:  filter.Limit,
-		Offset: filter.Offset,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device_group: list: %w", err)
@@ -52,8 +54,11 @@ func (g *DeviceGroup) List(ctx context.Context, filter store.ListDeviceGroupsFil
 	return out, nil
 }
 
-func (g *DeviceGroup) Count(ctx context.Context) (int64, error) {
-	n, err := g.q.CountDeviceGroups(ctx)
+func (g *DeviceGroup) Count(ctx context.Context, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := g.q.CountDeviceGroups(ctx, generated.CountDeviceGroupsParams{
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("device_group: count: %w", translateNotFound(err))
 	}

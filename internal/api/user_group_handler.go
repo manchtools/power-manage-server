@@ -127,6 +127,10 @@ func (h *UserGroupHandler) GetUserGroup(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
+	if err := auth.EnforceUserGroupScope(ctx, "GetUserGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
@@ -170,12 +174,18 @@ func (h *UserGroupHandler) ListUserGroups(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	groups, err := h.store.Repos().UserGroup.List(ctx, store.ListUserGroupsFilter{Limit: pageSize, Offset: offset})
+	// User-group scope (#3): a scope-limited ListUserGroups holder sees only the
+	// groups in their scope (direct id-match); a global holder is unrestricted.
+	// Same restriction drives the count so pagination totals stay honest.
+	scopeGroups, scopeRestricted := auth.UserScopeListFilter(ctx, "ListUserGroups")
+	scope := store.ScopeGroupFilter{Restricted: scopeRestricted, GroupIDs: scopeGroups}
+
+	groups, err := h.store.Repos().UserGroup.List(ctx, store.ListUserGroupsFilter{Limit: pageSize, Offset: offset, Scope: scope})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
 	}
 
-	count, err := h.store.Repos().UserGroup.Count(ctx)
+	count, err := h.store.Repos().UserGroup.Count(ctx, scope)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count user groups")
 	}
@@ -209,6 +219,10 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceUserGroupScope(ctx, "UpdateUserGroup", req.Msg.GroupId); err != nil {
 		return nil, err
 	}
 
@@ -252,6 +266,10 @@ func (h *UserGroupHandler) SetUserGroupMaintenanceWindow(ctx context.Context, re
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceUserGroupScope(ctx, "SetUserGroupMaintenanceWindow", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -315,6 +333,10 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
+	if err := auth.EnforceUserGroupScope(ctx, "DeleteUserGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	appendDelete := func() error {
 		return appendEvent(ctx, h.store, h.logger, store.Event{
 			StreamType: "user_group",
@@ -374,6 +396,22 @@ func (h *UserGroupHandler) AddUserToGroup(ctx context.Context, req *connect.Requ
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Scope (#3): the target group must be in the caller's user-group scope
+	// (direct id-match), AND every user being added must already be within the
+	// caller's scope (membership). The user check is load-bearing: without it a
+	// user-group-scoped admin could pull any user into a group they control and
+	// thereby gain user-target authority over them — a scope escape. RemoveUser
+	// needs only the group check (removal cannot expand scope).
+	if err := auth.EnforceUserGroupScope(ctx, "AddUserToGroup", req.Msg.GroupId); err != nil {
+		return nil, err
+	}
+	resolver := newScopeResolver(h.store)
+	for _, userID := range userIDs {
+		if err := auth.EnforceUserScopeOrSelf(ctx, resolver, "AddUserToGroup", userID); err != nil {
+			return nil, err
+		}
 	}
 
 	q := h.store.Queries()
@@ -455,6 +493,19 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
 	}
 
+	// Authenticate and scope-check BEFORE the membership probe so an out-of-scope
+	// group is denied with PermissionDenied rather than leaking membership state
+	// (a non-member would otherwise surface as NotFound first). Removal only needs
+	// the group id-match — it cannot expand the caller's scope.
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceUserGroupScope(ctx, "RemoveUserFromGroup", req.Msg.GroupId); err != nil {
+		return nil, err
+	}
+
 	// Verify membership
 	isMember, err := h.store.Queries().IsUserInGroup(ctx, db.IsUserInGroupParams{
 		GroupID: req.Msg.GroupId,
@@ -465,11 +516,6 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	}
 	if !isMember {
 		return nil, apiErrorCtx(ctx, ErrUserNotFound, connect.CodeNotFound, "user is not a member of this group")
-	}
-
-	userCtx, err := requireAuth(ctx)
-	if err != nil {
-		return nil, err
 	}
 
 	streamID := req.Msg.GroupId + ":" + req.Msg.UserId
@@ -720,6 +766,23 @@ func (h *UserGroupHandler) ListUserGroupsForUser(ctx context.Context, req *conne
 	groups, err := h.store.Repos().UserGroup.ListForUser(ctx, req.Msg.UserId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list user groups")
+	}
+
+	// User-group scope (#3): restrict the returned groups to the caller's scope in
+	// Go — ListForUser is shared with the scope resolver and must stay unfiltered
+	// there. A global holder keeps all groups.
+	if scopeGroups, restricted := auth.UserScopeListFilter(ctx, "ListUserGroupsForUser"); restricted {
+		allowed := make(map[string]struct{}, len(scopeGroups))
+		for _, id := range scopeGroups {
+			allowed[id] = struct{}{}
+		}
+		kept := groups[:0]
+		for _, g := range groups {
+			if _, ok := allowed[g.ID]; ok {
+				kept = append(kept, g)
+			}
+		}
+		groups = kept
 	}
 
 	protoGroups := make([]*pm.UserGroup, len(groups))

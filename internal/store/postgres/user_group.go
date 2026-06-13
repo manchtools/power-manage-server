@@ -60,8 +60,10 @@ func (g *UserGroup) GetWithMembers(ctx context.Context, id string) (store.UserGr
 
 func (g *UserGroup) List(ctx context.Context, filter store.ListUserGroupsFilter) ([]store.UserGroup, error) {
 	rows, err := g.q.ListUserGroups(ctx, generated.ListUserGroupsParams{
-		Limit:  filter.Limit,
-		Offset: filter.Offset,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("user_group: list: %w", err)
@@ -73,8 +75,11 @@ func (g *UserGroup) List(ctx context.Context, filter store.ListUserGroupsFilter)
 	return out, nil
 }
 
-func (g *UserGroup) Count(ctx context.Context) (int64, error) {
-	n, err := g.q.CountUserGroups(ctx)
+func (g *UserGroup) Count(ctx context.Context, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := g.q.CountUserGroups(ctx, generated.CountUserGroupsParams{
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("user_group: count: %w", translateNotFound(err))
 	}

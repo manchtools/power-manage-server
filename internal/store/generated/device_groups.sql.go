@@ -56,10 +56,16 @@ func (q *Queries) ClaimDeviceGroupForMembership(ctx context.Context, arg ClaimDe
 const countDeviceGroups = `-- name: CountDeviceGroups :one
 SELECT COUNT(*) FROM device_groups_projection
 WHERE is_deleted = FALSE
+  AND (NOT $1::boolean OR id = ANY($2::text[]))
 `
 
-func (q *Queries) CountDeviceGroups(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countDeviceGroups)
+type CountDeviceGroupsParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountDeviceGroups(ctx context.Context, arg CountDeviceGroupsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeviceGroups, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -514,17 +520,27 @@ func (q *Queries) ListDeviceGroupMembershipsByDevice(ctx context.Context, device
 const listDeviceGroups = `-- name: ListDeviceGroups :many
 SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
 WHERE is_deleted = FALSE
+  -- Device-group scope (#3): a direct id-match — when @scope_restricted, the
+  -- group itself must be one of @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT $3::boolean OR id = ANY($4::text[]))
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDeviceGroupsParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsParams) ([]DeviceGroupsProjection, error) {
-	rows, err := q.db.Query(ctx, listDeviceGroups, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listDeviceGroups,
+		arg.Limit,
+		arg.Offset,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -734,6 +750,9 @@ WHERE m.device_id = $1 AND g.is_deleted = FALSE
 ORDER BY g.name ASC
 `
 
+// NOTE: also used by the scope resolver (DeviceGroupsForDevice) to compute a
+// device's groups for scope checks, so it MUST stay UNFILTERED. The
+// ListDeviceGroupsForDevice handler applies device-group scope in Go.
 func (q *Queries) ListGroupsForDevice(ctx context.Context, deviceID string) ([]DeviceGroupsProjection, error) {
 	rows, err := q.db.Query(ctx, listGroupsForDevice, deviceID)
 	if err != nil {

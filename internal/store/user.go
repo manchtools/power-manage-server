@@ -63,10 +63,12 @@ type UserSessionInfo struct {
 	IsDeleted      bool
 }
 
-// ListUsersFilter is the pagination shape for the user list endpoint.
+// ListUsersFilter is the pagination shape for the user list endpoint,
+// plus the #3 user-group scope restriction.
 type ListUsersFilter struct {
 	Limit  int32
 	Offset int32
+	Scope  ScopeGroupFilter
 }
 
 // ScopedGrant is one (permission, scope) tuple a user holds. ScopeKind
@@ -118,8 +120,9 @@ type UserRepo interface {
 	// List returns a page of users.
 	List(ctx context.Context, filter ListUsersFilter) ([]User, error)
 
-	// Count returns the total non-deleted user count.
-	Count(ctx context.Context) (int64, error)
+	// Count returns the total non-deleted user count, scoped to the
+	// caller's user-group scope when restricted.
+	Count(ctx context.Context, scope ScopeGroupFilter) (int64, error)
 
 	// ListAllNonDeleted returns every non-deleted user. Used by
 	// the server-settings handler's batch-enable propagation

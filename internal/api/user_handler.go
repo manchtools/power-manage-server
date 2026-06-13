@@ -238,12 +238,18 @@ func (h *UserHandler) ListUsers(ctx context.Context, req *connect.Request[pm.Lis
 		return nil, err
 	}
 
-	users, err := h.store.Repos().User.List(ctx, store.ListUsersFilter{Limit: pageSize, Offset: offset})
+	// User-group scope (#3): a scope-limited ListUsers holder sees only users in
+	// their scope groups; a global holder is unrestricted. Same restriction drives
+	// the count so pagination totals stay honest.
+	scopeGroups, scopeRestricted := auth.UserScopeListFilter(ctx, "ListUsers")
+	scope := store.ScopeGroupFilter{Restricted: scopeRestricted, GroupIDs: scopeGroups}
+
+	users, err := h.store.Repos().User.List(ctx, store.ListUsersFilter{Limit: pageSize, Offset: offset, Scope: scope})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list users")
 	}
 
-	count, err := h.store.Repos().User.Count(ctx)
+	count, err := h.store.Repos().User.Count(ctx, scope)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count users")
 	}

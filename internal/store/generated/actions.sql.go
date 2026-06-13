@@ -41,13 +41,20 @@ WHERE ($1::TEXT = '' OR device_id = $1)
   ) OR EXISTS (
     SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
   ))
+  -- Device-group scope (#3): when @scope_restricted, the execution's device must
+  -- be a member of a group in @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT $5::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = executions_projection.device_id AND dgm.group_id = ANY($6::text[]))
+  )
 `
 
 type CountExecutionsParams struct {
-	Column1 string `json:"column_1"`
-	Column2 string `json:"column_2"`
-	Column3 int32  `json:"column_3"`
-	Column4 string `json:"column_4"`
+	Column1         string   `json:"column_1"`
+	Column2         string   `json:"column_2"`
+	Column3         int32    `json:"column_3"`
+	Column4         string   `json:"column_4"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams) (int64, error) {
@@ -56,6 +63,8 @@ func (q *Queries) CountExecutions(ctx context.Context, arg CountExecutionsParams
 		arg.Column2,
 		arg.Column3,
 		arg.Column4,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
 	)
 	var count int64
 	err := row.Scan(&count)
@@ -542,17 +551,24 @@ WHERE ($1::TEXT = '' OR device_id = $1)
   ) OR EXISTS (
     SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
   ))
+  -- Device-group scope (#3): when @scope_restricted, the execution's device must
+  -- be a member of a group in @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT $7::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = executions_projection.device_id AND dgm.group_id = ANY($8::text[]))
+  )
 ORDER BY created_at DESC
 LIMIT $5 OFFSET $6
 `
 
 type ListExecutionsParams struct {
-	Column1 string `json:"column_1"`
-	Column2 string `json:"column_2"`
-	Column3 int32  `json:"column_3"`
-	Column4 string `json:"column_4"`
-	Limit   int32  `json:"limit"`
-	Offset  int32  `json:"offset"`
+	Column1         string   `json:"column_1"`
+	Column2         string   `json:"column_2"`
+	Column3         int32    `json:"column_3"`
+	Column4         string   `json:"column_4"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) ([]ExecutionsProjection, error) {
@@ -563,6 +579,8 @@ func (q *Queries) ListExecutions(ctx context.Context, arg ListExecutionsParams) 
 		arg.Column4,
 		arg.Limit,
 		arg.Offset,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
 	)
 	if err != nil {
 		return nil, err
