@@ -332,13 +332,19 @@ func TestVerifyAndExtractClaims_ByteTamperedSignature(t *testing.T) {
 	idToken := f.signIDToken(t, "test-client", "n", map[string]any{"email_verified": true})
 
 	// JWS is header.payload.signature; tamper one char of the signature.
+	// Mutate a NON-terminal char: the final base64url char of an RS256
+	// signature carries only a couple of meaningful bits, so flipping it can
+	// decode to the same bytes (a no-op that would let verification pass).
+	// A mid-segment char always changes the decoded signature bytes.
 	parts := strings.Split(idToken, ".")
 	require.Len(t, parts, 3)
 	sig := []byte(parts[2])
-	if sig[len(sig)-1] == 'A' {
-		sig[len(sig)-1] = 'B'
+	require.Greater(t, len(sig), 2)
+	idx := len(sig) / 2
+	if sig[idx] == 'A' {
+		sig[idx] = 'B'
 	} else {
-		sig[len(sig)-1] = 'A'
+		sig[idx] = 'A'
 	}
 	parts[2] = string(sig)
 	tampered := strings.Join(parts, ".")
