@@ -13,6 +13,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -45,6 +46,10 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	hasRawSQL := strings.TrimSpace(msg.RawSql) != ""
 	if hasTable == hasRawSQL {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "exactly one of table or raw_sql is required")
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DispatchOSQuery", msg.DeviceId); err != nil {
+		return nil, err
 	}
 
 	// Verify device exists
@@ -124,6 +129,10 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "query result not found")
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetOSQueryResult", result.DeviceID); err != nil {
+		return nil, err
+	}
+
 	// Auto-expire pending results that have been waiting too long
 	if !result.Completed && time.Since(result.CreatedAt) > osqueryResultTimeout {
 		timeoutErr := "query timed out: device did not respond within 5 minutes"
@@ -162,6 +171,10 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 	}
 
 	msg := req.Msg
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceInventory", msg.DeviceId); err != nil {
+		return nil, err
+	}
 
 	var rows []store.InventoryTable
 	var err error
@@ -203,6 +216,10 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	}
 
 	msg := req.Msg
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "RefreshDeviceInventory", msg.DeviceId); err != nil {
+		return nil, err
+	}
 
 	// Verify device exists
 	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: msg.DeviceId})

@@ -228,6 +228,96 @@ func EnforceUnscopedGrantAuthority(ctx context.Context) error {
 	return nil // no scope authority — ordinary admin, allowed
 }
 
+// EnforceUserScopeOrSelf authorizes a user-target action across every grant
+// tier, for handlers that previously used EnforceSelfScope:
+//   - caller holds `permission` as the base — unrestricted OR user-group-scoped:
+//     defer to EnforceUserScope (global ⇒ any target; scoped ⇒ only targets in a
+//     covered user group). The base appears in the flat permission set for BOTH
+//     unrestricted and scoped grants (the scope lives on the grant, not the
+//     permission string), so HasPermission catches a scoped holder and confines
+//     them here rather than waving them through;
+//   - caller holds only `permission:self`: allow only when targetUserID is the
+//     caller's own id;
+//   - otherwise deny.
+func EnforceUserScopeOrSelf(ctx context.Context, resolver ScopeResolver, permission, targetUserID string) error {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if HasPermission(ctx, permission) {
+		// Holds the base. The flat permission set IS the authority; the scoped
+		// grants only CONFINE. A user_group-scoped grant restricts to it; an
+		// unscoped grant (Global) is unrestricted.
+		f := UserScopeFilterFor(ctx, permission)
+		if f.Global {
+			return nil
+		}
+		if len(f.GroupIDs) > 0 {
+			return EnforceUserScope(ctx, resolver, permission, targetUserID)
+		}
+		// No user_group-scoped grant. Only a COMPLETE absence of scoping grants
+		// for this permission is unrestricted (the AuthContext fixture / a
+		// not-yet-resolved grant). A grant of a DIFFERENT kind fails CLOSED —
+		// defense-in-depth against a wrong-kind grant that rejectUnscopableRole
+		// should already prevent, so it can never read as fleet-wide access.
+		if hasScopedGrant(ctx, permission) {
+			return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+		}
+		return nil
+	}
+	if HasPermission(ctx, permission+":self") && targetUserID == user.ID {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+}
+
+// EnforceDeviceScopeOnBaseTier applies #7 device-group scope confinement ONLY on
+// the base-permission tier — when the caller holds `permission` unrestricted or
+// device-group-scoped (the base is present in the flat permission set for both).
+// A caller holding only `permission:assigned` is left to the assigned-owner SQL
+// filter (the OwnerScope/userFilterID path) and passes through here unblocked.
+// This is the StartTerminal gate, generalized for reuse across device handlers.
+func EnforceDeviceScopeOnBaseTier(ctx context.Context, resolver ScopeResolver, permission, deviceID string) error {
+	if _, ok := UserFromContext(ctx); !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if !HasPermission(ctx, permission) {
+		return nil // :assigned-only tier — confined by the owner SQL filter, not here
+	}
+	// Holds the base. A device_group-scoped grant confines to it; an unscoped
+	// grant (Global) is unrestricted; a wrong-kind grant fails CLOSED (see
+	// EnforceUserScopeOrSelf); only a complete absence of scoping grants is
+	// unrestricted.
+	f := DeviceScopeFilterFor(ctx, permission)
+	if f.Global {
+		return nil
+	}
+	if len(f.GroupIDs) > 0 {
+		return EnforceDeviceScope(ctx, resolver, permission, deviceID)
+	}
+	if hasScopedGrant(ctx, permission) {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	return nil
+}
+
+// hasScopedGrant reports whether the caller holds ANY scoped grant for the
+// permission, regardless of scope kind. The base-tier scope checks use it to
+// fail closed when a base holder has a grant of a non-matching kind, rather than
+// treating an empty same-kind filter as unrestricted access.
+func hasScopedGrant(ctx context.Context, permission string) bool {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return false
+	}
+	for _, g := range user.ScopedGrants {
+		if g.Permission == permission {
+			return true
+		}
+	}
+	return false
+}
+
 // intersects reports whether a and b share any element.
 func intersects(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {

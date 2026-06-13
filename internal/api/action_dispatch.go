@@ -21,6 +21,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -35,6 +36,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DispatchAction", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
@@ -421,6 +426,10 @@ func (h *ActionHandler) DispatchAssignedActions(ctx context.Context, req *connec
 		return nil, err
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DispatchAssignedActions", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+
 	actions, err := h.store.Queries().ListAssignedActionsForDevice(ctx, req.Msg.DeviceId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get assigned actions")
@@ -604,6 +613,10 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetExecution", exec.DeviceID); err != nil {
+		return nil, err
+	}
+
 	protoExec := h.executionToProto(exec)
 
 	// Fetch action name
@@ -714,6 +727,10 @@ func (h *ActionHandler) DispatchInstantAction(ctx context.Context, req *connect.
 
 	if !isInstantActionType(req.Msg.InstantAction) {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid instant action type: "+req.Msg.InstantAction.String())
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DispatchInstantAction", req.Msg.DeviceId); err != nil {
+		return nil, err
 	}
 
 	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId})
@@ -896,6 +913,10 @@ func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Reques
 	exec, err := h.store.Repos().Execution.Get(ctx, req.Msg.ExecutionId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "CancelExecution", exec.DeviceID); err != nil {
+		return nil, err
 	}
 
 	// Cancel only acts on rows that haven't dispatched yet. Past that

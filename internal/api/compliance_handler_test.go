@@ -7,7 +7,6 @@ package api_test
 // the empty-results path.
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 
@@ -52,7 +51,7 @@ func TestGetDeviceCompliance_NoResults_EmptyChecks(t *testing.T) {
 	h, st := newComplianceHandler(t)
 	deviceID := testutil.CreateTestDevice(t, st, "compliance-empty")
 
-	resp, err := h.GetDeviceCompliance(context.Background(),
+	resp, err := h.GetDeviceCompliance(testutil.AdminContext(testutil.NewID()),
 		connect.NewRequest(&pm.GetDeviceComplianceRequest{DeviceId: deviceID}))
 	require.NoError(t, err)
 	assert.Empty(t, resp.Msg.Checks, "device with no compliance results returns empty Checks")
@@ -60,7 +59,7 @@ func TestGetDeviceCompliance_NoResults_EmptyChecks(t *testing.T) {
 
 func TestGetDeviceCompliance_DeviceWithResults_DecodesDetectionOutput(t *testing.T) {
 	h, st := newComplianceHandler(t)
-	ctx := context.Background()
+	ctx := testutil.AdminContext(testutil.NewID())
 
 	deviceID := testutil.CreateTestDevice(t, st, "compliance-with-results")
 	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -109,7 +108,7 @@ func TestGetDeviceCompliance_MissingDetectionOutput_NilCommandOutput(t *testing.
 	// zero-value struct that would falsely look like "ran with empty
 	// output".
 	h, st := newComplianceHandler(t)
-	ctx := context.Background()
+	ctx := testutil.AdminContext(testutil.NewID())
 
 	deviceID := testutil.CreateTestDevice(t, st, "compliance-no-output")
 	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")

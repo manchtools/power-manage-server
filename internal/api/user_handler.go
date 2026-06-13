@@ -209,7 +209,7 @@ func (h *UserHandler) GetUser(ctx context.Context, req *connect.Request[pm.GetUs
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "GetUser", req.Msg.Id); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "GetUser", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -296,7 +296,7 @@ func (h *UserHandler) UpdateUserEmail(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "UpdateUserEmail", req.Msg.Id); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "UpdateUserEmail", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -337,7 +337,7 @@ func (h *UserHandler) UpdateUserPassword(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "UpdateUserPassword", req.Msg.Id); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "UpdateUserPassword", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -405,6 +405,10 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "SetUserDisabled", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Emit appropriate event
 	eventType := string(eventtypes.UserEnabled)
 	if req.Msg.Disabled {
@@ -461,6 +465,10 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 		return nil, err
 	}
 
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "DeleteUser", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Load user BEFORE delete to get system action IDs for cleanup
 	user, err := h.store.Repos().User.Get(ctx, req.Msg.Id)
 	if err != nil {
@@ -504,7 +512,7 @@ func (h *UserHandler) UpdateUserProfile(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "UpdateUserProfile", req.Msg.Id); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "UpdateUserProfile", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -604,6 +612,10 @@ func (h *UserHandler) SetUserProvisioningEnabled(ctx context.Context, req *conne
 		return nil, err
 	}
 
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "SetUserProvisioningEnabled", req.Msg.UserId); err != nil {
+		return nil, err
+	}
+
 	enabled := req.Msg.Enabled
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
@@ -650,6 +662,10 @@ func (h *UserHandler) UpdateUserLinuxUsername(ctx context.Context, req *connect.
 		return nil, err
 	}
 
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "UpdateUserLinuxUsername", req.Msg.UserId); err != nil {
+		return nil, err
+	}
+
 	// Sanitize the username the same way as during creation
 	username := deriveLinuxUsername(req.Msg.LinuxUsername, "")
 	if username == "" {
@@ -688,7 +704,7 @@ func (h *UserHandler) AddUserSshKey(ctx context.Context, req *connect.Request[pm
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "AddUserSshKey", req.Msg.UserId); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "AddUserSshKey", req.Msg.UserId); err != nil {
 		return nil, err
 	}
 
@@ -736,7 +752,7 @@ func (h *UserHandler) RemoveUserSshKey(ctx context.Context, req *connect.Request
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "RemoveUserSshKey", req.Msg.UserId); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "RemoveUserSshKey", req.Msg.UserId); err != nil {
 		return nil, err
 	}
 
@@ -770,7 +786,7 @@ func (h *UserHandler) UpdateUserSshSettings(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	if err := auth.EnforceSelfScope(ctx, "UpdateUserSshSettings", req.Msg.UserId); err != nil {
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "UpdateUserSshSettings", req.Msg.UserId); err != nil {
 		return nil, err
 	}
 

@@ -233,6 +233,10 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 
 	targetUserID := req.Msg.UserId
 
+	if err := auth.EnforceUserScopeOrSelf(ctx, newScopeResolver(h.store), "AdminDisableUserTOTP", targetUserID); err != nil {
+		return nil, err
+	}
+
 	// Check target user exists and has TOTP enabled
 	user, err := h.store.Repos().User.Get(ctx, targetUserID)
 	if err != nil {

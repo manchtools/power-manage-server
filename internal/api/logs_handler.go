@@ -10,6 +10,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -38,6 +39,10 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 	}
 
 	msg := req.Msg
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "QueryDeviceLogs", msg.DeviceId); err != nil {
+		return nil, err
+	}
 
 	// Verify device exists
 	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: msg.DeviceId})
@@ -107,6 +112,10 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 	result, err := h.store.Repos().Logs.GetQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceLogResult", result.DeviceID); err != nil {
+		return nil, err
 	}
 
 	// Auto-expire pending results that have been waiting too long
