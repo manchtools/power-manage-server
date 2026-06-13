@@ -228,6 +228,61 @@ func EnforceUnscopedGrantAuthority(ctx context.Context) error {
 	return nil // no scope authority — ordinary admin, allowed
 }
 
+// EnforceUserScopeOrSelf authorizes a user-target action across every grant
+// tier, for handlers that previously used EnforceSelfScope:
+//   - caller holds `permission` as the base — unrestricted OR user-group-scoped:
+//     defer to EnforceUserScope (global ⇒ any target; scoped ⇒ only targets in a
+//     covered user group). The base appears in the flat permission set for BOTH
+//     unrestricted and scoped grants (the scope lives on the grant, not the
+//     permission string), so HasPermission catches a scoped holder and confines
+//     them here rather than waving them through;
+//   - caller holds only `permission:self`: allow only when targetUserID is the
+//     caller's own id;
+//   - otherwise deny.
+func EnforceUserScopeOrSelf(ctx context.Context, resolver ScopeResolver, permission, targetUserID string) error {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if HasPermission(ctx, permission) {
+		// Holds the base. The flat permission set IS the authority; the scoped
+		// grants only CONFINE. If there is a user_group-scoped grant for this
+		// permission, restrict to it; an unscoped grant (Global) or no scoping
+		// grant at all means unrestricted.
+		f := UserScopeFilterFor(ctx, permission)
+		if f.Global || len(f.GroupIDs) == 0 {
+			return nil
+		}
+		return EnforceUserScope(ctx, resolver, permission, targetUserID)
+	}
+	if HasPermission(ctx, permission+":self") && targetUserID == user.ID {
+		return nil
+	}
+	return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+}
+
+// EnforceDeviceScopeOnBaseTier applies #7 device-group scope confinement ONLY on
+// the base-permission tier — when the caller holds `permission` unrestricted or
+// device-group-scoped (the base is present in the flat permission set for both).
+// A caller holding only `permission:assigned` is left to the assigned-owner SQL
+// filter (the OwnerScope/userFilterID path) and passes through here unblocked.
+// This is the StartTerminal gate, generalized for reuse across device handlers.
+func EnforceDeviceScopeOnBaseTier(ctx context.Context, resolver ScopeResolver, permission, deviceID string) error {
+	if _, ok := UserFromContext(ctx); !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("not authenticated"))
+	}
+	if !HasPermission(ctx, permission) {
+		return nil // :assigned-only tier — confined by the owner SQL filter, not here
+	}
+	// Holds the base. Confine only if a device_group-scoped grant is attached;
+	// an unscoped grant (Global) or no scoping grant means unrestricted.
+	f := DeviceScopeFilterFor(ctx, permission)
+	if f.Global || len(f.GroupIDs) == 0 {
+		return nil
+	}
+	return EnforceDeviceScope(ctx, resolver, permission, deviceID)
+}
+
 // intersects reports whether a and b share any element.
 func intersects(a, b []string) bool {
 	if len(a) == 0 || len(b) == 0 {
