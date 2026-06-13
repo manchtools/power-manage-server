@@ -372,3 +372,55 @@ func TestRotateSCIMToken_NotEnabled(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
+
+// TestIdentityProvider_TrustEmailAssertions_RoundTrip pins WS5: the
+// trust_email_assertions opt-in is settable via Create/Update and reflected in
+// the response (and thus the projection the SCIM gate reads). Default false.
+func TestIdentityProvider_TrustEmailAssertions_RoundTrip(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	enc := testutil.NewEncryptor(t)
+	h := api.NewIDPHandler(st, enc, "http://localhost:8081", slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	// Create with the flag ON.
+	created, err := h.CreateIdentityProvider(ctx, connect.NewRequest(&pm.CreateIdentityProviderRequest{
+		Name:                 "TrustIdP",
+		Slug:                 "trustidp" + testutil.NewID()[:6],
+		ProviderType:         pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
+		ClientId:             "cid",
+		ClientSecret:         "secret",
+		IssuerUrl:            "https://idp.example.com",
+		TrustEmailAssertions: true,
+	}))
+	require.NoError(t, err)
+	assert.True(t, created.Msg.Provider.TrustEmailAssertions, "Create must persist trust_email_assertions=true")
+	providerID := created.Msg.Provider.Id
+
+	// Read back.
+	got, err := h.GetIdentityProvider(ctx, connect.NewRequest(&pm.GetIdentityProviderRequest{Id: providerID}))
+	require.NoError(t, err)
+	assert.True(t, got.Msg.Provider.TrustEmailAssertions, "Get must reflect the stored flag")
+
+	// Update the flag OFF.
+	updated, err := h.UpdateIdentityProvider(ctx, connect.NewRequest(&pm.UpdateIdentityProviderRequest{
+		Id:                   providerID,
+		Name:                 "TrustIdP",
+		Enabled:              true,
+		TrustEmailAssertions: false,
+	}))
+	require.NoError(t, err)
+	assert.False(t, updated.Msg.Provider.TrustEmailAssertions, "Update must be able to turn the flag off")
+
+	// Default: a provider created without the flag is false.
+	def, err := h.CreateIdentityProvider(ctx, connect.NewRequest(&pm.CreateIdentityProviderRequest{
+		Name:         "DefaultIdP",
+		Slug:         "defaultidp" + testutil.NewID()[:6],
+		ProviderType: pm.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
+		ClientId:     "cid",
+		ClientSecret: "secret",
+		IssuerUrl:    "https://idp2.example.com",
+	}))
+	require.NoError(t, err)
+	assert.False(t, def.Msg.Provider.TrustEmailAssertions, "default must be false (secure)")
+}

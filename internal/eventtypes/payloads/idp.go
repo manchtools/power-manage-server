@@ -36,6 +36,7 @@ type IdentityProviderCreated struct {
 	Scopes                   []string        `json:"scopes,omitempty"`
 	AutoCreateUsers          bool            `json:"auto_create_users"`
 	AutoLinkByEmail          bool            `json:"auto_link_by_email"`
+	TrustEmailAssertions     bool            `json:"trust_email_assertions"`
 	DefaultRoleID            string          `json:"default_role_id,omitempty"`
 	DisablePasswordForLinked bool            `json:"disable_password_for_linked"`
 	GroupClaim               string          `json:"group_claim,omitempty"`
