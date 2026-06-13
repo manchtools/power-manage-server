@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"strings"
 	"time"
@@ -30,6 +31,32 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
+
+// Per-group advisory-lock namespaces for the drain (#15). The high 32 bits hold
+// a fixed namespace so a derived key can never collide with the api last-admin
+// lock (advisoryKeyAdminMutation, whose high 32 bits are 0x61); device and user
+// queues use distinct namespaces so a device group and a user group with the same
+// id-hash don't exclude each other. The low 32 bits are an FNV-1a hash of the
+// group id — a hash collision only causes an occasional redundant skip (the
+// skipped group's queue row survives and is re-evaluated), never incorrect
+// membership.
+const (
+	dynDeviceGroupLockNamespace int64 = 0x64796e64 << 32 // "dynd"
+	dynUserGroupLockNamespace   int64 = 0x64796e75 << 32 // "dynu"
+)
+
+func deviceGroupLockKey(groupID string) int64 {
+	return dynDeviceGroupLockNamespace | int64(groupIDHash(groupID))
+}
+func userGroupLockKey(groupID string) int64 {
+	return dynUserGroupLockNamespace | int64(groupIDHash(groupID))
+}
+
+func groupIDHash(groupID string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(groupID))
+	return h.Sum32()
+}
 
 // Evaluator is the in-process group-membership recalculator. Construct
 // once per server boot (alongside the handlers / inbox worker) and call
@@ -247,12 +274,22 @@ func (e *Evaluator) DrainDeviceGroupQueue(ctx context.Context) (DrainResult, err
 	}
 	var count int32
 	for _, id := range ids {
-		if err := e.EvaluateDeviceGroup(ctx, id); err != nil {
+		// Claim the group with a per-group advisory lock so two control replicas
+		// never evaluate the same group concurrently (#15). A skip (ran=false)
+		// means another replica holds it — leave the queue row; it (or a later
+		// drain) handles it. At-least-once: evaluation is idempotent, so a crash
+		// mid-eval releases the lock and the surviving row is re-evaluated.
+		ran, err := e.store.TryWithAdvisoryLock(ctx, deviceGroupLockKey(id), func() error {
+			return e.EvaluateDeviceGroup(ctx, id)
+		})
+		if err != nil {
 			e.logger.Warn("dyngroupeval: failed to evaluate queued device group; skipping",
 				"group_id", id, "error", err)
 			continue
 		}
-		count++
+		if ran {
+			count++
+		}
 	}
 	more, err := q.HasDynamicDeviceGroupQueueEntries(ctx)
 	if err != nil {
@@ -270,12 +307,18 @@ func (e *Evaluator) DrainUserGroupQueue(ctx context.Context) (DrainResult, error
 	}
 	var count int32
 	for _, id := range ids {
-		if err := e.EvaluateUserGroup(ctx, id); err != nil {
+		// Per-group advisory claim — see DrainDeviceGroupQueue (#15).
+		ran, err := e.store.TryWithAdvisoryLock(ctx, userGroupLockKey(id), func() error {
+			return e.EvaluateUserGroup(ctx, id)
+		})
+		if err != nil {
 			e.logger.Warn("dyngroupeval: failed to evaluate queued user group; skipping",
 				"group_id", id, "error", err)
 			continue
 		}
-		count++
+		if ran {
+			count++
+		}
 	}
 	more, err := q.HasDynamicUserGroupQueueEntries(ctx)
 	if err != nil {

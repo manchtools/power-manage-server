@@ -596,3 +596,38 @@ func TestWithAdvisoryLock_NoDeadlockUnderPoolPressure(t *testing.T) {
 		}
 	}
 }
+
+// TestTryWithAdvisoryLock_SkipsWhenHeldElsewhere pins the cross-session skip
+// semantics the dynamic-group drain relies on (#15): when another database
+// session already holds the advisory lock — i.e. another control replica is
+// evaluating that group — TryWithAdvisoryLock must report ran=false and NOT run
+// fn, so the second replica skips it (the queue row survives and is re-evaluated;
+// at-least-once). When the lock is free it runs fn and reports ran=true.
+func TestTryWithAdvisoryLock_SkipsWhenHeldElsewhere(t *testing.T) {
+	st := testutil.SetupPostgresPool(t, 4)
+	ctx := context.Background()
+	const key int64 = 0x64796e6701 // namespaced drain-style key
+
+	// Simulate "another replica" by holding the lock on a separate session.
+	holder, err := st.TestingPool().Acquire(ctx)
+	require.NoError(t, err)
+	defer holder.Release()
+	var got bool
+	require.NoError(t, holder.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got))
+	require.True(t, got, "holder session must acquire the lock")
+
+	ran, err := st.TryWithAdvisoryLock(ctx, key, func() error {
+		t.Fatal("fn must not run while the lock is held by another session")
+		return nil
+	})
+	require.NoError(t, err)
+	assert.False(t, ran, "TryWithAdvisoryLock must skip when the lock is held elsewhere")
+
+	// Release the holder's lock; now the try must succeed and run fn.
+	require.NoError(t, holder.QueryRow(ctx, "SELECT pg_advisory_unlock($1)", key).Scan(&got))
+	called := false
+	ran, err = st.TryWithAdvisoryLock(ctx, key, func() error { called = true; return nil })
+	require.NoError(t, err)
+	assert.True(t, ran, "TryWithAdvisoryLock must run when the lock is free")
+	assert.True(t, called, "fn must run when the lock is acquired")
+}
