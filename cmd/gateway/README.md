@@ -253,6 +253,14 @@ Each connected device has its own Asynq queue (`device:<id>`) with a per-device 
 | `log:query` | Send a remote journalctl log query to the agent |
 | `luks:revoke_device_key` | Instruct agent to revoke device-bound LUKS key |
 
+> **Stream-RPC signatures are relayed, never originated (WS4).** The four
+> root stream-RPCs above (`osquery:dispatch`, `inventory:request`, `log:query`,
+> `luks:revoke_device_key`) are CA-signed at the Control Server. Each payload
+> carries the signature; the Gateway copies it verbatim onto the wire message
+> and **never calls a signer** — it has no CA key. The agent verifies the
+> signature fail-closed before running the request as root, so a compromised
+> Gateway/Valkey cannot forge or tamper one. See ADR 0007.
+
 ### Gateway → Control (control:inbox queue)
 
 Agent events are forwarded to the `control:inbox` queue for the Control Server to process:

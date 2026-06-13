@@ -11,6 +11,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -24,12 +25,13 @@ type LogsHandler struct {
 	taskQueueHolder
 	store  *store.Store
 	logger *slog.Logger
+	signer ca.ActionSigner  // signs log-query dispatches (WS4)
 	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewLogsHandler creates a new logs handler.
-func NewLogsHandler(st *store.Store, logger *slog.Logger) *LogsHandler {
-	return &LogsHandler{store: st, logger: logger, now: time.Now}
+func NewLogsHandler(st *store.Store, logger *slog.Logger, signer ca.ActionSigner) *LogsHandler {
+	return &LogsHandler{store: st, logger: logger, signer: signer, now: time.Now}
 }
 
 // QueryDeviceLogs dispatches a journalctl log query to a connected device.
@@ -67,12 +69,11 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create log query result")
 	}
 
-	// Dispatch log query to device via Asynq task queue.
-	// Enqueue failure: the pending result row already exists. Mark
-	// it expired so callers polling GetDeviceLogResult see a
-	// terminal failure rather than waiting the full 5-minute
-	// timeout on a task that never shipped.
-	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeLogQueryDispatch, taskqueue.LogQueryDispatchPayload{
+	// Build + sign the dispatch (WS4): journalctl runs as root, so the agent
+	// verifies the CA signature before building any journalctl invocation.
+	// Fail closed on a signing error — expire the pending row rather than
+	// shipping an unsigned task the agent drops.
+	payload := taskqueue.LogQueryDispatchPayload{
 		QueryID:  queryID,
 		Lines:    msg.Lines,
 		Unit:     msg.Unit,
@@ -81,7 +82,23 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		Priority: msg.Priority,
 		Grep:     msg.Grep,
 		Kernel:   msg.Kernel,
-	},
+	}
+	if err := signLogQueryDispatch(h.signer, &payload); err != nil {
+		h.logger.Error("log query dispatch signing failed; marking result expired",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		if expireErr := h.store.Repos().Logs.ExpirePendingQueryResult(ctx, queryID, "dispatch signing failed"); expireErr != nil {
+			h.logger.Error("failed to mark sign-failed log query result as expired",
+				"query_id", queryID, "error", expireErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign log query dispatch")
+	}
+
+	// Dispatch log query to device via Asynq task queue.
+	// Enqueue failure: the pending result row already exists. Mark
+	// it expired so callers polling GetDeviceLogResult see a
+	// terminal failure rather than waiting the full 5-minute
+	// timeout on a task that never shipped.
+	if err := h.aqClient.EnqueueToDevice(msg.DeviceId, taskqueue.TypeLogQueryDispatch, payload,
 		asynq.MaxRetry(3),
 		asynq.Deadline(h.now().Add(2*time.Minute)),
 	); err != nil {

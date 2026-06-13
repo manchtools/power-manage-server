@@ -123,16 +123,16 @@ func (h *deviceTaskHandler) handleOSQueryDispatch(_ context.Context, t *asynq.Ta
 		return fmt.Errorf("unmarshal osquery dispatch: %w", err)
 	}
 
+	// Relay the control-signed message verbatim: build the wire OSQuery from
+	// the shared ToProto (so its bytes match what the control server signed)
+	// and attach the carried signature. The gateway NEVER originates a
+	// signature — it only forwards (WS4).
+	query := payload.ToProto()
+	query.Signature = payload.Signature
 	msg := &pm.ServerMessage{
 		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_Query{
-			Query: &pm.OSQuery{
-				QueryId: payload.QueryID,
-				Table:   payload.Table,
-				Columns: payload.Columns,
-				Limit:   payload.Limit,
-				RawSql:  payload.RawSQL,
-			},
+			Query: query,
 		},
 	}
 
@@ -144,11 +144,20 @@ func (h *deviceTaskHandler) handleOSQueryDispatch(_ context.Context, t *asynq.Ta
 	return nil
 }
 
-func (h *deviceTaskHandler) handleInventoryRequest(_ context.Context, _ *asynq.Task) error {
+func (h *deviceTaskHandler) handleInventoryRequest(_ context.Context, t *asynq.Task) error {
+	var payload taskqueue.InventoryRequestPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("unmarshal inventory request: %w", err)
+	}
+
+	// Relay the control-signed request verbatim (WS4): carry query_id +
+	// signature onto the wire so the agent verifies before running osquery.
+	req := payload.ToProto()
+	req.Signature = payload.Signature
 	msg := &pm.ServerMessage{
 		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_RequestInventory{
-			RequestInventory: &pm.RequestInventory{},
+			RequestInventory: req,
 		},
 	}
 
@@ -156,7 +165,7 @@ func (h *deviceTaskHandler) handleInventoryRequest(_ context.Context, _ *asynq.T
 		return fmt.Errorf("send inventory request to agent: %w", err)
 	}
 
-	h.logger.Info("inventory request dispatched")
+	h.logger.Info("inventory request dispatched", "query_id", payload.QueryID)
 	return nil
 }
 
@@ -166,12 +175,14 @@ func (h *deviceTaskHandler) handleRevokeLuksDeviceKey(_ context.Context, t *asyn
 		return fmt.Errorf("unmarshal revoke luks: %w", err)
 	}
 
+	// Relay the control-signed revocation verbatim (WS4): carry the signature
+	// binding action_id onto the wire so the agent verifies before the wipe.
+	revoke := payload.ToProto()
+	revoke.Signature = payload.Signature
 	msg := &pm.ServerMessage{
 		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_RevokeLuksDeviceKey{
-			RevokeLuksDeviceKey: &pm.RevokeLuksDeviceKey{
-				ActionId: payload.ActionID,
-			},
+			RevokeLuksDeviceKey: revoke,
 		},
 	}
 
@@ -189,19 +200,15 @@ func (h *deviceTaskHandler) handleLogQueryDispatch(_ context.Context, t *asynq.T
 		return fmt.Errorf("unmarshal log query dispatch: %w", err)
 	}
 
+	// Relay the control-signed log query verbatim (WS4): build the wire
+	// LogQuery from the shared ToProto (matching the signed bytes) and attach
+	// the carried signature. Gateway never originates it.
+	query := payload.ToProto()
+	query.Signature = payload.Signature
 	msg := &pm.ServerMessage{
 		Id: ulid.Make().String(),
 		Payload: &pm.ServerMessage_LogQuery{
-			LogQuery: &pm.LogQuery{
-				QueryId:  payload.QueryID,
-				Lines:    payload.Lines,
-				Unit:     payload.Unit,
-				Since:    payload.Since,
-				Until:    payload.Until,
-				Priority: payload.Priority,
-				Grep:     payload.Grep,
-				Kernel:   payload.Kernel,
-			},
+			LogQuery: query,
 		},
 	}
 

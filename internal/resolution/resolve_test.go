@@ -562,6 +562,11 @@ func (noOpSigner) Sign(envelopeBytes []byte) ([]byte, error) {
 	return []byte("noop-test-signature"), nil
 }
 
+func (noOpSigner) SignDomain(domain string, payload []byte) ([]byte, error) {
+	_ = payload
+	return []byte("noop-test-signature:" + domain), nil
+}
+
 // bootstrapAndReconcileTerminalAdmin runs the manager's bootstrap +
 // reconcile against the test store so the two global actions exist
 // before the resolution-layer assertions run.

@@ -39,7 +39,7 @@ func globalCtx(actorID, perm string) context.Context {
 // all. Membership-based.
 func TestListDevices_DeviceScopeFiltered(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	h := api.NewDeviceHandler(st, nil, slog.Default())
+	h := api.NewDeviceHandler(st, nil, slog.Default(), api.NoOpSigner{})
 	actor := testutil.CreateTestUser(t, st, testutil.NewID()+"@a.com", "pass", "admin")
 
 	dgX := testutil.CreateTestDeviceGroup(t, st, actor, "Plant X")

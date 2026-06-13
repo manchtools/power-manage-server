@@ -17,6 +17,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -32,6 +33,7 @@ type DeviceHandler struct {
 	store     *store.Store
 	logger    *slog.Logger
 	encryptor *crypto.Encryptor
+	signer    ca.ActionSigner // signs LUKS device-key revocation dispatches (WS4)
 	// crl, when set, receives a deleted device's cert fingerprint so the cert
 	// stops working at the gateway. nil disables it (no Valkey / tests).
 	crl *crl.Store
@@ -39,8 +41,8 @@ type DeviceHandler struct {
 }
 
 // NewDeviceHandler creates a new device handler.
-func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger) *DeviceHandler {
-	return &DeviceHandler{store: st, encryptor: enc, logger: logger, now: time.Now}
+func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger, signer ca.ActionSigner) *DeviceHandler {
+	return &DeviceHandler{store: st, encryptor: enc, logger: logger, signer: signer, now: time.Now}
 }
 
 // SetCRLStore wires the certificate revocation list (post-construction).
@@ -992,10 +994,33 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record revocation request")
 	}
 
-	// Phase 2: enqueue.
-	if enqErr := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, taskqueue.RevokeLuksDeviceKeyPayload{
-		ActionID: req.Msg.ActionId,
-	}, asynq.MaxRetry(5)); enqErr != nil {
+	// Phase 2: sign + enqueue. The agent verifies the CA signature binding
+	// action_id before performing the destructive, irreversible slot-7 wipe
+	// (WS4), so a compromised gateway cannot forge or replay a revocation. A
+	// signing failure transitions the projection requested → failed.
+	revokePayload := taskqueue.RevokeLuksDeviceKeyPayload{ActionID: req.Msg.ActionId}
+	if signErr := signRevokeLuksDeviceKey(h.signer, &revokePayload); signErr != nil {
+		h.logger.Error("luks revocation signing failed; emitting LuksDeviceKeyRevocationFailed",
+			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", signErr)
+		if failErr := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "luks_key",
+			StreamID:   luksStreamID,
+			EventType:  string(eventtypes.LuksDeviceKeyRevocationFailed),
+			Data: payloads.LuksDeviceKeyRevocationFailed{
+				DeviceID: req.Msg.DeviceId,
+				ActionID: req.Msg.ActionId,
+				Error:    "failed to sign revocation dispatch",
+				FailedAt: h.now().UTC().Format(time.RFC3339Nano),
+			},
+			ActorType: "system",
+			ActorID:   "system",
+		}); failErr != nil {
+			h.logger.Error("failed to append LuksDeviceKeyRevocationFailed; projection stays at 'requested'",
+				"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", failErr)
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign LUKS revocation dispatch")
+	}
+	if enqErr := h.aqClient.EnqueueToDevice(req.Msg.DeviceId, taskqueue.TypeRevokeLuksDeviceKey, revokePayload, asynq.MaxRetry(5)); enqErr != nil {
 		// Phase 3b: append Failed so the projection transitions
 		// requested → failed. Best-effort; if this append also
 		// fails the projection stays at 'requested', which is
