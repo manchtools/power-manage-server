@@ -16,12 +16,13 @@ import (
 // Integration tests for the terminal_sessions table + its sqlc
 // queries. Cover the critical invariants of the rc7 reshape:
 //
-//   - Lifecycle Start creates a complete row.
+//   - Lifecycle Start creates a complete row (and is the ONLY query
+//     that may INSERT one — see the UPDATE-only append below).
 //   - Chunks append to `input`, bump chunk_count, and track
 //     last_sequence for idempotency.
-//   - A chunk arriving before the lifecycle Start creates a
-//     placeholder row that the Start-upsert then fills in
-//     without clobbering already-accumulated stdin.
+//   - A chunk arriving before the lifecycle Start is a no-op: the
+//     append query is UPDATE-only and never mints a placeholder, so a
+//     forged chunk cannot create an owner-bearing row.
 //   - Duplicate or out-of-order chunk sequences are rejected
 //     (last_sequence guard).
 //   - Oversized input clamps at the 8 MiB cap and flips
@@ -47,11 +48,15 @@ func upsertStartParams(sessionID, deviceID, userID string) db.UpsertTerminalSess
 	}
 }
 
-func chunkParams(sessionID, deviceID, userID string, data []byte, seq int64) db.AppendTerminalSessionChunkParams {
+// chunkParams builds an append-chunk parameter set. The append query is
+// UPDATE-only and keyed solely by session_id — it no longer carries
+// device_id/user_id (those are write-once, set by
+// UpsertTerminalSessionStart), so ownership cannot be spoofed via a
+// chunk. deviceID/userID are retained as helper arguments only to keep
+// the call sites self-documenting about which session a chunk targets.
+func chunkParams(sessionID, _deviceID, _userID string, data []byte, seq int64) db.AppendTerminalSessionChunkParams {
 	return db.AppendTerminalSessionChunkParams{
 		SessionID: sessionID,
-		DeviceID:  deviceID,
-		UserID:    userID,
 		Input:     data,
 		Sequence:  seq,
 	}
@@ -81,43 +86,50 @@ func TestTerminalSessions_StartCreatesRow(t *testing.T) {
 	assert.Equal(t, int64(0), row.LastSequence)
 }
 
-func TestTerminalSessions_ChunkBeforeStartCreatesPlaceholder(t *testing.T) {
-	// Covers the inbox-worker race: an AuditChunk task landing
-	// before the TerminalSessionStarted event is processed. The
-	// chunk handler must create a row on its own (minimally
-	// populated) so the stdin isn't dropped. The later Start
-	// upsert fills in the missing metadata without losing data.
+func TestTerminalSessions_ChunkBeforeStartIsNoop(t *testing.T) {
+	// Contract change (device-origin trust binding / SA-C2): the
+	// append-chunk query is UPDATE-only and must NEVER create a row.
+	// A chunk that races ahead of the TerminalSessionStarted event
+	// updates zero rows — the session does not exist yet — so no
+	// placeholder is minted. This is the defense-in-depth half of the
+	// inbox fix: a compromised gateway forging a chunk for a session
+	// it does not own can no longer materialise an owner-bearing row
+	// with attacker-chosen device_id/user_id and have it back-filled.
+	// The data loss is bounded to the pre-Start window; the agent
+	// re-tees on the next batch once Start has created the row.
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 	q := st.Queries()
 	sid := testutil.NewID()
 
+	// Chunk before any Start — must be a silent no-op, not an error,
+	// and must NOT create a row.
 	err := q.AppendTerminalSessionChunk(ctx, chunkParams(sid, "dev-2", "user-2", []byte("early\n"), 1))
-	require.NoError(t, err)
+	require.NoError(t, err, "an orphan chunk must no-op, not error")
+
+	_, err = q.GetTerminalSession(ctx, sid)
+	require.Error(t, err, "an audit chunk must never create a session row")
+
+	// Now the Start arrives — it is the ONLY query that bootstraps the
+	// row, with its own (authoritative, mTLS-sourced) owners.
+	require.NoError(t, q.UpsertTerminalSessionStart(ctx, upsertStartParams(sid, "dev-2", "user-2")))
 
 	row, err := q.GetTerminalSession(ctx, sid)
 	require.NoError(t, err)
 	assert.Equal(t, "dev-2", row.DeviceID)
 	assert.Equal(t, "user-2", row.UserID)
-	assert.Empty(t, row.TtyUser, "tty_user stays empty until the Start upsert fills it")
-	assert.Equal(t, int32(1), row.ChunkCount)
-	assert.Equal(t, int64(1), row.LastSequence)
-	assert.Equal(t, []byte("early\n"), row.Input)
+	assert.Equal(t, "pm-tty-user-2", row.TtyUser)
+	assert.Equal(t, int32(0), row.ChunkCount, "the pre-Start chunk was dropped, not retained")
+	assert.Empty(t, row.Input, "no stdin carried over from before Start")
+	assert.Equal(t, int64(0), row.LastSequence)
 
-	// Now the Start arrives — upsert must merge metadata without
-	// overwriting the already-captured stdin.
-	startParams := upsertStartParams(sid, "dev-2", "user-2")
-	err = q.UpsertTerminalSessionStart(ctx, startParams)
-	require.NoError(t, err)
-
+	// A chunk AFTER Start appends normally onto the existing row.
+	require.NoError(t, q.AppendTerminalSessionChunk(ctx, chunkParams(sid, "dev-2", "user-2", []byte("late\n"), 1)))
 	row, err = q.GetTerminalSession(ctx, sid)
 	require.NoError(t, err)
-	assert.Equal(t, "pm-tty-user-2", row.TtyUser, "Start upsert fills in tty_user")
-	assert.Equal(t, int32(80), row.Cols)
-	assert.Equal(t, int32(24), row.Rows)
-	assert.Equal(t, int32(1), row.ChunkCount, "chunk_count preserved across Start upsert")
-	assert.Equal(t, []byte("early\n"), row.Input, "stdin preserved across Start upsert")
-	assert.Equal(t, int64(1), row.LastSequence, "last_sequence preserved across Start upsert")
+	assert.Equal(t, int32(1), row.ChunkCount)
+	assert.Equal(t, int64(1), row.LastSequence)
+	assert.Equal(t, []byte("late\n"), row.Input)
 }
 
 func TestTerminalSessions_ChunksAppendInOrder(t *testing.T) {
@@ -236,14 +248,16 @@ func TestTerminalSessions_InputCapClampsAndFlagsTruncation(t *testing.T) {
 	assert.Equal(t, int64(3), row.LastSequence)
 }
 
-func TestTerminalSessions_OversizedFirstChunkClampsOnInsert(t *testing.T) {
-	// Pathological first chunk: larger than the entire cap,
-	// arriving before any Start. The INSERT branch must clamp
-	// to the cap and set input_truncated from the get-go.
+func TestTerminalSessions_OversizedFirstChunkClampsOnAppend(t *testing.T) {
+	// Pathological first chunk: larger than the entire cap. The
+	// append (against the row bootstrapped by Start) must clamp to the
+	// cap and set input_truncated from the first byte over.
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 	q := st.Queries()
 	sid := testutil.NewID()
+
+	require.NoError(t, q.UpsertTerminalSessionStart(ctx, upsertStartParams(sid, "dev-big", "user-big")))
 
 	payload := bytes.Repeat([]byte{'X'}, inputCapBytes+1024)
 	require.NoError(t, q.AppendTerminalSessionChunk(ctx, chunkParams(sid, "dev-big", "user-big", payload, 1)))

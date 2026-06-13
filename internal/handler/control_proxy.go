@@ -14,19 +14,35 @@ import (
 // This replaces direct database access for synchronous operations that need credential handling.
 type ControlProxy struct {
 	client pmv1connect.InternalServiceClient
+	// gatewayID is this gateway's own identity, stamped onto every device-origin
+	// request so control can confine the call to the device→gateway routing
+	// binding (the gateway peer mTLS cert is shared and carries no per-gateway
+	// identity, so the request must self-assert it). See server#403.
+	gatewayID string
 }
 
 // NewControlProxy creates a new control proxy pointing at the given control server URL.
-// The httpClient should be configured with mTLS when TLS is enabled.
-func NewControlProxy(httpClient *http.Client, controlURL string) *ControlProxy {
+// The httpClient should be configured with mTLS when TLS is enabled. gatewayID is
+// this gateway's identity, stamped onto device-origin requests for the
+// device→gateway binding check on control.
+func NewControlProxy(httpClient *http.Client, controlURL, gatewayID string) *ControlProxy {
+	// Fail fast on an empty gatewayID: a gateway that stamps "" onto every
+	// device-origin request has control reject ALL of them (the binding check
+	// returns "gateway_id is required") — a total, silent outage. cmd/gateway
+	// guarantees a non-empty id (config or a startup ULID), so this only fires
+	// on a future wiring bug, and a loud crash beats a silently-dead gateway.
+	if gatewayID == "" {
+		panic("handler.NewControlProxy: gatewayID must not be empty")
+	}
 	client := pmv1connect.NewInternalServiceClient(httpClient, controlURL)
-	return &ControlProxy{client: client}
+	return &ControlProxy{client: client, gatewayID: gatewayID}
 }
 
 // VerifyDevice checks that a device exists and is not deleted on the control server.
 func (p *ControlProxy) VerifyDevice(ctx context.Context, deviceID string) error {
 	_, err := p.client.VerifyDevice(ctx, connect.NewRequest(&pm.VerifyDeviceRequest{
-		DeviceId: deviceID,
+		DeviceId:  deviceID,
+		GatewayId: p.gatewayID,
 	}))
 	return err
 }
@@ -34,7 +50,8 @@ func (p *ControlProxy) VerifyDevice(ctx context.Context, deviceID string) error 
 // SyncActions resolves all assigned actions for a device via the control server.
 func (p *ControlProxy) SyncActions(ctx context.Context, deviceID string) (*pm.SyncActionsResponse, error) {
 	resp, err := p.client.ProxySyncActions(ctx, connect.NewRequest(&pm.InternalSyncActionsRequest{
-		DeviceId: deviceID,
+		DeviceId:  deviceID,
+		GatewayId: p.gatewayID,
 	}))
 	if err != nil {
 		return nil, err
@@ -45,8 +62,9 @@ func (p *ControlProxy) SyncActions(ctx context.Context, deviceID string) (*pm.Sy
 // ValidateLuksToken validates and consumes a one-time LUKS token via the control server.
 func (p *ControlProxy) ValidateLuksToken(ctx context.Context, deviceID, token string) (*pm.ValidateLuksTokenResponse, error) {
 	resp, err := p.client.ProxyValidateLuksToken(ctx, connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
-		DeviceId: deviceID,
-		Token:    token,
+		DeviceId:  deviceID,
+		Token:     token,
+		GatewayId: p.gatewayID,
 	}))
 	if err != nil {
 		return nil, err
@@ -57,8 +75,9 @@ func (p *ControlProxy) ValidateLuksToken(ctx context.Context, deviceID, token st
 // GetLuksKey retrieves and decrypts the current LUKS key via the control server.
 func (p *ControlProxy) GetLuksKey(ctx context.Context, deviceID, actionID string) (*pm.GetLuksKeyResponse, error) {
 	resp, err := p.client.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
-		DeviceId: deviceID,
-		ActionId: actionID,
+		DeviceId:  deviceID,
+		ActionId:  actionID,
+		GatewayId: p.gatewayID,
 	}))
 	if err != nil {
 		return nil, err
@@ -74,6 +93,7 @@ func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, dev
 		DevicePath:     devicePath,
 		Passphrase:     passphrase,
 		RotationReason: reason,
+		GatewayId:      p.gatewayID,
 	}))
 	if err != nil {
 		return nil, err
@@ -87,6 +107,7 @@ func (p *ControlProxy) StoreLpsPasswords(ctx context.Context, deviceID, actionID
 		DeviceId:  deviceID,
 		ActionId:  actionID,
 		Rotations: rotations,
+		GatewayId: p.gatewayID,
 	}))
 	return err
 }

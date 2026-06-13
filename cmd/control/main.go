@@ -316,6 +316,13 @@ func main() {
 		// ProxyValidateTerminalToken.
 		internalHandler.SetTerminalTokenStore(valkey.TerminalTokenStore)
 	}
+	if valkey != nil && valkey.GatewayRegistry != nil {
+		// Confine every device-origin InternalService request to the gateway the
+		// device is actually live on (server#403). Wired whenever the
+		// Valkey-backed routing registry is available; a nil resolver (no
+		// registry) keeps the documented single-gateway bypass.
+		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
+	}
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(
 		internalHandler,
 		connect.WithInterceptors(api.NewValidationInterceptor()),

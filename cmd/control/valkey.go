@@ -70,6 +70,12 @@ type valkeySubsystem struct {
 	// it to the ControlService so renewal/device-deletion revoke the old cert;
 	// gateways read the same Valkey key to enforce it on mTLS connections.
 	CRLStore *crl.Store
+
+	// GatewayRegistry is the device→gateway routing registry. main() hands it to
+	// the InternalHandler (SetDeviceGatewayResolver) so every device-origin
+	// InternalService request is confined to the gateway the device is live on
+	// (server#403). The same registry backs terminal URL lookup + fan-out.
+	GatewayRegistry *registry.Registry
 }
 
 // Close stops the Asynq servers and closes the Valkey clients.
@@ -145,6 +151,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	v.CRLStore = crl.NewStore(v.rdb)
 	svc.SetCRLStore(v.CRLStore)
 	gatewayReg := registry.New(registry.NewValkeyBackend(v.rdb), logger.With("component", "gateway_registry"))
+	v.GatewayRegistry = gatewayReg
 	termHandler := api.NewTerminalHandler(
 		st,
 		v.TerminalTokenStore,
@@ -183,7 +190,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	}
 
 	// Asynq mux + servers.
-	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"))
+	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"), gatewayReg)
 	aqLogger := logger.With("component", "asynq_server")
 	v.inboxServer = newInboxAsynqServer(cfg, aqLogger)
 	if err := v.inboxServer.Start(inboxWorker.NewMux()); err != nil {

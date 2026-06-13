@@ -17,6 +17,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -49,7 +50,22 @@ type InternalHandler struct {
 	// default 'method not implemented'.
 	terminalTokenStore *terminal.TokenStore
 
+	// deviceGatewayResolver resolves which gateway a device is currently live
+	// on, written under the agent's mTLS identity (the device→gateway routing
+	// registry). Set via SetDeviceGatewayResolver in HA/multi-gateway
+	// deployments. When nil (single-gateway, non-HA), the device-origin binding
+	// check is bypassed — the documented single-gateway exception (see ADR).
+	deviceGatewayResolver registry.DeviceGatewayLookup
+
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
+}
+
+// SetDeviceGatewayResolver wires the device→gateway routing registry so every
+// InternalService request that carries a device_id is confined to the gateway
+// the device is actually live on (verifyDeviceGatewayBinding). Called from
+// main.go in HA/multi-gateway deployments; left nil for single-gateway.
+func (h *InternalHandler) SetDeviceGatewayResolver(r registry.DeviceGatewayLookup) {
+	h.deviceGatewayResolver = r
 }
 
 // NewInternalHandler creates a new internal service handler.
@@ -87,6 +103,9 @@ func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
+	}
 
 	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID})
 	if err != nil {
@@ -106,6 +125,9 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	deviceID := req.Msg.DeviceId
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
+	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
 	}
 
 	// Fail closed on a missing signer. Synced actions are signed at
@@ -341,6 +363,9 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and token are required")
 	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
+	}
 
 	token, err := h.store.Repos().Luks.ConsumeToken(ctx, store.ConsumeLuksTokenParams{Token: req.Msg.Token, DeviceID: req.Msg.DeviceId})
 	if err != nil {
@@ -373,6 +398,9 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
+	}
 
 	key, err := h.store.Repos().Luks.GetCurrentForAction(ctx, store.LuksKeyByActionKey{DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId})
 	if err != nil {
@@ -397,6 +425,9 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || req.Msg.Passphrase == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and passphrase are required")
+	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
 	}
 
 	encPassphrase, err := h.encryptor.Encrypt(req.Msg.Passphrase)
@@ -438,6 +469,9 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
+	}
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+		return nil, err
 	}
 
 	// Persistence MUST fail-closed. LPS rotation is irreversible:

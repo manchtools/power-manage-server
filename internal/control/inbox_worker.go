@@ -22,6 +22,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -46,10 +47,19 @@ type InboxWorker struct {
 	signer     ca.ActionSigner
 	taskSigner *taskqueue.Signer
 	logger     *slog.Logger
+	// resolver looks up which gateway a device is currently live on, so
+	// every device-origin handler can confine the task to that gateway
+	// (registry.CheckDeviceGatewayBinding). nil = single-gateway / non-HA
+	// deployment: the binding is documented-disabled there, exactly as on
+	// the InternalService side (api/gateway_binding.go).
+	resolver registry.DeviceGatewayLookup
 }
 
-// NewInboxWorker creates a new inbox worker.
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger) *InboxWorker {
+// NewInboxWorker creates a new inbox worker. resolver is the
+// device→gateway routing lookup used to bind device-origin tasks to the
+// gateway the device is live on; pass nil in single-gateway deployments
+// where the binding is not enforced.
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger, resolver registry.DeviceGatewayLookup) *InboxWorker {
 	return &InboxWorker{
 		now:        time.Now,
 		store:      st,
@@ -57,7 +67,19 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.Actio
 		signer:     signer,
 		taskSigner: taskSigner,
 		logger:     logger,
+		resolver:   resolver,
 	}
+}
+
+// verifyDeviceGatewayBinding maps the shared binding policy to an inbox drop:
+// a forged/mismatched binding is NOT retryable, so wrap with asynq.SkipRetry
+// and append NO event. Returns nil when the binding is OK (or no resolver).
+func (w *InboxWorker) verifyDeviceGatewayBinding(ctx context.Context, deviceID, gatewayID string) error {
+	if err := registry.CheckDeviceGatewayBinding(ctx, w.resolver, deviceID, gatewayID); err != nil {
+		w.logger.Warn("inbox: rejecting device-origin task: gateway binding", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
+		return fmt.Errorf("%w: device→gateway binding: %v", asynq.SkipRetry, err)
+	}
+	return nil
 }
 
 // NewMux returns an Asynq ServeMux with handlers for the main
@@ -101,6 +123,10 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	var payload taskqueue.DeviceHelloPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal device hello: %w", err)
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
@@ -150,6 +176,10 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 	var payload taskqueue.DeviceHeartbeatPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal device heartbeat: %w", err)
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	// Skip processing for deleted or unknown devices.
@@ -202,6 +232,10 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	resultID := result.GetActionId().GetValue()
 	if resultID == "" {
 		return fmt.Errorf("action result missing action ID")
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, deviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	logger := w.logger.With("device_id", deviceID, "result_id", resultID)
@@ -433,6 +467,10 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 		return fmt.Errorf("unmarshal output chunk: %w", err)
 	}
 
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
+	}
+
 	// Second-line size guard (audit F-33). The gateway already caps
 	// at 64 KiB on the agent-facing side (handler/agent.go,
 	// maxOutputChunkBytes), but the inbox worker is also a trust
@@ -454,6 +492,27 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 		return nil
 	}
 
+	// Cross-device ownership guard (mirrors the handleExecutionResult
+	// check). The execution ID is non-secret, so without this a
+	// compromised agent could splice forged output onto ANOTHER device's
+	// execution stream by supplying its ID. The reporting device must own
+	// the execution. When the execution is not found we keep the prior
+	// behaviour (append anyway) — chunks can legitimately race ahead of
+	// the ExecutionCreated projection, and there is no owner to spoof yet.
+	if exec, err := w.store.Repos().Execution.Get(ctx, payload.ExecutionID); err == nil {
+		if exec.DeviceID != payload.DeviceID {
+			w.logger.Warn("dropping output chunk: execution belongs to a different device",
+				"execution_id", payload.ExecutionID,
+				"reporting_device_id", payload.DeviceID,
+				"execution_device_id", exec.DeviceID)
+			return nil
+		}
+	} else if !store.IsNotFound(err) {
+		// Transient DB / context error — let Asynq retry rather than
+		// drop or blindly append.
+		return fmt.Errorf("look up execution %s for output chunk: %w", payload.ExecutionID, err)
+	}
+
 	return w.store.AppendEvent(ctx, store.Event{
 		StreamType: "execution",
 		StreamID:   payload.ExecutionID,
@@ -472,6 +531,10 @@ func (w *InboxWorker) handleOSQueryResult(ctx context.Context, t *asynq.Task) er
 	var payload taskqueue.OSQueryResultPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal osquery result: %w", err)
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	w.logger.Info("received query result",
@@ -506,6 +569,10 @@ func (w *InboxWorker) handleLogQueryResult(ctx context.Context, t *asynq.Task) e
 		return fmt.Errorf("unmarshal log query result: %w", err)
 	}
 
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
+	}
+
 	w.logger.Info("received log query result",
 		"device_id", payload.DeviceID,
 		"query_id", payload.QueryID,
@@ -533,6 +600,10 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 	var payload taskqueue.InventoryUpdatePayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal inventory update: %w", err)
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	w.logger.Info("received device inventory",
@@ -592,6 +663,10 @@ func (w *InboxWorker) handleSecurityAlert(ctx context.Context, t *asynq.Task) er
 		return fmt.Errorf("unmarshal security alert: %w", err)
 	}
 
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
+	}
+
 	w.logger.Warn("received security alert from device",
 		"device_id", payload.DeviceID,
 		"alert_type", payload.AlertType,
@@ -616,6 +691,10 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	var payload taskqueue.RevokeLuksDeviceKeyResultPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal revoke luks result: %w", err)
+	}
+
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
 	}
 
 	w.logger.Info("received LUKS device key revocation result",
@@ -643,11 +722,14 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	// not a correctness issue for the projection (it keys by
 	// stream_id), but worth flagging for the audit export.
 	//
-	// If the lookup fails (e.g. the Requested event never made it
-	// to disk because the original API call crashed), fall back to
-	// a fresh stream ID so we still record the Failed outcome
-	// durably — an orphan Failed event is better than dropping the
-	// agent-reported failure on the floor.
+	// If the lookup finds no matching Requested/Dispatched stream, the
+	// result is dropped (see the IsNotFound branch). Earlier versions
+	// minted a FRESH ulid here and appended anyway — but the (device,
+	// action) pair is attacker-supplied, so a compromised gateway could
+	// fabricate an orphan luks_key stream out of thin air (audit:
+	// no genuine operator request ever existed). We only ever land the
+	// terminal event on a stream a real RevokeLuksDeviceKey request
+	// minted.
 	luksStreamID, err := w.store.Repos().Luks.GetRevocationStreamID(ctx, store.LuksRevocationStreamKey{
 		DeviceID: payload.DeviceID,
 		ActionID: payload.ActionID,
@@ -656,16 +738,15 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	case err == nil:
 		// Happy path — stream ID recovered.
 	case store.IsNotFound(err):
-		// Genuinely absent: the Requested event never landed
-		// (original RPC crashed before append). Fall back to a
-		// fresh ULID so we still record the terminal outcome —
-		// an orphan Failed event is better than silently dropping
-		// the agent-reported failure on the floor.
-		w.logger.Warn("LUKS revocation stream ID not found — appending to a fresh stream; projection will show only the terminal event",
+		// No outstanding revocation request for this (device, action).
+		// Either the result is stale/duplicate, or it was forged by a
+		// compromised gateway for a request that was never made. Drop
+		// it rather than fabricate an orphan stream from attacker input.
+		w.logger.Warn("dropping LUKS revocation result: no matching outstanding revocation request",
 			"device_id", payload.DeviceID,
 			"action_id", payload.ActionID,
 		)
-		luksStreamID = ulid.Make().String()
+		return nil
 	default:
 		// Transient DB / context error. Return so Asynq retries;
 		// previously we masked these as "not found" and forked
@@ -1011,9 +1092,13 @@ func writeFramed(h hash.Hash, b []byte) {
 // (TerminalSessionStarted / Stopped / Terminated) stay on the
 // audit stream as the user-visible audit markers.
 //
-// The sqlc query uses INSERT ... ON CONFLICT so a chunk arriving
-// before the lifecycle Started event still creates a valid row;
-// the Started handler's upsert then completes the metadata.
+// The sqlc query is UPDATE-only (keyed on session_id): an audit chunk
+// can append stdin onto an EXISTING session but can never INSERT an
+// owner-bearing row. Session bootstrap is the lifecycle
+// TerminalSessionStarted handler's job (UpsertTerminalSessionStart). A
+// chunk that outruns the Started event — or one a compromised gateway
+// forges for an unknown / unowned session — is dropped here rather than
+// allowed to mint a placeholder with attacker-chosen owners.
 func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Task) error {
 	var payload taskqueue.TerminalAuditChunkPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
@@ -1026,10 +1111,38 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		return nil
 	}
 
+	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
+		return err
+	}
+
+	// The session row is the authority on who owns the stdin stream.
+	// The audit chunk is no longer allowed to CREATE a session (an
+	// upsert keyed on payload DeviceID/UserID would let a compromised
+	// gateway mint a placeholder row with attacker-chosen owners, then
+	// have it back-filled — or simply pollute the audit trail). Require
+	// the session to already exist (bootstrapped by the
+	// TerminalSessionStarted lifecycle handler), and require the chunk's
+	// claimed (device, user) to match the row's owners exactly. Append
+	// using the owners DERIVED FROM THE ROW, never the payload.
+	session, err := w.store.Queries().GetTerminalSession(ctx, payload.SessionID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			w.logger.Warn("dropping terminal audit chunk for unknown session: refusing to create a session from an audit chunk",
+				"session_id", payload.SessionID, "device_id", payload.DeviceID, "user_id", payload.UserID)
+			return nil
+		}
+		return fmt.Errorf("look up terminal session %s: %w", payload.SessionID, err)
+	}
+	if session.DeviceID != payload.DeviceID || session.UserID != payload.UserID {
+		w.logger.Warn("dropping terminal audit chunk: device/user does not own the session",
+			"session_id", payload.SessionID,
+			"claimed_device_id", payload.DeviceID, "session_device_id", session.DeviceID,
+			"claimed_user_id", payload.UserID, "session_user_id", session.UserID)
+		return nil
+	}
+
 	return w.store.Queries().AppendTerminalSessionChunk(ctx, db.AppendTerminalSessionChunkParams{
 		SessionID: payload.SessionID,
-		DeviceID:  payload.DeviceID,
-		UserID:    payload.UserID,
 		Input:     payload.Data,
 		// Sequence guards against duplicate / out-of-order retries
 		// from Asynq. The gateway's audit batcher stamps each chunk

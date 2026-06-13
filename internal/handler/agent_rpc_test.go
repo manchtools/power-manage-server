@@ -78,7 +78,7 @@ func setupAgentForRPCTest(t *testing.T) (*AgentHandler, *recordingInternalForRPC
 	t.Cleanup(srv.Close)
 
 	hh := &AgentHandler{
-		controlProxy: NewControlProxy(srv.Client(), srv.URL),
+		controlProxy: NewControlProxy(srv.Client(), srv.URL, "test-gateway"),
 		logger:       slog.Default(),
 	}
 	return hh, stub

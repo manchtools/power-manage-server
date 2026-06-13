@@ -104,7 +104,7 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 
 	// 2) Real ControlProxy + connection.Manager + recording fakes for
 	// the queue and per-device worker manager.
-	proxy := NewControlProxy(internalSrv.Client(), internalSrv.URL)
+	proxy := NewControlProxy(internalSrv.Client(), internalSrv.URL, "test-gateway")
 	mgr := connection.NewManager()
 	worker := &fakeStreamWorkerManager{}
 	h := &AgentHandler{

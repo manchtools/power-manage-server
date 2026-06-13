@@ -92,7 +92,7 @@ func setupAgentForLuksTest(t *testing.T) (*AgentHandler, *recordingInternal) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	proxy := NewControlProxy(srv.Client(), srv.URL)
+	proxy := NewControlProxy(srv.Client(), srv.URL, "test-gateway")
 	mgr := connection.NewManager()
 	return &AgentHandler{
 		manager:      mgr,

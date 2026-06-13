@@ -35,15 +35,27 @@ type TerminalBridgeHandler struct {
 	sessions     *connection.TerminalSessionRegistry
 	controlProxy *ControlProxy
 	aqClient     *taskqueue.Client
-	logger       *slog.Logger
+	// gatewayID self-asserts which gateway is relaying the terminal-stdin
+	// audit chunks this bridge tees to control:inbox. The inbox worker
+	// binds it against the session's device→gateway routing so a
+	// confused/compromised gateway cannot forge audit bytes for a device
+	// live elsewhere. Empty in single-gateway deployments (binding
+	// disabled there, matching the rest of the device-origin pipeline).
+	gatewayID string
+	logger    *slog.Logger
 }
 
-// NewTerminalBridgeHandler constructs a bridge handler.
+// NewTerminalBridgeHandler constructs a bridge handler. gatewayID is
+// the relaying gateway's self-asserted identity, stamped onto the
+// terminal-audit chunks so the control:inbox worker can bind them to
+// the device→gateway routing registry; pass "" in single-gateway
+// deployments where the binding is not enforced.
 func NewTerminalBridgeHandler(
 	manager *connection.Manager,
 	sessions *connection.TerminalSessionRegistry,
 	controlProxy *ControlProxy,
 	aqClient *taskqueue.Client,
+	gatewayID string,
 	logger *slog.Logger,
 ) *TerminalBridgeHandler {
 	return &TerminalBridgeHandler{
@@ -51,6 +63,7 @@ func NewTerminalBridgeHandler(
 		sessions:     sessions,
 		controlProxy: controlProxy,
 		aqClient:     aqClient,
+		gatewayID:    gatewayID,
 		logger:       logger,
 	}
 }
@@ -524,6 +537,7 @@ func (h *TerminalBridgeHandler) enqueueAuditChunk(
 		UserID:    validated.UserId,
 		Data:      data,
 		Sequence:  seq,
+		GatewayID: h.gatewayID,
 	}
 	if err := h.aqClient.EnqueueToControl(taskqueue.TypeTerminalAuditChunk, payload); err != nil {
 		h.logger.Debug("failed to enqueue terminal audit chunk",

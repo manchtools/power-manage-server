@@ -11,85 +11,67 @@ import (
 )
 
 const appendTerminalSessionChunk = `-- name: AppendTerminalSessionChunk :exec
-INSERT INTO terminal_sessions (
-    session_id, device_id, user_id, tty_user,
-    started_at,
-    input,
-    input_truncated,
-    last_sequence,
-    chunk_count
-) VALUES (
-    $1, $2, $3, '',
-    NOW(),
-    -- Postgres has no LEFT(bytea, int); use substring for bytea
-    -- clamping. ` + "`" + `FROM 1 FOR n` + "`" + ` is 1-indexed inclusive.
-    substring($4::bytea FROM 1 FOR 8388608),
-    octet_length($4::bytea) > 8388608,
-    $5,
-    1
-)
-ON CONFLICT (session_id) DO UPDATE SET
-    input = terminal_sessions.input
-          || substring(EXCLUDED.input FROM 1 FOR
-                       GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
-    input_truncated = terminal_sessions.input_truncated
-                   OR (octet_length(EXCLUDED.input)
-                       > GREATEST(0, 8388608 - octet_length(terminal_sessions.input))),
-    last_sequence = EXCLUDED.last_sequence,
-    chunk_count   = terminal_sessions.chunk_count + 1
-  WHERE EXCLUDED.last_sequence > terminal_sessions.last_sequence
+UPDATE terminal_sessions SET
+    input = input
+          || substring($1::bytea FROM 1 FOR
+                       GREATEST(0, 8388608 - octet_length(input))),
+    input_truncated = input_truncated
+                   OR (octet_length($1::bytea)
+                       > GREATEST(0, 8388608 - octet_length(input))),
+    last_sequence = $2,
+    chunk_count   = chunk_count + 1
+  WHERE session_id = $3
+    AND $2 > last_sequence
 `
 
 type AppendTerminalSessionChunkParams struct {
-	SessionID string `json:"session_id"`
-	DeviceID  string `json:"device_id"`
-	UserID    string `json:"user_id"`
 	Input     []byte `json:"input"`
 	Sequence  int64  `json:"sequence"`
+	SessionID string `json:"session_id"`
 }
 
 // Called from the TerminalAuditChunk inbox handler.
 //
-// Two safety guards layered into a single statement:
+// UPDATE-only (defense in depth, server SA-C2 / device-origin trust
+// binding): this statement can ONLY append stdin onto an EXISTING
+// session row, keyed by session_id. It deliberately does NOT INSERT
+// and does NOT set device_id/user_id — those owners are written once,
+// by UpsertTerminalSessionStart from the mTLS-authenticated lifecycle
+// event. A compromised gateway relaying a forged chunk for an unknown
+// session therefore updates zero rows (the inbox handler additionally
+// drops unknown sessions before reaching here), so it can never mint a
+// placeholder row with attacker-chosen owners that a later Started
+// event would bless. Ownership of the chunk is checked in the handler
+// against the session row BEFORE this runs.
 //
-//   - Sequence idempotency. The gateway's audit batcher stamps
-//     each chunk with a strictly-monotonic per-session sequence.
-//     We only apply the append when the incoming sequence is
-//     greater than the stored last_sequence, so a duplicate or
-//     reordered retry from Asynq is a no-op rather than a
-//     double-append that would corrupt `input` and inflate
-//     chunk_count.
+// Two safety guards retained from the previous upsert form:
 //
-//   - 8 MiB cap on `input`. The appended payload is clamped to
-//     the remaining capacity (LEFT(bytes, GREATEST(0, cap -
-//     current))) so a single oversized chunk still produces a
+//   - Sequence idempotency. The gateway's audit batcher stamps each
+//     chunk with a strictly-monotonic per-session sequence. We only
+//     apply the append when the incoming sequence is greater than the
+//     stored last_sequence, so a duplicate or reordered retry from
+//     Asynq is a no-op rather than a double-append that would corrupt
+//     `input` and inflate chunk_count.
+//
+//   - 8 MiB cap on `input`. The appended payload is clamped to the
+//     remaining capacity so a single oversized chunk still produces a
 //     well-formed row and flips input_truncated to mark the loss.
-//     Subsequent chunks clamp to zero bytes until retention or
-//     archive runs.
+//     Subsequent chunks clamp to zero bytes until retention or archive
+//     runs.
 //
-// The INSERT branch creates a placeholder when a chunk outruns
-// the lifecycle Started event. device_id and user_id come from
-// the chunk payload, so the placeholder is well-formed.
-//
-// Concurrency note: this query's last_sequence guard defends
-// against Asynq REDELIVERY of a single task (same sequence twice),
-// but a NAIVE deployment with two workers dequeuing different
-// sequences for the same session in parallel could still drop
-// bytes on the loser of the race (whichever commits last fails
-// the guard and no-ops). To close that window, the control server
-// processes TypeTerminalAuditChunk on a dedicated Asynq server
-// with Concurrency=1 (queue ControlTerminalAuditQueue, wired up
-// in cmd/control/main.go). As long as the operator does not flip
-// that concurrency or re-route the task type to the main inbox
-// queue, per-session chunks commit strictly in sequence order.
+// Concurrency note: the last_sequence guard defends against Asynq
+// REDELIVERY of a single task (same sequence twice), but a NAIVE
+// deployment with two workers dequeuing different sequences for the
+// same session in parallel could still drop bytes on the loser of the
+// race (whichever commits last fails the guard and no-ops). To close
+// that window, the control server processes TypeTerminalAuditChunk on
+// a dedicated Asynq server with Concurrency=1 (queue
+// ControlTerminalAuditQueue, wired up in cmd/control/main.go). As long
+// as the operator does not flip that concurrency or re-route the task
+// type to the main inbox queue, per-session chunks commit strictly in
+// sequence order.
 func (q *Queries) AppendTerminalSessionChunk(ctx context.Context, arg AppendTerminalSessionChunkParams) error {
-	_, err := q.db.Exec(ctx, appendTerminalSessionChunk,
-		arg.SessionID,
-		arg.DeviceID,
-		arg.UserID,
-		arg.Input,
-		arg.Sequence,
-	)
+	_, err := q.db.Exec(ctx, appendTerminalSessionChunk, arg.Input, arg.Sequence, arg.SessionID)
 	return err
 }
 
@@ -431,12 +413,15 @@ type UpsertTerminalSessionStartParams struct {
 //     duplicate or out-of-order retries do not corrupt `input`
 //     or stutter chunk_count.
 //
-// Called from the TerminalSessionStarted inbox handler. The INSERT
-// is idempotent per session_id because a TerminalAuditChunk task
-// can race ahead of the lifecycle event on a busy inbox — the chunk
-// handler has its own INSERT ... ON CONFLICT that creates a
-// placeholder row, and this upsert then fills in the real metadata
-// without clobbering any stdin already appended.
+// Called from the TerminalSessionStarted inbox handler. This is the
+// ONLY query that bootstraps a terminal_sessions row — the
+// AppendTerminalSessionChunk path below is UPDATE-only and cannot
+// INSERT, so an audit chunk can never mint an owner-bearing row with
+// attacker-chosen device_id/user_id. If a chunk races ahead of the
+// lifecycle Started event it is dropped by the inbox handler (the
+// session does not exist yet); the agent re-tees on the next batch
+// once Started has created the row. The upsert remains idempotent per
+// session_id so a redelivered Started event is harmless.
 func (q *Queries) UpsertTerminalSessionStart(ctx context.Context, arg UpsertTerminalSessionStartParams) error {
 	_, err := q.db.Exec(ctx, upsertTerminalSessionStart,
 		arg.SessionID,

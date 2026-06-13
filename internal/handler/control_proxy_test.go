@@ -173,7 +173,7 @@ func setupProxy(t *testing.T) (*handler.ControlProxy, *fakeInternalService) {
 	mux.Handle(path, h)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return handler.NewControlProxy(srv.Client(), srv.URL), fake
+	return handler.NewControlProxy(srv.Client(), srv.URL, "test-gateway"), fake
 }
 
 // =============================================================================
@@ -334,9 +334,18 @@ func TestControlProxy_TransportError_Propagates(t *testing.T) {
 	// Point the proxy at a URL no server is listening on. The Connect
 	// client should surface a transport-class error rather than a
 	// silent zero-value response.
-	p := handler.NewControlProxy(http.DefaultClient, "http://127.0.0.1:1") // port 1 — never listening
+	p := handler.NewControlProxy(http.DefaultClient, "http://127.0.0.1:1", "test-gateway") // port 1 — never listening
 	_, err := p.SyncActions(context.Background(), "dev-1")
 	require.Error(t, err, "transport-level failure must propagate; a zero-value response would be silently bad")
+}
+
+// TestNewControlProxy_PanicsOnEmptyGatewayID pins the fail-fast: a gateway that
+// stamps an empty gateway_id onto every device-origin request has control reject
+// ALL of them, a total silent outage. The constructor must crash loudly instead.
+func TestNewControlProxy_PanicsOnEmptyGatewayID(t *testing.T) {
+	require.Panics(t, func() {
+		handler.NewControlProxy(http.DefaultClient, "https://control.invalid", "")
+	}, "an empty gatewayID must fail fast at construction")
 }
 
 // =============================================================================
