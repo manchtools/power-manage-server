@@ -65,6 +65,24 @@ FROM user_group_members_projection ugm
 JOIN user_group_roles_projection ugr ON ugr.group_id = ugm.group_id
 WHERE ugr.role_id = $1;
 
+-- name: ListUserIDsWithRoleExcludingGroup :many
+-- Users who hold the role via a DIRECT grant OR via membership in any user
+-- group OTHER than the excluded one. The last-admin guard on the group-demotion
+-- paths uses this to compute the admin set that SURVIVES removing one group's
+-- role grant (revoke-role-from-group / delete-group): a user who is admin only
+-- via the excluded group is correctly dropped, while one who also holds Admin
+-- directly or via another group is retained.
+SELECT DISTINCT user_id FROM (
+    SELECT ur.user_id
+    FROM user_roles_projection ur
+    WHERE ur.role_id = sqlc.arg(role_id)
+    UNION
+    SELECT ugm.user_id
+    FROM user_group_members_projection ugm
+    JOIN user_group_roles_projection ugr ON ugr.group_id = ugm.group_id
+    WHERE ugr.role_id = sqlc.arg(role_id) AND ugm.group_id <> sqlc.arg(exclude_group_id)
+) AS admins;
+
 -- name: GetUserPermissionsWithGroups :many
 SELECT DISTINCT unnest(r.permissions)::TEXT AS permission
 FROM roles_projection r

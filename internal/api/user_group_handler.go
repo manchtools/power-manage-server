@@ -311,14 +311,32 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   req.Msg.Id,
-		EventType:  string(eventtypes.UserGroupDeleted),
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
-	}, "failed to delete user group"); err != nil {
+	appendDelete := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   req.Msg.Id,
+			EventType:  string(eventtypes.UserGroupDeleted),
+			Data:       map[string]any{},
+			ActorType:  "user",
+			ActorID:    userCtx.ID,
+		}, "failed to delete user group")
+	}
+	// Last-admin guard: deleting an admin-bearing group strips that admin path
+	// from every member at once — refuse if it would leave no enabled admin, and
+	// run the check + delete under the shared advisory lock so it is atomic
+	// against a concurrent admin removal (#5/#369).
+	confersAdmin, err := h.groupConfersAdmin(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check group admin role")
+	}
+	if confersAdmin {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterGroupRoleRemoved(ctx, h.store, req.Msg.Id)
+		}, appendDelete)
+	} else {
+		err = appendDelete()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -451,17 +469,34 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 	}
 
 	streamID := req.Msg.GroupId + ":" + req.Msg.UserId
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  string(eventtypes.UserGroupMemberRemoved),
-		Data: payloads.UserGroupMemberRemoved{
-			GroupID: req.Msg.GroupId,
-			UserID:  req.Msg.UserId,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to remove user from group"); err != nil {
+	appendRemove := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  string(eventtypes.UserGroupMemberRemoved),
+			Data: payloads.UserGroupMemberRemoved{
+				GroupID: req.Msg.GroupId,
+				UserID:  req.Msg.UserId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to remove user from group")
+	}
+	// Last-admin guard: if this group confers Admin, removing the member could
+	// strip their only admin path — refuse if it would leave no enabled admin,
+	// under the shared advisory lock for atomicity (#5/#369).
+	confersAdmin, err := h.groupConfersAdmin(ctx, req.Msg.GroupId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check group admin role")
+	}
+	if confersAdmin {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterMemberRemoved(ctx, h.store, req.Msg.GroupId, req.Msg.UserId)
+		}, appendRemove)
+	} else {
+		err = appendRemove()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -625,19 +660,37 @@ func (h *UserGroupHandler) RevokeRoleFromUserGroup(ctx context.Context, req *con
 	if scopeKind != "" {
 		streamID += ":" + scopeID
 	}
-	if err := appendEvent(ctx, h.store, h.logger, store.Event{
-		StreamType: "user_group",
-		StreamID:   streamID,
-		EventType:  string(eventtypes.UserGroupRoleRevoked),
-		Data: payloads.UserGroupRoleRevoked{
-			GroupID:   req.Msg.GroupId,
-			RoleID:    req.Msg.RoleId,
-			ScopeKind: sk,
-			ScopeID:   si,
-		},
-		ActorType: "user",
-		ActorID:   userCtx.ID,
-	}, "failed to revoke role from user group"); err != nil {
+	appendRevoke := func() error {
+		return appendEvent(ctx, h.store, h.logger, store.Event{
+			StreamType: "user_group",
+			StreamID:   streamID,
+			EventType:  string(eventtypes.UserGroupRoleRevoked),
+			Data: payloads.UserGroupRoleRevoked{
+				GroupID:   req.Msg.GroupId,
+				RoleID:    req.Msg.RoleId,
+				ScopeKind: sk,
+				ScopeID:   si,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}, "failed to revoke role from user group")
+	}
+	// Last-admin guard: revoking the UNSCOPED Admin grant from a group strips
+	// admin from every member that held it only via this group — refuse if no
+	// enabled admin would survive, under the shared advisory lock (#5/#369). A
+	// scoped grant never confers global admin, so it skips the guard.
+	adminRevoke, err := h.revokingUnscopedAdminRole(ctx, req.Msg.RoleId, scopeKind)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check revoked role")
+	}
+	if adminRevoke {
+		err = guardedAdminMutationGuard(ctx, h.store, func() error {
+			return assertEnabledAdminRemainsAfterGroupRoleRemoved(ctx, h.store, req.Msg.GroupId)
+		}, appendRevoke)
+	} else {
+		err = appendRevoke()
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -872,6 +925,36 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 // the first failure but continues through the rest so that a single
 // failing member does not prevent the remaining members from being
 // invalidated. A partial bump is better than stopping early.
+// groupConfersAdmin reports whether the user group currently grants the Admin
+// system role (unscoped). Gates the last-admin guard on member-remove / delete.
+func (h *UserGroupHandler) groupConfersAdmin(ctx context.Context, groupID string) (bool, error) {
+	adminRole, err := h.store.Repos().Role.GetByName(ctx, "Admin")
+	if err != nil {
+		return false, err
+	}
+	return h.store.Queries().UserGroupHasRole(ctx, db.UserGroupHasRoleParams{
+		GroupID: groupID,
+		RoleID:  adminRole.ID,
+	})
+}
+
+// revokingUnscopedAdminRole reports whether a revoke targets the UNSCOPED Admin
+// system-role grant — the only grant that confers global admin and so the only
+// one the last-admin guard applies to.
+func (h *UserGroupHandler) revokingUnscopedAdminRole(ctx context.Context, roleID, scopeKind string) (bool, error) {
+	if scopeKind != "" {
+		return false, nil
+	}
+	role, err := h.store.Queries().GetRoleByID(ctx, roleID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return role.IsSystem && role.Name == "Admin", nil
+}
+
 func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
 	memberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 	if err != nil {
