@@ -458,6 +458,45 @@ func (s *Store) WithAdvisoryLock(ctx context.Context, key int64, fn func() error
 	return fn()
 }
 
+// TryWithAdvisoryLock is the non-blocking sibling of WithAdvisoryLock. It runs
+// fn while holding a session-level advisory lock on key ONLY IF the lock is free
+// across the whole database; if another session already holds it (e.g. another
+// control replica), it reports ran=false WITHOUT running fn. Used by the
+// dynamic-group drain so two replicas never evaluate the same group concurrently
+// — the second skips it and the queue row it leaves behind is picked up later
+// (at-least-once; evaluation is idempotent).
+//
+// Same local-mutex discipline as WithAdvisoryLock: the mutex is taken only for
+// the brief try (and across fn when acquired) so a skipping caller releases it
+// immediately. Cross-process exclusion is pg_try_advisory_lock's job — within a
+// single process the mutex already serializes callers, so the skip path matters
+// across replicas (the actual concern).
+func (s *Store) TryWithAdvisoryLock(ctx context.Context, key int64, fn func() error) (ran bool, err error) {
+	s.advisoryMu.Lock()
+	defer s.advisoryMu.Unlock()
+
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return false, fmt.Errorf("acquire connection for advisory lock: %w", err)
+	}
+	defer conn.Release()
+
+	var got bool
+	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock($1)", key).Scan(&got); err != nil {
+		return false, fmt.Errorf("try advisory lock %d: %w", key, err)
+	}
+	if !got {
+		return false, nil
+	}
+	defer func() {
+		if _, uerr := conn.Exec(context.WithoutCancel(ctx), "SELECT pg_advisory_unlock($1)", key); uerr != nil && err == nil {
+			err = fmt.Errorf("release advisory lock %d: %w", key, uerr)
+		}
+	}()
+
+	return true, fn()
+}
+
 // WithTx runs a function within a transaction.
 func (s *Store) WithTx(ctx context.Context, fn func(*Queries) error) error {
 	tx, err := s.pool.Begin(ctx)

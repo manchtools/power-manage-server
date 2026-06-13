@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -273,14 +274,45 @@ func TestAuthorize_DeviceHeartbeat(t *testing.T) {
 	}
 }
 
-func TestAuthorize_DeviceDeniedAdminActions(t *testing.T) {
-	denied := []string{"CreateUser", "DeleteDevice", "DispatchAction", "ListUsers"}
-	for _, action := range denied {
-		allowed := Authorize(AuthzInput{
-			IsDevice:  true,
-			SubjectID: "device-1",
-			Action:    action,
-		})
-		assert.False(t, allowed, "device should be denied %s", action)
+// TestAuthorize_DeviceAllowed_ExactSet pins the EXACT set of actions a device
+// cert may invoke and proves every other registered permission is denied —
+// self-discoveringly, so a new permission can never silently become
+// device-reachable (#11). Replaces the old hand-picked denied-actions sample.
+//
+// The allowed set is sourced from the device trust model (a device may read
+// itself, read definitions to execute, read its own executions, and report
+// status), NOT from authorizeDevice — so a change to authorizeDevice that widens
+// device reach fails this test.
+func TestAuthorize_DeviceAllowed_ExactSet(t *testing.T) {
+	const self = "device-1"
+	allowed := map[string]AuthzInput{
+		"GetDevice":       {IsDevice: true, SubjectID: self, Action: "GetDevice", ResourceID: self},
+		"ListDefinitions": {IsDevice: true, SubjectID: self, Action: "ListDefinitions"},
+		"GetDefinition":   {IsDevice: true, SubjectID: self, Action: "GetDefinition"},
+		"ListExecutions":  {IsDevice: true, SubjectID: self, Action: "ListExecutions", DeviceID: self},
+		"GetExecution":    {IsDevice: true, SubjectID: self, Action: "GetExecution", DeviceID: self},
+		"Heartbeat":       {IsDevice: true, SubjectID: self, Action: "Heartbeat"},
+		"UpdateStatus":    {IsDevice: true, SubjectID: self, Action: "UpdateStatus"},
 	}
+	require.NotEmpty(t, allowed)
+
+	for name, in := range allowed {
+		assert.Truef(t, Authorize(in), "device must be allowed %s with its correct binding", name)
+	}
+
+	// Self-discovering deny: every registered RBAC permission NOT in the allow-set
+	// must be denied for a device — even handed a self-binding, a device must not
+	// gain a permission merely because it was added to the registry.
+	perms := AllPermissions()
+	require.NotEmpty(t, perms, "no permissions discovered — the deny sweep would be vacuous")
+	denied := 0
+	for _, p := range perms {
+		if _, ok := allowed[p.Key]; ok {
+			continue
+		}
+		in := AuthzInput{IsDevice: true, SubjectID: self, Action: p.Key, ResourceID: self, DeviceID: self}
+		assert.Falsef(t, Authorize(in), "device must be denied %s (not in the device allow-list)", p.Key)
+		denied++
+	}
+	require.Greater(t, denied, len(allowed), "deny sweep must cover more permissions than the allow-list")
 }
