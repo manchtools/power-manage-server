@@ -147,7 +147,22 @@ func main() {
 	}
 	http2.ConfigureTransport(controlTransport)
 	controlHTTPClient := &http.Client{Transport: controlTransport}
-	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL)
+
+	// Resolve this gateway's stable ID before constructing the control proxy,
+	// which stamps it onto every device-origin request for the device→gateway
+	// binding check on control. If GATEWAY_ID is set, use it (static-config
+	// Traefik setups where the operator pre-declares per-gateway routes);
+	// otherwise generate a ULID at startup (dynamic-config setups where Traefik
+	// picks up new routes from a watcher / file provider / k8s ingress).
+	gatewayID := cfg.GatewayID
+	if gatewayID == "" {
+		gatewayID = ulid.Make().String()
+		logger.Info("generated dynamic gateway ID", "gateway_id", gatewayID)
+	} else {
+		logger.Info("using configured gateway ID", "gateway_id", gatewayID)
+	}
+
+	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL, gatewayID)
 	logger.Info("control proxy initialized", "control_url", cfg.ControlURL)
 
 	// Create connection manager
@@ -165,19 +180,6 @@ func main() {
 		logger.With("component", "device_worker"),
 	)
 	defer workerMgr.StopAll()
-
-	// Resolve this gateway's stable ID. If GATEWAY_ID is set, use it
-	// (static-config Traefik setups where the operator pre-declares
-	// per-gateway routes). Otherwise generate a ULID at startup
-	// (dynamic-config setups where Traefik picks up new routes from
-	// a watcher / file provider / k8s ingress automatically).
-	gatewayID := cfg.GatewayID
-	if gatewayID == "" {
-		gatewayID = ulid.Make().String()
-		logger.Info("generated dynamic gateway ID", "gateway_id", gatewayID)
-	} else {
-		logger.Info("using configured gateway ID", "gateway_id", gatewayID)
-	}
 
 	// Declare the shutdown signal ctx up-front so downstream goroutines
 	// (registry refresh, internal-URL refresh) can derive from it and

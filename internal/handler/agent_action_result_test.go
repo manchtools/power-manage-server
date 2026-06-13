@@ -66,7 +66,7 @@ func setupForActionResult(t *testing.T) (*AgentHandler, *fakeEnqueuer, *recordin
 	fake := &fakeEnqueuer{}
 	hh := &AgentHandler{
 		aqClient:     fake,
-		controlProxy: NewControlProxy(srv.Client(), srv.URL),
+		controlProxy: NewControlProxy(srv.Client(), srv.URL, "test-gateway"),
 		logger:       slog.Default(),
 	}
 	return hh, fake, stub

@@ -90,6 +90,16 @@ const (
 	// config" message instead of "An unexpected error occurred". See
 	// rc11 #79.
 	ErrGatewayNotRegistered = "gateway_not_registered"
+
+	// Gateway↔control device-origin binding (WS2 / #403).
+	// ErrGatewayDeviceBindingMismatch: the calling gateway is not the one the
+	// device is live on — a compromised/confused gateway reaching for another
+	// device's secrets or forging its events (CodePermissionDenied).
+	// ErrGatewayDeviceBindingUnknown: the device is not live on any gateway, so
+	// the binding cannot be verified — fail-closed rather than allow
+	// (CodeFailedPrecondition).
+	ErrGatewayDeviceBindingMismatch = "gateway_device_binding_mismatch"
+	ErrGatewayDeviceBindingUnknown  = "gateway_device_binding_unknown"
 )
 
 // Compliance policy error codes.
