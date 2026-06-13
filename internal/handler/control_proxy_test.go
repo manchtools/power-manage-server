@@ -339,6 +339,15 @@ func TestControlProxy_TransportError_Propagates(t *testing.T) {
 	require.Error(t, err, "transport-level failure must propagate; a zero-value response would be silently bad")
 }
 
+// TestNewControlProxy_PanicsOnEmptyGatewayID pins the fail-fast: a gateway that
+// stamps an empty gateway_id onto every device-origin request has control reject
+// ALL of them, a total silent outage. The constructor must crash loudly instead.
+func TestNewControlProxy_PanicsOnEmptyGatewayID(t *testing.T) {
+	require.Panics(t, func() {
+		handler.NewControlProxy(http.DefaultClient, "https://control.invalid", "")
+	}, "an empty gatewayID must fail fast at construction")
+}
+
 // =============================================================================
 // GatewayServiceHandler smoke tests — list / terminate via the
 // in-memory TerminalSessionRegistry. The handler is otherwise a thin

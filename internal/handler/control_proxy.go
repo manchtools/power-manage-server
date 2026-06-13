@@ -26,6 +26,14 @@ type ControlProxy struct {
 // this gateway's identity, stamped onto device-origin requests for the
 // device→gateway binding check on control.
 func NewControlProxy(httpClient *http.Client, controlURL, gatewayID string) *ControlProxy {
+	// Fail fast on an empty gatewayID: a gateway that stamps "" onto every
+	// device-origin request has control reject ALL of them (the binding check
+	// returns "gateway_id is required") — a total, silent outage. cmd/gateway
+	// guarantees a non-empty id (config or a startup ULID), so this only fires
+	// on a future wiring bug, and a loud crash beats a silently-dead gateway.
+	if gatewayID == "" {
+		panic("handler.NewControlProxy: gatewayID must not be empty")
+	}
 	client := pmv1connect.NewInternalServiceClient(httpClient, controlURL)
 	return &ControlProxy{client: client, gatewayID: gatewayID}
 }
