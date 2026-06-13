@@ -279,7 +279,6 @@ var v1ScopableDeviceTargeted = []string{
 	"GetDeviceCompliancePolicyStatus",
 	"AddDeviceToGroup",
 	"RemoveDeviceFromGroup",
-	"CreateStaticDeviceGroup",
 	"RenameDeviceGroup",
 	"UpdateDeviceGroupDescription",
 	"DeleteDeviceGroup",
@@ -306,7 +305,6 @@ var v1ScopableUserTargeted = []string{
 	"RemoveUserSshKey",
 	"AddUserToGroup",
 	"RemoveUserFromGroup",
-	"CreateStaticUserGroup",
 	"UpdateUserGroup",
 	"DeleteUserGroup",
 	"SetUserGroupMaintenanceWindow",
@@ -344,6 +342,12 @@ var v1NonScopableDangerous = []string{
 	"UpdateDynamicUserGroupQuery",
 	"EvaluateDynamicUserGroup",
 	"ValidateUserGroupQuery",
+	// Group CREATION is org-tier: a brand-new group has no id and no
+	// members, so nothing can confine a scope at create time. Marking
+	// create "scopable" would be advisory-only — scope is enforced on
+	// the downstream group-management + membership ops instead.
+	"CreateStaticDeviceGroup",
+	"CreateStaticUserGroup",
 	// Scope-authority itself is org-tier — V1 stance per T-S7
 	"AssignRoleScope",
 	// Role management is org-tier
@@ -474,11 +478,17 @@ func TestAllPermissions_RemovesLegacyCreateAndUpdateKeys(t *testing.T) {
 	}
 }
 
-func TestCreateStaticDeviceGroup_TargetsDevice(t *testing.T) {
+func TestCreateStaticDeviceGroup_NotScopable(t *testing.T) {
+	// Reversed from the original #7 stance: group CREATION is org-tier. A
+	// brand-new group has no id and no members, so there is nothing for a scope
+	// to confine at create time — making it scopable would be advisory-only,
+	// which the scopable==enforced rule forbids. Scope is enforced on the
+	// downstream group-management + membership ops (RenameDeviceGroup,
+	// AddDeviceToGroup, …) instead.
 	info, ok := indexAllByKey(t)["CreateStaticDeviceGroup"]
 	require.True(t, ok)
-	assert.Equal(t, TargetDevice, info.TargetKind,
-		"CreateStaticDeviceGroup must be TargetDevice so a scope-confined admin can organize their scoped devices into sub-groups")
+	assert.Equal(t, TargetUnspecified, info.TargetKind,
+		"CreateStaticDeviceGroup must be org-tier (TargetUnspecified) — nothing to confine a scope against at create time")
 }
 
 func TestCreateDynamicDeviceGroup_NotScopable(t *testing.T) {
@@ -488,11 +498,14 @@ func TestCreateDynamicDeviceGroup_NotScopable(t *testing.T) {
 		"CreateDynamicDeviceGroup must stay unscopable — dynamic queries can match arbitrary devices and perturb other scopes (T-S2)")
 }
 
-func TestCreateStaticUserGroup_TargetsUser(t *testing.T) {
+func TestCreateStaticUserGroup_NotScopable(t *testing.T) {
+	// Org-tier, symmetric with CreateStaticDeviceGroup: nothing to confine a
+	// scope against at create time; scope is enforced on the downstream
+	// group-management + membership ops.
 	info, ok := indexAllByKey(t)["CreateStaticUserGroup"]
 	require.True(t, ok)
-	assert.Equal(t, TargetUser, info.TargetKind,
-		"CreateStaticUserGroup must be TargetUser, symmetric with the device-group split")
+	assert.Equal(t, TargetUnspecified, info.TargetKind,
+		"CreateStaticUserGroup must be org-tier (TargetUnspecified) — nothing to confine a scope against at create time")
 }
 
 func TestCreateDynamicUserGroup_NotScopable(t *testing.T) {

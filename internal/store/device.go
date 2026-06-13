@@ -55,11 +55,14 @@ type GetDeviceKey struct {
 }
 
 // ListDevicesFilter pairs pagination with the same `:self`-scoped
-// owner filter that GetDeviceKey uses.
+// owner filter that GetDeviceKey uses, plus the #3 device-group scope
+// restriction (orthogonal to OwnerScope: OwnerScope is the :assigned
+// tier, Scope is the device-group tier).
 type ListDevicesFilter struct {
 	Limit      int32
 	Offset     int32
 	OwnerScope *string
+	Scope      ScopeGroupFilter
 }
 
 // DeviceRepo reads device-projection state. Writes flow through
@@ -91,13 +94,13 @@ type DeviceRepo interface {
 	ListOffline(ctx context.Context, filter ListDevicesFilter) ([]Device, error)
 
 	// Count returns the total non-deleted device count (optionally
-	// scoped). Pairs with List.
-	Count(ctx context.Context, ownerScope *string) (int64, error)
+	// scoped by owner and/or device-group scope). Pairs with List.
+	Count(ctx context.Context, ownerScope *string, scope ScopeGroupFilter) (int64, error)
 
 	// CountOnline / CountOffline mirror their ListXxx counterparts
 	// for pagination totals.
-	CountOnline(ctx context.Context, ownerScope *string) (int64, error)
-	CountOffline(ctx context.Context, ownerScope *string) (int64, error)
+	CountOnline(ctx context.Context, ownerScope *string, scope ScopeGroupFilter) (int64, error)
+	CountOffline(ctx context.Context, ownerScope *string, scope ScopeGroupFilter) (int64, error)
 
 	// HostnamesByIDs returns the (id, hostname) pairs for the given
 	// device IDs in a single round-trip. Used by response builders

@@ -99,11 +99,18 @@ func (q *Queries) CountGroupsWithRole(ctx context.Context, roleID string) (int64
 }
 
 const countUserGroups = `-- name: CountUserGroups :one
-SELECT count(*) FROM user_groups_projection WHERE is_deleted = FALSE
+SELECT count(*) FROM user_groups_projection
+WHERE is_deleted = FALSE
+  AND (NOT $1::boolean OR id = ANY($2::text[]))
 `
 
-func (q *Queries) CountUserGroups(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countUserGroups)
+type CountUserGroupsParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountUserGroups(ctx context.Context, arg CountUserGroupsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUserGroups, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -692,16 +699,28 @@ func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]L
 }
 
 const listUserGroups = `-- name: ListUserGroups :many
-SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2
+SELECT id, name, description, member_count, created_at, created_by, updated_at, is_deleted, projection_version, is_dynamic, dynamic_query, maintenance_window FROM user_groups_projection
+WHERE is_deleted = FALSE
+  AND (NOT $3::boolean OR id = ANY($4::text[]))
+ORDER BY name LIMIT $1 OFFSET $2
 `
 
 type ListUserGroupsParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
+// User-group scope (#3): direct id-match — when @scope_restricted, the group
+// itself must be one of @scope_group_ids. Empty array restricts to nothing.
 func (q *Queries) ListUserGroups(ctx context.Context, arg ListUserGroupsParams) ([]UserGroupsProjection, error) {
-	rows, err := q.db.Query(ctx, listUserGroups, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listUserGroups,
+		arg.Limit,
+		arg.Offset,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}

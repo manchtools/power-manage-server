@@ -247,6 +247,11 @@ WHERE ($1::TEXT = '' OR device_id = $1)
   ) OR EXISTS (
     SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
   ))
+  -- Device-group scope (#3): when @scope_restricted, the execution's device must
+  -- be a member of a group in @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = executions_projection.device_id AND dgm.group_id = ANY(@scope_group_ids::text[]))
+  )
 ORDER BY created_at DESC
 LIMIT $5 OFFSET $6;
 
@@ -259,7 +264,12 @@ WHERE ($1::TEXT = '' OR device_id = $1)
     SELECT 1 FROM actions_projection a WHERE a.id = executions_projection.action_id AND a.name ILIKE '%' || $4 || '%'
   ) OR EXISTS (
     SELECT 1 FROM devices_projection d WHERE d.id = executions_projection.device_id AND d.hostname ILIKE '%' || $4 || '%'
-  ));
+  ))
+  -- Device-group scope (#3): when @scope_restricted, the execution's device must
+  -- be a member of a group in @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = executions_projection.device_id AND dgm.group_id = ANY(@scope_group_ids::text[]))
+  );
 
 -- name: ListPendingExecutionsForDevice :many
 -- Include both 'pending' and 'dispatched' statuses, since dispatched executions

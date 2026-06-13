@@ -4,6 +4,11 @@ WHERE id = $1 AND is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
   );
 
 -- name: IsDeviceDeleted :one
@@ -20,6 +25,11 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2;
 
@@ -30,6 +40,11 @@ WHERE is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
   )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2;
@@ -42,6 +57,11 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2;
 
@@ -51,6 +71,11 @@ WHERE is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
   );
 
 -- name: CountDevicesOnline :one
@@ -60,6 +85,11 @@ WHERE is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
   );
 
 -- name: CountDevicesOffline :one
@@ -69,6 +99,11 @@ WHERE is_deleted = FALSE
   AND (sqlc.narg('filter_user_id')::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = sqlc.narg('filter_user_id'))
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = sqlc.narg('filter_user_id'))
+  )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY(@scope_group_ids::text[]))
   );
 
 -- name: ListDeviceAssignedUserIDsBatch :many

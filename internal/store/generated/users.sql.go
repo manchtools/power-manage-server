@@ -13,10 +13,18 @@ import (
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users_projection
 WHERE is_deleted = FALSE
+  AND (NOT $1::boolean
+    OR EXISTS (SELECT 1 FROM user_group_members_projection ugm WHERE ugm.user_id = users_projection.id AND ugm.group_id = ANY($2::text[]))
+  )
 `
 
-func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
-	row := q.db.QueryRow(ctx, countUsers)
+type CountUsersParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountUsers(ctx context.Context, arg CountUsersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsers, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -574,17 +582,29 @@ func (q *Queries) ListUserSshKeysBatch(ctx context.Context, userIds []string) ([
 const listUsers = `-- name: ListUsers :many
 SELECT id, email, password_hash, role, created_at, updated_at, last_login_at, disabled, is_deleted, projection_version, session_version, has_password, totp_enabled, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, user_provisioning_enabled, system_tty_action_id FROM users_projection
 WHERE is_deleted = FALSE
+  -- User-group scope (#3): when @scope_restricted, the user must be a member of a
+  -- group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $3::boolean
+    OR EXISTS (SELECT 1 FROM user_group_members_projection ugm WHERE ugm.user_id = users_projection.id AND ugm.group_id = ANY($4::text[]))
+  )
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {
-	Limit  int32 `json:"limit"`
-	Offset int32 `json:"offset"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]UsersProjection, error) {
-	rows, err := q.db.Query(ctx, listUsers, arg.Limit, arg.Offset)
+	rows, err := q.db.Query(ctx, listUsers,
+		arg.Limit,
+		arg.Offset,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}

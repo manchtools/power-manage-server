@@ -40,6 +40,9 @@ type DeviceGroupMember struct {
 type ListDeviceGroupsFilter struct {
 	Limit  int32
 	Offset int32
+	// Scope is the #3 device-group restriction: a direct id-match —
+	// when Restricted, only groups whose id is in GroupIDs are listed.
+	Scope ScopeGroupFilter
 }
 
 // DeviceGroupRepo reads device-group state from the projection.
@@ -58,8 +61,9 @@ type DeviceGroupRepo interface {
 	// List returns a page of groups.
 	List(ctx context.Context, filter ListDeviceGroupsFilter) ([]DeviceGroup, error)
 
-	// Count returns the total non-deleted group count.
-	Count(ctx context.Context) (int64, error)
+	// Count returns the total non-deleted group count, scoped to the
+	// caller's device-group scope when restricted.
+	Count(ctx context.Context, scope ScopeGroupFilter) (int64, error)
 
 	// ListForDevice returns every group the device belongs to
 	// (direct + dynamic-materialized membership).

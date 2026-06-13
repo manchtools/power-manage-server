@@ -69,6 +69,13 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		}
 	}
 
+	// Device-group scope (#3): orthogonal to the :assigned OwnerScope above. A
+	// scope-limited ListDevices holder sees only devices in their scope groups; a
+	// global holder is unrestricted. The same restriction drives the count query
+	// so pagination totals stay honest and don't leak the out-of-scope count.
+	scopeGroups, scopeRestricted := auth.DeviceScopeListFilter(ctx, "ListDevices")
+	scope := store.ScopeGroupFilter{Restricted: scopeRestricted, GroupIDs: scopeGroups}
+
 	var devices []store.Device
 
 	deviceRepo := h.store.Repos().Device
@@ -76,6 +83,7 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		Limit:      pageSize,
 		Offset:     offset,
 		OwnerScope: filterUID,
+		Scope:      scope,
 	}
 	switch req.Msg.StatusFilter {
 	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
@@ -93,11 +101,11 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 	var count int64
 	switch req.Msg.StatusFilter {
 	case pm.DeviceStatus_DEVICE_STATUS_ONLINE:
-		count, err = deviceRepo.CountOnline(ctx, filterUID)
+		count, err = deviceRepo.CountOnline(ctx, filterUID, scope)
 	case pm.DeviceStatus_DEVICE_STATUS_OFFLINE:
-		count, err = deviceRepo.CountOffline(ctx, filterUID)
+		count, err = deviceRepo.CountOffline(ctx, filterUID, scope)
 	default:
-		count, err = deviceRepo.Count(ctx, filterUID)
+		count, err = deviceRepo.Count(ctx, filterUID, scope)
 	}
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to count devices")

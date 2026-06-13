@@ -54,10 +54,21 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $2::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($3::text[]))
+  )
 `
 
-func (q *Queries) CountDevices(ctx context.Context, filterUserID *string) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevices, filterUserID)
+type CountDevicesParams struct {
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountDevices(ctx context.Context, arg CountDevicesParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevices, arg.FilterUserID, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -71,10 +82,21 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $2::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($3::text[]))
+  )
 `
 
-func (q *Queries) CountDevicesOffline(ctx context.Context, filterUserID *string) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevicesOffline, filterUserID)
+type CountDevicesOfflineParams struct {
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountDevicesOffline(ctx context.Context, arg CountDevicesOfflineParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesOffline, arg.FilterUserID, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -88,10 +110,21 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $1)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $1)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $2::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($3::text[]))
+  )
 `
 
-func (q *Queries) CountDevicesOnline(ctx context.Context, filterUserID *string) (int64, error) {
-	row := q.db.QueryRow(ctx, countDevicesOnline, filterUserID)
+type CountDevicesOnlineParams struct {
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountDevicesOnline(ctx context.Context, arg CountDevicesOnlineParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDevicesOnline, arg.FilterUserID, arg.ScopeRestricted, arg.ScopeGroupIds)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -207,15 +240,27 @@ WHERE id = $1 AND is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $2)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $2)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $3::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($4::text[]))
+  )
 `
 
 type GetDeviceByIDParams struct {
-	ID           string  `json:"id"`
-	FilterUserID *string `json:"filter_user_id"`
+	ID              string   `json:"id"`
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (DevicesProjection, error) {
-	row := q.db.QueryRow(ctx, getDeviceByID, arg.ID, arg.FilterUserID)
+	row := q.db.QueryRow(ctx, getDeviceByID,
+		arg.ID,
+		arg.FilterUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	var i DevicesProjection
 	err := row.Scan(
 		&i.ID,
@@ -746,18 +791,31 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $4::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($5::text[]))
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesParams struct {
-	Limit        int32   `json:"limit"`
-	Offset       int32   `json:"offset"`
-	FilterUserID *string `json:"filter_user_id"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevices, arg.Limit, arg.Offset, arg.FilterUserID)
+	rows, err := q.db.Query(ctx, listDevices,
+		arg.Limit,
+		arg.Offset,
+		arg.FilterUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -800,18 +858,31 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $4::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($5::text[]))
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesOfflineParams struct {
-	Limit        int32   `json:"limit"`
-	Offset       int32   `json:"offset"`
-	FilterUserID *string `json:"filter_user_id"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOfflineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesOffline, arg.Limit, arg.Offset, arg.FilterUserID)
+	rows, err := q.db.Query(ctx, listDevicesOffline,
+		arg.Limit,
+		arg.Offset,
+		arg.FilterUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -854,18 +925,31 @@ WHERE is_deleted = FALSE
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
     OR EXISTS (SELECT 1 FROM device_assigned_groups_projection dag JOIN user_group_members_projection ugm ON ugm.group_id = dag.group_id WHERE dag.device_id = devices_projection.id AND ugm.user_id = $3)
   )
+  -- Device-group scope (#3): when @scope_restricted, the device must be a member
+  -- of a group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT $4::boolean
+    OR EXISTS (SELECT 1 FROM device_group_members_projection dgm WHERE dgm.device_id = devices_projection.id AND dgm.group_id = ANY($5::text[]))
+  )
 ORDER BY last_seen_at DESC
 LIMIT $1 OFFSET $2
 `
 
 type ListDevicesOnlineParams struct {
-	Limit        int32   `json:"limit"`
-	Offset       int32   `json:"offset"`
-	FilterUserID *string `json:"filter_user_id"`
+	Limit           int32    `json:"limit"`
+	Offset          int32    `json:"offset"`
+	FilterUserID    *string  `json:"filter_user_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
 }
 
 func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlineParams) ([]DevicesProjection, error) {
-	rows, err := q.db.Query(ctx, listDevicesOnline, arg.Limit, arg.Offset, arg.FilterUserID)
+	rows, err := q.db.Query(ctx, listDevicesOnline,
+		arg.Limit,
+		arg.Offset,
+		arg.FilterUserID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+	)
 	if err != nil {
 		return nil, err
 	}

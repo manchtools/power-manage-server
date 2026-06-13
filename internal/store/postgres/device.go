@@ -46,9 +46,11 @@ func (d *Device) IsDeleted(ctx context.Context, id string) (bool, error) {
 
 func (d *Device) List(ctx context.Context, filter store.ListDevicesFilter) ([]store.Device, error) {
 	rows, err := d.q.ListDevices(ctx, generated.ListDevicesParams{
-		Limit:        filter.Limit,
-		Offset:       filter.Offset,
-		FilterUserID: filter.OwnerScope,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		FilterUserID:    filter.OwnerScope,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device: list: %w", err)
@@ -58,9 +60,11 @@ func (d *Device) List(ctx context.Context, filter store.ListDevicesFilter) ([]st
 
 func (d *Device) ListOnline(ctx context.Context, filter store.ListDevicesFilter) ([]store.Device, error) {
 	rows, err := d.q.ListDevicesOnline(ctx, generated.ListDevicesOnlineParams{
-		Limit:        filter.Limit,
-		Offset:       filter.Offset,
-		FilterUserID: filter.OwnerScope,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		FilterUserID:    filter.OwnerScope,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device: list online: %w", err)
@@ -70,9 +74,11 @@ func (d *Device) ListOnline(ctx context.Context, filter store.ListDevicesFilter)
 
 func (d *Device) ListOffline(ctx context.Context, filter store.ListDevicesFilter) ([]store.Device, error) {
 	rows, err := d.q.ListDevicesOffline(ctx, generated.ListDevicesOfflineParams{
-		Limit:        filter.Limit,
-		Offset:       filter.Offset,
-		FilterUserID: filter.OwnerScope,
+		Limit:           filter.Limit,
+		Offset:          filter.Offset,
+		FilterUserID:    filter.OwnerScope,
+		ScopeRestricted: filter.Scope.Restricted,
+		ScopeGroupIds:   filter.Scope.GroupIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("device: list offline: %w", err)
@@ -80,24 +86,36 @@ func (d *Device) ListOffline(ctx context.Context, filter store.ListDevicesFilter
 	return d.deviceRowsToSlice(ctx, rows)
 }
 
-func (d *Device) Count(ctx context.Context, ownerScope *string) (int64, error) {
-	n, err := d.q.CountDevices(ctx, ownerScope)
+func (d *Device) Count(ctx context.Context, ownerScope *string, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := d.q.CountDevices(ctx, generated.CountDevicesParams{
+		FilterUserID:    ownerScope,
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("device: count: %w", translateNotFound(err))
 	}
 	return n, nil
 }
 
-func (d *Device) CountOnline(ctx context.Context, ownerScope *string) (int64, error) {
-	n, err := d.q.CountDevicesOnline(ctx, ownerScope)
+func (d *Device) CountOnline(ctx context.Context, ownerScope *string, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := d.q.CountDevicesOnline(ctx, generated.CountDevicesOnlineParams{
+		FilterUserID:    ownerScope,
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("device: count online: %w", translateNotFound(err))
 	}
 	return n, nil
 }
 
-func (d *Device) CountOffline(ctx context.Context, ownerScope *string) (int64, error) {
-	n, err := d.q.CountDevicesOffline(ctx, ownerScope)
+func (d *Device) CountOffline(ctx context.Context, ownerScope *string, scope store.ScopeGroupFilter) (int64, error) {
+	n, err := d.q.CountDevicesOffline(ctx, generated.CountDevicesOfflineParams{
+		FilterUserID:    ownerScope,
+		ScopeRestricted: scope.Restricted,
+		ScopeGroupIds:   scope.GroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("device: count offline: %w", translateNotFound(err))
 	}

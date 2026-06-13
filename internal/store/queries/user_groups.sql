@@ -5,10 +5,17 @@ SELECT * FROM user_groups_projection WHERE id = $1 AND is_deleted = FALSE;
 SELECT * FROM user_groups_projection WHERE name = $1 AND is_deleted = FALSE;
 
 -- name: ListUserGroups :many
-SELECT * FROM user_groups_projection WHERE is_deleted = FALSE ORDER BY name LIMIT $1 OFFSET $2;
+-- User-group scope (#3): direct id-match — when @scope_restricted, the group
+-- itself must be one of @scope_group_ids. Empty array restricts to nothing.
+SELECT * FROM user_groups_projection
+WHERE is_deleted = FALSE
+  AND (NOT @scope_restricted::boolean OR id = ANY(@scope_group_ids::text[]))
+ORDER BY name LIMIT $1 OFFSET $2;
 
 -- name: CountUserGroups :one
-SELECT count(*) FROM user_groups_projection WHERE is_deleted = FALSE;
+SELECT count(*) FROM user_groups_projection
+WHERE is_deleted = FALSE
+  AND (NOT @scope_restricted::boolean OR id = ANY(@scope_group_ids::text[]));
 
 -- name: ListUserGroupMembers :many
 SELECT ugm.user_id, u.email, ugm.added_at

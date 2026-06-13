@@ -9,12 +9,20 @@ WHERE email = $1 AND is_deleted = FALSE;
 -- name: ListUsers :many
 SELECT * FROM users_projection
 WHERE is_deleted = FALSE
+  -- User-group scope (#3): when @scope_restricted, the user must be a member of a
+  -- group in @scope_group_ids. An empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM user_group_members_projection ugm WHERE ugm.user_id = users_projection.id AND ugm.group_id = ANY(@scope_group_ids::text[]))
+  )
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users_projection
-WHERE is_deleted = FALSE;
+WHERE is_deleted = FALSE
+  AND (NOT @scope_restricted::boolean
+    OR EXISTS (SELECT 1 FROM user_group_members_projection ugm WHERE ugm.user_id = users_projection.id AND ugm.group_id = ANY(@scope_group_ids::text[]))
+  );
 
 -- name: ListAllUsers :many
 SELECT * FROM users_projection

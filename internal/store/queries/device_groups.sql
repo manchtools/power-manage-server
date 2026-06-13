@@ -11,12 +11,16 @@ WHERE name = $1 AND is_deleted = FALSE;
 -- name: ListDeviceGroups :many
 SELECT * FROM device_groups_projection
 WHERE is_deleted = FALSE
+  -- Device-group scope (#3): a direct id-match — when @scope_restricted, the
+  -- group itself must be one of @scope_group_ids. Empty array restricts to nothing.
+  AND (NOT @scope_restricted::boolean OR id = ANY(@scope_group_ids::text[]))
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
 -- name: CountDeviceGroups :one
 SELECT COUNT(*) FROM device_groups_projection
-WHERE is_deleted = FALSE;
+WHERE is_deleted = FALSE
+  AND (NOT @scope_restricted::boolean OR id = ANY(@scope_group_ids::text[]));
 
 -- Device Group Members queries
 
@@ -39,6 +43,9 @@ WHERE m.group_id = $1 AND d.is_deleted = FALSE
 ORDER BY d.hostname ASC;
 
 -- name: ListGroupsForDevice :many
+-- NOTE: also used by the scope resolver (DeviceGroupsForDevice) to compute a
+-- device's groups for scope checks, so it MUST stay UNFILTERED. The
+-- ListDeviceGroupsForDevice handler applies device-group scope in Go.
 SELECT g.* FROM device_groups_projection g
 JOIN device_group_members_projection m ON g.id = m.group_id
 WHERE m.device_id = $1 AND g.is_deleted = FALSE
