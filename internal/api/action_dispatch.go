@@ -21,6 +21,7 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -35,6 +36,10 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DispatchAction", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 

@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -403,6 +404,10 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 // GetDeviceCompliancePolicyStatus returns the per-policy compliance status for a device.
 func (h *CompliancePolicyHandler) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pm.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pm.GetDeviceCompliancePolicyStatusResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceCompliancePolicyStatus", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 

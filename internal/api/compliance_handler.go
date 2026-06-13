@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -32,6 +33,10 @@ func (h *ComplianceHandler) GetDeviceCompliance(ctx context.Context, req *connec
 	}
 
 	deviceID := req.Msg.DeviceId
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceCompliance", deviceID); err != nil {
+		return nil, err
+	}
 
 	// Enforce the same assignment/owner scope as GetDevice. Without this any
 	// user could read any device's compliance — including detection-script

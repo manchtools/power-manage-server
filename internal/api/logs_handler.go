@@ -10,6 +10,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -38,6 +39,10 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 	}
 
 	msg := req.Msg
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "QueryDeviceLogs", msg.DeviceId); err != nil {
+		return nil, err
+	}
 
 	// Verify device exists
 	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: msg.DeviceId})
