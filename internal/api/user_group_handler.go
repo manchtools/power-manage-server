@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -300,8 +299,13 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
-	// Prevent deletion of SCIM-managed groups
-	isScimManaged, _ := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	// Prevent deletion of SCIM-managed groups. Fail CLOSED: this is a security
+	// guard, not best-effort display enrichment, so a failed check must reject
+	// the delete rather than silently treat the group as unmanaged (#14).
+	isScimManaged, err := h.store.Repos().SCIM.IsUserGroupSCIMManaged(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify SCIM-managed status")
+	}
 	if isScimManaged {
 		return nil, apiErrorCtx(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
 	}
@@ -1028,4 +1032,3 @@ func (h *UserGroupHandler) userGroupRoleGrants(ctx context.Context, groupID stri
 }
 
 // Suppress unused import warning
-var _ = fmt.Sprintf
