@@ -145,6 +145,10 @@ func (h *DeviceHandler) GetDevice(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDevice", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{
 		ID:         req.Msg.Id,
 		OwnerScope: userFilterID(ctx, "GetDevice"),
@@ -251,6 +255,10 @@ func (h *DeviceHandler) DeleteDevice(ctx context.Context, req *connect.Request[p
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "DeleteDevice", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -508,6 +516,10 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "SetDeviceSyncInterval", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
