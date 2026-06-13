@@ -404,6 +404,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		DeviceID:     deviceID,
 		Hostname:     hello.Hostname,
 		AgentVersion: hello.AgentVersion,
+		GatewayID:    h.gatewayID,
 	}); err != nil {
 		h.logger.Warn("failed to enqueue device hello", "error", err)
 	}
@@ -513,7 +514,7 @@ func (h *AgentHandler) handleHeartbeat(ctx context.Context, deviceID string, hb 
 	// were dead writes into the event store. Live metrics will need a
 	// dedicated DeviceMetricsPayload + projection if we ever want them.
 	_ = hb
-	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID}
+	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID, GatewayID: h.gatewayID}
 	// Refresh the device→gateway TTL on every heartbeat. Best-effort:
 	// a Valkey failure here is logged but does not refuse the
 	// heartbeat — the existing UpdateLastSeen path is the source of
@@ -555,6 +556,7 @@ func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, 
 	return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:         deviceID,
 		ActionResultJSON: resultJSON,
+		GatewayID:        h.gatewayID,
 	})
 }
 
@@ -650,6 +652,7 @@ func (h *AgentHandler) handleOutputChunk(ctx context.Context, deviceID string, c
 		Stream:      streamType,
 		Data:        string(chunk.Data),
 		Sequence:    int64(chunk.Sequence),
+		GatewayID:   h.gatewayID,
 	})
 }
 
@@ -668,11 +671,12 @@ func (h *AgentHandler) handleQueryResult(deviceID string, result *pm.OSQueryResu
 		rowsBytes = []byte("[]")
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
-		DeviceID: deviceID,
-		QueryID:  result.QueryId,
-		Success:  result.Success,
-		Error:    result.Error,
-		RowsJSON: rowsBytes,
+		DeviceID:  deviceID,
+		QueryID:   result.QueryId,
+		Success:   result.Success,
+		Error:     result.Error,
+		RowsJSON:  rowsBytes,
+		GatewayID: h.gatewayID,
 	})
 }
 
@@ -697,8 +701,9 @@ func (h *AgentHandler) handleInventory(deviceID string, inventory *pm.DeviceInve
 		})
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
-		DeviceID: deviceID,
-		Tables:   tables,
+		DeviceID:  deviceID,
+		Tables:    tables,
+		GatewayID: h.gatewayID,
 	})
 }
 
@@ -714,6 +719,7 @@ func (h *AgentHandler) handleSecurityAlert(ctx context.Context, deviceID string,
 		AlertType: alert.Type.String(),
 		Message:   alert.Message,
 		Details:   alert.Details,
+		GatewayID: h.gatewayID,
 	})
 }
 
@@ -767,10 +773,11 @@ func (h *AgentHandler) handleRevokeLuksResult(deviceID string, result *pm.Revoke
 		"error", result.Error,
 	)
 	return h.aqClient.EnqueueToControl(taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID: deviceID,
-		ActionID: result.ActionId,
-		Success:  result.Success,
-		Error:    result.Error,
+		DeviceID:  deviceID,
+		ActionID:  result.ActionId,
+		Success:   result.Success,
+		Error:     result.Error,
+		GatewayID: h.gatewayID,
 	})
 }
 
@@ -781,11 +788,12 @@ func (h *AgentHandler) handleLogQueryResult(deviceID string, result *pm.LogQuery
 		"success", result.Success,
 	)
 	return h.aqClient.EnqueueToControl(taskqueue.TypeLogQueryResult, taskqueue.LogQueryResultPayload{
-		DeviceID: deviceID,
-		QueryID:  result.QueryId,
-		Success:  result.Success,
-		Error:    result.Error,
-		Logs:     result.Logs,
+		DeviceID:  deviceID,
+		QueryID:   result.QueryId,
+		Success:   result.Success,
+		Error:     result.Error,
+		Logs:      result.Logs,
+		GatewayID: h.gatewayID,
 	})
 }
 

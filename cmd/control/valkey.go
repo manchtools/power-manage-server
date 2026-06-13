@@ -190,7 +190,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	}
 
 	// Asynq mux + servers.
-	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"))
+	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"), gatewayReg)
 	aqLogger := logger.With("component", "asynq_server")
 	v.inboxServer = newInboxAsynqServer(cfg, aqLogger)
 	if err := v.inboxServer.Start(inboxWorker.NewMux()); err != nil {

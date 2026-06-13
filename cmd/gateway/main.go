@@ -669,6 +669,7 @@ func main() {
 	if cfg.WebListenAddr != "" {
 		bridgeHandler := handler.NewTerminalBridgeHandler(
 			manager, terminalSessions, controlProxy, aqClient,
+			gatewayID,
 			logger.With("component", "terminal_bridge"),
 		)
 		webMux := buildWebMux(gatewayID, bridgeHandler)

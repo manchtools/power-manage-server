@@ -17,6 +17,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -54,16 +55,16 @@ type InternalHandler struct {
 	// registry). Set via SetDeviceGatewayResolver in HA/multi-gateway
 	// deployments. When nil (single-gateway, non-HA), the device-origin binding
 	// check is bypassed — the documented single-gateway exception (see ADR).
-	deviceGatewayResolver DeviceGatewayResolver
+	deviceGatewayResolver registry.DeviceGatewayLookup
 
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // SetDeviceGatewayResolver wires the device→gateway routing registry so every
 // InternalService request that carries a device_id is confined to the gateway
-// the device is actually live on (VerifyDeviceGatewayBinding). Called from
+// the device is actually live on (verifyDeviceGatewayBinding). Called from
 // main.go in HA/multi-gateway deployments; left nil for single-gateway.
-func (h *InternalHandler) SetDeviceGatewayResolver(r DeviceGatewayResolver) {
+func (h *InternalHandler) SetDeviceGatewayResolver(r registry.DeviceGatewayLookup) {
 	h.deviceGatewayResolver = r
 }
 
