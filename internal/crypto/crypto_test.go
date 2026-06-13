@@ -153,3 +153,86 @@ func TestNilEncryptor_Passthrough(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hello", pt)
 }
+
+// WS5 #8 — AES-GCM AAD binds an at-rest secret to its row context.
+
+func TestEncryptWithContext_AADBindsContext(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+
+	aadA := crypto.SecretAAD("01HDEVICEA", "01HACTIONA", "luks")
+	aadB := crypto.SecretAAD("01HDEVICEB", "01HACTIONA", "luks") // different device
+
+	ct, err := enc.EncryptWithContext("super-secret", aadA)
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(ct, "enc:v2:"), "AAD-bound ciphertext uses the v2 prefix")
+
+	// Correct AAD round-trips.
+	pt, err := enc.DecryptWithContext(ct, aadA)
+	require.NoError(t, err)
+	assert.Equal(t, "super-secret", pt)
+
+	// Wrong AAD (a different row context) must fail to open — the secret is
+	// bound to its row and cannot be relocated.
+	_, err = enc.DecryptWithContext(ct, aadB)
+	require.Error(t, err, "a secret sealed for one context must not open under another")
+}
+
+func TestDecryptWithContext_ByteTamperedFails(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+	aad := crypto.SecretAAD("01HDEV", "01HACT", "lps")
+
+	ct, err := enc.EncryptWithContext("rotate-me", aad)
+	require.NoError(t, err)
+
+	// Flip a mid-string char of the base64 body — GCM integrity must reject.
+	body := strings.TrimPrefix(ct, "enc:v2:")
+	b := []byte(body)
+	idx := len(b) / 2
+	if b[idx] == 'A' {
+		b[idx] = 'B'
+	} else {
+		b[idx] = 'A'
+	}
+	tampered := "enc:v2:" + string(b)
+	_, err = enc.DecryptWithContext(tampered, aad)
+	require.Error(t, err, "a byte-tampered ciphertext must fail GCM integrity")
+}
+
+func TestDecryptWithContext_LegacyV1StillDecrypts(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+
+	// A legacy row was sealed with the nil-AAD Encrypt (enc:v1).
+	legacy, err := enc.Encrypt("old-secret")
+	require.NoError(t, err)
+	require.True(t, strings.HasPrefix(legacy, "enc:v1:"))
+
+	// DecryptWithContext must still open it (migration is non-breaking; no
+	// backfill). The aad is ignored for v1 values.
+	pt, err := enc.DecryptWithContext(legacy, crypto.SecretAAD("any", "any", "luks"))
+	require.NoError(t, err)
+	assert.Equal(t, "old-secret", pt)
+}
+
+func TestDecryptWithContext_PlaintextPassthrough(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+	pt, err := enc.DecryptWithContext("not-encrypted", crypto.SecretAAD("d", "a", "luks"))
+	require.NoError(t, err)
+	assert.Equal(t, "not-encrypted", pt)
+}
+
+func TestDecryptWithContext_WrongKeyFails(t *testing.T) {
+	encA, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+	encB, err := crypto.NewEncryptor(differentKey())
+	require.NoError(t, err)
+	aad := crypto.SecretAAD("d", "a", "luks")
+
+	ct, err := encA.EncryptWithContext("x", aad)
+	require.NoError(t, err)
+	_, err = encB.DecryptWithContext(ct, aad)
+	require.Error(t, err, "a different key must not open the ciphertext")
+}

@@ -724,7 +724,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	resp := &pm.GetDeviceLpsPasswordsResponse{}
 
 	for _, p := range current {
-		decPassword, err := h.encryptor.Decrypt(p.Password)
+		decPassword, err := h.encryptor.DecryptWithContext(p.Password, crypto.SecretAAD(p.DeviceID, p.ActionID, "lps"))
 		if err != nil {
 			// Decrypt failure on stored material is alarming —
 			// possible key-rotation drift, corrupted ciphertext,
@@ -748,7 +748,7 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 	}
 
 	for _, p := range history {
-		decPassword, err := h.encryptor.Decrypt(p.Password)
+		decPassword, err := h.encryptor.DecryptWithContext(p.Password, crypto.SecretAAD(p.DeviceID, p.ActionID, "lps"))
 		if err != nil {
 			h.logger.Error("failed to decrypt LPS password (history)",
 				"device_id", p.DeviceID, "action_id", p.ActionID, "error", err)
@@ -803,7 +803,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 	resp := &pm.GetDeviceLuksKeysResponse{}
 
 	for _, k := range current {
-		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
+		decPassphrase, err := h.encryptor.DecryptWithContext(k.Passphrase, crypto.SecretAAD(k.DeviceID, k.ActionID, "luks"))
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (current)",
 				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
@@ -832,7 +832,7 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 	}
 
 	for _, k := range history {
-		decPassphrase, err := h.encryptor.Decrypt(k.Passphrase)
+		decPassphrase, err := h.encryptor.DecryptWithContext(k.Passphrase, crypto.SecretAAD(k.DeviceID, k.ActionID, "luks"))
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (history)",
 				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
