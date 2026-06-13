@@ -131,6 +131,32 @@ func TestLastAdmin_GroupDemotionPaths_AllowedWithSecondDirectAdmin(t *testing.T)
 	})
 }
 
+// TestLastAdmin_GroupDemotionPaths_DisabledAdminDoesNotCount pins that the
+// survivor computation excludes DISABLED admins: a disabled direct admin must
+// not be mistaken for the surviving administrator, so removing the sole ENABLED
+// admin (held via a group) is still refused. Guards against the lockout where a
+// soft-deleted/disabled admin is wrongly counted as a survivor.
+func TestLastAdmin_GroupDemotionPaths_DisabledAdminDoesNotCount(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	groupH := api.NewUserGroupHandler(st, slog.Default())
+	userH := api.NewUserHandler(st, slog.Default(), nil)
+	actor := testutil.NewID()
+	caller := testutil.AdminContext(actor)
+	group, _ := adminViaGroup(t, st, actor)
+
+	// A second (direct) admin exists, then is DISABLED — while two admins are
+	// still enabled, so the disable itself is allowed.
+	directAdmin := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	_, err := userH.SetUserDisabled(caller, connect.NewRequest(&pm.SetUserDisabledRequest{Id: directAdmin, Disabled: true}))
+	require.NoError(t, err)
+
+	// The only ENABLED admin is now the group member. Deleting that group must be
+	// refused — the disabled direct admin is not a valid survivor.
+	_, err = groupH.DeleteUserGroup(caller, connect.NewRequest(&pm.DeleteUserGroupRequest{Id: group}))
+	require.Error(t, err, "a disabled admin must not be counted as the surviving administrator")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+}
+
 // TestLastAdminGuard_ConcurrentDistinctRemovals_AcrossGroupPaths fires two
 // admin-removing requests through DIFFERENT door types — one direct-role revoke,
 // one group-membership removal — for two DISTINCT admins concurrently. The shared

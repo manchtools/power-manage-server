@@ -929,6 +929,22 @@ func (h *UserGroupHandler) bumpUserSessionVersion(ctx context.Context, userID, a
 // the first failure but continues through the rest so that a single
 // failing member does not prevent the remaining members from being
 // invalidated. A partial bump is better than stopping early.
+func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
+	memberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, uid := range memberIDs {
+		if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
 // groupConfersAdmin reports whether the user group currently grants the Admin
 // system role (unscoped). Gates the last-admin guard on member-remove / delete.
 func (h *UserGroupHandler) groupConfersAdmin(ctx context.Context, groupID string) (bool, error) {
@@ -957,22 +973,6 @@ func (h *UserGroupHandler) revokingUnscopedAdminRole(ctx context.Context, roleID
 		return false, err
 	}
 	return role.IsSystem && role.Name == "Admin", nil
-}
-
-func (h *UserGroupHandler) bumpSessionVersionForGroupMembers(ctx context.Context, groupID, actorID string) error {
-	memberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
-	if err != nil {
-		return err
-	}
-	var firstErr error
-	for _, uid := range memberIDs {
-		if err := h.bumpUserSessionVersion(ctx, uid, actorID); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	return firstErr
 }
 
 // userGroupToProto converts a database user group projection to a protobuf

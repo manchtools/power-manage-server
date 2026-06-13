@@ -11,8 +11,17 @@ import (
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+func userHasRole(t *testing.T, st *store.Store, userID, roleID string) bool {
+	t.Helper()
+	ok, err := st.Queries().UserHasRole(context.Background(), db.UserHasRoleParams{UserID: userID, RoleID: roleID})
+	require.NoError(t, err)
+	return ok
+}
 
 // The role-management permissions ARE the authorization. Holding
 // AssignRoleToUser / AssignRoleToUserGroup / AddUserToGroup / CreateRole /
@@ -36,6 +45,7 @@ func TestAssignRoleToUser_PermissionAloneAuthorizesAnyRole(t *testing.T) {
 		UserId: target, RoleId: adminRole.ID,
 	}))
 	require.NoError(t, err)
+	assert.True(t, userHasRole(t, st, target, adminRole.ID), "the Admin role must actually be assigned")
 }
 
 func TestAssignRoleToUserGroup_PermissionAloneAuthorizesAnyRole(t *testing.T) {
@@ -51,6 +61,9 @@ func TestAssignRoleToUserGroup_PermissionAloneAuthorizesAnyRole(t *testing.T) {
 		GroupId: group, RoleId: adminRole.ID,
 	}))
 	require.NoError(t, err)
+	hasRole, err := st.Queries().UserGroupHasRole(context.Background(), db.UserGroupHasRoleParams{GroupID: group, RoleID: adminRole.ID})
+	require.NoError(t, err)
+	assert.True(t, hasRole, "the Admin role must actually be granted to the group")
 }
 
 func TestAddUserToGroup_PermissionAloneAuthorizesAdminBearingGroup(t *testing.T) {
@@ -73,6 +86,9 @@ func TestAddUserToGroup_PermissionAloneAuthorizesAdminBearingGroup(t *testing.T)
 		GroupId: group, UserId: target,
 	}))
 	require.NoError(t, err)
+	inGroup, err := st.Queries().IsUserInGroup(context.Background(), db.IsUserInGroupParams{GroupID: group, UserID: target})
+	require.NoError(t, err)
+	assert.True(t, inGroup, "the member must actually be added to the group")
 }
 
 func TestCreateRole_PermissionAloneAuthorizesAnyPermissions(t *testing.T) {
@@ -115,5 +131,6 @@ func TestCreateUser_PermissionAloneAuthorizesAnyRole(t *testing.T) {
 		RoleIds:  []string{adminRole.ID},
 	}))
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.User.Id)
+	require.NotEmpty(t, resp.Msg.User.Id)
+	assert.True(t, userHasRole(t, st, resp.Msg.User.Id, adminRole.ID), "the new user must actually carry the Admin role")
 }
