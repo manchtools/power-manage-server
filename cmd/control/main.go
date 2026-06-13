@@ -204,8 +204,13 @@ func main() {
 	// Reconcile system roles (Admin/User) with current permission definitions.
 	// Bypasses the event store (direct UPDATE on roles_projection via sqlc),
 	// so the ordering vs WireAll doesn't matter for this call.
+	// Fail CLOSED: the reconciler is the authority that syncs the Admin/User
+	// system roles to the code-defined permission sets (the migration seed is a
+	// stale starting point). Booting anyway on failure would serve traffic with
+	// drifted system-role permissions, so a failure is fatal (#16).
 	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
 		logger.Error("failed to reconcile system roles", "error", err)
+		os.Exit(1)
 	}
 
 	// rc11 #77: derived-projection wiring for system actions —
