@@ -186,14 +186,22 @@ func validateAgentUpdateParams(ctx context.Context, p *pm.AgentUpdateParams) err
 		if !strings.HasPrefix(strings.ToLower(arch.BinaryUrl), "https://") {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "binary_url must use HTTPS")
 		}
-		if !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
+		// WS7: integrity is required, but the operator chooses the source.
+		// At least one of checksum_url (default — track "latest", verified
+		// against the operator's checksum file) or expected_sha256 (an
+		// exact pinned hash inside the CA-signed action) must be set, so an
+		// update can never run with no integrity check at all.
+		if arch.ChecksumUrl == "" && arch.ExpectedSha256 == "" {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "each architecture must set checksum_url or expected_sha256")
+		}
+		if arch.ChecksumUrl != "" && !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "checksum_url must use HTTPS")
 		}
-		// WS7 #1: the CA-signed hash that gates the binary swap. Explicit
-		// 64-lowercase-hex check for a precise error code (the struct-tag
-		// `hexadecimal` rule also accepts uppercase, which the agent's
-		// canonical comparison must not depend on).
-		if !isLowerHex64(arch.ExpectedSha256) {
+		// When pinned, expected_sha256 is the CA-signed hash that overrides
+		// the checksum file. Explicit 64-lowercase-hex check (the struct-tag
+		// `hexadecimal` rule also accepts uppercase, which the canonical
+		// stored form must not).
+		if arch.ExpectedSha256 != "" && !isLowerHex64(arch.ExpectedSha256) {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "expected_sha256 must be 64 lowercase hex characters")
 		}
 	}
