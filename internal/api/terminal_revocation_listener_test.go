@@ -108,6 +108,55 @@ func TestTerminalRevocationListener_RoleRevoke(t *testing.T) {
 	})
 }
 
+// sessionInvalidatedEvent builds the event emitted by
+// RoleHandler.bumpUserSessionVersion (the role-update / session-version-bump
+// path): stream "user", StreamID = userID, empty payload.
+func sessionInvalidatedEvent(userID string) store.PersistedEvent {
+	return store.PersistedEvent{
+		StreamType: "user",
+		EventType:  "UserSessionInvalidated",
+		StreamID:   userID,
+		Data:       []byte("{}"),
+	}
+}
+
+// TestTerminalRevocationListener_SessionInvalidatedClosesWhenStartTerminalLost
+// pins the #391 gap unique to WS11: role grants are revoked/updated via
+// bumpUserSessionVersion, which emits UserSessionInvalidated — NOT
+// UserRoleRevoked. The listener must treat it like a role revoke: recheck
+// effective permissions and close live sessions iff StartTerminal is gone.
+// RED today (the switch has no UserSessionInvalidated case, so it returns early
+// and never closes).
+func TestTerminalRevocationListener_SessionInvalidatedClosesWhenStartTerminalLost(t *testing.T) {
+	t.Run("StartTerminal lost via session bump -> close", func(t *testing.T) {
+		ft := &fakeSessionTerminator{ch: make(chan string, 1)}
+		l := api.TerminalRevocationListener(ft, fakePermsChecker{perms: []string{"ListDevices"}}, slog.Default())
+		l(context.Background(), sessionInvalidatedEvent("u1"))
+		expectClose(t, ft.ch, "u1")
+	})
+
+	t.Run("still holds StartTerminal after bump -> no close", func(t *testing.T) {
+		ft := &fakeSessionTerminator{ch: make(chan string, 1)}
+		l := api.TerminalRevocationListener(ft, fakePermsChecker{perms: []string{"StartTerminal"}}, slog.Default())
+		l(context.Background(), sessionInvalidatedEvent("u2"))
+		expectNoClose(t, ft.ch)
+	})
+
+	t.Run("permission recheck errors -> no close (fail-safe)", func(t *testing.T) {
+		ft := &fakeSessionTerminator{ch: make(chan string, 1)}
+		l := api.TerminalRevocationListener(ft, fakePermsChecker{err: assert.AnError}, slog.Default())
+		l(context.Background(), sessionInvalidatedEvent("u3"))
+		expectNoClose(t, ft.ch)
+	})
+
+	t.Run("non-user stream is ignored", func(t *testing.T) {
+		ft := &fakeSessionTerminator{ch: make(chan string, 1)}
+		l := api.TerminalRevocationListener(ft, fakePermsChecker{perms: []string{"ListDevices"}}, slog.Default())
+		l(context.Background(), store.PersistedEvent{StreamType: "device", EventType: "UserSessionInvalidated", StreamID: "d1", Data: []byte("{}")})
+		expectNoClose(t, ft.ch)
+	})
+}
+
 // panicTerminator panics, but signals (via defer) that it ran.
 type panicTerminator struct{ done chan struct{} }
 
