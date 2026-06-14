@@ -5,9 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func corsTestLogger() *slog.Logger {
@@ -50,6 +52,53 @@ func TestCORS_ExplicitOrigin_KeepsCredentials(t *testing.T) {
 	assert.Equal(t, "https://app.example", w.Header().Get("Access-Control-Allow-Origin"))
 	assert.Equal(t, "true", w.Header().Get("Access-Control-Allow-Credentials"),
 		"a named origin keeps credentials")
+}
+
+// TestCORS_AllowHeadersExcludesCookie pins WS13 #15: auth is Bearer-only, so the
+// preflight Access-Control-Allow-Headers must NOT advertise Cookie (advertising
+// it invites a cookie-based cross-origin flow the server doesn't use). Splits
+// the header on ", " and asserts membership rather than substring-matching the
+// whole constant.
+func TestCORS_AllowHeadersExcludesCookie(t *testing.T) {
+	h := CORS([]string{"https://app.example"}, false, corsTestLogger())(okHandler())
+
+	req := httptest.NewRequest(http.MethodOptions, "/x", nil)
+	req.Header.Set("Origin", "https://app.example")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNoContent, w.Code, "allowed-origin preflight is 204")
+	allow := splitCSV(w.Header().Get("Access-Control-Allow-Headers"))
+	assert.Contains(t, allow, "Authorization", "Bearer auth header must be allowed")
+	assert.Contains(t, allow, "Content-Type")
+	assert.NotContains(t, allow, "Cookie", "Cookie must NOT be an allowed request header (Bearer-only auth)")
+}
+
+// TestCORS_AllowedOriginPreflight204 pins the preflight contract for an allowed
+// origin: 204 with Allow-Methods, Allow-Headers, Max-Age, and Vary present.
+func TestCORS_AllowedOriginPreflight204(t *testing.T) {
+	h := CORS([]string{"https://app.example"}, false, corsTestLogger())(okHandler())
+
+	req := httptest.NewRequest(http.MethodOptions, "/x", nil)
+	req.Header.Set("Origin", "https://app.example")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.NotEmpty(t, w.Header().Get("Access-Control-Allow-Methods"))
+	assert.NotEmpty(t, w.Header().Get("Access-Control-Allow-Headers"))
+	assert.Equal(t, "86400", w.Header().Get("Access-Control-Max-Age"))
+	assert.Contains(t, w.Header().Values("Vary"), "Origin")
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // TestCORS_UnlistedOrigin_NoHeaders pins that a non-allow-listed origin (not in

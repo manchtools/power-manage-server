@@ -3,12 +3,25 @@ package handler
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
 )
+
+// proxyCallTimeout bounds each unary gateway→control InternalService call
+// (WS13 #11). A PER-CALL deadline (not a client-wide http.Client.Timeout, which
+// would also break the long-lived agent bidi stream that may share a transport)
+// ensures a hung/slow control server cannot wedge a gateway worker goroutine
+// indefinitely. A shorter caller deadline is preserved.
+const proxyCallTimeout = 15 * time.Second
+
+// withProxyDeadline derives a bounded context for a single proxy call.
+func withProxyDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, proxyCallTimeout)
+}
 
 // ControlProxy wraps a Connect-RPC client for calling InternalService on the control server.
 // This replaces direct database access for synchronous operations that need credential handling.
@@ -40,6 +53,8 @@ func NewControlProxy(httpClient *http.Client, controlURL, gatewayID string) *Con
 
 // VerifyDevice checks that a device exists and is not deleted on the control server.
 func (p *ControlProxy) VerifyDevice(ctx context.Context, deviceID string) error {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	_, err := p.client.VerifyDevice(ctx, connect.NewRequest(&pm.VerifyDeviceRequest{
 		DeviceId:  deviceID,
 		GatewayId: p.gatewayID,
@@ -49,6 +64,8 @@ func (p *ControlProxy) VerifyDevice(ctx context.Context, deviceID string) error 
 
 // SyncActions resolves all assigned actions for a device via the control server.
 func (p *ControlProxy) SyncActions(ctx context.Context, deviceID string) (*pm.SyncActionsResponse, error) {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	resp, err := p.client.ProxySyncActions(ctx, connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId:  deviceID,
 		GatewayId: p.gatewayID,
@@ -61,6 +78,8 @@ func (p *ControlProxy) SyncActions(ctx context.Context, deviceID string) (*pm.Sy
 
 // ValidateLuksToken validates and consumes a one-time LUKS token via the control server.
 func (p *ControlProxy) ValidateLuksToken(ctx context.Context, deviceID, token string) (*pm.ValidateLuksTokenResponse, error) {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	resp, err := p.client.ProxyValidateLuksToken(ctx, connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
 		DeviceId:  deviceID,
 		Token:     token,
@@ -74,6 +93,8 @@ func (p *ControlProxy) ValidateLuksToken(ctx context.Context, deviceID, token st
 
 // GetLuksKey retrieves and decrypts the current LUKS key via the control server.
 func (p *ControlProxy) GetLuksKey(ctx context.Context, deviceID, actionID string) (*pm.GetLuksKeyResponse, error) {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	resp, err := p.client.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
 		DeviceId:  deviceID,
 		ActionId:  actionID,
@@ -87,6 +108,8 @@ func (p *ControlProxy) GetLuksKey(ctx context.Context, deviceID, actionID string
 
 // StoreLuksKey encrypts and stores a new LUKS key via the control server.
 func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, devicePath, passphrase string, reason pm.RotationReason) (*pm.StoreLuksKeyResponse, error) {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	resp, err := p.client.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
 		DeviceId:       deviceID,
 		ActionId:       actionID,
@@ -103,6 +126,8 @@ func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, dev
 
 // StoreLpsPasswords encrypts and stores LPS password rotation entries via the control server.
 func (p *ControlProxy) StoreLpsPasswords(ctx context.Context, deviceID, actionID string, rotations []*pm.LpsPasswordRotation) error {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	_, err := p.client.ProxyStoreLpsPasswords(ctx, connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId:  deviceID,
 		ActionId:  actionID,
@@ -118,6 +143,8 @@ func (p *ControlProxy) StoreLpsPasswords(ctx context.Context, deviceID, actionID
 // the bridge needs to set up the session. Returns an error (typically
 // connect.CodeUnauthenticated) if the token is invalid or expired.
 func (p *ControlProxy) ValidateTerminalToken(ctx context.Context, sessionID, token string) (*pm.InternalValidateTerminalTokenResponse, error) {
+	ctx, cancel := withProxyDeadline(ctx)
+	defer cancel()
 	resp, err := p.client.ProxyValidateTerminalToken(ctx, connect.NewRequest(&pm.InternalValidateTerminalTokenRequest{
 		SessionId: sessionID,
 		Token:     token,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -259,13 +260,49 @@ func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
 	}
 }
 
+// Pool tuning (WS13 #10). statementTimeout bounds any SINGLE query's wall-clock
+// so a runaway/pathological statement cannot pin a connection indefinitely
+// (it is per-statement, not per-transaction, so a long multi-statement replay is
+// unaffected; migrations run on a separate stdlib connection and are exempt).
+// MaxConns/MaxConnLifetime are set explicitly rather than left to pgx defaults.
+const (
+	statementTimeout    = 30 * time.Second
+	poolMaxConns        = 20
+	poolMaxConnLifetime = time.Hour
+)
+
+// newPool builds a tuned pgx pool: an application statement_timeout in the
+// connection RuntimeParams plus explicit MaxConns/MaxConnLifetime. Shared by
+// New and NewWithoutMigrations so control/gateway/indexer get the same bounds.
+func newPool(ctx context.Context, connString string) (*pgxpool.Pool, error) {
+	cfg, err := pgxpool.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("parse pool config: %w", err)
+	}
+	if cfg.ConnConfig.RuntimeParams == nil {
+		cfg.ConnConfig.RuntimeParams = map[string]string{}
+	}
+	// Respect an operator-provided statement_timeout in the DSN; otherwise apply
+	// our default. Postgres takes a bare integer as milliseconds.
+	if _, set := cfg.ConnConfig.RuntimeParams["statement_timeout"]; !set {
+		cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(statementTimeout.Milliseconds(), 10)
+	}
+	cfg.MaxConns = poolMaxConns
+	cfg.MaxConnLifetime = poolMaxConnLifetime
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create connection pool: %w", err)
+	}
+	return pool, nil
+}
+
 // New creates a new Store and runs migrations.
 // This should only be called by the control server which is responsible for database schema management.
 func New(ctx context.Context, connString string) (*Store, error) {
 	// Create connection pool
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := newPool(ctx, connString)
 	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
+		return nil, err
 	}
 
 	// Verify connection
@@ -305,9 +342,9 @@ func New(ctx context.Context, connString string) (*Store, error) {
 // and don't manage the schema.
 func NewWithoutMigrations(ctx context.Context, connString string) (*Store, error) {
 	// Create connection pool
-	pool, err := pgxpool.New(ctx, connString)
+	pool, err := newPool(ctx, connString)
 	if err != nil {
-		return nil, fmt.Errorf("create connection pool: %w", err)
+		return nil, err
 	}
 
 	// Verify connection

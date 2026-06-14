@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"math"
+	"strconv"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -103,6 +105,36 @@ func TestParsePagination_BadToken(t *testing.T) {
 			cerr := new(connect.Error)
 			require.True(t, errors.As(err, &cerr))
 			assert.Equal(t, connect.CodeInvalidArgument, cerr.Code())
+		})
+	}
+}
+
+// TestParsePagination_OffsetCeiling pins WS13 #3: the offset is capped to a
+// small ceiling (maxListOffset) so no client can force a deep-OFFSET full-table
+// scan. The bound is sourced from intent (a hard ceiling), not from the prior
+// math.MaxInt32 rule. A ceiling+1 token is REJECTED, not silently clamped.
+func TestParsePagination_OffsetCeiling(t *testing.T) {
+	cases := []struct {
+		name    string
+		token   string
+		wantErr bool
+		offset  int32
+	}{
+		{name: "well under ceiling accepted", token: "100", offset: 100},
+		{name: "at ceiling accepted", token: strconv.Itoa(maxListOffset), offset: maxListOffset},
+		{name: "ceiling+1 rejected", token: strconv.Itoa(maxListOffset + 1), wantErr: true},
+		{name: "MaxInt32 rejected (was accepted before)", token: strconv.Itoa(math.MaxInt32), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, off, err := parsePagination(50, tc.token)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.offset, off)
 		})
 	}
 }

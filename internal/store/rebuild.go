@@ -33,6 +33,22 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// rebuildBatchSize bounds how many events dispatchViaGoApplier holds in memory
+// at once (WS13 #14): the replay is keyset-paginated by sequence_num in batches
+// of this size instead of buffering the entire matching event stream. A package
+// var (not const) so tests can lower it to exercise the batch boundary cheaply.
+var rebuildBatchSize = 1000
+
+// SetRebuildBatchSizeForTest lowers rebuildBatchSize and returns a restore func.
+// Test-only seam: the rebuild round-trip lives in package store_test (it needs
+// testutil, which imports store), so the batch boundary can't be exercised via
+// the unexported var directly.
+func SetRebuildBatchSizeForTest(n int) (restore func()) {
+	prev := rebuildBatchSize
+	rebuildBatchSize = n
+	return func() { rebuildBatchSize = prev }
+}
+
 // RebuildResult reports per-target outcome of RebuildAll. Operators
 // running an emergency replay want to see exactly which projections
 // were touched and how many events were replayed for each.
@@ -321,40 +337,64 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 // Refs manchtools/power-manage-server#125.
 func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply) (int64, error) {
 	q := s.queries.WithTx(tx)
-	rows, err := tx.Query(ctx,
-		`SELECT id, sequence_num, stream_type, stream_id, stream_version,
-		        event_type, data, metadata, actor_type, actor_id, occurred_at
-		   FROM events
-		  WHERE stream_type = ANY($1)
-		  ORDER BY sequence_num`,
-		t.StreamTypes,
-	)
-	if err != nil {
-		return 0, fmt.Errorf("load events for %s: %w", t.Name, err)
-	}
-	events := make([]PersistedEvent, 0, 256)
-	for rows.Next() {
-		var ev PersistedEvent
-		if err := rows.Scan(
-			&ev.ID, &ev.SequenceNum, &ev.StreamType, &ev.StreamID, &ev.StreamVersion,
-			&ev.EventType, &ev.Data, &ev.Metadata, &ev.ActorType, &ev.ActorID, &ev.OccurredAt,
-		); err != nil {
-			rows.Close()
-			return 0, fmt.Errorf("scan event row for %s: %w", t.Name, err)
-		}
-		events = append(events, ev)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate events for %s: %w", t.Name, err)
-	}
 
-	for _, ev := range events {
-		if err := apply(ctx, q, ev); err != nil {
-			return 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
+	// Stream in keyset-paginated batches rather than buffering the entire
+	// matching event stream in memory (WS13 #14): a large event store could
+	// otherwise materialise millions of rows at once. We cannot apply inside an
+	// open rows iteration because pgx forbids a second query on a connection
+	// with a live result set, and `apply` issues projection writes on this same
+	// tx — so each batch is fully scanned and its rows closed BEFORE applying,
+	// then the cursor (sequence_num, which is monotonic and unique) advances.
+	// Memory is bounded to one batch; order and the snapshot are preserved
+	// because the events table is append-only and read within this tx.
+	var (
+		total   int64
+		lastSeq int64 // sequence_num is a positive bigserial, so 0 precedes all
+	)
+	for {
+		rows, err := tx.Query(ctx,
+			`SELECT id, sequence_num, stream_type, stream_id, stream_version,
+			        event_type, data, metadata, actor_type, actor_id, occurred_at
+			   FROM events
+			  WHERE stream_type = ANY($1) AND sequence_num > $2
+			  ORDER BY sequence_num
+			  LIMIT $3`,
+			t.StreamTypes, lastSeq, rebuildBatchSize,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("load events for %s: %w", t.Name, err)
+		}
+		batch := make([]PersistedEvent, 0, rebuildBatchSize)
+		for rows.Next() {
+			var ev PersistedEvent
+			if err := rows.Scan(
+				&ev.ID, &ev.SequenceNum, &ev.StreamType, &ev.StreamID, &ev.StreamVersion,
+				&ev.EventType, &ev.Data, &ev.Metadata, &ev.ActorType, &ev.ActorID, &ev.OccurredAt,
+			); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("scan event row for %s: %w", t.Name, err)
+			}
+			batch = append(batch, ev)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("iterate events for %s: %w", t.Name, err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, ev := range batch {
+			if err := apply(ctx, q, ev); err != nil {
+				return 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
+			}
+			lastSeq = ev.SequenceNum
+			total++
+		}
+		if len(batch) < rebuildBatchSize {
+			break
 		}
 	}
-	return int64(len(events)), nil
+	return total, nil
 }
 
 // selectTargets resolves operator-supplied names to their

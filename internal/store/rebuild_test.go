@@ -58,6 +58,38 @@ func TestRebuildAll_RoundTripsThroughEventStore(t *testing.T) {
 	assert.Equal(t, before.ID, after.ID)
 }
 
+// TestRebuildAll_StreamsAcrossBatchBoundary pins WS13 #14: with the batch size
+// lowered below the event count, the keyset-paginated replay still applies every
+// event across batch boundaries in order (no events dropped or double-applied,
+// no full pre-buffer). Seeds several users, lowers the batch size to 2, truncates
+// the projection, and asserts every user reappears and the count matches.
+func TestRebuildAll_StreamsAcrossBatchBoundary(t *testing.T) {
+	restore := store.SetRebuildBatchSizeForTest(2)
+	defer restore()
+
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	ids := make([]string, 0, 5)
+	for i := 0; i < 5; i++ { // 5 users > batch size 2 → at least 3 batches
+		ids = append(ids, testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin"))
+	}
+
+	_, err := st.TestingPool().Exec(ctx, "TRUNCATE users_projection CASCADE")
+	require.NoError(t, err)
+
+	res, err := st.RebuildAll(ctx, "users")
+	require.NoError(t, err)
+	require.Len(t, res.Targets, 1)
+	assert.GreaterOrEqual(t, res.Targets[0].EventsApplied, int64(len(ids)),
+		"every seeded user's events must replay across the batch boundary")
+
+	for _, id := range ids {
+		_, err := st.Queries().GetUserByID(ctx, id)
+		assert.NoErrorf(t, err, "user %s must reappear after a multi-batch rebuild", id)
+	}
+}
+
 // TestRebuildAll_NoArgsRebuildsEverything covers the operator
 // happy-path: `RebuildAll(ctx)` with no targets rebuilds every
 // registered projection. We seed a few stream types, truncate them
