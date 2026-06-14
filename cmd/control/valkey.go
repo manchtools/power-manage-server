@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
@@ -251,7 +252,10 @@ func configureTerminalAdminFanout(cfg *Config, termHandler *api.TerminalHandler,
 			MinVersion:   tls.VersionTLS13,
 		},
 	}
-	termHandler.SetInternalHTTPClient(&http.Client{Transport: transport})
+	// A client-level Timeout backstops the per-call context deadlines on the
+	// terminal admin fan-out (WS11 #8) so a half-open connection to a gateway
+	// can't pin a request goroutine indefinitely.
+	termHandler.SetInternalHTTPClient(&http.Client{Transport: transport, Timeout: 30 * time.Second})
 	logger.Info("terminal admin fan-out enabled (mTLS client configured)")
 	return nil
 }
