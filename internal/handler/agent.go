@@ -140,11 +140,35 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 // listener is for managed devices only, and a leaked gateway or
 // control cert must not be usable here.
 // RevocationChecker reports whether an agent cert (by SHA-256 fingerprint) has
-// been revoked. The gateway's crl.Cache satisfies it; a nil checker disables the
-// revocation gate (e.g. when no Valkey is configured).
+// been revoked, and whether the underlying revocation list has loaded at least
+// once. The gateway's crl.Cache satisfies it.
+//
+// A nil checker, or one whose Loaded() is false, is treated as FAIL-CLOSED by
+// MTLSMiddleware: if we cannot consult a loaded revocation list we cannot prove
+// the presented cert is *not* revoked, so the request is rejected rather than
+// admitted. The only way to run without real revocation data is to pass an
+// explicit NoopRevocationChecker (a typed, dev-only opt-out the caller logs at
+// WARN) — never a bare nil and never an unloaded cache.
 type RevocationChecker interface {
 	IsRevoked(fingerprint string) bool
+	// Loaded reports whether the revocation list has been successfully loaded
+	// at least once. Until it has, MTLSMiddleware fails closed.
+	Loaded() bool
 }
+
+// NoopRevocationChecker is the explicit, typed dev-only opt-out from the
+// revocation gate: it reports nothing revoked and always "loaded", so
+// MTLSMiddleware admits non-revoked certs without a real CRL. Use it ONLY on
+// non-mTLS dev paths and log at WARN where it is wired — it is deliberately
+// distinct from a bare nil (which fails closed) so disabling revocation is a
+// visible, intentional choice in the code, never an accident.
+type NoopRevocationChecker struct{}
+
+// IsRevoked always returns false (nothing is known-revoked).
+func (NoopRevocationChecker) IsRevoked(string) bool { return false }
+
+// Loaded always returns true (the no-op list is trivially "loaded").
+func (NoopRevocationChecker) Loaded() bool { return true }
 
 func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -197,20 +221,32 @@ func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slo
 			return
 		}
 
-		// Reject revoked certs. The chain already verified against the CA above;
-		// this is the revocation gate that makes a leaked or superseded cert stop
-		// working before its (1-year) natural expiry. r.TLS.PeerCertificates[0]
-		// is the same leaf the peer-class check used, so it's non-nil here.
-		if revocation != nil {
-			fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
-			if revocation.IsRevoked(fp) {
-				logger.Warn("mTLS rejected: certificate revoked",
-					"device_id", deviceID,
-					"remote_addr", r.RemoteAddr,
-				)
-				http.Error(w, "client certificate revoked", http.StatusForbidden)
-				return
-			}
+		// Revocation gate (fail CLOSED). The chain already verified against the CA
+		// above; this is what makes a leaked or superseded cert stop working
+		// before its (1-year) natural expiry. r.TLS.PeerCertificates[0] is the
+		// same leaf the peer-class check used, so it's non-nil here.
+		//
+		// A nil checker or one whose list has not loaded means we CANNOT prove
+		// this cert is unrevoked → reject, never admit. Running without real
+		// revocation data requires an explicit NoopRevocationChecker (Loaded()
+		// true), which the caller logs at WARN — a bare nil is never tolerated.
+		if revocation == nil || !revocation.Loaded() {
+			logger.Warn("mTLS rejected: certificate revocation unavailable (fail-closed)",
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+				"checker_nil", revocation == nil,
+			)
+			http.Error(w, "client certificate revocation unavailable", http.StatusForbidden)
+			return
+		}
+		fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
+		if revocation.IsRevoked(fp) {
+			logger.Warn("mTLS rejected: certificate revoked",
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+			)
+			http.Error(w, "client certificate revoked", http.StatusForbidden)
+			return
 		}
 
 		// Add device ID to context

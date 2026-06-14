@@ -89,14 +89,25 @@ func (s *Store) LoadActive(ctx context.Context) (map[string]struct{}, error) {
 // fingerprint check. It refreshes from the Store on a ticker; on a refresh
 // error it KEEPS the previous snapshot (fail-static, never fail-open-to-empty),
 // so a transient Valkey outage cannot silently drop revocation enforcement.
+//
+// A freshly-constructed Cache is NOT yet loaded: Loaded() reports false until
+// the first SUCCESSFUL Refresh. This is the "fail-closed until loaded at least
+// once" invariant — admitting callers (the mTLS middleware) treat a not-loaded
+// cache as "cannot prove this cert is unrevoked" and reject, distinct from a
+// loaded-but-empty cache (a genuinely empty CRL, which admits).
 type Cache struct {
 	store   *Store
 	logger  *slog.Logger
 	mu      sync.RWMutex
 	revoked map[string]struct{}
+	// loaded becomes true only after the first successful Refresh and never
+	// reverts: once we have ANY good snapshot, fail-static (keep it) covers
+	// subsequent refresh errors. It is the boot fail-open footing — a
+	// never-refreshed cache must not be mistaken for an empty revocation list.
+	loaded bool
 }
 
-// NewCache creates an empty cache over the given store.
+// NewCache creates an empty, not-yet-loaded cache over the given store.
 func NewCache(store *Store, logger *slog.Logger) *Cache {
 	return &Cache{store: store, logger: logger, revoked: map[string]struct{}{}}
 }
@@ -109,8 +120,20 @@ func (c *Cache) IsRevoked(fingerprint string) bool {
 	return ok
 }
 
+// Loaded reports whether the cache has completed at least one successful
+// Refresh. False on a brand-new cache and after a refresh that only ever
+// errored; true once a snapshot has been loaded (and stays true thereafter,
+// per the fail-static contract).
+func (c *Cache) Loaded() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.loaded
+}
+
 // Refresh reloads the snapshot from the Store. Exported so the gateway can do
-// one synchronous load at startup before it starts admitting connections.
+// one synchronous load at startup before it starts admitting connections. On
+// error the previous snapshot and the loaded flag are left unchanged (a failed
+// refresh never counts as "loaded").
 func (c *Cache) Refresh(ctx context.Context) error {
 	next, err := c.store.LoadActive(ctx)
 	if err != nil {
@@ -118,6 +141,7 @@ func (c *Cache) Refresh(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.revoked = next
+	c.loaded = true
 	c.mu.Unlock()
 	return nil
 }

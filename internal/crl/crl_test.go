@@ -79,6 +79,38 @@ func TestCache_IsRevokedAfterRefresh(t *testing.T) {
 	assert.False(t, c.IsRevoked("fp-unknown"))
 }
 
+// TestCache_NotLoadedUntilFirstSuccessfulRefresh pins WS12 #1/#3: the
+// "loaded vs never-loaded" distinction that the mTLS fail-closed gate keys on.
+// Sourced from intent ("fail closed until the list has loaded at least once"),
+// NOT from the revoked==nil/empty artifact.
+func TestCache_NotLoadedUntilFirstSuccessfulRefresh(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	s, mr, _ := testStore(t, func() time.Time { return now })
+
+	c := NewCache(s, slog.Default())
+	// ABSENT: a brand-new cache with no Refresh is NOT loaded (boot fail-open
+	// footing) — distinct from "loaded and empty".
+	assert.False(t, c.Loaded(), "a never-refreshed cache must report not-loaded")
+
+	// present-but-WRONG: a refresh against a closed backend errors → still not
+	// loaded (a FAILED refresh does not count as loaded).
+	mr.Close()
+	require.Error(t, c.Refresh(context.Background()))
+	assert.False(t, c.Loaded(), "a failed refresh must not flip Loaded() to true")
+}
+
+func TestCache_LoadedTrueAfterSuccessfulRefresh(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	s, _, _ := testStore(t, func() time.Time { return now })
+
+	c := NewCache(s, slog.Default())
+	require.NoError(t, c.Refresh(context.Background()))
+	assert.True(t, c.Loaded(), "after one successful Refresh the cache is loaded")
+	// loaded-and-empty is a valid state: the CRL had no entries, but the cache
+	// IS loaded, so the gate admits non-revoked certs.
+	assert.False(t, c.IsRevoked("anything"))
+}
+
 func TestCache_FailStaticOnRefreshError(t *testing.T) {
 	now := time.Unix(1_000_000, 0)
 	s, mr, _ := testStore(t, func() time.Time { return now })
@@ -93,4 +125,8 @@ func TestCache_FailStaticOnRefreshError(t *testing.T) {
 	mr.Close()
 	require.Error(t, c.Refresh(context.Background()))
 	assert.True(t, c.IsRevoked("fp-x"), "must retain the previous snapshot on a refresh error")
+	// WS12 #1: after a successful load, a later failed refresh keeps Loaded()
+	// true (fail-static) — the two states (never-loaded vs loaded-then-stale)
+	// must not collapse.
+	assert.True(t, c.Loaded(), "a failed refresh after a good load must keep Loaded() true (fail-static)")
 }
