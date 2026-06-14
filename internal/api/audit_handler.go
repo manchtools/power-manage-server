@@ -124,6 +124,15 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 		// `passphrase` at the top level.
 		"LuksKeyRotated": {paths: []string{"passphrase"}},
 	},
+	"totp": {
+		// WS10 #8: TOTP setup persists the AES-GCM secret ciphertext and
+		// the backup-code bcrypt hashes; regeneration persists fresh
+		// backup-code hashes. Keep both out of the audit view. The
+		// self-discovering TestEveryTOTPEventClassifiedForRedaction pins
+		// that every secret-bearing TOTP event is covered here.
+		string(eventtypes.TOTPSetupInitiated):         {paths: []string{"secret_encrypted", "backup_codes_hash"}},
+		string(eventtypes.TOTPBackupCodesRegenerated): {paths: []string{"backup_codes_hash"}},
+	},
 }
 
 // actionRedactionSchemas maps an action's `params.type` value to the

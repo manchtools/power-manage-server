@@ -53,6 +53,16 @@ const maxAgentMessageBytes = 64 << 20
 // the cert's 1-year natural expiry.
 const crlRefreshInterval = 30 * time.Second
 
+// opsHealthHandler serves the unauthenticated ops-port /health endpoint.
+// It reports liveness ONLY — it must NOT disclose fleet telemetry such as
+// the connected-agent count, which previously leaked the live device
+// count to anyone able to reach the ops port (WS10 #12).
+func opsHealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"status":"healthy"}`)
+}
+
 func main() {
 	// Parse flags — TLS is always required for mTLS agent connections
 	tlsCert := flag.String("tls-cert", "", "path to server certificate (required)")
@@ -592,11 +602,7 @@ func main() {
 
 	// Separate mux for health checks (accessible without mTLS)
 	opsMux := http.NewServeMux()
-	opsMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"healthy","agents":%d}`, manager.Count())
-	})
+	opsMux.HandleFunc("/health", opsHealthHandler)
 	opsMux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

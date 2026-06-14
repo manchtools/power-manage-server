@@ -3,13 +3,16 @@ package ca
 
 import (
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/url"
 	"os"
@@ -53,6 +56,15 @@ func New(certPath, keyPath string, validity time.Duration, opts ...Option) (*CA,
 		return nil, fmt.Errorf("read CA key: %w", err)
 	}
 
+	// WS10 #11: the CA private key is the root of all trust — warn loudly
+	// (but do not block startup) if it is group/world-accessible. A hard
+	// failure here would break an existing deployment with a looser key
+	// mode; the operator must tighten it to owner-only (0600).
+	if info, statErr := os.Stat(keyPath); statErr == nil && info.Mode().Perm()&0o077 != 0 {
+		slog.Warn("CA private key file is group/world-accessible — restrict it to owner-only (chmod 0600)",
+			"path", keyPath, "mode", fmt.Sprintf("%#o", info.Mode().Perm()))
+	}
+
 	return NewFromPEM(certPEM, keyPEM, validity, opts...)
 }
 
@@ -76,6 +88,18 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration, opts ...Option) 
 	key, err := parsePrivateKey(keyBlock.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse CA key: %w", err)
+	}
+
+	// WS10 #7: the CA key signs BOTH issued certificates and dispatched
+	// actions (verify.ActionSigner), which supports only ECDSA and RSA.
+	// parsePrivateKey accepts any crypto.Signer (e.g. an Ed25519 PKCS8
+	// key) — reject a signer-incompatible key at boot rather than load it
+	// and silently break action dispatch later.
+	switch key.(type) {
+	case *ecdsa.PrivateKey, *rsa.PrivateKey:
+		// supported
+	default:
+		return nil, fmt.Errorf("unsupported CA signing key type %T (the action signer requires ECDSA or RSA)", key)
 	}
 
 	pool := x509.NewCertPool()

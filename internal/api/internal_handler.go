@@ -367,7 +367,9 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 		return nil, err
 	}
 
-	token, err := h.store.Repos().Luks.ConsumeToken(ctx, store.ConsumeLuksTokenParams{Token: req.Msg.Token, DeviceID: req.Msg.DeviceId})
+	// WS10 #3: tokens are stored hashed — hash the presented plaintext
+	// before lookup so the at-rest column never holds a usable token.
+	token, err := h.store.Repos().Luks.ConsumeToken(ctx, store.ConsumeLuksTokenParams{Token: hashLuksToken(req.Msg.Token), DeviceID: req.Msg.DeviceId})
 	if err != nil {
 		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token is invalid or has expired")
