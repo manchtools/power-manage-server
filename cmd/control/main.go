@@ -285,8 +285,16 @@ func main() {
 		auth.NewAuthzInterceptor(),
 	)
 
+	// controlMaxRequestBytes bounds how much of a single request body the
+	// control server will buffer before the handler runs (WS13 #4). Without it,
+	// an UNAUTHENTICATED caller (Login/Register are public) could stream an
+	// arbitrarily large body and force unbounded allocation pre-auth. 8 MiB is
+	// generous for control-plane JSON/proto (including a FILE/SHELL action's
+	// embedded content) while still bounding the pre-auth buffer.
+	const controlMaxRequestBytes = 8 << 20
+
 	mux := http.NewServeMux()
-	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors)
+	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(path, handler)
 
 	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
@@ -335,6 +343,7 @@ func main() {
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(
 		internalHandler,
 		connect.WithInterceptors(api.NewValidationInterceptor()),
+		connect.WithReadMaxBytes(controlMaxRequestBytes),
 	)
 
 	// Peer-class gate: InternalService handles credential-bearing

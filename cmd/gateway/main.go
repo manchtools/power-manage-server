@@ -47,6 +47,11 @@ var version = "dev"
 // bounding the blast radius of a hostile peer.
 const maxAgentMessageBytes = 64 << 20
 
+// maxGatewayServiceBytes caps the GatewayService (control→gateway admin
+// list/terminate fan-out) request body. Those payloads are tiny; 4 MiB bounds
+// pre-handler buffering with ample headroom (WS13 #4).
+const maxGatewayServiceBytes = 4 << 20
+
 // crlRefreshInterval is how often the gateway reloads the cert-revocation list
 // from Valkey into its in-memory cache. A revocation takes at most this long to
 // propagate to a gateway — acceptable for cert revocation, and far better than
@@ -639,7 +644,10 @@ func main() {
 	// admitted — an agent cert that happens to chain to the same
 	// internal CA cannot invoke admin fan-out RPCs.
 	gwSvcHandler := handler.NewGatewayServiceHandler(terminalSessions, manager, logger.With("component", "gateway_service"))
-	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler)
+	// Bound the admin fan-out request body (WS13 #4). GatewayService handles
+	// list/terminate RPCs with tiny payloads, so a modest cap is ample and
+	// keeps an oversized body from being buffered before the handler runs.
+	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler, connect.WithReadMaxBytes(maxGatewayServiceBytes))
 	// Revocation gate (WS12 #2): a revoked control cert must not be able to
 	// drive admin list/terminate fan-out. The same loaded CRL cache the agent
 	// path uses backs it (Valkey is mandatory on the gateway, so it's never nil).
