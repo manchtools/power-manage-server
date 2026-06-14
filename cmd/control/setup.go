@@ -63,39 +63,28 @@ func bootstrapAllDevicesGroup(ctx context.Context, st *store.Store, logger *slog
 }
 
 // errEncryptionKeyRequired is the boot-time fatal returned when
-// CONTROL_ENCRYPTION_KEY is unset and the operator did not opt out
-// via CONTROL_ENCRYPTION_KEY_REQUIRED=false. The error type is the
-// only signal main() needs to log+exit; the helper handles the
-// "opt out" warn-and-continue case internally.
-var errEncryptionKeyRequired = errors.New("CONTROL_ENCRYPTION_KEY is required (set CONTROL_ENCRYPTION_KEY_REQUIRED=false to opt out)")
+// CONTROL_ENCRYPTION_KEY is unset. The error type is the only signal
+// main() needs to log+exit.
+var errEncryptionKeyRequired = errors.New("CONTROL_ENCRYPTION_KEY is required (32-byte key; generate one with `openssl rand -hex 32`)")
 
-// initEncryptor reads CONTROL_ENCRYPTION_KEY (and its REQUIRED opt-out)
-// from the environment and returns the constructed Encryptor.
+// initEncryptor reads CONTROL_ENCRYPTION_KEY from the environment and returns
+// the constructed Encryptor.
 //
-// Returns (nil, nil) only when the operator explicitly opted out via
-// CONTROL_ENCRYPTION_KEY_REQUIRED=false; a Warn line is logged on that
-// path so the unencrypted-secrets state is visible in boot logs.
+// The encryption key is MANDATORY — there is NO plaintext opt-out (WS11 #4: the
+// former CONTROL_ENCRYPTION_KEY_REQUIRED=false escape was removed so no
+// deployment, not even by accident, can store IdP client secrets, TOTP secrets,
+// LUKS keys, or LPS passwords unencrypted at rest).
 //
-// Returns (nil, errEncryptionKeyRequired) when the key is unset and
-// the operator did NOT opt out — main() must log+exit.
-//
-// Returns (nil, err) for malformed-key errors from crypto.NewEncryptor.
-//
-// Why "fail closed": IdP client secrets, LUKS keys, and other
-// secrets-at-rest rely on this encryptor. Running without a key
-// would silently degrade security in production. The opt-out is
-// kept available for dev / single-tenant deployments that genuinely
-// store no secrets.
-func initEncryptor(logger *slog.Logger) (*crypto.Encryptor, error) {
+// Returns (nil, errEncryptionKeyRequired) when the key is unset — main() must
+// log+exit. Returns (nil, err) for malformed-key errors from
+// crypto.NewEncryptor (surfaced as-is so an operator sees a typo'd key rather
+// than mistaking it for a missing one). On success returns the encryptor.
+func initEncryptor(_ *slog.Logger) (*crypto.Encryptor, error) {
 	enc, err := crypto.NewEncryptor(os.Getenv("CONTROL_ENCRYPTION_KEY"))
 	if err != nil {
 		return nil, err
 	}
 	if enc == nil {
-		if os.Getenv("CONTROL_ENCRYPTION_KEY_REQUIRED") == "false" {
-			logger.Warn("CONTROL_ENCRYPTION_KEY not set and CONTROL_ENCRYPTION_KEY_REQUIRED=false - secrets will be stored unencrypted")
-			return nil, nil
-		}
 		return nil, errEncryptionKeyRequired
 	}
 	return enc, nil

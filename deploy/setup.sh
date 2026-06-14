@@ -75,15 +75,15 @@ check_env() {
         missing=1
     fi
 
-    # AES-256-GCM key for at-rest secret encryption. Must be exactly
-    # 64 hex chars (32 bytes). Interactive mode's prompt_secret already
-    # length-checks this; the check_env mirror is what catches a
-    # --no-prompt run against a malformed .env. Empty is allowed only
-    # when the operator explicitly opted out via
-    # CONTROL_ENCRYPTION_KEY_REQUIRED=false (handled at control-server
-    # boot, not here).
-    if [[ -n "${CONTROL_ENCRYPTION_KEY:-}" ]] && [[ ! "$CONTROL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters when set"
+    # AES-256-GCM key for at-rest secret encryption. MANDATORY — exactly
+    # 64 hex chars (32 bytes). The control server refuses to boot without it
+    # (no plaintext opt-out, WS11), so the check_env mirror flags both an
+    # empty and a malformed value on a --no-prompt run.
+    if [[ -z "${CONTROL_ENCRYPTION_KEY:-}" ]]; then
+        log_error "CONTROL_ENCRYPTION_KEY is required (generate with: openssl rand -hex 32)"
+        missing=1
+    elif [[ ! "$CONTROL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters"
         missing=1
     fi
 

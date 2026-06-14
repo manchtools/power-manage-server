@@ -177,14 +177,10 @@ func main() {
 		}
 	}, false)
 
-	// Initialize secret encryptor.
-	//
-	// rc3 note: previously read unprefixed PM_ENCRYPTION_KEY /
-	// PM_ENCRYPTION_KEY_REQUIRED. Now namespaced as
-	// CONTROL_ENCRYPTION_KEY / CONTROL_ENCRYPTION_KEY_REQUIRED so all
-	// control-server knobs live under one prefix. Operators upgrading
-	// from rc2 must rename their .env entries — the old names are no
-	// longer read.
+	// Initialize secret encryptor. CONTROL_ENCRYPTION_KEY is MANDATORY —
+	// the former CONTROL_ENCRYPTION_KEY_REQUIRED=false plaintext opt-out was
+	// removed (WS11 #4); a missing key is a fatal boot error so secrets at
+	// rest can never be stored unencrypted, even by accident.
 	encryptor, err := initEncryptor(logger)
 	if err != nil {
 		logger.Error("failed to initialize encryptor", "error", err)
