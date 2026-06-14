@@ -280,6 +280,9 @@ func main() {
 
 	interceptors := connect.WithInterceptors(
 		api.NewLoggingInterceptor(logger),
+		// Bound every unary handler's wall-clock (WS13 #10). Backstops the DB
+		// statement_timeout for non-DB blocking; streaming passes through.
+		api.NewRequestDeadlineInterceptor(api.RequestDeadline),
 		auth.NewAuthInterceptor(logger, jwtManager, rateLimiters),
 		api.NewValidationInterceptor(),
 		auth.NewAuthzInterceptor(),
