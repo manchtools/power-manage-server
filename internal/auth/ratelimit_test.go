@@ -1,11 +1,13 @@
 package auth
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRateLimiter_AllowWithinLimit(t *testing.T) {
@@ -121,4 +123,59 @@ func TestRateLimiter_Blocked(t *testing.T) {
 
 	// Keys are independent.
 	assert.False(t, rl.Blocked("other"))
+}
+
+// TestRateLimiter_KeyCapEvictsEldest pins audit F-20: at the per-instance key
+// ceiling, inserting a never-seen key evicts the single eldest-seen key, the
+// map stays bounded (never grows to cap+1), and re-touching an EXISTING key at
+// the ceiling is exempt from eviction. "Eldest" is sourced from the insertion
+// order under an injected clock, not from reading evictEldestLocked's output.
+func TestRateLimiter_KeyCapEvictsEldest(t *testing.T) {
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	const capKeys = 4
+	rl := newRateLimiterWithCap(10, time.Hour, capKeys, WithClock(func() time.Time { return now }))
+	defer rl.Stop()
+
+	// Insert `capKeys` distinct keys, advancing the clock between each so k0 is
+	// provably the eldest by lastSeen and k{capKeys-1} the newest.
+	for i := 0; i < capKeys; i++ {
+		require.True(t, rl.Allow(fmt.Sprintf("k%d", i)))
+		now = now.Add(time.Minute)
+	}
+	require.Len(t, rl.attempts, capKeys, "map should be exactly at the cap before the over-limit insert")
+
+	// Insert one never-seen key at the ceiling: the eldest (k0) is evicted.
+	require.True(t, rl.Allow("kNew"))
+	assert.Len(t, rl.attempts, capKeys, "map must stay bounded at the cap, not grow to cap+1")
+	_, k0Present := rl.attempts["k0"]
+	assert.False(t, k0Present, "the eldest-seen key k0 must be the one evicted")
+	_, kNewPresent := rl.attempts["kNew"]
+	assert.True(t, kNewPresent, "the newly inserted key must be present after eviction")
+
+	// Re-touch an EXISTING key at the ceiling: it gets a fresh timestamp and
+	// nothing is evicted (size unchanged, no other key dropped).
+	now = now.Add(time.Minute)
+	require.True(t, rl.Allow("k1"))
+	assert.Len(t, rl.attempts, capKeys, "re-touching an existing key must not change the map size")
+	for _, k := range []string{"k1", "k2", "k3", "kNew"} {
+		_, ok := rl.attempts[k]
+		assert.Truef(t, ok, "existing key %q must survive an existing-key re-touch (no spurious eviction)", k)
+	}
+}
+
+// TestRateLimiter_KeyCapDoesNotEvictBelowCeiling pins the rejection path: when
+// the map is below the cap, inserting a new key must NOT evict anything.
+func TestRateLimiter_KeyCapDoesNotEvictBelowCeiling(t *testing.T) {
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	rl := newRateLimiterWithCap(10, time.Hour, 8, WithClock(func() time.Time { return now }))
+	defer rl.Stop()
+
+	for i := 0; i < 5; i++ { // 5 < cap (8)
+		require.True(t, rl.Allow(fmt.Sprintf("k%d", i)))
+		now = now.Add(time.Minute)
+	}
+	require.True(t, rl.Allow("kNew"))
+	assert.Len(t, rl.attempts, 6, "no eviction below the ceiling — every inserted key is retained")
+	_, k0 := rl.attempts["k0"]
+	assert.True(t, k0, "k0 must NOT be evicted while the map is below the ceiling")
 }

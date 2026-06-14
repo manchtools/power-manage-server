@@ -651,3 +651,112 @@ func TestAuthzInterceptor_DeviceContext_DeniesAdminAction(t *testing.T) {
 	require.Error(t, err, "a device must be denied an admin action through the real interceptor")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
+
+// TestClientIPFromHTTP_TrustAttribution pins the rate-limit spoof surface
+// (finding 3): X-Forwarded-For / X-Real-IP are honoured ONLY when the direct
+// peer is in the configured trusted-proxy set, and malformed config is dropped
+// rather than widening trust. Every attacker-supplied header value is sourced
+// from intent (an arbitrary spoofed address), never from the function's own
+// output. TrustedProxies is a package global; the cleanup resets it.
+func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+
+	const spoofed = "203.0.113.66" // attacker-chosen XFF value
+
+	cases := []struct {
+		name       string
+		trusted    []string
+		remoteAddr string
+		xff        string
+		xri        string
+		want       string
+	}{
+		{
+			name:       "untrusted peer + spoofed XFF returns the peer, not the XFF",
+			remoteAddr: "198.51.100.5:443",
+			xff:        spoofed,
+			want:       "198.51.100.5",
+		},
+		{
+			name:       "trusted /8 peer + XFF returns the first XFF hop",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", 10.9.9.9",
+			want:       spoofed,
+		},
+		{
+			name:       "trusted peer + X-Real-IP (no XFF) returns X-Real-IP",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xri:        "192.0.2.7",
+			want:       "192.0.2.7",
+		},
+		{
+			name:       "trusted peer + malformed XFF falls through to X-Real-IP",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "not-an-ip",
+			xri:        "192.0.2.7",
+			want:       "192.0.2.7",
+		},
+		{
+			name:       "trusted peer + malformed XFF + no X-Real-IP falls through to the peer",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "not-an-ip",
+			want:       "10.1.2.3",
+		},
+		{
+			name:       "bare-IP trusted entry parsed as /32 (IPv4) trusts the exact peer",
+			trusted:    []string{"172.16.0.9"},
+			remoteAddr: "172.16.0.9:5555",
+			xff:        spoofed,
+			want:       spoofed,
+		},
+		{
+			name:       "bare-IP /32 does not widen to a neighbouring address",
+			trusted:    []string{"172.16.0.9"},
+			remoteAddr: "172.16.0.10:5555", // one off — not trusted
+			xff:        spoofed,
+			want:       "172.16.0.10",
+		},
+		{
+			name:       "bare-IP trusted entry parsed as /128 (IPv6) trusts the exact peer",
+			trusted:    []string{"2001:db8::1"},
+			remoteAddr: "[2001:db8::1]:5555",
+			xff:        spoofed,
+			want:       spoofed,
+		},
+		{
+			name:       "malformed CIDR entries are skipped, not fatal, and do not widen trust",
+			trusted:    []string{"10.0.0.0/999", "garbage"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed,
+			want:       "10.1.2.3", // peer untrusted because the bad CIDRs were dropped
+		},
+		{
+			name:       "RemoteAddr without a port parses to the bare IP",
+			remoteAddr: "198.51.100.5",
+			want:       "198.51.100.5",
+		},
+		{
+			name:       "no parsable IP anywhere returns the empty string",
+			remoteAddr: "",
+			want:       "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetTrustedProxies(tc.trusted)
+			r := &http.Request{RemoteAddr: tc.remoteAddr, Header: http.Header{}}
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.xri != "" {
+				r.Header.Set("X-Real-IP", tc.xri)
+			}
+			assert.Equal(t, tc.want, ClientIPFromHTTP(r))
+		})
+	}
+}
