@@ -158,24 +158,57 @@ func TestLogin_GlobalPasswordAuthDisabled(t *testing.T) {
 	assert.Contains(t, err.Error(), "password login is disabled")
 }
 
-func TestLogin_DisabledUser(t *testing.T) {
+// TestLogin_DisabledAccountIsEnumerationSafe pins WS11 finding 11: a disabled
+// account with the CORRECT password must return the SAME generic
+// invalid-credentials response as a wrong password — NOT a distinguishable
+// "account is disabled" (CodePermissionDenied), which is a user-enumeration
+// oracle for a credential holder. The "correct password on a disabled account"
+// case is sourced from intent (a credential holder must not learn account
+// state), not from the handler's prior branch.
+func TestLogin_DisabledAccountIsEnumerationSafe(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()
 	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
 
-	email := testutil.NewID() + "@test.com"
-	userID := testutil.CreateTestUser(t, st, email, "password", "user")
-
-	// Disable the user
-	err := st.AppendEvent(context.Background(), testutil.DisableEvent(userID))
-	require.NoError(t, err)
-
-	_, err = h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
-		Email:    email,
-		Password: "password",
+	// Baseline: an ENABLED account with the correct password still succeeds.
+	enabledEmail := testutil.NewID() + "@test.com"
+	testutil.CreateTestUser(t, st, enabledEmail, "correct-password", "user")
+	resp, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email: enabledEmail, Password: "correct-password",
 	}))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Msg.AccessToken)
+
+	// Disabled account WITH the correct password.
+	disabledEmail := testutil.NewID() + "@test.com"
+	disabledID := testutil.CreateTestUser(t, st, disabledEmail, "correct-password", "user")
+	require.NoError(t, st.AppendEvent(context.Background(), testutil.DisableEvent(disabledID)))
+
+	_, disabledErr := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email: disabledEmail, Password: "correct-password",
+	}))
+	require.Error(t, disabledErr)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(disabledErr),
+		"a disabled account must not be distinguishable via a PermissionDenied code")
+	assert.Contains(t, disabledErr.Error(), "invalid credentials")
+	assert.NotContains(t, disabledErr.Error(), "disabled",
+		"the disabled state must not leak to a credential holder")
+
+	// Wrong password on the SAME disabled account → byte-identical response.
+	_, wrongErr := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email: disabledEmail, Password: "wrong-password",
+	}))
+	require.Error(t, wrongErr)
+	assert.Equal(t, disabledErr.Error(), wrongErr.Error(),
+		"disabled+correct and disabled+wrong must be indistinguishable")
+
+	// Nonexistent account → same generic response (parity).
+	_, missingErr := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email: testutil.NewID() + "@test.com", Password: "any-password",
+	}))
+	require.Error(t, missingErr)
+	assert.Equal(t, disabledErr.Error(), missingErr.Error(),
+		"a nonexistent account must be indistinguishable from a disabled one")
 }
 
 func TestLogin_NoCookiesSet(t *testing.T) {
