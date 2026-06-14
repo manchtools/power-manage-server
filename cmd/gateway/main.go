@@ -640,7 +640,10 @@ func main() {
 	// internal CA cannot invoke admin fan-out RPCs.
 	gwSvcHandler := handler.NewGatewayServiceHandler(terminalSessions, manager, logger.With("component", "gateway_service"))
 	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler)
-	mux.Handle(gwSvcPath, mtls.RequirePeerClass(logger, mtls.PeerClassControl)(gwSvcH))
+	// Revocation gate (WS12 #2): a revoked control cert must not be able to
+	// drive admin list/terminate fan-out. The same loaded CRL cache the agent
+	// path uses backs it (Valkey is mandatory on the gateway, so it's never nil).
+	mux.Handle(gwSvcPath, mtls.RequirePeerClassNotRevoked(logger, crlCache, mtls.PeerClassControl)(gwSvcH))
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))

@@ -139,38 +139,12 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 // does not carry the "agent" peer-class URI SAN — the AgentService
 // listener is for managed devices only, and a leaked gateway or
 // control cert must not be usable here.
-// RevocationChecker reports whether an agent cert (by SHA-256 fingerprint) has
-// been revoked, and whether the underlying revocation list has loaded at least
-// once. The gateway's crl.Cache satisfies it.
-//
-// A nil checker, or one whose Loaded() is false, is treated as FAIL-CLOSED by
-// MTLSMiddleware: if we cannot consult a loaded revocation list we cannot prove
-// the presented cert is *not* revoked, so the request is rejected rather than
-// admitted. The only way to run without real revocation data is to pass an
-// explicit NoopRevocationChecker (a typed, dev-only opt-out the caller logs at
-// WARN) — never a bare nil and never an unloaded cache.
-type RevocationChecker interface {
-	IsRevoked(fingerprint string) bool
-	// Loaded reports whether the revocation list has been successfully loaded
-	// at least once. Until it has, MTLSMiddleware fails closed.
-	Loaded() bool
-}
-
-// NoopRevocationChecker is the explicit, typed dev-only opt-out from the
-// revocation gate: it reports nothing revoked and always "loaded", so
-// MTLSMiddleware admits non-revoked certs without a real CRL. Use it ONLY on
-// non-mTLS dev paths and log at WARN where it is wired — it is deliberately
-// distinct from a bare nil (which fails closed) so disabling revocation is a
-// visible, intentional choice in the code, never an accident.
-type NoopRevocationChecker struct{}
-
-// IsRevoked always returns false (nothing is known-revoked).
-func (NoopRevocationChecker) IsRevoked(string) bool { return false }
-
-// Loaded always returns true (the no-op list is trivially "loaded").
-func (NoopRevocationChecker) Loaded() bool { return true }
-
-func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slog.Logger) http.Handler {
+// MTLSMiddleware gates the gateway's AgentService listener. The revocation
+// checker is mtls.RevocationChecker (the gateway's *crl.Cache satisfies it); a
+// nil or not-yet-loaded checker fails CLOSED — see mtls.RevocationChecker and
+// the fail-closed block below. The only no-CRL path is an explicit
+// mtls.NoopRevocationChecker, logged at WARN by the caller.
+func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
 		if r.URL.Path == "/health" || r.URL.Path == "/ready" {

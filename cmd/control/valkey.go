@@ -43,6 +43,11 @@ import (
 	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
+// controlCRLRefreshInterval is how often the control server reloads the CRL
+// cache that gates its InternalService mTLS listener. Matches the gateway's
+// cadence; revocations propagate to the internal plane within one interval.
+const controlCRLRefreshInterval = 30 * time.Second
+
 // valkeySubsystem owns every long-lived component constructed when
 // the operator configures Valkey. Close() unwinds them in reverse
 // construction order; nil components are skipped so a partial-init
@@ -71,6 +76,13 @@ type valkeySubsystem struct {
 	// it to the ControlService so renewal/device-deletion revoke the old cert;
 	// gateways read the same Valkey key to enforce it on mTLS connections.
 	CRLStore *crl.Store
+
+	// CRLCache is a loaded, in-memory snapshot of CRLStore used to gate the
+	// InternalService mTLS listener (WS12 #2: a revoked gateway cert must not
+	// be able to call ProxyGetLuksKey / ProxyStoreLpsPasswords). It is loaded
+	// synchronously at subsystem init — a failed initial load fails the whole
+	// subsystem (fail-closed, mirroring the gateway's boot).
+	CRLCache *crl.Cache
 
 	// GatewayRegistry is the device→gateway routing registry. main() hands it to
 	// the InternalHandler (SetDeviceGatewayResolver) so every device-origin
@@ -151,6 +163,14 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	v.TerminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(v.rdb))
 	v.CRLStore = crl.NewStore(v.rdb)
 	svc.SetCRLStore(v.CRLStore)
+	// Load the CRL cache that gates the InternalService mTLS listener. Fail the
+	// subsystem if the initial load errors — symmetry with the gateway's
+	// fail-closed boot: never admit gateway certs against an unloaded CRL.
+	v.CRLCache = crl.NewCache(v.CRLStore, logger.With("component", "crl"))
+	if err := v.CRLCache.Refresh(ctx); err != nil {
+		return nil, fmt.Errorf("initial CRL load failed (refusing to start the internal mTLS listener without a loaded revocation list): %w", err)
+	}
+	go v.CRLCache.Run(ctx, controlCRLRefreshInterval)
 	gatewayReg := registry.New(registry.NewValkeyBackend(v.rdb), logger.With("component", "gateway_registry"))
 	v.GatewayRegistry = gatewayReg
 	termHandler := api.NewTerminalHandler(

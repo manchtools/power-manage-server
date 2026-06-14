@@ -288,7 +288,7 @@ func TestMTLSMiddleware_AgentClassReachesInnerWithDeviceIDInContext(t *testing.T
 	// Explicit NoopRevocationChecker (the typed dev opt-out) — a bare nil now
 	// fails closed (see TestMTLSMiddleware_NilRevocationChecker), so the happy
 	// path must pass an explicit loaded checker.
-	mw := MTLSMiddleware(inner, NoopRevocationChecker{}, newTestLogger())
+	mw := MTLSMiddleware(inner, mtls.NoopRevocationChecker{}, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	agent := mtls.PeerClassAgent
@@ -475,7 +475,7 @@ func TestMTLSMiddleware_NilRevocationChecker(t *testing.T) {
 	// explicit NoopRevocationChecker → admits non-revoked (typed dev opt-out).
 	called := false
 	innerOK := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
-	mwNoop := MTLSMiddleware(innerOK, NoopRevocationChecker{}, newTestLogger())
+	mwNoop := MTLSMiddleware(innerOK, mtls.NoopRevocationChecker{}, newTestLogger())
 	reqNoop := httptest.NewRequest(http.MethodGet, "/api", nil)
 	reqNoop.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
 	recNoop := httptest.NewRecorder()
