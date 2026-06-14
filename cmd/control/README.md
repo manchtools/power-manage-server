@@ -777,6 +777,17 @@ query evaluation, search, projector rebuild, log/osquery fan-out). This bounds a
 stolen access token or a runaway client. The ceilings are fixed defaults; over a
 limit the RPC returns `CodeResourceExhausted`.
 
+### Resource bounds & timeouts
+
+The request boundary is bounded against resource-exhaustion DoS (WS13): the
+ControlService/InternalService handlers cap request bodies at 8 MiB
+(`connect.WithReadMaxBytes`, over-cap rejected pre-handler); list pagination
+offset is capped at `maxListOffset` (100_000) and a deeper token is rejected
+rather than scanned; the database pool applies a `statement_timeout` (30s
+per-statement; migrations exempt) and every unary RPC runs under a 30s
+request-deadline interceptor; and gateway↔control proxy calls carry per-call
+deadlines. These are fixed defaults today.
+
 ## Certificate Revocation
 
 When a certificate is superseded (`RenewCertificate`) or a device is deleted, the

@@ -108,6 +108,16 @@ revocation gate fails closed: if the CRL has not loaded (Valkey unavailable at
 boot) the listener refuses connections rather than admitting an unverifiable
 cert.
 
+**Request-boundary resource bounds.** The request boundary is bounded against
+resource-exhaustion DoS: list pagination offset is capped (`maxListOffset`,
+deep-OFFSET scans rejected with `CodeInvalidArgument`); request bodies are size-
+capped via `connect.WithReadMaxBytes` (Control/Internal 8 MiB, Gateway 4 MiB —
+over-cap rejected pre-handler with `CodeResourceExhausted`); the DB pool sets a
+`statement_timeout` (single-query wall-clock bound) and every unary RPC runs
+under a request-deadline interceptor; gateway↔control proxy calls carry per-call
+deadlines; and event-store rebuild streams in bounded batches instead of buffering
+the whole stream.
+
 **Rate limiting & client IP.** Unauthenticated endpoints (login, refresh,
 register, logout, cert renewal, auth-methods lookup) are throttled per client IP;
 authenticated RPCs are throttled per user, with a tighter ceiling on heavy
