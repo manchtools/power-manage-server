@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 )
 
 var testLogger = slog.Default()
@@ -650,6 +652,95 @@ func TestAuthzInterceptor_DeviceContext_DeniesAdminAction(t *testing.T) {
 	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
 	require.Error(t, err, "a device must be denied an admin action through the real interceptor")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// setupAuthRateLimitTest mounts the EvaluateDynamicGroup (expensive) procedure
+// behind the REAL AuthInterceptor with the supplied limiters, recording whether
+// the handler ran via a per-request header. Returns the server URL + manager.
+func setupAuthRateLimitTest(t *testing.T, limiters RateLimiters) (string, *JWTManager) {
+	t.Helper()
+	jwtMgr := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-for-interceptor-test"),
+		AccessTokenExpiry: 15 * time.Minute,
+	})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, limiters)
+
+	const procedure = "/pm.v1.ControlService/EvaluateDynamicGroup"
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(_ context.Context, _ *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			resp := connect.NewResponse(&emptypb.Empty{})
+			resp.Header().Set("X-Handler-Ran", "true")
+			return resp, nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.URL, jwtMgr
+}
+
+// TestAuthInterceptor_AuthenticatedRPCRateLimited pins WS11 finding 6: the
+// per-user authenticated limiter gates ahead of the handler, and buckets are
+// keyed per user (two users on the same connection do not share a budget).
+func TestAuthInterceptor_AuthenticatedRPCRateLimited(t *testing.T) {
+	const ceiling = 3
+	serverURL, jwtMgr := setupAuthRateLimitTest(t, RateLimiters{
+		Authenticated: NewRateLimiter(ceiling, time.Minute),
+	})
+	const procedure = "/pm.v1.ControlService/EvaluateDynamicGroup"
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, serverURL+procedure)
+
+	call := func(t *testing.T, userID string) (*connect.Response[emptypb.Empty], error) {
+		t.Helper()
+		tokens, err := jwtMgr.GenerateTokens(userID, userID+"@x", []string{"EvaluateDynamicGroup"}, nil, 1)
+		require.NoError(t, err)
+		req := connect.NewRequest(&emptypb.Empty{})
+		req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+		return client.CallUnary(context.Background(), req)
+	}
+
+	// First `ceiling` calls for user A reach the handler.
+	for i := 0; i < ceiling; i++ {
+		resp, err := call(t, "userA")
+		require.NoError(t, err, "call %d within the ceiling must succeed", i+1)
+		assert.Equal(t, "true", resp.Header().Get("X-Handler-Ran"))
+	}
+
+	// The next call from the SAME user is rejected BEFORE the handler runs.
+	_, err := call(t, "userA")
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many")
+
+	// A DIFFERENT user on the same connection has an independent bucket — the
+	// limiter must not collapse per-user budgets onto one axis.
+	resp, err := call(t, "userB")
+	require.NoError(t, err, "a distinct user must have an independent per-user bucket")
+	assert.Equal(t, "true", resp.Header().Get("X-Handler-Ran"))
+}
+
+// TestIsExpensiveProcedure_MatchesRealProcedures is the self-discovering guard
+// for the expensive matcher: it walks the real ControlService descriptor and
+// asserts the matcher recognises at least one actual procedure (so the patterns
+// can never silently match zero), and that an ordinary read (GetUser) is NOT
+// classified as expensive.
+func TestIsExpensiveProcedure_MatchesRealProcedures(t *testing.T) {
+	svc := pm.File_pm_v1_control_proto.Services().ByName("ControlService")
+	require.NotNil(t, svc, "ControlService descriptor must resolve")
+
+	matched := []string{}
+	methods := svc.Methods()
+	for i := 0; i < methods.Len(); i++ {
+		name := string(methods.Get(i).Name())
+		if isExpensiveProcedure(name) {
+			matched = append(matched, name)
+		}
+	}
+	require.NotEmpty(t, matched,
+		"isExpensiveProcedure matched zero real ControlService procedures — the patterns drifted")
+	assert.False(t, isExpensiveProcedure("GetUser"), "an ordinary read must not be classified expensive")
 }
 
 // TestClientIPFromHTTP_TrustAttribution pins the rate-limit spoof surface

@@ -257,6 +257,40 @@ type RateLimiters struct {
 	// reflects whether an email exists and its auth config — an enumeration
 	// oracle if left unthrottled (audit). Keyed by client IP.
 	AuthMethods *RateLimiter
+	// Authenticated is the general per-user ceiling applied to EVERY
+	// authenticated control RPC after the token validates (WS11 #6). It bounds
+	// a compromised token or a runaway client from hammering the API. Keyed by
+	// the authenticated user ID, so two users never share a bucket.
+	Authenticated *RateLimiter
+	// Expensive is a tighter per-user ceiling applied ON TOP of Authenticated
+	// to the self-discovered set of heavy procedures (query evaluation, search,
+	// projector rebuild, log/osquery fan-out — see isExpensiveProcedure). Keyed
+	// by the authenticated user ID.
+	Expensive *RateLimiter
+}
+
+// isExpensiveProcedure reports whether an authenticated control procedure runs
+// a heavy operation — dynamic-group query evaluation, search, a projector
+// rebuild, or a log/osquery fan-out — that warrants a tighter per-user ceiling
+// than ordinary reads. It is self-discovered from the action name so a newly
+// added Evaluate* / Search* / Rebuild* / Query* / *Query RPC is covered
+// automatically rather than from a hand-maintained list that fails open. A test
+// (TestIsExpensiveProcedure_MatchesRealProcedures) walks the ControlService
+// descriptor and asserts the matcher recognises at least one real procedure, so
+// it can never silently match zero.
+func isExpensiveProcedure(action string) bool {
+	return strings.HasPrefix(action, "Evaluate") ||
+		strings.HasPrefix(action, "Search") ||
+		strings.HasPrefix(action, "Rebuild") ||
+		strings.HasPrefix(action, "Query") ||
+		strings.HasSuffix(action, "Query")
+}
+
+// procedureAction extracts the trailing method name from a Connect procedure
+// path ("/pm.v1.ControlService/EvaluateDynamicGroup" -> "EvaluateDynamicGroup").
+func procedureAction(procedure string) string {
+	parts := strings.Split(procedure, "/")
+	return parts[len(parts)-1]
 }
 
 // AuthInterceptor provides Connect-RPC authentication interceptor.
@@ -374,6 +408,25 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 				return nil, authErrorCtx(ctx, errTokenExpired, connect.CodeUnauthenticated, "token expired")
 			}
 			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid token")
+		}
+
+		// Authenticated-RPC rate limiting (WS11 #6). The caller is now
+		// authenticated, so key per-user: a stolen token or a misbehaving
+		// client cannot exhaust the API, and two users never share a bucket.
+		// The general ceiling counts every authenticated call; the tighter
+		// "expensive" ceiling additionally gates the self-discovered heavy set.
+		// Both run BEFORE next so the limiter gates ahead of any handler work.
+		if i.limiters.Authenticated != nil {
+			if !i.limiters.Authenticated.Allow("uid:" + claims.UserID) {
+				i.logger.Warn("rate limit exceeded", "limiter", "authenticated", "user_id", claims.UserID, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
+			}
+		}
+		if i.limiters.Expensive != nil && isExpensiveProcedure(procedureAction(procedure)) {
+			if !i.limiters.Expensive.Allow("uid:" + claims.UserID) {
+				i.logger.Warn("rate limit exceeded", "limiter", "expensive", "user_id", claims.UserID, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many expensive requests, try again later")
+			}
 		}
 
 		// Add user context with permissions + scoped grants from JWT

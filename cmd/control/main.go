@@ -268,6 +268,14 @@ func main() {
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
+		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
+		// user ID, not IP). Authenticated is a generous general ceiling
+		// (~10 rps sustained per user) that bounds a stolen token / runaway
+		// client; Expensive is a tighter ceiling applied on top for the
+		// self-discovered heavy set (query evaluation, search, rebuild,
+		// log/osquery fan-out).
+		Authenticated: auth.NewRateLimiter(600, 1*time.Minute),
+		Expensive:     auth.NewRateLimiter(60, 1*time.Minute),
 	}
 
 	interceptors := connect.WithInterceptors(
