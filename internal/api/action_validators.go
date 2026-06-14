@@ -48,9 +48,47 @@ func validateParamsMsg(ctx context.Context, msg proto.Message) error {
 		return validateShellScriptChoice(ctx, p)
 	case *pm.AgentUpdateParams:
 		return validateAgentUpdateParams(ctx, p)
+	case *pm.AppInstallParams:
+		return validateAppInstallParams(ctx, p)
 	default:
 		return Validate(ctx, msg)
 	}
+}
+
+// isLowerHex64 reports whether s is exactly 64 lowercase hex characters —
+// the canonical SHA-256 form. The struct-tag `hexadecimal` validator also
+// accepts UPPERCASE, so this explicit check pins the lowercase form the
+// agent's comparison and the design expect (defense in depth: the agent
+// compares case-insensitively, but the control plane stores canonical).
+func isLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateAppInstallParams enforces, for deb/rpm/appimage download-and-
+// install actions, that the url is https and a 64-lowercase-hex
+// checksum_sha256 is present (WS7 #2 — mandatory integrity; without it the
+// only authenticity is TLS to a possibly-compromised origin). The
+// required-checksum + valid-url tags run via Validate; the https + lower-
+// hex rules are the explicit additions.
+func validateAppInstallParams(ctx context.Context, p *pm.AppInstallParams) error {
+	if err := Validate(ctx, p); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(strings.ToLower(p.Url), "https://") {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "url must use HTTPS")
+	}
+	if !isLowerHex64(p.ChecksumSha256) {
+		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "checksum_sha256 must be 64 lowercase hex characters")
+	}
+	return nil
 }
 
 // validateCreateActionParams validates the params oneof of a CreateActionRequest.
@@ -150,6 +188,13 @@ func validateAgentUpdateParams(ctx context.Context, p *pm.AgentUpdateParams) err
 		}
 		if !strings.HasPrefix(strings.ToLower(arch.ChecksumUrl), "https://") {
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "checksum_url must use HTTPS")
+		}
+		// WS7 #1: the CA-signed hash that gates the binary swap. Explicit
+		// 64-lowercase-hex check for a precise error code (the struct-tag
+		// `hexadecimal` rule also accepts uppercase, which the agent's
+		// canonical comparison must not depend on).
+		if !isLowerHex64(arch.ExpectedSha256) {
+			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "expected_sha256 must be 64 lowercase hex characters")
 		}
 	}
 	return nil
