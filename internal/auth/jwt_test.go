@@ -1,15 +1,98 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// algConfusionClaims builds a minimal valid access-token claims body for the
+// alg-confusion tests. Only the signing algorithm varies between cases; the
+// claims are always well-formed and unexpired so a failure can only be the
+// signing-method rejection, never expiry/type.
+func algConfusionClaims() *Claims {
+	now := time.Now()
+	return &Claims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+			Issuer:    "test",
+			Subject:   "user-1",
+			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
+		UserID:    "user-1",
+		Email:     "a@b.com",
+		TokenType: TokenTypeAccess,
+	}
+}
+
+// TestValidateToken_RejectsAlgNone pins that a token whose header advertises
+// alg:none (unsigned, RFC-7519 §6) is rejected. Issuance is always HS256, so
+// an unsigned token is by definition forged. The "wrong" algorithm is sourced
+// from intent (the literal `none` method), not from the keyfunc under test.
+// Correct path is the HS256 token from GenerateTokens (covered elsewhere);
+// this is the present-but-WRONG case.
+func TestValidateToken_RejectsAlgNone(t *testing.T) {
+	m := newTestJWTManager()
+
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodNone, algConfusionClaims()).
+		SignedString(jwt.UnsafeAllowNoneSignatureType)
+	require.NoError(t, err)
+
+	_, err = m.ValidateToken(tok, TokenTypeAccess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected signing method",
+		"alg:none must be rejected on the HS256 signing-method pin, not on expiry/type")
+}
+
+// TestValidateToken_RejectsHSFamilyConfusion pins HS384/HS512 rejection EVEN
+// THOUGH the same shared secret would verify them. Signing with the manager's
+// own secret proves the pin is on token.Method != HS256, not merely on whether
+// the secret matches.
+func TestValidateToken_RejectsHSFamilyConfusion(t *testing.T) {
+	m := newTestJWTManager()
+	secret := []byte("test-secret-for-jwt") // the manager's own secret
+
+	for _, method := range []*jwt.SigningMethodHMAC{jwt.SigningMethodHS384, jwt.SigningMethodHS512} {
+		t.Run(method.Alg(), func(t *testing.T) {
+			tok, err := jwt.NewWithClaims(method, algConfusionClaims()).SignedString(secret)
+			require.NoError(t, err)
+
+			_, err = m.ValidateToken(tok, TokenTypeAccess)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "unexpected signing method",
+				"%s signed with the real secret must still be rejected — the pin is on the method, not the key", method.Alg())
+		})
+	}
+}
+
+// TestValidateToken_RejectsRS256PublicKeyConfusion pins the classic RS↔HS
+// algorithm-confusion attack: an RS256-signed token must be rejected, NOT
+// verified by treating the HMAC secret as an RSA public key. The wrong
+// algorithm is sourced from intent (issuance is always HS256), never from the
+// keyfunc.
+func TestValidateToken_RejectsRS256PublicKeyConfusion(t *testing.T) {
+	m := newTestJWTManager()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodRS256, algConfusionClaims()).SignedString(key)
+	require.NoError(t, err)
+
+	_, err = m.ValidateToken(tok, TokenTypeAccess)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected signing method",
+		"RS256 must be rejected on the signing-method pin, not silently treated as an HMAC key")
+}
 
 // decodeJWTPayload base64url-decodes the claims segment of a JWT so a
 // test can assert on the raw wire shape (e.g. an omitempty claim's
