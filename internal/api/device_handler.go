@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -853,6 +854,15 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
+// hashLuksToken returns the hex SHA-256 of a one-time LUKS token — the
+// form stored at rest and matched on validation (WS10 #3), so the
+// plaintext token never persists. Single source for the create and
+// validate (ProxyValidateLuksToken) sides.
+func hashLuksToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // CreateLuksToken creates a one-time token for setting a user-defined LUKS passphrase.
 // Only the device's assigned owner can create a token (admins cannot).
 func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Request[pm.CreateLuksTokenRequest]) (*connect.Response[pm.CreateLuksTokenResponse], error) {
@@ -915,8 +925,11 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 	token := hex.EncodeToString(tokenBytes)
 
-	// Store in DB
-	_, err = h.store.Repos().Luks.CreateToken(ctx, store.CreateLuksTokenParams{DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId, Token: token, MinLength: minLength, Complexity: complexity})
+	// WS10 #3: store only the SHA-256 hash of the token, never the
+	// plaintext (consistent with registration/terminal tokens). The
+	// plaintext is returned to the caller exactly once below; an attacker
+	// who reads the DB cannot replay it to set a LUKS passphrase.
+	_, err = h.store.Repos().Luks.CreateToken(ctx, store.CreateLuksTokenParams{DeviceID: req.Msg.DeviceId, ActionID: req.Msg.ActionId, Token: hashLuksToken(token), MinLength: minLength, Complexity: complexity})
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create token")
 	}
