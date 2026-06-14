@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"log/slog"
-	"math"
 
 	"connectrpc.com/connect"
 
@@ -54,6 +53,14 @@ func appendEvent(ctx context.Context, st *store.Store, logger *slog.Logger, evt 
 	return nil
 }
 
+// maxListOffset caps the pagination offset (WS13 #3). A client-controlled deep
+// OFFSET forces the database to scan and discard `offset` rows on every list
+// RPC — an asymmetric-work DoS. 100_000 matches the Search backbone's ceiling
+// (search_handler.maxSearchOffset); beyond it, list pages should route through
+// Search (server#84/#325) rather than raw OFFSET. A token past the ceiling is
+// REJECTED, not silently clamped, so the client learns to stop paginating.
+const maxListOffset = 100_000
+
 // parsePagination extracts page size and offset from request fields.
 // Default page size is 50, max is 100.
 func parsePagination(pageSize int32, pageToken string) (size int32, offset int32, err error) {
@@ -65,7 +72,7 @@ func parsePagination(pageSize int32, pageToken string) (size int32, offset int32
 	}
 	if pageToken != "" {
 		offset64, parseErr := parsePageToken(pageToken)
-		if parseErr != nil || offset64 < 0 || offset64 > math.MaxInt32 {
+		if parseErr != nil || offset64 < 0 || offset64 > maxListOffset {
 			return 0, 0, apiError(ErrInvalidPageToken, connect.CodeInvalidArgument, "invalid page token")
 		}
 		offset = int32(offset64)
