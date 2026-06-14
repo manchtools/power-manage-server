@@ -4,7 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -32,12 +33,25 @@ import (
 func TestEveryEventPayloadSecretFieldCovered(t *testing.T) {
 	const payloadsDir = "../eventtypes/payloads"
 
+	// Parse the payload source files directly. os.ReadDir + parser.ParseFile is
+	// used instead of the deprecated parser.ParseDir (SA1019), staying
+	// pure-stdlib (the project's archtest convention; go/packages is too
+	// fragile here) and avoiding the runtime-reflection problem that there is
+	// no registry enumerating payload types.
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, payloadsDir, func(fi fs.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, 0)
+	entries, err := os.ReadDir(payloadsDir)
 	require.NoError(t, err)
-	require.NotEmpty(t, pkgs, "no packages parsed under %s", payloadsDir)
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, perr := parser.ParseFile(fset, filepath.Join(payloadsDir, name), nil, 0)
+		require.NoError(t, perr)
+		files = append(files, f)
+	}
+	require.NotEmpty(t, files, "no payload source files parsed under %s", payloadsDir)
 
 	// event-type name -> set of redaction paths (union across all streams).
 	covered := map[string]map[string]bool{}
@@ -53,40 +67,38 @@ func TestEveryEventPayloadSecretFieldCovered(t *testing.T) {
 	}
 
 	scanned := 0
-	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			for _, decl := range file.Decls {
-				gd, ok := decl.(*ast.GenDecl)
-				if !ok || gd.Tok != token.TYPE {
+	for _, file := range files {
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || !ts.Name.IsExported() {
 					continue
 				}
-				for _, spec := range gd.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok || !ts.Name.IsExported() {
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				structName := ts.Name.Name
+				for _, field := range st.Fields.List {
+					if field.Tag == nil || !isStringishType(field.Type) {
 						continue
 					}
-					st, ok := ts.Type.(*ast.StructType)
-					if !ok {
+					tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`"))
+					jsonName := strings.Split(tag.Get("json"), ",")[0]
+					if jsonName == "" || jsonName == "-" {
 						continue
 					}
-					structName := ts.Name.Name
-					for _, field := range st.Fields.List {
-						if field.Tag == nil || !isStringishType(field.Type) {
-							continue
-						}
-						tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`"))
-						jsonName := strings.Split(tag.Get("json"), ",")[0]
-						if jsonName == "" || jsonName == "-" {
-							continue
-						}
-						if !isSensitiveParamField(jsonName) {
-							continue
-						}
-						scanned++
-						require.Truef(t, covered[structName][jsonName],
-							"payload %s field %s (json:%q) looks secret but no redaction schema covers event %q path %q — add it to eventRedactionSchemas in audit_handler.go",
-							structName, astFieldName(field), jsonName, structName, jsonName)
+					if !isSensitiveParamField(jsonName) {
+						continue
 					}
+					scanned++
+					require.Truef(t, covered[structName][jsonName],
+						"payload %s field %s (json:%q) looks secret but no redaction schema covers event %q path %q — add it to eventRedactionSchemas in audit_handler.go",
+						structName, astFieldName(field), jsonName, structName, jsonName)
 				}
 			}
 		}
