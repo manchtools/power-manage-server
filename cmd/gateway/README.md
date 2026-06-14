@@ -71,6 +71,16 @@ The Gateway Server:
 
 > **rc3 migration:** the previously unprefixed `VALKEY_ADDR` / `VALKEY_PASSWORD` / `VALKEY_DB` / `LOG_LEVEL` knobs now live under the `GATEWAY_*` namespace. The old names are no longer read.
 
+#### Terminal WebSocket authentication
+
+The TTY WebSocket endpoint requires the session bearer token in the
+`Sec-WebSocket-Protocol: bearer.<token>` request header — the gateway echoes the
+same subprotocol back to complete the handshake. The legacy `?token=<token>`
+query-string form is **rejected** with `401` before any validation (WS11):
+query strings leak into reverse-proxy access logs, browser `Referer` headers,
+and devtools network panels. `session_id` still travels as a query parameter (it
+is not a secret).
+
 #### Traefik self-registration (Redis KV)
 
 When enabled, each gateway replica publishes its own routing entries into Traefik's Redis KV provider. This removes the need for per-replica Traefik labels in compose and lets `docker compose up --scale gateway=N` (or k8s replica sets) add instances with zero operator touch per replica. The shared mTLS TCP router is load-balanced across all replicas; each replica owns a `/gw/<id>` path on the TTY host for session-specific routing.
@@ -296,10 +306,11 @@ Credential-bearing operations are proxied via Connect-RPC (`InternalService`) to
 
 ```bash
 curl http://localhost:8080/health
-# Returns: {"status":"healthy","agents":5}
+# Returns: {"status":"healthy"}
 ```
 
-The health endpoint returns the number of connected agents.
+The health endpoint reports liveness only. The connected-agent count was
+removed (WS10) so the unauthenticated probe doesn't leak fleet size.
 
 ### Ready Check
 

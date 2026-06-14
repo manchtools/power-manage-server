@@ -93,6 +93,19 @@ The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`); the Gatew
 | `Logout` | Revoke the presented refresh token. |
 | `GetCurrentUser` | Return the authenticated user's profile from JWT claims. |
 
+JWTs are signed with **HS256 only** — alg-confusion tokens (`none`, HS384/HS512,
+RS256) are rejected. `Login` returns the same generic *invalid credentials* for a
+wrong password, a non-existent account, and a **disabled** account, so a
+credential holder can't probe account state.
+
+**Rate limiting & client IP.** Unauthenticated endpoints (login, refresh,
+register, logout, cert renewal, auth-methods lookup) are throttled per client IP;
+authenticated RPCs are throttled per user, with a tighter ceiling on heavy
+operations (query evaluation, search, projector rebuild, log/osquery fan-out).
+Client-IP attribution honours `X-Forwarded-For` / `X-Real-IP` **only** when the
+direct peer is in `CONTROL_TRUSTED_PROXIES` (CIDRs or bare IPs); otherwise the
+peer address is used, so proxy headers can't be spoofed to evade per-IP limits.
+
 ### Users
 
 | Method | Description |
