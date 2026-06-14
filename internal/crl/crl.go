@@ -10,6 +10,15 @@
 //     mTLS expiry anyway, so it never needs to stay revoked), and
 //   - the gateway caches the set in memory, so the per-connection check is a
 //     local map lookup — no per-connection RPC — and survives a Valkey blip.
+//
+// Two invariants protect the cached read path:
+//   - fail-static: a refresh error KEEPS the previous snapshot (never fail-open
+//     to empty), so a transient Valkey outage cannot silently drop enforcement.
+//   - fail-closed-until-loaded: a Cache reports Loaded()==false until its first
+//     SUCCESSFUL refresh; callers (the mTLS middleware) treat a not-yet-loaded
+//     cache as "cannot prove this cert is unrevoked" and reject, distinct from a
+//     loaded-but-empty cache (a genuinely empty CRL, which admits). The gateway
+//     therefore fails its boot if the initial load never succeeds.
 package crl
 
 import (

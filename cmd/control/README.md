@@ -777,6 +777,18 @@ query evaluation, search, projector rebuild, log/osquery fan-out). This bounds a
 stolen access token or a runaway client. The ceilings are fixed defaults; over a
 limit the RPC returns `CodeResourceExhausted`.
 
+## Certificate Revocation
+
+When a certificate is superseded (`RenewCertificate`) or a device is deleted, the
+Control Server publishes the old fingerprint to a shared Valkey CRL. Beyond the
+gateway's agent listener, the **InternalService mTLS listener now consults the
+CRL too**: a revoked gateway certificate is rejected at connect time on the
+credential-bearing proxy plane, giving operators immediate revocation instead of
+waiting for the certificate's natural expiry. The gate fails closed — if the CRL
+cache cannot load at boot (Valkey unavailable) the subsystem refuses to start
+rather than admitting unverifiable certs. A no-Valkey dev deployment runs the
+internal listener with an explicit, WARN-logged no-op checker.
+
 ## CA Rotation
 
 The Control Server supports CA certificate rotation without re-registering agents. This is done via a **trust bundle** approach:

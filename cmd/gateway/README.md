@@ -319,6 +319,20 @@ curl http://localhost:8080/ready
 # Returns: ok
 ```
 
+## Certificate revocation (CRL)
+
+The control server publishes superseded/deleted certificate fingerprints to a
+shared Valkey CRL; the gateway caches it in memory and checks every mTLS
+connection against it (a local map lookup, refreshed on a ticker).
+
+The gateway **fails closed**: it refuses to start if the initial CRL load does
+not succeed (after a bounded retry), rather than booting with an empty list and
+admitting a revoked cert while Valkey is down. At runtime a not-yet-loaded or
+unavailable revocation list rejects connections (it cannot prove a cert is
+unrevoked); a successfully-loaded-but-empty list admits normally. The
+control-class `GatewayService` listener (admin list/terminate fan-out) consults
+the same CRL, so a revoked control cert is rejected at connect time.
+
 ## Action Types
 
 The Gateway forwards these action types from Control Server to agents:
