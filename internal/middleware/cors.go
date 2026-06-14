@@ -9,8 +9,11 @@ import (
 const (
 	// corsAllowMethods lists HTTP methods allowed in cross-origin requests.
 	corsAllowMethods = "GET, POST, PUT, DELETE, OPTIONS"
-	// corsAllowHeaders lists request headers the client may send.
-	corsAllowHeaders = "Accept, Authorization, Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms, Cookie"
+	// corsAllowHeaders lists request headers the client may send. Cookie is
+	// intentionally NOT advertised (WS13 #15): authentication is Bearer-only
+	// (Authorization header), so advertising Cookie would invite a cookie-based
+	// cross-origin flow the server doesn't use.
+	corsAllowHeaders = "Accept, Authorization, Content-Type, Connect-Protocol-Version, Connect-Timeout-Ms"
 	// corsExposeHeaders lists response headers the browser may access.
 	corsExposeHeaders = "Connect-Content-Encoding, Connect-Protocol-Version"
 	// corsMaxAge is the preflight cache duration in seconds (24 hours).
