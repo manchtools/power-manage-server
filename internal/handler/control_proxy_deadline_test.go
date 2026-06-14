@@ -28,7 +28,9 @@ func TestWithProxyDeadline_BoundsCall(t *testing.T) {
 		defer cancel()
 		dl, ok := ctx.Deadline()
 		require.True(t, ok)
-		assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), dl, proxyCallTimeout,
+		// Tolerance must be well under proxyCallTimeout (15s) so this is binding:
+		// if the per-call bound wrongly won, dl would be ~15s out and fail here.
+		assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), dl, 2*time.Second,
 			"the earlier caller deadline must win over the per-call bound")
 	})
 }
