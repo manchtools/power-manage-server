@@ -79,12 +79,14 @@ func NewTerminalBridgeHandler(
 const terminalSubprotocolPrefix = "bearer."
 
 // extractTerminalToken returns the session token from (a) the
-// Sec-WebSocket-Protocol header with the `bearer.<token>` shape,
-// preferred; or (b) the legacy `?token=` query parameter. When the
-// subprotocol form is used, the chosen subprotocol is returned so
-// the Accept call can echo it back — browsers reject a handshake
-// response that does not echo one of the client's offered
-// protocols.
+// Sec-WebSocket-Protocol header with the `bearer.<token>` shape — the
+// only ACCEPTED transport; or (b) the legacy `?token=` query parameter,
+// which is surfaced ONLY so ServeHTTP can hard-reject it explicitly
+// (WS11 finding 5). When the subprotocol form is used, the chosen
+// subprotocol is returned so the Accept call can echo it back — browsers
+// reject a handshake response that does not echo one of the client's
+// offered protocols. A non-empty token with an empty chosenSubprotocol
+// therefore means "token arrived in the URL" and must be refused.
 func extractTerminalToken(r *http.Request) (token, chosenSubprotocol string) {
 	// Sec-WebSocket-Protocol can be comma-separated with multiple
 	// offers. We scan for any entry starting with `bearer.` and
@@ -112,17 +114,21 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	sessionID := r.URL.Query().Get("session_id")
 	token, chosenSubprotocol := extractTerminalToken(r)
 	if sessionID == "" || token == "" {
-		http.Error(w, "session_id and token are required (use Sec-WebSocket-Protocol: bearer.<token> or ?token=...)", http.StatusBadRequest)
+		http.Error(w, "session_id and token are required (send the token via Sec-WebSocket-Protocol: bearer.<token>)", http.StatusBadRequest)
 		return
 	}
 	if chosenSubprotocol == "" {
-		// Legacy path — token travelled in the URL. Warn so the
-		// operator can trace old clients. Once all clients have
-		// migrated, we can turn this into a hard reject.
-		h.logger.Warn("terminal token received via query parameter; switch client to Sec-WebSocket-Protocol: bearer.<token>",
+		// Token arrived via the legacy `?token=` query parameter. Hard-reject
+		// it (WS11 finding 5): query strings leak into reverse-proxy access
+		// logs, browser Referer headers, and devtools network panels, so the
+		// bearer token MUST travel in the Sec-WebSocket-Protocol header. Do
+		// NOT consult the control server — refuse before any validation work.
+		h.logger.Warn("rejected terminal token presented via query parameter; client must use Sec-WebSocket-Protocol: bearer.<token>",
 			"session_id", sessionID,
 			"remote_addr", r.RemoteAddr,
 		)
+		http.Error(w, "terminal token must be sent via Sec-WebSocket-Protocol: bearer.<token>, not the URL query string", http.StatusUnauthorized)
+		return
 	}
 
 	logger := h.logger.With("session_id", sessionID)

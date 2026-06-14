@@ -177,14 +177,10 @@ func main() {
 		}
 	}, false)
 
-	// Initialize secret encryptor.
-	//
-	// rc3 note: previously read unprefixed PM_ENCRYPTION_KEY /
-	// PM_ENCRYPTION_KEY_REQUIRED. Now namespaced as
-	// CONTROL_ENCRYPTION_KEY / CONTROL_ENCRYPTION_KEY_REQUIRED so all
-	// control-server knobs live under one prefix. Operators upgrading
-	// from rc2 must rename their .env entries — the old names are no
-	// longer read.
+	// Initialize secret encryptor. CONTROL_ENCRYPTION_KEY is MANDATORY —
+	// the former CONTROL_ENCRYPTION_KEY_REQUIRED=false plaintext opt-out was
+	// removed (WS11 #4); a missing key is a fatal boot error so secrets at
+	// rest can never be stored unencrypted, even by accident.
 	encryptor, err := initEncryptor(logger)
 	if err != nil {
 		logger.Error("failed to initialize encryptor", "error", err)
@@ -272,6 +268,14 @@ func main() {
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
+		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
+		// user ID, not IP). Authenticated is a generous general ceiling
+		// (~10 rps sustained per user) that bounds a stolen token / runaway
+		// client; Expensive is a tighter ceiling applied on top for the
+		// self-discovered heavy set (query evaluation, search, rebuild,
+		// log/osquery fan-out).
+		Authenticated: auth.NewRateLimiter(600, 1*time.Minute),
+		Expensive:     auth.NewRateLimiter(60, 1*time.Minute),
 	}
 
 	interceptors := connect.WithInterceptors(

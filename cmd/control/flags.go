@@ -5,6 +5,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -128,8 +130,11 @@ func validateConfig(cfg *Config) error {
 	if cfg.JWTSecret == "" {
 		return fmt.Errorf("CONTROL_JWT_SECRET (or -jwt-secret) is required")
 	}
-	if len(cfg.JWTSecret) < 32 {
-		return fmt.Errorf("CONTROL_JWT_SECRET must be at least 32 characters")
+	if err := validateJWTSecretStrength(cfg.JWTSecret); err != nil {
+		return err
+	}
+	if err := validateAdminPassword(cfg.AdminPassword); err != nil {
+		return err
 	}
 	if cfg.TLSEnabled && (cfg.TLSCert == "" || cfg.TLSKey == "") {
 		return fmt.Errorf("-tls-cert and -tls-key are required when TLS is enabled")
@@ -140,6 +145,67 @@ func validateConfig(cfg *Config) error {
 	// expose a credential-less reflect-any-origin CORS policy to the internet.
 	if cfg.CORSAllowAll && (cfg.TLSEnabled || !listenAddrIsLocalhost(cfg.ListenAddr)) {
 		return fmt.Errorf("CONTROL_CORS_ALLOW_ALL is development-only and must not be set when TLS is enabled or the listen address is not localhost (got %q); set CONTROL_CORS_ORIGINS to an explicit allow-list instead", cfg.ListenAddr)
+	}
+	return nil
+}
+
+// jwtSecretMinBytes is the entropy floor for the HMAC signing secret: 256 bits.
+const jwtSecretMinBytes = 32
+
+// adminPasswordMinLen is the floor for the bootstrap admin password. It is a
+// throwaway first-login credential meant to be rotated immediately, but it
+// must still resist a trivial guess (the docs once shipped "admin").
+const adminPasswordMinLen = 12
+
+// validateJWTSecretStrength enforces that CONTROL_JWT_SECRET decodes (hex or
+// base64) to at least 32 random bytes (WS11 finding 4) — not merely that it is
+// >= 32 characters. A bare passphrase no longer passes: operators must supply a
+// CSPRNG-generated secret (`openssl rand -base64 48` or `openssl rand -hex 32`),
+// mirroring the CONTROL_ENCRYPTION_KEY handling. The raw string still signs
+// tokens (HMAC takes its entropy from the bytes either way); this only gates
+// operator input so a weak secret can't be brute-forced into forging tokens.
+func validateJWTSecretStrength(secret string) error {
+	if decodedSecretLen(secret) < jwtSecretMinBytes {
+		return fmt.Errorf(
+			"CONTROL_JWT_SECRET must decode (hex or base64) to at least %d random bytes; generate one with `openssl rand -base64 48` or `openssl rand -hex 32`",
+			jwtSecretMinBytes)
+	}
+	return nil
+}
+
+// decodedSecretLen returns the largest decoded byte length of s across the hex
+// and base64 (std/url, padded/raw) encodings, or 0 if it decodes under none.
+// Taking the max is deliberate: an operator may legitimately supply either
+// encoding, and a high-entropy value will satisfy the floor in at least one.
+func decodedSecretLen(s string) int {
+	best := 0
+	if b, err := hex.DecodeString(s); err == nil && len(b) > best {
+		best = len(b)
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding, base64.RawStdEncoding,
+		base64.URLEncoding, base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil && len(b) > best {
+			best = len(b)
+		}
+	}
+	return best
+}
+
+// validateAdminPassword enforces a minimum length on the bootstrap admin
+// password (WS11 finding 9). An EMPTY password is the no-bootstrap path
+// (main() only seeds an admin when both email and password are set), so an
+// operator can drop the password from the environment after first boot without
+// the server refusing to start. A non-empty but too-weak password is fatal.
+func validateAdminPassword(pw string) error {
+	if pw == "" {
+		return nil
+	}
+	if len(pw) < adminPasswordMinLen {
+		return fmt.Errorf(
+			"CONTROL_ADMIN_PASSWORD must be at least %d characters; it is a first-login bootstrap credential — set a strong value and rotate it after the first login",
+			adminPasswordMinLen)
 	}
 	return nil
 }

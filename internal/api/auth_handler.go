@@ -129,8 +129,17 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
 
+	// WS11 #11: a disabled account with the correct password must be
+	// INDISTINGUISHABLE from a wrong password to a credential holder — a
+	// distinct "account is disabled" / CodePermissionDenied response is a
+	// user-enumeration oracle. Collapse it into the generic
+	// invalid-credentials path and account the failure toward the per-account
+	// ceiling like the other rejection branches. (The post-2FA disabled check
+	// in totp_handler.VerifyLoginTOTP intentionally keeps the explicit error —
+	// the caller has already proven the second factor there.)
 	if user.Disabled {
-		return nil, apiErrorCtx(ctx, ErrNotAuthenticated, connect.CodePermissionDenied, "account is disabled")
+		h.loginAccountLimiter.Allow(acctKey)
+		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	// If TOTP is enabled, return a challenge instead of tokens

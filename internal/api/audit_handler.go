@@ -106,6 +106,13 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 	"identity_provider": {
 		string(eventtypes.IdentityProviderCreated): {paths: []string{"client_secret_encrypted"}},
 		string(eventtypes.IdentityProviderUpdated): {paths: []string{"client_secret_encrypted"}},
+		// WS11 #1: SCIM enable/rotate persist the bcrypt hash of the SCIM
+		// bearer token. Like password_hash / backup_codes_hash, a
+		// credential-derived hash must not surface through ListAuditEvents.
+		// The self-discovering TestEveryEventPayloadSecretFieldCovered pins
+		// that every secret-bearing payload field has a path here.
+		string(eventtypes.IdentityProviderSCIMEnabled):      {paths: []string{"scim_token_hash"}},
+		string(eventtypes.IdentityProviderSCIMTokenRotated): {paths: []string{"scim_token_hash"}},
 	},
 	"user": {
 		string(eventtypes.UserPasswordChanged):  {paths: []string{"password_hash"}},

@@ -196,6 +196,30 @@ func TestRedactEventData_NonActionStreams(t *testing.T) {
 	}
 }
 
+// TestRedactEventData_SCIMTokenHash locks WS11 #1: the bcrypt hash of a SCIM
+// bearer token must be scrubbed from the IdentityProviderSCIMEnabled and
+// IdentityProviderSCIMTokenRotated events. The secret is sourced from intent
+// (the payloads.IdentityProviderSCIMEnabled `scim_token_hash` JSON tag), not
+// from the schema map.
+func TestRedactEventData_SCIMTokenHash(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType string
+	}{
+		{"SCIM enabled", "IdentityProviderSCIMEnabled"},
+		{"SCIM token rotated", "IdentityProviderSCIMTokenRotated"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{"scim_token_hash": "SENTINEL_SCIM_BCRYPT"})
+			require.NoError(t, err)
+			out := redactEventData("identity_provider", tc.eventType, raw)
+			assert.NotContains(t, out, "SENTINEL_SCIM_BCRYPT", "SCIM token hash must be redacted")
+			assert.Contains(t, out, "[REDACTED]")
+		})
+	}
+}
+
 // TestRedactEventData_UnknownShapesPassThrough locks the design contract that
 // the redactor is conservative for NON action/execution streams: an unknown
 // (stream,event) combination passes through unchanged.
@@ -309,13 +333,19 @@ func isSensitiveParamField(name string) bool {
 	case "ca_cert", "client_cert", // public PEM certificates
 		"ssh_authorized_keys",   // public keys
 		"gpg_key_url", "gpgkey", // repository key URLs, not key material
-		"checksum_sha256":
+		"checksum_sha256",
+		"description": // "deSCRIPTion" matches the "script" fragment but is not secret
 		return false
 	}
 	for _, frag := range []string{
 		"script", "content", "custom_config",
 		"psk", "preshared_key", "client_key", "private_key", "gpg_key",
 		"passphrase", "password", "secret",
+		// "hash" catches credential-DERIVED material that still must not
+		// reach the operator-facing audit log: password_hash,
+		// backup_codes_hash, scim_token_hash. The redaction policy already
+		// scrubs the first two, so consistency demands the third.
+		"hash",
 	} {
 		if strings.Contains(name, frag) {
 			return true

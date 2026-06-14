@@ -147,8 +147,10 @@ services:
       - CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL=${DYNAMIC_GROUP_EVAL_INTERVAL:-1h}
       - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
       - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
-      - CONTROL_ENCRYPTION_KEY=${CONTROL_ENCRYPTION_KEY:-}
-      - CONTROL_ENCRYPTION_KEY_REQUIRED=${CONTROL_ENCRYPTION_KEY_REQUIRED:-}
+      # CONTROL_ENCRYPTION_KEY is mandatory (32-byte AES key, hex-encoded:
+      # `openssl rand -hex 32`). The control server refuses to boot without it —
+      # there is no plaintext opt-out.
+      - CONTROL_ENCRYPTION_KEY=${CONTROL_ENCRYPTION_KEY:?CONTROL_ENCRYPTION_KEY is required}
       - CONTROL_INTERNAL_LISTEN_ADDR=:8082
       - CONTROL_INTERNAL_TLS_CERT=/certs/control.crt
       - CONTROL_INTERNAL_TLS_KEY=/certs/control.key

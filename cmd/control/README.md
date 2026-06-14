@@ -57,18 +57,18 @@ Environment variables override command-line flags:
 |----------|-------------|
 | `CONTROL_LISTEN_ADDR` | Listen address |
 | `CONTROL_DATABASE_URL` | PostgreSQL connection URL |
-| `CONTROL_JWT_SECRET` | JWT signing secret |
+| `CONTROL_JWT_SECRET` | JWT signing secret. **Must decode (hex or base64) to ≥32 random bytes** — a bare passphrase is rejected at boot. Generate with `openssl rand -base64 48` or `openssl rand -hex 32`. |
 | `CONTROL_CA_CERT` | CA certificate path |
 | `CONTROL_CA_KEY` | CA private key path |
 | `CONTROL_GATEWAY_URL` | Gateway URL returned to agents during registration |
 | `CONTROL_ADMIN_EMAIL` | Bootstrap admin email (first-boot only; see [Bootstrap Admin](#bootstrap-admin)) |
-| `CONTROL_ADMIN_PASSWORD` | Bootstrap admin password (first-boot only; see [Bootstrap Admin](#bootstrap-admin)) |
+| `CONTROL_ADMIN_PASSWORD` | Bootstrap admin password (first-boot only; see [Bootstrap Admin](#bootstrap-admin)). When set it must be **≥12 characters**; leave empty after first boot to skip bootstrap. |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
 | `CONTROL_SCIM_BASE_URL` | Base URL for SCIM v2 endpoints (e.g., `https://control.example.com:8081`) |
 | `CONTROL_CA_TRUST_BUNDLE` | PEM file with trusted CA certificates for verification (supports CA rotation) |
-| `CONTROL_ENCRYPTION_KEY` | AES-256 encryption key for identity provider client secrets (hex-encoded, 32 bytes) |
+| `CONTROL_ENCRYPTION_KEY` | **Mandatory.** AES-256 key for secrets at rest (IdP client secrets, TOTP secrets, LUKS keys, LPS passwords); hex-encoded 32 bytes (`openssl rand -hex 32`). The server refuses to boot without it — there is no plaintext opt-out. |
 | `CONTROL_PASSWORD_AUTH_ENABLED` | Enable password-based login (default: `true`). Set to `false` for SSO-only. |
-| `CONTROL_TRUSTED_PROXIES` | Comma-separated trusted proxy IPs/CIDRs for client IP parsing |
+| `CONTROL_TRUSTED_PROXIES` | Comma-separated trusted proxy IPs/CIDRs. `X-Forwarded-For` / `X-Real-IP` are honoured **only** when the direct peer is in this set; otherwise the peer address is used. Bare IPs are treated as `/32` (IPv4) or `/128` (IPv6); malformed entries are skipped. |
 | `CONTROL_SSH_ACCESS_FOR_ALL` | Grant SSH access to all devices by default (default: `false`) |
 | `CONTROL_VALKEY_ADDR` | Valkey/Redis address for Asynq task queue (e.g., `localhost:6379`) |
 | `CONTROL_VALKEY_PASSWORD` | Valkey/Redis password |
@@ -109,14 +109,17 @@ Create real users once you're logged in as the bootstrap admin — via the web U
 ### Running Locally
 
 ```bash
-# Run with environment variables
+# Run with environment variables. Generate the secrets with a CSPRNG — the
+# server rejects a weak JWT secret / admin password and refuses to boot without
+# an encryption key.
 export CONTROL_DATABASE_URL="postgres://powermanage:powermanage@localhost:5432/powermanage?sslmode=disable"
-export CONTROL_JWT_SECRET="your-secret-key"
+export CONTROL_JWT_SECRET="$(openssl rand -base64 48)"
+export CONTROL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export CONTROL_CA_CERT="./dev/certs/ca.crt"
 export CONTROL_CA_KEY="./dev/certs/ca.key"
 export CONTROL_GATEWAY_URL="https://gateway.example.com"
 export CONTROL_ADMIN_EMAIL="admin@localhost.com"
-export CONTROL_ADMIN_PASSWORD="admin"
+export CONTROL_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # ≥12 chars; rotate after first login
 
 go run ./server/cmd/control
 ```
@@ -755,12 +758,24 @@ RLS is enabled on all projection tables:
 
 ### Security Best Practices
 
-1. **JWT Secret**: Always set a strong `CONTROL_JWT_SECRET` in production
-2. **Database**: Use SSL for PostgreSQL connections in production
-3. **CA Key**: Protect the CA private key - it signs all agent certificates
-4. **Admin Credentials**: Change default admin credentials immediately
-5. **Network**: Consider running behind a reverse proxy with TLS termination
-6. **RLS**: The database enforces permissions even if application code is compromised
+1. **JWT Secret**: `CONTROL_JWT_SECRET` must decode (hex or base64) to ≥32 random bytes — generate with `openssl rand -base64 48`. A bare passphrase is rejected at boot.
+2. **Encryption key**: `CONTROL_ENCRYPTION_KEY` is mandatory (`openssl rand -hex 32`); the server refuses to boot without it and there is no plaintext opt-out for secrets at rest.
+3. **Database**: Use SSL for PostgreSQL connections in production
+4. **CA Key**: Protect the CA private key - it signs all agent certificates
+5. **Admin Credentials**: Set a strong bootstrap `CONTROL_ADMIN_PASSWORD` (≥12 chars) and rotate it after the first login; drop it from the environment thereafter
+6. **Trusted proxies**: Set `CONTROL_TRUSTED_PROXIES` so `X-Forwarded-For` / `X-Real-IP` are honoured only from your proxy — otherwise rate-limit IP attribution can be spoofed
+7. **Network**: Consider running behind a reverse proxy with TLS termination
+8. **RLS**: The database enforces permissions even if application code is compromised
+
+### Rate limiting
+
+Beyond the per-IP throttles on the unauthenticated endpoints (login, refresh,
+register, logout, cert renewal, auth-methods lookup), authenticated control RPCs
+are rate-limited **per user** (keyed by user ID, not IP): a generous general
+ceiling on every call plus a tighter ceiling on heavy operations (dynamic-group
+query evaluation, search, projector rebuild, log/osquery fan-out). This bounds a
+stolen access token or a runaway client. The ceilings are fixed defaults; over a
+limit the RPC returns `CodeResourceExhausted`.
 
 ## CA Rotation
 

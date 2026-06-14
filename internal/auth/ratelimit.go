@@ -29,6 +29,11 @@ type RateLimiter struct {
 	window   time.Duration
 	stopCh   chan struct{}
 	now      func() time.Time // clock seam; defaults to time.Now, overridden in tests
+	// maxKeys caps the attempts map size (audit F-20). Defaults to
+	// maxRateLimiterKeys; the test seam newRateLimiterWithCap lowers it so the
+	// LRU eviction path can be exercised deterministically without inserting
+	// 100k keys.
+	maxKeys int
 }
 
 // RateLimiterOption configures a RateLimiter.
@@ -50,11 +55,24 @@ func NewRateLimiter(limit int, window time.Duration, opts ...RateLimiterOption) 
 		window:   window,
 		stopCh:   make(chan struct{}),
 		now:      time.Now,
+		maxKeys:  maxRateLimiterKeys,
 	}
 	for _, opt := range opts {
 		opt(rl)
 	}
 	go rl.cleanup()
+	return rl
+}
+
+// newRateLimiterWithCap is a test seam (audit F-20): identical to
+// NewRateLimiter but with a settable per-instance key cap so the LRU eviction
+// branch in Allow can be exercised deterministically with a handful of keys
+// instead of the 100k production ceiling. Not for production use.
+func newRateLimiterWithCap(limit int, window time.Duration, maxKeys int, opts ...RateLimiterOption) *RateLimiter {
+	rl := NewRateLimiter(limit, window, opts...)
+	rl.mu.Lock()
+	rl.maxKeys = maxKeys
+	rl.mu.Unlock()
 	return rl
 }
 
@@ -86,7 +104,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 	// the ceiling AND this is a never-seen-before key, evict the
 	// eldest entry. Existing keys are exempt — they just get a fresh
 	// timestamp.
-	if _, exists := rl.attempts[key]; !exists && len(rl.attempts) >= maxRateLimiterKeys {
+	if _, exists := rl.attempts[key]; !exists && len(rl.attempts) >= rl.maxKeys {
 		rl.evictEldestLocked()
 	}
 

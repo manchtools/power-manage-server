@@ -5,7 +5,9 @@ import (
 	"testing"
 )
 
-const validJWTSecret = "0123456789abcdef0123456789abcdef" // 32 chars
+// validJWTSecret is 64 hex chars = 32 decoded bytes, the entropy floor
+// CONTROL_JWT_SECRET now requires (WS11 finding 4).
+const validJWTSecret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
 // TestValidateConfig_RefusesAllowAllInProd pins WS5 #7: CORS allow-all is
 // dev-only — validateConfig must refuse to boot it when TLS is enabled or the
@@ -65,5 +67,67 @@ func TestValidateConfig_JWTSecret(t *testing.T) {
 	}
 	if err := validateConfig(&Config{JWTSecret: validJWTSecret, ListenAddr: "127.0.0.1:8081"}); err != nil {
 		t.Fatalf("valid minimal config should pass: %v", err)
+	}
+}
+
+// TestValidateConfig_JWTSecretEntropyFloor pins WS11 finding 4: the secret must
+// decode (hex or base64) to >= 32 random bytes, not merely be >= 32 characters.
+// "wrong" is sourced from the intent ("32 RANDOM bytes"), not the old length
+// rule — so a 32-char value that passed before is now rejected.
+func TestValidateConfig_JWTSecretEntropyFloor(t *testing.T) {
+	cases := []struct {
+		name    string
+		secret  string
+		wantErr bool
+	}{
+		{"absent", "", true},
+		{"32 hex chars decode to only 16 bytes (passed the old rule)", "0123456789abcdef0123456789abcdef", true},
+		{"40-char low-entropy all-a decodes under 32 bytes", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},
+		{"non-encoded 32-char passphrase is rejected", "this is a passphrase not base64!", true},
+		{"64 hex chars = 32 bytes", validJWTSecret, false},
+		{"44-char base64 = 33 bytes", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConfig(&Config{JWTSecret: tc.secret, ListenAddr: "127.0.0.1:8081"})
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %q to be rejected by the entropy floor", tc.secret)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %q to pass the entropy floor, got: %v", tc.secret, err)
+			}
+		})
+	}
+}
+
+// TestValidateConfig_AdminPasswordFloor pins WS11 finding 9: a bootstrap admin
+// password must clear a minimum-length floor (the documented "admin" example is
+// rejected). An admin email with NO password is the no-bootstrap path (allowed)
+// so an operator can drop the password from the env after first boot without
+// the server refusing to start.
+func TestValidateConfig_AdminPasswordFloor(t *testing.T) {
+	base := func(email, pw string) *Config {
+		return &Config{JWTSecret: validJWTSecret, ListenAddr: "127.0.0.1:8081", AdminEmail: email, AdminPassword: pw}
+	}
+	cases := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{"weak admin example rejected", base("admin@example.com", "admin"), true},
+		{"empty password with email set is the no-bootstrap path", base("admin@example.com", ""), false},
+		{"strong password accepted", base("admin@example.com", "a-strong-bootstrap-secret"), false},
+		{"no admin configured at all", base("", ""), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConfig(tc.cfg)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected the admin-password floor to reject this config")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected this config to pass, got: %v", err)
+			}
+		})
 	}
 }

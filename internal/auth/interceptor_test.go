@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
 )
 
 var testLogger = slog.Default()
@@ -650,4 +652,202 @@ func TestAuthzInterceptor_DeviceContext_DeniesAdminAction(t *testing.T) {
 	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
 	require.Error(t, err, "a device must be denied an admin action through the real interceptor")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// setupAuthRateLimitTest mounts the EvaluateDynamicGroup (expensive) procedure
+// behind the REAL AuthInterceptor with the supplied limiters, recording whether
+// the handler ran via a per-request header. Returns the server URL + manager.
+func setupAuthRateLimitTest(t *testing.T, limiters RateLimiters) (string, *JWTManager) {
+	t.Helper()
+	jwtMgr := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-for-interceptor-test"),
+		AccessTokenExpiry: 15 * time.Minute,
+	})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, limiters)
+
+	const procedure = "/pm.v1.ControlService/EvaluateDynamicGroup"
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(_ context.Context, _ *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			resp := connect.NewResponse(&emptypb.Empty{})
+			resp.Header().Set("X-Handler-Ran", "true")
+			return resp, nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.URL, jwtMgr
+}
+
+// TestAuthInterceptor_AuthenticatedRPCRateLimited pins WS11 finding 6: the
+// per-user authenticated limiter gates ahead of the handler, and buckets are
+// keyed per user (two users on the same connection do not share a budget).
+func TestAuthInterceptor_AuthenticatedRPCRateLimited(t *testing.T) {
+	const ceiling = 3
+	serverURL, jwtMgr := setupAuthRateLimitTest(t, RateLimiters{
+		Authenticated: NewRateLimiter(ceiling, time.Minute),
+	})
+	const procedure = "/pm.v1.ControlService/EvaluateDynamicGroup"
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, serverURL+procedure)
+
+	call := func(t *testing.T, userID string) (*connect.Response[emptypb.Empty], error) {
+		t.Helper()
+		tokens, err := jwtMgr.GenerateTokens(userID, userID+"@x", []string{"EvaluateDynamicGroup"}, nil, 1)
+		require.NoError(t, err)
+		req := connect.NewRequest(&emptypb.Empty{})
+		req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+		return client.CallUnary(context.Background(), req)
+	}
+
+	// First `ceiling` calls for user A reach the handler.
+	for i := 0; i < ceiling; i++ {
+		resp, err := call(t, "userA")
+		require.NoError(t, err, "call %d within the ceiling must succeed", i+1)
+		assert.Equal(t, "true", resp.Header().Get("X-Handler-Ran"))
+	}
+
+	// The next call from the SAME user is rejected BEFORE the handler runs.
+	_, err := call(t, "userA")
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many")
+
+	// A DIFFERENT user on the same connection has an independent bucket — the
+	// limiter must not collapse per-user budgets onto one axis.
+	resp, err := call(t, "userB")
+	require.NoError(t, err, "a distinct user must have an independent per-user bucket")
+	assert.Equal(t, "true", resp.Header().Get("X-Handler-Ran"))
+}
+
+// TestIsExpensiveProcedure_MatchesRealProcedures is the self-discovering guard
+// for the expensive matcher: it walks the real ControlService descriptor and
+// asserts the matcher recognises at least one actual procedure (so the patterns
+// can never silently match zero), and that an ordinary read (GetUser) is NOT
+// classified as expensive.
+func TestIsExpensiveProcedure_MatchesRealProcedures(t *testing.T) {
+	svc := pm.File_pm_v1_control_proto.Services().ByName("ControlService")
+	require.NotNil(t, svc, "ControlService descriptor must resolve")
+
+	matched := []string{}
+	methods := svc.Methods()
+	for i := 0; i < methods.Len(); i++ {
+		name := string(methods.Get(i).Name())
+		if isExpensiveProcedure(name) {
+			matched = append(matched, name)
+		}
+	}
+	require.NotEmpty(t, matched,
+		"isExpensiveProcedure matched zero real ControlService procedures — the patterns drifted")
+	assert.False(t, isExpensiveProcedure("GetUser"), "an ordinary read must not be classified expensive")
+}
+
+// TestClientIPFromHTTP_TrustAttribution pins the rate-limit spoof surface
+// (finding 3): X-Forwarded-For / X-Real-IP are honoured ONLY when the direct
+// peer is in the configured trusted-proxy set, and malformed config is dropped
+// rather than widening trust. Every attacker-supplied header value is sourced
+// from intent (an arbitrary spoofed address), never from the function's own
+// output. TrustedProxies is a package global; the cleanup resets it.
+func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+
+	const spoofed = "203.0.113.66" // attacker-chosen XFF value
+
+	cases := []struct {
+		name       string
+		trusted    []string
+		remoteAddr string
+		xff        string
+		xri        string
+		want       string
+	}{
+		{
+			name:       "untrusted peer + spoofed XFF returns the peer, not the XFF",
+			remoteAddr: "198.51.100.5:443",
+			xff:        spoofed,
+			want:       "198.51.100.5",
+		},
+		{
+			name:       "trusted /8 peer + XFF returns the first XFF hop",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", 10.9.9.9",
+			want:       spoofed,
+		},
+		{
+			name:       "trusted peer + X-Real-IP (no XFF) returns X-Real-IP",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xri:        "192.0.2.7",
+			want:       "192.0.2.7",
+		},
+		{
+			name:       "trusted peer + malformed XFF falls through to X-Real-IP",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "not-an-ip",
+			xri:        "192.0.2.7",
+			want:       "192.0.2.7",
+		},
+		{
+			name:       "trusted peer + malformed XFF + no X-Real-IP falls through to the peer",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "not-an-ip",
+			want:       "10.1.2.3",
+		},
+		{
+			name:       "bare-IP trusted entry parsed as /32 (IPv4) trusts the exact peer",
+			trusted:    []string{"172.16.0.9"},
+			remoteAddr: "172.16.0.9:5555",
+			xff:        spoofed,
+			want:       spoofed,
+		},
+		{
+			name:       "bare-IP /32 does not widen to a neighbouring address",
+			trusted:    []string{"172.16.0.9"},
+			remoteAddr: "172.16.0.10:5555", // one off — not trusted
+			xff:        spoofed,
+			want:       "172.16.0.10",
+		},
+		{
+			name:       "bare-IP trusted entry parsed as /128 (IPv6) trusts the exact peer",
+			trusted:    []string{"2001:db8::1"},
+			remoteAddr: "[2001:db8::1]:5555",
+			xff:        spoofed,
+			want:       spoofed,
+		},
+		{
+			name:       "malformed CIDR entries are skipped, not fatal, and do not widen trust",
+			trusted:    []string{"10.0.0.0/999", "garbage"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed,
+			want:       "10.1.2.3", // peer untrusted because the bad CIDRs were dropped
+		},
+		{
+			name:       "RemoteAddr without a port parses to the bare IP",
+			remoteAddr: "198.51.100.5",
+			want:       "198.51.100.5",
+		},
+		{
+			name:       "no parsable IP anywhere returns the empty string",
+			remoteAddr: "",
+			want:       "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			SetTrustedProxies(tc.trusted)
+			r := &http.Request{RemoteAddr: tc.remoteAddr, Header: http.Header{}}
+			if tc.xff != "" {
+				r.Header.Set("X-Forwarded-For", tc.xff)
+			}
+			if tc.xri != "" {
+				r.Header.Set("X-Real-IP", tc.xri)
+			}
+			assert.Equal(t, tc.want, ClientIPFromHTTP(r))
+		})
+	}
 }

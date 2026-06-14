@@ -68,6 +68,17 @@ func TerminalRevocationListener(term userSessionTerminator, perms userPermission
 			}
 			userID = p.UserID
 			recheckStartTerminal = true
+		case string(eventtypes.UserSessionInvalidated):
+			// Role grants are revoked/updated via RoleHandler.bumpUserSessionVersion
+			// (and the user-group equivalent), which emits UserSessionInvalidated —
+			// NOT UserRoleRevoked. Treat it like a role revoke: recheck effective
+			// permissions and close iff StartTerminal is gone. The stream is "user"
+			// and StreamID is the userID (#391 gap closed in WS11).
+			if ev.StreamType != "user" {
+				return
+			}
+			userID = ev.StreamID
+			recheckStartTerminal = true
 		default:
 			return
 		}

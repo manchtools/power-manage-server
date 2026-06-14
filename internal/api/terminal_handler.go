@@ -670,9 +670,14 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
 	}
 
-	// Call the gateway to terminate the session.
+	// Call the gateway to terminate the session under a bounded context
+	// (WS11 #8): the bare request ctx carries no deadline, so a stuck or slow
+	// gateway would hang this admin RPC indefinitely. Matches the 10s bound
+	// used by the ListActiveTerminalSessions fan-out above.
+	gwCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
-	resp, err := client.TerminateGatewayTerminalSession(ctx, connect.NewRequest(&pm.TerminateGatewayTerminalSessionRequest{
+	resp, err := client.TerminateGatewayTerminalSession(gwCtx, connect.NewRequest(&pm.TerminateGatewayTerminalSessionRequest{
 		SessionId: req.Msg.SessionId,
 		Reason:    req.Msg.Reason,
 	}))
