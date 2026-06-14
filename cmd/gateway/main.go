@@ -63,6 +63,47 @@ func opsHealthHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"status":"healthy"}`)
 }
 
+// initialCRLAttempts / initialCRLBackoff bound the boot-time CRL load so a brief
+// Valkey hiccup retries but a hard outage still gives up quickly enough that
+// SIGTERM is honoured. Tunable here; the helper takes them as params for tests.
+const (
+	initialCRLAttempts = 3
+	initialCRLBackoff  = time.Second
+)
+
+// crlRefresher is the subset of *crl.Cache loadInitialCRL needs — a seam so the
+// boot-fatal decision is unit-testable without standing up the full gateway.
+type crlRefresher interface {
+	Refresh(context.Context) error
+}
+
+// loadInitialCRL performs a bounded series of synchronous CRL refreshes at boot.
+// It returns nil as soon as one succeeds (the cache is now Loaded()), or a
+// non-nil error after exhausting attempts. The caller MUST treat a non-nil
+// return as FATAL (os.Exit) — the gateway must never begin admitting mTLS
+// connections with an unloaded revocation list, or a revoked cert sails through
+// at boot when Valkey is down (WS12 #1, fail closed). Aborts early if ctx is
+// cancelled (SIGTERM during startup).
+func loadInitialCRL(ctx context.Context, cache crlRefresher, attempts int, backoff time.Duration, logger *slog.Logger) error {
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := cache.Refresh(ctx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			logger.Warn("initial CRL load attempt failed", "attempt", attempt, "max", attempts, "error", err)
+		}
+		if attempt < attempts {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return fmt.Errorf("initial CRL load aborted during startup: %w", ctx.Err())
+			}
+		}
+	}
+	return fmt.Errorf("initial CRL load failed after %d attempts: %w", attempts, lastErr)
+}
+
 func main() {
 	// Parse flags — TLS is always required for mTLS agent connections
 	tlsCert := flag.String("tls-cert", "", "path to server certificate (required)")
@@ -573,8 +614,12 @@ func main() {
 	})
 	defer crlRDB.Close()
 	crlCache := crl.NewCache(crl.NewStore(crlRDB), logger.With("component", "crl"))
-	if err := crlCache.Refresh(shutdownCtx); err != nil {
-		logger.Warn("initial CRL load failed; starting with empty revocation list (will retry)", "error", err)
+	// Fail CLOSED at boot (WS12 #1): if the initial CRL load never succeeds we
+	// refuse to start rather than admit connections with an unloaded revocation
+	// list — a revoked cert must never sail through because Valkey was down.
+	if err := loadInitialCRL(shutdownCtx, crlCache, initialCRLAttempts, initialCRLBackoff, logger); err != nil {
+		logger.Error("refusing to start without a loaded revocation list", "error", err)
+		os.Exit(1)
 	}
 	go crlCache.Run(shutdownCtx, crlRefreshInterval)
 
@@ -595,7 +640,10 @@ func main() {
 	// internal CA cannot invoke admin fan-out RPCs.
 	gwSvcHandler := handler.NewGatewayServiceHandler(terminalSessions, manager, logger.With("component", "gateway_service"))
 	gwSvcPath, gwSvcH := pmv1connect.NewGatewayServiceHandler(gwSvcHandler)
-	mux.Handle(gwSvcPath, mtls.RequirePeerClass(logger, mtls.PeerClassControl)(gwSvcH))
+	// Revocation gate (WS12 #2): a revoked control cert must not be able to
+	// drive admin list/terminate fan-out. The same loaded CRL cache the agent
+	// path uses backs it (Valkey is mandatory on the gateway, so it's never nil).
+	mux.Handle(gwSvcPath, mtls.RequirePeerClassNotRevoked(logger, crlCache, mtls.PeerClassControl)(gwSvcH))
 
 	// Wrap with security headers
 	securedMux := middleware.RequestID(middleware.SecurityHeaders(mux))

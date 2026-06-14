@@ -139,14 +139,12 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 // does not carry the "agent" peer-class URI SAN — the AgentService
 // listener is for managed devices only, and a leaked gateway or
 // control cert must not be usable here.
-// RevocationChecker reports whether an agent cert (by SHA-256 fingerprint) has
-// been revoked. The gateway's crl.Cache satisfies it; a nil checker disables the
-// revocation gate (e.g. when no Valkey is configured).
-type RevocationChecker interface {
-	IsRevoked(fingerprint string) bool
-}
-
-func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slog.Logger) http.Handler {
+// MTLSMiddleware gates the gateway's AgentService listener. The revocation
+// checker is mtls.RevocationChecker (the gateway's *crl.Cache satisfies it); a
+// nil or not-yet-loaded checker fails CLOSED — see mtls.RevocationChecker and
+// the fail-closed block below. The only no-CRL path is an explicit
+// mtls.NoopRevocationChecker, logged at WARN by the caller.
+func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
 		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
@@ -197,20 +195,32 @@ func MTLSMiddleware(next http.Handler, revocation RevocationChecker, logger *slo
 			return
 		}
 
-		// Reject revoked certs. The chain already verified against the CA above;
-		// this is the revocation gate that makes a leaked or superseded cert stop
-		// working before its (1-year) natural expiry. r.TLS.PeerCertificates[0]
-		// is the same leaf the peer-class check used, so it's non-nil here.
-		if revocation != nil {
-			fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
-			if revocation.IsRevoked(fp) {
-				logger.Warn("mTLS rejected: certificate revoked",
-					"device_id", deviceID,
-					"remote_addr", r.RemoteAddr,
-				)
-				http.Error(w, "client certificate revoked", http.StatusForbidden)
-				return
-			}
+		// Revocation gate (fail CLOSED). The chain already verified against the CA
+		// above; this is what makes a leaked or superseded cert stop working
+		// before its (1-year) natural expiry. r.TLS.PeerCertificates[0] is the
+		// same leaf the peer-class check used, so it's non-nil here.
+		//
+		// A nil checker or one whose list has not loaded means we CANNOT prove
+		// this cert is unrevoked → reject, never admit. Running without real
+		// revocation data requires an explicit NoopRevocationChecker (Loaded()
+		// true), which the caller logs at WARN — a bare nil is never tolerated.
+		if revocation == nil || !revocation.Loaded() {
+			logger.Warn("mTLS rejected: certificate revocation unavailable (fail-closed)",
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+				"checker_nil", revocation == nil,
+			)
+			http.Error(w, "client certificate revocation unavailable", http.StatusForbidden)
+			return
+		}
+		fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
+		if revocation.IsRevoked(fp) {
+			logger.Warn("mTLS rejected: certificate revoked",
+				"device_id", deviceID,
+				"remote_addr", r.RemoteAddr,
+			)
+			http.Error(w, "client certificate revoked", http.StatusForbidden)
+			return
 		}
 
 		// Add device ID to context

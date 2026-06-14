@@ -1,8 +1,10 @@
 package mtls
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -159,6 +161,95 @@ func RequirePeerClass(logger *slog.Logger, allowed ...PeerClass) func(http.Handl
 			}
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// RevocationChecker reports whether a peer cert (by SHA-256 DER fingerprint) is
+// revoked, and whether the revocation list has loaded at least once. The
+// gateway's *crl.Cache satisfies it structurally. This interface lives in mtls
+// (not handler) so the internal-listener wrappers here can consult the CRL
+// without importing handler — handler imports mtls, so the reverse would be an
+// import cycle.
+//
+// A nil checker, or one whose Loaded() is false, is treated as FAIL-CLOSED:
+// without a loaded list we cannot prove the cert is unrevoked, so we reject. The
+// only no-CRL path is an explicit NoopRevocationChecker, which the caller logs
+// at WARN — never a bare nil.
+type RevocationChecker interface {
+	IsRevoked(fingerprint string) bool
+	Loaded() bool
+}
+
+// NoopRevocationChecker is the explicit, typed dev-only opt-out from the
+// revocation gate: nothing revoked, always loaded. Use it ONLY where there is
+// genuinely no CRL (a no-Valkey dev control server) and log at WARN where wired.
+// It is deliberately distinct from a bare nil (which fails closed) so disabling
+// revocation is a visible, intentional choice in the code.
+type NoopRevocationChecker struct{}
+
+// IsRevoked always returns false.
+func (NoopRevocationChecker) IsRevoked(string) bool { return false }
+
+// Loaded always returns true.
+func (NoopRevocationChecker) Loaded() bool { return true }
+
+// fingerprintFromCert returns hex(sha256(cert.Raw)), matching
+// ca.FingerprintFromCert. Reimplemented here (rather than imported) because ca
+// imports mtls — see RevocationChecker. Empty for a nil cert (fails safe: an
+// empty fingerprint matches no revoked entry, and nil certs are already rejected
+// upstream by the peer-class / TLS checks).
+func fingerprintFromCert(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// RequirePeerClassNotRevoked is RequirePeerClass plus a fail-closed CRL gate, for
+// the internal mTLS listeners (control's InternalService, gateway's control-class
+// GatewayService). After the peer-class checks pass it consults the revocation
+// list, so a revoked gateway/control cert is rejected at connect time rather
+// than usable until its natural expiry (WS12 #2). Health endpoints bypass as in
+// RequirePeerClass.
+//
+// Revocation is ADDITIVE: a wrong-class cert is still rejected first by the
+// peer-class check. A nil/unloaded checker fails closed (403) — pass an explicit
+// NoopRevocationChecker (logged at WARN) to run without a CRL.
+func RequirePeerClassNotRevoked(logger *slog.Logger, revocation RevocationChecker, allowed ...PeerClass) func(http.Handler) http.Handler {
+	peerClass := RequirePeerClass(logger, allowed...)
+	return func(next http.Handler) http.Handler {
+		// Wrap the existing peer-class middleware so class is enforced FIRST,
+		// then revocation. The revocation check sees only requests that already
+		// passed the class gate (and the health bypass).
+		revocationGate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// r.TLS and PeerCertificates are guaranteed non-nil here:
+			// RequirePeerClass rejected a nil r.TLS / class-less cert before
+			// delegating to this handler.
+			if revocation == nil || !revocation.Loaded() {
+				if logger != nil {
+					logger.Warn("internal mTLS rejected: certificate revocation unavailable (fail-closed)",
+						"remote_addr", r.RemoteAddr, "path", r.URL.Path, "checker_nil", revocation == nil)
+				}
+				http.Error(w, "client certificate revocation unavailable", http.StatusForbidden)
+				return
+			}
+			fp := fingerprintFromCert(r.TLS.PeerCertificates[0])
+			if revocation.IsRevoked(fp) {
+				if logger != nil {
+					logger.Warn("internal mTLS rejected: certificate revoked",
+						"remote_addr", r.RemoteAddr, "path", r.URL.Path)
+				}
+				http.Error(w, "client certificate revoked", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+		return peerClass(revocationGate)
 	}
 }
 

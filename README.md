@@ -98,6 +98,16 @@ RS256) are rejected. `Login` returns the same generic *invalid credentials* for 
 wrong password, a non-existent account, and a **disabled** account, so a
 credential holder can't probe account state.
 
+**Certificate revocation (mTLS plane).** Revoked agent/gateway/control
+certificate fingerprints are published to a shared Valkey CRL. Both the
+gateway's agent listener and the **internal mTLS listeners** consult it: the
+control server's `InternalService` (credential-bearing proxy RPCs) and the
+gateway's control-class `GatewayService` reject a revoked peer cert at connect
+time — immediate revocation, not waiting for the cert's natural expiry. The
+revocation gate fails closed: if the CRL has not loaded (Valkey unavailable at
+boot) the listener refuses connections rather than admitting an unverifiable
+cert.
+
 **Rate limiting & client IP.** Unauthenticated endpoints (login, refresh,
 register, logout, cert renewal, auth-methods lookup) are throttled per client IP;
 authenticated RPCs are throttled per user, with a tighter ceiling on heavy
