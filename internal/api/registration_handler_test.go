@@ -79,6 +79,72 @@ func generateCSR(t *testing.T) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 }
 
+// generateCSRWithTemplate builds a CSR after letting the caller stamp fields
+// (CN, SANs) onto the template — used to prove the issued identity comes from
+// the server, not the CSR, and that a SAN-bearing CSR is refused.
+func generateCSRWithTemplate(t *testing.T, modify func(*x509.CertificateRequest)) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: "default-cn"}}
+	modify(tmpl)
+	der, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+}
+
+// TestRegister_IssuedCertBindsServerDeviceIDNotCSRCN drives the real handler and
+// pins that the issued cert's CN is the SERVER-minted device id, never the
+// attacker-controlled CSR Subject, and that no CSR SAN leaks into the cert.
+func TestRegister_IssuedCertBindsServerDeviceIDNotCSRCN(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	testCA := newTestCA(t)
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	_, tokenValue := createTestTokenWithValue(t, st, adminID, false)
+
+	csr := generateCSRWithTemplate(t, func(c *x509.CertificateRequest) {
+		c.Subject.CommonName = "victim-device-id" // attacker-chosen
+	})
+	resp, err := h.Register(context.Background(), connect.NewRequest(&pm.RegisterRequest{
+		Token: tokenValue, Hostname: "h", AgentVersion: "1.0.0", Csr: csr,
+	}))
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(resp.Msg.Certificate)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, resp.Msg.DeviceId.Value, parsed.Subject.CommonName,
+		"issued CN must be the server-minted device id")
+	assert.NotEqual(t, "victim-device-id", parsed.Subject.CommonName,
+		"the attacker-controlled CSR CN must never become the cert identity")
+	assert.Empty(t, parsed.DNSNames)
+	assert.Empty(t, parsed.IPAddresses)
+	assert.Empty(t, parsed.EmailAddresses)
+}
+
+// TestRegister_SANBearingCSRRejected drives the real handler with a SAN-bearing
+// CSR and asserts no certificate is issued (the CA refuses any caller-supplied
+// SAN, so an enrolling agent cannot mint a non-agent peer-class identity).
+func TestRegister_SANBearingCSRRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	testCA := newTestCA(t)
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	_, tokenValue := createTestTokenWithValue(t, st, adminID, false)
+
+	csr := generateCSRWithTemplate(t, func(c *x509.CertificateRequest) {
+		c.DNSNames = []string{"control-server.example.com"}
+	})
+	_, err := h.Register(context.Background(), connect.NewRequest(&pm.RegisterRequest{
+		Token: tokenValue, Hostname: "h", AgentVersion: "1.0.0", Csr: csr,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+		"a SAN-bearing CSR must not yield a certificate (CA refuses it -> handler maps to Internal)")
+}
+
 // createTestTokenWithValue creates a registration token and returns both the
 // token ID and the plaintext token value (needed for registration).
 func createTestTokenWithValue(t *testing.T, st *store.Store, actorID string, oneTime bool) (tokenID, tokenValue string) {
