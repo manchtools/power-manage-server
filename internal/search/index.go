@@ -314,6 +314,29 @@ func (idx *Index) EnsureIndexes(ctx context.Context) error {
 	return nil
 }
 
+// IndexesPresent reports whether ALL configured search indexes already exist in
+// the backend (WS13 #12). It is the gate that lets the indexer warm-without-flush
+// on a normal restart instead of destructively dropping + rebuilding on every
+// boot. A definitively-missing index returns (false, nil); any other backend
+// error is surfaced so the caller fails closed rather than wrongly assuming the
+// indexes are gone and flushing.
+func (idx *Index) IndexesPresent(ctx context.Context) (bool, error) {
+	for _, ix := range IndexSchemas {
+		err := idx.rdb.Do(ctx, "FT.INFO", ix.Name).Err()
+		if err == nil {
+			continue
+		}
+		// "Unknown index name" (RediSearch) / "no such index" (valkey-search)
+		// both mean the index is absent — a definite not-present, not an error.
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "unknown index") || strings.Contains(lower, "no such index") {
+			return false, nil
+		}
+		return false, fmt.Errorf("FT.INFO %s: %w", ix.Name, err)
+	}
+	return true, nil
+}
+
 // Warm performs a full rebuild of all search data from PostgreSQL.
 // This is the only operation that reads from PG for search purposes.
 func (idx *Index) Warm(ctx context.Context) error {

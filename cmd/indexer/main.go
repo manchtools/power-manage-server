@@ -91,20 +91,20 @@ func main() {
 	// Initialize search index (nil aqClient — indexer doesn't enqueue tasks)
 	searchIdx := search.New(rdb, st, nil, logger.With("component", "search"))
 
-	// Ensure indexes exist
-	if err := searchIdx.EnsureIndexes(ctx); err != nil {
-		logger.Error("failed to ensure search indexes", "error", err)
+	// Bring the search index up at boot WITHOUT an unconditional destructive
+	// flush on every restart (WS13 #12). If the indexes already exist we warm
+	// without flushing; only when they're missing do we flush + rebuild, and
+	// that destructive path is serialised by a Valkey lock so concurrent /
+	// crash-looping indexers can't race repeated wipes. (Rebuild creates the
+	// indexes internally via EnsureIndexes, so no separate ensure step is
+	// needed.) The present-check must run BEFORE any create, or the indexes
+	// would always look present.
+	locker := newValkeyRebuildLocker(rdb)
+	if err := startupSearchSync(ctx, searchIdx, locker, logger); err != nil {
+		logger.Error("initial search index sync failed", "error", err)
 		os.Exit(1)
 	}
-	logger.Info("search indexes ensured")
-
-	// Full rebuild from PG on startup (flushes stale data, then rewarms)
-	logger.Info("starting initial search index rebuild")
-	if err := searchIdx.Rebuild(ctx); err != nil {
-		logger.Error("initial search index rebuild failed", "error", err)
-		os.Exit(1)
-	}
-	logger.Info("initial search index rebuild complete")
+	logger.Info("search index startup sync complete")
 
 	// Start periodic reconciliation
 	if cfg.ReconcileInterval > 0 {
