@@ -45,20 +45,27 @@ func TestSystemRolePermissionsAreReconcilerOwned(t *testing.T) {
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		require.NoError(t, err)
-		body := string(raw)
-		for _, roleID := range roleIDs {
-			if !strings.Contains(body, roleID) {
-				continue
+		// Scope the check to individual statements so a migration that mentions
+		// a role ID in one statement and sets unrelated permissions in another
+		// cannot produce a false classification. Splitting on ';' is sufficient
+		// for these literal-only seed/update statements.
+		for _, stmt := range strings.Split(string(raw), ";") {
+			for _, roleID := range roleIDs {
+				if !strings.Contains(stmt, roleID) {
+					continue
+				}
+				// Only consider statements that actually set a permissions value.
+				if !strings.Contains(stmt, "permissions") {
+					continue
+				}
+				sawSeed = true
+				// A non-empty literal here means this statement seeded a frozen
+				// list; an empty '{}' (no match of the non-empty RE) means
+				// reconciler-owned. Statements are visited in file order, so the
+				// last one to set the role wins.
+				lastFinalEmpty[roleID] = !nonEmptyPermArrayRE.MatchString(stmt)
+				lastFile[roleID] = f
 			}
-			// Only consider migrations that actually set a permissions value.
-			if !strings.Contains(body, "permissions") {
-				continue
-			}
-			sawSeed = true
-			// A non-empty literal here means this migration seeded a frozen list;
-			// an empty '{}' (no match of the non-empty RE) means reconciler-owned.
-			lastFinalEmpty[roleID] = !nonEmptyPermArrayRE.MatchString(body)
-			lastFile[roleID] = f
 		}
 	}
 
