@@ -66,6 +66,7 @@ func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
 		assert.Equal(t, 1, g.warmCalls, "a contender that lost the lock warms instead of flushing")
 		assert.Equal(t, 0, g.rebuildCalls, "only the lock holder may flush+rebuild")
+		assert.Equal(t, 0, l.released, "release must not be called when the lock was not acquired")
 	})
 
 	t.Run("present-check error fails closed (no flush)", func(t *testing.T) {
@@ -94,6 +95,21 @@ func TestValkeyRebuildLocker_TryLock(t *testing.T) {
 	ok1, release1, err := l1.TryLock(ctx)
 	require.NoError(t, err)
 	require.True(t, ok1, "the first indexer acquires the lock")
+
+	// The lock key must carry a TTL so a crashed holder can't deadlock all
+	// other indexers forever.
+	ttl, err := rdb.TTL(ctx, rebuildLockKey).Result()
+	require.NoError(t, err)
+	require.Greater(t, ttl.Seconds(), 0.0, "the rebuild lock must have a TTL (no permanent deadlock on crash)")
+
+	// CAS-delete: a NON-owner releasing must NOT delete the lock (otherwise a
+	// buggy/racing indexer could free another's lock and trigger concurrent
+	// destructive rebuilds). Run the release script with l2's (wrong) owner
+	// value and assert the lock is still held.
+	require.NoError(t, rdb.Eval(ctx, casDeleteScript, []string{rebuildLockKey}, l2.value).Err())
+	stillHeld, _, err := l2.TryLock(ctx)
+	require.NoError(t, err)
+	require.False(t, stillHeld, "a non-owner must NOT be able to release the lock")
 
 	ok2, _, err := l2.TryLock(ctx)
 	require.NoError(t, err)
