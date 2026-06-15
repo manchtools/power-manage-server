@@ -74,10 +74,11 @@ func applyUserRoleRevoked(ctx context.Context, st *store.Store, logger *slog.Log
 		return
 	}
 	if err := st.Queries().DeleteUserRoleProjection(ctx, db.DeleteUserRoleProjectionParams{
-		UserID:    payload.UserID,
-		RoleID:    payload.RoleID,
-		ScopeKind: payload.ScopeKind,
-		ScopeID:   payload.ScopeID,
+		UserID:            payload.UserID,
+		RoleID:            payload.RoleID,
+		ScopeKind:         payload.ScopeKind,
+		ScopeID:           payload.ScopeID,
+		ProjectionVersion: e.SequenceNum,
 	}); err != nil {
 		logger.Warn("user_role projector: failed to delete user_roles_projection row",
 			"event_id", e.ID,

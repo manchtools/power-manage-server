@@ -38,13 +38,15 @@ WHERE user_id = $1
   AND role_id = $2
   AND scope_kind IS NOT DISTINCT FROM $3::TEXT
   AND scope_id   IS NOT DISTINCT FROM $4::TEXT
+  AND projection_version <= $5
 `
 
 type DeleteUserRoleProjectionParams struct {
-	UserID    string  `json:"user_id"`
-	RoleID    string  `json:"role_id"`
-	ScopeKind *string `json:"scope_kind"`
-	ScopeID   *string `json:"scope_id"`
+	UserID            string  `json:"user_id"`
+	RoleID            string  `json:"role_id"`
+	ScopeKind         *string `json:"scope_kind"`
+	ScopeID           *string `json:"scope_id"`
+	ProjectionVersion int64   `json:"projection_version"`
 }
 
 // UserRoleRevoked handler — 4-tuple revoke grammar (server #7 S5).
@@ -54,12 +56,17 @@ type DeleteUserRoleProjectionParams struct {
 // grant); when the caller passes concrete values it targets the
 // specific scoped row. A miss is a silent no-op, matching the
 // prior projector behaviour.
+// Stale-replay guard (WS16 #7, mirrors DeleteDeviceAssignedUser): the
+// caller passes the revoke event's sequence_num as projection_version;
+// a row whose projection_version is newer (a re-grant that bumped it)
+// survives an out-of-order replay of an older UserRoleRevoked.
 func (q *Queries) DeleteUserRoleProjection(ctx context.Context, arg DeleteUserRoleProjectionParams) error {
 	_, err := q.db.Exec(ctx, deleteUserRoleProjection,
 		arg.UserID,
 		arg.RoleID,
 		arg.ScopeKind,
 		arg.ScopeID,
+		arg.ProjectionVersion,
 	)
 	return err
 }

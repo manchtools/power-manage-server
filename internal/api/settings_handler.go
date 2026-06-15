@@ -14,20 +14,36 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// systemActionSyncer is the slice of SystemActionManager the settings fan-out
+// depends on. Narrowing it to an interface lets a test inject a panicking
+// implementation to prove the fan-out goroutine recovers (WS16 #9).
+type systemActionSyncer interface {
+	SyncAllUsersSystemActions(ctx context.Context) error
+}
+
 // SettingsHandler handles server settings RPCs.
 type SettingsHandler struct {
 	store         *store.Store
 	logger        *slog.Logger
-	systemActions *SystemActionManager
+	systemActions systemActionSyncer
+	// onPropagationDone, when set (tests only), is invoked after the detached
+	// settings fan-out goroutine finishes — including after a recovered panic —
+	// so a test can observe completion without racing.
+	onPropagationDone func()
 }
 
 // NewSettingsHandler creates a new settings handler.
 func NewSettingsHandler(st *store.Store, logger *slog.Logger, systemActions *SystemActionManager) *SettingsHandler {
-	return &SettingsHandler{
-		store:         st,
-		logger:        logger.With("component", "settings_handler"),
-		systemActions: systemActions,
+	h := &SettingsHandler{
+		store:  st,
+		logger: logger.With("component", "settings_handler"),
 	}
+	// Avoid a typed-nil interface: a nil *SystemActionManager must leave the
+	// field nil so the `!= nil` guard in the fan-out stays correct.
+	if systemActions != nil {
+		h.systemActions = systemActions
+	}
+	return h
 }
 
 // GetServerSettings returns the current server settings.
@@ -84,25 +100,7 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 	// a potentially-slow fan-out. bgCtx is bounded by a hard timeout
 	// so a wedged downstream (DB outage, hanging action dispatch) can
 	// never leak the goroutine forever.
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		if req.Msg.UserProvisioningEnabled {
-			if err := h.enableProvisioningForAllUsers(bgCtx); err != nil {
-				h.logger.Error("failed to propagate provisioning to users", "error", err)
-			}
-		}
-		if req.Msg.SshAccessForAll {
-			if err := h.enableSshAccessForAllUsers(bgCtx); err != nil {
-				h.logger.Error("failed to propagate SSH access to users", "error", err)
-			}
-		}
-		if h.systemActions != nil {
-			if err := h.systemActions.SyncAllUsersSystemActions(bgCtx); err != nil {
-				h.logger.Error("failed to sync system actions after settings update", "error", err)
-			}
-		}
-	}()
+	go h.runSettingsPropagation(req.Msg)
 
 	return connect.NewResponse(&pm.UpdateServerSettingsResponse{
 		Settings: &pm.ServerSettings{
@@ -110,6 +108,41 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 			SshAccessForAll:         settings.SshAccessForAll,
 		},
 	}), nil
+}
+
+// runSettingsPropagation performs the detached post-update fan-out under panic
+// recovery (WS16 #9): a panic in any propagation path — e.g. a downstream nil
+// deref — would otherwise crash the whole control process, since a panic in a
+// bare goroutine is unrecoverable by the parent. bgCtx is bounded by a hard
+// timeout so a wedged downstream can never leak the goroutine forever.
+func (h *SettingsHandler) runSettingsPropagation(msg *pm.UpdateServerSettingsRequest) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error("settings fan-out panic recovered", "panic", r)
+		}
+		if h.onPropagationDone != nil {
+			h.onPropagationDone()
+		}
+	}()
+
+	bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if msg.UserProvisioningEnabled {
+		if err := h.enableProvisioningForAllUsers(bgCtx); err != nil {
+			h.logger.Error("failed to propagate provisioning to users", "error", err)
+		}
+	}
+	if msg.SshAccessForAll {
+		if err := h.enableSshAccessForAllUsers(bgCtx); err != nil {
+			h.logger.Error("failed to propagate SSH access to users", "error", err)
+		}
+	}
+	if h.systemActions != nil {
+		if err := h.systemActions.SyncAllUsersSystemActions(bgCtx); err != nil {
+			h.logger.Error("failed to sync system actions after settings update", "error", err)
+		}
+	}
 }
 
 // enableProvisioningForAllUsers sets user_provisioning_enabled=true on every user

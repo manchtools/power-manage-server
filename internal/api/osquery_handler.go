@@ -176,6 +176,12 @@ func (h *OSQueryHandler) GetOSQueryResult(ctx context.Context, req *connect.Requ
 			for _, row := range rawRows {
 				resp.Rows = append(resp.Rows, &pm.OSQueryRow{Data: row})
 			}
+		} else {
+			// WS16 #11: a decode failure must not masquerade as a clean,
+			// empty success — surface it so corrupt/malformed result rows are
+			// observable instead of silently dropped.
+			h.logger.Warn("osquery result rows decode failed",
+				"query_id", result.QueryID, "error", err)
 		}
 	}
 
@@ -219,6 +225,12 @@ func (h *OSQueryHandler) GetDeviceInventory(ctx context.Context, req *connect.Re
 			for _, r := range rawRows {
 				table.Rows = append(table.Rows, &pm.OSQueryRow{Data: r})
 			}
+		} else {
+			// WS16 #11: log a corrupt inventory table rather than emit it as
+			// an empty (but present) table that looks like the device has no
+			// data for it.
+			h.logger.Warn("inventory table rows decode failed",
+				"device_id", msg.DeviceId, "table", row.TableName, "error", err)
 		}
 
 		resp.Tables = append(resp.Tables, table)
