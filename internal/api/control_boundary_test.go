@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -102,6 +103,40 @@ func TestControlRPCBoundaryAuthzStillRunsAfterValidation(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.NotEmpty(t, errorDetailRequestID(t, err), "authz errors must carry request correlation IDs")
+}
+
+// TestRegister_FieldBounds_OverlongRejectedByValidation pins the pre-auth field
+// bounds for the public Register RPC: an over-bound Token / Hostname /
+// AgentVersion is rejected by the validation interceptor with
+// CodeInvalidArgument BEFORE the handler does its token lookup. (The ABSENT/zero
+// case is covered by the self-discovering sweep above.) Lengths are sourced from
+// the documented caps (255 / 253 / 32), one character over each — not from the
+// validate tag.
+func TestRegister_FieldBounds_OverlongRejectedByValidation(t *testing.T) {
+	f := newControlRPCFixture(t)
+	valid := func() *pm.RegisterRequest {
+		return &pm.RegisterRequest{Token: "tok", Hostname: "host", AgentVersion: "1.0.0", Csr: []byte("csr")}
+	}
+	cases := []struct {
+		name string
+		mut  func(*pm.RegisterRequest)
+	}{
+		{"token over 255", func(r *pm.RegisterRequest) { r.Token = strings.Repeat("a", 256) }},
+		{"hostname over 253", func(r *pm.RegisterRequest) { r.Hostname = strings.Repeat("a", 254) }},
+		{"agent_version over 32", func(r *pm.RegisterRequest) { r.AgentVersion = strings.Repeat("a", 33) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := valid()
+			tc.mut(req)
+			// Register is public — no bearer needed; validation runs before the
+			// token lookup regardless.
+			_, err := f.client.Register(context.Background(), connect.NewRequest(req))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+				"an overlong %s must be rejected by validation before the token lookup", tc.name)
+		})
+	}
 }
 
 func errorDetailRequestID(t *testing.T, err error) string {
