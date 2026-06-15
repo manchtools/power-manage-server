@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -39,6 +40,22 @@ func (w *Worker) RegisterHandlers(mux *asynq.ServeMux) {
 	mux.HandleFunc(taskqueue.TypeSearchReindex, w.handleReindex)
 	mux.HandleFunc(taskqueue.TypeSearchMemberChange, w.handleMemberChange)
 	mux.HandleFunc(taskqueue.TypeSearchRemove, w.handleRemove)
+}
+
+// BuildSearchWorkerMux assembles the search worker's Asynq mux with the F-02
+// HMAC verify-middleware mounted AHEAD of every handler. It returns an error
+// when signer is nil so a missing PM_TASK_SIGNING_KEY is a fatal startup
+// failure rather than an unsigned mux — an unsigned mux would let a compromised
+// Valkey relay (actor-4) inject forged or unsigned search:* tasks. Extracted
+// from cmd/indexer so the verify-first wiring is testable without booting the
+// binary.
+func BuildSearchWorkerMux(rdb *redis.Client, signer *taskqueue.Signer, logger *slog.Logger) (*asynq.ServeMux, error) {
+	if signer == nil {
+		return nil, errors.New("search worker mux requires a task signer: PM_TASK_SIGNING_KEY must be set (audit F-02 — task verification is mandatory)")
+	}
+	mux := asynq.NewServeMux()
+	NewWorker(rdb, signer, logger).RegisterHandlers(mux)
+	return mux, nil
 }
 
 func (w *Worker) handleReindex(ctx context.Context, t *asynq.Task) error {

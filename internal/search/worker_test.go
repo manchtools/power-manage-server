@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -115,4 +116,88 @@ func TestWorker_UnsignedTaskIsRejected(t *testing.T) {
 	err = f.mux.ProcessTask(f.ctx, asynq.NewTask(taskqueue.TypeSearchReindex, data))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "task signature")
+}
+
+// A task signed with a DIFFERENT key (forged, not merely absent) must be
+// rejected with asynq.SkipRetry (so it dead-letters rather than retry-loops)
+// and must NOT mutate the index — the F-02 HMAC is the sole authenticator for
+// search:* tasks against a compromised Valkey relay (actor-4). Driven through
+// the real mux for all three task types.
+func TestWorker_ForgedKeyTaskRejectedAndNoHSET(t *testing.T) {
+	const forgedKeyHex = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	forged, err := taskqueue.NewSigner(forgedKeyHex)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name     string
+		taskType string
+		payload  any
+		hashKey  string
+	}{
+		{"reindex", taskqueue.TypeSearchReindex,
+			taskqueue.SearchReindexPayload{Scope: ScopeAction, ID: "act-1", Data: &taskqueue.SearchEntityData{Name: "forged"}},
+			prefixAction + "act-1"},
+		{"member change", taskqueue.TypeSearchMemberChange,
+			taskqueue.SearchMemberChangePayload{ParentScope: ScopeActionSet, ParentID: "set-1", ChildScope: ScopeAction, ChildID: "act-1", Action: "add"},
+			prefixActionSet + "set-1"},
+		{"remove", taskqueue.TypeSearchRemove,
+			taskqueue.SearchRemovePayload{Scope: ScopeAction, ID: "act-1"},
+			prefixAction + "act-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWorkerFixture(t)
+			data, err := json.Marshal(tc.payload)
+			require.NoError(t, err)
+			// Signed with the WRONG key.
+			task := asynq.NewTask(tc.taskType, forged.Wrap(data), asynq.Queue(taskqueue.SearchQueue))
+
+			err = f.mux.ProcessTask(f.ctx, task)
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, asynq.SkipRetry),
+				"a forged-key task must dead-letter (SkipRetry), not retry-loop; got %v", err)
+
+			exists, err := f.rdb.Exists(f.ctx, tc.hashKey).Result()
+			require.NoError(t, err)
+			assert.Equal(t, int64(0), exists, "a forged task must not create/mutate the %s hash", tc.hashKey)
+		})
+	}
+}
+
+func TestBuildSearchWorkerMux_NilSignerIsFatal(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+
+	mux, err := BuildSearchWorkerMux(rdb, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.Error(t, err, "a nil signer (empty PM_TASK_SIGNING_KEY) must be fatal")
+	assert.Nil(t, mux)
+	assert.Contains(t, err.Error(), "PM_TASK_SIGNING_KEY")
+}
+
+// BuildSearchWorkerMux must mount VerifyMiddleware AHEAD of the handlers, so an
+// unsigned or forged task is rejected before any HSET. Drive both through the
+// assembled mux and assert SkipRetry + no index mutation.
+func TestBuildSearchWorkerMux_VerifiesBeforeHandlers(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { require.NoError(t, rdb.Close()) })
+
+	signer, err := taskqueue.NewSigner(workerTestKeyHex)
+	require.NoError(t, err)
+	mux, err := BuildSearchWorkerMux(rdb, signer, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+
+	payload := taskqueue.SearchReindexPayload{Scope: ScopeAction, ID: "act-1", Data: &taskqueue.SearchEntityData{Name: "x"}}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	// Unsigned.
+	err = mux.ProcessTask(context.Background(), asynq.NewTask(taskqueue.TypeSearchReindex, data, asynq.Queue(taskqueue.SearchQueue)))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, asynq.SkipRetry), "unsigned task rejected before the handler; got %v", err)
+
+	exists, err := rdb.Exists(context.Background(), prefixAction+"act-1").Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), exists, "verify-middleware must run before any HSET")
 }
