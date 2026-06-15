@@ -58,7 +58,7 @@ SELECT COALESCE(MAX(sequence_num), 0)::BIGINT as sequence_num FROM events;
 SELECT * FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%')
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || replace(replace(replace($3, '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!')
 ORDER BY occurred_at DESC
 LIMIT $4 OFFSET $5;
 
@@ -66,7 +66,7 @@ LIMIT $4 OFFSET $5;
 SELECT COUNT(*) FROM events
 WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($2::TEXT = '' OR stream_type = $2)
-  AND ($3::TEXT = '' OR event_type ILIKE '%' || $3 || '%');
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || replace(replace(replace($3, '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!');
 
 -- name: LoadOutputChunks :many
 -- Load all output chunks for an execution, ordered by sequence
