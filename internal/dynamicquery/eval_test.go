@@ -15,6 +15,58 @@ func mustParse(t *testing.T, q string) dynamicquery.Expr {
 	return expr
 }
 
+// in/notIn split the value on commas (splitTrimLower), so a value carrying a
+// comma, empty list elements, and keyword/quote characters all have specific,
+// non-obvious outcomes that the simple-value cases in TestEvaluateDevice_LabelOps
+// never exercise. The expected outcomes here are sourced from the split SEMANTICS
+// (comma is the separator, empties are kept, equals does NOT split), not from the
+// implementation — so an under-specified split rule is caught.
+func TestEvaluateDevice_InSplitMetacharacters(t *testing.T) {
+	ctx := dynamicquery.DeviceContext{
+		Labels: map[string]string{
+			"role":  "web",
+			"csv":   "a,b",   // a label VALUE that itself contains the separator
+			"empty": "",      // an explicitly empty label value
+			"kw":    "in",    // a value equal to an operator keyword
+			"quote": `pr"od`, // a value containing a double quote
+		},
+	}
+	cases := []struct {
+		query string
+		want  bool
+	}{
+		// equals does NOT split — a comma-bearing value matches itself.
+		{`labels.csv equals "a,b"`, true},
+		// in() DOES split on comma, so the comma-bearing value matches neither
+		// element of the list it looks identical to.
+		{`labels.csv in "a,b"`, false},
+		{`labels.csv notIn "a,b"`, true},
+		// A normal member still matches across the split.
+		{`labels.role in "web,db,cache"`, true},
+		// Empty list elements ("web,,db" -> ["web","","db"]) don't break a real match.
+		{`labels.role in "web,,db"`, true},
+		// Footgun pinned: an EMPTY field value matches the empty element produced
+		// by a stray comma. Documenting it so a future "skip empties" change is a
+		// deliberate, test-visible decision.
+		{`labels.empty in "a,,b"`, true},
+		{`labels.empty in "a,b"`, false},
+		// A keyword as a list element is just a string element.
+		{`labels.kw in "equals,in,contains"`, true},
+		// A quote inside the value is matched literally by equals; in() splits on
+		// comma only, so the quoted value (no comma) is a single element.
+		{`labels.quote equals "pr\"od"`, true},
+		{`labels.quote in "pr\"od,other"`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			got := dynamicquery.EvaluateDevice(mustParse(t, tc.query), ctx)
+			if got != tc.want {
+				t.Fatalf("EvaluateDevice(%q) = %v; want %v", tc.query, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEvaluateDevice_LabelOps(t *testing.T) {
 	ctx := dynamicquery.DeviceContext{
 		Labels: map[string]string{
