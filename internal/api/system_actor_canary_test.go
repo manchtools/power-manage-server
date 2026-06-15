@@ -10,42 +10,49 @@ import (
 	"testing"
 )
 
-// TestSystemActorCanary scans internal/api for every location that
-// writes an audit event with ActorID="system", lists them with file:
-// line, and emits a warning (t.Logf, not t.Error) for anything that
-// isn't in the documented known-cases list below.
+// TestSystemActorCanary scans internal/api for every location that writes an
+// audit event with ActorID="system", keyed by ENCLOSING FUNCTION, and FAILS the
+// suite for any site that is not in the documented known-cases list below (and
+// for any stale list entry).
 //
-// Rationale: ActorID="system" labels an audit event as "not a human
-// action" and should be reserved for deliberate, documented cases
-// — bootstrap events, system-action auto-creation, settings
-// migration. A silent fallback from "auth context missing" to
-// "system" misattributes bugs to the system itself and hides them
-// (see the rc7 terminal_handler and device_handler cleanups). This
-// test is the canary: it does NOT fail the suite on an unknown
-// site, it warns, so the next reviewer investigates and either
-// adds an entry to knownSystemActorSites with a rationale or
-// replaces the fallback with requireAuth.
+// Rationale: ActorID="system" labels an audit event as "not a human action" and
+// must be reserved for deliberate, documented cases — bootstrap events,
+// system-action auto-creation, settings migration, system-generated
+// compensating events. A silent fallback from "auth context missing" to
+// "system" misattributes bugs to the system itself and hides them (see the rc7
+// terminal_handler and device_handler cleanups). The canary forces every new
+// system-actor write to be reviewed: a reviewer either adds an entry here with a
+// rationale or replaces the fallback with requireAuth.
 //
-// Run with -v to see the warnings on every CI run.
-//
-// When you intentionally add a new system-actor append, also add a
-// row to knownSystemActorSites with a one-line rationale.
+// Sites are keyed by `<file>:<enclosing-func>` (not a line number) so the
+// allowlist is stable across unrelated edits.
 var knownSystemActorSites = map[string]string{
-	// Settings — initial seed + schema migrations run by the control
-	// server itself, not by any user. These are legitimately "system"
-	// actions: there is no user to attribute them to at bootstrap time.
-	"settings_handler.go:57":  "initial settings seeded at control-server boot",
-	"settings_handler.go:123": "settings schema migration on server start",
-	"settings_handler.go:158": "settings schema migration on server start",
+	// System action store — the control server owns the lifecycle of
+	// server-managed actions (pm-tty-*, SSH access, etc.); there is no user to
+	// attribute these writes to.
+	"system_action_store.go:CreateAction":       "system action store creates a server-owned action",
+	"system_action_store.go:UpdateAction":       "system action store updates a server-owned action",
+	"system_action_store.go:DeleteAction":       "system action store deletes a server-owned action",
+	"system_action_store.go:LinkAction":         "system action store links a server-owned action into a set/definition",
+	"system_action_store.go:AssignActionToUser": "system action store assigns a server-owned action to a user",
 
-	// System actions — pm-tty-* and SSH-access actions auto-created /
-	// re-bound by the control server. Not user-initiated; the server
-	// owns the lifecycle.
-	"system_actions.go:394": "auto-created pm-tty-* user action (first-time provision)",
-	"system_actions.go:419": "auto-created pm-tty-* user action (rebind on config change)",
-	"system_actions.go:439": "auto-created SSH access action (first-time provision)",
-	"system_actions.go:451": "auto-created SSH access action (rebuild)",
-	"system_actions.go:467": "auto-created SSH access action (schema migration)",
+	// Terminal-admin membership is server-managed, not user-initiated.
+	"system_actions.go:emitTerminalAdminMembershipRevoked": "server emits terminal-admin membership revocation",
+
+	// Dispatch compensating events — the SERVER records an ExecutionFailed when
+	// the dispatch enqueue itself fails; it is a system event, not the
+	// dispatching user's action.
+	"action_dispatch.go:DispatchAction":        "system-generated ExecutionFailed compensating event on enqueue failure",
+	"action_dispatch.go:DispatchInstantAction": "system-generated ExecutionFailed compensating event on enqueue failure",
+
+	// LUKS device-key revocation lifecycle is recorded by the server.
+	"device_handler.go:RevokeLuksDeviceKey": "server records the LUKS device-key revocation lifecycle event",
+
+	// Settings changes that cascade into server-owned system actions at boot or
+	// on a bulk toggle — no per-user actor.
+	"settings_handler.go:UpdateServerSettings":          "settings change cascades server-owned system actions",
+	"settings_handler.go:enableSshAccessForAllUsers":    "bulk SSH-access enablement creates server-owned actions",
+	"settings_handler.go:enableProvisioningForAllUsers": "bulk provisioning enablement creates server-owned actions",
 }
 
 func TestSystemActorCanary(t *testing.T) {
@@ -56,36 +63,44 @@ func TestSystemActorCanary(t *testing.T) {
 
 	t.Logf("SystemActor canary: found %d site(s) with ActorID=\"system\"", len(sites))
 
+	// Matches-zero guard: the scan walks the package source for the literal
+	// pattern. If it ever finds NOTHING (a regex/path drift, or the file moved),
+	// the canary would silently pass while no longer guarding anything.
+	if len(sites) == 0 {
+		t.Fatal(`SystemActor canary found ZERO ActorID="system" sites — the scanner drifted and can no longer catch an unreviewed system-actor write`)
+	}
+
 	for _, site := range sites {
-		// Key format is `<file-basename>:<line>`. file-basename is
-		// used rather than a full path so a test running from
-		// different working directories stays consistent.
+		// Key format is `<file-basename>:<enclosing-func>` — file basename (not a
+		// full path) so the key is working-directory-independent, and the
+		// enclosing function (not a line number) so it survives unrelated edits.
 		if rationale, known := knownSystemActorSites[site]; known {
 			t.Logf("  [known ] %s — %s", site, rationale)
 		} else {
-			// The warning. Not a failure. A reviewer reading `go test
-			// -v` output will see this and investigate.
-			t.Logf("  [WARN  ] %s — UNKNOWN; verify this is intentional and update knownSystemActorSites with a rationale", site)
+			// A new, unreviewed system-actor write site is a FAILURE: every such
+			// site bypasses the actor-authorization model and must be reviewed
+			// and recorded in knownSystemActorSites with a rationale.
+			t.Errorf(`UNKNOWN ActorID="system" site %s — verify it is intentional and add it to knownSystemActorSites with a rationale`, site)
 		}
 	}
 
-	// Also flag removals: entries in knownSystemActorSites that no
-	// longer exist in the source indicate the call site was deleted
-	// or moved. Warn so the entry can be cleaned up.
+	// A stale exemption (listed but no longer in source) is real drift, not a
+	// warning: left in place it could later mask a genuine new site at the same
+	// key. Fail so it is cleaned up.
 	siteSet := make(map[string]struct{}, len(sites))
 	for _, s := range sites {
 		siteSet[s] = struct{}{}
 	}
 	for expected := range knownSystemActorSites {
 		if _, found := siteSet[expected]; !found {
-			t.Logf("  [stale ] %s — listed in knownSystemActorSites but no longer in source; remove the entry", expected)
+			t.Errorf("stale knownSystemActorSites entry %s — listed but no longer in source; remove it", expected)
 		}
 	}
 }
 
-// scanSystemActorSites walks dir for non-test .go files and returns
-// every `<file-basename>:<line>` whose contents match the literal
-// `ActorID: "system"` pattern (whitespace tolerant).
+// scanSystemActorSites walks dir for non-test .go files and returns the
+// DEDUPED set of `<file-basename>:<enclosing-func>` for every line matching the
+// literal `ActorID: "system"` pattern (whitespace tolerant).
 func scanSystemActorSites(t *testing.T, dir string) []string {
 	t.Helper()
 
@@ -94,8 +109,13 @@ func scanSystemActorSites(t *testing.T, dir string) []string {
 	//     ActorID:    "system"
 	// Tolerant of any whitespace between ActorID, :, and the string.
 	re := regexp.MustCompile(`ActorID\s*:\s*"system"`)
+	// Enclosing function: `func Name(` or `func (recv) Name(`. Keying sites by
+	// their enclosing function rather than a line number keeps the allowlist
+	// STABLE across unrelated edits — a line-number key drifts on every change
+	// above the site, turning the gate into churn.
+	funcRe := regexp.MustCompile(`^func\s+(?:\([^)]*\)\s+)?([A-Za-z0-9_]+)\s*\(`)
 
-	var hits []string
+	seen := map[string]struct{}{}
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -113,14 +133,15 @@ func scanSystemActorSites(t *testing.T, dir string) []string {
 		defer f.Close()
 
 		scanner := bufio.NewScanner(f)
-		lineNo := 0
-		// Default buf is fine; api/ files are not enormous but bump
-		// anyway to tolerate a few oversized generated stubs.
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		currentFunc := "<file-scope>"
 		for scanner.Scan() {
-			lineNo++
-			if re.MatchString(scanner.Text()) {
-				hits = append(hits, filepath.Base(path)+":"+itoa(lineNo))
+			line := scanner.Text()
+			if m := funcRe.FindStringSubmatch(line); m != nil {
+				currentFunc = m[1]
+			}
+			if re.MatchString(line) {
+				seen[filepath.Base(path)+":"+currentFunc] = struct{}{}
 			}
 		}
 		return scanner.Err()
@@ -128,29 +149,9 @@ func scanSystemActorSites(t *testing.T, dir string) []string {
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
-	return hits
-}
-
-// itoa is a tiny strconv.Itoa shim; avoids another import just for
-// one call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
 	}
-	var buf [20]byte
-	i := len(buf)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return out
 }

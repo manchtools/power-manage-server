@@ -20,6 +20,12 @@ func rpcMethodNames(t *testing.T) map[string]bool {
 	for i := 0; i < iface.NumMethod(); i++ {
 		out[iface.Method(i).Name] = true
 	}
+	// Matches-zero guard: every parity test below iterates this set. If
+	// reflection ever surfaces no RPCs (a generated-handler refactor), the
+	// parity assertions would all pass VACUOUSLY — fail loudly instead.
+	if len(out) == 0 {
+		t.Fatal("rpcMethodNames discovered ZERO RPCs on ControlServiceHandler — parity tests would pass vacuously")
+	}
 	return out
 }
 
@@ -77,6 +83,9 @@ var nonRPCBackedPermissions = map[string]bool{
 //     gates /CreateDeviceGroup via the alternatives map).
 func TestEveryPermissionMatchesAnRPC(t *testing.T) {
 	rpcs := rpcMethodNames(t)
+	if len(auth.AllPermissions()) == 0 {
+		t.Fatal("AllPermissions() is empty — this parity test would pass vacuously")
+	}
 	for _, p := range auth.AllPermissions() {
 		base := stripScope(p.Key)
 		if nonRPCBackedPermissions[base] {
@@ -144,6 +153,9 @@ func TestEveryPublicProcedureIsAnRPC(t *testing.T) {
 // Catches new RPCs added without permission wiring.
 func TestEveryRPCIsCoveredByPermissionOrPublic(t *testing.T) {
 	rpcs := rpcMethodNames(t)
+	if len(auth.AllPermissions()) == 0 {
+		t.Fatal("AllPermissions() is empty — this parity test would pass vacuously")
+	}
 
 	// Build the inverse map: RPC name → covered (bool).
 	covered := make(map[string]bool, len(rpcs))
