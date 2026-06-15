@@ -605,55 +605,6 @@ func TestAuthInterceptor_ListAuthMethodsThrottled(t *testing.T) {
 	assert.Contains(t, err.Error(), "too many", "must trip the AuthMethods limiter, not some other gate")
 }
 
-// setupDeviceInterceptorTest wires the REAL AuthzInterceptor behind a tiny
-// interceptor that injects a device context (mirroring what the mTLS device-auth
-// path produces in production), so the interceptor's device branch is exercised
-// end-to-end through WrapUnary rather than unit-testing authorizeDevice in
-// isolation (#10).
-func setupDeviceInterceptorTest(t *testing.T, procedure string) string {
-	t.Helper()
-
-	deviceInjector := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			return next(WithDevice(ctx, &DeviceContext{ID: "device-1"}), req)
-		}
-	})
-	authzIc := NewAuthzInterceptor()
-
-	mux := http.NewServeMux()
-	handler := connect.NewUnaryHandler(
-		procedure,
-		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
-			return connect.NewResponse(&emptypb.Empty{}), nil
-		},
-		connect.WithInterceptors(deviceInjector, authzIc),
-	)
-	mux.Handle(procedure, handler)
-
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-	return server.URL
-}
-
-func TestAuthzInterceptor_DeviceContext_AllowsDeviceAction(t *testing.T) {
-	const procedure = "/pm.v1.ControlService/Heartbeat"
-	serverURL := setupDeviceInterceptorTest(t, procedure)
-
-	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, serverURL+procedure)
-	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
-	require.NoError(t, err, "a device must be allowed Heartbeat through the real interceptor device branch")
-}
-
-func TestAuthzInterceptor_DeviceContext_DeniesAdminAction(t *testing.T) {
-	const procedure = "/pm.v1.ControlService/DeleteDevice"
-	serverURL := setupDeviceInterceptorTest(t, procedure)
-
-	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, serverURL+procedure)
-	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
-	require.Error(t, err, "a device must be denied an admin action through the real interceptor")
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-}
-
 // setupAuthRateLimitTest mounts the EvaluateDynamicGroup (expensive) procedure
 // behind the REAL AuthInterceptor with the supplied limiters, recording whether
 // the handler ran via a per-request header. Returns the server URL + manager.

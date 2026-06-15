@@ -280,15 +280,18 @@ func TestStream_HappyPathRegistersStartsWorkerAndSendsWelcome(t *testing.T) {
 	assert.Empty(t, stopped)
 
 	require.NoError(t, stream.CloseRequest())
-	// Drain the response side so the handler's Stream() goroutine
-	// observes the request-side EOF and unwinds before we snapshot
-	// worker state below. The terminal error itself is not asserted
-	// here — Connect-Go v1.18.1 wraps a clean bidi stream shutdown
-	// over httptest as *connect.Error{CodeUnknown, "EOF"} instead
-	// of plain io.EOF (see #331 for the open investigation). The
-	// load-bearing assertion is the worker.stopped check below,
-	// which proves Stream() returned and ran its cleanup.
-	_ = recvErr(stream)
+	// Drain the response side so the handler's Stream() goroutine observes the
+	// request-side EOF and unwinds before we snapshot worker state below.
+	// WS16 server#331: the handler now classifies the clean shutdown (which
+	// connect-go v1.18.1 surfaces to the server as *connect.Error{CodeUnknown,
+	// "EOF"}) as graceful and returns nil, so the client sees a clean io.EOF
+	// terminal status rather than an inherited error.
+	// recvErr maps a clean io.EOF terminal status to nil, so a graceful close
+	// surfaces as no error here; the pre-fix handler returned the raw
+	// CodeUnknown/"EOF" error, which recvErr would surface as non-nil.
+	termErr := recvErr(stream)
+	assert.NoError(t, termErr,
+		"a clean agent shutdown must terminate the stream gracefully (handler returns nil), not re-emit an error (#331)")
 
 	_, stopped = f.worker.snapshot()
 	assert.Equal(t, []string{"01HZX9DEFGH000000000000000"}, stopped)

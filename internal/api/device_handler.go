@@ -29,6 +29,15 @@ import (
 )
 
 // DeviceHandler handles device management RPCs.
+// deviceAssignmentLister reads a device's already-assigned user/group IDs for
+// AssignDevice's dedup. It is a seam (defaulting to the store's queries) so a
+// test can drive the infra-failure path that must fail closed rather than
+// proceed blind on empty dedup sets (WS16 #8).
+type deviceAssignmentLister interface {
+	ListDeviceAssignedUserIDs(ctx context.Context, deviceID string) ([]string, error)
+	ListDeviceAssignedGroupIDs(ctx context.Context, deviceID string) ([]string, error)
+}
+
 type DeviceHandler struct {
 	taskQueueHolder
 	store     *store.Store
@@ -37,13 +46,14 @@ type DeviceHandler struct {
 	signer    ca.ActionSigner // signs LUKS device-key revocation dispatches (WS4)
 	// crl, when set, receives a deleted device's cert fingerprint so the cert
 	// stops working at the gateway. nil disables it (no Valkey / tests).
-	crl *crl.Store
-	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
+	crl              *crl.Store
+	assignmentLister deviceAssignmentLister // dedup-read seam (WS16 #8); defaults to store queries
+	now              func() time.Time       // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewDeviceHandler creates a new device handler.
 func NewDeviceHandler(st *store.Store, enc *crypto.Encryptor, logger *slog.Logger, signer ca.ActionSigner) *DeviceHandler {
-	return &DeviceHandler{store: st, encryptor: enc, logger: logger, signer: signer, now: time.Now}
+	return &DeviceHandler{store: st, encryptor: enc, logger: logger, signer: signer, assignmentLister: st.Queries(), now: time.Now}
 }
 
 // SetCRLStore wires the certificate revocation list (post-construction).
@@ -351,13 +361,21 @@ func (h *DeviceHandler) AssignDevice(ctx context.Context, req *connect.Request[p
 		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
-	// Build sets of already-assigned user/group IDs to prevent duplicate events
-	existingUserIDs, _ := q.ListDeviceAssignedUserIDs(ctx, req.Msg.DeviceId)
+	// Build sets of already-assigned user/group IDs to prevent duplicate
+	// events. WS16 #8: a DB error here must abort — proceeding with empty
+	// dedup sets on infra failure re-emits duplicate DeviceAssigned events.
+	existingUserIDs, err := h.assignmentLister.ListDeviceAssignedUserIDs(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list device assignments")
+	}
 	existingUserSet := make(map[string]bool, len(existingUserIDs))
 	for _, id := range existingUserIDs {
 		existingUserSet[id] = true
 	}
-	existingGroupIDs, _ := q.ListDeviceAssignedGroupIDs(ctx, req.Msg.DeviceId)
+	existingGroupIDs, err := h.assignmentLister.ListDeviceAssignedGroupIDs(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list device assignments")
+	}
 	existingGroupSet := make(map[string]bool, len(existingGroupIDs))
 	for _, id := range existingGroupIDs {
 		existingGroupSet[id] = true
@@ -906,10 +924,17 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "action is not an encryption action")
 	}
 
-	// Parse LUKS params to get complexity requirements
+	// Parse LUKS params to get complexity requirements. WS16 #10: a decode
+	// failure must fail closed — silently falling back to the floor policy
+	// (min 16, complexity 0) would weaken a security-gating token whenever the
+	// stored params are corrupt.
 	var luksParams pm.EncryptionParams
 	if len(action.Params) > 0 {
-		protojson.UnmarshalOptions{DiscardUnknown: true}.Unmarshal(action.Params, &luksParams)
+		if err := (protojson.UnmarshalOptions{DiscardUnknown: true}).Unmarshal(action.Params, &luksParams); err != nil {
+			h.logger.Error("encryption action params decode failed",
+				"action_id", req.Msg.ActionId, "error", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "encryption action params are corrupt")
+		}
 	}
 
 	minLength := luksParams.UserPassphraseMinLength

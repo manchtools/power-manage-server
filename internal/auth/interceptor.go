@@ -480,19 +480,6 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 		parts := strings.Split(procedure, "/")
 		action := parts[len(parts)-1]
 
-		// Check if device context
-		if deviceCtx, ok := DeviceFromContext(ctx); ok {
-			input := AuthzInput{
-				IsDevice:  true,
-				SubjectID: deviceCtx.ID,
-				Action:    action,
-			}
-			if !Authorize(input) {
-				return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
-			}
-			return next(ctx, req)
-		}
-
 		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {

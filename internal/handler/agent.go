@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -440,6 +442,13 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	for {
 		msg, err := stream.Receive()
 		if err != nil {
+			// WS16 server#331: classify a clean agent shutdown as graceful
+			// instead of re-emitting it up the stack as an error (which logged
+			// every normal disconnect at error severity).
+			if isStreamClosed(err) {
+				h.logger.Info("agent stream closed", "device_id", deviceID)
+				return nil
+			}
 			return err
 		}
 
@@ -452,6 +461,31 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 			)
 		}
 	}
+}
+
+// isStreamClosed reports whether a bidi-stream Receive error represents a
+// clean end-of-stream / cancellation rather than a real transport fault.
+// connect-go v1.18.1 wraps a clean agent shutdown over h2c as
+// *connect.Error{CodeUnknown, "EOF"} instead of plain io.EOF (server#331), so
+// that shape is classified too — otherwise every graceful disconnect would be
+// re-emitted up the stack as an error.
+func isStreamClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		if ce.Code() == connect.CodeCanceled {
+			return true
+		}
+		if ce.Code() == connect.CodeUnknown && strings.Contains(ce.Message(), "EOF") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleAgentMessage processes messages from the agent.

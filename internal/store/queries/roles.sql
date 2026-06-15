@@ -196,8 +196,13 @@ ON CONFLICT DO NOTHING;
 -- grant); when the caller passes concrete values it targets the
 -- specific scoped row. A miss is a silent no-op, matching the
 -- prior projector behaviour.
+-- Stale-replay guard (WS16 #7, mirrors DeleteDeviceAssignedUser): the
+-- caller passes the revoke event's sequence_num as projection_version;
+-- a row whose projection_version is newer (a re-grant that bumped it)
+-- survives an out-of-order replay of an older UserRoleRevoked.
 DELETE FROM user_roles_projection
 WHERE user_id = $1
   AND role_id = $2
   AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
-  AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT;
+  AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT
+  AND projection_version <= sqlc.arg('projection_version');
