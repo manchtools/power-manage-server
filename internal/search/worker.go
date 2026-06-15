@@ -353,15 +353,17 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		}
 		return fields
 	case ScopeDevice:
+		// Every field here is agent-reported — bound and strip them before the
+		// live HSET, mirroring the warm path (Index.warmDevices) exactly.
 		fields := map[string]any{
-			"hostname":          data.Hostname,
-			"agent_version":     data.AgentVersion,
-			"labels":            data.Labels,
+			"hostname":          sanitizeSearchField(data.Hostname, maxHostnameField),
+			"agent_version":     sanitizeSearchField(data.AgentVersion, maxOSField),
+			"labels":            sanitizeSearchField(data.Labels, maxLabelsField),
 			"compliance_status": strconv.Itoa(int(data.ComplianceStatus)),
-			"os_name":           data.OSName,
-			"os_version":        data.OSVersion,
-			"os_arch":           data.OSArch,
-			"kernel":            data.Kernel,
+			"os_name":           sanitizeSearchField(data.OSName, maxOSField),
+			"os_version":        sanitizeSearchField(data.OSVersion, maxOSField),
+			"os_arch":           sanitizeSearchField(data.OSArch, maxOSField),
+			"kernel":            sanitizeSearchField(data.Kernel, maxOSField),
 		}
 		if data.RegisteredAt != 0 {
 			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)
