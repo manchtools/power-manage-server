@@ -82,6 +82,35 @@ func TestEnsureIndexes(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestIndexesPresent pins WS13 #12's gate against a REAL valkey-search backend
+// (the part that miniredis can't cover): IndexesPresent must classify a missing
+// index as not-present (false, nil) — NOT a hard error — which validates the
+// FT.INFO "index missing" error-substring matching against the real backend, and
+// must report present once all indexes exist. The fail-closed direction (any
+// OTHER FT.INFO error -> error, never a wrong "not present" that would flush) is
+// what makes the gate safe.
+func TestIndexesPresent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	rdb := setupRedis(t)
+	ctx := context.Background()
+
+	idx := search.New(rdb, nil, nil, testLogger())
+
+	// Fresh backend: no indexes yet. The real "unknown index" error must be
+	// classified as not-present, not surfaced as a hard error.
+	present, err := idx.IndexesPresent(ctx)
+	require.NoError(t, err, "a missing index must classify as not-present, not a hard error (FT.INFO substring must match the real backend)")
+	assert.False(t, present, "no indexes exist on a fresh backend")
+
+	// After EnsureIndexes, every configured index exists → present.
+	require.NoError(t, idx.EnsureIndexes(ctx))
+	present, err = idx.IndexesPresent(ctx)
+	require.NoError(t, err)
+	assert.True(t, present, "after EnsureIndexes all indexes must be reported present")
+}
+
 func TestWarmActions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
