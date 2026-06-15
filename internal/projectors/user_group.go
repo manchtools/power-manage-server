@@ -49,15 +49,9 @@ type userGroupCreatedRaw struct {
 // otherwise fail the INSERT, surfacing as a Postgres constraint
 // violation rather than a projector-level validation error.
 func UserGroupCreatedFromEvent(e store.PersistedEvent) (UserGroupCreatedPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupCreated) {
-		return UserGroupCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserGroupCreatedPayload{}, fmt.Errorf("projector: empty UserGroupCreated payload")
-	}
-	var raw userGroupCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserGroupCreatedPayload{}, fmt.Errorf("projector: invalid UserGroupCreated payload: %w", err)
+	raw, err := decodePayload[userGroupCreatedRaw](e, "user_group", eventtypes.UserGroupCreated)
+	if err != nil {
+		return UserGroupCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return UserGroupCreatedPayload{}, fmt.Errorf("projector: UserGroupCreated requires name")
@@ -102,15 +96,9 @@ type userGroupUpdatedRaw struct {
 // Description signals "update" vs "preserve": non-nil = update with
 // the value (incl. empty string); nil = preserve.
 func UserGroupUpdatedFromEvent(e store.PersistedEvent) (UserGroupUpdatedPayload, error) {
-	if e.StreamType != "user_group" || e.EventType != string(eventtypes.UserGroupUpdated) {
-		return UserGroupUpdatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserGroupUpdatedPayload{}, fmt.Errorf("projector: empty UserGroupUpdated payload")
-	}
-	var raw userGroupUpdatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserGroupUpdatedPayload{}, fmt.Errorf("projector: invalid UserGroupUpdated payload: %w", err)
+	raw, err := decodePayload[userGroupUpdatedRaw](e, "user_group", eventtypes.UserGroupUpdated)
+	if err != nil {
+		return UserGroupUpdatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return UserGroupUpdatedPayload{}, fmt.Errorf("projector: UserGroupUpdated requires name")

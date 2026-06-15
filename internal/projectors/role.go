@@ -60,15 +60,9 @@ type roleCreatedRaw struct {
 // Defaults match the PL/pgSQL projector: missing description → "";
 // missing permissions → empty slice; missing is_system → false.
 func RoleCreatedFromEvent(e store.PersistedEvent) (RoleCreatedPayload, error) {
-	if e.StreamType != "role" || e.EventType != string(eventtypes.RoleCreated) {
-		return RoleCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return RoleCreatedPayload{}, fmt.Errorf("projector: empty RoleCreated payload")
-	}
-	var raw roleCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return RoleCreatedPayload{}, fmt.Errorf("projector: invalid RoleCreated payload: %w", err)
+	raw, err := decodePayload[roleCreatedRaw](e, "role", eventtypes.RoleCreated)
+	if err != nil {
+		return RoleCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return RoleCreatedPayload{}, fmt.Errorf("projector: RoleCreated requires name")

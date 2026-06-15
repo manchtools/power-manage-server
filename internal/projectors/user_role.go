@@ -1,7 +1,6 @@
 package projectors
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -37,15 +36,9 @@ type UserRoleRevokedPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func UserRoleAssignedFromEvent(e store.PersistedEvent) (UserRoleAssignedPayload, error) {
-	if e.StreamType != "user_role" || e.EventType != string(eventtypes.UserRoleAssigned) {
-		return UserRoleAssignedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserRoleAssignedPayload{}, fmt.Errorf("projector: empty UserRoleAssigned payload")
-	}
-	var p UserRoleAssignedPayload
-	if err := json.Unmarshal(e.Data, &p); err != nil {
-		return UserRoleAssignedPayload{}, fmt.Errorf("projector: invalid UserRoleAssigned payload: %w", err)
+	p, err := decodePayload[UserRoleAssignedPayload](e, "user_role", eventtypes.UserRoleAssigned)
+	if err != nil {
+		return UserRoleAssignedPayload{}, err
 	}
 	switch {
 	case p.UserID == "":
@@ -63,15 +56,9 @@ func UserRoleAssignedFromEvent(e store.PersistedEvent) (UserRoleAssignedPayload,
 // UserRoleRevokedFromEvent decodes UserRoleRevoked. Same validation
 // shape as UserRoleAssigned — both composite-key fields required.
 func UserRoleRevokedFromEvent(e store.PersistedEvent) (UserRoleRevokedPayload, error) {
-	if e.StreamType != "user_role" || e.EventType != string(eventtypes.UserRoleRevoked) {
-		return UserRoleRevokedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserRoleRevokedPayload{}, fmt.Errorf("projector: empty UserRoleRevoked payload")
-	}
-	var p UserRoleRevokedPayload
-	if err := json.Unmarshal(e.Data, &p); err != nil {
-		return UserRoleRevokedPayload{}, fmt.Errorf("projector: invalid UserRoleRevoked payload: %w", err)
+	p, err := decodePayload[UserRoleRevokedPayload](e, "user_role", eventtypes.UserRoleRevoked)
+	if err != nil {
+		return UserRoleRevokedPayload{}, err
 	}
 	switch {
 	case p.UserID == "":

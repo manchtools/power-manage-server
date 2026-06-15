@@ -54,15 +54,9 @@ type ExecutionCreatedPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func ExecutionCreatedFromEvent(e store.PersistedEvent) (ExecutionCreatedPayload, error) {
-	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionCreated) {
-		return ExecutionCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ExecutionCreatedPayload{}, fmt.Errorf("projector: empty ExecutionCreated payload")
-	}
-	var raw payloads.ExecutionCreated
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ExecutionCreatedPayload{}, fmt.Errorf("projector: invalid ExecutionCreated payload: %w", err)
+	raw, err := decodePayload[payloads.ExecutionCreated](e, "execution", eventtypes.ExecutionCreated)
+	if err != nil {
+		return ExecutionCreatedPayload{}, err
 	}
 	if raw.DeviceID == "" {
 		return ExecutionCreatedPayload{}, fmt.Errorf("projector: ExecutionCreated requires device_id")
@@ -122,15 +116,9 @@ type ExecutionScheduledPayload struct {
 // emitter that builds this event populates it unconditionally
 // (action_handler.go RunAt branch); a missing key is an emitter bug.
 func ExecutionScheduledFromEvent(e store.PersistedEvent) (ExecutionScheduledPayload, error) {
-	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionScheduled) {
-		return ExecutionScheduledPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ExecutionScheduledPayload{}, fmt.Errorf("projector: empty ExecutionScheduled payload")
-	}
-	var raw payloads.ExecutionScheduled
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ExecutionScheduledPayload{}, fmt.Errorf("projector: invalid ExecutionScheduled payload: %w", err)
+	raw, err := decodePayload[payloads.ExecutionScheduled](e, "execution", eventtypes.ExecutionScheduled)
+	if err != nil {
+		return ExecutionScheduledPayload{}, err
 	}
 	if raw.DeviceID == "" {
 		return ExecutionScheduledPayload{}, fmt.Errorf("projector: ExecutionScheduled requires device_id")

@@ -40,15 +40,9 @@ type AssignmentCreatedPayload struct {
 // failure surface in the listener log instead of producing a half-
 // applied row.
 func AssignmentCreatedFromEvent(e store.PersistedEvent) (AssignmentCreatedPayload, error) {
-	if e.StreamType != "assignment" || e.EventType != string(eventtypes.AssignmentCreated) {
-		return AssignmentCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return AssignmentCreatedPayload{}, fmt.Errorf("projector: empty AssignmentCreated payload")
-	}
-	var raw payloads.AssignmentCreated
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return AssignmentCreatedPayload{}, fmt.Errorf("projector: invalid AssignmentCreated payload: %w", err)
+	raw, err := decodePayload[payloads.AssignmentCreated](e, "assignment", eventtypes.AssignmentCreated)
+	if err != nil {
+		return AssignmentCreatedPayload{}, err
 	}
 	switch {
 	case raw.SourceType == "":

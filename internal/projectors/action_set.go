@@ -41,15 +41,9 @@ type actionSetCreatedRaw struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func ActionSetCreatedFromEvent(e store.PersistedEvent) (ActionSetCreatedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetCreated) {
-		return ActionSetCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionSetCreatedPayload{}, fmt.Errorf("projector: empty ActionSetCreated payload")
-	}
-	var raw actionSetCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionSetCreatedPayload{}, fmt.Errorf("projector: invalid ActionSetCreated payload: %w", err)
+	raw, err := decodePayload[actionSetCreatedRaw](e, "action_set", eventtypes.ActionSetCreated)
+	if err != nil {
+		return ActionSetCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return ActionSetCreatedPayload{}, fmt.Errorf("projector: ActionSetCreated requires name")
@@ -89,15 +83,9 @@ type actionSetRenamedRaw struct {
 
 // ActionSetRenamedFromEvent decodes ActionSetRenamed.
 func ActionSetRenamedFromEvent(e store.PersistedEvent) (ActionSetRenamedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetRenamed) {
-		return ActionSetRenamedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionSetRenamedPayload{}, fmt.Errorf("projector: empty ActionSetRenamed payload")
-	}
-	var raw actionSetRenamedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionSetRenamedPayload{}, fmt.Errorf("projector: invalid ActionSetRenamed payload: %w", err)
+	raw, err := decodePayload[actionSetRenamedRaw](e, "action_set", eventtypes.ActionSetRenamed)
+	if err != nil {
+		return ActionSetRenamedPayload{}, err
 	}
 	if raw.Name == "" {
 		return ActionSetRenamedPayload{}, fmt.Errorf("projector: ActionSetRenamed requires name")
@@ -190,15 +178,9 @@ type actionSetMemberRaw struct {
 
 // ActionSetMemberAddedFromEvent decodes ActionSetMemberAdded.
 func ActionSetMemberAddedFromEvent(e store.PersistedEvent) (ActionSetMemberAddedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberAdded) {
-		return ActionSetMemberAddedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionSetMemberAddedPayload{}, fmt.Errorf("projector: empty ActionSetMemberAdded payload")
-	}
-	var raw actionSetMemberRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionSetMemberAddedPayload{}, fmt.Errorf("projector: invalid ActionSetMemberAdded payload: %w", err)
+	raw, err := decodePayload[actionSetMemberRaw](e, "action_set", eventtypes.ActionSetMemberAdded)
+	if err != nil {
+		return ActionSetMemberAddedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return ActionSetMemberAddedPayload{}, fmt.Errorf("projector: ActionSetMemberAdded requires action_id")
@@ -223,15 +205,9 @@ type actionSetMemberRemovedRaw struct {
 
 // ActionSetMemberRemovedFromEvent decodes ActionSetMemberRemoved.
 func ActionSetMemberRemovedFromEvent(e store.PersistedEvent) (ActionSetMemberRemovedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberRemoved) {
-		return ActionSetMemberRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionSetMemberRemovedPayload{}, fmt.Errorf("projector: empty ActionSetMemberRemoved payload")
-	}
-	var raw actionSetMemberRemovedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionSetMemberRemovedPayload{}, fmt.Errorf("projector: invalid ActionSetMemberRemoved payload: %w", err)
+	raw, err := decodePayload[actionSetMemberRemovedRaw](e, "action_set", eventtypes.ActionSetMemberRemoved)
+	if err != nil {
+		return ActionSetMemberRemovedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return ActionSetMemberRemovedPayload{}, fmt.Errorf("projector: ActionSetMemberRemoved requires action_id")
@@ -247,15 +223,9 @@ type ActionSetMemberReorderedPayload = ActionSetMemberAddedPayload
 // Same field set as ActionSetMemberAdded plus the same default-zero
 // behaviour for sort_order.
 func ActionSetMemberReorderedFromEvent(e store.PersistedEvent) (ActionSetMemberReorderedPayload, error) {
-	if e.StreamType != "action_set" || e.EventType != string(eventtypes.ActionSetMemberReordered) {
-		return ActionSetMemberReorderedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionSetMemberReorderedPayload{}, fmt.Errorf("projector: empty ActionSetMemberReordered payload")
-	}
-	var raw actionSetMemberRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionSetMemberReorderedPayload{}, fmt.Errorf("projector: invalid ActionSetMemberReordered payload: %w", err)
+	raw, err := decodePayload[actionSetMemberRaw](e, "action_set", eventtypes.ActionSetMemberReordered)
+	if err != nil {
+		return ActionSetMemberReorderedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return ActionSetMemberReorderedPayload{}, fmt.Errorf("projector: ActionSetMemberReordered requires action_id")

@@ -49,15 +49,9 @@ type deviceGroupCreatedRaw struct {
 // otherwise fail the INSERT, surfacing as a Postgres constraint
 // violation rather than a projector-level validation error.
 func DeviceGroupCreatedFromEvent(e store.PersistedEvent) (DeviceGroupCreatedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupCreated) {
-		return DeviceGroupCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceGroupCreatedPayload{}, fmt.Errorf("projector: empty DeviceGroupCreated payload")
-	}
-	var raw deviceGroupCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceGroupCreatedPayload{}, fmt.Errorf("projector: invalid DeviceGroupCreated payload: %w", err)
+	raw, err := decodePayload[deviceGroupCreatedRaw](e, "device_group", eventtypes.DeviceGroupCreated)
+	if err != nil {
+		return DeviceGroupCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return DeviceGroupCreatedPayload{}, fmt.Errorf("projector: DeviceGroupCreated requires name")
@@ -94,15 +88,9 @@ type deviceGroupRenamedRaw struct {
 
 // DeviceGroupRenamedFromEvent decodes DeviceGroupRenamed.
 func DeviceGroupRenamedFromEvent(e store.PersistedEvent) (DeviceGroupRenamedPayload, error) {
-	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupRenamed) {
-		return DeviceGroupRenamedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceGroupRenamedPayload{}, fmt.Errorf("projector: empty DeviceGroupRenamed payload")
-	}
-	var raw deviceGroupRenamedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceGroupRenamedPayload{}, fmt.Errorf("projector: invalid DeviceGroupRenamed payload: %w", err)
+	raw, err := decodePayload[deviceGroupRenamedRaw](e, "device_group", eventtypes.DeviceGroupRenamed)
+	if err != nil {
+		return DeviceGroupRenamedPayload{}, err
 	}
 	if raw.Name == "" {
 		return DeviceGroupRenamedPayload{}, fmt.Errorf("projector: DeviceGroupRenamed requires name")
