@@ -841,10 +841,37 @@ func (h *AgentHandler) handleLogQueryResult(deviceID string, result *pm.LogQuery
 	})
 }
 
+// assertDeviceMatchesCert enforces that the mTLS client-certificate identity
+// matches the device_id a device-scoped RPC claims to act on. It must run
+// before any work so a compromised agent presenting device A's certificate
+// cannot drive an operation against device B. When mTLS is not required
+// (dev/test without a terminating gateway) it is a no-op. Shared by every
+// device-scoped agent RPC so the binding cannot drift between them.
+func (h *AgentHandler) assertDeviceMatchesCert(ctx context.Context, deviceID string) error {
+	if !h.requireTLS {
+		return nil
+	}
+	certDeviceID, ok := DeviceIDFromContext(ctx)
+	if !ok {
+		return connect.NewError(connect.CodeUnauthenticated, errors.New("mTLS authentication required"))
+	}
+	if certDeviceID != deviceID {
+		h.logger.Warn("agent RPC device ID mismatch", "cert_device_id", certDeviceID, "requested_device_id", deviceID)
+		return connect.NewError(connect.CodePermissionDenied, errors.New("device ID does not match certificate"))
+	}
+	return nil
+}
+
 // ValidateLuksToken validates and consumes a one-time LUKS token via the control server.
 func (h *AgentHandler) ValidateLuksToken(ctx context.Context, req *connect.Request[pm.ValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id and token are required"))
+	}
+
+	// Bind to the mTLS cert exactly as SyncActions does — without this a
+	// compromised agent could redeem a LUKS token issued for another device.
+	if err := h.assertDeviceMatchesCert(ctx, req.Msg.DeviceId); err != nil {
+		return nil, err
 	}
 
 	resp, err := h.controlProxy.ValidateLuksToken(ctx, req.Msg.DeviceId, req.Msg.Token)
@@ -863,16 +890,9 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("device_id is required"))
 	}
 
-	// Verify mTLS certificate matches requested device ID
-	if h.requireTLS {
-		certDeviceID, ok := DeviceIDFromContext(ctx)
-		if !ok {
-			return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("mTLS authentication required"))
-		}
-		if certDeviceID != deviceID {
-			h.logger.Warn("SyncActions device ID mismatch", "cert_device_id", certDeviceID, "requested_device_id", deviceID)
-			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("device ID does not match certificate"))
-		}
+	// Verify mTLS certificate matches requested device ID.
+	if err := h.assertDeviceMatchesCert(ctx, deviceID); err != nil {
+		return nil, err
 	}
 
 	h.logger.Info("agent syncing actions", "device_id", deviceID)

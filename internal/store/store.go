@@ -198,6 +198,17 @@ func (s *Store) rebuildApplyFor(name string) RebuildApply {
 	return s.rebuildAppliers[name]
 }
 
+// HasRebuildApply reports whether a Go applier is registered for the named
+// rebuild target. Exposed so a parity test can assert every AllRebuildTargets
+// entry is wired (a missing applier makes RebuildAll silently no-op the
+// projection — the failure mode #125 fixed).
+func (s *Store) HasRebuildApply(name string) bool {
+	s.listenersMu.RLock()
+	defer s.listenersMu.RUnlock()
+	_, ok := s.rebuildAppliers[name]
+	return ok
+}
+
 // fireListeners invokes both the legacy OnEventAppended callback (if
 // set) and every RegisterEventListener entry. Centralised so the two
 // AppendEvent variants stay in sync.

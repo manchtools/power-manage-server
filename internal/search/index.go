@@ -716,9 +716,11 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 		for _, d := range devices {
 			labels := FlattenLabels(d.Labels)
 			fields := map[string]any{
-				"hostname":          d.Hostname,
-				"agent_version":     d.AgentVersion,
-				"labels":            labels,
+				// hostname / labels / agent_version are agent-reported — bound and
+				// strip them before indexing (see sanitizeSearchField).
+				"hostname":          sanitizeSearchField(d.Hostname, maxHostnameField),
+				"agent_version":     sanitizeSearchField(d.AgentVersion, maxOSField),
+				"labels":            sanitizeSearchField(labels, maxLabelsField),
 				"compliance_status": strconv.Itoa(int(d.ComplianceStatus)),
 			}
 			if d.RegisteredAt != nil {
@@ -733,17 +735,18 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 			if err == nil {
 				for _, t := range inv {
 					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)
+					// os_* / kernel come from agent-reported osquery rows — sanitize.
 					if osName != "" {
-						fields["os_name"] = osName
+						fields["os_name"] = sanitizeSearchField(osName, maxOSField)
 					}
 					if osVer != "" {
-						fields["os_version"] = osVer
+						fields["os_version"] = sanitizeSearchField(osVer, maxOSField)
 					}
 					if osArch != "" {
-						fields["os_arch"] = osArch
+						fields["os_arch"] = sanitizeSearchField(osArch, maxOSField)
 					}
 					if kernel != "" {
-						fields["kernel"] = kernel
+						fields["kernel"] = sanitizeSearchField(kernel, maxOSField)
 					}
 				}
 			}

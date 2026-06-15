@@ -209,26 +209,46 @@ func TestUserRoleListener_AssignReplayIsIdempotent(t *testing.T) {
 	assert.Equal(t, 1, count, "ON CONFLICT DO NOTHING keeps assignment row unique despite replays")
 }
 
-// TestUserRoleListener_RevokeWhenAbsentIsNoop — defensive: a Revoke
-// event with no matching row must not error. The PL/pgSQL projector
-// used a plain DELETE which silently affects zero rows on a miss;
-// the Go listener must preserve that.
+// TestUserRoleListener_RevokeWhenAbsentIsNoop — a Revoke event with no matching
+// row must not error AND must not disturb any OTHER grant. The PL/pgSQL
+// projector used a plain DELETE (scoped to the event's user_id+role_id); the Go
+// listener must preserve that exact scoping. This feeds the JWT `sgrants` claim,
+// so an over-broad revoke would silently strip a user's roles. Plant a real,
+// unrelated grant first and prove it survives the absent revoke.
 func TestUserRoleListener_RevokeWhenAbsentIsNoop(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 
+	roleID := testutil.NewID()
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pw", "user")
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "role", StreamID: roleID, EventType: "RoleCreated",
+		Data:      map[string]any{"name": "tmp", "permissions": []string{"x"}},
+		ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user_role", StreamID: userID + ":" + roleID, EventType: "UserRoleAssigned",
+		Data:      map[string]any{"user_id": userID, "role_id": roleID},
+		ActorType: "user", ActorID: "u",
+	}))
+
+	// Revoke a grant that does NOT exist (different user AND role).
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "user_role",
 		StreamID:   "ghost:role",
 		EventType:  "UserRoleRevoked",
-		Data: map[string]any{
-			"user_id": "ghost-user",
-			"role_id": "ghost-role",
-		},
-		ActorType: "user", ActorID: "u",
+		Data:       map[string]any{"user_id": "ghost-user", "role_id": "ghost-role"},
+		ActorType:  "user", ActorID: "u",
 	}))
-	// No assertion needed — the test passes as long as AppendEvent
-	// returns without error.
+
+	// The planted, unrelated grant must be untouched — the absent revoke
+	// deleted nothing else.
+	count := -1
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		"SELECT count(*) FROM user_roles_projection WHERE user_id=$1 AND role_id=$2",
+		userID, roleID,
+	).Scan(&count))
+	assert.Equal(t, 1, count, "a revoke of an absent (user,role) must not delete an unrelated grant")
 }
 
 // TestUserRoleListener_IgnoresWrongStreamType — defensive.

@@ -152,6 +152,43 @@ func TestIssueCertificateFromCSR_Success(t *testing.T) {
 	assert.True(t, cert.NotAfter.After(time.Now()))
 }
 
+// TestIssueCertificateFromCSR_IdentityComesFromServerNotCSR pins the
+// anti-impersonation contract: the issued identity (CN + Subject.SerialNumber)
+// is taken from the SERVER-supplied deviceID, never the attacker-controlled CSR
+// Subject. The CSR CN is set to a DIFFERENT value than the server id so the test
+// cannot pass by coincidence — the Success test above used the same string for
+// both, which could not distinguish "id from server" from "id from CSR".
+func TestIssueCertificateFromCSR_IdentityComesFromServerNotCSR(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	const csrChosenID = "attacker-chosen-id"      // whatever the agent put in the CSR
+	const serverAuthoritativeID = "real-device-7" // the server's own authoritative id
+	csrPEM, _ := generateCSR(t, csrChosenID)
+
+	cert, err := c.IssueCertificateFromCSR(serverAuthoritativeID, csrPEM)
+	require.NoError(t, err)
+
+	got, err := c.VerifyCertificate(cert.CertPEM)
+	require.NoError(t, err)
+	assert.Equal(t, serverAuthoritativeID, got, "VerifyCertificate must report the SERVER id")
+	assert.NotEqual(t, csrChosenID, got)
+
+	gotPEM, err := ca.DeviceIDFromPEM(cert.CertPEM)
+	require.NoError(t, err)
+	assert.Equal(t, serverAuthoritativeID, gotPEM)
+
+	// Parse the issued cert: BOTH identity fields must be the server id.
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, serverAuthoritativeID, parsed.Subject.CommonName, "CN must be the server id, not the CSR CN")
+	assert.Equal(t, serverAuthoritativeID, parsed.Subject.SerialNumber, "Subject.SerialNumber must be the server id")
+	assert.NotEqual(t, csrChosenID, parsed.Subject.CommonName, "the attacker-controlled CSR CN must never become the cert identity")
+}
+
 // generateCSRWithSAN builds a CSR for deviceID after letting the caller stamp a
 // subject-alternative-name onto the template — used to prove the CA rejects any
 // caller-supplied SAN (which would otherwise let an enrolling agent mint a

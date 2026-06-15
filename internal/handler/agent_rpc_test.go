@@ -139,6 +139,52 @@ func TestValidateLuksToken_ProxyError_MappedToNotFound(t *testing.T) {
 		"proxy error MUST be re-mapped to CodeNotFound — leaking the upstream code would enable timing-side-channel probes against the control plane")
 }
 
+func TestValidateLuksToken_TLS_DeviceIDMismatch_PermissionDenied(t *testing.T) {
+	// requireTLS=true: the cert's device-ID context MUST match the request's
+	// device_id, exactly as SyncActions enforces. A mismatch lets a compromised
+	// agent redeem a one-time LUKS token issued for a DIFFERENT device — the
+	// token unlocks that other device's encrypted volume. The guard must run
+	// BEFORE the proxy is touched.
+	h, stub := setupAgentForRPCTest(t)
+	h.requireTLS = true
+	ctx := contextWithDeviceID(context.Background(), "cert-dev-1")
+	_, err := h.ValidateLuksToken(ctx, connect.NewRequest(&pm.ValidateLuksTokenRequest{
+		DeviceId: "different-dev-2",
+		Token:    "the-token",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"cert/request device-ID mismatch MUST be CodePermissionDenied — anything else lets a device redeem another's LUKS token")
+	assert.Empty(t, stub.lastValidateLuksToken,
+		"the control proxy MUST NOT be called on a cert mismatch — the guard runs before the work")
+}
+
+func TestValidateLuksToken_TLS_NoDeviceIDInContext_Unauthenticated(t *testing.T) {
+	h, stub := setupAgentForRPCTest(t)
+	h.requireTLS = true
+	_, err := h.ValidateLuksToken(context.Background(), connect.NewRequest(&pm.ValidateLuksTokenRequest{
+		DeviceId: "dev-1",
+		Token:    "tok",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Empty(t, stub.lastValidateLuksToken, "no proxy call without an authenticated cert identity")
+}
+
+func TestValidateLuksToken_TLS_MatchingDeviceID_PropagatesToProxy(t *testing.T) {
+	h, stub := setupAgentForRPCTest(t)
+	h.requireTLS = true
+	stub.validateLuksResp = &pm.ValidateLuksTokenResponse{ActionId: "act-1"}
+	ctx := contextWithDeviceID(context.Background(), "dev-1")
+	resp, err := h.ValidateLuksToken(ctx, connect.NewRequest(&pm.ValidateLuksTokenRequest{
+		DeviceId: "dev-1",
+		Token:    "the-token",
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "act-1", resp.Msg.ActionId)
+	assert.Equal(t, "the-token", stub.lastValidateLuksToken, "a matching cert identity proceeds to the proxy")
+}
+
 // =============================================================================
 // SyncActions
 // =============================================================================

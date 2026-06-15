@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -39,6 +40,22 @@ func (w *Worker) RegisterHandlers(mux *asynq.ServeMux) {
 	mux.HandleFunc(taskqueue.TypeSearchReindex, w.handleReindex)
 	mux.HandleFunc(taskqueue.TypeSearchMemberChange, w.handleMemberChange)
 	mux.HandleFunc(taskqueue.TypeSearchRemove, w.handleRemove)
+}
+
+// BuildSearchWorkerMux assembles the search worker's Asynq mux with the F-02
+// HMAC verify-middleware mounted AHEAD of every handler. It returns an error
+// when signer is nil so a missing PM_TASK_SIGNING_KEY is a fatal startup
+// failure rather than an unsigned mux — an unsigned mux would let a compromised
+// Valkey relay (actor-4) inject forged or unsigned search:* tasks. Extracted
+// from cmd/indexer so the verify-first wiring is testable without booting the
+// binary.
+func BuildSearchWorkerMux(rdb *redis.Client, signer *taskqueue.Signer, logger *slog.Logger) (*asynq.ServeMux, error) {
+	if signer == nil {
+		return nil, errors.New("search worker mux requires a task signer: PM_TASK_SIGNING_KEY must be set (audit F-02 — task verification is mandatory)")
+	}
+	mux := asynq.NewServeMux()
+	NewWorker(rdb, signer, logger).RegisterHandlers(mux)
+	return mux, nil
 }
 
 func (w *Worker) handleReindex(ctx context.Context, t *asynq.Task) error {
@@ -353,15 +370,17 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		}
 		return fields
 	case ScopeDevice:
+		// Every field here is agent-reported — bound and strip them before the
+		// live HSET, mirroring the warm path (Index.warmDevices) exactly.
 		fields := map[string]any{
-			"hostname":          data.Hostname,
-			"agent_version":     data.AgentVersion,
-			"labels":            data.Labels,
+			"hostname":          sanitizeSearchField(data.Hostname, maxHostnameField),
+			"agent_version":     sanitizeSearchField(data.AgentVersion, maxOSField),
+			"labels":            sanitizeSearchField(data.Labels, maxLabelsField),
 			"compliance_status": strconv.Itoa(int(data.ComplianceStatus)),
-			"os_name":           data.OSName,
-			"os_version":        data.OSVersion,
-			"os_arch":           data.OSArch,
-			"kernel":            data.Kernel,
+			"os_name":           sanitizeSearchField(data.OSName, maxOSField),
+			"os_version":        sanitizeSearchField(data.OSVersion, maxOSField),
+			"os_arch":           sanitizeSearchField(data.OSArch, maxOSField),
+			"kernel":            sanitizeSearchField(data.Kernel, maxOSField),
 		}
 		if data.RegisteredAt != 0 {
 			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)

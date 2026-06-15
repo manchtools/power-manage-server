@@ -19,7 +19,6 @@ package compliance
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -161,7 +160,13 @@ func (e *Evaluator) evalOne(ctx context.Context, q *store.Queries, deviceID stri
 		ActionID: rule.ActionID,
 	})
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	// store.IsNotFound — NOT errors.Is(err, store.ErrNotFound): the generated
+	// query returns the backend's pgx.ErrNoRows, which is a DIFFERENT sentinel
+	// from store.ErrNotFound. Per store/notfound.go, callers outside the store
+	// package must recognise "no row" via store.IsNotFound (it matches both).
+	// The earlier errors.Is check never fired, so a rule with no result yet
+	// errored instead of resolving to UNKNOWN.
+	case store.IsNotFound(err):
 		// No result yet — UNKNOWN. Persist a placeholder row so the
 		// device-list UI can surface "waiting for first check" per
 		// rule.
@@ -206,7 +211,7 @@ func (e *Evaluator) evalOne(ctx context.Context, q *store.Queries, deviceID stri
 	})
 	firstFailedAt := now
 	switch {
-	case errors.Is(err, store.ErrNotFound):
+	case store.IsNotFound(err):
 		// First-ever non-compliant state for this rule.
 	case err != nil:
 		return 0, fmt.Errorf("compliance: read first_failed_at for %s/%s/%s: %w", deviceID, rule.PolicyID, rule.ActionID, err)

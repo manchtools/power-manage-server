@@ -126,6 +126,23 @@ func TestRebuildAll_NoArgsRebuildsEverything(t *testing.T) {
 	}
 }
 
+// TestAllRebuildTargetsHaveRegisteredApplier is the self-discovering parity
+// guard for #125's silent-no-op failure mode: every entry in AllRebuildTargets
+// MUST have a Go applier wired by projectors.WireAll. A target without one makes
+// RebuildAll TRUNCATE the projection and then "succeed" without re-applying any
+// event — a destructive no-op during emergency replay. Adding a target here
+// without the matching WireAll registration trips this test. (Matches-zero
+// guarded so an empty target list can't pass vacuously.)
+func TestAllRebuildTargetsHaveRegisteredApplier(t *testing.T) {
+	require.NotEmpty(t, store.AllRebuildTargets, "AllRebuildTargets is empty — the parity guard would pass vacuously")
+
+	st := testutil.SetupPostgres(t) // SetupPostgres runs projectors.WireAll
+	for _, target := range store.AllRebuildTargets {
+		assert.Truef(t, st.HasRebuildApply(target.Name),
+			"rebuild target %q has no Go applier registered — projectors.WireAll must RegisterRebuildApply it, or RebuildAll silently no-ops the projection", target.Name)
+	}
+}
+
 // TestRebuildAll_UnknownTargetIsRejected — operators mistyping a
 // target name must get a clean error rather than a silent no-op.
 // Bug-class avoidance: a typo'd `RebuildAll(ctx, "user")` (singular)

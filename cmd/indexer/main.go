@@ -121,15 +121,15 @@ func main() {
 		logger.Error("failed to load task signer", "error", err)
 		os.Exit(1)
 	}
-	if taskSigner == nil {
-		logger.Error("PM_TASK_SIGNING_KEY is required (audit F-02 — Asynq task verification is mandatory)")
+
+	// Assemble the search worker mux with the F-02 verify-middleware mounted
+	// first. BuildSearchWorkerMux fails closed if the signer is nil (empty
+	// PM_TASK_SIGNING_KEY) — task verification is mandatory.
+	mux, err := search.BuildSearchWorkerMux(rdb, taskSigner, logger.With("component", "search_worker"))
+	if err != nil {
+		logger.Error("failed to build search worker mux", "error", err)
 		os.Exit(1)
 	}
-
-	// Initialize and start Asynq worker for search task processing
-	searchWorker := search.NewWorker(rdb, taskSigner, logger.With("component", "search_worker"))
-	mux := asynq.NewServeMux()
-	searchWorker.RegisterHandlers(mux)
 
 	aqLogger := logger.With("component", "asynq_server")
 	aqServer := asynq.NewServer(

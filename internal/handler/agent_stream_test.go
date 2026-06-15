@@ -92,6 +92,14 @@ type streamFixture struct {
 }
 
 func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
+	return newStreamFixtureWithCert(t, requireTLS, "")
+}
+
+// newStreamFixtureWithCert is newStreamFixture plus an mTLS-cert-derived device
+// id stamped into the server-side request context (mimicking MTLSMiddleware), so
+// the cert/Hello device-id mismatch gate can be driven. certDeviceID == ""
+// injects nothing — the requireTLS path then sees no cert identity.
+func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string) *streamFixture {
 	t.Helper()
 
 	// 1) httptest InternalService stub for ControlProxy.VerifyDevice.
@@ -129,7 +137,14 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 	mux := http.NewServeMux()
 	path, hh := pmv1connect.NewAgentServiceHandler(h)
 	mux.Handle(path, hh)
-	srv := httptest.NewUnstartedServer(mux)
+	var agentHandler http.Handler = mux
+	if certDeviceID != "" {
+		agentHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), DeviceIDContextKey, certDeviceID)
+			mux.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+	srv := httptest.NewUnstartedServer(agentHandler)
 	protocols := new(http.Protocols)
 	protocols.SetUnencryptedHTTP2(true)
 	srv.Config.Protocols = protocols
@@ -224,6 +239,59 @@ func TestStream_HelloWithEmptyDeviceIDIsRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
 		"Hello with empty device_id MUST be rejected — the empty key would collide across agents")
+}
+
+func TestStream_NoCertDeviceIDWhenTLSRequiredIsUnauthenticated(t *testing.T) {
+	// requireTLS=true but no mTLS-derived device id in context (the gateway
+	// terminating mTLS should always set it; if it ever doesn't, the handler
+	// must fail closed rather than stream unauthenticated).
+	f := newStreamFixture(t, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream := f.client.Stream(ctx)
+	require.NoError(t, stream.Send(&pm.AgentMessage{
+		Payload: &pm.AgentMessage_Hello{Hello: &pm.Hello{
+			DeviceId: &pm.DeviceId{Value: "01HZX9ABCD0000000000000000"},
+			Hostname: "h", AgentVersion: "v",
+		}},
+	}))
+	require.NoError(t, stream.CloseRequest())
+
+	err := recvErr(stream)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Empty(t, f.control.lastVerifyDevice, "VerifyDevice must not run without a cert identity")
+	started, _ := f.worker.snapshot()
+	assert.Empty(t, started, "no worker started")
+}
+
+func TestStream_CertHelloDeviceIDMismatchRejected(t *testing.T) {
+	// The cert identifies deviceA; the Hello claims deviceB. A compromised agent
+	// presenting another device's certificate must not register or stream as
+	// that other device — the gate must reject before VerifyDevice/StartWorker.
+	const certID = "01HZX9ABCD000000000000000A"
+	const helloID = "01HZX9ABCD000000000000000B"
+	f := newStreamFixtureWithCert(t, true, certID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream := f.client.Stream(ctx)
+	require.NoError(t, stream.Send(&pm.AgentMessage{
+		Payload: &pm.AgentMessage_Hello{Hello: &pm.Hello{
+			DeviceId: &pm.DeviceId{Value: helloID},
+			Hostname: "h", AgentVersion: "v",
+		}},
+	}))
+	require.NoError(t, stream.CloseRequest())
+
+	err := recvErr(stream)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"cert/Hello device-ID mismatch MUST be CodePermissionDenied")
+	assert.Empty(t, f.control.lastVerifyDevice, "VerifyDevice must not run on a cert/Hello mismatch")
+	started, _ := f.worker.snapshot()
+	assert.Empty(t, started, "no worker started on a mismatch")
 }
 
 func TestStream_VerifyDeviceFailureRejectsConnection(t *testing.T) {
