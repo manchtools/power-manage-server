@@ -326,10 +326,17 @@ func (idx *Index) IndexesPresent(ctx context.Context) (bool, error) {
 		if err == nil {
 			continue
 		}
-		// "Unknown index name" (RediSearch) / "no such index" (valkey-search)
-		// both mean the index is absent — a definite not-present, not an error.
+		// A missing index is "not present", NOT a hard error. The wording differs
+		// by backend, so match all known shapes (verified against the real
+		// backend by TestIndexesPresent):
+		//   valkey-search: "Index with name 'X' not found in database 0"
+		//   RediSearch:    "Unknown index name"
+		// Any OTHER FT.INFO error (e.g. backend unreachable) is surfaced so the
+		// caller fails closed and never flushes on an indeterminate result.
 		lower := strings.ToLower(err.Error())
-		if strings.Contains(lower, "unknown index") || strings.Contains(lower, "no such index") {
+		if strings.Contains(lower, "not found") ||
+			strings.Contains(lower, "unknown index") ||
+			strings.Contains(lower, "no such index") {
 			return false, nil
 		}
 		return false, fmt.Errorf("FT.INFO %s: %w", ix.Name, err)
