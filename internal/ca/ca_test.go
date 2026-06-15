@@ -8,6 +8,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
+	"net/url"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/mtls"
 )
 
 // generateTestCA creates a self-signed CA cert and key for testing.
@@ -147,6 +150,87 @@ func TestIssueCertificateFromCSR_Success(t *testing.T) {
 	assert.Nil(t, cert.KeyPEM, "private key should stay on agent")
 	assert.NotEmpty(t, cert.Fingerprint)
 	assert.True(t, cert.NotAfter.After(time.Now()))
+}
+
+// generateCSRWithSAN builds a CSR for deviceID after letting the caller stamp a
+// subject-alternative-name onto the template — used to prove the CA rejects any
+// caller-supplied SAN (which would otherwise let an enrolling agent mint a
+// non-agent peer-class identity).
+func generateCSRWithSAN(t *testing.T, deviceID string, modify func(*x509.CertificateRequest)) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: deviceID}}
+	modify(tmpl)
+	der, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+}
+
+// TestIssueCertificateFromCSR_RejectsSAN pins WS14 #1: the CA must reject ANY
+// CSR carrying a SAN. "Wrong" cases are sourced from intent — identities an
+// enrolling agent must never be able to mint (a gateway/control peer class, a
+// server hostname/IP) — not from the validation rule. The load-bearing one is
+// the spiffe gateway URI: without the SAN rejection an agent could request a
+// gateway peer class and reach the InternalService.
+func TestIssueCertificateFromCSR_RejectsSAN(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	mustURL := func(s string) *url.URL {
+		u, perr := url.Parse(s)
+		require.NoError(t, perr)
+		return u
+	}
+	cases := map[string]func(*x509.CertificateRequest){
+		"spiffe gateway URI": func(r *x509.CertificateRequest) { r.URIs = []*url.URL{mustURL("spiffe://power-manage/gateway")} },
+		"spiffe control URI": func(r *x509.CertificateRequest) { r.URIs = []*url.URL{mustURL("spiffe://power-manage/control")} },
+		"dns name":           func(r *x509.CertificateRequest) { r.DNSNames = []string{"control-server.example.com"} },
+		"ip address":         func(r *x509.CertificateRequest) { r.IPAddresses = []net.IP{net.ParseIP("10.0.0.1")} },
+		"email":              func(r *x509.CertificateRequest) { r.EmailAddresses = []string{"x@y"} },
+	}
+	for name, modify := range cases {
+		t.Run(name, func(t *testing.T) {
+			csrPEM := generateCSRWithSAN(t, "device-001", modify)
+			cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+			require.Error(t, err, "a CSR with a SAN must be rejected")
+			assert.Contains(t, err.Error(), "must not request subject alternative names")
+			assert.Nil(t, cert, "no certificate must be issued for a SAN-bearing CSR")
+		})
+	}
+
+	// Correct/absent: a plain CSR (no SAN) still issues.
+	csrPEM, _ := generateCSR(t, "device-001")
+	cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+	require.NoError(t, err)
+	require.NotNil(t, cert)
+}
+
+// TestIssueCertificateFromCSR_StampsExactlyAgentPeerClass pins WS14 #1's
+// positive half: an issued cert carries EXACTLY one URI SAN, the agent peer
+// class — so an enrolling agent can never obtain a non-agent class, even via a
+// CN/name collision.
+func TestIssueCertificateFromCSR_StampsExactlyAgentPeerClass(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	csrPEM, _ := generateCSR(t, "device-001")
+	cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	require.Len(t, parsed.URIs, 1, "an issued agent cert must carry exactly one URI SAN")
+	assert.Equal(t, "spiffe://power-manage/agent", parsed.URIs[0].String())
+
+	class, err := mtls.PeerClassFromCert(parsed)
+	require.NoError(t, err)
+	assert.Equal(t, mtls.PeerClassAgent, class, "an issued cert must always be the agent peer class")
 }
 
 // TestIssueCertificateFromCSR_ValidityWindowFromClock pins that the
