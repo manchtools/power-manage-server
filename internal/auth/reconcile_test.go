@@ -60,19 +60,24 @@ func TestReconcileSystemRoles_UpdatesDB(t *testing.T) {
 	assert.ElementsMatch(t, auth.DefaultUserPermissions(), userRole.Permissions)
 }
 
-// TestUserSeedRole_MatchesDefaultPermissions pins the RAW migration seed (before
-// any reconcile) against the code-defined set, so a fresh install is correct
-// even in the window before the first boot reconcile. The seed previously
-// granted UpdateUserLinuxUsername:self (admin-only, #354) and omitted
-// StopTerminal — masked only by the non-fatal reconciler (#16).
-func TestUserSeedRole_MatchesDefaultPermissions(t *testing.T) {
+// TestSystemRoleSeed_IsReconcilerOwned pins that the migration seed leaves the
+// system-role permissions EMPTY (WS17b #18). The Go reconciler
+// (auth.ReconcileSystemRoles, validated by TestReconcileSystemRoles_UpdatesDB)
+// is the single source of truth, so there is no SQL literal to drift from
+// AdminPermissions/DefaultUserPermissions. Earlier the seed hard-coded literals
+// that DID drift — granting the admin-only UpdateUserLinuxUsername:self and
+// omitting newer permissions — masked only by the non-fatal reconciler (#16).
+// The fresh-install window before the first boot reconcile is intentionally
+// permission-less for the system roles.
+func TestSystemRoleSeed_IsReconcilerOwned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	userRole, err := st.Queries().GetRoleByID(context.Background(), auth.UserRoleID)
-	require.NoError(t, err)
-	assert.ElementsMatch(t, auth.DefaultUserPermissions(), userRole.Permissions,
-		"the User-role seed literal must match DefaultUserPermissions()")
-	assert.NotContains(t, userRole.Permissions, "UpdateUserLinuxUsername:self",
-		"linux_username is admin-only — the seed must not self-service it (#354/#16)")
+	ctx := context.Background()
+	for _, id := range []string{auth.AdminRoleID, auth.UserRoleID} {
+		role, err := st.Queries().GetRoleByID(ctx, id)
+		require.NoError(t, err)
+		assert.Emptyf(t, role.Permissions,
+			"system role %s seed must be reconciler-owned (empty) so it cannot drift from the Go set", id)
+	}
 }
 
 // TestReconcileSystemRoles_FailClosedOnError pins that the reconcile SURFACES
