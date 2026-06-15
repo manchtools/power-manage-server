@@ -53,15 +53,9 @@ type ActionCreatedPayload struct {
 // for any other (stream, event_type) so the listener wrapper can
 // silently no-op.
 func ActionCreatedFromEvent(e store.PersistedEvent) (ActionCreatedPayload, error) {
-	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionCreated) {
-		return ActionCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionCreatedPayload{}, fmt.Errorf("projector: empty ActionCreated payload")
-	}
-	var raw payloads.ActionCreated
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionCreatedPayload{}, fmt.Errorf("projector: invalid ActionCreated payload: %w", err)
+	raw, err := decodePayload[payloads.ActionCreated](e, "action", eventtypes.ActionCreated)
+	if err != nil {
+		return ActionCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return ActionCreatedPayload{}, fmt.Errorf("projector: ActionCreated requires name")
@@ -108,15 +102,9 @@ type ActionRenamedPayload struct {
 
 // ActionRenamedFromEvent decodes ActionRenamed.
 func ActionRenamedFromEvent(e store.PersistedEvent) (ActionRenamedPayload, error) {
-	if e.StreamType != "action" || e.EventType != string(eventtypes.ActionRenamed) {
-		return ActionRenamedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ActionRenamedPayload{}, fmt.Errorf("projector: empty ActionRenamed payload")
-	}
-	var raw payloads.ActionRenamed
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ActionRenamedPayload{}, fmt.Errorf("projector: invalid ActionRenamed payload: %w", err)
+	raw, err := decodePayload[payloads.ActionRenamed](e, "action", eventtypes.ActionRenamed)
+	if err != nil {
+		return ActionRenamedPayload{}, err
 	}
 	if raw.Name == "" {
 		return ActionRenamedPayload{}, fmt.Errorf("projector: ActionRenamed requires name")

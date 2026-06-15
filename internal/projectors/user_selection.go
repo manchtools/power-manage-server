@@ -1,7 +1,6 @@
 package projectors
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -29,20 +28,14 @@ type UserSelectionChangedPayload struct {
 
 // UserSelectionChangedFromEvent decodes UserSelectionChanged.
 func UserSelectionChangedFromEvent(e store.PersistedEvent) (UserSelectionChangedPayload, error) {
-	if e.StreamType != "user_selection" || e.EventType != string(eventtypes.UserSelectionChanged) {
-		return UserSelectionChangedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserSelectionChangedPayload{}, fmt.Errorf("projector: empty UserSelectionChanged payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		DeviceID   string `json:"device_id"`
 		SourceType string `json:"source_type"`
 		SourceID   string `json:"source_id"`
 		Selected   *bool  `json:"selected,omitempty"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserSelectionChangedPayload{}, fmt.Errorf("projector: invalid UserSelectionChanged payload: %w", err)
+	}](e, "user_selection", eventtypes.UserSelectionChanged)
+	if err != nil {
+		return UserSelectionChangedPayload{}, err
 	}
 	switch {
 	case raw.DeviceID == "":

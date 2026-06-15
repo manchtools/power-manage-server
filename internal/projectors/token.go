@@ -1,7 +1,6 @@
 package projectors
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -44,15 +43,9 @@ type tokenCreatedRaw struct {
 // missing max_uses → 0; missing expires_at → nil (stays NULL); missing
 // owner_id → nil. value_hash is required (UNIQUE NOT NULL).
 func TokenCreatedFromEvent(e store.PersistedEvent) (TokenCreatedPayload, error) {
-	if e.StreamType != "token" || e.EventType != string(eventtypes.TokenCreated) {
-		return TokenCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return TokenCreatedPayload{}, fmt.Errorf("projector: empty TokenCreated payload")
-	}
-	var raw tokenCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return TokenCreatedPayload{}, fmt.Errorf("projector: invalid TokenCreated payload: %w", err)
+	raw, err := decodePayload[tokenCreatedRaw](e, "token", eventtypes.TokenCreated)
+	if err != nil {
+		return TokenCreatedPayload{}, err
 	}
 	if raw.ValueHash == "" {
 		return TokenCreatedPayload{}, fmt.Errorf("projector: TokenCreated requires value_hash")
@@ -89,17 +82,11 @@ func TokenCreatedFromEvent(e store.PersistedEvent) (TokenCreatedPayload, error) 
 // the rename handler always supplies it; an empty payload would be
 // a programmer error.
 func TokenRenamedFromEvent(e store.PersistedEvent) (TokenRenamedPayload, error) {
-	if e.StreamType != "token" || e.EventType != string(eventtypes.TokenRenamed) {
-		return TokenRenamedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return TokenRenamedPayload{}, fmt.Errorf("projector: empty TokenRenamed payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		Name string `json:"name"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return TokenRenamedPayload{}, fmt.Errorf("projector: invalid TokenRenamed payload: %w", err)
+	}](e, "token", eventtypes.TokenRenamed)
+	if err != nil {
+		return TokenRenamedPayload{}, err
 	}
 	if raw.Name == "" {
 		return TokenRenamedPayload{}, fmt.Errorf("projector: TokenRenamed requires name")

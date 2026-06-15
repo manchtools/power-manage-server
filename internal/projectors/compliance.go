@@ -47,15 +47,9 @@ type complianceResultUpdatedRaw struct {
 // Returns ErrIgnoredEvent for any other (stream, event_type) so the
 // listener wrapper can silently no-op.
 func ComplianceResultUpdatedFromEvent(e store.PersistedEvent) (ComplianceResultUpdatedPayload, error) {
-	if e.StreamType != "compliance" || e.EventType != string(eventtypes.ComplianceResultUpdated) {
-		return ComplianceResultUpdatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ComplianceResultUpdatedPayload{}, fmt.Errorf("projector: empty ComplianceResultUpdated payload")
-	}
-	var raw complianceResultUpdatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ComplianceResultUpdatedPayload{}, fmt.Errorf("projector: invalid ComplianceResultUpdated payload: %w", err)
+	raw, err := decodePayload[complianceResultUpdatedRaw](e, "compliance", eventtypes.ComplianceResultUpdated)
+	if err != nil {
+		return ComplianceResultUpdatedPayload{}, err
 	}
 	if raw.DeviceID == "" {
 		return ComplianceResultUpdatedPayload{}, fmt.Errorf("projector: ComplianceResultUpdated requires device_id")
@@ -95,15 +89,9 @@ type complianceResultRemovedRaw struct {
 
 // ComplianceResultRemovedFromEvent decodes ComplianceResultRemoved.
 func ComplianceResultRemovedFromEvent(e store.PersistedEvent) (ComplianceResultRemovedPayload, error) {
-	if e.StreamType != "compliance" || e.EventType != string(eventtypes.ComplianceResultRemoved) {
-		return ComplianceResultRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return ComplianceResultRemovedPayload{}, fmt.Errorf("projector: empty ComplianceResultRemoved payload")
-	}
-	var raw complianceResultRemovedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return ComplianceResultRemovedPayload{}, fmt.Errorf("projector: invalid ComplianceResultRemoved payload: %w", err)
+	raw, err := decodePayload[complianceResultRemovedRaw](e, "compliance", eventtypes.ComplianceResultRemoved)
+	if err != nil {
+		return ComplianceResultRemovedPayload{}, err
 	}
 	if raw.DeviceID == "" {
 		return ComplianceResultRemovedPayload{}, fmt.Errorf("projector: ComplianceResultRemoved requires device_id")

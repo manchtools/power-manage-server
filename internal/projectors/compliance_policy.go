@@ -34,15 +34,9 @@ type compliancePolicyCreatedRaw struct {
 // Returns ErrIgnoredEvent for any other (stream, event_type) so the
 // listener wrapper can silently no-op.
 func CompliancePolicyCreatedFromEvent(e store.PersistedEvent) (CompliancePolicyCreatedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyCreated) {
-		return CompliancePolicyCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return CompliancePolicyCreatedPayload{}, fmt.Errorf("projector: empty CompliancePolicyCreated payload")
-	}
-	var raw compliancePolicyCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return CompliancePolicyCreatedPayload{}, fmt.Errorf("projector: invalid CompliancePolicyCreated payload: %w", err)
+	raw, err := decodePayload[compliancePolicyCreatedRaw](e, "compliance_policy", eventtypes.CompliancePolicyCreated)
+	if err != nil {
+		return CompliancePolicyCreatedPayload{}, err
 	}
 	if raw.Name == "" {
 		return CompliancePolicyCreatedPayload{}, fmt.Errorf("projector: CompliancePolicyCreated requires name")
@@ -73,15 +67,9 @@ type compliancePolicyRenamedRaw struct {
 
 // CompliancePolicyRenamedFromEvent decodes CompliancePolicyRenamed.
 func CompliancePolicyRenamedFromEvent(e store.PersistedEvent) (CompliancePolicyRenamedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRenamed) {
-		return CompliancePolicyRenamedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return CompliancePolicyRenamedPayload{}, fmt.Errorf("projector: empty CompliancePolicyRenamed payload")
-	}
-	var raw compliancePolicyRenamedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return CompliancePolicyRenamedPayload{}, fmt.Errorf("projector: invalid CompliancePolicyRenamed payload: %w", err)
+	raw, err := decodePayload[compliancePolicyRenamedRaw](e, "compliance_policy", eventtypes.CompliancePolicyRenamed)
+	if err != nil {
+		return CompliancePolicyRenamedPayload{}, err
 	}
 	if raw.Name == "" {
 		return CompliancePolicyRenamedPayload{}, fmt.Errorf("projector: CompliancePolicyRenamed requires name")
@@ -148,15 +136,9 @@ type compliancePolicyRuleAddedRaw struct {
 
 // CompliancePolicyRuleAddedFromEvent decodes CompliancePolicyRuleAdded.
 func CompliancePolicyRuleAddedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleAddedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleAdded) {
-		return CompliancePolicyRuleAddedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return CompliancePolicyRuleAddedPayload{}, fmt.Errorf("projector: empty CompliancePolicyRuleAdded payload")
-	}
-	var raw compliancePolicyRuleAddedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return CompliancePolicyRuleAddedPayload{}, fmt.Errorf("projector: invalid CompliancePolicyRuleAdded payload: %w", err)
+	raw, err := decodePayload[compliancePolicyRuleAddedRaw](e, "compliance_policy", eventtypes.CompliancePolicyRuleAdded)
+	if err != nil {
+		return CompliancePolicyRuleAddedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return CompliancePolicyRuleAddedPayload{}, fmt.Errorf("projector: CompliancePolicyRuleAdded requires action_id")
@@ -188,15 +170,9 @@ type compliancePolicyRuleRemovedRaw struct {
 
 // CompliancePolicyRuleRemovedFromEvent decodes CompliancePolicyRuleRemoved.
 func CompliancePolicyRuleRemovedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleRemovedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleRemoved) {
-		return CompliancePolicyRuleRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return CompliancePolicyRuleRemovedPayload{}, fmt.Errorf("projector: empty CompliancePolicyRuleRemoved payload")
-	}
-	var raw compliancePolicyRuleRemovedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return CompliancePolicyRuleRemovedPayload{}, fmt.Errorf("projector: invalid CompliancePolicyRuleRemoved payload: %w", err)
+	raw, err := decodePayload[compliancePolicyRuleRemovedRaw](e, "compliance_policy", eventtypes.CompliancePolicyRuleRemoved)
+	if err != nil {
+		return CompliancePolicyRuleRemovedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return CompliancePolicyRuleRemovedPayload{}, fmt.Errorf("projector: CompliancePolicyRuleRemoved requires action_id")
@@ -226,15 +202,9 @@ type compliancePolicyRuleUpdatedRaw struct {
 
 // CompliancePolicyRuleUpdatedFromEvent decodes CompliancePolicyRuleUpdated.
 func CompliancePolicyRuleUpdatedFromEvent(e store.PersistedEvent) (CompliancePolicyRuleUpdatedPayload, error) {
-	if e.StreamType != "compliance_policy" || e.EventType != string(eventtypes.CompliancePolicyRuleUpdated) {
-		return CompliancePolicyRuleUpdatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return CompliancePolicyRuleUpdatedPayload{}, fmt.Errorf("projector: empty CompliancePolicyRuleUpdated payload")
-	}
-	var raw compliancePolicyRuleUpdatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return CompliancePolicyRuleUpdatedPayload{}, fmt.Errorf("projector: invalid CompliancePolicyRuleUpdated payload: %w", err)
+	raw, err := decodePayload[compliancePolicyRuleUpdatedRaw](e, "compliance_policy", eventtypes.CompliancePolicyRuleUpdated)
+	if err != nil {
+		return CompliancePolicyRuleUpdatedPayload{}, err
 	}
 	if raw.ActionID == "" {
 		return CompliancePolicyRuleUpdatedPayload{}, fmt.Errorf("projector: CompliancePolicyRuleUpdated requires action_id")

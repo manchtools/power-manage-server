@@ -1,7 +1,6 @@
 package projectors
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -36,20 +35,14 @@ type SCIMGroupMappingUpdatedPayload struct {
 
 // SCIMGroupMappedFromEvent decodes SCIMGroupMapped.
 func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupMapped) {
-		return SCIMGroupMappedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return SCIMGroupMappedPayload{}, fmt.Errorf("projector: empty SCIMGroupMapped payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		ProviderID      string  `json:"provider_id"`
 		SCIMGroupID     string  `json:"scim_group_id"`
 		SCIMDisplayName *string `json:"scim_display_name,omitempty"`
 		UserGroupID     string  `json:"user_group_id"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return SCIMGroupMappedPayload{}, fmt.Errorf("projector: invalid SCIMGroupMapped payload: %w", err)
+	}](e, "scim_group_mapping", eventtypes.SCIMGroupMapped)
+	if err != nil {
+		return SCIMGroupMappedPayload{}, err
 	}
 	switch {
 	case raw.ProviderID == "":
@@ -73,18 +66,12 @@ func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, e
 
 // SCIMGroupUnmappedFromEvent decodes SCIMGroupUnmapped.
 func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupUnmapped) {
-		return SCIMGroupUnmappedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return SCIMGroupUnmappedPayload{}, fmt.Errorf("projector: empty SCIMGroupUnmapped payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		ProviderID  string `json:"provider_id"`
 		SCIMGroupID string `json:"scim_group_id"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return SCIMGroupUnmappedPayload{}, fmt.Errorf("projector: invalid SCIMGroupUnmapped payload: %w", err)
+	}](e, "scim_group_mapping", eventtypes.SCIMGroupUnmapped)
+	if err != nil {
+		return SCIMGroupUnmappedPayload{}, err
 	}
 	switch {
 	case raw.ProviderID == "":
@@ -99,19 +86,13 @@ func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayloa
 // Only scim_display_name is updatable; pointer field preserves
 // "missing → no update" via COALESCE.
 func SCIMGroupMappingUpdatedFromEvent(e store.PersistedEvent) (SCIMGroupMappingUpdatedPayload, error) {
-	if e.StreamType != "scim_group_mapping" || e.EventType != string(eventtypes.SCIMGroupMappingUpdated) {
-		return SCIMGroupMappingUpdatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return SCIMGroupMappingUpdatedPayload{}, fmt.Errorf("projector: empty SCIMGroupMappingUpdated payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		ProviderID      string  `json:"provider_id"`
 		SCIMGroupID     string  `json:"scim_group_id"`
 		SCIMDisplayName *string `json:"scim_display_name,omitempty"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return SCIMGroupMappingUpdatedPayload{}, fmt.Errorf("projector: invalid SCIMGroupMappingUpdated payload: %w", err)
+	}](e, "scim_group_mapping", eventtypes.SCIMGroupMappingUpdated)
+	if err != nil {
+		return SCIMGroupMappingUpdatedPayload{}, err
 	}
 	switch {
 	case raw.ProviderID == "":

@@ -1,7 +1,6 @@
 package projectors
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -24,15 +23,9 @@ type LpsPasswordRotatedPayload = payloads.LpsPasswordRotated
 // Reuse from a handler that wants to mirror the projection state in
 // memory while the listener writes to the DB.
 func LpsPasswordRotatedFromEvent(e store.PersistedEvent) (LpsPasswordRotatedPayload, error) {
-	if e.StreamType != "lps_password" || e.EventType != string(eventtypes.LpsPasswordRotated) {
-		return LpsPasswordRotatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: empty LpsPasswordRotated payload")
-	}
-	var p LpsPasswordRotatedPayload
-	if err := json.Unmarshal(e.Data, &p); err != nil {
-		return LpsPasswordRotatedPayload{}, fmt.Errorf("projector: invalid LpsPasswordRotated payload: %w", err)
+	p, err := decodePayload[LpsPasswordRotatedPayload](e, "lps_password", eventtypes.LpsPasswordRotated)
+	if err != nil {
+		return LpsPasswordRotatedPayload{}, err
 	}
 	// Every field below was implicitly required by the deleted
 	// PL/pgSQL projector — `(event.data->>'rotated_at')::TIMESTAMPTZ`

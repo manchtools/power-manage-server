@@ -68,15 +68,9 @@ type DeviceRegisteredPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func DeviceRegisteredFromEvent(e store.PersistedEvent) (DeviceRegisteredPayload, error) {
-	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceRegistered) {
-		return DeviceRegisteredPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceRegisteredPayload{}, fmt.Errorf("projector: empty DeviceRegistered payload")
-	}
-	var raw payloads.DeviceRegistered
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceRegisteredPayload{}, fmt.Errorf("projector: invalid DeviceRegistered payload: %w", err)
+	raw, err := decodePayload[payloads.DeviceRegistered](e, "device", eventtypes.DeviceRegistered)
+	if err != nil {
+		return DeviceRegisteredPayload{}, err
 	}
 	out := DeviceRegisteredPayload{
 		ID:                  e.StreamID,
@@ -199,15 +193,9 @@ type DeviceCertRenewedPayload struct {
 
 // DeviceCertRenewedFromEvent decodes DeviceCertRenewed.
 func DeviceCertRenewedFromEvent(e store.PersistedEvent) (DeviceCertRenewedPayload, error) {
-	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceCertRenewed) {
-		return DeviceCertRenewedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: empty DeviceCertRenewed payload")
-	}
-	var raw payloads.DeviceCertRenewed
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: invalid DeviceCertRenewed payload: %w", err)
+	raw, err := decodePayload[payloads.DeviceCertRenewed](e, "device", eventtypes.DeviceCertRenewed)
+	if err != nil {
+		return DeviceCertRenewedPayload{}, err
 	}
 	if raw.CertFingerprint == nil || *raw.CertFingerprint == "" {
 		return DeviceCertRenewedPayload{}, fmt.Errorf("projector: DeviceCertRenewed requires cert_fingerprint")
@@ -271,15 +259,9 @@ type DeviceLabelSetPayload struct {
 
 // DeviceLabelSetFromEvent decodes DeviceLabelSet.
 func DeviceLabelSetFromEvent(e store.PersistedEvent) (DeviceLabelSetPayload, error) {
-	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelSet) {
-		return DeviceLabelSetPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceLabelSetPayload{}, fmt.Errorf("projector: empty DeviceLabelSet payload")
-	}
-	var raw payloads.DeviceLabelSet
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceLabelSetPayload{}, fmt.Errorf("projector: invalid DeviceLabelSet payload: %w", err)
+	raw, err := decodePayload[payloads.DeviceLabelSet](e, "device", eventtypes.DeviceLabelSet)
+	if err != nil {
+		return DeviceLabelSetPayload{}, err
 	}
 	if raw.Key == nil || *raw.Key == "" {
 		return DeviceLabelSetPayload{}, fmt.Errorf("projector: DeviceLabelSet requires key")
@@ -300,15 +282,9 @@ type DeviceLabelRemovedPayload struct {
 
 // DeviceLabelRemovedFromEvent decodes DeviceLabelRemoved.
 func DeviceLabelRemovedFromEvent(e store.PersistedEvent) (DeviceLabelRemovedPayload, error) {
-	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceLabelRemoved) {
-		return DeviceLabelRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DeviceLabelRemovedPayload{}, fmt.Errorf("projector: empty DeviceLabelRemoved payload")
-	}
-	var raw payloads.DeviceLabelRemoved
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DeviceLabelRemovedPayload{}, fmt.Errorf("projector: invalid DeviceLabelRemoved payload: %w", err)
+	raw, err := decodePayload[payloads.DeviceLabelRemoved](e, "device", eventtypes.DeviceLabelRemoved)
+	if err != nil {
+		return DeviceLabelRemovedPayload{}, err
 	}
 	if raw.Key == nil || *raw.Key == "" {
 		return DeviceLabelRemovedPayload{}, fmt.Errorf("projector: DeviceLabelRemoved requires key")

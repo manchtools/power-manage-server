@@ -63,15 +63,9 @@ type UserCreatedWithRolesPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func UserCreatedWithRolesFromEvent(e store.PersistedEvent) (UserCreatedWithRolesPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserCreatedWithRoles) {
-		return UserCreatedWithRolesPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: empty UserCreatedWithRoles payload")
-	}
-	var raw payloads.UserCreatedWithRoles
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserCreatedWithRolesPayload{}, fmt.Errorf("projector: invalid UserCreatedWithRoles payload: %w", err)
+	raw, err := decodePayload[payloads.UserCreatedWithRoles](e, "user", eventtypes.UserCreatedWithRoles)
+	if err != nil {
+		return UserCreatedWithRolesPayload{}, err
 	}
 	// PL/pgSQL parity: a missing email key would have produced SQL
 	// NULL and crashed the NOT NULL constraint at INSERT time. Surface
@@ -186,15 +180,9 @@ type UserEmailChangedPayload struct {
 // NOT NULL, so the original projector relied on the emitter always
 // supplying a non-empty value. Keep that contract here.
 func UserEmailChangedFromEvent(e store.PersistedEvent) (UserEmailChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserEmailChanged) {
-		return UserEmailChangedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserEmailChangedPayload{}, fmt.Errorf("projector: empty UserEmailChanged payload")
-	}
-	var raw payloads.UserEmailChanged
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserEmailChangedPayload{}, fmt.Errorf("projector: invalid UserEmailChanged payload: %w", err)
+	raw, err := decodePayload[payloads.UserEmailChanged](e, "user", eventtypes.UserEmailChanged)
+	if err != nil {
+		return UserEmailChangedPayload{}, err
 	}
 	// PL/pgSQL parity: missing key → SQL NULL → NOT NULL violation
 	// at UPDATE time. Surface earlier here. Explicit "" is preserved
@@ -216,15 +204,9 @@ type UserPasswordChangedPayload struct {
 
 // UserPasswordChangedFromEvent decodes UserPasswordChanged.
 func UserPasswordChangedFromEvent(e store.PersistedEvent) (UserPasswordChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserPasswordChanged) {
-		return UserPasswordChangedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserPasswordChangedPayload{}, fmt.Errorf("projector: empty UserPasswordChanged payload")
-	}
-	var raw payloads.UserPasswordChanged
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserPasswordChangedPayload{}, fmt.Errorf("projector: invalid UserPasswordChanged payload: %w", err)
+	raw, err := decodePayload[payloads.UserPasswordChanged](e, "user", eventtypes.UserPasswordChanged)
+	if err != nil {
+		return UserPasswordChangedPayload{}, err
 	}
 	if raw.PasswordHash == nil {
 		return UserPasswordChangedPayload{}, fmt.Errorf("projector: UserPasswordChanged requires password_hash")
@@ -241,15 +223,9 @@ type UserRoleChangedPayload struct {
 
 // UserRoleChangedFromEvent decodes UserRoleChanged.
 func UserRoleChangedFromEvent(e store.PersistedEvent) (UserRoleChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserRoleChanged) {
-		return UserRoleChangedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserRoleChangedPayload{}, fmt.Errorf("projector: empty UserRoleChanged payload")
-	}
-	var raw payloads.UserRoleChanged
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserRoleChangedPayload{}, fmt.Errorf("projector: invalid UserRoleChanged payload: %w", err)
+	raw, err := decodePayload[payloads.UserRoleChanged](e, "user", eventtypes.UserRoleChanged)
+	if err != nil {
+		return UserRoleChangedPayload{}, err
 	}
 	// PL/pgSQL parity: missing key → SQL NULL → NOT NULL violation.
 	// Explicit "" is preserved verbatim.
@@ -282,15 +258,9 @@ type UserSshKeyAddedPayload struct {
 // default to "" so callers that omit them still produce a valid
 // element shape in the JSONB array.
 func UserSshKeyAddedFromEvent(e store.PersistedEvent) (UserSshKeyAddedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshKeyAdded) {
-		return UserSshKeyAddedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserSshKeyAddedPayload{}, fmt.Errorf("projector: empty UserSshKeyAdded payload")
-	}
-	var raw payloads.UserSshKeyAdded
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserSshKeyAddedPayload{}, fmt.Errorf("projector: invalid UserSshKeyAdded payload: %w", err)
+	raw, err := decodePayload[payloads.UserSshKeyAdded](e, "user", eventtypes.UserSshKeyAdded)
+	if err != nil {
+		return UserSshKeyAddedPayload{}, err
 	}
 	if raw.KeyID == nil || *raw.KeyID == "" {
 		return UserSshKeyAddedPayload{}, fmt.Errorf("projector: UserSshKeyAdded requires key_id")
@@ -316,15 +286,9 @@ type UserSshKeyRemovedPayload struct {
 
 // UserSshKeyRemovedFromEvent decodes UserSshKeyRemoved.
 func UserSshKeyRemovedFromEvent(e store.PersistedEvent) (UserSshKeyRemovedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSshKeyRemoved) {
-		return UserSshKeyRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserSshKeyRemovedPayload{}, fmt.Errorf("projector: empty UserSshKeyRemoved payload")
-	}
-	var raw payloads.UserSshKeyRemoved
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserSshKeyRemovedPayload{}, fmt.Errorf("projector: invalid UserSshKeyRemoved payload: %w", err)
+	raw, err := decodePayload[payloads.UserSshKeyRemoved](e, "user", eventtypes.UserSshKeyRemoved)
+	if err != nil {
+		return UserSshKeyRemovedPayload{}, err
 	}
 	if raw.KeyID == nil || *raw.KeyID == "" {
 		return UserSshKeyRemovedPayload{}, fmt.Errorf("projector: UserSshKeyRemoved requires key_id")
@@ -376,15 +340,9 @@ type UserLinuxUsernameChangedPayload struct {
 
 // UserLinuxUsernameChangedFromEvent decodes UserLinuxUsernameChanged.
 func UserLinuxUsernameChangedFromEvent(e store.PersistedEvent) (UserLinuxUsernameChangedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserLinuxUsernameChanged) {
-		return UserLinuxUsernameChangedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserLinuxUsernameChangedPayload{}, fmt.Errorf("projector: empty UserLinuxUsernameChanged payload")
-	}
-	var raw payloads.UserLinuxUsernameChanged
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserLinuxUsernameChangedPayload{}, fmt.Errorf("projector: invalid UserLinuxUsernameChanged payload: %w", err)
+	raw, err := decodePayload[payloads.UserLinuxUsernameChanged](e, "user", eventtypes.UserLinuxUsernameChanged)
+	if err != nil {
+		return UserLinuxUsernameChangedPayload{}, err
 	}
 	if raw.LinuxUsername == nil {
 		return UserLinuxUsernameChangedPayload{}, fmt.Errorf("projector: UserLinuxUsernameChanged requires linux_username")
@@ -418,15 +376,9 @@ const (
 // action_id defaults to "" so an explicit "unlink" can still flow
 // through (matches PL/pgSQL `COALESCE(event.data->>"action_id", "")`).
 func UserSystemActionLinkedFromEvent(e store.PersistedEvent) (UserSystemActionLinkedPayload, error) {
-	if e.StreamType != "user" || e.EventType != string(eventtypes.UserSystemActionLinked) {
-		return UserSystemActionLinkedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return UserSystemActionLinkedPayload{}, fmt.Errorf("projector: empty UserSystemActionLinked payload")
-	}
-	var raw payloads.UserSystemActionLinked
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return UserSystemActionLinkedPayload{}, fmt.Errorf("projector: invalid UserSystemActionLinked payload: %w", err)
+	raw, err := decodePayload[payloads.UserSystemActionLinked](e, "user", eventtypes.UserSystemActionLinked)
+	if err != nil {
+		return UserSystemActionLinkedPayload{}, err
 	}
 	if raw.Field == nil || *raw.Field == "" {
 		return UserSystemActionLinkedPayload{}, fmt.Errorf("projector: UserSystemActionLinked requires field")

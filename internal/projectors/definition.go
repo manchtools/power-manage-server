@@ -252,15 +252,9 @@ type definitionMemberRaw struct {
 
 // DefinitionMemberAddedFromEvent decodes DefinitionMemberAdded.
 func DefinitionMemberAddedFromEvent(e store.PersistedEvent) (DefinitionMemberAddedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberAdded) {
-		return DefinitionMemberAddedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DefinitionMemberAddedPayload{}, fmt.Errorf("projector: empty DefinitionMemberAdded payload")
-	}
-	var raw definitionMemberRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DefinitionMemberAddedPayload{}, fmt.Errorf("projector: invalid DefinitionMemberAdded payload: %w", err)
+	raw, err := decodePayload[definitionMemberRaw](e, "definition", eventtypes.DefinitionMemberAdded)
+	if err != nil {
+		return DefinitionMemberAddedPayload{}, err
 	}
 	if raw.ActionSetID == "" {
 		return DefinitionMemberAddedPayload{}, fmt.Errorf("projector: DefinitionMemberAdded requires action_set_id")
@@ -285,15 +279,9 @@ type definitionMemberRemovedRaw struct {
 
 // DefinitionMemberRemovedFromEvent decodes DefinitionMemberRemoved.
 func DefinitionMemberRemovedFromEvent(e store.PersistedEvent) (DefinitionMemberRemovedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberRemoved) {
-		return DefinitionMemberRemovedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DefinitionMemberRemovedPayload{}, fmt.Errorf("projector: empty DefinitionMemberRemoved payload")
-	}
-	var raw definitionMemberRemovedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DefinitionMemberRemovedPayload{}, fmt.Errorf("projector: invalid DefinitionMemberRemoved payload: %w", err)
+	raw, err := decodePayload[definitionMemberRemovedRaw](e, "definition", eventtypes.DefinitionMemberRemoved)
+	if err != nil {
+		return DefinitionMemberRemovedPayload{}, err
 	}
 	if raw.ActionSetID == "" {
 		return DefinitionMemberRemovedPayload{}, fmt.Errorf("projector: DefinitionMemberRemoved requires action_set_id")
@@ -306,15 +294,9 @@ type DefinitionMemberReorderedPayload = DefinitionMemberAddedPayload
 
 // DefinitionMemberReorderedFromEvent decodes DefinitionMemberReordered.
 func DefinitionMemberReorderedFromEvent(e store.PersistedEvent) (DefinitionMemberReorderedPayload, error) {
-	if e.StreamType != "definition" || e.EventType != string(eventtypes.DefinitionMemberReordered) {
-		return DefinitionMemberReorderedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return DefinitionMemberReorderedPayload{}, fmt.Errorf("projector: empty DefinitionMemberReordered payload")
-	}
-	var raw definitionMemberRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return DefinitionMemberReorderedPayload{}, fmt.Errorf("projector: invalid DefinitionMemberReordered payload: %w", err)
+	raw, err := decodePayload[definitionMemberRaw](e, "definition", eventtypes.DefinitionMemberReordered)
+	if err != nil {
+		return DefinitionMemberReorderedPayload{}, err
 	}
 	if raw.ActionSetID == "" {
 		return DefinitionMemberReorderedPayload{}, fmt.Errorf("projector: DefinitionMemberReordered requires action_set_id")

@@ -34,15 +34,9 @@ type LuksRevocationPayload struct {
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
 func LuksKeyRotatedFromEvent(e store.PersistedEvent) (LuksKeyRotatedPayload, error) {
-	if e.StreamType != "luks_key" || e.EventType != string(eventtypes.LuksKeyRotated) {
-		return LuksKeyRotatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: empty LuksKeyRotated payload")
-	}
-	var p LuksKeyRotatedPayload
-	if err := json.Unmarshal(e.Data, &p); err != nil {
-		return LuksKeyRotatedPayload{}, fmt.Errorf("projector: invalid LuksKeyRotated payload: %w", err)
+	p, err := decodePayload[LuksKeyRotatedPayload](e, "luks_key", eventtypes.LuksKeyRotated)
+	if err != nil {
+		return LuksKeyRotatedPayload{}, err
 	}
 	switch {
 	case p.DeviceID == "":

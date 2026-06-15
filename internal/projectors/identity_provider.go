@@ -133,15 +133,9 @@ type idpCreatedRaw struct {
 // IdentityProviderCreatedFromEvent decodes IdentityProviderCreated.
 // Returns ErrIgnoredEvent for any other (stream, event_type).
 func IdentityProviderCreatedFromEvent(e store.PersistedEvent) (IdentityProviderCreatedPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityProviderCreated) {
-		return IdentityProviderCreatedPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return IdentityProviderCreatedPayload{}, fmt.Errorf("projector: empty IdentityProviderCreated payload")
-	}
-	var raw idpCreatedRaw
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return IdentityProviderCreatedPayload{}, fmt.Errorf("projector: invalid IdentityProviderCreated payload: %w", err)
+	raw, err := decodePayload[idpCreatedRaw](e, "identity_provider", eventtypes.IdentityProviderCreated)
+	if err != nil {
+		return IdentityProviderCreatedPayload{}, err
 	}
 	switch {
 	case raw.Name == "":
@@ -265,21 +259,15 @@ func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderU
 // IdentityLinkedFromEvent decodes IdentityLinked. user_id, provider_id
 // and external_id are required (composite key on the projection).
 func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityLinked) {
-		return IdentityLinkPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return IdentityLinkPayload{}, fmt.Errorf("projector: empty IdentityLinked payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		UserID        string  `json:"user_id"`
 		ProviderID    string  `json:"provider_id"`
 		ExternalID    string  `json:"external_id"`
 		ExternalEmail *string `json:"external_email,omitempty"`
 		ExternalName  *string `json:"external_name,omitempty"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return IdentityLinkPayload{}, fmt.Errorf("projector: invalid IdentityLinked payload: %w", err)
+	}](e, "identity_provider", eventtypes.IdentityLinked)
+	if err != nil {
+		return IdentityLinkPayload{}, err
 	}
 	switch {
 	case raw.UserID == "":
@@ -305,20 +293,14 @@ func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error
 // provider_id + external_id are the lookup key; external_email and
 // external_name are NULLIF-semantic (empty preserves existing).
 func IdentityLinkLoginUpdatedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	if e.StreamType != "identity_provider" || e.EventType != string(eventtypes.IdentityLinkLoginUpdated) {
-		return IdentityLinkPayload{}, ErrIgnoredEvent
-	}
-	if len(e.Data) == 0 {
-		return IdentityLinkPayload{}, fmt.Errorf("projector: empty IdentityLinkLoginUpdated payload")
-	}
-	var raw struct {
+	raw, err := decodePayload[struct {
 		ProviderID    string `json:"provider_id"`
 		ExternalID    string `json:"external_id"`
 		ExternalEmail string `json:"external_email"`
 		ExternalName  string `json:"external_name"`
-	}
-	if err := json.Unmarshal(e.Data, &raw); err != nil {
-		return IdentityLinkPayload{}, fmt.Errorf("projector: invalid IdentityLinkLoginUpdated payload: %w", err)
+	}](e, "identity_provider", eventtypes.IdentityLinkLoginUpdated)
+	if err != nil {
+		return IdentityLinkPayload{}, err
 	}
 	switch {
 	case raw.ProviderID == "":
