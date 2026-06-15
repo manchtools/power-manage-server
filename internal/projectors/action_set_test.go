@@ -398,6 +398,124 @@ func TestActionSetListener_MemberReorderUpdatesRow(t *testing.T) {
 		"reorder bumps parent projection_version + updated_at")
 }
 
+// TestActionSetListener_StaleMemberRemovedDoesNotWipeLiveMembership pins the
+// DELETE-branch half of #163's stale-replay guard (mirror of the add-branch
+// coverage): a late ActionSetMemberRemoved whose SequenceNum is older than the
+// parent's projection_version must NOT remove a live member. Threat: an
+// out-of-order/replayed event must never silently drop membership.
+func TestActionSetListener_StaleMemberRemovedDoesNotWipeLiveMembership(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	setID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetCreated",
+		Data: map[string]any{"name": "stale-remove"}, ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data: map[string]any{"action_id": "act-A", "sort_order": 0}, ActorType: "user", ActorID: "u",
+	}))
+
+	before, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), before.MemberCount)
+
+	// Drive the REAL listener with a stale MemberRemoved (SequenceNum older than
+	// the parent's current projection_version).
+	older := before.ProjectionVersion - 5
+	listener := projectors.ActionSetListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID: uuid.New(), SequenceNum: older,
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberRemoved",
+		Data: jsonOrFail(t, map[string]any{"action_id": "act-A"}), ActorType: "user", ActorID: "u",
+	})
+
+	_, err = st.Queries().GetActionSetMember(ctx, db.GetActionSetMemberParams{SetID: setID, ActionID: "act-A"})
+	require.NoError(t, err, "a live member must survive a stale MemberRemoved (the Claim guard must short-circuit the DELETE branch)")
+	after, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), after.MemberCount, "member_count must be unchanged by a stale removal")
+	assert.Equal(t, before.ProjectionVersion, after.ProjectionVersion, "a stale event must not bump projection_version")
+}
+
+// TestActionSetListener_StaleMemberReorderedDoesNotClobberPosition pins the
+// reorder branch of the stale-replay guard (#163): a stale ActionSetMemberReordered
+// must not overwrite a fresher sort_order (both the parent Claim guard and the
+// per-member version guard reject it).
+func TestActionSetListener_StaleMemberReorderedDoesNotClobberPosition(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	setID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetCreated",
+		Data: map[string]any{"name": "stale-reorder"}, ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data: map[string]any{"action_id": "act-A", "sort_order": 0}, ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberReordered",
+		Data: map[string]any{"action_id": "act-A", "sort_order": 5}, ActorType: "user", ActorID: "u",
+	}))
+
+	before, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+
+	older := before.ProjectionVersion - 5
+	listener := projectors.ActionSetListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID: uuid.New(), SequenceNum: older,
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberReordered",
+		Data: jsonOrFail(t, map[string]any{"action_id": "act-A", "sort_order": 99}), ActorType: "user", ActorID: "u",
+	})
+
+	member, err := st.Queries().GetActionSetMember(ctx, db.GetActionSetMemberParams{SetID: setID, ActionID: "act-A"})
+	require.NoError(t, err)
+	assert.Equal(t, int32(5), member.SortOrder, "a stale reorder must not clobber the fresher sort_order")
+}
+
+// TestActionSetListener_RecountAfterStaleEventStaysCorrect pins that a rejected
+// stale event leaves no counter drift (#163): after a stale MemberAdded is
+// skipped, a fresh valid MemberAdded yields the correct member_count.
+func TestActionSetListener_RecountAfterStaleEventStaysCorrect(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	setID := testutil.NewID()
+
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetCreated",
+		Data: map[string]any{"name": "recount"}, ActorType: "user", ActorID: "u",
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data: map[string]any{"action_id": "act-A", "sort_order": 0}, ActorType: "user", ActorID: "u",
+	}))
+
+	before, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+
+	// A stale MemberAdded (rejected by the parent Claim guard).
+	older := before.ProjectionVersion - 5
+	listener := projectors.ActionSetListener(st, slog.Default())
+	listener(ctx, store.PersistedEvent{
+		ID: uuid.New(), SequenceNum: older,
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data: jsonOrFail(t, map[string]any{"action_id": "act-STALE", "sort_order": 0}), ActorType: "user", ActorID: "u",
+	})
+
+	// A fresh valid MemberAdded must recount to exactly 2 (no drift from the skip).
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
+		Data: map[string]any{"action_id": "act-B", "sort_order": 1}, ActorType: "user", ActorID: "u",
+	}))
+	after, err := st.Queries().GetActionSetByID(ctx, setID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), after.MemberCount, "member_count must be 2 (act-A + act-B); the skipped stale event must leave no drift")
+}
+
 // TestActionSetListener_DeleteCascadesMembersAndDefinitions confirms
 // ActionSetDeleted soft-deletes the set, wipes every member row, AND
 // (the cross-stream cascade that makes this projector trickier than
