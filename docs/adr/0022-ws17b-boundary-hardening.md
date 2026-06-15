@@ -53,6 +53,18 @@ Migration `014` blanks the system-role permission arrays. The reconciler is now
 the single source of truth; a self-discovering test asserts no migration leaves a
 non-empty frozen literal for the system roles.
 
+### 4b. Compliance evaluator recognizes "no row" via `store.IsNotFound` (#6)
+
+Writing the grace-period/rollup/first_failed_at coverage surfaced a real bug: the
+evaluator resolved "no result yet → UNKNOWN" and "first-ever non-compliant → seed
+first_failed_at" with `errors.Is(err, store.ErrNotFound)`. The generated queries
+return the backend's `pgx.ErrNoRows` — a *different* sentinel — so those branches
+never fired; a rule with no result yet, or failing for the first time, errored
+instead and aborted the whole device evaluation. Per `store/notfound.go`, callers
+outside the store package must use `store.IsNotFound(err)` (it matches both
+sentinels); the evaluator now does. A sibling sweep found no other caller with the
+pattern.
+
 ### 4. `BuildSearchWorkerMux` is fail-closed and testable (#15)
 
 The indexer's mux+signer assembly moved from inline `cmd/indexer/main.go` into
