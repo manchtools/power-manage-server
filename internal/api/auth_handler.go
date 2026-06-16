@@ -37,6 +37,14 @@ type AuthHandler struct {
 	// (keyed by normalised email), closing the IP-rotation bypass on the
 	// interceptor's per-IP login limiter.
 	loginAccountLimiter *auth.RateLimiter
+	// dummyVerify is a PER-INSTANCE seam over the timing-equalisation dummy
+	// bcrypt that runs on the no-user / disabled / SSO-only / provider-disabled
+	// login paths. It wraps ONLY the discarded dummy comparison — the real
+	// password check uses auth.VerifyPassword directly, so no swappable hook
+	// sits on the authentication path. Defaulted in NewAuthHandler; tests set it
+	// per handler instance (no shared global → no data race) to confirm the
+	// control actually fires.
+	dummyVerify func(password, hash string) bool
 }
 
 // NewAuthHandler creates a new auth handler. The passwordAuthEnabled flag
@@ -52,6 +60,7 @@ func NewAuthHandler(st *store.Store, logger *slog.Logger, jwtManager *auth.JWTMa
 		jwtManager:          jwtManager,
 		passwordAuthEnabled: passwordAuthEnabled,
 		loginAccountLimiter: auth.NewRateLimiter(loginAccountFailLimit, loginAccountFailWindow),
+		dummyVerify:         auth.VerifyPassword,
 	}
 }
 
@@ -65,7 +74,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	// burned bcrypt cycle doesn't leak account existence via timing when
 	// the operator has disabled password login entirely.
 	if !h.passwordAuthEnabled {
-		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		h.dummyVerify(req.Msg.Password, auth.DummyHash)
 		return nil, apiErrorCtx(ctx, ErrPasswordLoginDisabled, connect.CodeUnauthenticated, "password login is disabled on this server")
 	}
 
@@ -84,7 +93,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	if err != nil {
 		if store.IsNotFound(err) {
 			// Perform a dummy bcrypt comparison to prevent timing-based user enumeration
-			auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+			h.dummyVerify(req.Msg.Password, auth.DummyHash)
 			// Count the failure for the per-account ceiling. Recording for a
 			// non-existent email too keeps the behaviour identical to a real
 			// account (no enumeration), and an attacker spraying one address is
@@ -103,7 +112,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 	// (audit). The login UI learns the right method from the (now rate-limited)
 	// ListAuthMethods, not from this error.
 	if !user.HasPassword {
-		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		h.dummyVerify(req.Msg.Password, auth.DummyHash)
 		h.loginAccountLimiter.Allow(acctKey)
 		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}
@@ -119,7 +128,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to verify login eligibility")
 	}
 	if len(disablingProviders) > 0 {
-		auth.VerifyPassword(req.Msg.Password, auth.DummyHash)
+		h.dummyVerify(req.Msg.Password, auth.DummyHash)
 		h.loginAccountLimiter.Allow(acctKey)
 		return nil, apiErrorCtx(ctx, ErrInvalidCredentials, connect.CodeUnauthenticated, "invalid credentials")
 	}

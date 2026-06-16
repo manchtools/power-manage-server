@@ -182,6 +182,44 @@ func TestProxyGetLuksKey_GatewayBinding(t *testing.T) {
 	})
 }
 
+// TestProxyGetLuksKey_DeviceScopingAcrossDevices pins WS2 #9 (explicitly
+// requested by the work plan): a LUKS key stored for device A must NEVER be
+// returned to device B, even when B presents a perfectly valid gateway binding
+// of its own. This guards the WHERE device_id scoping in the GetLuksKey query
+// independently of the gateway-origin binding — a regression that scoped only by
+// action_id would leak A's passphrase to B.
+func TestProxyGetLuksKey_DeviceScopingAcrossDevices(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	deviceA := testutil.CreateTestDevice(t, st, "luks-scope-a")
+	deviceB := testutil.CreateTestDevice(t, st, "luks-scope-b")
+	const gwA, gwB = "gw-A", "gw-B"
+	h, reg := wiredHandler(t, st, deviceA, gwA)
+	require.NoError(t, reg.AttachDevice(context.Background(), deviceB, gwB, registry.DefaultDeviceTTL))
+	ctx := context.Background()
+	actionID := newULID()
+
+	// Seed a secret for device A via its correctly-bound gateway.
+	_, err := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
+		DeviceId: deviceA, ActionId: actionID, DevicePath: "/dev/sda1", Passphrase: "A-secret",
+		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: gwA,
+	}))
+	require.NoError(t, err)
+
+	// Device B — correctly bound to ITS OWN gateway — asks for the SAME action
+	// id. It must not receive device A's passphrase: either a not-found error, or
+	// (defensively) a response that is anything but A's secret.
+	resp, err := h.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
+		DeviceId: deviceB, ActionId: actionID, GatewayId: gwB,
+	}))
+	if err != nil {
+		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+			"device B has no key for this action id and must be told not-found, not handed another device's key")
+	} else {
+		assert.NotEqual(t, "A-secret", resp.Msg.Passphrase,
+			"device B must NEVER receive device A's LUKS passphrase")
+	}
+}
+
 // TestProxyStoreLuksKey_NoEventOnGatewayMismatch proves the device-attributed
 // LuksKeyRotated event is NEVER appended on a binding mismatch — the forge path.
 func TestProxyStoreLuksKey_NoEventOnGatewayMismatch(t *testing.T) {

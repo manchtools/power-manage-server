@@ -18,3 +18,12 @@ func (h *TerminalHandler) ScopedSessionsForTest(ctx context.Context, sessions []
 // concurrency regression test widen the read→append window. Compiled only into
 // test binaries. Pass nil to clear.
 func SetRenewCertTestHook(fn func()) { renewCertTestHook = fn }
+
+// SetDummyVerifyForTest overrides this handler's per-instance dummy-bcrypt seam
+// (the discarded timing-equalisation comparison on the Login miss paths) so a
+// test can confirm the control runs. Per-instance: no shared global, so it is
+// race-free even across parallel tests. Compiled only into test binaries; the
+// real password check (auth.VerifyPassword) is unaffected.
+func (h *AuthHandler) SetDummyVerifyForTest(fn func(password, hash string) bool) {
+	h.dummyVerify = fn
+}
