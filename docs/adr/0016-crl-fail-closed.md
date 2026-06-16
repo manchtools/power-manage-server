@@ -67,5 +67,7 @@ in `handler` was removed. `mtls` cannot import `handler` or `ca` (both import
 - No proto/SDK/web changes. The revocation rejections are mTLS-layer 403s
   (`http.Error`), not Connect `apiError`s, so no new error codes / i18n keys.
 - The "concurrent-renewal version-guard / CAS" item carried forward from the
-  2026-06-10 audit is a separate verification task (not a WS12 finding) and is
-  not addressed here.
+  2026-06-10 audit was a separate verification task (not a WS12 finding) and was
+  not addressed here. It has since been **fixed** by serializing
+  `RenewCertificate` per device under an advisory lock — see ADR 0023 and
+  `manchtools/power-manage-server#441`.
