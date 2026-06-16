@@ -35,13 +35,16 @@
 //   - TestProjectionTablesWrittenOnlyByProjectors ... projection_writes_test.go
 //   - TestNoUnabstractedTimeNow ........... time_now_test.go
 //   - TestNoStdlibJSONOfProtoMessage ...... proto_json_test.go
+//   - TestNoUnframedHashPreimage .......... hash_preimage_test.go
+//   - TestSignatureIsOverDeterministicProtoAndSingleRepresentation ... signing_test.go
 //
 // RPC classification (every ControlService RPC is in exactly one of
 // {public allow-list, permission, procedure-alternative}, both
 // directions, matches-zero-guarded) is ALREADY enforced by
 // internal/auth/permissions_parity_test.go — it is not duplicated here.
-// InternalService classification belongs to the gateway↔control trust
-// stream, not to these module-wide guards.
+// InternalService classification (every RPC is device-origin-bound or an
+// explicitly-justified non-device-scoped exception) lives beside its
+// handlers in internal/api/internal_service_classification_test.go.
 //
 // The unabstracted-clock guard (TestNoUnabstractedTimeNow) landed with
 // the module-wide clock-seam refactor (WS0): every time.Now() call site
