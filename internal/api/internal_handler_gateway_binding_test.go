@@ -220,6 +220,58 @@ func TestProxyGetLuksKey_DeviceScopingAcrossDevices(t *testing.T) {
 	}
 }
 
+// TestProxyValidateLuksToken_ConsumesByHash pins the validate-side at-rest-hash
+// contract (WS10): a minted plaintext token validates once (the server hashes it
+// before lookup), is single-use (replay → not-found), and a tampered token never
+// matches. Create-side hashing is covered elsewhere; this covers the proxy
+// validate path, which was previously only tested for missing fields.
+func TestProxyValidateLuksToken_ConsumesByHash(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	dh := api.NewDeviceHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")
+	deviceID := testutil.CreateTestDevice(t, st, "luks-validate-host")
+	actionID := testutil.CreateTestAction(t, st, userID, "Encrypt Disk", int(pm.ActionType_ACTION_TYPE_ENCRYPTION))
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
+	const gw = "gw-A"
+	ih, _ := wiredHandler(t, st, deviceID, gw)
+	ctx := context.Background()
+
+	mint := func() string {
+		resp, err := dh.CreateLuksToken(testutil.UserContext(userID), connect.NewRequest(&pm.CreateLuksTokenRequest{
+			DeviceId: deviceID, ActionId: actionID,
+		}))
+		require.NoError(t, err)
+		require.NotEmpty(t, resp.Msg.Token)
+		return resp.Msg.Token
+	}
+
+	// Happy: the plaintext validates (server hashes before lookup) and returns
+	// the bound action.
+	plaintext := mint()
+	resp, err := ih.ProxyValidateLuksToken(ctx, connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
+		DeviceId: deviceID, Token: plaintext, GatewayId: gw,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, actionID, resp.Msg.ActionId)
+
+	// Replay: a consumed one-time token is rejected.
+	_, err = ih.ProxyValidateLuksToken(ctx, connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
+		DeviceId: deviceID, Token: plaintext, GatewayId: gw,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a consumed token must not be replayable")
+
+	// Tampered: a different token never matches the stored hash (mint a fresh
+	// valid one first so the rejection is hash-mismatch, not an empty store).
+	tampered := mint() + "tampered"
+	_, err = ih.ProxyValidateLuksToken(ctx, connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
+		DeviceId: deviceID, Token: tampered, GatewayId: gw,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a tampered token must not match the at-rest hash")
+}
+
 // TestProxyStoreLuksKey_NoEventOnGatewayMismatch proves the device-attributed
 // LuksKeyRotated event is NEVER appended on a binding mismatch — the forge path.
 func TestProxyStoreLuksKey_NoEventOnGatewayMismatch(t *testing.T) {
