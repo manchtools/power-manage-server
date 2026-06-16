@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,6 +170,75 @@ func TestRenewCertificate_DeletedDevice(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+// TestRenewCertificate_ConcurrentRenewalsSerialize pins the CF6 fix: two or
+// more renewals presenting the SAME current certificate concurrently must not
+// both succeed. Without serialization both pass the fingerprint check and both
+// issue a certificate, leaving a valid-but-untracked live cert whose fingerprint
+// never lands in the projection. With the per-device advisory lock, exactly one
+// wins and the rest are rejected because the stored fingerprint has advanced —
+// and the device's stored fingerprint must equal the single winning cert.
+func TestRenewCertificate_ConcurrentRenewalsSerialize(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewCertificateHandler(st, certAuth, slog.Default())
+
+	deviceID := testutil.CreateTestDevice(t, st, "renew-concurrent-host")
+	certPEM, fingerprint, csrPEM := issueTestDeviceCert(t, certAuth, deviceID)
+	setDeviceCertFingerprint(t, st, deviceID, fingerprint)
+
+	// Widen the window between the fingerprint check and the append so the race
+	// is deterministic: without the per-device advisory lock all goroutines read
+	// the same (stale) fingerprint during this sleep and each issues a cert.
+	api.SetRenewCertTestHook(func() { time.Sleep(120 * time.Millisecond) })
+	t.Cleanup(func() { api.SetRenewCertTestHook(nil) })
+
+	const n = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	resps := make([]*pm.RenewCertificateResponse, n)
+	errs := make([]error, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all goroutines together to maximise contention
+			resp, err := h.RenewCertificate(t.Context(), connect.NewRequest(&pm.RenewCertificateRequest{
+				CurrentCertificate: certPEM,
+				Csr:                csrPEM,
+			}))
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			resps[i] = resp.Msg
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var successes int
+	var winningFP string
+	for i := range n {
+		if errs[i] != nil {
+			// Losers fail closed: the presented cert is no longer the stored one.
+			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(errs[i]),
+				"a losing concurrent renewal must be rejected as unrecognized, got: %v", errs[i])
+			continue
+		}
+		successes++
+		fp, ferr := ca.FingerprintFromPEM(resps[i].Certificate)
+		require.NoError(t, ferr)
+		winningFP = fp
+	}
+	require.Equal(t, 1, successes, "exactly one concurrent renewal may win against a single current certificate")
+
+	// No orphaned issuance: the stored fingerprint must equal the single winner.
+	dev, err := st.Repos().Device.Get(t.Context(), store.GetDeviceKey{ID: deviceID})
+	require.NoError(t, err)
+	require.NotNil(t, dev.CertFingerprint)
+	assert.Equal(t, winningFP, *dev.CertFingerprint, "stored fingerprint must match the single winning cert")
 }
 
 func TestRenewCertificate_FingerprintMismatch(t *testing.T) {
