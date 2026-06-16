@@ -45,12 +45,39 @@ Ground rules for every guard:
 | `TestSecretComparesAreConstantTime` | ✅ | ✅ | ✅ | Secret/MAC/token/signature/fingerprint/digest compares use `subtle.ConstantTimeCompare`/`hmac.Equal`, never `==`/`bytes.Equal`. Presence (`== nil`/`== ""`) and metadata fields excluded. |
 | `TestProjectionTablesWrittenOnlyByProjectors` | ✅ | — | — | Request handlers never write `*_projection` directly — they append events; projectors and computed-read-model engines write projections (see below). |
 | `TestNoUnabstractedTimeNow` | ✅ | — | ✅ | No direct `time.Now()` calls in runtime code (see clock seam below). |
+| `TestNoStdlibJSONOfProtoMessage` | ✅ | — | ✅ | Proto messages are (de)serialised with `protojson`, never stdlib `encoding/json` (WS1b#5). |
+| `TestNoUnframedHashPreimage` | ✅ | — | — | Hash/MAC preimages must be length-prefixed / domain-separated, never built by `+`-concatenation or `fmt.Sprintf` of multiple fields (the pre-image-ambiguity class behind WS1 / WS1b#3). |
+| `TestSignatureIsOverDeterministicProtoAndSingleRepresentation` | ✅ | — | — | No proto field named `*_canonical` (one representation, no divergent twin); the action signer's `Sign()` is called only from the single canonicalization seam `actionparams.BuildAndSignEnvelope` (ADR 0003). |
 
-RPC classification (every `ControlService` RPC is in exactly one of
-{public allow-list, permission, procedure-alternative}, both directions,
-matches-zero-guarded) is already enforced by
-`server/internal/auth/permissions_parity_test.go` and is **not** duplicated in
-`archtest`.
+### RPC classification (lives next to the handlers, not in `archtest`)
+
+Every RPC is consciously classified, by a self-discovering, matches-zero-guarded
+test anchored to the live proto/connect registry — kept beside the code it
+guards rather than duplicated in `archtest`:
+
+- **`ControlService`** — every RPC is in exactly one of {public allow-list,
+  permission, procedure-alternative}, both directions:
+  `server/internal/auth/permissions_parity_test.go`.
+- **`InternalService`** — every RPC is either device-origin-bound (request
+  carries `device_id`, covered by the gateway-binding completeness guard
+  `TestInternalHandlers_GatewayBindingIsSelfDiscovering`) or explicitly listed
+  non-device-scoped (gated by the peer-class mTLS listener + session ownership):
+  `server/internal/api/internal_service_classification_test.go`. A new
+  unclassified InternalService RPC fails the build.
+
+### Other self-discovering guards (in their owning packages)
+
+- **`TestEveryActionTypeHandledInEveryParamsSwitch`**
+  (`internal/actionparams/registry_test.go`) — every `ActionType` is handled by
+  the single proto-reflection params registry (WS1b#1).
+- **`TestExecutionCreatedEmittedTyped`** (`internal/api`) — dispatch emits typed
+  `payloads.ExecutionCreated`, never an ad-hoc `map[string]any` (WS1b#2).
+- **`TestGeneratedCodeIsRegenerated`** — enforced as CI jobs (sqlc drift in
+  `sqlc.yml`; proto regen drift in the sdk repo), not a Go test.
+
+A `dupl`-style cross-file duplication CI backstop was **considered and
+deferred** in favour of single-source helpers + completeness tests — see ADR
+0021.
 
 ### The clock seam (`TestNoUnabstractedTimeNow`)
 
