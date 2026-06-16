@@ -469,6 +469,33 @@ func TestLogin_SSOOnlyUserNoPassword(t *testing.T) {
 // with a wrong password apart: all three return the IDENTICAL Unauthenticated
 // "invalid credentials" error (audit user-enumeration fix). Timing parity comes
 // from the dummy bcrypt each path runs.
+// TestLogin_TimingEqualization_RunsDummyBcryptOnMiss pins WS5's timing-oracle
+// control: a no-such-user login MUST still perform a bcrypt comparison against
+// auth.DummyHash, so a wrong-email attempt costs the same as a wrong-password
+// one (no user-enumeration timing oracle). The existing enumeration tests assert
+// identical *responses* but would still pass if the dummy bcrypt were deleted;
+// this asserts the control itself fires, via the VerifyPassword seam.
+func TestLogin_TimingEqualization_RunsDummyBcryptOnMiss(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	jwtMgr := testutil.NewJWTManager()
+	h := api.NewAuthHandler(st, slog.Default(), jwtMgr, true)
+
+	var hashes []string
+	h.SetDummyVerifyForTest(func(_, hash string) bool {
+		hashes = append(hashes, hash)
+		return false // the dummy comparison's result is discarded by the handler
+	})
+
+	_, err := h.Login(context.Background(), connect.NewRequest(&pm.LoginRequest{
+		Email:    testutil.NewID() + "@nonexistent.test",
+		Password: "whatever",
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.Contains(t, hashes, auth.DummyHash,
+		"a no-such-user login must run a dummy bcrypt against auth.DummyHash to equalise timing (WS5 timing-oracle control)")
+}
+
 func TestLogin_EnumerationSafe_IdenticalErrors(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	jwtMgr := testutil.NewJWTManager()

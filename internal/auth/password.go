@@ -24,7 +24,9 @@ func HashPassword(password string) (string, error) {
 	return string(hash), nil
 }
 
-// VerifyPassword checks if a password matches a hash.
+// VerifyPassword checks if a password matches a hash. Intentionally a plain
+// func (not a reassignable var): this is the authentication primitive in
+// security-critical code, so it must not be a runtime-swappable bypass vector.
 func VerifyPassword(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
