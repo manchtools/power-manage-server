@@ -315,6 +315,37 @@ func TestIssueCertificateFromCSR_InvalidCSR(t *testing.T) {
 	assert.Contains(t, err.Error(), "decode CSR PEM")
 }
 
+// TestIssueCertificateFromCSR_ForgedSignatureRejected pins the csr.CheckSignature
+// gate: a CSR whose ASN.1 structure is valid but whose signature does NOT verify
+// (tampered in transit, or minted by someone who does not hold the private key)
+// must be refused. The InvalidCSR test above only feeds garbage PEM; this covers
+// the structurally-valid-but-forged-signature branch — an uncovered edge that
+// guards proof-of-possession at issuance.
+func TestIssueCertificateFromCSR_ForgedSignatureRejected(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	// A structurally valid CSR, then corrupt its signature: the last byte of the
+	// DER lies in the signatureValue, so ParseCertificateRequest still succeeds
+	// while CheckSignature must fail.
+	csrPEM, _ := generateCSR(t, "device-001")
+	block, _ := pem.Decode(csrPEM)
+	require.NotNil(t, block)
+	der := append([]byte(nil), block.Bytes...)
+	der[len(der)-1] ^= 0xFF
+	forged := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+
+	// Sanity: the forged CSR still parses, so we are exercising CheckSignature,
+	// not the parse path the InvalidCSR test already covers.
+	_, perr := x509.ParseCertificateRequest(der)
+	require.NoError(t, perr, "forged CSR must remain structurally parseable")
+
+	_, err = c.IssueCertificateFromCSR("device-001", forged)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid CSR signature")
+}
+
 func TestVerifyCertificate_Success(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
