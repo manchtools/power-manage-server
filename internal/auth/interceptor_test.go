@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -384,6 +385,54 @@ func TestAuthInterceptor_LogoutRateLimit(t *testing.T) {
 	require.Error(t, err, "call 3 MUST be rate-limited — Logout was previously unrate-limited (issue #142)")
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "too many logout attempts")
+}
+
+// TestAuthInterceptor_ExpensiveProcedureRateLimit pins WS13-9: the per-user
+// "Expensive" limiter actually gates the heavy procedures (Evaluate*/Search*/
+// *Query). No test previously configured Expensive, so a regression dropping the
+// check — or isExpensiveProcedure no longer matching EvaluateDynamicGroup —
+// would go unnoticed. An authenticated caller's SECOND expensive call within a
+// 1/min budget is rejected with ResourceExhausted, before the handler runs.
+func TestAuthInterceptor_ExpensiveProcedureRateLimit(t *testing.T) {
+	jwtMgr := NewJWTManager(JWTConfig{
+		Secret:            []byte("test-secret-for-expensive-limiter"),
+		AccessTokenExpiry: 15 * time.Minute,
+	})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{
+		Expensive: NewRateLimiter(1, time.Minute),
+	})
+
+	const procedure = "/pm.v1.ControlService/EvaluateDynamicGroup"
+	var handlerCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(_ context.Context, _ *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			handlerCalls.Add(1)
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	tokens, err := jwtMgr.GenerateTokens("uid-expensive", "e@x.com", []string{"GetUser"}, nil, 1)
+	require.NoError(t, err)
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, server.URL+procedure)
+	call := func() error {
+		req := connect.NewRequest(&emptypb.Empty{})
+		req.Header().Set("Authorization", "Bearer "+tokens.AccessToken)
+		_, callErr := client.CallUnary(context.Background(), req)
+		return callErr
+	}
+
+	require.NoError(t, call(), "the first expensive call is within the 1/min budget")
+	err = call()
+	require.Error(t, err, "the second expensive call must be rejected by the Expensive limiter")
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "expensive")
+	assert.EqualValues(t, 1, handlerCalls.Load(), "the rejected call must not reach the handler")
 }
 
 // TestAuthInterceptor_RenewCertificateRateLimit pins the #142 fix for
