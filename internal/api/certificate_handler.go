@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
+	"hash/fnv"
 	"log/slog"
 	"time"
 
@@ -41,6 +43,27 @@ func NewCertificateHandler(st *store.Store, certAuth *ca.CA, logger *slog.Logger
 // the Valkey subsystem comes up).
 func (h *CertificateHandler) SetCRLStore(s *crl.Store) { h.crl = s }
 
+// renewCertTestHook is a test-only seam invoked between the fingerprint check
+// and the certificate issuance/append in renewLocked. It is nil (a no-op) in
+// production; tests install it via SetRenewCertTestHook (export_test.go) to
+// widen the read→append window and prove the per-device advisory lock actually
+// serializes concurrent renewals.
+var renewCertTestHook func()
+
+// renewCertLockNamespace namespaces the per-device certificate-renewal advisory
+// lock so its derived keys cannot collide with the admin-mutation lock
+// (advisoryKeyAdminMutation) or the dynamic-group locks. "cert" in hex occupies
+// the high 32 bits; the low 32 bits are an FNV-1a hash of the device id. A hash
+// collision only serializes two unrelated devices' renewals occasionally —
+// correctness-preserving, never a wrong outcome.
+const renewCertLockNamespace int64 = 0x63657274 << 32 // "cert"
+
+func renewCertLockKey(deviceID string) int64 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(deviceID))
+	return renewCertLockNamespace | int64(h.Sum32())
+}
+
 // RenewCertificate renews a device certificate.
 // The agent authenticates by presenting its current (still valid) certificate.
 func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.Request[pm.RenewCertificateRequest]) (*connect.Response[pm.RenewCertificateResponse], error) {
@@ -55,6 +78,41 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "invalid certificate")
 	}
 
+	// Serialize renewals per device (CF6). The fingerprint read+compare and the
+	// DeviceCertRenewed append run together under a per-device advisory lock, so
+	// two concurrent renewals presenting the same current certificate cannot
+	// both pass the check and both issue a cert (which would leave a valid-but-
+	// untracked live cert whose fingerprint never lands in the projection). The
+	// second caller blocks, then re-reads the advanced fingerprint and is
+	// rejected. WithAdvisoryLock holds the lock across the post-commit
+	// projection write, so the next caller's Device.Get observes it.
+	var resp *connect.Response[pm.RenewCertificateResponse]
+	lockErr := h.store.WithAdvisoryLock(ctx, renewCertLockKey(deviceID), func() error {
+		r, rerr := h.renewLocked(ctx, deviceID, req.Msg)
+		if rerr != nil {
+			return rerr
+		}
+		resp = r
+		return nil
+	})
+	if lockErr != nil {
+		// renewLocked returns connect-coded errors; pass those through. Only a
+		// lock-infrastructure failure (acquire/release) is re-coded Internal.
+		var ce *connect.Error
+		if errors.As(lockErr, &ce) {
+			return nil, lockErr
+		}
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to serialize certificate renewal")
+	}
+	return resp, nil
+}
+
+// renewLocked performs the device lookup, fingerprint and proof-of-possession
+// checks, issuance, DeviceCertRenewed append and superseded-cert revocation. It
+// MUST run while holding the per-device renewal advisory lock (see
+// RenewCertificate) so the fingerprint read and the append are atomic against a
+// concurrent renewal.
+func (h *CertificateHandler) renewLocked(ctx context.Context, deviceID string, msg *pm.RenewCertificateRequest) (*connect.Response[pm.RenewCertificateResponse], error) {
 	// Verify the device exists and is not deleted
 	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID})
 	if err != nil {
@@ -69,7 +127,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 
 	// Verify the certificate fingerprint matches what's in the database
 	// This prevents use of revoked or superseded certificates
-	currentFP, err := ca.FingerprintFromPEM(req.Msg.CurrentCertificate)
+	currentFP, err := ca.FingerprintFromPEM(msg.CurrentCertificate)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to compute fingerprint")
 	}
@@ -87,19 +145,26 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
 	}
 
+	// Test seam: widen the window between the fingerprint check and the append
+	// so the concurrency regression test can prove the advisory lock serializes
+	// renewals. No-op in production.
+	if renewCertTestHook != nil {
+		renewCertTestHook()
+	}
+
 	// Proof-of-possession: the CSR must carry the SAME public key as the
 	// current certificate. The current cert is an untrusted request field on a
 	// public (non-mTLS) listener and certs are public material, so without this
 	// anyone holding a device's cert PEM could renew it onto a key they control
 	// and impersonate the device (#361). Agents reuse their keypair on renewal,
 	// so this is behavior-compatible.
-	if err := ca.AssertCSRMatchesCertKey(req.Msg.CurrentCertificate, req.Msg.Csr); err != nil {
+	if err := ca.AssertCSRMatchesCertKey(msg.CurrentCertificate, msg.Csr); err != nil {
 		h.logger.Warn("certificate renewal proof-of-possession failed", "device_id", deviceID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "CSR key does not match current certificate")
 	}
 
 	// Sign the new CSR
-	newCert, err := h.ca.IssueCertificateFromCSR(deviceID, req.Msg.Csr)
+	newCert, err := h.ca.IssueCertificateFromCSR(deviceID, msg.Csr)
 	if err != nil {
 		h.logger.Error("failed to sign CSR", "error", err, "device_id", deviceID)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to issue certificate")
@@ -130,7 +195,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, req *connect.
 	// next renewal/the periodic refresh re-converge. The DB fingerprint was
 	// already advanced by the DeviceCertRenewed event above.
 	if h.crl != nil {
-		if oldNotAfter, err := ca.NotAfterFromPEM(req.Msg.CurrentCertificate); err != nil {
+		if oldNotAfter, err := ca.NotAfterFromPEM(msg.CurrentCertificate); err != nil {
 			h.logger.Warn("could not parse old cert expiry for CRL; superseded cert not revoked", "device_id", deviceID, "error", err)
 		} else if err := h.crl.Revoke(ctx, currentFP, oldNotAfter); err != nil {
 			h.logger.Error("failed to revoke superseded cert in CRL", "device_id", deviceID, "error", err)
