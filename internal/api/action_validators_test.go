@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 const validSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" // 64 hex

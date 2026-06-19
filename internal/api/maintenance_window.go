@@ -3,8 +3,8 @@ package api
 import (
 	"encoding/json"
 
-	pmv1 "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/sdk/go/maintenance"
+	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage-sdk/maintenance"
 )
 
 // maintenanceWindowToMap turns a proto MaintenanceWindow into the

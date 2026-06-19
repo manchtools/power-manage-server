@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 var testLogger = slog.Default()

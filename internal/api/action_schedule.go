@@ -11,7 +11,7 @@ package api
 import (
 	"encoding/json"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // scheduleToMap converts an ActionSchedule proto to a map for event storage.

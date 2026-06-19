@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // TestRequestDeadlineInterceptor_BoundsHandlerContext pins WS13 #10: the handler

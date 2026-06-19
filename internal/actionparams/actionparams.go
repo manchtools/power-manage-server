@@ -5,7 +5,7 @@ package actionparams
 import (
 	"fmt"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // ScopedSessionsForTest exposes the unexported device-scope session filter so the

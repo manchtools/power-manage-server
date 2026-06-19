@@ -22,8 +22,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 
-	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
-	"github.com/manchtools/power-manage/sdk/go/logging"
+	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage-sdk/logging"
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/crl"

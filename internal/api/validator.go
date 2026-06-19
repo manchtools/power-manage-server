@@ -6,7 +6,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
 
-	sdkvalidate "github.com/manchtools/power-manage/sdk/go/validate"
+	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 )
 
 // validate is the shared validator instance with ULID custom rule.

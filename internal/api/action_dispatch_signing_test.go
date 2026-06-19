@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/sdk/go/verify"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage-sdk/verify"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"

@@ -3,7 +3,7 @@ package api
 import (
 	"fmt"
 
-	"github.com/manchtools/power-manage/sdk/go/verify"
+	"github.com/manchtools/power-manage-sdk/verify"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )

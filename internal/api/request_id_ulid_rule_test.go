@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 )
 
 // idRuleExemptFields lists string request fields whose name ends in "Id" but

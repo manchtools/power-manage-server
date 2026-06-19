@@ -11,7 +11,7 @@ import (
 	// Imported for its init() side effect: registers every pm.v1 file
 	// descriptor in protoregistry.GlobalFiles so the proto-reflection arm below
 	// can walk them.
-	_ "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	_ "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // signCallAllowlist enumerates the application-level call sites of the action

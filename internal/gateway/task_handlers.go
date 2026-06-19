@@ -9,7 +9,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
