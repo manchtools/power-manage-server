@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 )
 

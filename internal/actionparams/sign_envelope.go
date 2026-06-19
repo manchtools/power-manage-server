@@ -3,8 +3,8 @@ package actionparams
 import (
 	"fmt"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage/sdk/go/verify"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage-sdk/verify"
 )
 
 // EnvelopeSigner is the minimal contract BuildAndSignEnvelope needs: sign

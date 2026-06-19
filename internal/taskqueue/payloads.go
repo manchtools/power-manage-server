@@ -1,6 +1,6 @@
 package taskqueue
 
-import pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+import pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 
 // === Control → Gateway payloads (device queues) ===
 

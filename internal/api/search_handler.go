@@ -10,7 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // SearchHandler handles search and search index management RPCs.

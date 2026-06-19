@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"google.golang.org/protobuf/proto"
 )
 

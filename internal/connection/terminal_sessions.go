@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	pm "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 // TerminalSession represents a live WebSocket terminal bridge session

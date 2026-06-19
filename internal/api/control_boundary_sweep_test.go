@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 )
 
 // validateExemptControlRPCs lists the ControlService RPCs whose ZERO request is

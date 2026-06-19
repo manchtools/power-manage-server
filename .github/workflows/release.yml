@@ -36,7 +36,7 @@ jobs:
           path: _sdk
 
       - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
+        run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
 
       - uses: actions/setup-go@v6
         with:
@@ -80,7 +80,7 @@ jobs:
           path: _sdk
 
       - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage/sdk=./_sdk
+        run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
 
       - uses: actions/setup-go@v6
         with:

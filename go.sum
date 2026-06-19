@@ -111,10 +111,8 @@ github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 h1:6E+4a0GO5zZEnZ
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0/go.mod h1:zJYVVT2jmtg6P3p1VtQj7WsuWi/y4VnjVBn7F8KPB3I=
 github.com/magiconair/properties v1.8.10 h1:s31yESBquKXCV9a/ScB3ESkOjUYYv+X0rg8SYxI99mE=
 github.com/magiconair/properties v1.8.10/go.mod h1:Dhd985XPs7jluiymwWYZ0G4Z61jb3vdS329zhj2hYo0=
-github.com/manchtools/power-manage-sdk v0.4.1-0.20260614093038-dcaee55a819e h1:C6DZ7+Zh8T8v70V9UdS6s05Zc7vhyKbmNsXEzmlKaCE=
-github.com/manchtools/power-manage-sdk v0.4.1-0.20260614093038-dcaee55a819e/go.mod h1:qFWK6xophsVYsUqQm5+e5UquvpWpXMzIPqeHGO8GqXs=
-github.com/manchtools/power-manage-sdk v0.4.1-0.20260615161849-1b3d68039a55 h1:YObNEsUJBRvTl737iXNMXzAcQoCZnmSCx/N2I0BMi0o=
-github.com/manchtools/power-manage-sdk v0.4.1-0.20260615161849-1b3d68039a55/go.mod h1:4YgWcixbkSLTu5Ds8m/b/EfwGNRqUsOaC/nMgTyAwxo=
+github.com/manchtools/power-manage-sdk v0.4.1-0.20260619054456-9f9e35b04d92 h1:W//czJKqyGNBtUVHga9ozi1ymz+5K41ZajPZs7laXRg=
+github.com/manchtools/power-manage-sdk v0.4.1-0.20260619054456-9f9e35b04d92/go.mod h1:vt9jkT5k3HHURX0Mnp1fgP/6VC7gkk5TPkdbmElZQPc=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/mdelapenya/tlscert v0.2.0 h1:7H81W6Z/4weDvZBNOfQte5GpIMo0lGYEeWbkGp5LJHI=

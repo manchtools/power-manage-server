@@ -1,6 +1,6 @@
 package ca
 
-import "github.com/manchtools/power-manage/sdk/go/verify"
+import "github.com/manchtools/power-manage-sdk/verify"
 
 // ActionSigner is the minimal contract dispatch / inbox handlers need
 // to sign action payloads so agents can verify authenticity. Defined

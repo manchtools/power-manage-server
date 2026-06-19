@@ -12,8 +12,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/manchtools/power-manage/sdk/gen/go/pm/v1/pmv1connect"
-	"github.com/manchtools/power-manage/sdk/go/logging"
+	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
+	"github.com/manchtools/power-manage-sdk/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"

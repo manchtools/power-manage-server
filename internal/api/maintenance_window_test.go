@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	pmv1 "github.com/manchtools/power-manage/sdk/gen/go/pm/v1"
+	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
 
 func TestMaintenanceWindowToMap_NilOrEmpty(t *testing.T) {
