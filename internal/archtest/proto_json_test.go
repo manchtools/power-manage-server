@@ -16,8 +16,11 @@ import (
 var protoJSONAllowlist = map[string]string{}
 
 // protoPkgPathSuffix identifies the generated protobuf package regardless of
-// the import alias a file chooses (conventionally "pm").
-const protoPkgPathSuffix = "/sdk/gen/go/pm/v1"
+// the import alias a file chooses (conventionally "pm"). It anchors on the
+// generated-code path segment, NOT the module name, so a module rename (e.g.
+// power-manage/sdk → power-manage-sdk) can't silently turn the guard vacuous.
+// HasSuffix excludes the sibling connect package (…/gen/go/pm/v1/pmv1connect).
+const protoPkgPathSuffix = "/gen/go/pm/v1"
 
 // TestNoStdlibJSONOfProtoMessage forbids passing a generated protobuf type to
 // the standard library encoding/json (Marshal / MarshalIndent / Unmarshal, and
@@ -97,7 +100,7 @@ func TestNoStdlibJSONOfProtoMessage(t *testing.T) {
 }
 
 // protoImportAliases returns the set of local names by which f imports the
-// generated protobuf package (path suffix /sdk/gen/go/pm/v1). Self-discovered
+// generated protobuf package (path suffix /gen/go/pm/v1). Self-discovered
 // from the import block so the guard is not tied to the conventional "pm".
 func protoImportAliases(f *ast.File) map[string]bool {
 	out := map[string]bool{}
