@@ -16,13 +16,16 @@ import (
 func gateTestLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 type fakeGate struct {
-	present      bool
-	presentErr   error
-	warmCalls    int
-	rebuildCalls int
+	present       bool
+	presentErr    error
+	schemaCurrent bool
+	schemaErr     error
+	warmCalls     int
+	rebuildCalls  int
 }
 
 func (f *fakeGate) IndexesPresent(context.Context) (bool, error) { return f.present, f.presentErr }
+func (f *fakeGate) SchemaCurrent(context.Context) (bool, error)  { return f.schemaCurrent, f.schemaErr }
 func (f *fakeGate) Warm(context.Context) error                   { f.warmCalls++; return nil }
 func (f *fakeGate) Rebuild(context.Context) error                { f.rebuildCalls++; return nil }
 
@@ -43,12 +46,29 @@ func (f *fakeLocker) TryLock(context.Context) (bool, func(), error) {
 func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("indexes present → warm only, never rebuild", func(t *testing.T) {
-		g := &fakeGate{present: true}
+	t.Run("indexes present + schema current → warm only, never rebuild", func(t *testing.T) {
+		g := &fakeGate{present: true, schemaCurrent: true}
 		l := &fakeLocker{acquired: true} // would acquire, but must not be consulted
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
 		assert.Equal(t, 1, g.warmCalls, "present indexes must be warmed")
-		assert.Equal(t, 0, g.rebuildCalls, "present indexes must NOT be destructively rebuilt")
+		assert.Equal(t, 0, g.rebuildCalls, "present+current indexes must NOT be destructively rebuilt")
+	})
+
+	t.Run("indexes present but schema changed → rebuild under lock (#325)", func(t *testing.T) {
+		g := &fakeGate{present: true, schemaCurrent: false}
+		l := &fakeLocker{acquired: true}
+		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
+		assert.Equal(t, 1, g.rebuildCalls, "a schema change must trigger a drop+rebuild even when indexes exist")
+		assert.Equal(t, 0, g.warmCalls)
+		assert.Equal(t, 1, l.released)
+	})
+
+	t.Run("schema-check error fails closed (no flush)", func(t *testing.T) {
+		g := &fakeGate{present: true, schemaErr: errors.New("backend down")}
+		l := &fakeLocker{acquired: true}
+		require.Error(t, startupSearchSync(ctx, g, l, gateTestLogger()))
+		assert.Equal(t, 0, g.rebuildCalls)
+		assert.Equal(t, 0, g.warmCalls)
 	})
 
 	t.Run("indexes missing + lock won → rebuild under lock", func(t *testing.T) {

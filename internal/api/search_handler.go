@@ -26,6 +26,70 @@ func NewSearchHandler(logger *slog.Logger) *SearchHandler {
 	}
 }
 
+// sortFieldNames maps the wire SortField enum to the RediSearch index field it
+// sorts by. The enum is shared across scopes (#325); resolveSort enforces that
+// the field is actually SORTABLE on the requested scope via scopeSortableFields.
+var sortFieldNames = map[pm.SortField]string{
+	pm.SortField_SORT_FIELD_NAME:              "name",
+	pm.SortField_SORT_FIELD_TYPE:              "type",
+	pm.SortField_SORT_FIELD_HOSTNAME:          "hostname",
+	pm.SortField_SORT_FIELD_COMPLIANCE_STATUS: "compliance_status",
+	pm.SortField_SORT_FIELD_EMAIL:             "email",
+	pm.SortField_SORT_FIELD_DISPLAY_NAME:      "display_name",
+	pm.SortField_SORT_FIELD_DISABLED:          "disabled",
+	pm.SortField_SORT_FIELD_MEMBER_COUNT:      "member_count",
+	pm.SortField_SORT_FIELD_STATUS:            "status",
+	pm.SortField_SORT_FIELD_ACTION_TYPE:       "action_type",
+	pm.SortField_SORT_FIELD_DEVICE_HOSTNAME:   "device_hostname",
+	pm.SortField_SORT_FIELD_ACTOR_TYPE:        "actor_type",
+	pm.SortField_SORT_FIELD_STREAM_TYPE:       "stream_type",
+	pm.SortField_SORT_FIELD_EVENT_TYPE:        "event_type",
+	pm.SortField_SORT_FIELD_CREATED_AT:        "created_at",
+	pm.SortField_SORT_FIELD_UPDATED_AT:        "updated_at",
+	pm.SortField_SORT_FIELD_LAST_SEEN_AT:      "last_seen_at",
+	pm.SortField_SORT_FIELD_REGISTERED_AT:     "registered_at",
+	pm.SortField_SORT_FIELD_OCCURRED_AT:       "occurred_at",
+	// RULE_COUNT and LAST_LOGIN_AT are reserved for a follow-up (their index
+	// fields aren't populated yet) — intentionally absent so resolveSort rejects.
+}
+
+// scopeSortableFields lists the SORTABLE index fields per scope. Mirrors the
+// SORTABLE attributes in internal/search/index.go; a field is only here if its
+// scope's FT.CREATE schema declares it SORTABLE. Kept in lockstep with the index
+// by TestSearchSortableFieldsMatchIndex (self-discovering, matches-zero guard).
+var scopeSortableFields = map[string]map[string]bool{
+	"actions":             {"name": true, "type": true, "created_at": true, "updated_at": true},
+	"action_sets":         {"name": true, "member_count": true, "created_at": true, "updated_at": true},
+	"definitions":         {"name": true, "member_count": true, "created_at": true, "updated_at": true},
+	"compliance_policies": {"name": true},
+	"devices":             {"hostname": true, "compliance_status": true, "registered_at": true, "last_seen_at": true},
+	"users":               {"email": true, "display_name": true, "disabled": true, "created_at": true},
+	"device_groups":       {"name": true, "member_count": true, "created_at": true},
+	"user_groups":         {"name": true, "member_count": true, "created_at": true},
+	"executions":          {"device_hostname": true, "status": true, "action_type": true, "created_at": true},
+	"audit_events":        {"event_type": true, "stream_type": true, "actor_type": true, "occurred_at": true},
+}
+
+// resolveSort returns the (field, direction) for FT.SEARCH SORTBY. An unset
+// sort_field falls back to the scope's default (DESC); a set field is validated
+// against scopeSortableFields and rejected with InvalidArgument if it isn't
+// sortable on the requested scope.
+func resolveSort(ctx context.Context, scope string, sf pm.SortField, sd pm.SortDirection) (string, string, error) {
+	if sf == pm.SortField_SORT_FIELD_UNSPECIFIED {
+		return scopeSortField(scope), "DESC", nil
+	}
+	field, ok := sortFieldNames[sf]
+	if !ok || !scopeSortableFields[scope][field] {
+		return "", "", apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			fmt.Sprintf("sort field is not sortable on scope=%s", scope))
+	}
+	dir := "DESC"
+	if sd == pm.SortDirection_SORT_DIRECTION_ASC {
+		dir = "ASC"
+	}
+	return field, dir, nil
+}
+
 // scopeSortField returns the default sort field for a scope, or empty if none.
 func scopeSortField(scope string) string {
 	switch scope {
@@ -185,9 +249,14 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 
 		args := []any{"FT.SEARCH", idxName, ftQuery}
 
-		// Add SORTBY for scopes that have a timestamp field.
-		if sortField := scopeSortField(scope); sortField != "" {
-			args = append(args, "SORTBY", sortField, "DESC")
+		// SORTBY: the request's sort_field/direction validated against the scope,
+		// falling back to the scope default when unset (#325).
+		sortField, sortDir, err := resolveSort(ctx, scope, req.Msg.SortField, req.Msg.SortDirection)
+		if err != nil {
+			return nil, err
+		}
+		if sortField != "" {
+			args = append(args, "SORTBY", sortField, sortDir)
 		}
 
 		args = append(args, "LIMIT", offset, pageSize)

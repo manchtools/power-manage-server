@@ -29,6 +29,7 @@ const (
 // so the gate logic is unit-testable without a real RediSearch backend.
 type searchGate interface {
 	IndexesPresent(ctx context.Context) (bool, error)
+	SchemaCurrent(ctx context.Context) (bool, error)
 	Warm(ctx context.Context) error
 	Rebuild(ctx context.Context) error
 }
@@ -55,8 +56,18 @@ func startupSearchSync(ctx context.Context, gate searchGate, locker rebuildLocke
 		return fmt.Errorf("check search indexes present: %w", err)
 	}
 	if present {
-		logger.Info("search indexes already present; warming without destructive flush")
-		return gate.Warm(ctx)
+		// Present is not enough — a schema change (new field / SORTABLE) needs a
+		// drop+rebuild because FT.CREATE no-ops on an existing index. Warm only
+		// when the schema also matches the last rebuild's fingerprint.
+		current, err := gate.SchemaCurrent(ctx)
+		if err != nil {
+			return fmt.Errorf("check search schema fingerprint: %w", err)
+		}
+		if current {
+			logger.Info("search indexes present and schema current; warming without destructive flush")
+			return gate.Warm(ctx)
+		}
+		logger.Info("search index schema changed since last rebuild; rebuild required")
 	}
 
 	acquired, release, err := locker.TryLock(ctx)
