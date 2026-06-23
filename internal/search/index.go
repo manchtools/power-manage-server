@@ -5,6 +5,8 @@ package search
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -169,15 +171,32 @@ func (s IndexSchema) FilterableFields() map[string]bool {
 	return out
 }
 
+// SortableFields returns the field names declared SORTABLE — the only fields an
+// FT.SEARCH SORTBY can target. In every schema here SORTABLE immediately follows
+// the field's type (field, TYPE, SORTABLE), so the field is two tokens back; we
+// don't stack other modifiers before SORTABLE.
+func (s IndexSchema) SortableFields() map[string]bool {
+	out := map[string]bool{}
+	for i := 2; i < len(s.Schema); i++ {
+		if tok, _ := s.Schema[i].(string); tok != "SORTABLE" {
+			continue
+		}
+		if field, ok := s.Schema[i-2].(string); ok {
+			out[field] = true
+		}
+	}
+	return out
+}
+
 // IndexSchemas is the canonical set of RediSearch indexes EnsureIndexes creates.
 var IndexSchemas = []IndexSchema{
 	{
 		Name:   idxActions,
 		Prefix: prefixAction,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
-			"type", "TAG",
+			"type", "TAG", "SORTABLE",
 			"is_compliance", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
@@ -187,9 +206,9 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxActionSets,
 		Prefix: prefixActionSet,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
-			"member_count", "NUMERIC",
+			"member_count", "NUMERIC", "SORTABLE",
 			"action_names", "TEXT",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
@@ -199,9 +218,9 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxDefinitions,
 		Prefix: prefixDefinition,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
-			"member_count", "NUMERIC",
+			"member_count", "NUMERIC", "SORTABLE",
 			"set_names", "TEXT",
 			"action_names", "TEXT",
 			"created_at", "NUMERIC", "SORTABLE",
@@ -212,7 +231,7 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxCompliancePolicies,
 		Prefix: prefixCompliancePolicy,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
 			"action_names", "TEXT",
 		},
@@ -221,14 +240,14 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxDevices,
 		Prefix: prefixDevice,
 		Schema: []any{
-			"hostname", "TEXT",
+			"hostname", "TEXT", "SORTABLE",
 			"agent_version", "TAG",
 			"labels", "TEXT",
 			"os_name", "TEXT",
 			"os_version", "TEXT",
 			"os_arch", "TAG",
 			"kernel", "TEXT",
-			"compliance_status", "TAG",
+			"compliance_status", "TAG", "SORTABLE",
 			"registered_at", "NUMERIC", "SORTABLE",
 			"last_seen_at", "NUMERIC", "SORTABLE",
 		},
@@ -237,10 +256,10 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxUsers,
 		Prefix: prefixUser,
 		Schema: []any{
-			"email", "TEXT",
-			"display_name", "TEXT",
+			"email", "TEXT", "SORTABLE",
+			"display_name", "TEXT", "SORTABLE",
 			"linux_username", "TEXT",
-			"disabled", "TAG",
+			"disabled", "TAG", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -248,10 +267,10 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxDeviceGroups,
 		Prefix: prefixDeviceGroup,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
 			"is_dynamic", "TAG",
-			"member_count", "NUMERIC",
+			"member_count", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -259,10 +278,10 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxUserGroups,
 		Prefix: prefixUserGroup,
 		Schema: []any{
-			"name", "TEXT",
+			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
 			"is_dynamic", "TAG",
-			"member_count", "NUMERIC",
+			"member_count", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -271,9 +290,9 @@ var IndexSchemas = []IndexSchema{
 		Prefix: prefixExecution,
 		Schema: []any{
 			"action_name", "TEXT",
-			"device_hostname", "TEXT",
-			"status", "TAG",
-			"action_type", "TAG",
+			"device_hostname", "TEXT", "SORTABLE",
+			"status", "TAG", "SORTABLE",
+			"action_type", "TAG", "SORTABLE",
 			"device_id", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
@@ -282,13 +301,49 @@ var IndexSchemas = []IndexSchema{
 		Name:   idxAuditEvents,
 		Prefix: prefixAuditEvent,
 		Schema: []any{
-			"event_type", "TEXT",
-			"stream_type", "TAG",
-			"actor_type", "TAG",
+			"event_type", "TEXT", "SORTABLE",
+			"stream_type", "TAG", "SORTABLE",
+			"actor_type", "TAG", "SORTABLE",
 			"actor_id", "TAG",
 			"occurred_at", "NUMERIC", "SORTABLE",
 		},
 	},
+}
+
+// schemaFingerprintKey stores the hash of IndexSchemas from the last Rebuild.
+const schemaFingerprintKey = "pm:indexer:schema:fingerprint"
+
+// SchemaFingerprint is a stable hash of IndexSchemas. The indexer stamps it on
+// every successful Rebuild and compares it at boot; a mismatch means the schema
+// changed (a field added or promoted to SORTABLE/TAG) and the indexes must be
+// dropped+recreated to apply it — FT.CREATE is a no-op on an existing index.
+// Self-maintaining: editing IndexSchemas changes the fingerprint, so there is no
+// version constant to forget to bump (ponytail: the schema IS the version).
+func SchemaFingerprint() string {
+	h := sha256.New()
+	for _, ix := range IndexSchemas {
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00", ix.Name, ix.Prefix)
+		for _, f := range ix.Schema {
+			_, _ = fmt.Fprintf(h, "%v\x00", f)
+		}
+		_, _ = h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// SchemaCurrent reports whether the fingerprint stored at the last Rebuild
+// matches the current IndexSchemas. A missing stored value (never rebuilt, or a
+// pre-fingerprint deploy) counts as NOT current so the new schema is applied.
+// Backend read errors are surfaced (fail closed) rather than guessed.
+func (idx *Index) SchemaCurrent(ctx context.Context) (bool, error) {
+	stored, err := idx.rdb.Get(ctx, schemaFingerprintKey).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read schema fingerprint: %w", err)
+	}
+	return stored == SchemaFingerprint(), nil
 }
 
 // EnsureIndexes creates the FT search indexes if they do not already exist.
@@ -1098,6 +1153,12 @@ func (idx *Index) Rebuild(ctx context.Context) error {
 	}
 	if err := idx.Warm(ctx); err != nil {
 		return fmt.Errorf("warm: %w", err)
+	}
+	// Stamp the schema fingerprint so the next boot warms instead of rebuilding
+	// (until the schema changes again). Last step: only a fully-rebuilt index
+	// should claim to be current.
+	if err := idx.rdb.Set(ctx, schemaFingerprintKey, SchemaFingerprint(), 0).Err(); err != nil {
+		return fmt.Errorf("stamp schema fingerprint: %w", err)
 	}
 	return nil
 }
