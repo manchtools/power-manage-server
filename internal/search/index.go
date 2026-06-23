@@ -322,9 +322,9 @@ const schemaFingerprintKey = "pm:indexer:schema:fingerprint"
 func SchemaFingerprint() string {
 	h := sha256.New()
 	for _, ix := range IndexSchemas {
-		fmt.Fprintf(h, "%s\x00%s\x00", ix.Name, ix.Prefix)
+		_, _ = fmt.Fprintf(h, "%s\x00%s\x00", ix.Name, ix.Prefix)
 		for _, f := range ix.Schema {
-			fmt.Fprintf(h, "%v\x00", f)
+			_, _ = fmt.Fprintf(h, "%v\x00", f)
 		}
 		_, _ = h.Write([]byte{'\n'})
 	}
