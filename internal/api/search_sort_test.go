@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -67,6 +69,24 @@ func TestResolveSort_FieldNotSortableOnScope_InvalidArgument(t *testing.T) {
 	// hostname is sortable on devices, NOT on actions.
 	_, _, err := resolveSort(context.Background(), "actions",
 		pm.SortField_SORT_FIELD_HOSTNAME, pm.SortDirection_SORT_DIRECTION_DESC)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestDeviceStatusClause(t *testing.T) {
+	fixed := time.Unix(1_000_000, 0)
+	h := &SearchHandler{now: func() time.Time { return fixed }}
+	cutoff := fixed.Add(-5 * time.Minute).Unix() // 999_700
+
+	online, err := h.deviceStatusClause(context.Background(), "online")
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("@last_seen_at:[(%d +inf]", cutoff), online)
+
+	offline, err := h.deviceStatusClause(context.Background(), "offline")
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("@last_seen_at:[-inf %d]", cutoff), offline)
+
+	_, err = h.deviceStatusClause(context.Background(), "bogus")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }

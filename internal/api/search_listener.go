@@ -95,11 +95,13 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 		string(eventtypes.UserLinuxUsernameChanged),
 		string(eventtypes.UserDisabled),
 		string(eventtypes.UserEnabled),
-		string(eventtypes.UserRoleChanged), // role is an indexed filter (#325)
-		// last_login_at is an indexed sort (#325); reindex so "sort by last login /
-		// find dormant accounts" reflects a fresh login (one cheap enqueue/login).
-		string(eventtypes.UserLoggedIn):
+		// role is an indexed filter (#325); role changes are infrequent.
+		string(eventtypes.UserRoleChanged):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUser, ID: e.StreamID}}
+		// Note: UserLoggedIn is intentionally NOT here. last_login_at is an indexed
+		// sort (#325) but reindexing on every login is too costly; the value stays
+		// eventually-consistent via other user events + the periodic reconcile,
+		// which is fine for "sort by last login / find dormant accounts".
 
 	case string(eventtypes.UserDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUser, ID: e.StreamID}}

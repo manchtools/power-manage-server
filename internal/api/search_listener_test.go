@@ -28,6 +28,36 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
 		},
 		{
+			"UserRoleChanged reindexes user (role is filterable, #325)",
+			store.PersistedEvent{EventType: "UserRoleChanged", StreamID: "USR1", StreamType: "user"},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
+		},
+		// Assignment scope — reindex the SOURCE entity's `assigned` TAG (#325)
+		{
+			"AssignmentCreated reindexes the source action",
+			store.PersistedEvent{EventType: "AssignmentCreated", StreamID: "ASN1", StreamType: "assignment",
+				Data: []byte(`{"source_type":"action","source_id":"ACT1"}`)},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeAction, ID: "ACT1"}},
+		},
+		{
+			"AssignmentDeleted reindexes the source action_set",
+			store.PersistedEvent{EventType: "AssignmentDeleted", StreamID: "ASN1", StreamType: "assignment",
+				Data: []byte(`{"source_type":"action_set","source_id":"SET1"}`)},
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "SET1"}},
+		},
+		{
+			"AssignmentCreated to a compliance_policy is a no-op (no assigned TAG)",
+			store.PersistedEvent{EventType: "AssignmentCreated", StreamID: "ASN1", StreamType: "assignment",
+				Data: []byte(`{"source_type":"compliance_policy","source_id":"CP1"}`)},
+			nil,
+		},
+		{
+			"AssignmentDeleted with a legacy empty payload is a no-op",
+			store.PersistedEvent{EventType: "AssignmentDeleted", StreamID: "ASN1", StreamType: "assignment",
+				Data: []byte(`{}`)},
+			nil,
+		},
+		{
 			"UserEmailChanged reindexes user",
 			store.PersistedEvent{EventType: "UserEmailChanged", StreamID: "USR1", StreamType: "user"},
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"}},
