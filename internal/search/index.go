@@ -517,26 +517,26 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 			if a.Description != nil {
 				desc = *a.Description
 			}
-			isCompliance := "false"
+			isCompliance := false
 			var params map[string]any
 			if json.Unmarshal(a.Params, &params) == nil {
-				if v, ok := params["isCompliance"].(bool); ok && v {
-					isCompliance = "true"
+				if v, ok := params["isCompliance"].(bool); ok {
+					isCompliance = v
 				}
 			}
-			fields := map[string]any{
-				"name":          a.Name,
-				"description":   desc,
-				"type":          strconv.Itoa(int(a.ActionType)),
-				"is_compliance": isCompliance,
+			data := &taskqueue.SearchEntityData{
+				Name:         a.Name,
+				Description:  desc,
+				Type:         int32(a.ActionType),
+				IsCompliance: isCompliance,
 			}
 			if a.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(a.CreatedAt.Unix(), 10)
+				data.CreatedAt = a.CreatedAt.Unix()
 			}
 			if a.UpdatedAt != nil {
-				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = a.UpdatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixAction+a.ID, fields)
+			pipe.HSet(ctx, prefixAction+a.ID, entityFields(ScopeAction, data))
 			actionNames[a.ID] = a.Name
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
@@ -600,18 +600,21 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 				}
 			}
 
-			setFields := map[string]any{
-				"name":         s.Name,
-				"description":  s.Description,
-				"member_count": strconv.Itoa(int(s.MemberCount)),
-				"action_names": strings.Join(memberActionNames, " "),
+			data := &taskqueue.SearchEntityData{
+				Name:        s.Name,
+				Description: s.Description,
+				MemberCount: s.MemberCount,
 			}
 			if s.CreatedAt != nil {
-				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Unix(), 10)
+				data.CreatedAt = s.CreatedAt.Unix()
 			}
 			if s.UpdatedAt != nil {
-				setFields["updated_at"] = strconv.FormatInt(s.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = s.UpdatedAt.Unix()
 			}
+			// entityFields owns the standard fields; action_names is a warm-only
+			// denormalised join (the incremental path maintains it via rebuildParent).
+			setFields := entityFields(ScopeActionSet, data)
+			setFields["action_names"] = strings.Join(memberActionNames, " ")
 			pipe.HSet(ctx, prefixActionSet+s.ID, setFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
@@ -676,19 +679,22 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 				}
 			}
 
-			defFields := map[string]any{
-				"name":         d.Name,
-				"description":  d.Description,
-				"member_count": strconv.Itoa(int(d.MemberCount)),
-				"set_names":    strings.Join(memberSetNames, " "),
-				"action_names": strings.Join(allActionNames, " "),
+			data := &taskqueue.SearchEntityData{
+				Name:        d.Name,
+				Description: d.Description,
+				MemberCount: d.MemberCount,
 			}
 			if d.CreatedAt != nil {
-				defFields["created_at"] = strconv.FormatInt(d.CreatedAt.Unix(), 10)
+				data.CreatedAt = d.CreatedAt.Unix()
 			}
 			if d.UpdatedAt != nil {
-				defFields["updated_at"] = strconv.FormatInt(d.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = d.UpdatedAt.Unix()
 			}
+			// entityFields owns the standard fields; set_names/action_names are
+			// warm-only denormalised joins.
+			defFields := entityFields(ScopeDefinition, data)
+			defFields["set_names"] = strings.Join(memberSetNames, " ")
+			defFields["action_names"] = strings.Join(allActionNames, " ")
 			pipe.HSet(ctx, prefixDefinition+d.ID, defFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
@@ -734,11 +740,13 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 					}
 				}
 			}
-			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, map[string]any{
-				"name":         p.Name,
-				"description":  p.Description,
-				"action_names": strings.Join(actionNames, " "),
-			})
+			data := &taskqueue.SearchEntityData{
+				Name:           p.Name,
+				Description:    p.Description,
+				ActionNames:    strings.Join(actionNames, " "),
+				HasActionNames: true, // warm has the authoritative rule list
+			}
+			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, entityFields(ScopeCompliancePolicy, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -769,44 +777,28 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, d := range devices {
-			labels := FlattenLabels(d.Labels)
-			fields := map[string]any{
-				// hostname / labels / agent_version are agent-reported — bound and
-				// strip them before indexing (see sanitizeSearchField).
-				"hostname":          sanitizeSearchField(d.Hostname, maxHostnameField),
-				"agent_version":     sanitizeSearchField(d.AgentVersion, maxOSField),
-				"labels":            sanitizeSearchField(labels, maxLabelsField),
-				"compliance_status": strconv.Itoa(int(d.ComplianceStatus)),
+			// Build the same SearchEntityData the incremental path produces, then
+			// format via entityFields — single source of the device HSET shape
+			// (bounding/sanitising of agent-reported fields lives there).
+			data := &taskqueue.SearchEntityData{
+				Hostname:         d.Hostname,
+				AgentVersion:     d.AgentVersion,
+				Labels:           FlattenLabels(d.Labels),
+				ComplianceStatus: d.ComplianceStatus,
 			}
 			if d.RegisteredAt != nil {
-				fields["registered_at"] = strconv.FormatInt(d.RegisteredAt.Unix(), 10)
+				data.RegisteredAt = d.RegisteredAt.Unix()
 			}
 			if d.LastSeenAt != nil {
-				fields["last_seen_at"] = strconv.FormatInt(d.LastSeenAt.Unix(), 10)
+				data.LastSeenAt = d.LastSeenAt.Unix()
 			}
-
 			// Enrich with inventory data (os_version, system_info, kernel_info).
-			inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"})
-			if err == nil {
+			if inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"}); err == nil {
 				for _, t := range inv {
-					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)
-					// os_* / kernel come from agent-reported osquery rows — sanitize.
-					if osName != "" {
-						fields["os_name"] = sanitizeSearchField(osName, maxOSField)
-					}
-					if osVer != "" {
-						fields["os_version"] = sanitizeSearchField(osVer, maxOSField)
-					}
-					if osArch != "" {
-						fields["os_arch"] = sanitizeSearchField(osArch, maxOSField)
-					}
-					if kernel != "" {
-						fields["kernel"] = sanitizeSearchField(kernel, maxOSField)
-					}
+					EnrichDeviceInventory(data, t.TableName, t.Rows)
 				}
 			}
-
-			pipe.HSet(ctx, prefixDevice+d.ID, fields)
+			pipe.HSet(ctx, prefixDevice+d.ID, entityFields(ScopeDevice, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -879,16 +871,16 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 			if u.Disabled {
 				disabled = "true"
 			}
-			fields := map[string]any{
-				"email":          u.Email,
-				"display_name":   u.DisplayName,
-				"linux_username": u.LinuxUsername,
-				"disabled":       disabled,
+			data := &taskqueue.SearchEntityData{
+				Email:         u.Email,
+				DisplayName:   u.DisplayName,
+				LinuxUsername: u.LinuxUsername,
+				Disabled:      disabled,
 			}
 			if u.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(u.CreatedAt.Unix(), 10)
+				data.CreatedAt = u.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixUser+u.ID, fields)
+			pipe.HSet(ctx, prefixUser+u.ID, entityFields(ScopeUser, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -923,16 +915,16 @@ func (idx *Index) warmDeviceGroups(ctx context.Context) (int, error) {
 			if g.IsDynamic {
 				isDynamic = "true"
 			}
-			fields := map[string]any{
-				"name":         g.Name,
-				"description":  g.Description,
-				"is_dynamic":   isDynamic,
-				"member_count": strconv.Itoa(int(g.MemberCount)),
+			data := &taskqueue.SearchEntityData{
+				Name:        g.Name,
+				Description: g.Description,
+				IsDynamic:   isDynamic,
+				MemberCount: g.MemberCount,
 			}
 			if g.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+				data.CreatedAt = g.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixDeviceGroup+g.ID, fields)
+			pipe.HSet(ctx, prefixDeviceGroup+g.ID, entityFields(ScopeDeviceGroup, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -967,16 +959,16 @@ func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
 			if g.IsDynamic {
 				isDynamic = "true"
 			}
-			fields := map[string]any{
-				"name":         g.Name,
-				"description":  g.Description,
-				"is_dynamic":   isDynamic,
-				"member_count": strconv.Itoa(int(g.MemberCount)),
+			data := &taskqueue.SearchEntityData{
+				Name:        g.Name,
+				Description: g.Description,
+				IsDynamic:   isDynamic,
+				MemberCount: g.MemberCount,
 			}
 			if !g.CreatedAt.IsZero() {
-				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+				data.CreatedAt = g.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixUserGroup+g.ID, fields)
+			pipe.HSet(ctx, prefixUserGroup+g.ID, entityFields(ScopeUserGroup, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
