@@ -398,6 +398,34 @@ func (q *Queries) ListAssignedActionsForDevice(ctx context.Context, targetID str
 	return items, nil
 }
 
+const listAssignedSourceIDs = `-- name: ListAssignedSourceIDs :many
+SELECT DISTINCT source_id FROM assignments_projection
+WHERE source_type = $1 AND is_deleted = FALSE
+`
+
+// Distinct source_ids with at least one live assignment of the given
+// source_type. Backs the search index `assigned` TAG during a warm rebuild
+// (one query per type instead of a per-entity COUNT).
+func (q *Queries) ListAssignedSourceIDs(ctx context.Context, sourceType string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAssignedSourceIDs, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var source_id string
+		if err := rows.Scan(&source_id); err != nil {
+			return nil, err
+		}
+		items = append(items, source_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAssignments = `-- name: ListAssignments :many
 SELECT a.id, a.source_type, a.source_id, a.target_type, a.target_id, a.sort_order, a.mode, a.created_at, a.created_by, a.is_deleted, a.projection_version,
   COALESCE(CASE a.source_type

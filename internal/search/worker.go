@@ -314,6 +314,15 @@ func parentScopeOf(childScope string) string {
 	return ""
 }
 
+// setAssigned writes the assigned TAG when the reindex path computed it. An
+// empty value means "not computed" — leave the prior TAG alone (HSET is
+// additive) rather than clobbering it from a path that didn't load assignments.
+func setAssigned(fields map[string]any, data *taskqueue.SearchEntityData) {
+	if data.Assigned != "" {
+		fields["assigned"] = data.Assigned
+	}
+}
+
 func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any {
 	switch scope {
 	case ScopeAction:
@@ -327,6 +336,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"type":          strconv.Itoa(int(data.Type)),
 			"is_compliance": isCompliance,
 		}
+		setAssigned(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -340,6 +350,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"description":  data.Description,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
+		setAssigned(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -353,6 +364,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"description":  data.Description,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
+		setAssigned(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -367,6 +379,14 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		}
 		if data.HasActionNames {
 			fields["action_names"] = data.ActionNames
+		}
+		// HasRuleCount lets a 0-rule policy still write rule_count (the
+		// @rule_count:[0 0] empty filter needs the field present).
+		if data.HasRuleCount {
+			fields["rule_count"] = strconv.Itoa(int(data.RuleCount))
+		}
+		if data.CreatedAt != 0 {
+			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
 		return fields
 	case ScopeDevice:
@@ -395,6 +415,12 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"display_name":   data.DisplayName,
 			"linux_username": data.LinuxUsername,
 			"disabled":       data.Disabled,
+		}
+		if data.Role != "" {
+			fields["role"] = data.Role
+		}
+		if data.LastLoginAt != 0 {
+			fields["last_login_at"] = strconv.FormatInt(data.LastLoginAt, 10)
 		}
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)

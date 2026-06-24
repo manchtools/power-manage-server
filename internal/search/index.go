@@ -198,6 +198,7 @@ var IndexSchemas = []IndexSchema{
 			"description", "TEXT",
 			"type", "TAG", "SORTABLE",
 			"is_compliance", "TAG",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -210,6 +211,7 @@ var IndexSchemas = []IndexSchema{
 			"description", "TEXT",
 			"member_count", "NUMERIC", "SORTABLE",
 			"action_names", "TEXT",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -223,6 +225,7 @@ var IndexSchemas = []IndexSchema{
 			"member_count", "NUMERIC", "SORTABLE",
 			"set_names", "TEXT",
 			"action_names", "TEXT",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -234,6 +237,8 @@ var IndexSchemas = []IndexSchema{
 			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
 			"action_names", "TEXT",
+			"rule_count", "NUMERIC", "SORTABLE",
+			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
 	{
@@ -243,7 +248,9 @@ var IndexSchemas = []IndexSchema{
 			"hostname", "TEXT", "SORTABLE",
 			"agent_version", "TAG",
 			"labels", "TEXT",
-			"os_name", "TEXT",
+			// os_name is a TAG for exact "OS: Ubuntu" filter chips (#325); free-text
+			// device search still covers hostname/labels/os_version.
+			"os_name", "TAG",
 			"os_version", "TEXT",
 			"os_arch", "TAG",
 			"kernel", "TEXT",
@@ -260,6 +267,8 @@ var IndexSchemas = []IndexSchema{
 			"display_name", "TEXT", "SORTABLE",
 			"linux_username", "TEXT",
 			"disabled", "TAG", "SORTABLE",
+			"role", "TAG",
+			"last_login_at", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -492,11 +501,39 @@ func (idx *Index) Warm(ctx context.Context) error {
 // action_id → name map. Downstream warm passes (sets + definitions)
 // use the map for in-memory joins instead of issuing one Valkey
 // HGet per member. See manchtools/power-manage-server#153.
+// assignedSourceSet returns the set of source_ids of sourceType that have a live
+// assignment — for stamping the search `assigned` TAG during a warm rebuild
+// (one query per type, then O(1) lookups).
+func (idx *Index) assignedSourceSet(ctx context.Context, sourceType string) (map[string]bool, error) {
+	ids, err := idx.store.Queries().ListAssignedSourceIDs(ctx, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
+// tagBool renders a bool as the "true"/"false" string a RediSearch TAG stores.
+func tagBool(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, error) {
 	const pageSize int32 = 500
 	var offset int32
 	var total int
 	actionNames := map[string]string{}
+
+	assignedActions, err := idx.assignedSourceSet(ctx, "action")
+	if err != nil {
+		return total, actionNames, err
+	}
 
 	for {
 		actions, err := idx.store.Repos().Action.List(ctx, store.ListActionsFilter{
@@ -529,6 +566,7 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 				Description:  desc,
 				Type:         int32(a.ActionType),
 				IsCompliance: isCompliance,
+				Assigned:     tagBool(assignedActions[a.ID]),
 			}
 			if a.CreatedAt != nil {
 				data.CreatedAt = a.CreatedAt.Unix()
@@ -563,6 +601,11 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 	var total int
 	setNames := map[string]string{}
 	setMembers := map[string][]string{}
+
+	assignedSets, err := idx.assignedSourceSet(ctx, "action_set")
+	if err != nil {
+		return total, setNames, setMembers, err
+	}
 
 	for {
 		sets, err := idx.store.Repos().ActionSet.List(ctx, store.ListActionSetsFilter{
@@ -604,6 +647,7 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 				Name:        s.Name,
 				Description: s.Description,
 				MemberCount: s.MemberCount,
+				Assigned:    tagBool(assignedSets[s.ID]),
 			}
 			if s.CreatedAt != nil {
 				data.CreatedAt = s.CreatedAt.Unix()
@@ -644,6 +688,11 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 	var offset int32
 	var total int
 
+	assignedDefs, err := idx.assignedSourceSet(ctx, "definition")
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		defs, err := idx.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
 		if err != nil {
@@ -683,6 +732,7 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 				Name:        d.Name,
 				Description: d.Description,
 				MemberCount: d.MemberCount,
+				Assigned:    tagBool(assignedDefs[d.ID]),
 			}
 			if d.CreatedAt != nil {
 				data.CreatedAt = d.CreatedAt.Unix()
@@ -730,8 +780,10 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, p := range policies {
-			// Look up action names from compliance rules
+			// Look up action names + rule count from compliance rules.
 			var actionNames []string
+			var ruleCount int32
+			hasRuleCount := false
 			rules, err := idx.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
 			if err == nil {
 				for _, r := range rules {
@@ -739,12 +791,19 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 						actionNames = append(actionNames, r.ActionName)
 					}
 				}
+				ruleCount = int32(len(rules))
+				hasRuleCount = true
 			}
 			data := &taskqueue.SearchEntityData{
 				Name:           p.Name,
 				Description:    p.Description,
 				ActionNames:    strings.Join(actionNames, " "),
 				HasActionNames: true, // warm has the authoritative rule list
+				RuleCount:      ruleCount,
+				HasRuleCount:   hasRuleCount,
+			}
+			if p.CreatedAt != nil {
+				data.CreatedAt = p.CreatedAt.Unix()
 			}
 			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, entityFields(ScopeCompliancePolicy, data))
 		}
@@ -876,9 +935,13 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 				DisplayName:   u.DisplayName,
 				LinuxUsername: u.LinuxUsername,
 				Disabled:      disabled,
+				Role:          u.Role,
 			}
 			if u.CreatedAt != nil {
 				data.CreatedAt = u.CreatedAt.Unix()
+			}
+			if u.LastLoginAt != nil {
+				data.LastLoginAt = u.LastLoginAt.Unix()
 			}
 			pipe.HSet(ctx, prefixUser+u.ID, entityFields(ScopeUser, data))
 		}

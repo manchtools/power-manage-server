@@ -39,6 +39,13 @@ WHERE is_deleted = FALSE
   AND ($3::TEXT = '' OR target_type = $3)
   AND ($4::TEXT = '' OR target_id = $4);
 
+-- name: ListAssignedSourceIDs :many
+-- Distinct source_ids with at least one live assignment of the given
+-- source_type. Backs the search index `assigned` TAG during a warm rebuild
+-- (one query per type instead of a per-entity COUNT).
+SELECT DISTINCT source_id FROM assignments_projection
+WHERE source_type = $1 AND is_deleted = FALSE;
+
 -- Get all assignments for a specific source
 -- name: ListAssignmentsForSource :many
 SELECT * FROM assignments_projection

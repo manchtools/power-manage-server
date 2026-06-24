@@ -71,10 +71,11 @@ func TestResolveSort_FieldNotSortableOnScope_InvalidArgument(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestResolveSort_ReservedFieldNotYetWired_InvalidArgument(t *testing.T) {
-	// rule_count's index field isn't populated yet — must be rejected, not sent.
-	_, _, err := resolveSort(context.Background(), "compliance_policies",
+func TestResolveSort_RuleCountSortableOnCompliance(t *testing.T) {
+	// rule_count is now a populated SORTABLE field on compliance_policies (#325 PR B).
+	field, dir, err := resolveSort(context.Background(), "compliance_policies",
 		pm.SortField_SORT_FIELD_RULE_COUNT, pm.SortDirection_SORT_DIRECTION_DESC)
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	require.NoError(t, err)
+	assert.Equal(t, "rule_count", field)
+	assert.Equal(t, "DESC", dir)
 }

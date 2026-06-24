@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -17,12 +18,14 @@ import (
 type SearchHandler struct {
 	searchIndexHolder
 	logger *slog.Logger
+	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewSearchHandler creates a new search handler.
 func NewSearchHandler(logger *slog.Logger) *SearchHandler {
 	return &SearchHandler{
 		logger: logger,
+		now:    time.Now,
 	}
 }
 
@@ -44,13 +47,13 @@ var sortFieldNames = map[pm.SortField]string{
 	pm.SortField_SORT_FIELD_ACTOR_TYPE:        "actor_type",
 	pm.SortField_SORT_FIELD_STREAM_TYPE:       "stream_type",
 	pm.SortField_SORT_FIELD_EVENT_TYPE:        "event_type",
+	pm.SortField_SORT_FIELD_RULE_COUNT:        "rule_count",
+	pm.SortField_SORT_FIELD_LAST_LOGIN_AT:     "last_login_at",
 	pm.SortField_SORT_FIELD_CREATED_AT:        "created_at",
 	pm.SortField_SORT_FIELD_UPDATED_AT:        "updated_at",
 	pm.SortField_SORT_FIELD_LAST_SEEN_AT:      "last_seen_at",
 	pm.SortField_SORT_FIELD_REGISTERED_AT:     "registered_at",
 	pm.SortField_SORT_FIELD_OCCURRED_AT:       "occurred_at",
-	// RULE_COUNT and LAST_LOGIN_AT are reserved for a follow-up (their index
-	// fields aren't populated yet) — intentionally absent so resolveSort rejects.
 }
 
 // scopeSortableFields lists the SORTABLE index fields per scope. Mirrors the
@@ -61,9 +64,9 @@ var scopeSortableFields = map[string]map[string]bool{
 	"actions":             {"name": true, "type": true, "created_at": true, "updated_at": true},
 	"action_sets":         {"name": true, "member_count": true, "created_at": true, "updated_at": true},
 	"definitions":         {"name": true, "member_count": true, "created_at": true, "updated_at": true},
-	"compliance_policies": {"name": true},
+	"compliance_policies": {"name": true, "rule_count": true, "created_at": true},
 	"devices":             {"hostname": true, "compliance_status": true, "registered_at": true, "last_seen_at": true},
-	"users":               {"email": true, "display_name": true, "disabled": true, "created_at": true},
+	"users":               {"email": true, "display_name": true, "disabled": true, "last_login_at": true, "created_at": true},
 	"device_groups":       {"name": true, "member_count": true, "created_at": true},
 	"user_groups":         {"name": true, "member_count": true, "created_at": true},
 	"executions":          {"device_hostname": true, "status": true, "action_type": true, "created_at": true},
@@ -218,7 +221,26 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	// query plan. Without this check, an unscoped `@status:{pending}`
 	// would propagate to e.g. idx:action_sets, which RediSearch rejects
 	// with a SYNTAX error surfaced as opaque CodeInternal. See #158.
-	if err := validateFiltersForScopes(ctx, scopes, req.Msg.DateFilters, req.Msg.TagFilters); err != nil {
+	// Device online/offline is a synthetic filter (#325): "status" is not a real
+	// idx:devices field, so translate it to a last_seen_at range and strip it
+	// before the generic validation/build (else RediSearch rejects @status:{}).
+	tagFilters := req.Msg.TagFilters
+	var deviceStatusClause string
+	if statusVal, ok := req.Msg.TagFilters["status"]; ok && len(scopes) == 1 && scopes[0] == "devices" {
+		clause, err := h.deviceStatusClause(ctx, statusVal)
+		if err != nil {
+			return nil, err
+		}
+		deviceStatusClause = clause
+		tagFilters = make(map[string]string, len(req.Msg.TagFilters))
+		for k, v := range req.Msg.TagFilters {
+			if k != "status" {
+				tagFilters[k] = v
+			}
+		}
+	}
+
+	if err := validateFiltersForScopes(ctx, scopes, req.Msg.DateFilters, tagFilters); err != nil {
 		return nil, err
 	}
 
@@ -236,7 +258,14 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	}
 
 	// Build the FT.SEARCH query from text query + filters.
-	ftQuery := buildFTQuery(query, req.Msg.DateFilters, req.Msg.TagFilters)
+	ftQuery := buildFTQuery(query, req.Msg.DateFilters, tagFilters)
+	if deviceStatusClause != "" {
+		if ftQuery == "*" {
+			ftQuery = deviceStatusClause
+		} else {
+			ftQuery += " " + deviceStatusClause
+		}
+	}
 
 	var results []*pm.SearchResult
 	var totalCount int32
@@ -325,12 +354,12 @@ func (h *SearchHandler) RebuildSearchIndex(ctx context.Context, req *connect.Req
 //     defensive silent-drop check (defence in depth — the up-front
 //     validator already rejects unknown fields).
 var scopeFilterFields = map[string]map[string]bool{
-	"actions":             {"type": true, "is_compliance": true, "created_at": true, "updated_at": true},
-	"action_sets":         {"member_count": true, "created_at": true, "updated_at": true},
-	"definitions":         {"member_count": true, "created_at": true, "updated_at": true},
-	"compliance_policies": {},
-	"devices":             {"agent_version": true, "os_arch": true, "compliance_status": true, "registered_at": true, "last_seen_at": true},
-	"users":               {"disabled": true, "created_at": true},
+	"actions":             {"type": true, "is_compliance": true, "assigned": true, "created_at": true, "updated_at": true},
+	"action_sets":         {"member_count": true, "assigned": true, "created_at": true, "updated_at": true},
+	"definitions":         {"member_count": true, "assigned": true, "created_at": true, "updated_at": true},
+	"compliance_policies": {"rule_count": true, "created_at": true},
+	"devices":             {"agent_version": true, "os_arch": true, "os_name": true, "compliance_status": true, "registered_at": true, "last_seen_at": true},
+	"users":               {"disabled": true, "role": true, "last_login_at": true, "created_at": true},
 	"device_groups":       {"is_dynamic": true, "member_count": true, "created_at": true},
 	"user_groups":         {"is_dynamic": true, "member_count": true, "created_at": true},
 	"executions":          {"status": true, "action_type": true, "device_id": true, "created_at": true},
@@ -396,6 +425,24 @@ func validateFiltersForScopes(ctx context.Context, scopes []string, dateFilters 
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is only valid for scope=%s", field, strings.Join(supportedBy, ",")))
 	}
 	return nil
+}
+
+// deviceStatusClause translates the synthetic device "status" filter
+// (online/offline) into a last_seen_at range matching the 5-minute offline
+// window the Postgres path (ListOffline) uses, computed at query time. An
+// unknown value is rejected with InvalidArgument.
+func (h *SearchHandler) deviceStatusClause(ctx context.Context, status string) (string, error) {
+	const offlineWindow = 5 * time.Minute
+	cutoff := h.now().Add(-offlineWindow).Unix()
+	switch status {
+	case "online":
+		return fmt.Sprintf("@last_seen_at:[(%d +inf]", cutoff), nil
+	case "offline":
+		return fmt.Sprintf("@last_seen_at:[-inf %d]", cutoff), nil
+	default:
+		return "", apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			fmt.Sprintf("device status filter must be 'online' or 'offline', got %q", status))
+	}
 }
 
 // buildFTQuery constructs a RediSearch query string from text, date filters, and tag filters.
