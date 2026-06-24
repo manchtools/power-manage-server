@@ -94,8 +94,14 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 		string(eventtypes.UserProfileUpdated),
 		string(eventtypes.UserLinuxUsernameChanged),
 		string(eventtypes.UserDisabled),
-		string(eventtypes.UserEnabled):
+		string(eventtypes.UserEnabled),
+		// role is an indexed filter (#325); role changes are infrequent.
+		string(eventtypes.UserRoleChanged):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUser, ID: e.StreamID}}
+		// Note: UserLoggedIn is intentionally NOT here. last_login_at is an indexed
+		// sort (#325) but reindexing on every login is too costly; the value stays
+		// eventually-consistent via other user events + the periodic reconcile,
+		// which is fine for "sort by last login / find dormant accounts".
 
 	case string(eventtypes.UserDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUser, ID: e.StreamID}}
@@ -266,9 +272,46 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case string(eventtypes.CompliancePolicyDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeCompliancePolicy, ID: e.StreamID}}
+
+	// ---------------------------------------------------------
+	// Assignment scope — reindex the SOURCE entity's `assigned` TAG (#325).
+	// ---------------------------------------------------------
+	// StreamID is the assignment id; the source tuple rides in the payload
+	// (both Created and Deleted emit it). A compliance_policy source has no
+	// `assigned` field, and a legacy AssignmentDeleted with an empty payload
+	// is a no-op — the periodic reconciler/warm rebuild is the safety net.
+	case string(eventtypes.AssignmentCreated),
+		string(eventtypes.AssignmentDeleted):
+		var p struct {
+			SourceType string `json:"source_type"`
+			SourceID   string `json:"source_id"`
+		}
+		if json.Unmarshal(e.Data, &p) != nil || p.SourceID == "" {
+			return nil
+		}
+		scope := assignmentSourceScope(p.SourceType)
+		if scope == "" {
+			return nil
+		}
+		return []SearchAffected{{Op: SearchOpReindex, Scope: scope, ID: p.SourceID}}
 	}
 
 	return nil
+}
+
+// assignmentSourceScope maps an assignment source_type to the search scope whose
+// `assigned` TAG it affects, or "" for types that carry no such TAG
+// (compliance_policy / unknown).
+func assignmentSourceScope(sourceType string) string {
+	switch sourceType {
+	case "action":
+		return search.ScopeAction
+	case "action_set":
+		return search.ScopeActionSet
+	case "definition":
+		return search.ScopeDefinition
+	}
+	return ""
 }
 
 // SearchListener returns a store.EventListener that translates the
@@ -351,6 +394,20 @@ func SearchListener(st *store.Store, idx SearchIndex, logger *slog.Logger) store
 // key but the LATEST payload wins. So listener payload divergence
 // would be silent until Phase 2 removes the handler-side path. The
 // Phase 1 tests assert end-to-end equivalence to catch this.
+// sourceAssignedTag returns the "assigned" TAG value for a source entity by
+// counting its live assignments (#325). source_type is "action"/"action_set"/
+// "definition"; empty Column3/Column4 wildcard the target tuple.
+func sourceAssignedTag(ctx context.Context, q *db.Queries, sourceType, id string) (string, error) {
+	cnt, err := q.CountAssignments(ctx, db.CountAssignmentsParams{Column1: sourceType, Column2: id})
+	if err != nil {
+		return "", err
+	}
+	if cnt > 0 {
+		return "true", nil
+	}
+	return "false", nil
+}
+
 func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Logger, scope, id string) (*taskqueue.SearchEntityData, error) {
 	q := st.Queries()
 	switch scope {
@@ -364,15 +421,20 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if u.Disabled {
 			disabled = "true"
 		}
-		var createdAt int64
+		var createdAt, lastLoginAt int64
 		if u.CreatedAt != nil {
 			createdAt = u.CreatedAt.Unix()
+		}
+		if u.LastLoginAt != nil {
+			lastLoginAt = u.LastLoginAt.Unix()
 		}
 		return &taskqueue.SearchEntityData{
 			Email:         u.Email,
 			DisplayName:   u.DisplayName,
 			LinuxUsername: u.LinuxUsername,
 			Disabled:      disabled,
+			Role:          u.Role,
+			LastLoginAt:   lastLoginAt,
 			CreatedAt:     createdAt,
 		}, nil
 
@@ -452,10 +514,15 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if s.UpdatedAt != nil {
 			updatedAt = s.UpdatedAt.Unix()
 		}
+		assigned, err := sourceAssignedTag(ctx, q, "action_set", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
 			Name:        s.Name,
 			Description: s.Description,
 			MemberCount: s.MemberCount,
+			Assigned:    assigned,
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
 		}, nil
@@ -468,6 +535,9 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		data := &taskqueue.SearchEntityData{
 			Name:        p.Name,
 			Description: p.Description,
+		}
+		if p.CreatedAt != nil {
+			data.CreatedAt = p.CreatedAt.Unix()
 		}
 		// Rule list is denormalised into ActionNames so a search
 		// hit can match against the action names referenced by the
@@ -491,6 +561,8 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 			}
 			data.ActionNames = strings.Join(actionNames, " ")
 			data.HasActionNames = true
+			data.RuleCount = int32(len(rules))
+			data.HasRuleCount = true
 		}
 		return data, nil
 
@@ -521,11 +593,16 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if a.UpdatedAt != nil {
 			updatedAt = a.UpdatedAt.Unix()
 		}
+		assigned, err := sourceAssignedTag(ctx, q, "action", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
 			Name:         a.Name,
 			Description:  desc,
 			Type:         a.ActionType,
 			IsCompliance: isCompliance,
+			Assigned:     assigned,
 			CreatedAt:    createdAt,
 			UpdatedAt:    updatedAt,
 		}, nil
@@ -542,10 +619,15 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if d.UpdatedAt != nil {
 			updatedAt = d.UpdatedAt.Unix()
 		}
+		assigned, err := sourceAssignedTag(ctx, q, "definition", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
 			Name:        d.Name,
 			Description: d.Description,
 			MemberCount: d.MemberCount,
+			Assigned:    assigned,
 			CreatedAt:   createdAt,
 			UpdatedAt:   updatedAt,
 		}, nil

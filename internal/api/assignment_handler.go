@@ -174,8 +174,10 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
-	// Verify assignment exists before emitting delete event
-	_, err = h.store.Repos().Assignment.GetByID(ctx, req.Msg.Id)
+	// Verify assignment exists before emitting delete event. Capture the source
+	// tuple so the event carries it (StreamID is the assignment id) — the search
+	// classifier reindexes the source's `assigned` TAG without a DB lookup.
+	assignment, err := h.store.Repos().Assignment.GetByID(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrAssignmentNotFound, "assignment not found")
 	}
@@ -184,9 +186,12 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 		StreamType: "assignment",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.AssignmentDeleted),
-		Data:       map[string]any{},
-		ActorType:  "user",
-		ActorID:    userCtx.ID,
+		Data: payloads.AssignmentDeleted{
+			SourceType: assignment.SourceType,
+			SourceID:   assignment.SourceID,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
 	}, "failed to delete assignment"); err != nil {
 		return nil, err
 	}

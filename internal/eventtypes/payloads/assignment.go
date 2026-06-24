@@ -13,6 +13,17 @@ type AssignmentCreated struct {
 	Mode       *int32 `json:"mode,omitempty"`
 }
 
+// AssignmentDeleted is the wire shape for AssignmentDeleted. It carries the
+// source tuple (StreamID is the assignment id) so the search-index classifier
+// can reindex the affected action/action_set/definition's `assigned` TAG
+// without a DB lookup. The projector soft-deletes by StreamID and ignores these
+// fields; older events with an empty payload still replay (a warm rebuild
+// recomputes `assigned` from the current assignment state).
+type AssignmentDeleted struct {
+	SourceType string `json:"source_type,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+}
+
 // AssignmentModeChanged is the wire shape for AssignmentModeChanged.
 // Currently unused (assignments are immutable; mutate by
 // delete-and-recreate) but the projector preserves replay parity.

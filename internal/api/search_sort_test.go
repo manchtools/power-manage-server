@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -71,10 +73,29 @@ func TestResolveSort_FieldNotSortableOnScope_InvalidArgument(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestResolveSort_ReservedFieldNotYetWired_InvalidArgument(t *testing.T) {
-	// rule_count's index field isn't populated yet — must be rejected, not sent.
-	_, _, err := resolveSort(context.Background(), "compliance_policies",
-		pm.SortField_SORT_FIELD_RULE_COUNT, pm.SortDirection_SORT_DIRECTION_DESC)
+func TestDeviceStatusClause(t *testing.T) {
+	fixed := time.Unix(1_000_000, 0)
+	h := &SearchHandler{now: func() time.Time { return fixed }}
+	cutoff := fixed.Add(-5 * time.Minute).Unix() // 999_700
+
+	online, err := h.deviceStatusClause(context.Background(), "online")
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("@last_seen_at:[(%d +inf]", cutoff), online)
+
+	offline, err := h.deviceStatusClause(context.Background(), "offline")
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("@last_seen_at:[-inf %d]", cutoff), offline)
+
+	_, err = h.deviceStatusClause(context.Background(), "bogus")
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestResolveSort_RuleCountSortableOnCompliance(t *testing.T) {
+	// rule_count is now a populated SORTABLE field on compliance_policies (#325 PR B).
+	field, dir, err := resolveSort(context.Background(), "compliance_policies",
+		pm.SortField_SORT_FIELD_RULE_COUNT, pm.SortDirection_SORT_DIRECTION_DESC)
+	require.NoError(t, err)
+	assert.Equal(t, "rule_count", field)
+	assert.Equal(t, "DESC", dir)
 }

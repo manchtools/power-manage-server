@@ -331,9 +331,16 @@ type SearchEntityData struct {
 	DisplayName   string `json:"display_name,omitempty"`
 	LinuxUsername string `json:"linux_username,omitempty"`
 	Disabled      string `json:"disabled,omitempty"`
+	Role          string `json:"role,omitempty"`          // #325 TAG filter
+	LastLoginAt   int64  `json:"last_login_at,omitempty"` // #325 sortable
 
 	// Device group / User group fields
 	IsDynamic string `json:"is_dynamic,omitempty"`
+
+	// #325 filter additions
+	Assigned     string `json:"assigned,omitempty"`       // action/action_set/definition: "true"/"false" — directly assigned (TAG)
+	RuleCount    int32  `json:"rule_count,omitempty"`     // compliance policy rule count (NUMERIC, sortable)
+	HasRuleCount bool   `json:"has_rule_count,omitempty"` // signals RuleCount computed (so 0 is written for the empty-rules filter)
 
 	// Audit event fields
 	EventType  string `json:"event_type,omitempty"`

@@ -198,6 +198,7 @@ var IndexSchemas = []IndexSchema{
 			"description", "TEXT",
 			"type", "TAG", "SORTABLE",
 			"is_compliance", "TAG",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -210,6 +211,7 @@ var IndexSchemas = []IndexSchema{
 			"description", "TEXT",
 			"member_count", "NUMERIC", "SORTABLE",
 			"action_names", "TEXT",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -223,6 +225,7 @@ var IndexSchemas = []IndexSchema{
 			"member_count", "NUMERIC", "SORTABLE",
 			"set_names", "TEXT",
 			"action_names", "TEXT",
+			"assigned", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -234,6 +237,8 @@ var IndexSchemas = []IndexSchema{
 			"name", "TEXT", "SORTABLE",
 			"description", "TEXT",
 			"action_names", "TEXT",
+			"rule_count", "NUMERIC", "SORTABLE",
+			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
 	{
@@ -243,7 +248,9 @@ var IndexSchemas = []IndexSchema{
 			"hostname", "TEXT", "SORTABLE",
 			"agent_version", "TAG",
 			"labels", "TEXT",
-			"os_name", "TEXT",
+			// os_name is a TAG for exact "OS: Ubuntu" filter chips (#325); free-text
+			// device search still covers hostname/labels/os_version.
+			"os_name", "TAG",
 			"os_version", "TEXT",
 			"os_arch", "TAG",
 			"kernel", "TEXT",
@@ -260,6 +267,8 @@ var IndexSchemas = []IndexSchema{
 			"display_name", "TEXT", "SORTABLE",
 			"linux_username", "TEXT",
 			"disabled", "TAG", "SORTABLE",
+			"role", "TAG",
+			"last_login_at", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -492,11 +501,39 @@ func (idx *Index) Warm(ctx context.Context) error {
 // action_id → name map. Downstream warm passes (sets + definitions)
 // use the map for in-memory joins instead of issuing one Valkey
 // HGet per member. See manchtools/power-manage-server#153.
+// assignedSourceSet returns the set of source_ids of sourceType that have a live
+// assignment — for stamping the search `assigned` TAG during a warm rebuild
+// (one query per type, then O(1) lookups).
+func (idx *Index) assignedSourceSet(ctx context.Context, sourceType string) (map[string]bool, error) {
+	ids, err := idx.store.Queries().ListAssignedSourceIDs(ctx, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
+// tagBool renders a bool as the "true"/"false" string a RediSearch TAG stores.
+func tagBool(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, error) {
 	const pageSize int32 = 500
 	var offset int32
 	var total int
 	actionNames := map[string]string{}
+
+	assignedActions, err := idx.assignedSourceSet(ctx, "action")
+	if err != nil {
+		return total, actionNames, err
+	}
 
 	for {
 		actions, err := idx.store.Repos().Action.List(ctx, store.ListActionsFilter{
@@ -517,26 +554,27 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 			if a.Description != nil {
 				desc = *a.Description
 			}
-			isCompliance := "false"
+			isCompliance := false
 			var params map[string]any
 			if json.Unmarshal(a.Params, &params) == nil {
-				if v, ok := params["isCompliance"].(bool); ok && v {
-					isCompliance = "true"
+				if v, ok := params["isCompliance"].(bool); ok {
+					isCompliance = v
 				}
 			}
-			fields := map[string]any{
-				"name":          a.Name,
-				"description":   desc,
-				"type":          strconv.Itoa(int(a.ActionType)),
-				"is_compliance": isCompliance,
+			data := &taskqueue.SearchEntityData{
+				Name:         a.Name,
+				Description:  desc,
+				Type:         int32(a.ActionType),
+				IsCompliance: isCompliance,
+				Assigned:     tagBool(assignedActions[a.ID]),
 			}
 			if a.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(a.CreatedAt.Unix(), 10)
+				data.CreatedAt = a.CreatedAt.Unix()
 			}
 			if a.UpdatedAt != nil {
-				fields["updated_at"] = strconv.FormatInt(a.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = a.UpdatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixAction+a.ID, fields)
+			pipe.HSet(ctx, prefixAction+a.ID, entityFields(ScopeAction, data))
 			actionNames[a.ID] = a.Name
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
@@ -563,6 +601,11 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 	var total int
 	setNames := map[string]string{}
 	setMembers := map[string][]string{}
+
+	assignedSets, err := idx.assignedSourceSet(ctx, "action_set")
+	if err != nil {
+		return total, setNames, setMembers, err
+	}
 
 	for {
 		sets, err := idx.store.Repos().ActionSet.List(ctx, store.ListActionSetsFilter{
@@ -600,18 +643,22 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 				}
 			}
 
-			setFields := map[string]any{
-				"name":         s.Name,
-				"description":  s.Description,
-				"member_count": strconv.Itoa(int(s.MemberCount)),
-				"action_names": strings.Join(memberActionNames, " "),
+			data := &taskqueue.SearchEntityData{
+				Name:        s.Name,
+				Description: s.Description,
+				MemberCount: s.MemberCount,
+				Assigned:    tagBool(assignedSets[s.ID]),
 			}
 			if s.CreatedAt != nil {
-				setFields["created_at"] = strconv.FormatInt(s.CreatedAt.Unix(), 10)
+				data.CreatedAt = s.CreatedAt.Unix()
 			}
 			if s.UpdatedAt != nil {
-				setFields["updated_at"] = strconv.FormatInt(s.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = s.UpdatedAt.Unix()
 			}
+			// entityFields owns the standard fields; action_names is a warm-only
+			// denormalised join (the incremental path maintains it via rebuildParent).
+			setFields := entityFields(ScopeActionSet, data)
+			setFields["action_names"] = strings.Join(memberActionNames, " ")
 			pipe.HSet(ctx, prefixActionSet+s.ID, setFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
@@ -640,6 +687,11 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 	const pageSize int32 = 500
 	var offset int32
 	var total int
+
+	assignedDefs, err := idx.assignedSourceSet(ctx, "definition")
+	if err != nil {
+		return total, err
+	}
 
 	for {
 		defs, err := idx.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
@@ -676,19 +728,23 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 				}
 			}
 
-			defFields := map[string]any{
-				"name":         d.Name,
-				"description":  d.Description,
-				"member_count": strconv.Itoa(int(d.MemberCount)),
-				"set_names":    strings.Join(memberSetNames, " "),
-				"action_names": strings.Join(allActionNames, " "),
+			data := &taskqueue.SearchEntityData{
+				Name:        d.Name,
+				Description: d.Description,
+				MemberCount: d.MemberCount,
+				Assigned:    tagBool(assignedDefs[d.ID]),
 			}
 			if d.CreatedAt != nil {
-				defFields["created_at"] = strconv.FormatInt(d.CreatedAt.Unix(), 10)
+				data.CreatedAt = d.CreatedAt.Unix()
 			}
 			if d.UpdatedAt != nil {
-				defFields["updated_at"] = strconv.FormatInt(d.UpdatedAt.Unix(), 10)
+				data.UpdatedAt = d.UpdatedAt.Unix()
 			}
+			// entityFields owns the standard fields; set_names/action_names are
+			// warm-only denormalised joins.
+			defFields := entityFields(ScopeDefinition, data)
+			defFields["set_names"] = strings.Join(memberSetNames, " ")
+			defFields["action_names"] = strings.Join(allActionNames, " ")
 			pipe.HSet(ctx, prefixDefinition+d.ID, defFields)
 
 			if _, err := pipe.Exec(ctx); err != nil {
@@ -724,21 +780,33 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, p := range policies {
-			// Look up action names from compliance rules
-			var actionNames []string
+			// Look up action names + rule count from compliance rules. Fail the
+			// rebuild on error rather than indexing the policy with empty
+			// action_names and a missing rule_count — a warm rebuild flushes
+			// first, so partial data corrupts compliance search/filter state
+			// while reporting success.
 			rules, err := idx.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
-			if err == nil {
-				for _, r := range rules {
-					if r.ActionName != "" {
-						actionNames = append(actionNames, r.ActionName)
-					}
+			if err != nil {
+				return total, fmt.Errorf("list compliance policy rules %s: %w", p.ID, err)
+			}
+			var actionNames []string
+			for _, r := range rules {
+				if r.ActionName != "" {
+					actionNames = append(actionNames, r.ActionName)
 				}
 			}
-			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, map[string]any{
-				"name":         p.Name,
-				"description":  p.Description,
-				"action_names": strings.Join(actionNames, " "),
-			})
+			data := &taskqueue.SearchEntityData{
+				Name:           p.Name,
+				Description:    p.Description,
+				ActionNames:    strings.Join(actionNames, " "),
+				HasActionNames: true, // warm has the authoritative rule list
+				RuleCount:      int32(len(rules)),
+				HasRuleCount:   true,
+			}
+			if p.CreatedAt != nil {
+				data.CreatedAt = p.CreatedAt.Unix()
+			}
+			pipe.HSet(ctx, prefixCompliancePolicy+p.ID, entityFields(ScopeCompliancePolicy, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -769,44 +837,34 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, d := range devices {
-			labels := FlattenLabels(d.Labels)
-			fields := map[string]any{
-				// hostname / labels / agent_version are agent-reported — bound and
-				// strip them before indexing (see sanitizeSearchField).
-				"hostname":          sanitizeSearchField(d.Hostname, maxHostnameField),
-				"agent_version":     sanitizeSearchField(d.AgentVersion, maxOSField),
-				"labels":            sanitizeSearchField(labels, maxLabelsField),
-				"compliance_status": strconv.Itoa(int(d.ComplianceStatus)),
+			// Build the same SearchEntityData the incremental path produces, then
+			// format via entityFields — single source of the device HSET shape
+			// (bounding/sanitising of agent-reported fields lives there).
+			data := &taskqueue.SearchEntityData{
+				Hostname:         d.Hostname,
+				AgentVersion:     d.AgentVersion,
+				Labels:           FlattenLabels(d.Labels),
+				ComplianceStatus: d.ComplianceStatus,
 			}
 			if d.RegisteredAt != nil {
-				fields["registered_at"] = strconv.FormatInt(d.RegisteredAt.Unix(), 10)
+				data.RegisteredAt = d.RegisteredAt.Unix()
 			}
 			if d.LastSeenAt != nil {
-				fields["last_seen_at"] = strconv.FormatInt(d.LastSeenAt.Unix(), 10)
+				data.LastSeenAt = d.LastSeenAt.Unix()
 			}
-
 			// Enrich with inventory data (os_version, system_info, kernel_info).
+			// Fail the rebuild on error: entityFields always writes the os_* fields,
+			// so skipping enrichment would index empty OS data (breaking the os_name
+			// filter) for a device that has inventory — a flush-first rebuild has no
+			// prior value to fall back on.
 			inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"})
-			if err == nil {
-				for _, t := range inv {
-					osName, osVer, osArch, kernel := extractInventoryFields(t.TableName, t.Rows)
-					// os_* / kernel come from agent-reported osquery rows — sanitize.
-					if osName != "" {
-						fields["os_name"] = sanitizeSearchField(osName, maxOSField)
-					}
-					if osVer != "" {
-						fields["os_version"] = sanitizeSearchField(osVer, maxOSField)
-					}
-					if osArch != "" {
-						fields["os_arch"] = sanitizeSearchField(osArch, maxOSField)
-					}
-					if kernel != "" {
-						fields["kernel"] = sanitizeSearchField(kernel, maxOSField)
-					}
-				}
+			if err != nil {
+				return total, fmt.Errorf("list inventory tables for device %s: %w", d.ID, err)
 			}
-
-			pipe.HSet(ctx, prefixDevice+d.ID, fields)
+			for _, t := range inv {
+				EnrichDeviceInventory(data, t.TableName, t.Rows)
+			}
+			pipe.HSet(ctx, prefixDevice+d.ID, entityFields(ScopeDevice, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -879,16 +937,20 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 			if u.Disabled {
 				disabled = "true"
 			}
-			fields := map[string]any{
-				"email":          u.Email,
-				"display_name":   u.DisplayName,
-				"linux_username": u.LinuxUsername,
-				"disabled":       disabled,
+			data := &taskqueue.SearchEntityData{
+				Email:         u.Email,
+				DisplayName:   u.DisplayName,
+				LinuxUsername: u.LinuxUsername,
+				Disabled:      disabled,
+				Role:          u.Role,
 			}
 			if u.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(u.CreatedAt.Unix(), 10)
+				data.CreatedAt = u.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixUser+u.ID, fields)
+			if u.LastLoginAt != nil {
+				data.LastLoginAt = u.LastLoginAt.Unix()
+			}
+			pipe.HSet(ctx, prefixUser+u.ID, entityFields(ScopeUser, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -923,16 +985,16 @@ func (idx *Index) warmDeviceGroups(ctx context.Context) (int, error) {
 			if g.IsDynamic {
 				isDynamic = "true"
 			}
-			fields := map[string]any{
-				"name":         g.Name,
-				"description":  g.Description,
-				"is_dynamic":   isDynamic,
-				"member_count": strconv.Itoa(int(g.MemberCount)),
+			data := &taskqueue.SearchEntityData{
+				Name:        g.Name,
+				Description: g.Description,
+				IsDynamic:   isDynamic,
+				MemberCount: g.MemberCount,
 			}
 			if g.CreatedAt != nil {
-				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+				data.CreatedAt = g.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixDeviceGroup+g.ID, fields)
+			pipe.HSet(ctx, prefixDeviceGroup+g.ID, entityFields(ScopeDeviceGroup, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
@@ -967,16 +1029,16 @@ func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
 			if g.IsDynamic {
 				isDynamic = "true"
 			}
-			fields := map[string]any{
-				"name":         g.Name,
-				"description":  g.Description,
-				"is_dynamic":   isDynamic,
-				"member_count": strconv.Itoa(int(g.MemberCount)),
+			data := &taskqueue.SearchEntityData{
+				Name:        g.Name,
+				Description: g.Description,
+				IsDynamic:   isDynamic,
+				MemberCount: g.MemberCount,
 			}
 			if !g.CreatedAt.IsZero() {
-				fields["created_at"] = strconv.FormatInt(g.CreatedAt.Unix(), 10)
+				data.CreatedAt = g.CreatedAt.Unix()
 			}
-			pipe.HSet(ctx, prefixUserGroup+g.ID, fields)
+			pipe.HSet(ctx, prefixUserGroup+g.ID, entityFields(ScopeUserGroup, data))
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return total, fmt.Errorf("pipeline exec: %w", err)
