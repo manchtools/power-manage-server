@@ -12,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/search"
 )
 
 // SearchHandler handles search and search index management RPCs.
@@ -380,6 +381,21 @@ var allowedSearchFields = func() map[string]bool {
 	return out
 }()
 
+// numericSearchFields is the union of NUMERIC-declared fields across every index
+// schema. A tag filter on one must be emitted as a range (@field:[v v]) — the
+// TAG @field:{v} syntax is a RediSearch SYNTAX error on a NUMERIC field. This
+// backs the empty-relation filters (member_count/rule_count = 0). Derived from
+// the index schemas so it can't drift from what's actually declared.
+var numericSearchFields = func() map[string]bool {
+	out := map[string]bool{}
+	for _, ix := range search.IndexSchemas {
+		for f := range ix.NumericFields() {
+			out[f] = true
+		}
+	}
+	return out
+}()
+
 // validateFiltersForScopes returns InvalidArgument when the request's
 // filter fields reference attributes that aren't declared by every
 // index in the query plan. The error message names the scopes that
@@ -423,6 +439,19 @@ func validateFiltersForScopes(ctx context.Context, scopes []string, dateFilters 
 			return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is not supported by any search scope", field))
 		}
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is only valid for scope=%s", field, strings.Join(supportedBy, ",")))
+	}
+	// A NUMERIC field is emitted as a range (@field:[v v]); a non-integer value
+	// can't be expressed and would silently widen the query (fail-open). Reject
+	// it at the boundary rather than dropping it.
+	for field, value := range tagFilters {
+		if field == "" || value == "" || !numericSearchFields[field] {
+			continue
+		}
+		for _, v := range strings.Split(value, "|") {
+			if _, err := strconv.Atoi(strings.TrimSpace(v)); err != nil {
+				return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q requires integer values, got %q", field, v))
+			}
+		}
 	}
 	return nil
 }
@@ -479,8 +508,32 @@ func buildFTQuery(textQuery string, dateFilters []*pm.SearchDateFilter, tagFilte
 		if field == "" || value == "" || !allowedSearchFields[field] {
 			continue
 		}
-		// Values may be pipe-separated for OR. Escape each value.
+		// Values may be pipe-separated for OR.
 		vals := strings.Split(value, "|")
+		if numericSearchFields[field] {
+			// NUMERIC fields take a range, not TAG syntax. Each value V → an
+			// exact match [V V] (this backs the empty-relation filters, e.g.
+			// member_count=0 / rule_count=0). Non-integer values are dropped
+			// defensively so nothing unvalidated reaches the query string.
+			var ranges []string
+			for _, v := range vals {
+				v = strings.TrimSpace(v)
+				if _, err := strconv.Atoi(v); err != nil {
+					continue
+				}
+				ranges = append(ranges, fmt.Sprintf("@%s:[%s %s]", field, v, v))
+			}
+			switch len(ranges) {
+			case 0:
+				// nothing valid
+			case 1:
+				parts = append(parts, ranges[0])
+			default:
+				parts = append(parts, "("+strings.Join(ranges, "|")+")")
+			}
+			continue
+		}
+		// TAG fields.
 		var escaped []string
 		for _, v := range vals {
 			escaped = append(escaped, escapeRediSearchTagValue(v))

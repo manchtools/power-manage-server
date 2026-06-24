@@ -171,6 +171,23 @@ func (s IndexSchema) FilterableFields() map[string]bool {
 	return out
 }
 
+// NumericFields returns the field names declared NUMERIC. A structured filter on
+// a NUMERIC field must use a range (@field:[min max]); the TAG @field:{value}
+// syntax is a RediSearch error on a NUMERIC field. Derived by pairing each type
+// token with its preceding field name.
+func (s IndexSchema) NumericFields() map[string]bool {
+	out := map[string]bool{}
+	for i := 1; i < len(s.Schema); i++ {
+		if t, _ := s.Schema[i].(string); t != "NUMERIC" {
+			continue
+		}
+		if field, ok := s.Schema[i-1].(string); ok {
+			out[field] = true
+		}
+	}
+	return out
+}
+
 // SortableFields returns the field names declared SORTABLE — the only fields an
 // FT.SEARCH SORTBY can target. In every schema here SORTABLE immediately follows
 // the field's type (field, TYPE, SORTABLE), so the field is two tokens back; we

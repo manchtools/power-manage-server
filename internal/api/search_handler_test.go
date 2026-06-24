@@ -101,6 +101,33 @@ func TestBuildFTQuery_TagFilterEmptyValue(t *testing.T) {
 	assert.Equal(t, "*", q, "empty tag value should be skipped")
 }
 
+// NUMERIC fields (member_count, rule_count) must be emitted as a range — the
+// TAG @field:{v} syntax is a RediSearch error on a NUMERIC field. This backs
+// the empty-relation filters (e.g. action-sets with no actions → member_count=0).
+func TestBuildFTQuery_NumericFieldEmptyRelation(t *testing.T) {
+	tags := map[string]string{"member_count": "0"}
+	q := buildFTQuery("", nil, tags)
+	assert.Equal(t, "@member_count:[0 0]", q)
+}
+
+func TestBuildFTQuery_NumericFieldRuleCount(t *testing.T) {
+	tags := map[string]string{"rule_count": "0"}
+	q := buildFTQuery("", nil, tags)
+	assert.Equal(t, "@rule_count:[0 0]", q)
+}
+
+func TestBuildFTQuery_NumericFieldMultipleValues(t *testing.T) {
+	tags := map[string]string{"member_count": "0|5"}
+	q := buildFTQuery("", nil, tags)
+	assert.Equal(t, "(@member_count:[0 0]|@member_count:[5 5])", q)
+}
+
+func TestBuildFTQuery_NumericFieldNonIntegerDropped(t *testing.T) {
+	tags := map[string]string{"member_count": "abc"}
+	q := buildFTQuery("", nil, tags)
+	assert.Equal(t, "*", q, "non-integer numeric value must not reach the query")
+}
+
 func TestBuildFTQuery_Combined(t *testing.T) {
 	dateFilters := []*pm.SearchDateFilter{
 		{Field: "created_at", Start: 1000, End: 2000},
@@ -401,6 +428,30 @@ func TestValidateFiltersForScopes_UnknownField_RejectsAsUnsupported(t *testing.T
 	require.ErrorAs(t, err, &connectErr)
 	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
 	assert.Contains(t, connectErr.Message(), "not supported by any search scope")
+}
+
+func TestValidateFiltersForScopes_NumericFieldNonInteger_Rejected(t *testing.T) {
+	// member_count is a NUMERIC index field; a non-integer value must be
+	// rejected with InvalidArgument, not silently widened to no clause.
+	tagFilters := map[string]string{"member_count": "abc"}
+	err := validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters)
+	require.Error(t, err)
+
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	assert.Contains(t, connectErr.Message(), "member_count")
+}
+
+func TestValidateFiltersForScopes_NumericFieldInteger_OK(t *testing.T) {
+	tagFilters := map[string]string{"member_count": "0"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters))
+}
+
+func TestValidateFiltersForScopes_NumericFieldMultiInteger_OK(t *testing.T) {
+	// Pipe-separated OR of integers is valid.
+	tagFilters := map[string]string{"member_count": "0|5"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters))
 }
 
 func TestValidateFiltersForScopes_EmptyFieldOrValue_Skipped(t *testing.T) {
