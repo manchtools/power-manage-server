@@ -780,27 +780,28 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, p := range policies {
-			// Look up action names + rule count from compliance rules.
-			var actionNames []string
-			var ruleCount int32
-			hasRuleCount := false
+			// Look up action names + rule count from compliance rules. Fail the
+			// rebuild on error rather than indexing the policy with empty
+			// action_names and a missing rule_count — a warm rebuild flushes
+			// first, so partial data corrupts compliance search/filter state
+			// while reporting success.
 			rules, err := idx.store.Queries().ListCompliancePolicyRules(ctx, p.ID)
-			if err == nil {
-				for _, r := range rules {
-					if r.ActionName != "" {
-						actionNames = append(actionNames, r.ActionName)
-					}
+			if err != nil {
+				return total, fmt.Errorf("list compliance policy rules %s: %w", p.ID, err)
+			}
+			var actionNames []string
+			for _, r := range rules {
+				if r.ActionName != "" {
+					actionNames = append(actionNames, r.ActionName)
 				}
-				ruleCount = int32(len(rules))
-				hasRuleCount = true
 			}
 			data := &taskqueue.SearchEntityData{
 				Name:           p.Name,
 				Description:    p.Description,
 				ActionNames:    strings.Join(actionNames, " "),
 				HasActionNames: true, // warm has the authoritative rule list
-				RuleCount:      ruleCount,
-				HasRuleCount:   hasRuleCount,
+				RuleCount:      int32(len(rules)),
+				HasRuleCount:   true,
 			}
 			if p.CreatedAt != nil {
 				data.CreatedAt = p.CreatedAt.Unix()
@@ -852,10 +853,16 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 				data.LastSeenAt = d.LastSeenAt.Unix()
 			}
 			// Enrich with inventory data (os_version, system_info, kernel_info).
-			if inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"}); err == nil {
-				for _, t := range inv {
-					EnrichDeviceInventory(data, t.TableName, t.Rows)
-				}
+			// Fail the rebuild on error: entityFields always writes the os_* fields,
+			// so skipping enrichment would index empty OS data (breaking the os_name
+			// filter) for a device that has inventory — a flush-first rebuild has no
+			// prior value to fall back on.
+			inv, err := idx.store.Repos().Inventory.ListTables(ctx, d.ID, []string{"os_version", "system_info", "kernel_info"})
+			if err != nil {
+				return total, fmt.Errorf("list inventory tables for device %s: %w", d.ID, err)
+			}
+			for _, t := range inv {
+				EnrichDeviceInventory(data, t.TableName, t.Rows)
 			}
 			pipe.HSet(ctx, prefixDevice+d.ID, entityFields(ScopeDevice, data))
 		}
