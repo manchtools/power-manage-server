@@ -430,6 +430,30 @@ func TestValidateFiltersForScopes_UnknownField_RejectsAsUnsupported(t *testing.T
 	assert.Contains(t, connectErr.Message(), "not supported by any search scope")
 }
 
+func TestValidateFiltersForScopes_NumericFieldNonInteger_Rejected(t *testing.T) {
+	// member_count is a NUMERIC index field; a non-integer value must be
+	// rejected with InvalidArgument, not silently widened to no clause.
+	tagFilters := map[string]string{"member_count": "abc"}
+	err := validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters)
+	require.Error(t, err)
+
+	connectErr := new(connect.Error)
+	require.ErrorAs(t, err, &connectErr)
+	assert.Equal(t, connect.CodeInvalidArgument, connectErr.Code())
+	assert.Contains(t, connectErr.Message(), "member_count")
+}
+
+func TestValidateFiltersForScopes_NumericFieldInteger_OK(t *testing.T) {
+	tagFilters := map[string]string{"member_count": "0"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters))
+}
+
+func TestValidateFiltersForScopes_NumericFieldMultiInteger_OK(t *testing.T) {
+	// Pipe-separated OR of integers is valid.
+	tagFilters := map[string]string{"member_count": "0|5"}
+	require.NoError(t, validateFiltersForScopes(context.Background(), []string{"action_sets"}, nil, tagFilters))
+}
+
 func TestValidateFiltersForScopes_EmptyFieldOrValue_Skipped(t *testing.T) {
 	// Empty field names + empty values must NOT trip validation —
 	// they're silently dropped further down in buildFTQuery.

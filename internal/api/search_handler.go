@@ -440,6 +440,19 @@ func validateFiltersForScopes(ctx context.Context, scopes []string, dateFilters 
 		}
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q is only valid for scope=%s", field, strings.Join(supportedBy, ",")))
 	}
+	// A NUMERIC field is emitted as a range (@field:[v v]); a non-integer value
+	// can't be expressed and would silently widen the query (fail-open). Reject
+	// it at the boundary rather than dropping it.
+	for field, value := range tagFilters {
+		if field == "" || value == "" || !numericSearchFields[field] {
+			continue
+		}
+		for _, v := range strings.Split(value, "|") {
+			if _, err := strconv.Atoi(strings.TrimSpace(v)); err != nil {
+				return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, fmt.Sprintf("filter field %q requires integer values, got %q", field, v))
+			}
+		}
+	}
 	return nil
 }
 
