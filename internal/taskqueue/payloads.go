@@ -342,6 +342,14 @@ type SearchEntityData struct {
 	RuleCount    int32  `json:"rule_count,omitempty"`     // compliance policy rule count (NUMERIC, sortable)
 	HasRuleCount bool   `json:"has_rule_count,omitempty"` // signals RuleCount computed (so 0 is written for the empty-rules filter)
 
+	// #7 spec 14 — scoped object visibility. Comma-joined device-/user-group
+	// ids the object is directly assigned to (multi-value TAG). HasScopeGroupIDs
+	// signals it was computed so the indexer writes the field even when empty
+	// (an unassigned object must have an empty TAG → matches no scoped query →
+	// invisible to scoped admins), rather than leaving a stale prior value.
+	ScopeGroupIDs    string `json:"scope_group_ids,omitempty"`
+	HasScopeGroupIDs bool   `json:"has_scope_group_ids,omitempty"`
+
 	// Audit event fields
 	EventType  string `json:"event_type,omitempty"`
 	StreamType string `json:"stream_type,omitempty"`

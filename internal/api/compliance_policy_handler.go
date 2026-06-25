@@ -75,6 +75,10 @@ func (h *CompliancePolicyHandler) GetCompliancePolicy(ctx context.Context, req *
 		return nil, err
 	}
 
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.Id, ErrCompliancePolicyNotFound, "compliance policy not found"); err != nil {
+		return nil, err
+	}
+
 	policy, err := h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
@@ -139,6 +143,10 @@ func (h *CompliancePolicyHandler) RenameCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Verify policy exists before emitting event
 	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
@@ -176,6 +184,10 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyDescription(ctx context.
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -219,6 +231,10 @@ func (h *CompliancePolicyHandler) DeleteCompliancePolicy(ctx context.Context, re
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Verify policy exists before emitting delete event
 	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.Id)
 	if err != nil {
@@ -250,6 +266,10 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.PolicyId); err != nil {
 		return nil, err
 	}
 
@@ -321,6 +341,10 @@ func (h *CompliancePolicyHandler) RemoveCompliancePolicyRule(ctx context.Context
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.PolicyId); err != nil {
+		return nil, err
+	}
+
 	// Verify policy exists before emitting event
 	_, err = h.store.Repos().Compliance.GetPolicy(ctx, req.Msg.PolicyId)
 	if err != nil {
@@ -363,6 +387,10 @@ func (h *CompliancePolicyHandler) UpdateCompliancePolicyRule(ctx context.Context
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "compliance_policy", req.Msg.PolicyId); err != nil {
 		return nil, err
 	}
 

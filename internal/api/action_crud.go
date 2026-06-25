@@ -125,6 +125,10 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 		return nil, err
 	}
 
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id, ErrActionNotFound, "action not found"); err != nil {
+		return nil, err
+	}
+
 	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
@@ -183,6 +187,10 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	// Verify action exists before appending event
 	if _, err := h.store.Repos().Action.Get(ctx, req.Msg.Id); err != nil {
 		if store.IsNotFound(err) {
@@ -222,6 +230,10 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -268,6 +280,10 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -438,6 +454,10 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id); err != nil {
 		return nil, err
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -277,9 +278,10 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// Assignment scope — reindex the SOURCE entity's `assigned` TAG (#325).
 	// ---------------------------------------------------------
 	// StreamID is the assignment id; the source tuple rides in the payload
-	// (both Created and Deleted emit it). A compliance_policy source has no
-	// `assigned` field, and a legacy AssignmentDeleted with an empty payload
-	// is a no-op — the periodic reconciler/warm rebuild is the safety net.
+	// (both Created and Deleted emit it). All four object source types carry
+	// `scope_group_ids` (#7 spec 14), so every assignment change reindexes its
+	// source. A legacy AssignmentDeleted with an empty payload is a no-op — the
+	// periodic reconciler/warm rebuild is the safety net.
 	case string(eventtypes.AssignmentCreated),
 		string(eventtypes.AssignmentDeleted):
 		var p struct {
@@ -300,8 +302,10 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 }
 
 // assignmentSourceScope maps an assignment source_type to the search scope whose
-// `assigned` TAG it affects, or "" for types that carry no such TAG
-// (compliance_policy / unknown).
+// `assigned` / `scope_group_ids` TAG it affects, or "" for an unknown type. All
+// four object types carry `scope_group_ids` (#7 spec 14), so compliance_policy —
+// which has no `assigned` TAG but IS scope-filtered — must reindex on assignment
+// too.
 func assignmentSourceScope(sourceType string) string {
 	switch sourceType {
 	case "action":
@@ -310,6 +314,8 @@ func assignmentSourceScope(sourceType string) string {
 		return search.ScopeActionSet
 	case "definition":
 		return search.ScopeDefinition
+	case "compliance_policy":
+		return search.ScopeCompliancePolicy
 	}
 	return ""
 }
@@ -406,6 +412,20 @@ func sourceAssignedTag(ctx context.Context, q *db.Queries, sourceType, id string
 		return "true", nil
 	}
 	return "false", nil
+}
+
+// loadScopeGroupIDs returns the comma-joined, sorted device-/user-group ids the
+// object is DIRECTLY assigned to, for the search index `scope_group_ids` TAG (#7
+// spec 14). Sorted so the indexed value is deterministic (stable tests; stable
+// HSET). An unassigned object returns "" — written as an empty TAG so it matches
+// no scoped query and stays invisible to scoped admins.
+func loadScopeGroupIDs(ctx context.Context, q *db.Queries, sourceType, id string) (string, error) {
+	ids, err := q.ListScopeGroupIDsForSource(ctx, db.ListScopeGroupIDsForSourceParams{SourceType: sourceType, SourceID: id})
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ","), nil
 }
 
 func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Logger, scope, id string) (*taskqueue.SearchEntityData, error) {
@@ -518,13 +538,19 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if err != nil {
 			return nil, err
 		}
+		scopeGroups, err := loadScopeGroupIDs(ctx, q, "action_set", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
-			Name:        s.Name,
-			Description: s.Description,
-			MemberCount: s.MemberCount,
-			Assigned:    assigned,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
+			Name:             s.Name,
+			Description:      s.Description,
+			MemberCount:      s.MemberCount,
+			Assigned:         assigned,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
+			CreatedAt:        createdAt,
+			UpdatedAt:        updatedAt,
 		}, nil
 
 	case search.ScopeCompliancePolicy:
@@ -532,9 +558,15 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if err != nil {
 			return nil, err
 		}
+		scopeGroups, err := loadScopeGroupIDs(ctx, q, "compliance_policy", id)
+		if err != nil {
+			return nil, err
+		}
 		data := &taskqueue.SearchEntityData{
-			Name:        p.Name,
-			Description: p.Description,
+			Name:             p.Name,
+			Description:      p.Description,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
 		}
 		if p.CreatedAt != nil {
 			data.CreatedAt = p.CreatedAt.Unix()
@@ -597,14 +629,20 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if err != nil {
 			return nil, err
 		}
+		scopeGroups, err := loadScopeGroupIDs(ctx, q, "action", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
-			Name:         a.Name,
-			Description:  desc,
-			Type:         a.ActionType,
-			IsCompliance: isCompliance,
-			Assigned:     assigned,
-			CreatedAt:    createdAt,
-			UpdatedAt:    updatedAt,
+			Name:             a.Name,
+			Description:      desc,
+			Type:             a.ActionType,
+			IsCompliance:     isCompliance,
+			Assigned:         assigned,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
+			CreatedAt:        createdAt,
+			UpdatedAt:        updatedAt,
 		}, nil
 
 	case search.ScopeDefinition:
@@ -623,13 +661,19 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if err != nil {
 			return nil, err
 		}
+		scopeGroups, err := loadScopeGroupIDs(ctx, q, "definition", id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
-			Name:        d.Name,
-			Description: d.Description,
-			MemberCount: d.MemberCount,
-			Assigned:    assigned,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
+			Name:             d.Name,
+			Description:      d.Description,
+			MemberCount:      d.MemberCount,
+			Assigned:         assigned,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
+			CreatedAt:        createdAt,
+			UpdatedAt:        updatedAt,
 		}, nil
 
 	case search.ScopeUserGroup:

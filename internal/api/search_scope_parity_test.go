@@ -32,8 +32,15 @@ func TestScopeFilterFields_MirrorIndexSchemas(t *testing.T) {
 		want := ix.FilterableFields() // TAG/NUMERIC fields the index actually declares
 
 		// Every declared filterable field must be advertised, else operators
-		// can't filter on it.
+		// can't filter on it — EXCEPT server-only scope fields (scope_group_ids),
+		// which the server populates and filters on internally for RBAC scope and
+		// intentionally never exposes as a client filter (#7 spec 14).
 		for field := range want {
+			if search.ServerScopeFields[field] {
+				assert.Falsef(t, got[field],
+					"scope %q: %q is a server-only scope field and must NOT be in scopeFilterFields (it would become a client filter)", scope, field)
+				continue
+			}
 			assert.Truef(t, got[field],
 				"scope %q: index %q declares filterable field %q (TAG/NUMERIC) but scopeFilterFields omits it", scope, ix.Name, field)
 		}

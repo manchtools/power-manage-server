@@ -12,8 +12,53 @@ import (
 	"connectrpc.com/connect"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/search"
 )
+
+// scopesWithScopeGroupField are the search scopes whose index declares the
+// server-only scope_group_ids TAG (#7 spec 14 — scoped object visibility).
+// Derived from the index schemas so it can never drift from what's declared. A
+// scope-restricted caller's Search on these scopes is confined to objects whose
+// assignment groups intersect the caller's scope groups.
+var scopesWithScopeGroupField = func() map[string]bool {
+	out := map[string]bool{}
+	for _, ix := range search.IndexSchemas {
+		if ix.FilterableFields()[search.ScopeGroupField] {
+			out[ix.Scope()] = true
+		}
+	}
+	return out
+}()
+
+// noScopeSentinel is a TAG value no real object carries. A scope-restricted
+// caller with no resolvable scope groups (only possible with no authenticated
+// caller, behind the interceptor) gets a clause matching it, so the result is
+// empty — fail closed, never fail open to the whole catalog.
+const noScopeSentinel = "__pm_no_scope__"
+
+// scopeGroupClause returns the RediSearch clause confining a scope-restricted
+// caller to objects assigned within their scope groups (#7 spec 14), or "" when
+// the scope carries no scope_group_ids field or the caller is unrestricted
+// (global admin). Caller scope is read from the JWT — no DB round-trip (spec 14,
+// criterion 13).
+func scopeGroupClause(ctx context.Context, scope string) string {
+	if !scopesWithScopeGroupField[scope] {
+		return ""
+	}
+	groupIDs, restricted := auth.ObjectScopeListFilter(ctx)
+	if !restricted {
+		return ""
+	}
+	if len(groupIDs) == 0 {
+		return fmt.Sprintf("@%s:{%s}", search.ScopeGroupField, noScopeSentinel)
+	}
+	escaped := make([]string, len(groupIDs))
+	for i, id := range groupIDs {
+		escaped[i] = escapeRediSearchTagValue(id)
+	}
+	return fmt.Sprintf("@%s:{%s}", search.ScopeGroupField, strings.Join(escaped, "|"))
+}
 
 // SearchHandler handles search and search index management RPCs.
 type SearchHandler struct {
@@ -277,7 +322,20 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 			continue
 		}
 
-		args := []any{"FT.SEARCH", idxName, ftQuery}
+		// #7 spec 14: confine a scope-restricted caller to objects assigned within
+		// their scope groups. Per-scope (only object indexes carry the field) and
+		// derived from the caller's JWT — no DB round-trip. Mirrors the
+		// deviceStatusClause "*"-vs-append handling.
+		scopedQuery := ftQuery
+		if clause := scopeGroupClause(ctx, scope); clause != "" {
+			if scopedQuery == "*" {
+				scopedQuery = clause
+			} else {
+				scopedQuery += " " + clause
+			}
+		}
+
+		args := []any{"FT.SEARCH", idxName, scopedQuery}
 
 		// SORTBY: the request's sort_field/direction validated against the scope,
 		// falling back to the scope default when unset (#325).

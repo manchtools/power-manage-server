@@ -88,6 +88,10 @@ func (h *DefinitionHandler) GetDefinition(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.Id, ErrDefinitionNotFound, "definition not found"); err != nil {
+		return nil, err
+	}
+
 	def, err := h.store.Repos().Definition.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
@@ -159,6 +163,10 @@ func (h *DefinitionHandler) RenameDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
@@ -193,6 +201,10 @@ func (h *DefinitionHandler) UpdateDefinitionSchedule(ctx context.Context, req *c
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -240,6 +252,10 @@ func (h *DefinitionHandler) UpdateDefinitionDescription(ctx context.Context, req
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
@@ -274,6 +290,10 @@ func (h *DefinitionHandler) DeleteDefinition(ctx context.Context, req *connect.R
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.Id,
@@ -301,6 +321,10 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.DefinitionId); err != nil {
 		return nil, err
 	}
 
@@ -357,6 +381,10 @@ func (h *DefinitionHandler) RemoveActionSetFromDefinition(ctx context.Context, r
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.DefinitionId); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "definition",
 		StreamID:   req.Msg.DefinitionId,
@@ -394,6 +422,10 @@ func (h *DefinitionHandler) ReorderActionSetInDefinition(ctx context.Context, re
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.DefinitionId); err != nil {
 		return nil, err
 	}
 

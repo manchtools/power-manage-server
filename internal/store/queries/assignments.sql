@@ -977,3 +977,33 @@ WHERE is_deleted = FALSE
        OR name LIKE 'system:terminal-admin-full:%')
   AND name NOT IN ('system:terminal-admin-limited:global',
                    'system:terminal-admin-full:global');
+
+-- #7 spec 14 — scoped object visibility. The following queries back the
+-- search index `scope_group_ids` TAG (direct device-/user-group assignment ids
+-- per object) and the live effective/direct scope walk in the object handlers.
+
+-- name: ListScopeGroupIDsForSource :many
+-- Device-/user-group ids one object is DIRECTLY assigned to. Backs the search
+-- index `scope_group_ids` for an incremental object reindex (#7 spec 14).
+SELECT target_id FROM assignments_projection
+WHERE source_type = $1 AND source_id = $2
+  AND target_type IN ('device_group', 'user_group')
+  AND is_deleted = FALSE;
+
+-- name: ListScopeGroupAssignmentsBySourceType :many
+-- (source_id, group_id) pairs for every object of a type that is directly
+-- assigned to a device-/user-group. One query per type drives the search warm
+-- rebuild of `scope_group_ids` (mirrors ListAssignedSourceIDs).
+SELECT source_id, target_id FROM assignments_projection
+WHERE source_type = $1
+  AND target_type IN ('device_group', 'user_group')
+  AND is_deleted = FALSE;
+
+-- name: ListActionSetIDsContainingAction :many
+-- Reverse container edge: the action-set ids that contain an action. Used by the
+-- handler's EFFECTIVE (transitive read) scope walk (#7 spec 14).
+SELECT set_id FROM action_set_members_projection WHERE action_id = $1;
+
+-- name: ListDefinitionIDsContainingActionSet :many
+-- Reverse container edge: the definition ids that contain an action-set.
+SELECT definition_id FROM definition_members_projection WHERE action_set_id = $1;

@@ -46,10 +46,12 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeActionSet, ID: "SET1"}},
 		},
 		{
-			"AssignmentCreated to a compliance_policy is a no-op (no assigned TAG)",
+			// #7 spec 14: compliance policies carry scope_group_ids, so an
+			// assignment change now reindexes the policy (was a no-op pre-spec-14).
+			"AssignmentCreated to a compliance_policy reindexes the policy (scope_group_ids)",
 			store.PersistedEvent{EventType: "AssignmentCreated", StreamID: "ASN1", StreamType: "assignment",
 				Data: []byte(`{"source_type":"compliance_policy","source_id":"CP1"}`)},
-			nil,
+			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeCompliancePolicy, ID: "CP1"}},
 		},
 		{
 			"AssignmentDeleted with a legacy empty payload is a no-op",
