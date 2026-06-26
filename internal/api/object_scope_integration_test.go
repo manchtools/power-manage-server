@@ -134,3 +134,35 @@ func TestObjectScope_TransitiveRead_GetAllowed_WriteDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "transitive visibility must not grant write")
 }
+
+// CR (Critical): a scoped admin who owns an in-scope set must not be able to add
+// an OUT-OF-SCOPE action to it — that would pull hidden org content into their
+// fleet and make it transitively readable. The referenced action gets a
+// read-scope check → NotFound (no existence leak).
+func TestObjectScope_AddActionToSet_OutOfScopeActionRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionSetHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	dg := testutil.CreateTestDeviceGroup(t, st, adminID, "Fleet A")
+	dgOther := testutil.CreateTestDeviceGroup(t, st, adminID, "Fleet B")
+
+	setID := testutil.CreateTestActionSet(t, st, adminID, "My Set")
+	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device_group", dg, 0) // set in caller's scope
+
+	outOfScope := testutil.CreateTestAction(t, st, adminID, "Secret Action", 1)
+	testutil.CreateTestAssignment(t, st, adminID, "action", outOfScope, "device_group", dgOther, 0) // action out of scope
+
+	id, grants := scopedToGroup("scoped-admin", dg, "AddActionToSet", "GetAction")
+	ctx := testutil.AuthContextScoped(id, "s@test.com", []string{"AddActionToSet", "GetAction"}, grants)
+
+	_, err := h.AddActionToSet(ctx, connect.NewRequest(&pm.AddActionToSetRequest{SetId: setID, ActionId: outOfScope}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "out-of-scope referenced action must be rejected (NotFound)")
+
+	// Sanity: an in-scope action CAN be added to the set.
+	inScope := testutil.CreateTestAction(t, st, adminID, "Own Action", 1)
+	testutil.CreateTestAssignment(t, st, adminID, "action", inScope, "device_group", dg, 0)
+	_, err = h.AddActionToSet(ctx, connect.NewRequest(&pm.AddActionToSetRequest{SetId: setID, ActionId: inScope}))
+	require.NoError(t, err)
+}

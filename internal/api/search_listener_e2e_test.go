@@ -124,11 +124,19 @@ func (f *fakeSearchIndex) lastRemove(t *testing.T) removeCall {
 	return f.removed[len(f.removed)-1]
 }
 
-// reindexedScope reports whether (scope, id) was reindexed at least once.
-func (f *fakeSearchIndex) reindexedScope(scope, id string) bool {
+// reindexedScopeSince reports whether (scope, id) was reindexed at least once at
+// or after index `start` — so a membership-change assertion isn't satisfied by an
+// earlier entity-creation reindex (CR).
+func (f *fakeSearchIndex) reindexedScopeSince(start int, scope, id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, c := range f.reindexed {
+	if start < 0 {
+		start = 0
+	}
+	if start > len(f.reindexed) {
+		start = len(f.reindexed)
+	}
+	for _, c := range f.reindexed[start:] {
 		if c.Scope == scope && c.ID == id {
 			return true
 		}
@@ -210,8 +218,8 @@ func TestSearchListener_DeviceGroupMemberAdded_ReindexesGroup(t *testing.T) {
 	// A DeviceGroupMemberAdded event reindexes the GROUP (member_count) AND the
 	// affected DEVICE (its scope_group_ids changed, #7 spec 14).
 	require.Greater(t, fake.reindexCount(), before, "membership change must trigger reindexes")
-	assert.True(t, fake.reindexedScope(search.ScopeDeviceGroup, groupID), "group must be reindexed (member_count)")
-	assert.True(t, fake.reindexedScope(search.ScopeDevice, deviceID), "affected device must be reindexed (scope_group_ids)")
+	assert.True(t, fake.reindexedScopeSince(before, search.ScopeDeviceGroup, groupID), "group must be reindexed (member_count)")
+	assert.True(t, fake.reindexedScopeSince(before, search.ScopeDevice, deviceID), "affected device must be reindexed (scope_group_ids)")
 }
 
 // =============================================================================
@@ -230,8 +238,8 @@ func TestSearchListener_UserGroupMemberAdded_ReindexesGroupViaPrefixSplit(t *tes
 	// splits on ':' to reindex the GROUP (member_count) AND the affected USER (its
 	// scope_group_ids changed, #7 spec 14).
 	require.Greater(t, fake.reindexCount(), before)
-	assert.True(t, fake.reindexedScope(search.ScopeUserGroup, groupID), "group must be reindexed")
-	assert.True(t, fake.reindexedScope(search.ScopeUser, userID), "affected user must be reindexed")
+	assert.True(t, fake.reindexedScopeSince(before, search.ScopeUserGroup, groupID), "group must be reindexed")
+	assert.True(t, fake.reindexedScopeSince(before, search.ScopeUser, userID), "affected user must be reindexed")
 }
 
 // =============================================================================

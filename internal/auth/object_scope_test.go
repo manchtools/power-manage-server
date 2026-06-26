@@ -61,15 +61,15 @@ func TestObjectScopeListFilter(t *testing.T) {
 		assert.Equal(t, []string{"dg1"}, ids)
 	})
 
-	t.Run("a scoped grant with an empty id is ignored, leaving the caller unrestricted", func(t *testing.T) {
-		// Defensive: a malformed grant (kind set, id empty) must not silently
-		// confine the caller to an empty set (which would hide everything) nor
-		// count as a scope. With no other scoped grant the caller is global.
+	t.Run("a malformed scoped grant (kind set, id empty) fails CLOSED, never open", func(t *testing.T) {
+		// A group-kind scoped grant with an empty id must NOT fall through to
+		// unrestricted (org-wide) access — that would turn a malformed JWT into a
+		// scope escalation (CR finding). The caller IS scoped, just to nothing.
 		ctx := ctxWithGrants(
 			ScopedGrant{Permission: "ListDevices", ScopeKind: ScopeKindDeviceGroup, ScopeID: ""},
 		)
 		ids, restricted := ObjectScopeListFilter(ctx)
-		assert.False(t, restricted)
+		assert.True(t, restricted, "malformed scoped grant must restrict (fail closed), not grant global access")
 		assert.Empty(t, ids)
 	})
 }

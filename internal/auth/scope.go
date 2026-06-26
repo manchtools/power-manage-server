@@ -402,12 +402,17 @@ func ObjectScopeListFilter(ctx context.Context) (groupIDs []string, restricted b
 		return nil, true
 	}
 	seen := make(map[string]struct{}, len(user.ScopedGrants))
+	sawScopedGrant := false
 	for _, g := range user.ScopedGrants {
 		if g.ScopeKind != ScopeKindDeviceGroup && g.ScopeKind != ScopeKindUserGroup {
 			continue // unscoped grant (global for its permission) — no confinement
 		}
+		// A group-kind scoped grant means the caller IS scoped, even if the id is
+		// malformed (empty). Record that BEFORE the empty-id check so a malformed
+		// grant fails CLOSED below instead of falling through to global access.
+		sawScopedGrant = true
 		if g.ScopeID == "" {
-			continue // malformed grant — ignore rather than confine to nothing
+			continue // malformed grant — confines to nothing (handled by fail-closed return)
 		}
 		if _, dup := seen[g.ScopeID]; dup {
 			continue
@@ -416,7 +421,11 @@ func ObjectScopeListFilter(ctx context.Context) (groupIDs []string, restricted b
 		groupIDs = append(groupIDs, g.ScopeID)
 	}
 	if len(groupIDs) == 0 {
-		return nil, false // no scoped grant ⇒ unrestricted (global admin)
+		// No groups resolved. If the caller held ANY group-kind scoped grant, they
+		// are scoped — to nothing — so fail CLOSED (restricted, sees nothing); a
+		// malformed scoped JWT must never escalate to org-wide access. Only a
+		// COMPLETE absence of scoped grants is unrestricted (a global admin).
+		return nil, sawScopedGrant
 	}
 	return groupIDs, true
 }

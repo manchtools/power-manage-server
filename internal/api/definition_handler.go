@@ -334,6 +334,13 @@ func (h *DefinitionHandler) AddActionSetToDefinition(ctx context.Context, req *c
 		return nil, handleGetError(ctx, err, ErrDefinitionNotFound, "definition not found")
 	}
 
+	// The referenced action set must be readable in the caller's scope (#7 spec
+	// 14): otherwise a scoped admin could attach an out-of-scope set to their
+	// in-scope definition, making it deployable + readable through the definition.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.ActionSetId, ErrActionSetNotFound, "action set not found"); err != nil {
+		return nil, err
+	}
+
 	// Verify action set exists
 	actionSet, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.ActionSetId)
 	if err != nil {

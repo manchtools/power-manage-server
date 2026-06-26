@@ -335,6 +335,13 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
 	}
 
+	// The referenced action must be readable in the caller's scope (#7 spec 14):
+	// otherwise a scoped admin could pull an out-of-scope action into their
+	// in-scope set, making it deployable + transitively readable through the set.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", req.Msg.ActionId, ErrActionNotFound, "action not found"); err != nil {
+		return nil, err
+	}
+
 	// Verify action exists
 	action, err := h.store.Repos().Action.Get(ctx, req.Msg.ActionId)
 	if err != nil {

@@ -279,6 +279,13 @@ func (h *CompliancePolicyHandler) AddCompliancePolicyRule(ctx context.Context, r
 		return nil, handleGetError(ctx, err, ErrCompliancePolicyNotFound, "compliance policy not found")
 	}
 
+	// The referenced action must be readable in the caller's scope (#7 spec 14):
+	// otherwise a scoped admin could reference an out-of-scope action in their
+	// in-scope policy, applying unseen org-wide content to their fleet.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", req.Msg.ActionId, ErrActionNotFound, "action not found"); err != nil {
+		return nil, err
+	}
+
 	// Verify action exists and is a compliance action
 	action, err := h.store.Repos().Action.Get(ctx, req.Msg.ActionId)
 	if err != nil {
