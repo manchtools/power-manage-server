@@ -34,12 +34,16 @@ type Env struct {
 	Now func() time.Time
 }
 
+// timeNow is the package clock seam (WS0): runtime code never calls time.Now()
+// directly. Tests override Env.Now; this is the production default.
+var timeNow = time.Now
+
 // NewEnv builds an Env from an already-merged vars map.
 func NewEnv(vars map[string]string) *Env {
 	if vars == nil {
 		vars = map[string]string{}
 	}
-	return &Env{vars: vars, Now: time.Now}
+	return &Env{vars: vars, Now: timeNow}
 }
 
 // Get returns the merged value for key ("" if unset).
@@ -48,12 +52,12 @@ func (e *Env) Get(key string) string { return e.vars[key] }
 // Has reports whether key is present (even if empty).
 func (e *Env) Has(key string) bool { _, ok := e.vars[key]; return ok }
 
-// now returns the clock (defaulting to time.Now if unset).
+// now returns the clock (defaulting to the package seam if unset).
 func (e *Env) now() time.Time {
 	if e.Now != nil {
 		return e.Now()
 	}
-	return time.Now()
+	return timeNow()
 }
 
 // ProcessEnv snapshots os.Environ into a map.
@@ -150,4 +154,8 @@ type CacheProbe interface {
 	SchemaCurrent(ctx context.Context) (bool, error)
 	// ArchivedByQueue returns the archived (dead-letter) task count per queue.
 	ArchivedByQueue(ctx context.Context) (map[string]int, error)
+	// LastReconcile returns when the indexer last completed a reconcile and
+	// whether that heartbeat is present (absent ⇒ never stamped / pre-heartbeat
+	// indexer). Used to detect a dead/stuck indexer.
+	LastReconcile(ctx context.Context) (time.Time, bool, error)
 }

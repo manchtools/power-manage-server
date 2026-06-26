@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/manchtools/power-manage/server/internal/search"
 )
@@ -69,9 +70,15 @@ func (c QueuesCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	return findings, nil
 }
 
-// SearchCheck — expected indexes present + schema current (spec 15, criterion 13).
-// (A true reconcile-freshness check needs an indexer heartbeat key, which does not
-// exist yet; "indexes present + schema current" is the available signal.)
+// defaultReconcileInterval mirrors the indexer's own default
+// (cmd/indexer -reconcile-interval) so the freshness horizon self-calibrates
+// even when INDEXER_RECONCILE_INTERVAL is not in the inspected env.
+const defaultReconcileInterval = time.Hour
+
+// SearchCheck — expected indexes present (criterion 13, critical) + indexer
+// liveness via the reconcile heartbeat (warning past 2× the reconcile interval)
+// + schema fingerprint drift (warning). The freshness horizon is derived from
+// the configured interval, not a fixed wall-clock.
 type SearchCheck struct{}
 
 func (SearchCheck) ID() string { return "search" }
@@ -90,15 +97,42 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 			fmt.Sprintf("search index %s is missing", name),
 			"run the indexer / RebuildSearchIndex to (re)create it"))
 	}
+
+	// Indexer liveness: a heartbeat older than 2× the reconcile interval means
+	// the indexer process is dead/stuck — the index drifts silently even though
+	// the fingerprint may still match. Absent heartbeat ⇒ never stamped (fresh
+	// deploy / pre-heartbeat indexer); not a "stale" signal, so no warning.
+	interval := reconcileInterval(env)
+	if ts, present, err := env.Cache.LastReconcile(ctx); err == nil && present {
+		if age := env.now().Sub(ts); age > 2*interval {
+			f := warn(c.ID(),
+				fmt.Sprintf("the search indexer has not reconciled in %s (> 2× the %s interval) — it may be dead or stuck", age.Round(time.Second), interval),
+				"check the indexer container/logs and restart it")
+			f.Detail = "last reconcile " + ts.UTC().Format(time.RFC3339)
+			findings = append(findings, f)
+		}
+	}
+
 	if current, err := env.Cache.SchemaCurrent(ctx); err == nil && !current {
 		findings = append(findings, warn(c.ID(),
 			"the indexed schema is stale (fingerprint mismatch)",
 			"the indexer will rebuild on next boot; trigger a rebuild if it has not"))
 	}
 	if len(findings) == 0 {
-		return []Finding{ok(c.ID(), "all expected search indexes present and schema current")}, nil
+		return []Finding{ok(c.ID(), "all expected search indexes present, schema current, indexer reconciling")}, nil
 	}
 	return findings, nil
+}
+
+// reconcileInterval reads INDEXER_RECONCILE_INTERVAL (a Go duration) from the
+// inspected env, falling back to the indexer's own default. A non-positive value
+// (reconciliation disabled) also falls back, so the freshness check still has a
+// sane horizon.
+func reconcileInterval(env *Env) time.Duration {
+	if d, err := time.ParseDuration(env.Get("INDEXER_RECONCILE_INTERVAL")); err == nil && d > 0 {
+		return d
+	}
+	return defaultReconcileInterval
 }
 
 // AdminCheck — bootstrap admin still on the default email (spec 15, criterion 14).

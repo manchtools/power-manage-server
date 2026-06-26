@@ -222,9 +222,36 @@ func TestSearchCheck(t *testing.T) {
 		env.Cache = fakeCache{schemaCurrent: false}
 		assert.Equal(t, SeverityWarning, worst(run1(t, SearchCheck{}, env)))
 	})
-	t.Run("all present + current → ok", func(t *testing.T) {
+	t.Run("all present + current + fresh reconcile → ok", func(t *testing.T) {
 		env := testEnv(nil)
-		env.Cache = fakeCache{schemaCurrent: true}
+		env.Cache = fakeCache{
+			schemaCurrent: true,
+			reconcileOK:   true,
+			lastReconcile: env.now().Add(-30 * time.Minute), // within 2× the 1h default
+		}
+		assert.Equal(t, SeverityOK, worst(run1(t, SearchCheck{}, env)))
+	})
+	t.Run("stale reconcile heartbeat → warning (dead/stuck indexer)", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{
+			schemaCurrent: true,
+			reconcileOK:   true,
+			lastReconcile: env.now().Add(-3 * time.Hour), // > 2× the 1h default
+		}
+		assert.Equal(t, SeverityWarning, worst(run1(t, SearchCheck{}, env)))
+	})
+	t.Run("stale reconcile but schema current uses the configured interval", func(t *testing.T) {
+		env := testEnv(map[string]string{"INDEXER_RECONCILE_INTERVAL": "6h"})
+		env.Cache = fakeCache{
+			schemaCurrent: true,
+			reconcileOK:   true,
+			lastReconcile: env.now().Add(-3 * time.Hour), // < 2×6h → still fresh
+		}
+		assert.Equal(t, SeverityOK, worst(run1(t, SearchCheck{}, env)), "horizon derives from INDEXER_RECONCILE_INTERVAL")
+	})
+	t.Run("no heartbeat present → no false warning", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{schemaCurrent: true} // reconcileOK:false
 		assert.Equal(t, SeverityOK, worst(run1(t, SearchCheck{}, env)))
 	})
 }

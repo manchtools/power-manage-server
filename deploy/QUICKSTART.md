@@ -103,8 +103,9 @@ Flags:
 It reports placeholder/weak secrets, mandatory at-rest encryption key, a
 credentialed CORS wildcard, an internal mTLS listener bound to all interfaces, a
 floating `IMAGE_TAG`, certificate file permissions and approaching expiry,
-Postgres/Valkey reachability, Asynq dead-letter depth, search-index presence,
-and a bootstrap admin still on the default email.
+Postgres/Valkey reachability, Asynq dead-letter depth, search-index presence
+and indexer liveness (reconcile heartbeat), and a bootstrap admin still on the
+default email.
 
 ### Exit codes
 

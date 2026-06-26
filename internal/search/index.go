@@ -371,6 +371,12 @@ const schemaFingerprintKey = "pm:indexer:schema:fingerprint"
 // fingerprint — read by the control `doctor` search-health check (#322).
 const SchemaFingerprintKey = schemaFingerprintKey
 
+// LastReconcileKey holds the RFC3339 time the indexer last completed a reconcile
+// (boot sync or a periodic Rebuild). The control `doctor` reads it to detect a
+// dead/stuck indexer — a heartbeat older than 2× the reconcile interval is a
+// warning even when the schema fingerprint still matches (#322, spec 15 #13).
+const LastReconcileKey = "pm:indexer:last_reconcile"
+
 // SchemaFingerprint is a stable hash of IndexSchemas. The indexer stamps it on
 // every successful Rebuild and compares it at boot; a mismatch means the schema
 // changed (a field added or promoted to SORTABLE/TAG) and the indexes must be
@@ -1366,7 +1372,14 @@ func (idx *Index) Rebuild(ctx context.Context) error {
 	if err := idx.rdb.Set(ctx, schemaFingerprintKey, SchemaFingerprint(), 0).Err(); err != nil {
 		return fmt.Errorf("stamp schema fingerprint: %w", err)
 	}
-	return nil
+	return idx.StampReconciled(ctx)
+}
+
+// StampReconciled records that a reconcile just completed (LastReconcileKey,
+// RFC3339). Called at the end of every Rebuild and once after boot sync, so the
+// control `doctor` can spot a dead/stuck indexer whose heartbeat went stale.
+func (idx *Index) StampReconciled(ctx context.Context) error {
+	return idx.rdb.Set(ctx, LastReconcileKey, idx.now().UTC().Format(time.RFC3339), 0).Err()
 }
 
 // StartReconciliation launches a background goroutine that periodically

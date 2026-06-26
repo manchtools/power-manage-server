@@ -87,14 +87,27 @@ func TestValkeyProbe_Integration(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, current, "fingerprint matches the running schema")
 
-	// No queues created yet → empty, no error.
+	// Before any reconcile: the heartbeat is absent.
+	_, present, err := probe.LastReconcile(ctx)
+	require.NoError(t, err)
+	assert.False(t, present, "no heartbeat before a reconcile")
+
+	// The indexer stamps the heartbeat; the probe round-trips the real RFC3339 key.
+	require.NoError(t, idx.StampReconciled(ctx))
+	ts, present, err := probe.LastReconcile(ctx)
+	require.NoError(t, err)
+	require.True(t, present, "heartbeat present after StampReconciled")
+	assert.WithinDuration(t, time.Now(), ts, time.Minute, "heartbeat is recent")
+
+	// No queues created yet → empty, no error (queue-not-found is not a failure).
 	archived, err := probe.ArchivedByQueue(ctx)
 	require.NoError(t, err)
 	assert.Empty(t, archived)
 
-	// And the high-level check passes against the live cache.
+	// And the high-level check passes against the live cache (fresh heartbeat).
 	env := testEnv(nil)
 	env.Cache = probe
+	env.Now = time.Now // real clock so the fresh heartbeat reads as fresh
 	assert.Equal(t, SeverityOK, worst(run1(t, SearchCheck{}, env)))
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/hibiken/asynq"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,7 +102,7 @@ func (v *ValkeyProbe) ArchivedByQueue(_ context.Context) (map[string]int, error)
 	for _, q := range v.queues {
 		info, err := v.inspector.GetQueueInfo(q)
 		if err != nil {
-			if errors.Is(err, asynq.ErrQueueNotFound) {
+			if queueNotFound(err) {
 				continue // queue not created yet — nothing archived
 			}
 			return nil, err
@@ -109,6 +110,22 @@ func (v *ValkeyProbe) ArchivedByQueue(_ context.Context) (map[string]int, error)
 		out[q] = info.Archived
 	}
 	return out, nil
+}
+
+// LastReconcile reads the indexer heartbeat (search.LastReconcileKey, RFC3339).
+func (v *ValkeyProbe) LastReconcile(ctx context.Context) (time.Time, bool, error) {
+	raw, err := v.rdb.Get(ctx, search.LastReconcileKey).Result()
+	if errors.Is(err, redis.Nil) {
+		return time.Time{}, false, nil // never stamped
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return ts, true, nil
 }
 
 // Close releases the client + inspector.
@@ -128,4 +145,17 @@ func indexNotFound(err error) bool {
 	return strings.Contains(s, "unknown index") ||
 		strings.Contains(s, "no such index") ||
 		strings.Contains(s, "not found")
+}
+
+// queueNotFound reports whether an asynq inspector error means "queue not
+// created yet" (a fresh deploy has none) rather than a real failure. The
+// sentinel is matched first, but the inspector also returns a raw
+// `NOT_FOUND: queue "x" does not exist` that errors.Is does NOT catch, so the
+// string form is matched too (dead-branch error-sentinel guard).
+func queueNotFound(err error) bool {
+	if errors.Is(err, asynq.ErrQueueNotFound) {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "does not exist") || strings.Contains(s, "queue not found")
 }

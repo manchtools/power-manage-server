@@ -34,6 +34,9 @@ type fakeCache struct {
 	schemaErr     error
 	archived      map[string]int
 	archErr       error
+	lastReconcile time.Time
+	reconcileOK   bool
+	reconcileErr  error
 }
 
 func (f fakeCache) Ping(context.Context) error { return f.pingErr }
@@ -43,6 +46,9 @@ func (f fakeCache) MissingIndexes(context.Context, []string) ([]string, error) {
 func (f fakeCache) SchemaCurrent(context.Context) (bool, error) { return f.schemaCurrent, f.schemaErr }
 func (f fakeCache) ArchivedByQueue(context.Context) (map[string]int, error) {
 	return f.archived, f.archErr
+}
+func (f fakeCache) LastReconcile(context.Context) (time.Time, bool, error) {
+	return f.lastReconcile, f.reconcileOK, f.reconcileErr
 }
 
 func testEnv(vars map[string]string) *Env {

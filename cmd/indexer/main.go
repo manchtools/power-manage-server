@@ -104,6 +104,11 @@ func main() {
 		logger.Error("initial search index sync failed", "error", err)
 		os.Exit(1)
 	}
+	// Heartbeat so the control `doctor` sees a fresh reconcile right after boot,
+	// not only after the first periodic tick (the warm path skips Rebuild).
+	if err := searchIdx.StampReconciled(ctx); err != nil {
+		logger.Warn("could not stamp reconcile heartbeat", "error", err)
+	}
 	logger.Info("search index startup sync complete")
 
 	// Start periodic reconciliation
