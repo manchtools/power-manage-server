@@ -10,6 +10,32 @@ import (
 	"time"
 )
 
+const claimDynamicUserGroupForMembership = `-- name: ClaimDynamicUserGroupForMembership :execrows
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+  AND is_dynamic = TRUE
+`
+
+type ClaimDynamicUserGroupForMembershipParams struct {
+	ID                string    `json:"id"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ProjectionVersion int64     `json:"projection_version"`
+}
+
+// DYNAMIC sibling of ClaimUserGroupForMembership for UserGroupMembersReevaluated
+// (#7 spec 14).
+func (q *Queries) ClaimDynamicUserGroupForMembership(ctx context.Context, arg ClaimDynamicUserGroupForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimDynamicUserGroupForMembership, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimUserGroupForMembership = `-- name: ClaimUserGroupForMembership :execrows
 UPDATE user_groups_projection
 SET updated_at         = $2,
@@ -560,6 +586,37 @@ func (q *Queries) IsUserInGroup(ctx context.Context, arg IsUserInGroupParams) (b
 	return is_member, err
 }
 
+const listAllUserGroupMemberships = `-- name: ListAllUserGroupMemberships :many
+SELECT ugm.user_id, ugm.group_id FROM user_group_members_projection ugm
+JOIN user_groups_projection ug ON ug.id = ugm.group_id
+WHERE ug.is_deleted = FALSE
+`
+
+type ListAllUserGroupMembershipsRow struct {
+	UserID  string `json:"user_id"`
+	GroupID string `json:"group_id"`
+}
+
+func (q *Queries) ListAllUserGroupMemberships(ctx context.Context) ([]ListAllUserGroupMembershipsRow, error) {
+	rows, err := q.db.Query(ctx, listAllUserGroupMemberships)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllUserGroupMembershipsRow{}
+	for rows.Next() {
+		var i ListAllUserGroupMembershipsRow
+		if err := rows.Scan(&i.UserID, &i.GroupID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDynamicUserGroupQueueBatch = `-- name: ListDynamicUserGroupQueueBatch :many
 SELECT group_id FROM dynamic_user_group_evaluation_queue
 ORDER BY queued_at
@@ -633,6 +690,35 @@ func (q *Queries) ListInheritedRolesByUserIDs(ctx context.Context, dollar_1 []st
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUserGroupIDsForUser = `-- name: ListUserGroupIDsForUser :many
+
+SELECT ug.id FROM user_groups_projection ug
+JOIN user_group_members_projection ugm ON ugm.group_id = ug.id
+WHERE ugm.user_id = $1 AND ug.is_deleted = FALSE
+`
+
+// #7 spec 14 — user search scope. Group ids a user belongs to, excluding
+// soft-deleted groups — matches the auth ScopeResolver (ListUserGroupsForUser).
+func (q *Queries) ListUserGroupIDsForUser(ctx context.Context, userID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listUserGroupIDsForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

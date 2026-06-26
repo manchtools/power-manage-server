@@ -53,6 +53,34 @@ func (q *Queries) ClaimDeviceGroupForMembership(ctx context.Context, arg ClaimDe
 	return result.RowsAffected(), nil
 }
 
+const claimDynamicDeviceGroupForMembership = `-- name: ClaimDynamicDeviceGroupForMembership :execrows
+UPDATE device_groups_projection
+SET projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+  AND is_deleted = FALSE
+  AND is_dynamic = TRUE
+`
+
+type ClaimDynamicDeviceGroupForMembershipParams struct {
+	ID                string `json:"id"`
+	ProjectionVersion int64  `json:"projection_version"`
+}
+
+// Atomic guard for DeviceGroupMembersReevaluated (#7 spec 14). The DYNAMIC
+// sibling of ClaimDeviceGroupForMembership: bumps projection_version only when
+// the group exists, is alive, is DYNAMIC (the evaluator owns its member set),
+// and the event is newer. n=0 → skip (stale replay / non-dynamic / deleted),
+// so a stale reevaluation delta can't recreate removed members or wipe live
+// ones on replay.
+func (q *Queries) ClaimDynamicDeviceGroupForMembership(ctx context.Context, arg ClaimDynamicDeviceGroupForMembershipParams) (int64, error) {
+	result, err := q.db.Exec(ctx, claimDynamicDeviceGroupForMembership, arg.ID, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countDeviceGroups = `-- name: CountDeviceGroups :one
 SELECT COUNT(*) FROM device_groups_projection
 WHERE is_deleted = FALSE
@@ -409,6 +437,67 @@ func (q *Queries) InsertDeviceGroupProjection(ctx context.Context, arg InsertDev
 		arg.ProjectionVersion,
 	)
 	return err
+}
+
+const listAllDeviceGroupMemberships = `-- name: ListAllDeviceGroupMemberships :many
+SELECT m.device_id, m.group_id FROM device_group_members_projection m
+JOIN device_groups_projection g ON g.id = m.group_id
+WHERE g.is_deleted = FALSE
+`
+
+type ListAllDeviceGroupMembershipsRow struct {
+	DeviceID string `json:"device_id"`
+	GroupID  string `json:"group_id"`
+}
+
+func (q *Queries) ListAllDeviceGroupMemberships(ctx context.Context) ([]ListAllDeviceGroupMembershipsRow, error) {
+	rows, err := q.db.Query(ctx, listAllDeviceGroupMemberships)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAllDeviceGroupMembershipsRow{}
+	for rows.Next() {
+		var i ListAllDeviceGroupMembershipsRow
+		if err := rows.Scan(&i.DeviceID, &i.GroupID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceGroupIDsForDevice = `-- name: ListDeviceGroupIDsForDevice :many
+
+SELECT g.id FROM device_groups_projection g
+JOIN device_group_members_projection m ON m.group_id = g.id
+WHERE m.device_id = $1 AND g.is_deleted = FALSE
+`
+
+// #7 spec 14 — device search scope. Group ids a device belongs to (static +
+// dynamic-materialized), excluding soft-deleted groups — matches the auth
+// ScopeResolver (ListGroupsForDevice). Backs the search `scope_group_ids` TAG.
+func (q *Queries) ListDeviceGroupIDsForDevice(ctx context.Context, deviceID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupIDsForDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDeviceGroupMemberIDs = `-- name: ListDeviceGroupMemberIDs :many

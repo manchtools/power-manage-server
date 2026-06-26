@@ -201,6 +201,32 @@ func (q *Queries) InsertAssignmentProjection(ctx context.Context, arg InsertAssi
 	return result.RowsAffected(), nil
 }
 
+const listActionSetIDsContainingAction = `-- name: ListActionSetIDsContainingAction :many
+SELECT set_id FROM action_set_members_projection WHERE action_id = $1
+`
+
+// Reverse container edge: the action-set ids that contain an action. Used by the
+// handler's EFFECTIVE (transitive read) scope walk (#7 spec 14).
+func (q *Queries) ListActionSetIDsContainingAction(ctx context.Context, actionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listActionSetIDsContainingAction, actionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var set_id string
+		if err := rows.Scan(&set_id); err != nil {
+			return nil, err
+		}
+		items = append(items, set_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAssignedActionsForDevice = `-- name: ListAssignedActionsForDevice :many
 WITH assigned_actions AS (
   -- Direct action assignments (no hierarchy, use assignment sort_order only)
@@ -641,6 +667,31 @@ func (q *Queries) ListAssignmentsForUser(ctx context.Context, targetID string) (
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDefinitionIDsContainingActionSet = `-- name: ListDefinitionIDsContainingActionSet :many
+SELECT definition_id FROM definition_members_projection WHERE action_set_id = $1
+`
+
+// Reverse container edge: the definition ids that contain an action-set.
+func (q *Queries) ListDefinitionIDsContainingActionSet(ctx context.Context, actionSetID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDefinitionIDsContainingActionSet, actionSetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var definition_id string
+		if err := rows.Scan(&definition_id); err != nil {
+			return nil, err
+		}
+		items = append(items, definition_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1165,6 +1216,79 @@ func (q *Queries) ListResolvedActionsForDevice(ctx context.Context, targetID str
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listScopeGroupAssignmentsBySourceType = `-- name: ListScopeGroupAssignmentsBySourceType :many
+SELECT source_id, target_id FROM assignments_projection
+WHERE source_type = $1
+  AND target_type IN ('device_group', 'user_group')
+  AND is_deleted = FALSE
+`
+
+type ListScopeGroupAssignmentsBySourceTypeRow struct {
+	SourceID string `json:"source_id"`
+	TargetID string `json:"target_id"`
+}
+
+// (source_id, group_id) pairs for every object of a type that is directly
+// assigned to a device-/user-group. One query per type drives the search warm
+// rebuild of `scope_group_ids` (mirrors ListAssignedSourceIDs).
+func (q *Queries) ListScopeGroupAssignmentsBySourceType(ctx context.Context, sourceType string) ([]ListScopeGroupAssignmentsBySourceTypeRow, error) {
+	rows, err := q.db.Query(ctx, listScopeGroupAssignmentsBySourceType, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListScopeGroupAssignmentsBySourceTypeRow{}
+	for rows.Next() {
+		var i ListScopeGroupAssignmentsBySourceTypeRow
+		if err := rows.Scan(&i.SourceID, &i.TargetID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listScopeGroupIDsForSource = `-- name: ListScopeGroupIDsForSource :many
+
+SELECT target_id FROM assignments_projection
+WHERE source_type = $1 AND source_id = $2
+  AND target_type IN ('device_group', 'user_group')
+  AND is_deleted = FALSE
+`
+
+type ListScopeGroupIDsForSourceParams struct {
+	SourceType string `json:"source_type"`
+	SourceID   string `json:"source_id"`
+}
+
+// #7 spec 14 — scoped object visibility. The following queries back the
+// search index `scope_group_ids` TAG (direct device-/user-group assignment ids
+// per object) and the live effective/direct scope walk in the object handlers.
+// Device-/user-group ids one object is DIRECTLY assigned to. Backs the search
+// index `scope_group_ids` for an incremental object reindex (#7 spec 14).
+func (q *Queries) ListScopeGroupIDsForSource(ctx context.Context, arg ListScopeGroupIDsForSourceParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listScopeGroupIDsForSource, arg.SourceType, arg.SourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var target_id string
+		if err := rows.Scan(&target_id); err != nil {
+			return nil, err
+		}
+		items = append(items, target_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

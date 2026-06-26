@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -80,6 +81,7 @@ func UserGroupListener(st *store.Store, logger *slog.Logger) store.EventListener
 			string(eventtypes.UserGroupMemberAdded),
 			string(eventtypes.UserGroupMemberRemoved),
 			string(eventtypes.UserGroupMembersRebuilt),
+			string(eventtypes.UserGroupMembersReevaluated),
 			string(eventtypes.UserGroupRoleAssigned),
 			string(eventtypes.UserGroupRoleRevoked):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
@@ -135,8 +137,61 @@ func ApplyUserGroup(ctx context.Context, q *store.Queries, e store.PersistedEven
 		return applyUserGroupRoleRevoked(ctx, q, e)
 	case string(eventtypes.UserGroupMembersRebuilt):
 		return applyUserGroupMembersRebuilt(ctx, q, e)
+	case string(eventtypes.UserGroupMembersReevaluated):
+		return applyUserGroupMembersReevaluated(ctx, q, e)
 	}
 	return nil
+}
+
+// applyUserGroupMembersReevaluated projects the dynamic user-group membership
+// delta the evaluator emits (#7 spec 14) — the source of truth for dynamic
+// membership (no direct projection write), so a rebuild replays it. Dynamic
+// sibling of applyUserGroupMemberAdded/Removed; version+dynamic guard first.
+func applyUserGroupMembersReevaluated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	p, err := decodePayload[payloads.UserGroupMembersReevaluated](e, "user_group", eventtypes.UserGroupMembersReevaluated)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	n, err := q.ClaimDynamicUserGroupForMembership(ctx, db.ClaimDynamicUserGroupForMembershipParams{
+		ID:                e.StreamID,
+		UpdatedAt:         e.OccurredAt,
+		ProjectionVersion: e.SequenceNum,
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	for _, id := range p.AddedUserIDs {
+		if id == "" {
+			continue
+		}
+		if err := q.InsertUserGroupMember(ctx, db.InsertUserGroupMemberParams{
+			GroupID:           e.StreamID,
+			UserID:            id,
+			AddedAt:           e.OccurredAt,
+			AddedBy:           e.ActorID,
+			ProjectionVersion: e.SequenceNum,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, id := range p.RemovedUserIDs {
+		if id == "" {
+			continue
+		}
+		if err := q.DeleteUserGroupMember(ctx, db.DeleteUserGroupMemberParams{
+			GroupID: e.StreamID,
+			UserID:  id,
+		}); err != nil {
+			return err
+		}
+	}
+	return q.RecountUserGroupMembers(ctx, e.StreamID)
 }
 
 func applyUserGroupCreated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

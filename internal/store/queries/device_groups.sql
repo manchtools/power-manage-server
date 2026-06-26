@@ -352,3 +352,31 @@ WHERE group_id = $1
 UPDATE device_groups_projection
 SET member_count = (SELECT COUNT(*) FROM device_group_members_projection WHERE group_id = $1)
 WHERE id = $1;
+
+-- #7 spec 14 — device search scope. Group ids a device belongs to (static +
+-- dynamic-materialized), excluding soft-deleted groups — matches the auth
+-- ScopeResolver (ListGroupsForDevice). Backs the search `scope_group_ids` TAG.
+
+-- name: ListDeviceGroupIDsForDevice :many
+SELECT g.id FROM device_groups_projection g
+JOIN device_group_members_projection m ON m.group_id = g.id
+WHERE m.device_id = $1 AND g.is_deleted = FALSE;
+
+-- name: ListAllDeviceGroupMemberships :many
+SELECT m.device_id, m.group_id FROM device_group_members_projection m
+JOIN device_groups_projection g ON g.id = m.group_id
+WHERE g.is_deleted = FALSE;
+
+-- name: ClaimDynamicDeviceGroupForMembership :execrows
+-- Atomic guard for DeviceGroupMembersReevaluated (#7 spec 14). The DYNAMIC
+-- sibling of ClaimDeviceGroupForMembership: bumps projection_version only when
+-- the group exists, is alive, is DYNAMIC (the evaluator owns its member set),
+-- and the event is newer. n=0 → skip (stale replay / non-dynamic / deleted),
+-- so a stale reevaluation delta can't recreate removed members or wipe live
+-- ones on replay.
+UPDATE device_groups_projection
+SET projection_version = $2
+WHERE id = $1
+  AND projection_version < $2
+  AND is_deleted = FALSE
+  AND is_dynamic = TRUE;

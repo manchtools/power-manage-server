@@ -323,6 +323,18 @@ func setAssigned(fields map[string]any, data *taskqueue.SearchEntityData) {
 	}
 }
 
+// setScopeGroupIDs writes the scope_group_ids TAG (#7 spec 14). Unlike
+// setAssigned, it keys off the HasScopeGroupIDs flag, not a non-empty value: an
+// UNASSIGNED object must write an EMPTY TAG (so it matches no scoped query and is
+// invisible to scoped admins), which an "" == not-computed rule would wrongly
+// skip. A path that didn't compute scope groups (Has == false) leaves the prior
+// value alone (HSET additive).
+func setScopeGroupIDs(fields map[string]any, data *taskqueue.SearchEntityData) {
+	if data.HasScopeGroupIDs {
+		fields[ScopeGroupField] = data.ScopeGroupIDs
+	}
+}
+
 func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any {
 	switch scope {
 	case ScopeAction:
@@ -337,6 +349,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"is_compliance": isCompliance,
 		}
 		setAssigned(fields, data)
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -351,6 +364,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
 		setAssigned(fields, data)
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -365,6 +379,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
 		setAssigned(fields, data)
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -385,6 +400,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 		if data.HasRuleCount {
 			fields["rule_count"] = strconv.Itoa(int(data.RuleCount))
 		}
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -402,6 +418,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"os_arch":           sanitizeSearchField(data.OSArch, maxOSField),
 			"kernel":            sanitizeSearchField(data.Kernel, maxOSField),
 		}
+		setScopeGroupIDs(fields, data)
 		if data.RegisteredAt != 0 {
 			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)
 		}
@@ -416,6 +433,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"linux_username": data.LinuxUsername,
 			"disabled":       data.Disabled,
 		}
+		setScopeGroupIDs(fields, data)
 		if data.Role != "" {
 			fields["role"] = data.Role
 		}

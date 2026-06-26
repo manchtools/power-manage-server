@@ -33,14 +33,13 @@ var projectionMutationRe = regexp.MustCompile(`(?i)(INSERT\s+INTO|UPDATE|DELETE\
 var projectionWriteAllowlist = map[string]string{
 	"internal/compliance :: UpdateDeviceComplianceSummary": "Computed read-model: the compliance evaluator computes per-device compliance and writes the summary columns on device_projection. Evaluation results are derived state, not event-sourced.",
 	"internal/compliance :: UpsertComplianceEvaluation":    "Computed read-model: per-policy evaluation results written by the compliance evaluator. Derived state, not event-sourced.",
-	"internal/dyngroupeval :: InsertDeviceGroupMember":     "Computed read-model: DYNAMIC device-group membership is materialized by evaluating the group query (static membership is event-sourced via projectors).",
-	"internal/dyngroupeval :: DeleteDeviceGroupMember":     "Computed read-model: dynamic device-group membership reconciliation removes stale members.",
-	"internal/dyngroupeval :: RecountDeviceGroupMembers":   "Computed read-model: recomputes the dynamic device-group member count after materialization.",
-	"internal/dyngroupeval :: InsertUserGroupMember":       "Computed read-model: DYNAMIC user-group membership materialized from the group query.",
-	"internal/dyngroupeval :: DeleteUserGroupMember":       "Computed read-model: dynamic user-group membership reconciliation removes stale members.",
-	"internal/dyngroupeval :: RecountUserGroupMembers":     "Computed read-model: recomputes the dynamic user-group member count after materialization.",
-	"internal/auth :: UpdateSystemRolePermissions":         "Bootstrap reconcile: ReconcileSystemRoles syncs the Admin/User system-role permissions to the code-defined sets at startup so new permissions land without a manual toggle. System-role permission sets are code-owned, not user-event-sourced.",
-	"internal/store/postgres :: UpdateActionSignature":     "Store adapter: writes the server-computed CA signature back onto action_projection after signing. Tied to the WS1 action-signing rework — revisit when SignedActionEnvelope lands.",
+	// NOTE: dyngroupeval no longer appears here. #7 spec 14 made dynamic group
+	// membership event-driven — the evaluator emits *GroupMembersReevaluated delta
+	// events and a projector applies them (insert/delete/recount). The forcing
+	// function above is satisfied: removing these entries keeps this test red if
+	// the evaluator ever writes membership projections directly again.
+	"internal/auth :: UpdateSystemRolePermissions":     "Bootstrap reconcile: ReconcileSystemRoles syncs the Admin/User system-role permissions to the code-defined sets at startup so new permissions land without a manual toggle. System-role permission sets are code-owned, not user-event-sourced.",
+	"internal/store/postgres :: UpdateActionSignature": "Store adapter: writes the server-computed CA signature back onto action_projection after signing. Tied to the WS1 action-signing rework — revisit when SignedActionEnvelope lands.",
 }
 
 // TestProjectionTablesWrittenOnlyByProjectors enforces the CQRS write

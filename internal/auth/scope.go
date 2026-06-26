@@ -376,6 +376,60 @@ func UserScopeListFilter(ctx context.Context, permission string) (groupIDs []str
 	return scopeListFilter(ctx, permission, UserScopeFilterFor)
 }
 
+// ObjectScopeListFilter reduces the caller's scoped grants to the union of every
+// device-group and user-group id they are confined to, for scoping the shared
+// object types (actions, action-sets, definitions, compliance policies) by
+// assignment (#7 spec 14). Unlike the per-permission device/user filters, object
+// permissions are not independently scopable (they are TargetUnspecified), so an
+// object's visibility reuses the device-/user-group scope the caller already
+// holds from their grants: a caller scoped to device group X is confined to X's
+// objects too.
+//
+//   - restricted=false ⇒ the caller holds NO scoped grant at all (a global/org
+//     admin) — apply no object filter (sees everything, as today).
+//   - restricted=true  ⇒ confine to objects whose assignment groups intersect
+//     groupIDs. groupIDs may be empty only when there is no authenticated caller
+//     (fail closed — restrict to nothing); a real scoped grant always yields ≥1
+//     id.
+//
+// Read ONLY from the JWT-backed UserContext.ScopedGrants — never a DB lookup — so
+// a scoped Search slices results with zero round-trips (spec 14, criterion 13).
+func ObjectScopeListFilter(ctx context.Context) (groupIDs []string, restricted bool) {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		// No caller to resolve — fail closed (restrict to nothing), never open.
+		// Object handlers run behind the auth interceptor, so this is defensive.
+		return nil, true
+	}
+	seen := make(map[string]struct{}, len(user.ScopedGrants))
+	sawScopedGrant := false
+	for _, g := range user.ScopedGrants {
+		if g.ScopeKind != ScopeKindDeviceGroup && g.ScopeKind != ScopeKindUserGroup {
+			continue // unscoped grant (global for its permission) — no confinement
+		}
+		// A group-kind scoped grant means the caller IS scoped, even if the id is
+		// malformed (empty). Record that BEFORE the empty-id check so a malformed
+		// grant fails CLOSED below instead of falling through to global access.
+		sawScopedGrant = true
+		if g.ScopeID == "" {
+			continue // malformed grant — confines to nothing (handled by fail-closed return)
+		}
+		if _, dup := seen[g.ScopeID]; dup {
+			continue
+		}
+		seen[g.ScopeID] = struct{}{}
+		groupIDs = append(groupIDs, g.ScopeID)
+	}
+	if len(groupIDs) == 0 {
+		// No groups resolved. If the caller held ANY group-kind scoped grant, they
+		// are scoped — to nothing — so fail CLOSED (restricted, sees nothing); a
+		// malformed scoped JWT must never escalate to org-wide access. Only a
+		// COMPLETE absence of scoped grants is unrestricted (a global admin).
+		return nil, sawScopedGrant
+	}
+	return groupIDs, true
+}
+
 // scopeListFilter is the shared body for the device/user list filters. filterFor
 // selects the relevant scope kind (DeviceScopeFilterFor / UserScopeFilterFor).
 func scopeListFilter(ctx context.Context, permission string, filterFor func(context.Context, string) ScopeFilter) (groupIDs []string, restricted bool) {

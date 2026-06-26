@@ -89,6 +89,10 @@ func (h *ActionSetHandler) GetActionSet(ctx context.Context, req *connect.Reques
 		return nil, err
 	}
 
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.Id, ErrActionSetNotFound, "action set not found"); err != nil {
+		return nil, err
+	}
+
 	set, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
@@ -161,6 +165,10 @@ func (h *ActionSetHandler) RenameActionSet(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
@@ -194,6 +202,10 @@ func (h *ActionSetHandler) UpdateActionSetSchedule(ctx context.Context, req *con
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.Id); err != nil {
 		return nil, err
 	}
 
@@ -241,6 +253,10 @@ func (h *ActionSetHandler) UpdateActionSetDescription(ctx context.Context, req *
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
@@ -275,6 +291,10 @@ func (h *ActionSetHandler) DeleteActionSet(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.Id,
@@ -305,10 +325,21 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.SetId); err != nil {
+		return nil, err
+	}
+
 	// Verify set exists
 	_, err = h.store.Repos().ActionSet.Get(ctx, req.Msg.SetId)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionSetNotFound, "action set not found")
+	}
+
+	// The referenced action must be readable in the caller's scope (#7 spec 14):
+	// otherwise a scoped admin could pull an out-of-scope action into their
+	// in-scope set, making it deployable + transitively readable through the set.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", req.Msg.ActionId, ErrActionNotFound, "action not found"); err != nil {
+		return nil, err
 	}
 
 	// Verify action exists
@@ -358,6 +389,10 @@ func (h *ActionSetHandler) RemoveActionFromSet(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.SetId); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
@@ -395,6 +430,10 @@ func (h *ActionSetHandler) ReorderActionInSet(ctx context.Context, req *connect.
 
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.SetId); err != nil {
 		return nil, err
 	}
 

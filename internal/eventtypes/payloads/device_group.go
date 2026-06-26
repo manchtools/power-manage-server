@@ -33,6 +33,15 @@ type DeviceGroupMemberRemoved struct {
 	DeviceID string `json:"device_id"`
 }
 
+// DeviceGroupMembersReevaluated is the wire shape for the dynamic-group
+// membership delta the evaluator emits (#7 spec 14). StreamID carries the group
+// id; the payload carries the device ids added and removed by this evaluation.
+// Audited + consumed by api/SearchListener to reindex the affected devices.
+type DeviceGroupMembersReevaluated struct {
+	AddedDeviceIDs   []string `json:"added_device_ids,omitempty"`
+	RemovedDeviceIDs []string `json:"removed_device_ids,omitempty"`
+}
+
 // DeviceGroupQueryUpdated toggles a static group to dynamic (or back).
 type DeviceGroupQueryUpdated struct {
 	IsDynamic    bool   `json:"is_dynamic"`

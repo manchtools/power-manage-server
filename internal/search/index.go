@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -216,6 +217,11 @@ var IndexSchemas = []IndexSchema{
 			"type", "TAG", "SORTABLE",
 			"is_compliance", "TAG",
 			"assigned", "TAG",
+			// scope_group_ids: multi-value TAG of the device-/user-group ids this
+			// object is DIRECTLY assigned to (#7 spec 14). Scoped admins are
+			// confined to objects whose groups intersect their scope. Default ","
+			// separator — ULIDs contain no comma.
+			"scope_group_ids", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -229,6 +235,7 @@ var IndexSchemas = []IndexSchema{
 			"member_count", "NUMERIC", "SORTABLE",
 			"action_names", "TEXT",
 			"assigned", "TAG",
+			"scope_group_ids", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -243,6 +250,7 @@ var IndexSchemas = []IndexSchema{
 			"set_names", "TEXT",
 			"action_names", "TEXT",
 			"assigned", "TAG",
+			"scope_group_ids", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 			"updated_at", "NUMERIC", "SORTABLE",
 		},
@@ -255,6 +263,7 @@ var IndexSchemas = []IndexSchema{
 			"description", "TEXT",
 			"action_names", "TEXT",
 			"rule_count", "NUMERIC", "SORTABLE",
+			"scope_group_ids", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
 	},
@@ -272,6 +281,11 @@ var IndexSchemas = []IndexSchema{
 			"os_arch", "TAG",
 			"kernel", "TEXT",
 			"compliance_status", "TAG", "SORTABLE",
+			// scope_group_ids: the device-group ids this device belongs to (#7
+			// spec 14). Confines a scope-restricted admin's device Search to their
+			// device groups — the Search counterpart of the dedicated ListDevices
+			// scope filter. Server-only TAG (kept out of client filters).
+			"scope_group_ids", "TAG",
 			"registered_at", "NUMERIC", "SORTABLE",
 			"last_seen_at", "NUMERIC", "SORTABLE",
 		},
@@ -285,6 +299,8 @@ var IndexSchemas = []IndexSchema{
 			"linux_username", "TEXT",
 			"disabled", "TAG", "SORTABLE",
 			"role", "TAG",
+			// scope_group_ids: the user-group ids this user belongs to (#7 spec 14).
+			"scope_group_ids", "TAG",
 			"last_login_at", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
@@ -335,6 +351,18 @@ var IndexSchemas = []IndexSchema{
 		},
 	},
 }
+
+// ScopeGroupField is the multi-value TAG that holds the device-/user-group ids an
+// object is directly assigned to, used to confine scoped admins to their own
+// objects (#7 spec 14). The server both populates it (indexer) and filters on it
+// (search handler); it is NOT a client-facing filter, so ServerScopeFields keeps
+// it out of the api scopeFilterFields allow-list and the parity guard skips it.
+const ScopeGroupField = "scope_group_ids"
+
+// ServerScopeFields are index TAG fields the server populates and filters on for
+// RBAC scope confinement — never client-filterable. Self-discovering consumers
+// (scopeFilterFields parity, query builders) skip these.
+var ServerScopeFields = map[string]bool{ScopeGroupField: true}
 
 // schemaFingerprintKey stores the hash of IndexSchemas from the last Rebuild.
 const schemaFingerprintKey = "pm:indexer:schema:fingerprint"
@@ -541,6 +569,62 @@ func tagBool(b bool) string {
 	return "false"
 }
 
+// scopeGroupSet returns source_id → comma-joined sorted device-/user-group ids
+// for stamping the search `scope_group_ids` TAG during a warm rebuild (#7 spec
+// 14). One query per type, then O(1) lookups. A source absent from the map has
+// no group assignments → "" → invisible to scoped admins. Sorted for a stable
+// indexed value.
+func (idx *Index) scopeGroupSet(ctx context.Context, sourceType string) (map[string]string, error) {
+	rows, err := idx.store.Queries().ListScopeGroupAssignmentsBySourceType(ctx, sourceType)
+	if err != nil {
+		return nil, err
+	}
+	tmp := map[string][]string{}
+	for _, r := range rows {
+		tmp[r.SourceID] = append(tmp[r.SourceID], r.TargetID)
+	}
+	return joinSortedGroups(tmp), nil
+}
+
+// deviceGroupSet / userGroupSet return entity_id → comma-joined sorted group ids
+// for the device/user search `scope_group_ids` TAG during a warm rebuild (#7 spec
+// 14). One query each (the same is_deleted-excluded membership the auth resolver
+// uses), then O(1) lookups.
+func (idx *Index) deviceGroupSet(ctx context.Context) (map[string]string, error) {
+	rows, err := idx.store.Queries().ListAllDeviceGroupMemberships(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tmp := map[string][]string{}
+	for _, r := range rows {
+		tmp[r.DeviceID] = append(tmp[r.DeviceID], r.GroupID)
+	}
+	return joinSortedGroups(tmp), nil
+}
+
+func (idx *Index) userGroupSet(ctx context.Context) (map[string]string, error) {
+	rows, err := idx.store.Queries().ListAllUserGroupMemberships(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tmp := map[string][]string{}
+	for _, r := range rows {
+		tmp[r.UserID] = append(tmp[r.UserID], r.GroupID)
+	}
+	return joinSortedGroups(tmp), nil
+}
+
+// joinSortedGroups renders id→[group ids] as id→"g1,g2" (sorted, comma-joined) —
+// the multi-value TAG form scope_group_ids stores.
+func joinSortedGroups(m map[string][]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for id, ids := range m {
+		sort.Strings(ids)
+		out[id] = strings.Join(ids, ",")
+	}
+	return out
+}
+
 func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, error) {
 	const pageSize int32 = 500
 	var offset int32
@@ -548,6 +632,10 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 	actionNames := map[string]string{}
 
 	assignedActions, err := idx.assignedSourceSet(ctx, "action")
+	if err != nil {
+		return total, actionNames, err
+	}
+	scopeGroups, err := idx.scopeGroupSet(ctx, "action")
 	if err != nil {
 		return total, actionNames, err
 	}
@@ -579,11 +667,13 @@ func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, erro
 				}
 			}
 			data := &taskqueue.SearchEntityData{
-				Name:         a.Name,
-				Description:  desc,
-				Type:         int32(a.ActionType),
-				IsCompliance: isCompliance,
-				Assigned:     tagBool(assignedActions[a.ID]),
+				Name:             a.Name,
+				Description:      desc,
+				Type:             int32(a.ActionType),
+				IsCompliance:     isCompliance,
+				Assigned:         tagBool(assignedActions[a.ID]),
+				ScopeGroupIDs:    scopeGroups[a.ID],
+				HasScopeGroupIDs: true,
 			}
 			if a.CreatedAt != nil {
 				data.CreatedAt = a.CreatedAt.Unix()
@@ -620,6 +710,10 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 	setMembers := map[string][]string{}
 
 	assignedSets, err := idx.assignedSourceSet(ctx, "action_set")
+	if err != nil {
+		return total, setNames, setMembers, err
+	}
+	scopeGroups, err := idx.scopeGroupSet(ctx, "action_set")
 	if err != nil {
 		return total, setNames, setMembers, err
 	}
@@ -661,10 +755,12 @@ func (idx *Index) warmActionSets(ctx context.Context, actionNames map[string]str
 			}
 
 			data := &taskqueue.SearchEntityData{
-				Name:        s.Name,
-				Description: s.Description,
-				MemberCount: s.MemberCount,
-				Assigned:    tagBool(assignedSets[s.ID]),
+				Name:             s.Name,
+				Description:      s.Description,
+				MemberCount:      s.MemberCount,
+				Assigned:         tagBool(assignedSets[s.ID]),
+				ScopeGroupIDs:    scopeGroups[s.ID],
+				HasScopeGroupIDs: true,
 			}
 			if s.CreatedAt != nil {
 				data.CreatedAt = s.CreatedAt.Unix()
@@ -709,6 +805,10 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 	if err != nil {
 		return total, err
 	}
+	scopeGroups, err := idx.scopeGroupSet(ctx, "definition")
+	if err != nil {
+		return total, err
+	}
 
 	for {
 		defs, err := idx.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
@@ -746,10 +846,12 @@ func (idx *Index) warmDefinitions(ctx context.Context, actionNames, setNames map
 			}
 
 			data := &taskqueue.SearchEntityData{
-				Name:        d.Name,
-				Description: d.Description,
-				MemberCount: d.MemberCount,
-				Assigned:    tagBool(assignedDefs[d.ID]),
+				Name:             d.Name,
+				Description:      d.Description,
+				MemberCount:      d.MemberCount,
+				Assigned:         tagBool(assignedDefs[d.ID]),
+				ScopeGroupIDs:    scopeGroups[d.ID],
+				HasScopeGroupIDs: true,
 			}
 			if d.CreatedAt != nil {
 				data.CreatedAt = d.CreatedAt.Unix()
@@ -783,6 +885,11 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 	var offset int32
 	var total int
 
+	scopeGroups, err := idx.scopeGroupSet(ctx, "compliance_policy")
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		policies, err := idx.store.Queries().ListCompliancePolicies(ctx, db.ListCompliancePoliciesParams{
 			Limit:  pageSize,
@@ -813,12 +920,14 @@ func (idx *Index) warmCompliancePolicies(ctx context.Context) (int, error) {
 				}
 			}
 			data := &taskqueue.SearchEntityData{
-				Name:           p.Name,
-				Description:    p.Description,
-				ActionNames:    strings.Join(actionNames, " "),
-				HasActionNames: true, // warm has the authoritative rule list
-				RuleCount:      int32(len(rules)),
-				HasRuleCount:   true,
+				Name:             p.Name,
+				Description:      p.Description,
+				ActionNames:      strings.Join(actionNames, " "),
+				HasActionNames:   true, // warm has the authoritative rule list
+				RuleCount:        int32(len(rules)),
+				HasRuleCount:     true,
+				ScopeGroupIDs:    scopeGroups[p.ID],
+				HasScopeGroupIDs: true,
 			}
 			if p.CreatedAt != nil {
 				data.CreatedAt = p.CreatedAt.Unix()
@@ -843,6 +952,11 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 	var offset int32
 	var total int
 
+	scopeGroups, err := idx.deviceGroupSet(ctx)
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		devices, err := idx.store.Repos().Device.List(ctx, store.ListDevicesFilter{Limit: pageSize, Offset: offset, OwnerScope: nil})
 		if err != nil {
@@ -862,6 +976,8 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 				AgentVersion:     d.AgentVersion,
 				Labels:           FlattenLabels(d.Labels),
 				ComplianceStatus: d.ComplianceStatus,
+				ScopeGroupIDs:    scopeGroups[d.ID],
+				HasScopeGroupIDs: true,
 			}
 			if d.RegisteredAt != nil {
 				data.RegisteredAt = d.RegisteredAt.Unix()
@@ -936,6 +1052,11 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 	var offset int32
 	var total int
 
+	scopeGroups, err := idx.userGroupSet(ctx)
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		users, err := idx.store.Queries().ListAllUsers(ctx, db.ListAllUsersParams{
 			Limit:  pageSize,
@@ -955,11 +1076,13 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 				disabled = "true"
 			}
 			data := &taskqueue.SearchEntityData{
-				Email:         u.Email,
-				DisplayName:   u.DisplayName,
-				LinuxUsername: u.LinuxUsername,
-				Disabled:      disabled,
-				Role:          u.Role,
+				Email:            u.Email,
+				DisplayName:      u.DisplayName,
+				LinuxUsername:    u.LinuxUsername,
+				Disabled:         disabled,
+				Role:             u.Role,
+				ScopeGroupIDs:    scopeGroups[u.ID],
+				HasScopeGroupIDs: true,
 			}
 			if u.CreatedAt != nil {
 				data.CreatedAt = u.CreatedAt.Unix()

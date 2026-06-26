@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -79,7 +80,8 @@ func DeviceGroupListener(st *store.Store, logger *slog.Logger) store.EventListen
 			string(eventtypes.DeviceGroupMemberAdded),
 			string(eventtypes.DeviceAddedToGroup),
 			string(eventtypes.DeviceGroupMemberRemoved),
-			string(eventtypes.DeviceRemovedFromGroup):
+			string(eventtypes.DeviceRemovedFromGroup),
+			string(eventtypes.DeviceGroupMembersReevaluated):
 			if err := st.WithTx(ctx, func(q *store.Queries) error {
 				return ApplyDeviceGroup(ctx, q, e)
 			}); err != nil {
@@ -128,10 +130,65 @@ func ApplyDeviceGroup(ctx context.Context, q *store.Queries, e store.PersistedEv
 		return applyDeviceGroupMemberAdded(ctx, q, e)
 	case string(eventtypes.DeviceGroupMemberRemoved), string(eventtypes.DeviceRemovedFromGroup):
 		return applyDeviceGroupMemberRemoved(ctx, q, e)
+	case string(eventtypes.DeviceGroupMembersReevaluated):
+		return applyDeviceGroupMembersReevaluated(ctx, q, e)
 	case string(eventtypes.DeviceGroupDeleted):
 		return applyDeviceGroupDeleted(ctx, q, e)
 	}
 	return nil
+}
+
+// applyDeviceGroupMembersReevaluated projects the dynamic-group membership delta
+// the evaluator emits (#7 spec 14). The event is the SOURCE OF TRUTH for dynamic
+// membership (the evaluator no longer writes the projection directly), so a
+// rebuild reconstructs membership by replaying these events. Asymmetric-guard
+// discipline: the version+dynamic guard runs FIRST; on n==0 (stale replay,
+// flipped-to-static, or deleted) the delta is skipped so it can't resurrect
+// removed members or wipe live ones.
+func applyDeviceGroupMembersReevaluated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	p, err := decodePayload[payloads.DeviceGroupMembersReevaluated](e, "device_group", eventtypes.DeviceGroupMembersReevaluated)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	n, err := q.ClaimDynamicDeviceGroupForMembership(ctx, db.ClaimDynamicDeviceGroupForMembershipParams{
+		ID:                e.StreamID,
+		ProjectionVersion: e.SequenceNum,
+	})
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return nil
+	}
+	addedAt := e.OccurredAt
+	for _, id := range p.AddedDeviceIDs {
+		if id == "" {
+			continue
+		}
+		if err := q.InsertDeviceGroupMember(ctx, db.InsertDeviceGroupMemberParams{
+			GroupID:           e.StreamID,
+			DeviceID:          id,
+			AddedAt:           &addedAt,
+			ProjectionVersion: e.SequenceNum,
+		}); err != nil {
+			return err
+		}
+	}
+	for _, id := range p.RemovedDeviceIDs {
+		if id == "" {
+			continue
+		}
+		if err := q.DeleteDeviceGroupMember(ctx, db.DeleteDeviceGroupMemberParams{
+			GroupID:  e.StreamID,
+			DeviceID: id,
+		}); err != nil {
+			return err
+		}
+	}
+	return q.RecountDeviceGroupMembers(ctx, e.StreamID)
 }
 
 func applyDeviceGroupCreated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {

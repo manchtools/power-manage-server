@@ -24,10 +24,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/dynamicquery"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -125,32 +128,28 @@ func (e *Evaluator) EvaluateDeviceGroup(ctx context.Context, groupID string) err
 		}
 	}
 
+	// Membership is event-driven (#7 spec 14): the evaluator computes the delta
+	// and EMITS it; the device_group projector applies it (insert/delete +
+	// recount). The event — not a direct projection write — is the source of
+	// truth, so the audit log can never drift from membership and a projection
+	// rebuild reconstructs dynamic membership by replaying these events.
+	var added, removed []string
 	for id := range newSet {
 		if !currentSet[id] {
-			added := evalStart
-			if err := q.InsertDeviceGroupMember(ctx, db.InsertDeviceGroupMemberParams{
-				GroupID:           groupID,
-				DeviceID:          id,
-				AddedAt:           &added,
-				ProjectionVersion: 0,
-			}); err != nil {
-				return fmt.Errorf("dyngroupeval: add device %s to group %s: %w", id, groupID, err)
-			}
+			added = append(added, id)
 		}
 	}
 	for id := range currentSet {
 		if !newSet[id] {
-			if err := q.DeleteDeviceGroupMember(ctx, db.DeleteDeviceGroupMemberParams{
-				GroupID:  groupID,
-				DeviceID: id,
-			}); err != nil {
-				return fmt.Errorf("dyngroupeval: remove device %s from group %s: %w", id, groupID, err)
-			}
+			removed = append(removed, id)
 		}
 	}
 
-	if err := q.RecountDeviceGroupMembers(ctx, groupID); err != nil {
-		return fmt.Errorf("dyngroupeval: recount %s: %w", groupID, err)
+	if err := e.emitMembersReevaluated(ctx, "device_group", groupID,
+		string(eventtypes.DeviceGroupMembersReevaluated),
+		payloads.DeviceGroupMembersReevaluated{AddedDeviceIDs: sortedCopy(added), RemovedDeviceIDs: sortedCopy(removed)},
+		len(added)+len(removed)); err != nil {
+		return err
 	}
 
 	return q.DeleteDynamicDeviceGroupQueueBefore(ctx, db.DeleteDynamicDeviceGroupQueueBeforeParams{
@@ -208,38 +207,65 @@ func (e *Evaluator) EvaluateUserGroup(ctx context.Context, groupID string) error
 		}
 	}
 
+	// Event-driven membership (#7 spec 14): emit the delta; the user_group
+	// projector applies it. Source of truth = the event, so no audit/state drift.
+	var added, removed []string
 	for id := range newSet {
 		if !currentSet[id] {
-			if err := q.InsertUserGroupMember(ctx, db.InsertUserGroupMemberParams{
-				GroupID:           groupID,
-				UserID:            id,
-				AddedAt:           evalStart,
-				AddedBy:           "system",
-				ProjectionVersion: 0,
-			}); err != nil {
-				return fmt.Errorf("dyngroupeval: add user %s to group %s: %w", id, groupID, err)
-			}
+			added = append(added, id)
 		}
 	}
 	for id := range currentSet {
 		if !newSet[id] {
-			if err := q.DeleteUserGroupMember(ctx, db.DeleteUserGroupMemberParams{
-				GroupID: groupID,
-				UserID:  id,
-			}); err != nil {
-				return fmt.Errorf("dyngroupeval: remove user %s from group %s: %w", id, groupID, err)
-			}
+			removed = append(removed, id)
 		}
 	}
 
-	if err := q.RecountUserGroupMembers(ctx, groupID); err != nil {
-		return fmt.Errorf("dyngroupeval: recount user group %s: %w", groupID, err)
+	if err := e.emitMembersReevaluated(ctx, "user_group", groupID,
+		string(eventtypes.UserGroupMembersReevaluated),
+		payloads.UserGroupMembersReevaluated{AddedUserIDs: sortedCopy(added), RemovedUserIDs: sortedCopy(removed)},
+		len(added)+len(removed)); err != nil {
+		return err
 	}
 
 	return q.DeleteDynamicUserGroupQueueBefore(ctx, db.DeleteDynamicUserGroupQueueBeforeParams{
 		GroupID:  groupID,
 		BeforeTs: evalStart,
 	})
+}
+
+// emitMembersReevaluated appends a dynamic-group membership delta event (#7 spec
+// 14). The projector applies it (membership is event-driven — the event is the
+// source of truth, so no audit/state drift), and the search index reindexes the
+// affected devices/users. No-op when nothing changed. A failed append is returned
+// so the evaluation fails and the group stays queued for retry — membership is
+// NOT applied any other way, so the emit must not be silently dropped.
+func (e *Evaluator) emitMembersReevaluated(ctx context.Context, streamType, groupID, eventType string, data any, changed int) error {
+	if changed == 0 {
+		return nil
+	}
+	if err := e.store.AppendEvent(ctx, store.Event{
+		StreamType: streamType,
+		StreamID:   groupID,
+		EventType:  eventType,
+		Data:       data,
+		ActorType:  "system",
+		ActorID:    "system",
+	}); err != nil {
+		return fmt.Errorf("dyngroupeval: emit %s for %s: %w", eventType, groupID, err)
+	}
+	return nil
+}
+
+// sortedCopy returns a sorted copy of ids (deterministic event payload + stable
+// tests) without mutating the caller's slice.
+func sortedCopy(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := append([]string(nil), ids...)
+	sort.Strings(out)
+	return out
 }
 
 // DrainResult is the per-batch summary the drain loop returns. Count
