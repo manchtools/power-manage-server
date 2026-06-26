@@ -173,14 +173,13 @@ func (r Report) Counts() map[string]int {
 	return out
 }
 
-// sortedFindings returns findings worst-first, then by id, for stable rendering.
+// sortedFindings returns findings worst-first, preserving the declared check
+// order within each severity (a stable sort keyed on severity alone) so the
+// rendered report follows the registry order, not an alphabetical reshuffle.
 func (r Report) sortedFindings() []Finding {
 	out := append([]Finding(nil), r.Findings...)
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Severity != out[j].Severity {
-			return out[i].Severity > out[j].Severity
-		}
-		return out[i].ID < out[j].ID
+		return out[i].Severity > out[j].Severity
 	})
 	return out
 }

@@ -165,3 +165,18 @@ func TestRun_ExecErrorFromCheck(t *testing.T) {
 	require.Len(t, rep.ExecErrors, 1)
 	assert.Contains(t, strings.ToLower(rep.ExecErrors[0].Err), "nope")
 }
+
+// Equal-severity findings must render in declared (registry) order, not
+// alphabetised by id.
+func TestSortedFindings_PreservesDeclaredOrderWithinSeverity(t *testing.T) {
+	rep := Report{Findings: []Finding{
+		warn("zebra", "", ""),
+		warn("alpha", "", ""),
+		crit("mike", "", ""),
+	}}
+	got := rep.sortedFindings()
+	require.Len(t, got, 3)
+	assert.Equal(t, "mike", got[0].ID, "critical sorts first")
+	assert.Equal(t, "zebra", got[1].ID, "declared order kept within a severity")
+	assert.Equal(t, "alpha", got[2].ID)
+}

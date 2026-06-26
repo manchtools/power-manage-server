@@ -1372,7 +1372,14 @@ func (idx *Index) Rebuild(ctx context.Context) error {
 	if err := idx.rdb.Set(ctx, schemaFingerprintKey, SchemaFingerprint(), 0).Err(); err != nil {
 		return fmt.Errorf("stamp schema fingerprint: %w", err)
 	}
-	return idx.StampReconciled(ctx)
+	// Heartbeat is best-effort: the rebuild has already succeeded, so a transient
+	// Valkey write failure here must not fail it — the indexer's boot path treats
+	// a Rebuild error as fatal. The doctor reads a missing/stale heartbeat as a
+	// warning, never a hard error.
+	if err := idx.StampReconciled(ctx); err != nil {
+		idx.logger.Warn("could not stamp reconcile heartbeat after rebuild", "error", err)
+	}
+	return nil
 }
 
 // StampReconciled records that a reconcile just completed (LastReconcileKey,

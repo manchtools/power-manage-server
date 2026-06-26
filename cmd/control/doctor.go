@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -19,6 +20,13 @@ func runDoctor(args []string) int {
 	jsonOut := fs.Bool("json", false, "emit findings as JSON for CI/monitoring")
 	envFile := fs.String("env-file", ".env", "deploy .env file to inspect (skipped if absent)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0 // `doctor -h` is a successful help request, not a failure
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "doctor: unexpected argument(s): %v\n", fs.Args())
 		return 2
 	}
 
@@ -47,7 +55,17 @@ func runDoctor(args []string) int {
 		env.DB = db
 		defer db.Close()
 	}
-	valkeyDB, _ := strconv.Atoi(vars["CONTROL_VALKEY_DB"])
+	valkeyDB := 0
+	if raw := vars["CONTROL_VALKEY_DB"]; raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			// Silently coercing a bad value to DB 0 would probe the wrong database
+			// and report a false-positive health result — fail as a config error.
+			fmt.Fprintf(os.Stderr, "doctor: CONTROL_VALKEY_DB %q is not a valid integer: %v\n", raw, err)
+			return 2
+		}
+		valkeyDB = n
+	}
 	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], vars["CONTROL_VALKEY_PASSWORD"], valkeyDB); err == nil {
 		env.Cache = cache
 		defer cache.Close()

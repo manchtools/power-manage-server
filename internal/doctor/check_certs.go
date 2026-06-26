@@ -17,25 +17,31 @@ type CertPermsCheck struct{}
 func (CertPermsCheck) ID() string { return "cert_perms" }
 
 func (c CertPermsCheck) Run(_ context.Context, env *Env) ([]Finding, error) {
+	// Nothing configured to inspect is a genuine "not applicable", not a pass.
+	if len(env.KeyFiles) == 0 {
+		return []Finding{info(c.ID(), "no private key files configured to inspect")}, nil
+	}
 	var findings []Finding
-	checked := 0
 	for _, path := range env.KeyFiles {
-		info, err := os.Stat(path)
+		fi, err := os.Stat(path)
 		if err != nil {
-			continue // a missing key is reported by the boot path / expiry check, not here
+			// These paths are configured (CONTROL_*_KEY set, or the documented
+			// default that existed at resolution). A key we were told about but
+			// cannot stat — missing, or its directory unreadable — means we cannot
+			// verify a security-relevant file: fail closed, never silently skip.
+			findings = append(findings, crit(c.ID(),
+				fmt.Sprintf("cannot inspect private key %s", filepath.Base(path)),
+				"ensure the configured key exists and is owner-readable ("+err.Error()+")"))
+			continue
 		}
-		checked++
-		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 			findings = append(findings, crit(c.ID(),
 				fmt.Sprintf("private key %s is group/other-accessible (mode %#o)", filepath.Base(path), perm),
 				"chmod 0400 the key and restrict its directory"))
 		}
 	}
-	if checked == 0 {
-		return []Finding{info(c.ID(), "no private key files found to inspect")}, nil
-	}
 	if len(findings) == 0 {
-		return []Finding{ok(c.ID(), fmt.Sprintf("all %d private key file(s) are 0400-restricted", checked))}, nil
+		return []Finding{ok(c.ID(), fmt.Sprintf("all %d private key file(s) are 0400-restricted", len(env.KeyFiles)))}, nil
 	}
 	return findings, nil
 }

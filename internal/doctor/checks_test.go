@@ -27,6 +27,13 @@ func run1(t *testing.T, c Check, env *Env) []Finding {
 	return fs
 }
 
+// runErr runs a check and returns only its error (for the could-not-run paths).
+func runErr(t *testing.T, c Check, env *Env) error {
+	t.Helper()
+	_, err := c.Run(context.Background(), env)
+	return err
+}
+
 // worst returns the highest severity in a finding slice.
 func worst(fs []Finding) Severity {
 	w := SeverityOK
@@ -122,10 +129,15 @@ func TestCertPermsCheck(t *testing.T) {
 		env.KeyFiles = []string{bad}
 		assert.Equal(t, SeverityCritical, worst(run1(t, CertPermsCheck{}, env)))
 	})
-	t.Run("none present → info", func(t *testing.T) {
+	t.Run("nothing configured → info", func(t *testing.T) {
+		env := testEnv(nil) // KeyFiles empty
+		assert.Equal(t, SeverityInfo, worst(run1(t, CertPermsCheck{}, env)))
+	})
+	t.Run("configured key missing → critical, not a silent skip", func(t *testing.T) {
 		env := testEnv(nil)
 		env.KeyFiles = []string{filepath.Join(dir, "missing.key")}
-		assert.Equal(t, SeverityInfo, worst(run1(t, CertPermsCheck{}, env)))
+		assert.Equal(t, SeverityCritical, worst(run1(t, CertPermsCheck{}, env)),
+			"a key we were told about but cannot stat must fail closed")
 	})
 }
 
@@ -209,6 +221,16 @@ func TestQueuesCheck(t *testing.T) {
 	t.Run("no cache → info (skipped)", func(t *testing.T) {
 		assert.Equal(t, SeverityInfo, worst(run1(t, QueuesCheck{}, testEnv(nil))))
 	})
+	t.Run("cache unreachable → info skip (DatastoresCheck owns the critical)", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{pingErr: errors.New("conn refused")}
+		assert.Equal(t, SeverityInfo, worst(run1(t, QueuesCheck{}, env)))
+	})
+	t.Run("reachable but inspector fails → exec error (not a false pass)", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{archErr: errors.New("inspector boom")} // pingErr nil → reachable
+		require.Error(t, runErr(t, QueuesCheck{}, env))
+	})
 }
 
 func TestSearchCheck(t *testing.T) {
@@ -254,6 +276,21 @@ func TestSearchCheck(t *testing.T) {
 		env.Cache = fakeCache{schemaCurrent: true} // reconcileOK:false
 		assert.Equal(t, SeverityOK, worst(run1(t, SearchCheck{}, env)))
 	})
+	t.Run("cache unreachable → info skip", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{pingErr: errors.New("down")}
+		assert.Equal(t, SeverityInfo, worst(run1(t, SearchCheck{}, env)))
+	})
+	t.Run("reachable but FT.INFO fails → exec error", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{missingErr: errors.New("RediSearch module absent")}
+		require.Error(t, runErr(t, SearchCheck{}, env))
+	})
+	t.Run("reachable but heartbeat read fails → exec error", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{reconcileErr: errors.New("bad heartbeat value")}
+		require.Error(t, runErr(t, SearchCheck{}, env))
+	})
 }
 
 func TestAdminCheck(t *testing.T) {
@@ -271,12 +308,15 @@ func TestAdminCheck(t *testing.T) {
 		env.DB = fakeDB{adminExists: false}
 		assert.Equal(t, SeverityOK, worst(run1(t, AdminCheck{}, env)))
 	})
-	t.Run("db query errors → info skip, not a false ok", func(t *testing.T) {
+	t.Run("db unreachable → info skip (DatastoresCheck owns the critical)", func(t *testing.T) {
 		env := testEnv(map[string]string{"CONTROL_ADMIN_EMAIL": "ops@corp.example"})
-		env.DB = fakeDB{adminErr: errors.New("conn refused")}
-		// The DB is unreachable, so we cannot say "no default-email admin in
-		// use" — that would be a misleading green. Skip with info instead.
+		env.DB = fakeDB{pingErr: errors.New("conn refused")}
 		assert.Equal(t, SeverityInfo, worst(run1(t, AdminCheck{}, env)))
+	})
+	t.Run("db reachable but query fails → exec error (not a false ok)", func(t *testing.T) {
+		env := testEnv(map[string]string{"CONTROL_ADMIN_EMAIL": "ops@corp.example"})
+		env.DB = fakeDB{adminErr: errors.New("query boom")} // pingErr nil → reachable
+		require.Error(t, runErr(t, AdminCheck{}, env))
 	})
 	t.Run("no db configured + clean env → info skip (db side unverifiable)", func(t *testing.T) {
 		env := testEnv(map[string]string{"CONTROL_ADMIN_EMAIL": "ops@corp.example"})

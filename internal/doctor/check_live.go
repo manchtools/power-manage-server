@@ -38,18 +38,47 @@ func (c DatastoresCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	return findings, nil
 }
 
+// cacheReady gates the Valkey-backed checks. A nil probe (not configured) or an
+// unreachable instance is an intentional skip reported as info — DatastoresCheck
+// already raises the Critical for an unreachable store, so a dependent check must
+// NOT escalate to a could-not-run (exit 2). proceed=false means return the skip
+// finding; proceed=true means the store is reachable, so any later operation
+// error is a genuine execution failure (→ exit 2), not a false info pass.
+func cacheReady(ctx context.Context, c Check, env *Env) (skip []Finding, proceed bool) {
+	if env.Cache == nil {
+		return []Finding{info(c.ID(), "skipped — Valkey not configured")}, false
+	}
+	if err := env.Cache.Ping(ctx); err != nil {
+		return []Finding{info(c.ID(), "skipped — Valkey unreachable")}, false
+	}
+	return nil, true
+}
+
+// dbReady is cacheReady's Postgres counterpart.
+func dbReady(ctx context.Context, c Check, env *Env) (skip []Finding, proceed bool) {
+	if env.DB == nil {
+		return []Finding{info(c.ID(), "skipped — Postgres not configured")}, false
+	}
+	if err := env.DB.Ping(ctx); err != nil {
+		return []Finding{info(c.ID(), "skipped — Postgres unreachable")}, false
+	}
+	return nil, true
+}
+
 // QueuesCheck — Asynq dead-letter (archived) depth (spec 15, criterion 12).
 type QueuesCheck struct{}
 
 func (QueuesCheck) ID() string { return "queues" }
 
 func (c QueuesCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
-	if env.Cache == nil {
-		return []Finding{info(c.ID(), "skipped — Valkey unavailable")}, nil
+	if skip, ok := cacheReady(ctx, c, env); !ok {
+		return skip, nil
 	}
 	byQueue, err := env.Cache.ArchivedByQueue(ctx)
 	if err != nil {
-		return []Finding{info(c.ID(), "could not read queue depths: "+err.Error())}, nil
+		// Valkey is reachable (cacheReady pinged it) but the inspector failed —
+		// the check could not run, not a clean "no dead letters".
+		return nil, fmt.Errorf("read archived queue depths: %w", err)
 	}
 	var findings []Finding
 	names := make([]string, 0, len(byQueue))
@@ -84,12 +113,14 @@ type SearchCheck struct{}
 func (SearchCheck) ID() string { return "search" }
 
 func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
-	if env.Cache == nil {
-		return []Finding{info(c.ID(), "skipped — Valkey unavailable")}, nil
+	if skip, ok := cacheReady(ctx, c, env); !ok {
+		return skip, nil
 	}
 	missing, err := env.Cache.MissingIndexes(ctx, expectedIndexNames())
 	if err != nil {
-		return []Finding{info(c.ID(), "could not query search indexes: "+err.Error())}, nil
+		// Reachable but FT.INFO failed (e.g. the RediSearch module is absent) —
+		// could-not-run, not a clean pass.
+		return nil, fmt.Errorf("query search indexes: %w", err)
 	}
 	var findings []Finding
 	for _, name := range missing {
@@ -103,7 +134,11 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	// the fingerprint may still match. Absent heartbeat ⇒ never stamped (fresh
 	// deploy / pre-heartbeat indexer); not a "stale" signal, so no warning.
 	interval := reconcileInterval(env)
-	if ts, present, err := env.Cache.LastReconcile(ctx); err == nil && present {
+	ts, present, err := env.Cache.LastReconcile(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read indexer reconcile heartbeat: %w", err)
+	}
+	if present {
 		if age := env.now().Sub(ts); age > 2*interval {
 			f := warn(c.ID(),
 				fmt.Sprintf("the search indexer has not reconciled in %s (> 2× the %s interval) — it may be dead or stuck", age.Round(time.Second), interval),
@@ -113,7 +148,11 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 		}
 	}
 
-	if current, err := env.Cache.SchemaCurrent(ctx); err == nil && !current {
+	current, err := env.Cache.SchemaCurrent(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read schema fingerprint: %w", err)
+	}
+	if !current {
 		findings = append(findings, warn(c.ID(),
 			"the indexed schema is stale (fingerprint mismatch)",
 			"the indexer will rebuild on next boot; trigger a rebuild if it has not"))
@@ -150,14 +189,15 @@ func (c AdminCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	if env.Get("CONTROL_ADMIN_EMAIL") == defaultAdminEmail {
 		return flag(), nil
 	}
-	// The DB signal: does a live admin row still sit on the default email? If we
-	// cannot consult the DB, say so — never report a green we did not verify.
-	if env.DB == nil {
-		return []Finding{info(c.ID(), "default-email admin DB lookup skipped — Postgres unavailable; CONTROL_ADMIN_EMAIL is not the default")}, nil
+	// The DB signal: does a live admin row still sit on the default email? An
+	// unconfigured/unreachable DB is an intentional skip (DatastoresCheck owns the
+	// critical); only a reachable-but-failing query is a could-not-run.
+	if skip, ok := dbReady(ctx, c, env); !ok {
+		return skip, nil
 	}
 	exists, err := env.DB.AdminUserExists(ctx, defaultAdminEmail)
 	if err != nil {
-		return []Finding{info(c.ID(), "could not query for a default-email admin: "+err.Error())}, nil
+		return nil, fmt.Errorf("look up default-email admin: %w", err)
 	}
 	if exists {
 		return flag(), nil
