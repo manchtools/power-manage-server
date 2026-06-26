@@ -6,6 +6,9 @@ The server side of Power Manage, providing the API, web UI, agent registration, 
 - **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time (stateless, no database)
 - **[Indexer](cmd/indexer/)** — Full-text search indexer, reads from PostgreSQL and writes to Valkey RediSearch
 
+> **Security:** the threat model, trust boundaries, CA-compromise surface, and
+> vulnerability-disclosure process are documented in **[SECURITY.md](SECURITY.md)**.
+
 ## Architecture
 
 ```

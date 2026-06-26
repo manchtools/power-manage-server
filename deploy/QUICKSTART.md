@@ -1,5 +1,7 @@
 # Power Manage Server — Quickstart
 
+> Before exposing a deployment, read **[../SECURITY.md](../SECURITY.md)** — trust boundaries, what to protect (the Control host's CA keys), and the disclosure process. After install, `power-manage-control doctor` checks the live stack against those expectations.
+
 One-line install on a fresh Linux host with Docker + the compose plugin already installed:
 
 ```bash

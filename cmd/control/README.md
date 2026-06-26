@@ -2,6 +2,8 @@
 
 The Control Server is the central management API for Power Manage. It provides a Connect-RPC/gRPC API for managing users, devices, registration tokens, action definitions, and action executions.
 
+> **Security model:** Control holds the database and all three CA signing keys — see **[../../SECURITY.md](../../SECURITY.md)** for the threat model, trust boundaries, and CA-compromise surface.
+
 ## Architecture
 
 The Control Server uses a **CQRS/Event Sourcing** architecture:

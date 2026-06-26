@@ -35,6 +35,39 @@ ADRs under `docs/adr/`; this document is the consolidated map.
 | Compromised gateway / Valkey relay | Untrusted **for origination** | Action signing and origin binding must neutralize it; any unsigned root path is a bug. |
 | MITM / on-path | Untrusted | Transport (TLS 1.3), certificate validation, revocation. |
 
+## Trust assumptions
+
+- **mTLS terminates at the application, not a proxy.** The gateway's
+  `GatewayService` and Control's `InternalService` both set
+  `tls.RequireAndVerifyClientCert` and verify the peer certificate **in process**
+  against the strict internal CA pool only — system roots are never consulted for
+  these connections, so a publicly-trusted certificate cannot impersonate a peer.
+  Peer identity is a SPIFFE URI SAN (`spiffe://power-manage/{agent,gateway,control}`),
+  matched per peer class.
+- **The CA signing keys are the crown jewels and live only on Control.** The
+  database, the device/service CA keys, and the action-signing key never leave the
+  Control host; gateways run keyless and stateless. Protecting the Control host's
+  key material (filesystem permissions, host hardening, backups) is the operator's
+  responsibility and the single highest-value asset — see *CA compromise surface*
+  below.
+- **Asynq task integrity is HMAC, not transport.** Every task on the Valkey queues
+  is HMAC-signed with `PM_TASK_SIGNING_KEY` (a fatal-at-boot requirement): the
+  Control-side producer signs, the consumer (`search:*` indexer worker, per-device
+  gateway workers, the `control:inbox` worker) verifies before handling. A
+  compromised Valkey relay therefore cannot inject forged or unsigned tasks. This
+  is **defense-in-depth distinct from action signing** (which protects the
+  *payload* end-to-end at the CA layer): the HMAC binds the *transport queue*, the
+  CA envelope binds the *action*.
+
+## Component trust boundaries
+
+| Edge | Mechanism | Fails closed on |
+|---|---|---|
+| **Agent ↔ Gateway** | mTLS, device-cert CA, SPIFFE URI SAN (`.../agent`) peer-class check, CRL consulted | bad/revoked/wrong-class cert; CRL unloaded at boot |
+| **Gateway ↔ Control (`InternalService`)** | mTLS, service-cert CA, SPIFFE URI SAN (`.../gateway`); device-origin bound to the device→gateway registry | cert mismatch; gateway acting for a device it does not own |
+| **Control ↔ Postgres** | Password auth over the internal Docker network; not publicly exposed | — (network-isolation assumption; see *Known limitations*) |
+| **Control ↔ Valkey** | Password auth over the internal Docker network; **plus** `PM_TASK_SIGNING_KEY` HMAC on every task payload | unsigned/forged task payload |
+
 ## Per-surface guarantees
 
 ### Action dispatch — a compromised gateway/Valkey cannot forge or tamper (ADR 0003, 0007)
@@ -114,6 +147,60 @@ Pagination is capped; `ReadMaxBytes` bounds every handler; a `statement_timeout`
 plus per-handler deadlines bound DB work; CORS rejects credentialed wildcards
 and drops Cookies on disallowed origins; offline result spooling is disk-bounded;
 the search indexer gates its startup rebuild behind a Valkey lock.
+
+## CA compromise surface
+
+Power Manage runs **three independent CAs**, all rooted on the Control host. Their
+blast radii differ, and so does the recovery:
+
+| CA | Signs | If the key leaks | Recovery |
+|---|---|---|---|
+| **Device-cert CA** | Agent mTLS client certs | An attacker can mint agent certs and connect to gateways as any device | **Replace** the CA, re-enroll agents (or re-issue via the renewal path), and CRL the old chain. Highest urgency — it gates fleet access. |
+| **Service-cert CA** | Gateway/Control mTLS (`InternalService`) | An attacker who can also reach the internal network can impersonate a gateway to Control | **Replace** the CA and re-issue gateway/control certs. Contained by network isolation + the device→gateway origin binding. |
+| **Action-signing CA** | `SignedActionEnvelope` + the per-surface root-RPC domains (osquery / log-query / LUKS-revoke / inventory) | An attacker can forge actions agents will execute as root | **Replace** the signing key; agents reject envelopes under the old key once Control re-signs. The most dangerous to *execution* integrity. |
+
+Certificates are **re-issued** (cheap, automatic via the 80%-of-lifetime rotation)
+for routine expiry; a CA **key compromise** means **replacing** the CA itself —
+there is no partial-trust middle ground. Because the keys never leave Control,
+the compromise surface is the Control host, not the (keyless) gateways.
+
+## Secrets at rest
+
+Operator-supplied and generated secrets are encrypted with **AES-256-GCM** via
+`internal/crypto`, with context-binding AAD (the `enc:v2` envelope) so a
+ciphertext cannot be lifted from one record/column to another. The encrypted set:
+
+- **IdP client secrets** (OIDC/SSO configuration),
+- **LUKS volume keys** (disk-encryption custody),
+- **LPS passwords** (local privileged-service / rotated local credentials),
+- **SCIM bearer tokens** (provisioning).
+
+The encryption key is required at boot (no plaintext-by-accident opt-out). Hashed
+secrets (e.g. the LUKS-token at-rest hash) live in a root-only database. See
+*Accepted residuals* for the deliberate KDF/AAD boundaries.
+
+## Known limitations (out of scope)
+
+The threat model does **not** defend against:
+
+- **A compromised operator workstation or stolen operator session.** The Control
+  admin is trusted by design (see *Actors*); an attacker who is the operator has
+  the operator's powers. Mitigate with 2FA (TOTP), short access-token TTL, and
+  session invalidation — not with in-app hardening against the admin.
+- **Supply-chain compromise of the container images / release artifacts.** GitHub
+  is the distribution channel; there is no out-of-band signing of release
+  `SHA256SUMS` (ADR 0011, accepted risk). Build from source for absolute
+  guarantees, and pin image digests.
+- **Host / kernel / Docker-daemon compromise on the Control host.** Everything
+  (DB, CA keys, plaintext secrets in memory) is reachable from root on that host;
+  the internal Postgres/Valkey password boundary assumes the Docker network is
+  not already owned.
+- **Physical/offline theft of the Control disk** (ADR 0014): the on-disk key file
+  is not a defense against same-disk offline theft — full-disk encryption is that
+  boundary.
+
+> Operators can run `power-manage-control doctor` to check that a live deployment
+> matches the transport/CA/secret expectations this document assumes.
 
 ## Accepted residuals
 
