@@ -1,0 +1,87 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/manchtools/power-manage/server/internal/doctor"
+)
+
+// runDoctor implements `power-manage-control doctor [--json] [--env-file path]`:
+// a standalone, read-only health/security-posture pass. Returns the process exit
+// code (0 ok/info · 1 warning · 100 critical · 2 could-not-run — spec 15).
+func runDoctor(args []string) int {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	jsonOut := fs.Bool("json", false, "emit findings as JSON for CI/monitoring")
+	envFile := fs.String("env-file", ".env", "deploy .env file to inspect (skipped if absent)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	// Merge the process env with the deploy .env file (the file wins — it is the
+	// operator's stored config, the source of truth for what they configured).
+	vars := doctor.ProcessEnv()
+	fromFile := false
+	if dotenv, err := doctor.LoadEnvFile(*envFile); err != nil {
+		fmt.Fprintf(os.Stderr, "doctor: could not read %s: %v\n", *envFile, err)
+		return 2
+	} else if dotenv != nil {
+		vars = doctor.MergeVars(vars, dotenv)
+		fromFile = true
+	}
+
+	env := doctor.NewEnv(vars)
+	env.FromEnvFile = fromFile
+	env.CertFiles, env.KeyFiles = resolveCertPaths(vars)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Live probes connect lazily; a nil probe (bad/empty config) surfaces as a
+	// Critical finding from the datastores check, not a crash.
+	if db, err := doctor.NewPGProbe(ctx, vars["CONTROL_DATABASE_URL"]); err == nil {
+		env.DB = db
+		defer db.Close()
+	}
+	valkeyDB, _ := strconv.Atoi(vars["CONTROL_VALKEY_DB"])
+	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], vars["CONTROL_VALKEY_PASSWORD"], valkeyDB); err == nil {
+		env.Cache = cache
+		defer cache.Close()
+	}
+
+	report := doctor.Run(ctx, env, doctor.DefaultChecks())
+
+	if *jsonOut {
+		if err := doctor.RenderJSON(os.Stdout, report); err != nil {
+			fmt.Fprintf(os.Stderr, "doctor: render json: %v\n", err)
+			return 2
+		}
+	} else {
+		doctor.RenderHuman(os.Stdout, report)
+	}
+	return report.ExitCode()
+}
+
+// resolveCertPaths returns the cert/key files to inspect. A path is included when
+// its env var is explicitly set (configured → a missing file is a real problem)
+// OR the documented default exists (so an in-container run checks the mounted
+// certs); an unset var whose default is absent is skipped, so a host run without
+// the certs mounted doesn't produce false "missing cert" criticals.
+func resolveCertPaths(vars map[string]string) (certs, keys []string) {
+	add := func(list *[]string, envKey, def string) {
+		if v := vars[envKey]; v != "" {
+			*list = append(*list, v)
+		} else if _, err := os.Stat(def); err == nil {
+			*list = append(*list, def)
+		}
+	}
+	add(&certs, "CONTROL_CA_CERT", "/certs/ca.crt")
+	add(&certs, "CONTROL_INTERNAL_TLS_CERT", "/certs/control.crt")
+	add(&keys, "CONTROL_CA_KEY", "/certs/ca.key")
+	add(&keys, "CONTROL_INTERNAL_TLS_KEY", "/certs/control.key")
+	return certs, keys
+}

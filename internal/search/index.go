@@ -367,6 +367,10 @@ var ServerScopeFields = map[string]bool{ScopeGroupField: true}
 // schemaFingerprintKey stores the hash of IndexSchemas from the last Rebuild.
 const schemaFingerprintKey = "pm:indexer:schema:fingerprint"
 
+// SchemaFingerprintKey is the exported Valkey key for the indexed-schema
+// fingerprint — read by the control `doctor` search-health check (#322).
+const SchemaFingerprintKey = schemaFingerprintKey
+
 // SchemaFingerprint is a stable hash of IndexSchemas. The indexer stamps it on
 // every successful Rebuild and compares it at boot; a mismatch means the schema
 // changed (a field added or promoted to SORTABLE/TAG) and the indexes must be
