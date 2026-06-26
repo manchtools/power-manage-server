@@ -81,3 +81,49 @@ docker compose up -d
 2. Log in to `https://<CONTROL_DOMAIN>` with the bootstrap admin credentials the installer printed.
 3. Create real user accounts (UI, SSO, or SCIM) — the bootstrap admin is intentionally not for daily use; see [`.env.example`](./.env.example) for details.
 4. Generate a registration token and enroll your first agent.
+
+## Health & posture check: `doctor`
+
+The Control binary ships a read-only `doctor` subcommand that checks the live
+stack and deployment configuration against the expectations in
+[../SECURITY.md](../SECURITY.md). It never mutates state, so it is safe to run
+against production. Run it inside the running Control container so it sees the
+same env and `.env`:
+
+```bash
+docker compose exec control power-manage-control doctor          # human-readable
+docker compose exec control power-manage-control doctor --json   # machine-readable
+```
+
+Flags:
+
+- `--json` — emit a JSON report (`{summary, findings, exec_errors, exit_code}`) for CI/monitoring.
+- `--env-file <path>` — also inspect this `.env` (default `.env`, silently skipped if absent). Values in the file take precedence over the process environment — it is the operator's stored config, the source of truth for what was configured.
+
+It reports placeholder/weak secrets, mandatory at-rest encryption key, a
+credentialed CORS wildcard, an internal mTLS listener bound to all interfaces, a
+floating `IMAGE_TAG`, certificate file permissions and approaching expiry,
+Postgres/Valkey reachability, Asynq dead-letter depth, search-index presence
+and indexer liveness (reconcile heartbeat), and a bootstrap admin still on the
+default email.
+
+### Exit codes
+
+The exit code is the worst outcome, so a single boolean gate works in CI:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | all clear — only `ok`/`info` findings |
+| `1`  | at least one **warning** (worth fixing; not blocking) |
+| `100`| at least one **critical** finding (insecure/broken — do not ship) |
+| `2`  | a check could not run (exec error) — the report is incomplete; takes precedence over everything |
+
+Example gate (fail a deploy pipeline on any critical or could-not-run):
+
+```bash
+docker compose exec -T control power-manage-control doctor
+code=$?
+if [ "$code" -ge 100 ] || [ "$code" -eq 2 ]; then
+  echo "doctor found critical issues (exit $code)"; exit 1
+fi
+```
