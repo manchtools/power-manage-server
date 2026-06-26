@@ -23,7 +23,10 @@ database and the CA signing key. **Many gateways** may run on separate,
 internet-facing hosts with no database and no CA key; they relay over Valkey.
 One agent can enroll into any of N independent self-hosted backends. The design
 does **not** import SaaS assumptions. The detailed design records live in the
-ADRs under `docs/adr/`; this document is the consolidated map.
+ADRs under `docs/adr/`; this document is the consolidated map. The two foundations
+are the **mTLS identity model** (ADR 0025 — SPIFFE URI SANs, peer-class
+enforcement, CA role separation) and the **event-sourcing & audit model** (ADR
+0026 — append-only events, derived projections, synchronous Go projectors).
 
 ## Actors
 
