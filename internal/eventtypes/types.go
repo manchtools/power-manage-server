@@ -91,7 +91,13 @@ const (
 	DeviceGroupMaintenanceWindowSet EventType = "DeviceGroupMaintenanceWindowSet"
 	DeviceGroupMemberAdded          EventType = "DeviceGroupMemberAdded"
 	DeviceGroupMemberRemoved        EventType = "DeviceGroupMemberRemoved"
-	DeviceGroupDeleted              EventType = "DeviceGroupDeleted"
+	// DeviceGroupMembersReevaluated records a DYNAMIC group's membership delta
+	// produced by the in-process evaluator (#7 spec 14). The evaluator materializes
+	// dynamic membership imperatively (and a rebuild re-evaluates), so this is not a
+	// projected source — it exists for the audit trail and to drive the search
+	// index reindex of the affected devices via api/SearchListener.
+	DeviceGroupMembersReevaluated EventType = "DeviceGroupMembersReevaluated"
+	DeviceGroupDeleted            EventType = "DeviceGroupDeleted"
 	// Legacy device-group membership aliases — emitted by older versions
 	// before the *MemberAdded / *MemberRemoved naming. The device_group
 	// listener still recognises them so historical events replay
@@ -213,6 +219,11 @@ const (
 	UserGroupRoleAssigned         EventType = "UserGroupRoleAssigned"
 	UserGroupRoleRevoked          EventType = "UserGroupRoleRevoked"
 	UserGroupMembersRebuilt       EventType = "UserGroupMembersRebuilt"
+	// UserGroupMembersReevaluated is the user-group sibling of
+	// DeviceGroupMembersReevaluated — a dynamic user-group membership delta from
+	// the evaluator (#7 spec 14), audited + drives the search reindex of affected
+	// users; not a projected source.
+	UserGroupMembersReevaluated EventType = "UserGroupMembersReevaluated"
 
 	// user_selection stream
 	UserSelectionChanged EventType = "UserSelectionChanged"
@@ -237,7 +248,7 @@ func All() []EventType {
 		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet,
 		DeviceGroupCreated, DeviceGroupRenamed, DeviceGroupDescriptionUpdated, DeviceGroupQueryUpdated,
 		DeviceGroupSyncIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
-		DeviceGroupMemberRemoved, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
+		DeviceGroupMemberRemoved, DeviceGroupMembersReevaluated, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
 		ExecutionCreated, ExecutionScheduled, ExecutionDispatched, ExecutionStarted, ExecutionCompleted,
 		ExecutionFailed, ExecutionTimedOut, ExecutionSkipped, ExecutionCancelled, OutputChunk,
 		IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled,
@@ -261,7 +272,7 @@ func All() []EventType {
 		UserRoleAssigned, UserRoleRevoked,
 		UserGroupCreated, UserGroupUpdated, UserGroupQueryUpdated, UserGroupMaintenanceWindowSet,
 		UserGroupDeleted, UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupRoleAssigned,
-		UserGroupRoleRevoked, UserGroupMembersRebuilt,
+		UserGroupRoleRevoked, UserGroupMembersRebuilt, UserGroupMembersReevaluated,
 		UserSelectionChanged,
 	}
 }

@@ -124,6 +124,18 @@ func (f *fakeSearchIndex) lastRemove(t *testing.T) removeCall {
 	return f.removed[len(f.removed)-1]
 }
 
+// reindexedScope reports whether (scope, id) was reindexed at least once.
+func (f *fakeSearchIndex) reindexedScope(scope, id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.reindexed {
+		if c.Scope == scope && c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeSearchIndex) reindexCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -195,13 +207,11 @@ func TestSearchListener_DeviceGroupMemberAdded_ReindexesGroup(t *testing.T) {
 	before := fake.reindexCount()
 	testutil.AddDeviceToTestGroup(t, st, "u", groupID, deviceID)
 
-	// AddDeviceToTestGroup fires a DeviceGroupMemberAdded event whose
-	// StreamID is the group ID directly (not composite). The listener
-	// reindexes the group so member_count refreshes.
-	require.Greater(t, fake.reindexCount(), before, "membership change must trigger a group reindex")
-	last := fake.lastReindex(t)
-	assert.Equal(t, search.ScopeDeviceGroup, last.Scope)
-	assert.Equal(t, groupID, last.ID)
+	// A DeviceGroupMemberAdded event reindexes the GROUP (member_count) AND the
+	// affected DEVICE (its scope_group_ids changed, #7 spec 14).
+	require.Greater(t, fake.reindexCount(), before, "membership change must trigger reindexes")
+	assert.True(t, fake.reindexedScope(search.ScopeDeviceGroup, groupID), "group must be reindexed (member_count)")
+	assert.True(t, fake.reindexedScope(search.ScopeDevice, deviceID), "affected device must be reindexed (scope_group_ids)")
 }
 
 // =============================================================================
@@ -216,12 +226,12 @@ func TestSearchListener_UserGroupMemberAdded_ReindexesGroupViaPrefixSplit(t *tes
 	before := fake.reindexCount()
 	testutil.AddUserToTestGroup(t, st, "u", groupID, userID)
 
-	// AddUserToTestGroup uses a composite stream id "<group>:<user>".
-	// The listener must split on ':' and reindex the group only.
+	// AddUserToTestGroup uses a composite stream id "<group>:<user>". The listener
+	// splits on ':' to reindex the GROUP (member_count) AND the affected USER (its
+	// scope_group_ids changed, #7 spec 14).
 	require.Greater(t, fake.reindexCount(), before)
-	last := fake.lastReindex(t)
-	assert.Equal(t, search.ScopeUserGroup, last.Scope)
-	assert.Equal(t, groupID, last.ID, "listener must drop the user_id suffix from the composite stream id")
+	assert.True(t, fake.reindexedScope(search.ScopeUserGroup, groupID), "group must be reindexed")
+	assert.True(t, fake.reindexedScope(search.ScopeUser, userID), "affected user must be reindexed")
 }
 
 // =============================================================================

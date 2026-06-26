@@ -418,6 +418,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"os_arch":           sanitizeSearchField(data.OSArch, maxOSField),
 			"kernel":            sanitizeSearchField(data.Kernel, maxOSField),
 		}
+		setScopeGroupIDs(fields, data)
 		if data.RegisteredAt != 0 {
 			fields["registered_at"] = strconv.FormatInt(data.RegisteredAt, 10)
 		}
@@ -432,6 +433,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"linux_username": data.LinuxUsername,
 			"disabled":       data.Disabled,
 		}
+		setScopeGroupIDs(fields, data)
 		if data.Role != "" {
 			fields["role"] = data.Role
 		}

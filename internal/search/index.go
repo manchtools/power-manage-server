@@ -281,6 +281,11 @@ var IndexSchemas = []IndexSchema{
 			"os_arch", "TAG",
 			"kernel", "TEXT",
 			"compliance_status", "TAG", "SORTABLE",
+			// scope_group_ids: the device-group ids this device belongs to (#7
+			// spec 14). Confines a scope-restricted admin's device Search to their
+			// device groups — the Search counterpart of the dedicated ListDevices
+			// scope filter. Server-only TAG (kept out of client filters).
+			"scope_group_ids", "TAG",
 			"registered_at", "NUMERIC", "SORTABLE",
 			"last_seen_at", "NUMERIC", "SORTABLE",
 		},
@@ -294,6 +299,8 @@ var IndexSchemas = []IndexSchema{
 			"linux_username", "TEXT",
 			"disabled", "TAG", "SORTABLE",
 			"role", "TAG",
+			// scope_group_ids: the user-group ids this user belongs to (#7 spec 14).
+			"scope_group_ids", "TAG",
 			"last_login_at", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
 		},
@@ -576,12 +583,46 @@ func (idx *Index) scopeGroupSet(ctx context.Context, sourceType string) (map[str
 	for _, r := range rows {
 		tmp[r.SourceID] = append(tmp[r.SourceID], r.TargetID)
 	}
-	out := make(map[string]string, len(tmp))
-	for id, ids := range tmp {
+	return joinSortedGroups(tmp), nil
+}
+
+// deviceGroupSet / userGroupSet return entity_id → comma-joined sorted group ids
+// for the device/user search `scope_group_ids` TAG during a warm rebuild (#7 spec
+// 14). One query each (the same is_deleted-excluded membership the auth resolver
+// uses), then O(1) lookups.
+func (idx *Index) deviceGroupSet(ctx context.Context) (map[string]string, error) {
+	rows, err := idx.store.Queries().ListAllDeviceGroupMemberships(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tmp := map[string][]string{}
+	for _, r := range rows {
+		tmp[r.DeviceID] = append(tmp[r.DeviceID], r.GroupID)
+	}
+	return joinSortedGroups(tmp), nil
+}
+
+func (idx *Index) userGroupSet(ctx context.Context) (map[string]string, error) {
+	rows, err := idx.store.Queries().ListAllUserGroupMemberships(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tmp := map[string][]string{}
+	for _, r := range rows {
+		tmp[r.UserID] = append(tmp[r.UserID], r.GroupID)
+	}
+	return joinSortedGroups(tmp), nil
+}
+
+// joinSortedGroups renders id→[group ids] as id→"g1,g2" (sorted, comma-joined) —
+// the multi-value TAG form scope_group_ids stores.
+func joinSortedGroups(m map[string][]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for id, ids := range m {
 		sort.Strings(ids)
 		out[id] = strings.Join(ids, ",")
 	}
-	return out, nil
+	return out
 }
 
 func (idx *Index) warmActions(ctx context.Context) (int, map[string]string, error) {
@@ -911,6 +952,11 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 	var offset int32
 	var total int
 
+	scopeGroups, err := idx.deviceGroupSet(ctx)
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		devices, err := idx.store.Repos().Device.List(ctx, store.ListDevicesFilter{Limit: pageSize, Offset: offset, OwnerScope: nil})
 		if err != nil {
@@ -930,6 +976,8 @@ func (idx *Index) warmDevices(ctx context.Context) (int, error) {
 				AgentVersion:     d.AgentVersion,
 				Labels:           FlattenLabels(d.Labels),
 				ComplianceStatus: d.ComplianceStatus,
+				ScopeGroupIDs:    scopeGroups[d.ID],
+				HasScopeGroupIDs: true,
 			}
 			if d.RegisteredAt != nil {
 				data.RegisteredAt = d.RegisteredAt.Unix()
@@ -1004,6 +1052,11 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 	var offset int32
 	var total int
 
+	scopeGroups, err := idx.userGroupSet(ctx)
+	if err != nil {
+		return total, err
+	}
+
 	for {
 		users, err := idx.store.Queries().ListAllUsers(ctx, db.ListAllUsersParams{
 			Limit:  pageSize,
@@ -1023,11 +1076,13 @@ func (idx *Index) warmUsers(ctx context.Context) (int, error) {
 				disabled = "true"
 			}
 			data := &taskqueue.SearchEntityData{
-				Email:         u.Email,
-				DisplayName:   u.DisplayName,
-				LinuxUsername: u.LinuxUsername,
-				Disabled:      disabled,
-				Role:          u.Role,
+				Email:            u.Email,
+				DisplayName:      u.DisplayName,
+				LinuxUsername:    u.LinuxUsername,
+				Disabled:         disabled,
+				Role:             u.Role,
+				ScopeGroupIDs:    scopeGroups[u.ID],
+				HasScopeGroupIDs: true,
 			}
 			if u.CreatedAt != nil {
 				data.CreatedAt = u.CreatedAt.Unix()

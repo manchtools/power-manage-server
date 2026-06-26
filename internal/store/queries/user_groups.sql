@@ -427,3 +427,27 @@ WHERE group_id = $1
   AND role_id = $2
   AND scope_kind IS NOT DISTINCT FROM sqlc.narg('scope_kind')::TEXT
   AND scope_id   IS NOT DISTINCT FROM sqlc.narg('scope_id')::TEXT;
+
+-- #7 spec 14 — user search scope. Group ids a user belongs to, excluding
+-- soft-deleted groups — matches the auth ScopeResolver (ListUserGroupsForUser).
+
+-- name: ListUserGroupIDsForUser :many
+SELECT ug.id FROM user_groups_projection ug
+JOIN user_group_members_projection ugm ON ugm.group_id = ug.id
+WHERE ugm.user_id = $1 AND ug.is_deleted = FALSE;
+
+-- name: ListAllUserGroupMemberships :many
+SELECT ugm.user_id, ugm.group_id FROM user_group_members_projection ugm
+JOIN user_groups_projection ug ON ug.id = ugm.group_id
+WHERE ug.is_deleted = FALSE;
+
+-- name: ClaimDynamicUserGroupForMembership :execrows
+-- DYNAMIC sibling of ClaimUserGroupForMembership for UserGroupMembersReevaluated
+-- (#7 spec 14).
+UPDATE user_groups_projection
+SET updated_at         = $2,
+    projection_version = $3
+WHERE id = $1
+  AND projection_version < $3
+  AND is_deleted = FALSE
+  AND is_dynamic = TRUE;

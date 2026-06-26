@@ -135,19 +135,44 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 		string(eventtypes.DeviceGroupDescriptionUpdated),
 		string(eventtypes.DeviceGroupQueryUpdated),
 		string(eventtypes.DeviceGroupSyncIntervalSet),
-		string(eventtypes.DeviceGroupMaintenanceWindowSet),
-		string(eventtypes.DeviceGroupMemberAdded),
-		string(eventtypes.DeviceGroupMemberRemoved):
+		string(eventtypes.DeviceGroupMaintenanceWindowSet):
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
+
+	// Membership change (static admin add/remove, or legacy aliases): reindex the
+	// GROUP (member_count) AND the affected DEVICE (its scope_group_ids changed,
+	// #7 spec 14). device_id rides in the payload; StreamID is the group id.
+	case string(eventtypes.DeviceGroupMemberAdded),
+		string(eventtypes.DeviceGroupMemberRemoved),
+		string(eventtypes.DeviceAddedToGroup),
+		string(eventtypes.DeviceRemovedFromGroup):
+		ops := []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
+		var p struct {
+			DeviceID string `json:"device_id"`
+		}
+		if json.Unmarshal(e.Data, &p) == nil && p.DeviceID != "" {
+			ops = append(ops, SearchAffected{Op: SearchOpReindex, Scope: search.ScopeDevice, ID: p.DeviceID})
+		}
+		return ops
+
+	// Dynamic re-evaluation delta (#7 spec 14): reindex the group + every device
+	// whose membership changed this evaluation.
+	case string(eventtypes.DeviceGroupMembersReevaluated):
+		ops := []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
+		var p struct {
+			Added   []string `json:"added_device_ids"`
+			Removed []string `json:"removed_device_ids"`
+		}
+		if json.Unmarshal(e.Data, &p) == nil {
+			for _, id := range append(p.Added, p.Removed...) {
+				if id != "" {
+					ops = append(ops, SearchAffected{Op: SearchOpReindex, Scope: search.ScopeDevice, ID: id})
+				}
+			}
+		}
+		return ops
 
 	case string(eventtypes.DeviceGroupDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDeviceGroup, ID: e.StreamID}}
-
-	// DeviceAddedToGroup / DeviceRemovedFromGroup / DeviceGroupAssigned
-	// / DeviceGroupUnassigned do not change device_groups_projection
-	// fields directly — they live on different relationship tables.
-	// The DeviceGroupMemberAdded/Removed cases above already cover
-	// the membership-count refresh.
 
 	// ---------------------------------------------------------
 	// UserGroup scope
@@ -172,15 +197,45 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 	// listener (#77) — the user_id / role_id suffixes are irrelevant
 	// to the search payload (member_count + role list are already
 	// denormalised on the projection row by the projector).
+	// Member events: composite StreamID "<group_id>:<user_id>" — reindex the group
+	// (member_count) AND the affected user (its scope_group_ids changed, #7 spec 14).
 	case string(eventtypes.UserGroupMemberAdded),
-		string(eventtypes.UserGroupMemberRemoved),
-		string(eventtypes.UserGroupRoleAssigned),
+		string(eventtypes.UserGroupMemberRemoved):
+		groupID, userID, _ := strings.Cut(e.StreamID, ":")
+		if groupID == "" {
+			return nil
+		}
+		ops := []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: groupID}}
+		if userID != "" {
+			ops = append(ops, SearchAffected{Op: SearchOpReindex, Scope: search.ScopeUser, ID: userID})
+		}
+		return ops
+
+	// Role events: composite StreamID "<group_id>:role:<role_id>" — group only.
+	case string(eventtypes.UserGroupRoleAssigned),
 		string(eventtypes.UserGroupRoleRevoked):
 		groupID, _, _ := strings.Cut(e.StreamID, ":")
 		if groupID == "" {
 			return nil
 		}
 		return []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: groupID}}
+
+	// Dynamic re-evaluation delta (#7 spec 14): reindex the group + every user
+	// whose membership changed. StreamID is the group id (not composite).
+	case string(eventtypes.UserGroupMembersReevaluated):
+		ops := []SearchAffected{{Op: SearchOpReindex, Scope: search.ScopeUserGroup, ID: e.StreamID}}
+		var p struct {
+			Added   []string `json:"added_user_ids"`
+			Removed []string `json:"removed_user_ids"`
+		}
+		if json.Unmarshal(e.Data, &p) == nil {
+			for _, id := range append(p.Added, p.Removed...) {
+				if id != "" {
+					ops = append(ops, SearchAffected{Op: SearchOpReindex, Scope: search.ScopeUser, ID: id})
+				}
+			}
+		}
+		return ops
 
 	// ---------------------------------------------------------
 	// Execution scope
@@ -428,6 +483,28 @@ func loadScopeGroupIDs(ctx context.Context, q *db.Queries, sourceType, id string
 	return strings.Join(ids, ","), nil
 }
 
+// loadDeviceScopeGroupIDs / loadUserScopeGroupIDs return the comma-joined sorted
+// group ids a device/user belongs to, for the device/user search `scope_group_ids`
+// TAG (#7 spec 14). Same source as the auth ScopeResolver, so search confinement
+// matches handler enforcement.
+func loadDeviceScopeGroupIDs(ctx context.Context, q *db.Queries, deviceID string) (string, error) {
+	ids, err := q.ListDeviceGroupIDsForDevice(ctx, deviceID)
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ","), nil
+}
+
+func loadUserScopeGroupIDs(ctx context.Context, q *db.Queries, userID string) (string, error) {
+	ids, err := q.ListUserGroupIDsForUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, ","), nil
+}
+
 func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Logger, scope, id string) (*taskqueue.SearchEntityData, error) {
 	q := st.Queries()
 	switch scope {
@@ -448,14 +525,20 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if u.LastLoginAt != nil {
 			lastLoginAt = u.LastLoginAt.Unix()
 		}
+		scopeGroups, err := loadUserScopeGroupIDs(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
-			Email:         u.Email,
-			DisplayName:   u.DisplayName,
-			LinuxUsername: u.LinuxUsername,
-			Disabled:      disabled,
-			Role:          u.Role,
-			LastLoginAt:   lastLoginAt,
-			CreatedAt:     createdAt,
+			Email:            u.Email,
+			DisplayName:      u.DisplayName,
+			LinuxUsername:    u.LinuxUsername,
+			Disabled:         disabled,
+			Role:             u.Role,
+			LastLoginAt:      lastLoginAt,
+			CreatedAt:        createdAt,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
 		}, nil
 
 	case search.ScopeDevice:
@@ -479,6 +562,10 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if d.LastSeenAt != nil {
 			lastSeenAt = d.LastSeenAt.Unix()
 		}
+		scopeGroups, err := loadDeviceScopeGroupIDs(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
 		data := &taskqueue.SearchEntityData{
 			Hostname:         d.Hostname,
 			AgentVersion:     d.AgentVersion,
@@ -486,6 +573,8 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 			ComplianceStatus: d.ComplianceStatus,
 			RegisteredAt:     registeredAt,
 			LastSeenAt:       lastSeenAt,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
 		}
 		// Inventory enrichment is best-effort — matches the
 		// handler-side helper in device_handler.go. A missing

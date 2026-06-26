@@ -43,6 +43,15 @@ type UserGroupMemberRemoved struct {
 	UserID  string `json:"user_id"`
 }
 
+// UserGroupMembersReevaluated is the user-group dynamic membership delta the
+// evaluator emits (#7 spec 14). StreamID carries the group id; the payload
+// carries the user ids added and removed. Audited + drives the search reindex of
+// the affected users.
+type UserGroupMembersReevaluated struct {
+	AddedUserIDs   []string `json:"added_user_ids,omitempty"`
+	RemovedUserIDs []string `json:"removed_user_ids,omitempty"`
+}
+
 // UserGroupRoleAssigned / UserGroupRoleRevoked share the same
 // (group_id, role_id) composite-key shape plus the optional scope
 // tuple added in server #7 S2 / S5 (paired-or-neither, both nil =

@@ -92,12 +92,40 @@ build.
 - **Known boundary (documented, fail-closed):** transitive-only and
   individual-device/user-assigned objects under-show in `Search` for scoped
   callers; they remain reachable via `Get`.
-- **Out of scope of this ADR — a related, broader leak:** the `Search` RPC also
-  applies *no* device/user scope today, so the device/user **list pages** (which
-  use `Search`, not the scoped `ListDevices`/`ListUsers` RPCs) leak the whole org
-  to a scoped admin. Closing it needs the same `scope_group_ids` mechanism on the
-  device/user indexes plus a membership-change reindex cascade — and, for
-  *dynamic* groups (whose re-evaluation emits a **bulk** `*MembersRebuilt` event,
-  not per-member), an explicit eventual-consistency tradeoff on an access-control
-  filter. That design decision is deferred to a follow-up rather than shipped
-  implicitly here.
+
+## Device/user Search scope + event-driven dynamic membership (follow-up, shipped)
+
+The `Search` RPC applied *no* device/user scope, and the device/user **list
+pages use `Search`** (not the scoped `ListDevices`/`ListUsers` RPCs) — so a scoped
+admin's Device/User lists leaked the whole org. Closed with the same mechanism:
+
+- `scope_group_ids` TAG on `idx:devices` / `idx:users` = the entity's device-/
+  user-group memberships (same `is_deleted`-excluded source the auth
+  `ScopeResolver` uses, so Search confinement matches handler enforcement).
+  `scopeGroupClause` keys devices off `DeviceScopeListFilter("ListDevices")` and
+  users off `UserScopeListFilter("ListUsers")` — the JWT scope, no round-trip.
+- Freshness: the search listener reindexes the affected device/user on every
+  membership event — static admin add/remove (`*GroupMemberAdded/Removed`) and
+  the new dynamic-evaluation events below.
+
+**Event-driven dynamic membership (no audit drift, no ticker).** The dynamic-group
+evaluator previously wrote `*_group_members_projection` **directly, emitting no
+events** — so membership changes were absent from the event log and search could
+only catch up via the periodic reconcile. Reworked to be event-sourced:
+
+- The evaluator computes the membership delta and **emits a
+  `DeviceGroupMembersReevaluated` / `UserGroupMembersReevaluated` event** (group
+  id + added/removed ids, actor `system`); it no longer writes the projection
+  directly.
+- A **projector applies the delta** (`ClaimDynamic*GroupForMembership` version+
+  dynamic guard → insert added / delete removed → recount). The event is the
+  **source of truth**: a projection rebuild reconstructs dynamic membership by
+  replaying these events, exactly like static membership — so the audit log can
+  never drift from the materialized members.
+- The search listener reacts to the same event to reindex every affected
+  device/user — freshness is driven by the evaluator emitting on each run, not a
+  ticker (the periodic reconcile remains only a failure backstop).
+- The `Claim*` guard is the **dynamic** sibling of the static
+  `Claim*GroupForMembership` (`is_dynamic = TRUE`): static member events apply
+  only to static groups, reevaluation deltas only to dynamic groups; a stale
+  replay can't resurrect removed members or wipe live ones.

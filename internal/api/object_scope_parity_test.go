@@ -114,7 +114,22 @@ func TestObjectScope_EnforcementMatchesIndexFiltering(t *testing.T) {
 	require.Emptyf(t, missingWrite, "object types with no mutation/write scope enforcement: %s", strings.Join(missingWrite, ", "))
 
 	for scope := range scopesWithScopeGroupField {
+		if searchScopedNonObjectScopes[scope] {
+			continue
+		}
 		_, ok := scopeToType[scope]
 		require.Truef(t, ok, "index scope %q declares scope_group_ids but no object type / handler enforcement maps to it — Get would leak", scope)
 	}
+}
+
+// searchScopedNonObjectScopes are the non-object search scopes that also carry the
+// scope_group_ids TAG (#7 spec 14). They are NOT confined by enforceObjectReadScope
+// / enforceObjectWriteScope; their Search is filtered in scopeGroupClause via the
+// dedicated device-/user-group list filters (DeviceScopeListFilter("ListDevices") /
+// UserScopeListFilter("ListUsers")), and their per-object Get is already confined by
+// the existing device/user handler scope (covered by scope_enforcement_*_test.go and
+// TestScopablePermissions_AllEnforced). So the object-parity reverse check skips them.
+var searchScopedNonObjectScopes = map[string]bool{
+	"devices": true,
+	"users":   true,
 }

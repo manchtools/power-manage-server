@@ -46,7 +46,19 @@ func scopeGroupClause(ctx context.Context, scope string) string {
 	if !scopesWithScopeGroupField[scope] {
 		return ""
 	}
-	groupIDs, restricted := auth.ObjectScopeListFilter(ctx)
+	var groupIDs []string
+	var restricted bool
+	switch scope {
+	case "devices":
+		// Device Search mirrors the dedicated ListDevices scope: confine to the
+		// caller's device-group scope.
+		groupIDs, restricted = auth.DeviceScopeListFilter(ctx, "ListDevices")
+	case "users":
+		groupIDs, restricted = auth.UserScopeListFilter(ctx, "ListUsers")
+	default:
+		// The four object scopes share the caller's union device-/user-group scope.
+		groupIDs, restricted = auth.ObjectScopeListFilter(ctx)
+	}
 	if !restricted {
 		return ""
 	}

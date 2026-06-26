@@ -159,6 +159,17 @@ func TestAffectedSearchOps(t *testing.T) {
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
 		},
 		{
+			// #7 spec 14: dynamic re-eval delta reindexes the group + each affected device.
+			"DeviceGroupMembersReevaluated reindexes group + each affected device",
+			store.PersistedEvent{EventType: "DeviceGroupMembersReevaluated", StreamID: "DGRP1", StreamType: "device_group",
+				Data: []byte(`{"added_device_ids":["DEV1"],"removed_device_ids":["DEV2"]}`)},
+			[]api.SearchAffected{
+				{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeDevice, ID: "DEV1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeDevice, ID: "DEV2"},
+			},
+		},
+		{
 			"DeviceGroupMaintenanceWindowSet reindexes device group",
 			store.PersistedEvent{EventType: "DeviceGroupMaintenanceWindowSet", StreamID: "DGRP1", StreamType: "device_group"},
 			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeDeviceGroup, ID: "DGRP1"}},
@@ -258,14 +269,32 @@ func TestAffectedSearchOps(t *testing.T) {
 		// make loadSearchEntityData fail to find the row and the
 		// reindex would silently drop. CodeRabbit catch on PR #112.
 		{
-			"UserGroupMemberAdded extracts group_id from composite StreamID",
+			// Member event: reindex the group (member_count) AND the affected user
+			// (scope_group_ids, #7 spec 14), from the "<group>:<user>" composite.
+			"UserGroupMemberAdded reindexes group + affected user",
 			store.PersistedEvent{EventType: "UserGroupMemberAdded", StreamID: "UGRP1:USR42", StreamType: "user_group"},
-			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+			[]api.SearchAffected{
+				{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR42"},
+			},
 		},
 		{
-			"UserGroupMemberRemoved extracts group_id",
+			"UserGroupMemberRemoved reindexes group + affected user",
 			store.PersistedEvent{EventType: "UserGroupMemberRemoved", StreamID: "UGRP1:USR42", StreamType: "user_group"},
-			[]api.SearchAffected{{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"}},
+			[]api.SearchAffected{
+				{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR42"},
+			},
+		},
+		{
+			"UserGroupMembersReevaluated reindexes group + each affected user",
+			store.PersistedEvent{EventType: "UserGroupMembersReevaluated", StreamID: "UGRP1", StreamType: "user_group",
+				Data: []byte(`{"added_user_ids":["USR1"],"removed_user_ids":["USR2"]}`)},
+			[]api.SearchAffected{
+				{Op: api.SearchOpReindex, Scope: search.ScopeUserGroup, ID: "UGRP1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR1"},
+				{Op: api.SearchOpReindex, Scope: search.ScopeUser, ID: "USR2"},
+			},
 		},
 		{
 			"UserGroupRoleAssigned extracts group_id from <group>:role:<role> composite",
