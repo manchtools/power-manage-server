@@ -172,6 +172,53 @@ func (s IndexSchema) FilterableFields() map[string]bool {
 	return out
 }
 
+// matchAllSentinel is an impossible TAG value used to express "match every
+// document". valkey-search 1.2.0 (unlike RediSearch) rejects a bare `*`; the
+// list pages send `*` for an empty/no-filter query, which fails with "Invalid
+// query string syntax". Negating an impossible value — `-@field:{sentinel}` —
+// matches ALL docs, including those missing the field (a NUMERIC range
+// `[-inf +inf]` would silently drop docs without that field).
+const matchAllSentinel = "__pm_match_all__"
+
+// firstTAGField returns the first TAG field declared in the schema (schema order
+// is deterministic — Schema is a slice). Every index declares at least one TAG
+// field; a TAG negation is the cleanest match-all.
+func (s IndexSchema) firstTAGField() string {
+	for i := 1; i < len(s.Schema); i++ {
+		if t, _ := s.Schema[i].(string); t == "TAG" {
+			if field, ok := s.Schema[i-1].(string); ok {
+				return field
+			}
+		}
+	}
+	return ""
+}
+
+// MatchAllQuery returns a valkey-search query that matches every document in
+// this index. It is self-discovering: a new index automatically gets a valid
+// match-all from its own schema, so the empty/list-all path can never silently
+// regress to a bare `*` again. Returns "" only for the (impossible for current
+// indexes) case of a schema with no TAG field.
+func (s IndexSchema) MatchAllQuery() string {
+	field := s.firstTAGField()
+	if field == "" {
+		return ""
+	}
+	return fmt.Sprintf("-@%s:{%s}", field, matchAllSentinel)
+}
+
+// MatchAllForIndex returns the match-all query for the named index (e.g.
+// "idx:devices"), or "" if the index is unknown. Used by the search handler to
+// translate its internal `*` sentinel into a valkey-search-valid query.
+func MatchAllForIndex(name string) string {
+	for _, ix := range IndexSchemas {
+		if ix.Name == name {
+			return ix.MatchAllQuery()
+		}
+	}
+	return ""
+}
+
 // NumericFields returns the field names declared NUMERIC. A structured filter on
 // a NUMERIC field must use a range (@field:[min max]); the TAG @field:{value}
 // syntax is a RediSearch error on a NUMERIC field. Derived by pairing each type

@@ -347,6 +347,15 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 			}
 		}
 
+		// `*` is our internal "no constraints" sentinel. valkey-search 1.2.0
+		// rejects a bare `*`, so translate it to the index's real match-all
+		// (`-@<tag>:{sentinel}`, derived from the schema) before querying.
+		if scopedQuery == "*" {
+			if all := search.MatchAllForIndex(idxName); all != "" {
+				scopedQuery = all
+			}
+		}
+
 		args := []any{"FT.SEARCH", idxName, scopedQuery}
 
 		// SORTBY: the request's sort_field/direction validated against the scope,

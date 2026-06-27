@@ -79,6 +79,12 @@ func main() {
 		Password: cfg.ValkeyPassword,
 		DB:       cfg.ValkeyDB,
 		Protocol: 2,
+		// The default 3s read timeout is too tight for the bulk index rebuild:
+		// warming a scope pipelines hundreds of HSETs whose valkey-search
+		// indexing (SORTABLE/TEXT fields) can exceed 3s on a modest host, which
+		// then crash-loops the indexer ("warm …: i/o timeout"). 30s tolerates a
+		// slow host; WriteTimeout defaults to ReadTimeout when unset.
+		ReadTimeout: 30 * time.Second,
 	})
 	defer rdb.Close()
 
