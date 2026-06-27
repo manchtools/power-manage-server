@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
@@ -593,14 +593,16 @@ func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, 
 		return err
 	}
 
-	resultJSON, err := protojson.Marshal(result)
+	// Binary protobuf, not protojson: no proto message is serialized as JSON over
+	// the gateway→control queue (the result rides as binary inside the task).
+	resultProto, err := proto.Marshal(result)
 	if err != nil {
 		return fmt.Errorf("marshal action result: %w", err)
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-		DeviceID:         deviceID,
-		ActionResultJSON: resultJSON,
-		GatewayID:        h.gatewayID,
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
+		GatewayID:         h.gatewayID,
 	})
 }
 
