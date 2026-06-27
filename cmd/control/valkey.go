@@ -152,6 +152,10 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 		Password: cfg.ValkeyPassword,
 		DB:       cfg.ValkeyDB,
 		Protocol: 2,
+		// 30s (vs the 3s default) so the admin-triggered RebuildSearchIndex —
+		// which bulk-warms every scope — tolerates valkey-search indexing
+		// latency on a modest host instead of failing with "i/o timeout".
+		ReadTimeout: 30 * time.Second,
 	})
 
 	searchIdx := search.New(v.rdb, st, v.aqClient, logger.With("component", "search"))
