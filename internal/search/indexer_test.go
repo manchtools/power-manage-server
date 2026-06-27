@@ -274,6 +274,63 @@ func TestFlushAndRebuild(t *testing.T) {
 	assert.Equal(t, int64(1), count)
 }
 
+// TestRebuild_BulkLoadAtScaleDoesNotStall is the regression for the
+// valkey-search async-writer deadlock (ADR 0027). A big deployment must warm on
+// startup under ANY scale: the pre-fix Rebuild created the FT indexes BEFORE
+// warming, so the bulk pipeline of HSETs hit a LIVE index, overran
+// valkey-search's async writer, and deadlocked the connection until the client
+// read timed out (~120s) — the indexer could never start. The fixed order
+// (FlushSearchData → Warm into the index-less keyspace → EnsureIndexes → backfill)
+// lets valkey-search index by scanning at its own pace and completes in well under
+// a second even for thousands of rows.
+//
+// The pre-fix order makes this test hang (caught by the bounded context below);
+// the fixed order makes it pass quickly. Seeds THOUSANDS of executions on purpose
+// — a handful would not overrun the writer and would pass on BOTH orders.
+func TestRebuild_BulkLoadAtScaleDoesNotStall(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	st := testutil.SetupPostgres(t)
+	rdb := setupRedis(t)
+	ctx := context.Background()
+
+	userID := testutil.CreateTestUser(t, st, "admin@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "bulk-load-host")
+	actionID := testutil.CreateTestAction(t, st, userID, "Bulk Load Action", 100)
+
+	// Materialise the projection rows directly — thousands of real ExecutionCreated
+	// events would dominate the test runtime, and the warm reads the projection, not
+	// the event log. One statement seeds them all (created_at inside the warm's
+	// 90-day window, action_type matching the action above so the TAG query finds
+	// them).
+	const n = 5000
+	_, err := st.TestingPool().Exec(ctx, `
+		INSERT INTO executions_projection (id, device_id, action_id, action_type, status, created_at)
+		SELECT 'bulk_exec_' || g::text, $1, $2, 100, 'success', now() - (g || ' seconds')::interval
+		FROM generate_series(1, $3) g`, deviceID, actionID, n)
+	require.NoError(t, err)
+
+	idx := search.New(rdb, st, nil, testLogger())
+
+	// A correct load-then-index rebuild finishes in well under a second; the pre-fix
+	// order deadlocks and never returns. Bound it so a regression fails fast instead
+	// of hanging the whole suite for the go-redis read timeout.
+	rebuildCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	require.NoError(t, idx.Rebuild(rebuildCtx),
+		"a big deployment must warm on startup without stalling valkey-search's async writer")
+
+	// Rebuild waits for the backfill, so every seeded execution must already be
+	// indexed and queryable — no polling.
+	result, err := rdb.Do(ctx, "FT.SEARCH", "idx:executions", "@action_type:{100}", "LIMIT", 0, 0).Result()
+	require.NoError(t, err)
+	arr, ok := result.([]any)
+	require.True(t, ok)
+	count, _ := arr[0].(int64)
+	assert.Equal(t, int64(n), count, "every one of the %d bulk-loaded executions must be indexed", n)
+}
+
 func TestSearchExecutionsByTag(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
