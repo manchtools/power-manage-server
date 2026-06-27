@@ -116,17 +116,48 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	if skip, ok := cacheReady(ctx, c, env); !ok {
 		return skip, nil
 	}
-	missing, err := env.Cache.MissingIndexes(ctx, expectedIndexNames())
+	names := expectedIndexNames()
+	missing, err := env.Cache.MissingIndexes(ctx, names)
 	if err != nil {
 		// Reachable but FT.INFO failed (e.g. the RediSearch module is absent) —
 		// could-not-run, not a clean pass.
 		return nil, fmt.Errorf("query search indexes: %w", err)
 	}
 	var findings []Finding
+	missingSet := map[string]bool{}
 	for _, name := range missing {
+		missingSet[name] = true
 		findings = append(findings, crit(c.ID(),
 			fmt.Sprintf("search index %s is missing", name),
 			"run the indexer / RebuildSearchIndex to (re)create it"))
+	}
+
+	// Functional probe: a PRESENT index whose match-all query the engine REJECTS
+	// (e.g. a valkey-search version that doesn't accept the query syntax) breaks
+	// the list pages even though FT.INFO reports the index exists — a failure the
+	// presence/fingerprint/heartbeat checks all miss because none runs a query.
+	// Probe only the present indexes; a rejection is Critical (search can't answer).
+	present := make([]string, 0, len(names))
+	for _, n := range names {
+		if !missingSet[n] {
+			present = append(present, n)
+		}
+	}
+	rejected, err := env.Cache.SearchQueryRejections(ctx, present)
+	if err != nil {
+		return nil, fmt.Errorf("probe search queries: %w", err)
+	}
+	rejNames := make([]string, 0, len(rejected))
+	for n := range rejected {
+		rejNames = append(rejNames, n)
+	}
+	sort.Strings(rejNames)
+	for _, n := range rejNames {
+		f := crit(c.ID(),
+			fmt.Sprintf("search index %s is present but rejects queries — list pages will fail", n),
+			"the search engine does not accept the query syntax (e.g. a valkey-search version mismatch)")
+		f.Detail = rejected[n]
+		findings = append(findings, f)
 	}
 
 	// Indexer liveness: a heartbeat older than 2× the reconcile interval means
@@ -134,11 +165,11 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	// the fingerprint may still match. Absent heartbeat ⇒ never stamped (fresh
 	// deploy / pre-heartbeat indexer); not a "stale" signal, so no warning.
 	interval := reconcileInterval(env)
-	ts, present, err := env.Cache.LastReconcile(ctx)
+	ts, hbPresent, err := env.Cache.LastReconcile(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read indexer reconcile heartbeat: %w", err)
 	}
-	if present {
+	if hbPresent {
 		if age := env.now().Sub(ts); age > 2*interval {
 			f := warn(c.ID(),
 				fmt.Sprintf("the search indexer has not reconciled in %s (> 2× the %s interval) — it may be dead or stuck", age.Round(time.Second), interval),
@@ -158,7 +189,7 @@ func (c SearchCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 			"the indexer will rebuild on next boot; trigger a rebuild if it has not"))
 	}
 	if len(findings) == 0 {
-		return []Finding{ok(c.ID(), "all expected search indexes present, schema current, indexer reconciling")}, nil
+		return []Finding{ok(c.ID(), "all expected search indexes present and answering queries, schema current, indexer reconciling")}, nil
 	}
 	return findings, nil
 }

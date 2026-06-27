@@ -112,6 +112,28 @@ func (v *ValkeyProbe) ArchivedByQueue(_ context.Context) (map[string]int, error)
 	return out, nil
 }
 
+// SearchQueryRejections runs each index's real match-all query (the exact query
+// the list pages send for an empty/no-filter search) against the live engine and
+// records any the engine rejects. This catches a search that is PRESENT but
+// cannot answer — e.g. a valkey-search version that rejects the query syntax —
+// which the FT.INFO/fingerprint/heartbeat checks all miss. Read-only (LIMIT 0 0).
+func (v *ValkeyProbe) SearchQueryRejections(ctx context.Context, names []string) (map[string]string, error) {
+	rejected := map[string]string{}
+	for _, name := range names {
+		q := search.MatchAllForIndex(name)
+		if q == "" {
+			continue // unknown index — no match-all to probe
+		}
+		if err := v.rdb.Do(ctx, "FT.SEARCH", name, q, "LIMIT", 0, 0).Err(); err != nil {
+			if indexNotFound(err) {
+				continue // absent index is reported by MissingIndexes, not here
+			}
+			rejected[name] = err.Error()
+		}
+	}
+	return rejected, nil
+}
+
 // LastReconcile reads the indexer heartbeat (search.LastReconcileKey, RFC3339).
 func (v *ValkeyProbe) LastReconcile(ctx context.Context) (time.Time, bool, error) {
 	raw, err := v.rdb.Get(ctx, search.LastReconcileKey).Result()

@@ -291,6 +291,24 @@ func TestSearchCheck(t *testing.T) {
 		env.Cache = fakeCache{reconcileErr: errors.New("bad heartbeat value")}
 		require.Error(t, runErr(t, SearchCheck{}, env))
 	})
+	t.Run("present index rejects queries → critical (functional probe)", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{
+			schemaCurrent: true,
+			reconcileOK:   true,
+			lastReconcile: env.now().Add(-1 * time.Minute),
+			// FT.INFO says the index is present, but it rejects the match-all
+			// query — the exact failure the list pages hit. State checks would
+			// pass; the functional probe catches it.
+			rejected: map[string]string{"idx:devices": "Invalid query string syntax"},
+		}
+		assert.Equal(t, SeverityCritical, worst(run1(t, SearchCheck{}, env)))
+	})
+	t.Run("query probe errors (reachable) → exec error", func(t *testing.T) {
+		env := testEnv(nil)
+		env.Cache = fakeCache{schemaCurrent: true, rejectErr: errors.New("probe boom")}
+		require.Error(t, runErr(t, SearchCheck{}, env))
+	})
 }
 
 func TestAdminCheck(t *testing.T) {

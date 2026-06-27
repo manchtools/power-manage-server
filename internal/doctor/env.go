@@ -158,4 +158,11 @@ type CacheProbe interface {
 	// whether that heartbeat is present (absent ⇒ never stamped / pre-heartbeat
 	// indexer). Used to detect a dead/stuck indexer.
 	LastReconcile(ctx context.Context) (time.Time, bool, error)
+	// SearchQueryRejections runs each named index's real match-all query and
+	// returns the indexes whose query the engine REJECTED, mapped to the error
+	// (e.g. a valkey-search version that doesn't accept the query syntax). This
+	// is the FUNCTIONAL probe — index-presence/freshness checks miss a search
+	// that is present but cannot answer. Missing indexes are skipped (covered by
+	// MissingIndexes).
+	SearchQueryRejections(ctx context.Context, indexNames []string) (map[string]string, error)
 }
