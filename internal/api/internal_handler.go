@@ -61,8 +61,10 @@ type InternalHandler struct {
 }
 
 // SetDeviceGatewayResolver wires the device→gateway routing registry so every
-// InternalService request that carries a device_id is confined to the gateway
-// the device is actually live on (verifyDeviceGatewayBinding). Called from
+// credential-bearing InternalService request (ProxySync*/LUKS/LPS/terminal) is
+// confined to the gateway the device is actually live on
+// (verifyDeviceGatewayBinding). VerifyDevice is exempt — it is the pre-attach
+// bootstrap and would otherwise deadlock the device's own connection. Called from
 // main.go in HA/multi-gateway deployments; left nil for single-gateway.
 func (h *InternalHandler) SetDeviceGatewayResolver(r registry.DeviceGatewayLookup) {
 	h.deviceGatewayResolver = r
@@ -103,10 +105,19 @@ func (h *InternalHandler) VerifyDevice(ctx context.Context, req *connect.Request
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
-		return nil, err
-	}
 
+	// VerifyDevice deliberately does NOT call verifyDeviceGatewayBinding. It is the
+	// connection BOOTSTRAP: handler/agent.go calls it to admit a device's mTLS
+	// stream BEFORE AttachDevice publishes the device→gateway binding. Enforcing
+	// the binding here is a chicken-and-egg — the device can't verify (to connect)
+	// until it is live, and can't become live until it connects — so it rejects
+	// EVERY agent whenever the routing registry is wired (the server#404 regression
+	// these binding checks introduced). The SA-C2 confinement that binding protects
+	// does not apply: VerifyDevice reads only existence, returns no secret/action,
+	// and appends no event, and the device's identity is already proven by its mTLS
+	// client cert (agent.go checks cert device-id == hello device-id). The binding
+	// stays enforced on the credential-bearing ProxySync*/LUKS/LPS/terminal methods,
+	// which run only after the device is live.
 	_, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID})
 	if err != nil {
 		h.logger.Warn("device verification failed", "device_id", deviceID, "error", err)

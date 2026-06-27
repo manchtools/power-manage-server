@@ -65,10 +65,6 @@ func TestInternalHandlers_GatewayBindingIsSelfDiscovering(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"VerifyDevice", func() error {
-			_, e := h.VerifyDevice(ctx, connect.NewRequest(&pm.VerifyDeviceRequest{DeviceId: device, GatewayId: wrongGateway}))
-			return e
-		}},
 		{"ProxySyncActions", func() error {
 			_, e := h.ProxySyncActions(ctx, connect.NewRequest(&pm.InternalSyncActionsRequest{DeviceId: device, GatewayId: wrongGateway}))
 			return e
@@ -104,29 +100,63 @@ func TestInternalHandlers_GatewayBindingIsSelfDiscovering(t *testing.T) {
 			"%s must reject a gateway binding mismatch with PermissionDenied", c.name)
 	}
 
-	// Completeness: the table must cover EXACTLY the InternalService requests
-	// that carry a device_id (discovered from the proto descriptor), so a new
-	// device-origin RPC can't escape the binding by omission.
-	want := internalRequestsWithDeviceID(t)
-	assert.Equalf(t, want, len(cases),
-		"every InternalService request carrying device_id needs a binding case here (proto descriptor has %d, table has %d)", want, len(cases))
+	// VerifyDevice is the connection BOOTSTRAP and is intentionally exempt from the
+	// binding (enforcing it there deadlocks the device's own connect — see
+	// VerifyDevice in internal_handler.go). Prove the exemption is LIVE: with the
+	// device live on gw-A, a VerifyDevice claiming gw-B still SUCCEEDS.
+	_, verr := h.VerifyDevice(ctx, connect.NewRequest(&pm.VerifyDeviceRequest{DeviceId: device, GatewayId: wrongGateway}))
+	require.NoError(t, verr, "VerifyDevice is the pre-attach bootstrap and must NOT enforce the gateway binding")
+
+	// Completeness: EVERY InternalService request carrying a device_id must either
+	// have a binding case above OR be a justified exemption — so a new device-origin
+	// RPC can't escape the binding by omission, and an exemption can't go stale.
+	deviceRPCs := internalRequestsWithDeviceID(t)
+	covered := map[string]bool{}
+	for _, c := range cases {
+		covered[c.name] = true
+	}
+	for name := range deviceRPCs {
+		if bindingExemptInternalRPCs[name] {
+			continue
+		}
+		assert.Truef(t, covered[name],
+			"InternalService.%s carries device_id but enforces no binding case here — add a case above or a justified entry to bindingExemptInternalRPCs", name)
+	}
+	for name := range bindingExemptInternalRPCs {
+		assert.Truef(t, deviceRPCs[name],
+			"bindingExemptInternalRPCs[%q] is stale — that RPC no longer carries device_id", name)
+	}
 }
 
-// internalRequestsWithDeviceID counts InternalService methods whose request
-// message carries a device_id field — the self-discovering completeness anchor.
-func internalRequestsWithDeviceID(t *testing.T) int {
+// bindingExemptInternalRPCs are device-origin InternalService methods that
+// deliberately do NOT enforce verifyDeviceGatewayBinding. VerifyDevice is the
+// connection BOOTSTRAP: the gateway calls it to admit a device's mTLS stream
+// BEFORE AttachDevice publishes the device→gateway binding, so enforcing the
+// binding there is a chicken-and-egg that rejects every agent (the server#404
+// regression). It reads only existence, returns no secret/action, and appends no
+// event, so the SA-C2 confinement does not apply; the device's identity is
+// already proven by its mTLS client cert.
+var bindingExemptInternalRPCs = map[string]bool{
+	"VerifyDevice": true,
+}
+
+// internalRequestsWithDeviceID returns the set of InternalService method names
+// whose request message carries a device_id field — the self-discovering
+// completeness anchor for the binding guard.
+func internalRequestsWithDeviceID(t *testing.T) map[string]bool {
 	t.Helper()
 	svc := pm.File_pm_v1_internal_proto.Services().ByName("InternalService")
 	require.NotNil(t, svc, "InternalService descriptor must resolve")
-	n := 0
+	out := map[string]bool{}
 	methods := svc.Methods()
 	for i := 0; i < methods.Len(); i++ {
-		if methods.Get(i).Input().Fields().ByName("device_id") != nil {
-			n++
+		m := methods.Get(i)
+		if m.Input().Fields().ByName("device_id") != nil {
+			out[string(m.Name())] = true
 		}
 	}
-	require.NotZero(t, n, "matches-zero guard: no InternalService request carries device_id")
-	return n
+	require.NotZero(t, len(out), "matches-zero guard: no InternalService request carries device_id")
+	return out
 }
 
 // TestProxyGetLuksKey_GatewayBinding covers the LUKS-secret read path across all
