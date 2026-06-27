@@ -204,6 +204,35 @@ func TestBuildAndSignEnvelope_SignsExactTransportedBytes(t *testing.T) {
 	assert.Equal(t, "echo hi", env.GetShell().Script)
 }
 
+// TestBuildAndSignEnvelope_AgentUpdateAllowRedirect proves the operator's
+// allow_redirect flag rides inside the SIGNED BINARY envelope — not just the
+// JSON input. It must survive populate (JSON -> typed oneof) -> deterministic
+// proto marshal -> the exact bytes the signer signs and the agent verifies.
+// This is the server-side guarantee that a new self-update proto field is
+// covered by the signature without any hand-rolled per-field handling.
+func TestBuildAndSignEnvelope_AgentUpdateAllowRedirect(t *testing.T) {
+	signer := &recordingEnvelopeSigner{}
+	envBytes, _, err := actionparams.BuildAndSignEnvelope(
+		signer,
+		"exec-au-1",
+		int32(pm.ActionType_ACTION_TYPE_AGENT_UPDATE),
+		[]byte(`{"amd64":{"binaryUrl":"https://h/bin","checksumUrl":"https://h/sums"},"allowRedirect":true}`),
+		int32(pm.DesiredState_DESIRED_STATE_PRESENT),
+		300,
+		nil,
+		"device-au",
+	)
+	require.NoError(t, err)
+	require.Len(t, signer.signed, 1)
+	assert.Equal(t, envBytes, signer.signed[0], "signed bytes must equal transported bytes")
+
+	var env pm.SignedActionEnvelope
+	require.NoError(t, proto.Unmarshal(envBytes, &env))
+	require.NotNil(t, env.GetAgentUpdate())
+	assert.True(t, env.GetAgentUpdate().GetAllowRedirect(),
+		"allow_redirect must ride inside the signed binary envelope the agent verifies")
+}
+
 // TestBuildAndSignEnvelope_NilSignerRejected pins fail-closed on a nil signer —
 // a wiring bug must not produce an unsigned envelope.
 func TestBuildAndSignEnvelope_NilSignerRejected(t *testing.T) {

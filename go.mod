@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/manchtools/power-manage-sdk v0.5.1
+	github.com/manchtools/power-manage-sdk v0.5.2
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.26.0
