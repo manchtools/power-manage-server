@@ -159,7 +159,7 @@ func AllPermissions() []PermissionInfo {
 		{"DeleteDeviceGroup", "Device Groups", "Delete device groups", TargetDevice},
 		{"AddDeviceToGroup", "Device Groups", "Add devices to groups", TargetDevice},
 		{"RemoveDeviceFromGroup", "Device Groups", "Remove devices from groups", TargetDevice},
-		{"ValidateDynamicQuery", "Device Groups", "Validate dynamic queries", TargetUnspecified},
+		{"ValidateDynamicQuery", "Device Groups", "Validate dynamic device group queries", TargetUnspecified},
 		{"EvaluateDynamicGroup", "Device Groups", "Evaluate dynamic groups", TargetUnspecified},
 		{"SetDeviceGroupSyncInterval", "Device Groups", "Set device group sync interval", TargetDevice},
 		{"SetDeviceGroupMaintenanceWindow", "Device Groups", "Set device group maintenance window", TargetDevice},
