@@ -170,11 +170,13 @@ type DeviceHeartbeatPayload struct {
 }
 
 // ExecutionResultPayload is the payload for TypeExecutionResult tasks.
-// Contains the protojson-encoded ActionResult plus the device ID.
+// Carries the pm.ActionResult as BINARY protobuf (no protojson on the wire).
 type ExecutionResultPayload struct {
 	DeviceID string `json:"device_id"`
-	// ActionResultJSON is the protojson-serialized pm.ActionResult.
-	ActionResultJSON []byte `json:"action_result_json"`
+	// ActionResultProto is the deterministic BINARY-protobuf-serialized
+	// pm.ActionResult (proto.Marshal), so no proto message is ever sent as JSON
+	// over the gateway→control queue.
+	ActionResultProto []byte `json:"action_result_proto"`
 	// GatewayID — see DeviceHelloPayload.GatewayID.
 	GatewayID string `json:"gateway_id"`
 }

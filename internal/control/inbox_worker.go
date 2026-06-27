@@ -13,7 +13,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/oklog/ulid/v2"
-	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
@@ -219,12 +219,10 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		return fmt.Errorf("unmarshal execution result: %w", err)
 	}
 
-	// The ActionResultJSON is a protojson-encoded pm.ActionResult.
-	// We must use protojson.Unmarshal (not json.Unmarshal) because protojson
-	// encodes int64 fields as JSON strings per the protobuf spec, which
-	// standard json.Unmarshal cannot decode into Go int64 fields.
+	// The result rides as BINARY protobuf — no proto message is ever sent as JSON
+	// over the gateway→control queue.
 	var result pm.ActionResult
-	if err := protojson.Unmarshal(payload.ActionResultJSON, &result); err != nil {
+	if err := proto.Unmarshal(payload.ActionResultProto, &result); err != nil {
 		return fmt.Errorf("unmarshal action result: %w", err)
 	}
 

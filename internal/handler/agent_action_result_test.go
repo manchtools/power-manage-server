@@ -94,7 +94,7 @@ func TestHandleActionResult_NoMetadata_EnqueuesExecutionResult(t *testing.T) {
 	payload, ok := last.payload.(taskqueue.ExecutionResultPayload)
 	require.True(t, ok, "payload should be ExecutionResultPayload, got %T", last.payload)
 	assert.Equal(t, "dev-1", payload.DeviceID)
-	assert.NotEmpty(t, payload.ActionResultJSON, "marshalled result must be non-empty")
+	assert.NotEmpty(t, payload.ActionResultProto, "marshalled result must be non-empty")
 }
 
 // =============================================================================

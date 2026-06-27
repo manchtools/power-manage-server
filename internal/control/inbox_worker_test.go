@@ -18,7 +18,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -185,7 +184,7 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Build action result with protojson
+	// Build action result (binary proto)
 	result := &pm.ActionResult{
 		ActionId:    &pm.ActionId{Value: executionID},
 		Status:      pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
@@ -198,12 +197,12 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 			ExitCode: 0,
 		},
 	}
-	resultJSON, err := protojson.Marshal(result)
+	resultProto, err := proto.Marshal(result)
 	require.NoError(t, err)
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-		DeviceID:         deviceID,
-		ActionResultJSON: resultJSON,
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
 	})
 
 	err = mux.ProcessTask(context.Background(), task)
@@ -255,11 +254,11 @@ func TestHandleExecutionResult_RejectsCrossDeviceSpoof(t *testing.T) {
 		CompletedAt: timestamppb.Now(),
 		Output:      &pm.CommandOutput{Stdout: "FORGED", ExitCode: 0},
 	}
-	resultJSON, err := protojson.Marshal(result)
+	resultProto, err := proto.Marshal(result)
 	require.NoError(t, err)
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-		DeviceID:         attackerDevice,
-		ActionResultJSON: resultJSON,
+		DeviceID:          attackerDevice,
+		ActionResultProto: resultProto,
 	})
 
 	err = mux.ProcessTask(context.Background(), task)
@@ -343,12 +342,12 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 			ExitCode: 1,
 		},
 	}
-	resultJSON, err := protojson.Marshal(result)
+	resultProto, err := proto.Marshal(result)
 	require.NoError(t, err)
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-		DeviceID:         deviceID,
-		ActionResultJSON: resultJSON,
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
 	})
 
 	err = mux.ProcessTask(context.Background(), task)
@@ -376,12 +375,12 @@ func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 		DurationMs:  200,
 		CompletedAt: timestamppb.Now(),
 	}
-	resultJSON, err := protojson.Marshal(result)
+	resultProto, err := proto.Marshal(result)
 	require.NoError(t, err)
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
-		DeviceID:         deviceID,
-		ActionResultJSON: resultJSON,
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
 	})
 
 	err = mux.ProcessTask(context.Background(), task)
@@ -783,12 +782,12 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 			CompletedAt: timestamppb.Now(),
 			Output:      &pm.CommandOutput{Stdout: "ok", ExitCode: 0},
 		}
-		resultJSON, err := protojson.Marshal(result)
+		resultProto, err := proto.Marshal(result)
 		require.NoError(t, err)
 		raw, err := json.Marshal(taskqueue.ExecutionResultPayload{
-			DeviceID:         deviceID,
-			ActionResultJSON: resultJSON,
-			GatewayID:        claimedGateway,
+			DeviceID:          deviceID,
+			ActionResultProto: resultProto,
+			GatewayID:         claimedGateway,
 		})
 		require.NoError(t, err)
 		// Wrap exactly as the producer does so the mux's VerifyMiddleware
