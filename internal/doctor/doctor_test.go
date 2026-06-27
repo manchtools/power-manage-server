@@ -37,6 +37,8 @@ type fakeCache struct {
 	lastReconcile time.Time
 	reconcileOK   bool
 	reconcileErr  error
+	rejected      map[string]string
+	rejectErr     error
 }
 
 func (f fakeCache) Ping(context.Context) error { return f.pingErr }
@@ -49,6 +51,9 @@ func (f fakeCache) ArchivedByQueue(context.Context) (map[string]int, error) {
 }
 func (f fakeCache) LastReconcile(context.Context) (time.Time, bool, error) {
 	return f.lastReconcile, f.reconcileOK, f.reconcileErr
+}
+func (f fakeCache) SearchQueryRejections(context.Context, []string) (map[string]string, error) {
+	return f.rejected, f.rejectErr
 }
 
 func testEnv(vars map[string]string) *Env {
