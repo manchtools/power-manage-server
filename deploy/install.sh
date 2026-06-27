@@ -277,9 +277,14 @@ init_env() {
     # control talking to a 2026.07 valkey. Only version tags (vYYYY.MM[-rcN])
     # map to published images; a branch deploy (e.g. main) has no matching image
     # tag, so leave IMAGE_TAG untouched there.
+    #
+    # The published image tags STRIP the leading `v` (release.yml builds them
+    # from ${GITHUB_REF_NAME#v}, so tag v2026.07-rc2 → image 2026.07-rc2). Pin
+    # the v-less form or `docker compose pull` fails with `manifest unknown`.
     if [[ "$RELEASE_TAG" == v* ]]; then
-        set_image_tag "$RELEASE_TAG"
-        log_info "  Pinned IMAGE_TAG=$RELEASE_TAG (matches the deployed release)."
+        local image_tag="${RELEASE_TAG#v}"
+        set_image_tag "$image_tag"
+        log_info "  Pinned IMAGE_TAG=$image_tag (matches the deployed release)."
     fi
 }
 
