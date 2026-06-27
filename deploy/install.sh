@@ -245,6 +245,22 @@ download_deploy_tree() {
 ###############################################################################
 # Step 3 — initialise .env if missing
 ###############################################################################
+
+# set_image_tag writes IMAGE_TAG=$1 into .env, replacing any existing line (or
+# appending if absent) and preserving the file's 0600 mode — it holds secrets.
+# Atomic same-directory mktemp + rename, mirroring setup.sh's write_env_var.
+set_image_tag() {
+    local value="$1" envfile="$INSTALL_DIR/.env" tmp
+    tmp="$(mktemp "${envfile}.XXXXXX")"
+    awk -v v="$value" '
+        /^IMAGE_TAG=/ { print "IMAGE_TAG=" v; found=1; next }
+        { print }
+        END { if (!found) print "IMAGE_TAG=" v }
+    ' "$envfile" > "$tmp"
+    chmod --reference="$envfile" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+    mv "$tmp" "$envfile"
+}
+
 init_env() {
     cd "$INSTALL_DIR"
     if [[ ! -f .env ]]; then
@@ -252,6 +268,18 @@ init_env() {
         log_info "Created .env from .env.example — guided setup will fill it in."
     else
         log_info ".env already exists — guided setup will only prompt for missing values."
+    fi
+
+    # Pin IMAGE_TAG to the (already-resolved) release tag so the images actually
+    # match the deploy tree we just extracted. Without this, an upgrade re-run
+    # PRESERVES the operator's previous IMAGE_TAG and silently runs the OLD
+    # images against the NEW compose — the half-upgrade that left a 2026.06
+    # control talking to a 2026.07 valkey. Only version tags (vYYYY.MM[-rcN])
+    # map to published images; a branch deploy (e.g. main) has no matching image
+    # tag, so leave IMAGE_TAG untouched there.
+    if [[ "$RELEASE_TAG" == v* ]]; then
+        set_image_tag "$RELEASE_TAG"
+        log_info "  Pinned IMAGE_TAG=$RELEASE_TAG (matches the deployed release)."
     fi
 }
 
@@ -339,7 +367,11 @@ print_summary() {
     set -u
 
     echo ""
-    log_info "✓ Power Manage Server is up."
+    if [[ "${PM_EXISTING_INSTALL:-0}" -eq 1 ]]; then
+        log_info "✓ Power Manage Server upgraded to ${IMAGE_TAG:-<unset>}."
+    else
+        log_info "✓ Power Manage Server is up."
+    fi
     echo ""
     echo "  Control UI:    https://${CONTROL_DOMAIN:-<unset>}"
     echo "  Gateway mTLS:  https://${GATEWAY_DOMAIN:-<unset>}"
@@ -349,12 +381,24 @@ print_summary() {
     echo ""
     echo "  Admin login:   ${ADMIN_EMAIL:-<unset>}"
     echo "  Install dir:   $INSTALL_DIR"
+    echo "  Image tag:     ${IMAGE_TAG:-<unset>}"
     echo ""
-    echo "Next steps:"
-    echo "  1. Wait ~30s for Let's Encrypt to issue certs (first run only)."
-    echo "  2. Log in to the Control UI and create real user accounts."
-    echo "  3. Generate a registration token, then enroll an agent on a device:"
-    echo "       curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN:-<DOMAIN>} -t <TOKEN>"
+    if [[ "${PM_EXISTING_INSTALL:-0}" -eq 1 ]]; then
+        echo "Next steps:"
+        echo "  1. Confirm control started on the new version and applied migrations:"
+        echo "       docker compose -f $INSTALL_DIR/compose.yml logs -f control"
+        echo "       (look for the version banner + any 'goose' migration lines)"
+        echo "  2. Verify health & security posture:"
+        echo "       docker compose -f $INSTALL_DIR/compose.yml exec control control doctor"
+        echo ""
+        echo "  Your admin account, enrolled agents, and data are unchanged."
+    else
+        echo "Next steps:"
+        echo "  1. Wait ~30s for Let's Encrypt to issue certs (first run only)."
+        echo "  2. Log in to the Control UI and create real user accounts."
+        echo "  3. Generate a registration token, then enroll an agent on a device:"
+        echo "       curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN:-<DOMAIN>} -t <TOKEN>"
+    fi
     echo ""
     echo "  Logs:          docker compose -f $INSTALL_DIR/compose.yml logs -f"
     echo ""
@@ -363,6 +407,12 @@ print_summary() {
 main() {
     log_info "Power Manage Server installer (rc11)"
     echo ""
+
+    # Capture whether this is an upgrade BEFORE setup.sh (re)provisions certs:
+    # an existing CA is the canonical "already provisioned" marker, used to
+    # print upgrade-aware final instructions instead of fresh-install next-steps.
+    PM_EXISTING_INSTALL=0
+    [[ -f "$INSTALL_DIR/certs/ca.crt" ]] && PM_EXISTING_INSTALL=1
 
     preflight
     download_deploy_tree

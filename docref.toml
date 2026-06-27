@@ -1,0 +1,9 @@
+# docref keeps deploy/operator prose honest against the code it describes.
+# `docref check` (run in CI) fails when an anchored snippet or claim drifts from
+# the symbol/region it points at — e.g. the `control doctor` binary/subcommand
+# name, the doctor exit-code contract, or the registered check set.
+[scan]
+include = ["deploy/QUICKSTART.md", "SECURITY.md"]
+
+[check]
+level = "strict"

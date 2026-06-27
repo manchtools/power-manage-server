@@ -1,6 +1,6 @@
 // Package doctor runs operator-facing stack-health and security-posture checks
 // for a Power Manage Control deployment (#322, spec 15). It is invoked as
-// `power-manage-control doctor` — a standalone, read-only pass that reports
+// `control doctor` — a standalone, read-only pass that reports
 // findings with a severity and an exit code, and never mutates state.
 package doctor
 

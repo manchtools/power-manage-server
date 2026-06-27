@@ -1,6 +1,6 @@
 # Power Manage Server — Quickstart
 
-> Before exposing a deployment, read **[../SECURITY.md](../SECURITY.md)** — trust boundaries, what to protect (the Control host's CA keys), and the disclosure process. After install, `power-manage-control doctor` checks the live stack against those expectations.
+> Before exposing a deployment, read **[../SECURITY.md](../SECURITY.md)** — trust boundaries, what to protect (the Control host's CA keys), and the disclosure process. After install, `control doctor` checks the live stack against those expectations.
 
 One-line install on a fresh Linux host with Docker + the compose plugin already installed:
 
@@ -84,44 +84,52 @@ docker compose up -d
 
 ## Health & posture check: `doctor`
 
+<!-- docref: begin src=cmd/control/main.go#@doctor-subcommand:215d5a9d,.github/workflows/release.yml#@control-binary-name:6d502abb -->
 The Control binary ships a read-only `doctor` subcommand that checks the live
 stack and deployment configuration against the expectations in
 [../SECURITY.md](../SECURITY.md). It never mutates state, so it is safe to run
-against production. Run it inside the running Control container so it sees the
-same env and `.env`:
+against production. The in-container binary is `control` (run it inside the
+running Control container so it sees the same env and `.env`):
 
 ```bash
-docker compose exec control power-manage-control doctor          # human-readable
-docker compose exec control power-manage-control doctor --json   # machine-readable
+docker compose exec control control doctor          # human-readable
+docker compose exec control control doctor --json   # machine-readable
 ```
+<!-- docref: end -->
 
+<!-- docref: begin src=cmd/control/doctor.go#runDoctor:7091dc81 -->
 Flags:
 
 - `--json` — emit a JSON report (`{summary, findings, exec_errors, exit_code}`) for CI/monitoring.
 - `--env-file <path>` — also inspect this `.env` (default `.env`, silently skipped if absent). Values in the file take precedence over the process environment — it is the operator's stored config, the source of truth for what was configured.
+<!-- docref: end -->
 
+<!-- docref: begin src=internal/doctor/registry.go#DefaultChecks:401eacc2 -->
 It reports placeholder/weak secrets, mandatory at-rest encryption key, a
 credentialed CORS wildcard, an internal mTLS listener bound to all interfaces, a
 floating `IMAGE_TAG`, certificate file permissions and approaching expiry,
 Postgres/Valkey reachability, Asynq dead-letter depth, search-index presence
 and indexer liveness (reconcile heartbeat), and a bootstrap admin still on the
 default email.
+<!-- docref: end -->
 
 ### Exit codes
 
 The exit code is the worst outcome, so a single boolean gate works in CI:
 
+<!-- docref: begin src=internal/doctor/doctor.go#Report.ExitCode:91e925ce -->
 | Code | Meaning |
 |------|---------|
 | `0`  | all clear — only `ok`/`info` findings |
 | `1`  | at least one **warning** (worth fixing; not blocking) |
 | `100`| at least one **critical** finding (insecure/broken — do not ship) |
 | `2`  | a check could not run (exec error) — the report is incomplete; takes precedence over everything |
+<!-- docref: end -->
 
 Example gate (fail a deploy pipeline on any critical or could-not-run):
 
 ```bash
-docker compose exec -T control power-manage-control doctor
+docker compose exec -T control control doctor
 code=$?
 if [ "$code" -ge 100 ] || [ "$code" -eq 2 ]; then
   echo "doctor found critical issues (exit $code)"; exit 1

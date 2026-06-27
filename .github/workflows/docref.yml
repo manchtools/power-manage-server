@@ -1,0 +1,23 @@
+name: docref
+
+# Keeps deploy/operator prose (deploy/QUICKSTART.md, SECURITY.md) honest against
+# the code it describes — the `control doctor` binary/subcommand name, the
+# doctor exit-code contract, the registered check set, and the CLI flags. A
+# claim or snippet that drifts from its anchored code fails this check. Runs on
+# every push/PR (no path filter) because drift can be introduced from EITHER
+# side — editing the prose OR editing the anchored Go / release workflow.
+on:
+  push:
+    branches: [main, 'v*']
+  pull_request:
+
+jobs:
+  docref-check:
+    name: docref (docs anchored to code)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Purpose-built docref CI image (docref + git on Alpine); nothing to build.
+      - name: docref check (docs match the code they describe)
+        run: docker run --rm -v "${{ github.workspace }}:/repo" ghcr.io/manchtools/open-docref:v0.1.0 check
