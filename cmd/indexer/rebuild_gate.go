@@ -30,7 +30,6 @@ const (
 type searchGate interface {
 	IndexesPresent(ctx context.Context) (bool, error)
 	SchemaCurrent(ctx context.Context) (bool, error)
-	Warm(ctx context.Context) error
 	Rebuild(ctx context.Context) error
 }
 
@@ -64,8 +63,14 @@ func startupSearchSync(ctx context.Context, gate searchGate, locker rebuildLocke
 			return fmt.Errorf("check search schema fingerprint: %w", err)
 		}
 		if current {
-			logger.Info("search indexes present and schema current; warming without destructive flush")
-			return gate.Warm(ctx)
+			// Already built and schema-current. Do NOT bulk re-warm into a LIVE
+			// index: streaming a full reload of HSETs at an existing FT index
+			// deadlocks valkey-search's async writer (see Index.Rebuild / ADR 0027).
+			// The data is already indexed; the incremental worker keeps it live and
+			// the periodic reconcile corrects drift, so the reload is both unsafe
+			// and redundant — skip it.
+			logger.Info("search indexes present and schema current; skipping reload (incremental worker + periodic reconcile keep it current)")
+			return nil
 		}
 		logger.Info("search index schema changed since last rebuild; rebuild required")
 	}
@@ -75,12 +80,16 @@ func startupSearchSync(ctx context.Context, gate searchGate, locker rebuildLocke
 		return fmt.Errorf("acquire rebuild lock: %w", err)
 	}
 	if !acquired {
-		logger.Info("another indexer holds the rebuild lock; warming without flush")
-		return gate.Warm(ctx)
+		// Another indexer holds the lock and is performing the load-then-index
+		// rebuild, which will produce the complete index. Warming into its
+		// half-built/live index here would deadlock the async writer, so skip — the
+		// lock holder is the single source of the rebuild.
+		logger.Info("another indexer holds the rebuild lock; skipping (the lock holder rebuilds)")
+		return nil
 	}
 	defer release()
 
-	logger.Info("search indexes missing; performing destructive rebuild under lock")
+	logger.Info("search indexes missing or schema changed; performing load-then-index rebuild under lock")
 	return gate.Rebuild(ctx)
 }
 

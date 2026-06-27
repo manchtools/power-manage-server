@@ -11,9 +11,19 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+// notLiveResolver is a device→gateway routing registry that reports every device
+// as not currently live on any gateway (the state during a fresh connect, before
+// AttachDevice runs). Used to exercise the binding gate without a real Valkey.
+type notLiveResolver struct{}
+
+func (notLiveResolver) LookupDeviceGateway(context.Context, string) (string, error) {
+	return "", registry.ErrNoGateway
+}
 
 func TestVerifyDevice_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
@@ -48,6 +58,48 @@ func TestVerifyDevice_EmptyID(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// TestVerifyDevice_SucceedsWhenDeviceNotYetLive pins the bootstrap exemption: the
+// gateway calls VerifyDevice to admit a device's mTLS stream BEFORE AttachDevice
+// publishes the device→gateway binding, so VerifyDevice must succeed even with the
+// routing registry wired and the device reported as not-yet-live. The pre-fix code
+// enforced verifyDeviceGatewayBinding here and rejected every agent with "device
+// is not live on any gateway" — a chicken-and-egg that bricked all connections
+// (the server#404 regression). This test fails on that version and passes on the fix.
+func TestVerifyDevice_SucceedsWhenDeviceNotYetLive(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(notLiveResolver{}) // registry wired; device not live yet
+
+	deviceID := testutil.CreateTestDevice(t, st, "bootstrap-host")
+
+	resp, err := h.VerifyDevice(context.Background(), connect.NewRequest(&pm.VerifyDeviceRequest{
+		DeviceId:  deviceID,
+		GatewayId: "gw-1",
+	}))
+	require.NoError(t, err, "VerifyDevice must admit the bootstrap connection even though the device is not yet live in the registry")
+	assert.NotNil(t, resp)
+}
+
+// TestProxySyncActions_BindingStillEnforcedWhenNotLive is the guard for the fix
+// above: removing the binding from VerifyDevice must NOT weaken the credential-
+// bearing methods. With the routing registry wired and the device not live on the
+// claiming gateway, ProxySyncActions must still reject with FailedPrecondition —
+// the SA-C2 confinement (server#404) stays intact for the secret/action ops.
+func TestProxySyncActions_BindingStillEnforcedWhenNotLive(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(notLiveResolver{})
+
+	deviceID := testutil.CreateTestDevice(t, st, "secret-op-host")
+
+	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId:  deviceID,
+		GatewayId: "gw-1",
+	}))
+	require.Error(t, err, "a credential-bearing method must still enforce the device→gateway binding")
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "device-not-live binding rejection stays on ProxySyncActions")
 }
 
 func TestProxySyncActions_EmptyDeviceID(t *testing.T) {

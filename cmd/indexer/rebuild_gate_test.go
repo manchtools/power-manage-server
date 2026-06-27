@@ -20,13 +20,11 @@ type fakeGate struct {
 	presentErr    error
 	schemaCurrent bool
 	schemaErr     error
-	warmCalls     int
 	rebuildCalls  int
 }
 
 func (f *fakeGate) IndexesPresent(context.Context) (bool, error) { return f.present, f.presentErr }
 func (f *fakeGate) SchemaCurrent(context.Context) (bool, error)  { return f.schemaCurrent, f.schemaErr }
-func (f *fakeGate) Warm(context.Context) error                   { f.warmCalls++; return nil }
 func (f *fakeGate) Rebuild(context.Context) error                { f.rebuildCalls++; return nil }
 
 type fakeLocker struct {
@@ -39,19 +37,22 @@ func (f *fakeLocker) TryLock(context.Context) (bool, func(), error) {
 	return f.acquired, func() { f.released++ }, f.err
 }
 
-// TestStartupSearchSync_GatesDestructiveRebuild pins WS13 #12: the destructive
-// flush+rebuild only happens when the indexes are MISSING and this indexer wins
-// the lock; otherwise it warms without flushing. A present-check error fails
-// closed (no flush).
+// TestStartupSearchSync_GatesDestructiveRebuild pins WS13 #12 + the load-then-
+// index fix (ADR 0027): the destructive flush+rebuild only happens when the
+// indexes are MISSING (or the schema changed) and this indexer wins the lock.
+// Otherwise the boot SKIPS the bulk reload entirely — re-streaming HSETs into a
+// LIVE index would deadlock valkey-search's async writer, and the data is already
+// indexed (the incremental worker + periodic reconcile keep it current). A
+// present-check error fails closed (no flush).
 func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("indexes present + schema current → warm only, never rebuild", func(t *testing.T) {
+	t.Run("indexes present + schema current → skip, never rebuild or reload", func(t *testing.T) {
 		g := &fakeGate{present: true, schemaCurrent: true}
 		l := &fakeLocker{acquired: true} // would acquire, but must not be consulted
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
-		assert.Equal(t, 1, g.warmCalls, "present indexes must be warmed")
 		assert.Equal(t, 0, g.rebuildCalls, "present+current indexes must NOT be destructively rebuilt")
+		assert.Equal(t, 0, l.released, "the lock must not even be consulted when present+current")
 	})
 
 	t.Run("indexes present but schema changed → rebuild under lock (#325)", func(t *testing.T) {
@@ -59,7 +60,6 @@ func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 		l := &fakeLocker{acquired: true}
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
 		assert.Equal(t, 1, g.rebuildCalls, "a schema change must trigger a drop+rebuild even when indexes exist")
-		assert.Equal(t, 0, g.warmCalls)
 		assert.Equal(t, 1, l.released)
 	})
 
@@ -68,7 +68,6 @@ func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 		l := &fakeLocker{acquired: true}
 		require.Error(t, startupSearchSync(ctx, g, l, gateTestLogger()))
 		assert.Equal(t, 0, g.rebuildCalls)
-		assert.Equal(t, 0, g.warmCalls)
 	})
 
 	t.Run("indexes missing + lock won → rebuild under lock", func(t *testing.T) {
@@ -76,16 +75,14 @@ func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 		l := &fakeLocker{acquired: true}
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
 		assert.Equal(t, 1, g.rebuildCalls, "missing indexes + lock held → rebuild")
-		assert.Equal(t, 0, g.warmCalls)
 		assert.Equal(t, 1, l.released, "the lock must be released after rebuild")
 	})
 
-	t.Run("indexes missing + lock lost → warm only (no racing wipe)", func(t *testing.T) {
+	t.Run("indexes missing + lock lost → skip (the lock holder rebuilds)", func(t *testing.T) {
 		g := &fakeGate{present: false}
 		l := &fakeLocker{acquired: false}
 		require.NoError(t, startupSearchSync(ctx, g, l, gateTestLogger()))
-		assert.Equal(t, 1, g.warmCalls, "a contender that lost the lock warms instead of flushing")
-		assert.Equal(t, 0, g.rebuildCalls, "only the lock holder may flush+rebuild")
+		assert.Equal(t, 0, g.rebuildCalls, "only the lock holder may flush+rebuild; a contender skips (no firehose into the live index)")
 		assert.Equal(t, 0, l.released, "release must not be called when the lock was not acquired")
 	})
 
@@ -95,7 +92,6 @@ func TestStartupSearchSync_GatesDestructiveRebuild(t *testing.T) {
 		require.Error(t, startupSearchSync(ctx, g, l, gateTestLogger()),
 			"a present-check error must be fatal, not treated as 'missing' (which would flush)")
 		assert.Equal(t, 0, g.rebuildCalls, "must NOT flush/rebuild on an indeterminate present-check")
-		assert.Equal(t, 0, g.warmCalls)
 	})
 }
 

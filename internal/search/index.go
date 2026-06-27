@@ -1426,11 +1426,28 @@ func (idx *Index) Rebuild(ctx context.Context) error {
 	if err := idx.FlushSearchData(ctx); err != nil {
 		return fmt.Errorf("flush: %w", err)
 	}
+	// Load-then-index: populate the search keyspace BEFORE creating the FT
+	// indexes. valkey-search's async writer cannot absorb a bulk pipeline of HSETs
+	// aimed at a LIVE index — it applies write backpressure, stops replying
+	// mid-pipeline, and deadlocks the connection until the client read times out
+	// (~120s), so any deployment with more than a few dozen rows in a scope could
+	// never warm. Creating the indexes AFTER the keyspace is populated lets
+	// valkey-search backfill by scanning at its own pace (no client backpressure),
+	// which it handles cleanly at any scale. RediSearch indexed synchronously, so
+	// the old create-then-stream order was safe there; valkey-search's async
+	// writer is not. See ADR 0027.
+	if err := idx.Warm(ctx); err != nil {
+		return fmt.Errorf("warm: %w", err)
+	}
 	if err := idx.EnsureIndexes(ctx); err != nil {
 		return fmt.Errorf("ensure indexes: %w", err)
 	}
-	if err := idx.Warm(ctx); err != nil {
-		return fmt.Errorf("warm: %w", err)
+	// FT.CREATE returns immediately and backfills the pre-populated keyspace in the
+	// background; wait for that to finish so a completed Rebuild guarantees a
+	// fully-populated, query-ready index (the boot heartbeat, the doctor probe, and
+	// the list pages all rely on it being done).
+	if err := idx.waitForBackfill(ctx); err != nil {
+		return fmt.Errorf("await backfill: %w", err)
 	}
 	// Stamp the schema fingerprint so the next boot warms instead of rebuilding
 	// (until the schema changes again). Last step: only a fully-rebuilt index
@@ -1446,6 +1463,61 @@ func (idx *Index) Rebuild(ctx context.Context) error {
 		idx.logger.Warn("could not stamp reconcile heartbeat after rebuild", "error", err)
 	}
 	return nil
+}
+
+// waitForBackfill blocks until every FT index has finished the background
+// backfill that FT.CREATE kicks off over the pre-populated keyspace (the
+// load-then-index rebuild). Once it returns, a Rebuild has produced a fully
+// query-ready index. It polls FT.INFO's backfill_in_progress flag and honors ctx
+// for cancellation/deadline so a wedged backend can't hang the boot forever.
+func (idx *Index) waitForBackfill(ctx context.Context) error {
+	for _, ix := range IndexSchemas {
+		for {
+			done, err := idx.backfillDone(ctx, ix.Name)
+			if err != nil {
+				return err
+			}
+			if done {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	return nil
+}
+
+// backfillDone reports whether the named index has finished backfilling, read
+// from FT.INFO's backfill_in_progress field (0 = done). FT.INFO returns a flat
+// [field, value, ...] map; an absent field (a backend that doesn't report it) is
+// treated as done so the wait can never hang on a missing signal.
+func (idx *Index) backfillDone(ctx context.Context, name string) (bool, error) {
+	res, err := idx.rdb.Do(ctx, "FT.INFO", name).Result()
+	if err != nil {
+		return false, fmt.Errorf("FT.INFO %s: %w", name, err)
+	}
+	pairs, ok := res.([]any)
+	if !ok {
+		return true, nil // unexpected shape — don't hang the boot
+	}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		k, _ := pairs[i].(string)
+		if k != "backfill_in_progress" {
+			continue
+		}
+		switch v := pairs[i+1].(type) {
+		case int64:
+			return v == 0, nil
+		case string:
+			return v == "0", nil
+		default:
+			return true, nil
+		}
+	}
+	return true, nil // field absent → assume done
 }
 
 // StampReconciled records that a reconcile just completed (LastReconcileKey,
