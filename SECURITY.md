@@ -202,7 +202,7 @@ The threat model does **not** defend against:
   is not a defense against same-disk offline theft — full-disk encryption is that
   boundary.
 
-> Operators can run `power-manage-control doctor` to check that a live deployment
+> Operators can run `control doctor` to check that a live deployment
 > matches the transport/CA/secret expectations this document assumes.
 
 ## Accepted residuals

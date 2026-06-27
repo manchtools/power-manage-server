@@ -76,12 +76,14 @@ type Config struct {
 }
 
 func main() {
-	// `power-manage-control doctor` is a standalone, read-only stack-health pass
+	// `control doctor` is a standalone, read-only stack-health pass
 	// (#322). It must run WITHOUT booting the server, so it intercepts before
 	// parseFlags (which would choke on the positional subcommand).
+	// docref: begin doctor-subcommand
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		os.Exit(runDoctor(os.Args[2:]))
 	}
+	// docref: end doctor-subcommand
 
 	cfg := parseFlags()
 

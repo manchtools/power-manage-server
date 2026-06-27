@@ -12,7 +12,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/doctor"
 )
 
-// runDoctor implements `power-manage-control doctor [--json] [--env-file path]`:
+// runDoctor implements `control doctor [--json] [--env-file path]`:
 // a standalone, read-only health/security-posture pass. Returns the process exit
 // code (0 ok/info · 1 warning · 100 critical · 2 could-not-run — spec 15).
 func runDoctor(args []string) int {

@@ -168,9 +168,11 @@ jobs:
           cat > Dockerfile.control <<'DEOF'
           FROM docker.io/library/alpine:3.21
           RUN apk add --no-cache ca-certificates
+          # docref: begin control-binary-name
           COPY dist/control-linux-* /usr/local/bin/control
           EXPOSE 8081
           ENTRYPOINT ["/usr/local/bin/control"]
+          # docref: end control-binary-name
           DEOF
           docker build --provenance=false -f Dockerfile.control -t ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
           docker push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }}

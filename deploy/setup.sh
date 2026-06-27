@@ -279,6 +279,31 @@ generate_control_public_cert() {
 show_instructions() {
     echo ""
     echo "=========================================="
+    if [[ "${EXISTING_INSTALL:-0}" -eq 1 ]]; then
+        echo "  Power Manage Upgrade Prepared"
+        echo "=========================================="
+        echo ""
+        echo "Existing deployment — config and certificates refreshed in place."
+        echo "Your admin account, enrolled agents, DNS, and data are unchanged."
+        echo ""
+        echo "Next steps:"
+        echo ""
+        echo "1. Apply the new images / config:"
+        echo "   cd $SCRIPT_DIR && docker compose up -d"
+        echo ""
+        echo "2. Watch the control server start and apply any DB migrations:"
+        echo "   docker compose logs -f control     # look for the version + 'goose' lines"
+        echo ""
+        echo "3. Verify health & security posture:"
+        echo "   docker compose exec control control doctor"
+        echo ""
+        echo "If the indexer logs a Postgres auth failure (its DB role predates"
+        echo "INDEXER_POSTGRES_PASSWORD), set it once:"
+        echo "   docker exec -it pm-postgres psql -U powermanage -d powermanage \\"
+        echo "     -c \"ALTER ROLE pm_indexer PASSWORD '\$INDEXER_POSTGRES_PASSWORD'\""
+        echo ""
+        return
+    fi
     echo "  Power Manage Setup Complete"
     echo "=========================================="
     echo ""
@@ -297,11 +322,7 @@ show_instructions() {
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
     echo ""
-    echo "4. If upgrading an existing deployment, set the indexer DB password:"
-    echo "   docker exec -it pm-postgres psql -U powermanage -d powermanage \\"
-    echo "     -c \"ALTER ROLE pm_indexer PASSWORD '\$INDEXER_POSTGRES_PASSWORD'\""
-    echo ""
-    echo "5. Create a registration token, then install agents:"
+    echo "4. Create a registration token, then install agents:"
     echo "   curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN} -t <TOKEN>"
     echo ""
 }
@@ -593,32 +614,42 @@ guided_setup() {
     write_env_var PM_TASK_SIGNING_KEY "$REPLY_VALUE"
 
     # --- Admin account ---
-    # admin@<parent-domain> if CONTROL_DOMAIN has a dot; admin@<full>
-    # for single-label cases (admin@localhost is a valid local-delivery
-    # address for those deployments).
-    local admin_parent
-    admin_parent="$(parent_domain "$CONTROL_DOMAIN")"
-    local default_email
-    if [[ -n "$admin_parent" ]]; then
-        default_email="admin@$admin_parent"
+    # The bootstrap admin is created ONCE, from these values, the first time the
+    # control server boots. On a re-run / upgrade — detected by an already
+    # generated CA, the canonical "this deployment is provisioned" marker — the
+    # admin already exists in the database. Re-prompting here is not just noise:
+    # a freshly entered password is written to .env, and if the original
+    # bootstrap admin had since been removed or renamed, the server's
+    # create-if-missing bootstrap would RESURRECT it on the next boot. So skip
+    # the admin prompts entirely once provisioned, leaving the operator's
+    # existing .env values untouched.
+    local admin_pass="" admin_pass_generated=0
+    if [[ "${EXISTING_INSTALL:-0}" -eq 1 ]]; then
+        log_info "  Upgrade mode — keeping the current admin; skipping bootstrap-admin prompts."
     else
-        default_email="admin@$CONTROL_DOMAIN"
-    fi
-    prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "$default_email" "${ADMIN_EMAIL:-}"
-    write_env_var ADMIN_EMAIL "$REPLY_VALUE"
-    # Mirror the prompt result back into the shell var. The summary
-    # block below would otherwise echo the stale value sourced before
-    # the prompt loop ran (empty on a fresh install).
-    ADMIN_EMAIL="$REPLY_VALUE"
+        # admin@<parent-domain> if CONTROL_DOMAIN has a dot; admin@<full> for
+        # single-label cases (admin@localhost is a valid local-delivery address).
+        local admin_parent default_email
+        admin_parent="$(parent_domain "$CONTROL_DOMAIN")"
+        if [[ -n "$admin_parent" ]]; then
+            default_email="admin@$admin_parent"
+        else
+            default_email="admin@$CONTROL_DOMAIN"
+        fi
+        prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "$default_email" "${ADMIN_EMAIL:-}"
+        write_env_var ADMIN_EMAIL "$REPLY_VALUE"
+        # Mirror back so the summary block echoes the chosen value, not the
+        # stale one sourced before the prompt loop (empty on a fresh install).
+        ADMIN_EMAIL="$REPLY_VALUE"
 
-    # Use hex (not base64) so the generated password is safe to paste
-    # into a web form. base64 emits '+' and '/' — '+' decodes as space
-    # under application/x-www-form-urlencoded so the bootstrap admin
-    # could not sign in through the UI without manual URL encoding.
-    prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -hex 24" "${ADMIN_PASSWORD:-}"
-    write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
-    local admin_pass="$REPLY_VALUE"
-    local admin_pass_generated="$REPLY_GENERATED"
+        # Use hex (not base64) so the generated password is safe to paste into a
+        # web form. base64 emits '+' which decodes as space under
+        # application/x-www-form-urlencoded, blocking UI sign-in.
+        prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -hex 24" "${ADMIN_PASSWORD:-}"
+        write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
+        admin_pass="$REPLY_VALUE"
+        admin_pass_generated="$REPLY_GENERATED"
+    fi
 
     echo ""
     log_info "Guided setup complete. .env updated."
@@ -674,6 +705,17 @@ EOF
 
 main() {
     log_info "Power Manage Server Setup"
+    echo ""
+
+    # Detect a re-run / upgrade BEFORE generate_ca creates the CA: an existing
+    # CA is the canonical "this deployment is already provisioned" marker. Used
+    # to skip the one-time bootstrap-admin prompts (guided_setup) and to print
+    # upgrade-aware instructions instead of fresh-install next-steps.
+    EXISTING_INSTALL=0
+    if [[ -f "$CERTS_DIR/ca.crt" ]]; then
+        EXISTING_INSTALL=1
+        log_info "Existing deployment detected — running in upgrade mode."
+    fi
     echo ""
 
     # Guided mode runs only on a TTY when --no-prompt wasn't passed.
