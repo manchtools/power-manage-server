@@ -521,15 +521,29 @@ func (idx *Index) Warm(ctx context.Context) error {
 	// their denormalised action_names field via in-memory join
 	// instead of one Valkey HGet per member. See manchtools/power-
 	// manage-server#153 (audit F025).
+	// A per-scope warm failure is logged and SKIPPED, not propagated: one scope
+	// the backend can't ingest (e.g. a bulk-write stall) must NOT abort the whole
+	// rebuild and crash-loop the indexer, leaving EVERY scope unindexed. The
+	// scopes are independent except for the in-memory name maps threaded through
+	// the first three — a failed upstream scope yields an empty/partial map and
+	// the downstream join simply omits the denormalised names (nil-map lookups
+	// are safe). Skipped scopes get re-tried on the next periodic reconcile.
+	var skipped []string
+	scopeFailed := func(scope string, err error) {
+		idx.logger.Error("warm scope failed; skipping it so the rest of search still indexes (this scope stays empty until a later reconcile)",
+			"scope", scope, "error", err)
+		skipped = append(skipped, scope)
+	}
+
 	actionCount, actionNames, err := idx.warmActions(ctx)
 	if err != nil {
-		return fmt.Errorf("warm actions: %w", err)
+		scopeFailed("actions", err)
 	}
 
 	// 2. Index all action sets + their memberships.
 	setCount, setNames, setMembers, err := idx.warmActionSets(ctx, actionNames)
 	if err != nil {
-		return fmt.Errorf("warm action sets: %w", err)
+		scopeFailed("action_sets", err)
 	}
 
 	// 3. Index all definitions + their memberships. Uses both the
@@ -538,49 +552,49 @@ func (idx *Index) Warm(ctx context.Context) error {
 	// both set names and the action names of those sets.
 	defCount, err := idx.warmDefinitions(ctx, actionNames, setNames, setMembers)
 	if err != nil {
-		return fmt.Errorf("warm definitions: %w", err)
+		scopeFailed("definitions", err)
 	}
 
 	// 4. Index all compliance policies.
 	policyCount, err := idx.warmCompliancePolicies(ctx)
 	if err != nil {
-		return fmt.Errorf("warm compliance policies: %w", err)
+		scopeFailed("compliance_policies", err)
 	}
 
 	// 5. Index all devices.
 	deviceCount, err := idx.warmDevices(ctx)
 	if err != nil {
-		return fmt.Errorf("warm devices: %w", err)
+		scopeFailed("devices", err)
 	}
 
 	// 6. Index all users.
 	userCount, err := idx.warmUsers(ctx)
 	if err != nil {
-		return fmt.Errorf("warm users: %w", err)
+		scopeFailed("users", err)
 	}
 
 	// 7. Index all device groups.
 	deviceGroupCount, err := idx.warmDeviceGroups(ctx)
 	if err != nil {
-		return fmt.Errorf("warm device groups: %w", err)
+		scopeFailed("device_groups", err)
 	}
 
 	// 8. Index all user groups.
 	userGroupCount, err := idx.warmUserGroups(ctx)
 	if err != nil {
-		return fmt.Errorf("warm user groups: %w", err)
+		scopeFailed("user_groups", err)
 	}
 
 	// 9. Index recent executions (last 90 days).
 	execCount, err := idx.warmExecutions(ctx)
 	if err != nil {
-		return fmt.Errorf("warm executions: %w", err)
+		scopeFailed("executions", err)
 	}
 
-	// 8. Index recent audit events (last 90 days).
+	// 10. Index recent audit events (last 90 days).
 	auditCount, err := idx.warmAuditEvents(ctx)
 	if err != nil {
-		return fmt.Errorf("warm audit events: %w", err)
+		scopeFailed("audit_events", err)
 	}
 
 	idx.logger.Info("search index warm complete",
@@ -594,8 +608,13 @@ func (idx *Index) Warm(ctx context.Context) error {
 		"user_groups", userGroupCount,
 		"executions", execCount,
 		"audit_events", auditCount,
+		"skipped_scopes", skipped,
 		"duration", idx.now().Sub(start),
 	)
+	if len(skipped) > 0 {
+		idx.logger.Warn("search warm finished with skipped scopes — their searches will be empty until they index on a later reconcile",
+			"skipped", skipped)
+	}
 	return nil
 }
 
