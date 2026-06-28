@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -409,6 +410,16 @@ func SearchListener(st *store.Store, idx SearchIndex, logger *slog.Logger) store
 			case SearchOpReindex:
 				data, err := loadSearchEntityData(ctx, st, logger, op.Scope, op.ID)
 				if err != nil {
+					if errors.Is(err, errSkipSystemAction) {
+						// System-managed action: never in the search catalog. Purge
+						// any stale entry (no-op if it was never indexed) instead of
+						// reindexing, so it can't surface in the actions list.
+						if remErr := idx.EnqueueRemove(ctx, op.Scope, op.ID, nil); remErr != nil {
+							logger.Warn("search listener: failed to purge system action from index",
+								"scope", op.Scope, "id", op.ID, "event_type", e.EventType, "error", remErr)
+						}
+						continue
+					}
 					if store.IsNotFound(err) {
 						logger.Debug("search listener: entity gone before reindex (likely deleted in same tx batch); skipping",
 							"scope", op.Scope, "id", op.ID, "event_type", e.EventType)
@@ -504,6 +515,12 @@ func loadUserScopeGroupIDs(ctx context.Context, q *db.Queries, userID string) (s
 	sort.Strings(ids)
 	return strings.Join(ids, ","), nil
 }
+
+// errSkipSystemAction signals that an action is system-managed (is_system=true)
+// and must NOT be indexed — the SearchListener purges any stale entry instead of
+// reindexing. Sentinel rather than (nil, nil) so the unknown-scope guard at the
+// end of loadSearchEntityData still catches a genuinely missing loader.
+var errSkipSystemAction = errors.New("search: system-managed action excluded from index")
 
 func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Logger, scope, id string) (*taskqueue.SearchEntityData, error) {
 	q := st.Queries()
@@ -691,6 +708,14 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		a, err := q.GetActionByID(ctx, id)
 		if err != nil {
 			return nil, err
+		}
+		// System-managed actions (SSH/TTY/provisioning grants) are never part of
+		// the user-facing search catalog — the SQL ListActions path already
+		// excludes them (is_system=FALSE), so the incremental indexer must too,
+		// or they'd leak into the actions list page. Signal the listener to purge
+		// any stale entry instead of reindexing.
+		if a.IsSystem {
+			return nil, errSkipSystemAction
 		}
 		desc := ""
 		if a.Description != nil {

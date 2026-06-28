@@ -65,6 +65,11 @@ const (
 	ErrDynamicGroupManualModify = "dynamic_group_manual_modify"
 	ErrCannotDeleteSystemRole   = "cannot_delete_system_role"
 	ErrCannotRenameSystemRole   = "cannot_rename_system_role"
+	// ErrCannotModifySystemAction guards system-managed actions (is_system=true)
+	// — the SSH/TTY/provisioning grants the SystemActionManager owns. User-facing
+	// RPCs must never rename, edit, delete, assign, or unassign them. Mirrors the
+	// system-role immutability guards above.
+	ErrCannotModifySystemAction = "cannot_modify_system_action"
 	ErrCannotRemoveLastAdmin    = "cannot_remove_last_admin"
 	ErrRoleInUse                = "role_in_use"
 	ErrSCIMAlreadyEnabled       = "scim_already_enabled"

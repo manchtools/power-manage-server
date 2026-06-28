@@ -176,6 +176,35 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	}), nil
 }
 
+// rejectSystemAction returns the FailedPrecondition "system-managed action"
+// error when a is system-owned (is_system=true), else nil. System actions are
+// created and maintained exclusively by the SystemActionManager — they back the
+// SSH/TTY/provisioning grants — so user-facing RPCs must never rename, edit,
+// delete, assign, or unassign them. Mirrors the system-role immutability guards
+// in role_handler.go.
+func rejectSystemAction(ctx context.Context, a store.Action) error {
+	if a.IsSystem {
+		return apiErrorCtx(ctx, ErrCannotModifySystemAction, connect.CodeFailedPrecondition, "system-managed action cannot be modified")
+	}
+	return nil
+}
+
+// guardActionNotSystem loads the action by id and rejects when it is
+// system-managed. For handlers (DeleteAction, DeleteAssignment) that don't
+// already hold the action row. A missing action is NOT an error here — the
+// caller's existing flow handles non-existent ids — so this guard only ever
+// ADDS the system-managed rejection, never changes not-found behaviour.
+func guardActionNotSystem(ctx context.Context, st *store.Store, id string) error {
+	a, err := st.Repos().Action.Get(ctx, id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil
+		}
+		return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+	}
+	return rejectSystemAction(ctx, a)
+}
+
 // RenameAction renames an action.
 func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[pm.RenameActionRequest]) (*connect.Response[pm.UpdateActionResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
@@ -192,11 +221,15 @@ func (h *ActionHandler) RenameAction(ctx context.Context, req *connect.Request[p
 	}
 
 	// Verify action exists before appending event
-	if _, err := h.store.Repos().Action.Get(ctx, req.Msg.Id); err != nil {
+	existing, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
+	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+	}
+	if err := rejectSystemAction(ctx, existing); err != nil {
+		return nil, err
 	}
 
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
@@ -238,11 +271,15 @@ func (h *ActionHandler) UpdateActionDescription(ctx context.Context, req *connec
 	}
 
 	// Verify action exists before appending event
-	if _, err := h.store.Repos().Action.Get(ctx, req.Msg.Id); err != nil {
+	existing, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
+	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 		}
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+	}
+	if err := rejectSystemAction(ctx, existing); err != nil {
+		return nil, err
 	}
 
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
@@ -290,6 +327,9 @@ func (h *ActionHandler) UpdateActionParams(ctx context.Context, req *connect.Req
 	existing, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
+	}
+	if err := rejectSystemAction(ctx, existing); err != nil {
+		return nil, err
 	}
 
 	params, err := serializeProtoParams(actionparams.ExtractParamsMsg(req.Msg))
@@ -458,6 +498,10 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 	}
 
 	if err := enforceObjectWriteScope(ctx, objScope(h.store), h.logger, "action", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
+	if err := guardActionNotSystem(ctx, h.store, req.Msg.Id); err != nil {
 		return nil, err
 	}
 
