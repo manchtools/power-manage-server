@@ -34,6 +34,7 @@
 //   - TestSecretComparesAreConstantTime ... secret_compare_test.go
 //   - TestProjectionTablesWrittenOnlyByProjectors ... projection_writes_test.go
 //   - TestNoUnabstractedTimeNow ........... time_now_test.go
+//   - TestNoContextBackgroundInRequestPaths ... context_background_test.go
 //   - TestNoStdlibJSONOfProtoMessage ...... proto_json_test.go
 //   - TestNoUnframedHashPreimage .......... hash_preimage_test.go
 //   - TestSignatureIsOverDeterministicProtoAndSingleRepresentation ... signing_test.go
