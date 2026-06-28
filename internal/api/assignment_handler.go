@@ -45,12 +45,17 @@ func (h *AssignmentHandler) CreateAssignment(ctx context.Context, req *connect.R
 	// Validate source exists
 	switch req.Msg.SourceType {
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
-		_, err := h.store.Repos().Action.Get(ctx, req.Msg.SourceId)
+		action, err := h.store.Repos().Action.Get(ctx, req.Msg.SourceId)
 		if err != nil {
 			if store.IsNotFound(err) {
 				return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
+		}
+		// System-managed actions are assigned exclusively by the
+		// SystemActionManager; a user-facing assignment must never target one.
+		if err := rejectSystemAction(ctx, action); err != nil {
+			return nil, err
 		}
 	case pm.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
 		_, err := h.store.Repos().ActionSet.Get(ctx, req.Msg.SourceId)
@@ -180,6 +185,15 @@ func (h *AssignmentHandler) DeleteAssignment(ctx context.Context, req *connect.R
 	assignment, err := h.store.Repos().Assignment.GetByID(ctx, req.Msg.Id)
 	if err != nil {
 		return nil, handleGetError(ctx, err, ErrAssignmentNotFound, "assignment not found")
+	}
+
+	// A system-managed action's assignments are owned by the SystemActionManager
+	// (SSH/TTY/provisioning grants); a user must not be able to revoke one by
+	// deleting the assignment. Other source types carry no is_system concept.
+	if assignment.SourceType == "action" {
+		if err := guardActionNotSystem(ctx, h.store, assignment.SourceID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{

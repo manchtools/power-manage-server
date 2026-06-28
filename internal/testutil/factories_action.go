@@ -47,6 +47,37 @@ func CreateTestActionWithDesiredState(t *testing.T, st *store.Store, actorID, na
 	return id
 }
 
+// CreateTestSystemAction creates a system-managed action (is_system=true) via
+// events and returns the action ID. Mirrors the ActionCreated shape the
+// SystemActionManager emits — used to prove that user-facing mutation/assignment
+// RPCs reject system-managed actions.
+func CreateTestSystemAction(t *testing.T, st *store.Store, name string, actionType int) string {
+	t.Helper()
+	ctx := context.Background()
+	id := NewID()
+
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "action",
+		StreamID:   id,
+		EventType:  string(eventtypes.ActionCreated),
+		Data: map[string]any{
+			"name":            name,
+			"action_type":     actionType,
+			"desired_state":   0,
+			"params":          map[string]any{},
+			"timeout_seconds": 300,
+			"is_system":       true,
+		},
+		ActorType: "system",
+		ActorID:   "system",
+	})
+	if err != nil {
+		t.Fatalf("create test system action: %v", err)
+	}
+
+	return id
+}
+
 // CreateTestActionSet creates an action set via events and returns the action set ID.
 func CreateTestActionSet(t *testing.T, st *store.Store, actorID, name string) string {
 	t.Helper()
