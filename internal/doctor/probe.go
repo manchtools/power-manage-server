@@ -134,6 +134,17 @@ func (v *ValkeyProbe) SearchQueryRejections(ctx context.Context, names []string)
 	return rejected, nil
 }
 
+// KeyspaceNotifications reads Valkey's notify-keyspace-events config (empty = the
+// Redis default = off). Traefik's Redis provider needs it to WATCH the gateway's
+// self-registered routes.
+func (v *ValkeyProbe) KeyspaceNotifications(ctx context.Context) (string, error) {
+	m, err := v.rdb.ConfigGet(ctx, "notify-keyspace-events").Result()
+	if err != nil {
+		return "", err
+	}
+	return m["notify-keyspace-events"], nil
+}
+
 // LastReconcile reads the indexer heartbeat (search.LastReconcileKey, RFC3339).
 func (v *ValkeyProbe) LastReconcile(ctx context.Context) (time.Time, bool, error) {
 	raw, err := v.rdb.Get(ctx, search.LastReconcileKey).Result()

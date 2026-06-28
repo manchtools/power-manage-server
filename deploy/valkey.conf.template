@@ -38,3 +38,17 @@ port 6379
 # control, gateway, indexer, and traefik. The password is the only
 # auth gate.
 protected-mode no
+
+# Keyspace notifications — REQUIRED for Traefik's Redis provider to WATCH
+# the KV. Each gateway replica self-registers its Traefik routes (agent mTLS
+# passthrough + the per-replica TTY HTTP router) into this KV at startup and
+# refreshes them on a TTL. Traefik's redis provider subscribes to keyspace
+# notifications to pick up those writes live; without this, Valkey emits no
+# notifications, Traefik's WatchTree channel closes ("the WatchTree channel is
+# closed" / "Provider error, retrying"), and Traefik only ever sees the
+# snapshot it read at its own startup. The practical failure: a gateway
+# (re)deployed AFTER Traefik publishes routes Traefik never loads — most
+# visibly the TTY router, so terminal WebSockets 404 until Traefik is manually
+# restarted. KEA = keyspace + keyevent + all event classes (the set+del+expire
+# events the watch needs). Cheap for a config-sized keyspace.
+notify-keyspace-events KEA

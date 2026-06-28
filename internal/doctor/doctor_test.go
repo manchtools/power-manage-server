@@ -39,6 +39,8 @@ type fakeCache struct {
 	reconcileErr  error
 	rejected      map[string]string
 	rejectErr     error
+	keyspaceNotif string
+	keyspaceErr   error
 }
 
 func (f fakeCache) Ping(context.Context) error { return f.pingErr }
@@ -54,6 +56,9 @@ func (f fakeCache) LastReconcile(context.Context) (time.Time, bool, error) {
 }
 func (f fakeCache) SearchQueryRejections(context.Context, []string) (map[string]string, error) {
 	return f.rejected, f.rejectErr
+}
+func (f fakeCache) KeyspaceNotifications(context.Context) (string, error) {
+	return f.keyspaceNotif, f.keyspaceErr
 }
 
 func testEnv(vars map[string]string) *Env {

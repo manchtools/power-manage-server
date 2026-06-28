@@ -15,6 +15,7 @@ func DefaultChecks() []Check {
 		DatastoresCheck{},
 		QueuesCheck{},
 		SearchCheck{},
+		TerminalCheck{},
 		AdminCheck{},
 	}
 }
