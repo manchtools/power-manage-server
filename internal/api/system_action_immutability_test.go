@@ -188,6 +188,22 @@ func TestSearchListener_SystemActionExcludedFromIndex(t *testing.T) {
 	assert.Contains(t, rec.reindexed, normalID, "ordinary action must still be reindexed")
 }
 
+// TestDeleteAction_MissingActionReturnsNotFound pins the CR follow-up: the
+// system-action guard loads the action, so DeleteAction must reject a
+// nonexistent id with NotFound rather than emitting a phantom ActionDeleted
+// event for a stream that never existed.
+func TestDeleteAction_MissingActionReturnsNotFound(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.DeleteAction(ctx, connect.NewRequest(&pm.DeleteActionRequest{Id: testutil.NewID()}))
+	require.Error(t, err, "deleting a nonexistent action must not succeed")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
 // TestRenameAction_NormalActionStillWorks is the positive control: the guard
 // must reject ONLY system actions, never ordinary user-created ones.
 func TestRenameAction_NormalActionStillWorks(t *testing.T) {

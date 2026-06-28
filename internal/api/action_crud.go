@@ -501,7 +501,14 @@ func (h *ActionHandler) DeleteAction(ctx context.Context, req *connect.Request[p
 		return nil, err
 	}
 
-	if err := guardActionNotSystem(ctx, h.store, req.Msg.Id); err != nil {
+	// Load the action so a missing id is rejected with NotFound (rather than
+	// emitting a phantom ActionDeleted for a stream that never existed), and so
+	// system-managed actions are refused.
+	action, err := h.store.Repos().Action.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
+	}
+	if err := rejectSystemAction(ctx, action); err != nil {
 		return nil, err
 	}
 
