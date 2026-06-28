@@ -37,6 +37,7 @@
 //   - TestNoStdlibJSONOfProtoMessage ...... proto_json_test.go
 //   - TestNoUnframedHashPreimage .......... hash_preimage_test.go
 //   - TestSignatureIsOverDeterministicProtoAndSingleRepresentation ... signing_test.go
+//   - TestNotFoundChecksUseStoreRecognizer ... notfound_recognizer_test.go
 //
 // RPC classification (every ControlService RPC is in exactly one of
 // {public allow-list, permission, procedure-alternative}, both
