@@ -165,4 +165,9 @@ type CacheProbe interface {
 	// that is present but cannot answer. Missing indexes are skipped (covered by
 	// MissingIndexes).
 	SearchQueryRejections(ctx context.Context, indexNames []string) (map[string]string, error)
+	// KeyspaceNotifications returns Valkey's notify-keyspace-events config value
+	// (empty = off, the Redis default). Traefik's Redis provider WATCHES the
+	// gateway's self-registered routes via keyspace notifications, so an empty
+	// value silently breaks dynamic gateway routing (incl. the terminal route).
+	KeyspaceNotifications(ctx context.Context) (string, error)
 }
