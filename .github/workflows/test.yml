@@ -38,11 +38,11 @@ jobs:
       # Audit N020: the per-package list is intentionally explicit; the
       # split between unit and integration jobs is load-bearing because
       # integration tests bring up testcontainers (Postgres, Valkey) and
-      # take 5–20× longer. When you add a new internal/<pkg>, drop it
-      # in the right list. eventtypes/... is pure-Go (no DB, no network)
-      # so it lives here.
+      # take 5–20× longer. When you add a new package with tests, drop it
+      # in the right list — archtest's TestCIRunsEveryTestBearingPackage
+      # fails the build if a test-bearing package lands in neither (#481).
       - name: Run unit tests
-        run: go test -count=1 ./internal/archtest/... ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/... ./internal/eventtypes/...
+        run: go test -count=1 ./internal/archtest/... ./internal/auth/... ./internal/connection/... ./internal/middleware/... ./internal/taskqueue/... ./internal/config/... ./internal/mtls/... ./internal/crypto/... ./internal/eventtypes/... ./internal/actionparams/... ./internal/crl/... ./internal/dynamicquery/... ./cmd/gateway/... ./cmd/indexer/...
 
   # Integration tests are sharded across parallel runners so wall-clock is
   # the slowest shard rather than the sum of all packages (#338). Each shard
@@ -70,7 +70,7 @@ jobs:
             packages: ./internal/store/... ./internal/projectors/...
             run: '.'
           - name: handlers-services
-            packages: ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/... ./internal/doctor/...
+            packages: ./internal/handler/... ./internal/search/... ./internal/control/... ./internal/gateway/... ./internal/scim/... ./internal/ca/... ./internal/idp/... ./internal/doctor/... ./internal/compliance/... ./internal/dyngroupeval/... ./internal/resolution/... ./internal/terminal/... ./cmd/control/...
             run: '.'
     steps:
       - uses: actions/checkout@v5
