@@ -4,10 +4,11 @@
 -- main after the v2026.06 baseline (001–008): 009 role-permission split, 010
 -- role-grant scope columns, 011 events append-only trigger, 012 IdP
 -- trust_email_assertions, 013 LUKS token hashing, 014 reconciler-owned system
--- role permissions. Per the project's per-release migration convention (v2026.06
--- itself consolidated v2026.05's set), the delta ships as one ordered migration.
--- Statements are preserved verbatim and in their original apply order; Down
--- reverses that order. Source PRs: #333, #334, #404, #412, #420, #440.
+-- role permissions, plus 015 the LPS sealing keypair (spec 18 / #483). Per the
+-- project's per-release migration convention (v2026.06 itself consolidated
+-- v2026.05's set), the delta ships as one ordered migration. Statements are
+-- preserved verbatim and in their original apply order; Down reverses that
+-- order. Source PRs: #333, #334, #404, #412, #420, #440, #483.
 
 -- +goose Up
 
@@ -283,8 +284,28 @@ SET permissions = '{}'
 WHERE id IN ('00000000000000000000000001', '00000000000000000000000002')
   AND is_system = TRUE;
 
+-- ============================================================ [015_lps_keypair] UP
+-- Control-owned X25519 keypair for sealed LPS password transport (spec 18,
+-- manchtools/power-manage-agent#62). The agent seals each rotated LPS password
+-- to this public key so the relaying gateway can never read it; control unseals
+-- at receipt with the private key, then re-encrypts with the existing at-rest
+-- path. Infrastructure state, NOT domain state: generated once at control boot
+-- (EnsureLpsKeypair, advisory-locked) and never mutated, so it does not go
+-- through the event store / projector machinery. A single-row table
+-- (id = 'global') shared via Postgres lets every control replica load the same
+-- key. The private key is stored ONLY in the app-level encrypted (enc:v2) form.
+CREATE TABLE lps_keypair (
+    id              TEXT PRIMARY KEY DEFAULT 'global' CHECK (id = 'global'),
+    public_key      BYTEA NOT NULL,
+    private_key_enc TEXT  NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 
 -- +goose Down
+
+-- ============================================================ [015_lps_keypair] DOWN
+DROP TABLE IF EXISTS lps_keypair;
 
 -- ============================================================ [014_reconciler_owned_role_permissions] DOWN
 -- No-op: the Go reconciler repopulates these on every boot regardless, so there
