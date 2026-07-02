@@ -134,7 +134,15 @@ func BuildSignedLpsPublicKey(publicKey []byte, signer ca.ActionSigner) (*pm.LpsP
 	if signer == nil {
 		return nil, errors.New("lps keypair: nil signer; cannot sign public key for distribution")
 	}
-	msg := &pm.LpsPublicKey{PublicKey: publicKey}
+	// Parse before signing: reject a nil/malformed key up front (never
+	// distribute a CA-signed unusable key), and use the parsed key's own
+	// Bytes() so the signed message owns a copy — a later mutation of the
+	// caller's slice cannot desync the bytes from the signature.
+	pub, err := sdkcrypto.ParseX25519PublicKey(publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("parse lps public key for signing: %w", err)
+	}
+	msg := &pm.LpsPublicKey{PublicKey: pub.Bytes()}
 	canonical, err := verify.LpsPublicKeyCanonical(msg)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize lps public key: %w", err)

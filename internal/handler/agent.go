@@ -652,13 +652,13 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 			// becomes centrally recoverable again at the next post-upgrade
 			// rotation. Drop it — never proxy cleartext.
 			h.logger.Error("dropping LPS rotation without a sealed password (agent predates sealed LPS transport)",
-				"device_id", deviceID, "username", r.Username)
+				"device_id", deviceID)
 			continue
 		}
 		sealed, err := base64.StdEncoding.DecodeString(r.SealedPassword)
 		if err != nil {
 			h.logger.Error("dropping LPS rotation with undecodable sealed password",
-				"device_id", deviceID, "username", r.Username, "error", err)
+				"device_id", deviceID, "error", err)
 			continue
 		}
 		protoRotations = append(protoRotations, &pm.LpsPasswordRotation{

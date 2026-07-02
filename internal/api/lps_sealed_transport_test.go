@@ -210,6 +210,37 @@ func TestProxyStoreLpsPasswords_RejectsUnsealable(t *testing.T) {
 	assert.Empty(t, events, "a rejected unseal must append no event")
 }
 
+// TestProxyStoreLpsPasswords_BatchIsAtomic pins that a batch is all-or-nothing:
+// a [good, bad] batch rejects with InvalidArgument and appends NO event — the
+// good entry must not slip through before the bad one is reached (staging
+// unseals the whole batch before any append).
+func TestProxyStoreLpsPasswords_BatchIsAtomic(t *testing.T) {
+	h, st, _, pub, _ := newLpsHandler(t)
+	ctx := context.Background()
+	deviceID := testutil.CreateTestDevice(t, st, "lps-atomic-host")
+	actionID := testutil.NewID()
+
+	good, err := sdkcrypto.SealLpsPassword(pub, "pw", deviceID, actionID, "alice")
+	require.NoError(t, err)
+	bad := append([]byte(nil), good...)
+	bad[len(bad)-1] ^= 0xFF
+
+	_, err = h.ProxyStoreLpsPasswords(ctx, connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
+		DeviceId: deviceID,
+		ActionId: actionID,
+		Rotations: []*pm.LpsPasswordRotation{
+			{Username: "alice", SealedPassword: good, RotatedAt: "2026-03-31T12:00:00Z", Reason: pm.RotationReason_ROTATION_REASON_SCHEDULED},
+			{Username: "bob", SealedPassword: bad, RotatedAt: "2026-03-31T12:00:00Z", Reason: pm.RotationReason_ROTATION_REASON_SCHEDULED},
+		},
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+
+	events, err := st.LoadStreamByType(ctx, "lps_password", 100, 0)
+	require.NoError(t, err)
+	assert.Empty(t, events, "one bad entry must roll back the whole batch — no partial append")
+}
+
 // TestProxyStoreLpsPasswords_NilKeypairFailsClosed pins that a handler without
 // a configured keypair refuses to store rather than falling back to a cleartext
 // path.
