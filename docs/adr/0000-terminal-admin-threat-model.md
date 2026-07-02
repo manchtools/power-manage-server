@@ -22,9 +22,16 @@ already in production:
    and [server #328](https://github.com/manchtools/power-manage-server/pull/328)
    (umbrella #327), the agent skips chpasswd + chage when
    `UserParams.no_password=true`, and `syncTtyUserAction` sets that
-   flag for every pm-tty-\* account. Shadow stays at `!`. No LPS row
-   is emitted. The operator cannot retrieve a password they could
-   re-use for sudo — there is none.
+   flag for every pm-tty-\* account. The shadow password field sits at
+   `*` — "no password, **not** locked" (as of
+   [sdk #259](https://github.com/manchtools/power-manage-sdk/pull/259):
+   only a leading `!` means locked, and `usermod -U`/`-p '*'` is
+   passwordless-aware; earlier code left `!` here and treated it as
+   locked, which stranded enabled accounts as "disabled"). A leading
+   `!` is reserved for the **disabled/offboarded** state — see the
+   "Account lock and session activation are separate domains" invariant
+   under Decision. No LPS row is emitted. The operator cannot retrieve a
+   password they could re-use for sudo — there is none.
 3. **AdminPolicy executor** ([`agent/internal/executor/sudo.go`](../../../agent/internal/executor/sudo.go)) —
    creates a Linux group + sudoers drop-in + manages member usernames,
    with two presets (`FULL`, `LIMITED`) already templated.
@@ -476,6 +483,45 @@ can do.
   - `server/internal/api/terminal_admin_resolution_test.go` —
     intersection of (permission × scope), audit emission on
     revocation (T6, T6.GAP-A).
+
+### Account lock and session activation are separate domains (invariant)
+
+Two distinct pieces of `pm-tty-*` account state are deliberately **not**
+coupled, and must stay that way:
+
+- **Session activation = the login shell.** The agent flips the shell
+  `nologin` → `/bin/bash` at session start and back to `nologin` at
+  session end (and on agent shutdown). This is ephemeral, session-scoped
+  state the agent owns outright; it is the per-session gate and is not
+  part of any action's desired state.
+- **Account lock (`!`) = the disabled/offboarded policy state.** The
+  shadow lock is driven by `UserParams.Disabled` (from the user's
+  offboarding/disable status) and reconciled by the USER action
+  (`desiredAccountLocked == params.Disabled`; sdk #259 / agent #158).
+
+**Why they must not be coupled — the offboarding guarantee.** When a
+user is offboarded (disabled), their `pm-tty-*` account is **locked**,
+and the agent's terminal-start gate refuses a locked account
+(`terminal.go`: `if info.Locked → "tty user is disabled"`). This is a
+load-bearing security property: a disabled user loses terminal access
+**under all circumstances** — even if they somehow mint or replay a
+valid TTY token, the agent still denies the session because the account
+is locked. If the lock were instead toggled per session (unlock on
+start, lock on end, like the shell), that guarantee would break: a
+session-scoped unlock could readmit an offboarded user, and the reconcile
+(which drives the lock from `Disabled`) would fight the session toggle.
+The lock therefore has exactly one meaning — "this user is disabled" —
+and session lifecycle never touches it.
+
+**Corollary — locking between sessions buys no security and is refused.**
+The account is reachable only via the agent's root setuid opener, which
+ignores the shadow lock, the `nologin` shell, and the (absent) password;
+a non-root local user is already blocked by the passwordless `*`. So
+re-locking an *enabled* account between sessions adds no OS-level defense
+(the real gate is the server-side `StartTerminal` authorization + the
+device-local `tty.enabled` flag), while it *would* re-break the next
+session (the start gate refuses `!`). Enabled accounts rest at `*`
+between sessions by design; only disabled/offboarded ones sit at `!`.
 
 ## Consequences
 
