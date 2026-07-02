@@ -348,6 +348,15 @@ func (h *ActionSetHandler) AddActionToSet(ctx context.Context, req *connect.Requ
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
+	// System-managed actions (the SSH/TTY/provisioning grants owned by the
+	// SystemActionManager) must never be pulled into a user-controlled set:
+	// as a set member the action's name resurfaces in the set's search index
+	// and the action becomes dispatchable via DispatchActionSet. Reject like
+	// every other action-referencing mutation (#477 / #484).
+	if err := rejectSystemAction(ctx, action); err != nil {
+		return nil, err
+	}
+
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "action_set",
 		StreamID:   req.Msg.SetId,
