@@ -98,9 +98,35 @@ func TestDeleteAction_SystemActionRejected(t *testing.T) {
 	_, err := h.DeleteAction(ctx, connect.NewRequest(&pm.DeleteActionRequest{Id: sysActionID}))
 	requireSystemActionRejected(t, err)
 
-	// Positive control: the system action is still there (not deleted).
-	_, getErr := h.GetAction(ctx, connect.NewRequest(&pm.GetActionRequest{Id: sysActionID}))
-	require.NoError(t, getErr, "system action must survive the rejected delete")
+	// Positive control: the system action is still there (not deleted). Query
+	// the store directly — GetAction now hides system actions as NotFound
+	// (#488), so it can't be used to assert survival.
+	_, storeErr := st.Repos().Action.Get(context.Background(), sysActionID)
+	require.NoError(t, storeErr, "system action must survive the rejected delete")
+}
+
+// TestGetAction_SystemActionNotFound pins that a system-managed action's
+// content is not readable through GetAction (#488): an admin who pivots
+// device → execution → action_id must not be able to fetch the SSH/TTY/
+// provisioning grant script. Hidden as NotFound (uniform with out-of-scope),
+// while ordinary actions stay gettable.
+func TestGetAction_SystemActionNotFound(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	sysActionID := testutil.CreateTestSystemAction(t, st, "pm-tty-paul", int(pm.ActionType_ACTION_TYPE_SHELL))
+	normalID := testutil.CreateTestAction(t, st, adminID, "Normal", int(pm.ActionType_ACTION_TYPE_SHELL))
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.GetAction(ctx, connect.NewRequest(&pm.GetActionRequest{Id: sysActionID}))
+	require.Error(t, err, "a system action must not be readable via GetAction")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "hidden as NotFound, not a leaky code")
+
+	// Positive control: a normal action is still gettable.
+	resp, err := h.GetAction(ctx, connect.NewRequest(&pm.GetActionRequest{Id: normalID}))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Msg.Action)
 }
 
 func TestCreateAssignment_SystemActionSourceRejected(t *testing.T) {

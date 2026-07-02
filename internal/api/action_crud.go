@@ -134,6 +134,15 @@ func (h *ActionHandler) GetAction(ctx context.Context, req *connect.Request[pm.G
 		return nil, handleGetError(ctx, err, ErrActionNotFound, "action not found")
 	}
 
+	// System-managed actions (SSH/TTY/provisioning grants) are internal: the
+	// server resolves them via the store for dispatch/sync, but they are never
+	// user-readable. Hide them as NotFound so their content — e.g. a grant
+	// ShellParams script — can't be pivoted to from a device→execution→action_id
+	// link (#488). ListActions already excludes is_system at the query level.
+	if action.IsSystem {
+		return nil, apiErrorCtx(ctx, ErrActionNotFound, connect.CodeNotFound, "action not found")
+	}
+
 	return connect.NewResponse(&pm.GetActionResponse{
 		Action: h.actionToProto(action),
 	}), nil
