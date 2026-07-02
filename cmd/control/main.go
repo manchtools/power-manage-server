@@ -339,6 +339,24 @@ func main() {
 	// Mount InternalService on a separate mTLS-protected listener.
 	// The gateway presents its CA-signed certificate as a client cert.
 	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"), actionSigner)
+
+	// LPS sealing keypair: generated once (advisory-locked), shared across
+	// replicas via Postgres. The agent seals rotated LPS passwords to this
+	// public key so the gateway relays them opaquely; control unseals at
+	// receipt (spec 18). A failure here is fatal — running without it would
+	// silently disable LPS rotation on every agent (fail closed).
+	lpsPriv, lpsPub, err := api.EnsureLpsKeypair(ctx, st, encryptor)
+	if err != nil {
+		logger.Error("failed to initialize LPS sealing keypair", "error", err)
+		os.Exit(1)
+	}
+	signedLpsPub, err := api.BuildSignedLpsPublicKey(lpsPub, actionSigner)
+	if err != nil {
+		logger.Error("failed to sign LPS public key for distribution", "error", err)
+		os.Exit(1)
+	}
+	internalHandler.SetLpsKeypair(lpsPriv, signedLpsPub)
+
 	if valkey != nil && valkey.TerminalTokenStore != nil {
 		// Shared with the ControlService.StartTerminal handler so the
 		// gateway can validate tokens minted on this instance via

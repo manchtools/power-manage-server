@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ecdh"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
@@ -58,6 +60,25 @@ type InternalHandler struct {
 	deviceGatewayResolver registry.DeviceGatewayLookup
 
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
+
+	// lpsPrivateKey unseals LPS passwords the agent sealed to the control
+	// LPS public key (ProxyStoreLpsPasswords). lpsPublicKey is the CA-signed
+	// public key distributed to agents in the sync response
+	// (ProxySyncActions). Both are set via SetLpsKeypair after EnsureLpsKeypair
+	// in main.go; nil when the LPS keypair is not configured, in which case
+	// ProxyStoreLpsPasswords fails closed (cannot unseal) and sync omits the
+	// key (agents then refuse to rotate — fail closed on both ends).
+	lpsPrivateKey *ecdh.PrivateKey
+	lpsPublicKey  *pm.LpsPublicKey
+}
+
+// SetLpsKeypair wires the control server's LPS sealing keypair: the private
+// key used to unseal rotated passwords at receipt, and the pre-signed public
+// key distributed to agents in the sync response. Called from main.go after
+// EnsureLpsKeypair + BuildSignedLpsPublicKey.
+func (h *InternalHandler) SetLpsKeypair(priv *ecdh.PrivateKey, signedPublicKey *pm.LpsPublicKey) {
+	h.lpsPrivateKey = priv
+	h.lpsPublicKey = signedPublicKey
 }
 
 // SetDeviceGatewayResolver wires the device→gateway routing registry so every
@@ -297,6 +318,10 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		GroupedActions:      groups,
 		SyncIntervalMinutes: syncInterval,
 		MaintenanceWindow:   resolvedWindow,
+		// CA-signed LPS sealing key. nil when the keypair is not configured
+		// on this instance — the agent then has no key to seal to and refuses
+		// to rotate (fail closed), rather than rotating and sending cleartext.
+		LpsPublicKey: h.lpsPublicKey,
 	}), nil
 }
 
@@ -487,27 +512,33 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 		return nil, err
 	}
 
-	// Persistence MUST fail-closed. LPS rotation is irreversible:
-	// the agent has already run chpasswd locally, so the old password
-	// is gone. If the server silently fails to persist the new one,
-	// the user loses the only copy that LPS was meant to retain —
-	// and the gateway's post-RPC cleanup in agent.go clears the
-	// lps.rotations metadata from the execution result the moment
-	// this RPC returns success, so there is no second chance. Return
-	// an error on any append failure so the gateway leaves the
-	// metadata in place and the next retry replays the rotation
-	// persistence without needing a second local rotation.
-	//
-	// Encryption failures are already fail-closed above. Append
-	// failures now join that policy.
-	var (
-		persisted int
-		firstErr  error
-	)
+	// Unsealing requires the LPS private key. A nil key is a wiring/config
+	// failure (EnsureLpsKeypair not run): fail closed rather than accept
+	// passwords we cannot open — the agent should not have sealed to a key we
+	// don't hold, and we must never fall back to a cleartext path.
+	if h.lpsPrivateKey == nil {
+		h.logger.Error("LPS store: nil private key — keypair not configured", "device_id", req.Msg.DeviceId)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "lps keypair not configured")
+	}
+
+	// Two phases so a bad entry never leaves a partial batch. Phase 1 unseals,
+	// re-encrypts, and parses EVERY rotation before a single event is appended:
+	// an unseal failure (tampered, wrong key, or context mismatch) is permanent
+	// for the batch, so reject with InvalidArgument — no event appended, and the
+	// inbox does not retry a blob that can never open. Only after the whole
+	// batch is known persistable does phase 2 append. The blob and plaintext
+	// never appear in logs; device_id + action_id locate the failure.
+	staged := make([]payloads.LpsPasswordRotated, 0, len(req.Msg.Rotations))
 	for _, r := range req.Msg.Rotations {
-		encPassword, err := h.encryptor.EncryptWithContext(r.Password, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "lps"))
+		plaintext, err := sdkcrypto.OpenLpsPassword(h.lpsPrivateKey, r.SealedPassword, req.Msg.DeviceId, req.Msg.ActionId, r.Username)
 		if err != nil {
-			h.logger.Error("failed to encrypt LPS password", "error", err, "username", r.Username)
+			h.logger.Error("failed to unseal LPS password", "error", err, "device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId)
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "failed to unseal password")
+		}
+
+		encPassword, err := h.encryptor.EncryptWithContext(plaintext, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "lps"))
+		if err != nil {
+			h.logger.Error("failed to encrypt LPS password", "error", err, "device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")
 		}
 
@@ -524,28 +555,43 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 				rotatedAt = h.now().UTC()
 			}
 		}
+		staged = append(staged, payloads.LpsPasswordRotated{
+			DeviceID:       req.Msg.DeviceId,
+			ActionID:       req.Msg.ActionId,
+			Username:       r.Username,
+			Password:       encPassword,
+			RotatedAt:      rotatedAt,
+			RotationReason: rotationReasonToString(r.Reason),
+		})
+	}
+
+	// Phase 2: append the fully-staged batch. Persistence MUST fail-closed. LPS
+	// rotation is irreversible: the agent has already run chpasswd locally, so
+	// the old password is gone. If the server silently fails to persist the new
+	// one, the user loses the only copy LPS was meant to retain — and the
+	// gateway's post-RPC cleanup in agent.go clears the lps.rotations metadata
+	// the moment this RPC returns success, so there is no second chance. Return
+	// an error on any append failure so the gateway leaves the metadata in place
+	// and the inbox retry replays the batch.
+	var (
+		persisted int
+		firstErr  error
+	)
+	for _, payload := range staged {
 		lpsStreamID := ulid.Make().String()
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "lps_password",
 			StreamID:   lpsStreamID,
 			EventType:  string(eventtypes.LpsPasswordRotated),
-			Data: payloads.LpsPasswordRotated{
-				DeviceID:       req.Msg.DeviceId,
-				ActionID:       req.Msg.ActionId,
-				Username:       r.Username,
-				Password:       encPassword,
-				RotatedAt:      rotatedAt,
-				RotationReason: rotationReasonToString(r.Reason),
-			},
-			ActorType: "device",
-			ActorID:   req.Msg.DeviceId,
+			Data:       payload,
+			ActorType:  "device",
+			ActorID:    req.Msg.DeviceId,
 		}); err != nil {
 			h.logger.Error("failed to append LpsPasswordRotated event",
 				"device_id", req.Msg.DeviceId,
 				"action_id", req.Msg.ActionId,
-				"username", r.Username,
 				"persisted_before_failure", persisted,
-				"total_rotations", len(req.Msg.Rotations),
+				"total_rotations", len(staged),
 				"error", err,
 			)
 			if firstErr == nil {
@@ -576,12 +622,12 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 			"device_id", req.Msg.DeviceId,
 			"action_id", req.Msg.ActionId,
 			"persisted", persisted,
-			"total_rotations", len(req.Msg.Rotations),
+			"total_rotations", len(staged),
 			"first_error", firstErr,
 		)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
 			fmt.Sprintf("failed to persist %d of %d LPS rotations",
-				len(req.Msg.Rotations)-persisted, len(req.Msg.Rotations)))
+				len(staged)-persisted, len(staged)))
 	}
 
 	return connect.NewResponse(&pm.InternalStoreLpsPasswordsResponse{}), nil

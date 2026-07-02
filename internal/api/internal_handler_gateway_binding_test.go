@@ -86,7 +86,7 @@ func TestInternalHandlers_GatewayBindingIsSelfDiscovering(t *testing.T) {
 		{"ProxyStoreLpsPasswords", func() error {
 			_, e := h.ProxyStoreLpsPasswords(ctx, connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 				DeviceId: device, ActionId: actionID,
-				Rotations: []*pm.LpsPasswordRotation{{Username: "alice", Password: "pw", RotatedAt: "2026-06-13T00:00:00Z", Reason: pm.RotationReason_ROTATION_REASON_INITIAL}},
+				Rotations: []*pm.LpsPasswordRotation{{Username: "alice", SealedPassword: make([]byte, 61), RotatedAt: "2026-06-13T00:00:00Z", Reason: pm.RotationReason_ROTATION_REASON_INITIAL}},
 				GatewayId: wrongGateway,
 			}))
 			return e
