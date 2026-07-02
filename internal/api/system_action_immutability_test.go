@@ -141,6 +141,32 @@ func TestDeleteAssignment_SystemActionSourceRejected(t *testing.T) {
 	requireSystemActionRejected(t, err)
 }
 
+// TestAddActionToSet_SystemActionRejected closes the gap the pre-GA security
+// sweep found (#484): a system action added to a user-controlled set would
+// resurface its name in the set's search index AND become dispatchable via
+// DispatchActionSet — defeating the exact #477 fix. AddActionToSet must reject
+// a system action like every other action-referencing mutation.
+func TestAddActionToSet_SystemActionRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewActionSetHandler(st, slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	setID := testutil.CreateTestActionSet(t, st, adminID, "Test Set")
+	sysActionID := testutil.CreateTestSystemAction(t, st, "pm-tty-paul", int(pm.ActionType_ACTION_TYPE_SHELL))
+	ctx := testutil.AdminContext(adminID)
+
+	_, err := h.AddActionToSet(ctx, connect.NewRequest(&pm.AddActionToSetRequest{
+		SetId:    setID,
+		ActionId: sysActionID,
+	}))
+	requireSystemActionRejected(t, err)
+
+	// Positive control: the set gained no member from the rejected call.
+	resp, getErr := h.GetActionSet(ctx, connect.NewRequest(&pm.GetActionSetRequest{Id: setID}))
+	require.NoError(t, getErr)
+	assert.Equal(t, int32(0), resp.Msg.Set.MemberCount, "a rejected system action must not become a set member")
+}
+
 // recordingSearchIndex is a fake api.SearchIndex that records which entity IDs
 // the SearchListener tried to reindex vs. remove.
 type recordingSearchIndex struct {
