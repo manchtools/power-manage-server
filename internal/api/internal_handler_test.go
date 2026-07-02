@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
@@ -284,21 +285,25 @@ func TestProxyGetLuksKey_NotFound(t *testing.T) {
 }
 
 func TestProxyStoreLpsPasswords(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, slog.Default(), api.NoOpSigner{})
+	// Sealed happy path: seal to the bootstrapped keypair, store, expect
+	// success. The end-to-end recovery assertion lives in
+	// TestLpsSealedTransport_EndToEnd; this pins the basic accept path.
+	h, st, _, pub, _ := newLpsHandler(t)
 
 	deviceID := testutil.CreateTestDevice(t, st, "lps-host")
+	actionID := testutil.NewID()
+	sealed, err := sdkcrypto.SealLpsPassword(pub, "new-pass-123", deviceID, actionID, "admin")
+	require.NoError(t, err)
 
 	resp, err := h.ProxyStoreLpsPasswords(context.Background(), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId: deviceID,
-		ActionId: testutil.NewID(),
+		ActionId: actionID,
 		Rotations: []*pm.LpsPasswordRotation{
 			{
-				Username:  "admin",
-				Password:  "new-pass-123",
-				RotatedAt: "2026-03-31T12:00:00Z",
-				Reason:    pm.RotationReason_ROTATION_REASON_SCHEDULED,
+				Username:       "admin",
+				SealedPassword: sealed,
+				RotatedAt:      "2026-03-31T12:00:00Z",
+				Reason:         pm.RotationReason_ROTATION_REASON_SCHEDULED,
 			},
 		},
 	}))

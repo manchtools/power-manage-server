@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ecdh"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
@@ -58,6 +60,25 @@ type InternalHandler struct {
 	deviceGatewayResolver registry.DeviceGatewayLookup
 
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
+
+	// lpsPrivateKey unseals LPS passwords the agent sealed to the control
+	// LPS public key (ProxyStoreLpsPasswords). lpsPublicKey is the CA-signed
+	// public key distributed to agents in the sync response
+	// (ProxySyncActions). Both are set via SetLpsKeypair after EnsureLpsKeypair
+	// in main.go; nil when the LPS keypair is not configured, in which case
+	// ProxyStoreLpsPasswords fails closed (cannot unseal) and sync omits the
+	// key (agents then refuse to rotate — fail closed on both ends).
+	lpsPrivateKey *ecdh.PrivateKey
+	lpsPublicKey  *pm.LpsPublicKey
+}
+
+// SetLpsKeypair wires the control server's LPS sealing keypair: the private
+// key used to unseal rotated passwords at receipt, and the pre-signed public
+// key distributed to agents in the sync response. Called from main.go after
+// EnsureLpsKeypair + BuildSignedLpsPublicKey.
+func (h *InternalHandler) SetLpsKeypair(priv *ecdh.PrivateKey, signedPublicKey *pm.LpsPublicKey) {
+	h.lpsPrivateKey = priv
+	h.lpsPublicKey = signedPublicKey
 }
 
 // SetDeviceGatewayResolver wires the device→gateway routing registry so every
@@ -297,6 +318,10 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 		GroupedActions:      groups,
 		SyncIntervalMinutes: syncInterval,
 		MaintenanceWindow:   resolvedWindow,
+		// CA-signed LPS sealing key. nil when the keypair is not configured
+		// on this instance — the agent then has no key to seal to and refuses
+		// to rotate (fail closed), rather than rotating and sending cleartext.
+		LpsPublicKey: h.lpsPublicKey,
 	}), nil
 }
 
@@ -500,12 +525,33 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	//
 	// Encryption failures are already fail-closed above. Append
 	// failures now join that policy.
+	// Unsealing requires the LPS private key. A nil key is a wiring/config
+	// failure (EnsureLpsKeypair not run): fail closed rather than accept
+	// passwords we cannot open — the agent should not have sealed to a key we
+	// don't hold, and we must never fall back to a cleartext path.
+	if h.lpsPrivateKey == nil {
+		h.logger.Error("LPS store: nil private key — keypair not configured", "device_id", req.Msg.DeviceId)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "lps keypair not configured")
+	}
+
 	var (
 		persisted int
 		firstErr  error
 	)
 	for _, r := range req.Msg.Rotations {
-		encPassword, err := h.encryptor.EncryptWithContext(r.Password, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "lps"))
+		// Unseal the agent-sealed password (bound to device|action|username),
+		// then re-encrypt for at-rest storage. An unseal failure is a permanent
+		// error for THIS entry (tampered, sealed to a different key, or a
+		// context mismatch) — reject the request with InvalidArgument so the
+		// inbox does not retry a blob that can never open, and append no event.
+		// The blob and plaintext never appear in logs; only the username does.
+		plaintext, err := sdkcrypto.OpenLpsPassword(h.lpsPrivateKey, r.SealedPassword, req.Msg.DeviceId, req.Msg.ActionId, r.Username)
+		if err != nil {
+			h.logger.Error("failed to unseal LPS password", "error", err, "username", r.Username, "device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId)
+			return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "failed to unseal password")
+		}
+
+		encPassword, err := h.encryptor.EncryptWithContext(plaintext, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "lps"))
 		if err != nil {
 			h.logger.Error("failed to encrypt LPS password", "error", err, "username", r.Username)
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")

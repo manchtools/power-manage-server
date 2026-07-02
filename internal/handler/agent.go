@@ -3,6 +3,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -607,10 +608,13 @@ func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, 
 }
 
 // proxyLpsRotations extracts LPS password rotations from metadata, proxies them
-// via encrypted RPC, and strips the key before the result is enqueued to Valkey.
-// Unmarshal failures strip immediately (malformed, retry won't help).
-// StoreLpsPasswords failures return an error — the agent will resend the result
-// on reconnect, preserving the metadata for retry.
+// via internal RPC, and strips the key before the result is enqueued to Valkey.
+// The gateway relays each rotation's SEALED password opaquely: the agent sealed
+// it to control's LPS public key (spec 18), so the gateway — the least-trusted
+// server-side actor — can no longer read rotated passwords. Unmarshal failures
+// strip immediately (malformed, retry won't help). StoreLpsPasswords failures
+// return an error — the agent will resend the result on reconnect, preserving
+// the metadata for retry.
 func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID string, result *pm.ActionResult) error {
 	if result.Metadata == nil {
 		return nil
@@ -620,11 +624,15 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 		return nil
 	}
 
+	// sealed_password is base64 of the agent's crypto.SealLpsPassword output.
+	// A legacy agent (pre-sealed-transport) emits the old `password` cleartext
+	// field instead; those entries are dropped loudly below — the gateway must
+	// never proxy or enqueue a cleartext password.
 	var rotations []struct {
-		Username  string `json:"username"`
-		Password  string `json:"password"`
-		RotatedAt string `json:"rotated_at"`
-		Reason    string `json:"reason"`
+		Username       string `json:"username"`
+		SealedPassword string `json:"sealed_password"`
+		RotatedAt      string `json:"rotated_at"`
+		Reason         string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
 		delete(result.Metadata, "lps.rotations")
@@ -636,14 +644,35 @@ func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID
 		return nil
 	}
 
-	protoRotations := make([]*pm.LpsPasswordRotation, len(rotations))
-	for i, r := range rotations {
-		protoRotations[i] = &pm.LpsPasswordRotation{
-			Username:  r.Username,
-			Password:  r.Password,
-			RotatedAt: r.RotatedAt,
-			Reason:    rotationReasonFromAgentString(r.Reason),
+	protoRotations := make([]*pm.LpsPasswordRotation, 0, len(rotations))
+	for _, r := range rotations {
+		if r.SealedPassword == "" {
+			// Legacy cleartext entry (or a malformed one): the agent predates
+			// sealed LPS transport. The local rotation already happened; it
+			// becomes centrally recoverable again at the next post-upgrade
+			// rotation. Drop it — never proxy cleartext.
+			h.logger.Error("dropping LPS rotation without a sealed password (agent predates sealed LPS transport)",
+				"device_id", deviceID, "username", r.Username)
+			continue
 		}
+		sealed, err := base64.StdEncoding.DecodeString(r.SealedPassword)
+		if err != nil {
+			h.logger.Error("dropping LPS rotation with undecodable sealed password",
+				"device_id", deviceID, "username", r.Username, "error", err)
+			continue
+		}
+		protoRotations = append(protoRotations, &pm.LpsPasswordRotation{
+			Username:       r.Username,
+			SealedPassword: sealed,
+			RotatedAt:      r.RotatedAt,
+			Reason:         rotationReasonFromAgentString(r.Reason),
+		})
+	}
+	// Every entry was legacy/malformed and dropped: nothing to proxy, but the
+	// metadata must still be stripped before the result is enqueued to Valkey.
+	if len(protoRotations) == 0 {
+		delete(result.Metadata, "lps.rotations")
+		return nil
 	}
 	if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
 		return fmt.Errorf("store lps passwords: %w", err)

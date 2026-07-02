@@ -18,6 +18,7 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -150,20 +152,29 @@ func TestHandleActionResult_LpsRotationsEmpty_StripsNoProxyCall(t *testing.T) {
 }
 
 func TestHandleActionResult_LpsRotationsHappyPath_ProxiesAndStrips(t *testing.T) {
-	// Critical contract: the LPS password is encrypted in transit
-	// via the controlProxy — it must NOT also leak to Valkey via
-	// the EnqueueToControl payload. Verify both sides:
-	//   1) the proxy call carries the rotation
+	// Critical contract: the LPS password rides SEALED — the gateway
+	// relays it opaquely (it cannot read it) and must NOT leak it to
+	// Valkey via the EnqueueToControl payload. Verify:
+	//   1) the proxy call carries the decoded sealed bytes
 	//   2) the metadata key is stripped from the result before enqueue
 	h, fake, stub := setupForActionResult(t)
+
+	// Seal to a throwaway recipient key; the gateway never opens it, it
+	// just base64-decodes and relays. Assert byte-for-byte relay fidelity.
+	priv, err := sdkcrypto.GenerateX25519()
+	require.NoError(t, err)
+	sealed, err := sdkcrypto.SealLpsPassword(priv.PublicKey(), "s3cret", "dev-1", "act-5", "alice")
+	require.NoError(t, err)
+	sealedB64 := base64.StdEncoding.EncodeToString(sealed)
+
 	result := &pm.ActionResult{
 		ActionId: &pm.ActionId{Value: "act-5"},
 		Metadata: map[string]string{
-			"lps.rotations": `[{"username":"alice","password":"s3cret","rotated_at":"2026-05-11T10:00:00Z","reason":"scheduled"}]`,
+			"lps.rotations": `[{"username":"alice","sealed_password":"` + sealedB64 + `","rotated_at":"2026-05-11T10:00:00Z","reason":"scheduled"}]`,
 			"keep.this":     "yes",
 		},
 	}
-	err := h.handleActionResult(context.Background(), "dev-1", result)
+	err = h.handleActionResult(context.Background(), "dev-1", result)
 	require.NoError(t, err)
 
 	require.NotNil(t, stub.lastReq, "controlProxy.StoreLpsPasswords MUST be called when lps.rotations is non-empty")
@@ -171,15 +182,39 @@ func TestHandleActionResult_LpsRotationsHappyPath_ProxiesAndStrips(t *testing.T)
 	assert.Equal(t, "act-5", stub.lastReq.ActionId)
 	require.Len(t, stub.lastReq.Rotations, 1)
 	assert.Equal(t, "alice", stub.lastReq.Rotations[0].Username)
-	assert.Equal(t, "s3cret", stub.lastReq.Rotations[0].Password,
-		"the proxy MUST receive the cleartext password — encryption happens server-side via the InternalService impl")
+	assert.Equal(t, sealed, stub.lastReq.Rotations[0].SealedPassword,
+		"the proxy MUST receive the sealed bytes verbatim — the gateway relays opaquely, decryption happens server-side")
 
 	// Metadata key MUST be gone after a successful proxy call so
-	// the credential doesn't double-back through Valkey.
+	// the sealed blob doesn't double-back through Valkey.
 	_, ok := result.Metadata["lps.rotations"]
 	assert.False(t, ok, "lps.rotations key MUST be stripped after proxy succeeds — must not leak via Valkey payload")
 	_, ok = result.Metadata["keep.this"]
 	assert.True(t, ok, "non-LPS metadata keys must be preserved")
+
+	last := fake.lastCall(t)
+	assert.Equal(t, taskqueue.TypeExecutionResult, last.taskType)
+}
+
+// TestHandleActionResult_LpsLegacyCleartext_DroppedNotProxied covers
+// criterion 11: a legacy agent (pre-sealed-transport) emits the old
+// cleartext `password` field with no `sealed_password`. The gateway must
+// drop that entry — never proxy or enqueue a cleartext password — and still
+// strip the metadata before the result lands on Valkey.
+func TestHandleActionResult_LpsLegacyCleartext_DroppedNotProxied(t *testing.T) {
+	h, fake, stub := setupForActionResult(t)
+	result := &pm.ActionResult{
+		ActionId: &pm.ActionId{Value: "act-legacy"},
+		Metadata: map[string]string{
+			"lps.rotations": `[{"username":"alice","password":"s3cret","rotated_at":"2026-05-11T10:00:00Z","reason":"scheduled"}]`,
+		},
+	}
+	err := h.handleActionResult(context.Background(), "dev-1", result)
+	require.NoError(t, err)
+
+	assert.Nil(t, stub.lastReq, "a legacy cleartext rotation (no sealed_password) must NOT reach the proxy")
+	_, ok := result.Metadata["lps.rotations"]
+	assert.False(t, ok, "metadata must still be stripped so no cleartext leaks via Valkey")
 
 	last := fake.lastCall(t)
 	assert.Equal(t, taskqueue.TypeExecutionResult, last.taskType)
@@ -193,13 +228,17 @@ func TestHandleActionResult_LpsRotationsProxyError_PreservesMetadataAndReturnsEr
 	h, fake, stub := setupForActionResult(t)
 	stub.returnErr = connect.NewError(connect.CodeUnavailable, errors.New("control unreachable"))
 
+	priv, err := sdkcrypto.GenerateX25519()
+	require.NoError(t, err)
+	sealed, err := sdkcrypto.SealLpsPassword(priv.PublicKey(), "x", "dev-1", "act-6", "bob")
+	require.NoError(t, err)
 	result := &pm.ActionResult{
 		ActionId: &pm.ActionId{Value: "act-6"},
 		Metadata: map[string]string{
-			"lps.rotations": `[{"username":"bob","password":"x"}]`,
+			"lps.rotations": `[{"username":"bob","sealed_password":"` + base64.StdEncoding.EncodeToString(sealed) + `"}]`,
 		},
 	}
-	err := h.handleActionResult(context.Background(), "dev-1", result)
+	err = h.handleActionResult(context.Background(), "dev-1", result)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "store lps passwords")
 

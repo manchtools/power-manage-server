@@ -278,7 +278,7 @@ func TestControlProxy_ValidateLuksToken_HappyPath(t *testing.T) {
 
 func TestControlProxy_StoreLpsPasswords_HappyPath(t *testing.T) {
 	p, fake := setupProxy(t)
-	rots := []*pm.LpsPasswordRotation{{Username: "alice", Password: "raw-pass-the-control-server-encrypts"}}
+	rots := []*pm.LpsPasswordRotation{{Username: "alice", SealedPassword: []byte("sealed-blob-the-control-server-unseals")}}
 
 	require.NoError(t, p.StoreLpsPasswords(context.Background(), "dev-1", "act-2", rots))
 	require.NotNil(t, fake.lastStoreLpsPasswords)
