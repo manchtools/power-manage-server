@@ -962,6 +962,25 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	uri := fmt.Sprintf("power-manage://luks/set-passphrase?token=%s", token)
 	cliCmd := fmt.Sprintf("sudo power-manage-agent luks set-passphrase --token %s", token)
 
+	// Audit (#496): record who issued the LUKS key-storage token for which
+	// device+action. NO token material — not even its hash — is recorded; the
+	// audit interest is the grant, not the secret. Best-effort: the token is
+	// already persisted, so a failed append must not undo it.
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.DeviceId,
+		EventType:  string(eventtypes.LuksTokenCreated),
+		Data: payloads.LuksTokenCreated{
+			DeviceID: req.Msg.DeviceId,
+			ActionID: req.Msg.ActionId,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}); err != nil {
+		h.logger.Error("AUDIT GAP: failed to append LuksTokenCreated; token already issued",
+			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", err)
+	}
+
 	return connect.NewResponse(&pm.CreateLuksTokenResponse{
 		Token:      token,
 		Uri:        uri,

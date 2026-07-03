@@ -67,20 +67,13 @@ var nonEventMutations = map[string]string{
 	"RebuildSearchIndex": "valkey-only rebuild of the derived search index; no Postgres state is written",
 }
 
-// knownGaps are mutating RPCs that DO change state without appending any
-// event — audit gaps found while building this guard (#495), NOT sanctioned
-// designs. All six are tracked in #496; the guard asserts they still do not
-// append, so fixing one forces its entry's removal here.
-//
-// FINDINGS(#495 → tracked in #496): these RPCs mutate state with no audit event.
-var knownGaps = map[string]string{
-	"DispatchOSQuery":        "#496 — dispatches an arbitrary osquery read to a device (osquery_results staging row + signed dispatch) with no record of who queried what",
-	"QueryDeviceLogs":        "#496 — pulls device journald logs (log_query_results staging row + signed dispatch) with no audit trail",
-	"RefreshDeviceInventory": "#496 — triggers an osquery-backed inventory refresh with no audit trail",
-	"CreateLuksToken":        "#496 — issues a one-time LUKS key-storage authorization token with no record of the granting actor (RevokeLuksDeviceKey DOES append)",
-	"Logout":                 "#496 — revokes the refresh-token JTI but appends no UserLoggedOut counterpart to UserLoggedIn",
-	"RefreshToken":           "#496 — rotates the session (revokes old JTI, mints new) with no event; high-frequency, needs an accepted-noise decision",
-}
+// knownGaps holds mutating RPCs that change state without appending an event.
+// #496 CLOSED every gap found here (DispatchOSQuery, QueryDeviceLogs,
+// RefreshDeviceInventory, CreateLuksToken, Logout, RefreshToken now all
+// append an audit event), so the map is intentionally EMPTY: the guard below
+// requires every mutating RPC to reach AppendEvent, with no tracked-debt
+// escape hatch. A future gap must be FIXED, not parked here.
+var knownGaps = map[string]string{}
 
 // TestEveryMutatingControlRPCAppendsEvent is assertion 1 of the #495 guard:
 // mutating RPC ⇒ AppendEvent reachable through the handler's intra-package
