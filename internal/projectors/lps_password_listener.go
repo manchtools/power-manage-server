@@ -48,6 +48,12 @@ func LpsPasswordListener(st *store.Store, logger *slog.Logger) store.EventListen
 		return func(context.Context, store.PersistedEvent) {}
 	}
 	return func(ctx context.Context, e store.PersistedEvent) {
+		// Filter before opening a transaction so unrelated events don't pay
+		// a BEGIN/COMMIT round-trip (ApplyLpsPassword also filters, but only
+		// after WithTx has already opened the tx). Mirrors LuksKeyListener.
+		if e.StreamType != "lps_password" || e.EventType != string(eventtypes.LpsPasswordRotated) {
+			return
+		}
 		// Live dispatch keeps the three writes atomic on the autocommit
 		// pool via WithTx; the tx-bound queries are handed to
 		// ApplyLpsPassword.

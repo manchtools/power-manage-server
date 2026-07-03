@@ -152,6 +152,9 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 			h.logger.Error("AUDIT GAP: failed to append OSQueryDispatched; dispatch already succeeded",
 				"query_id", queryID, "device_id", msg.DeviceId, "error", err)
 		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for OSQueryDispatched; dispatch already succeeded",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", aerr)
 	}
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
@@ -325,6 +328,9 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 			h.logger.Error("AUDIT GAP: failed to append DeviceInventoryRefreshRequested; dispatch already succeeded",
 				"device_id", msg.DeviceId, "error", err)
 		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for DeviceInventoryRefreshRequested; dispatch already succeeded",
+			"device_id", msg.DeviceId, "error", aerr)
 	}
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil

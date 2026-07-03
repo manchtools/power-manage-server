@@ -136,6 +136,9 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 			h.logger.Error("AUDIT GAP: failed to append DeviceLogsQueried; dispatch already succeeded",
 				"query_id", queryID, "device_id", msg.DeviceId, "error", err)
 		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for DeviceLogsQueried; dispatch already succeeded",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", aerr)
 	}
 
 	return connect.NewResponse(&pm.QueryDeviceLogsResponse{

@@ -3,6 +3,7 @@ package projectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -89,9 +90,12 @@ func ApplySecurityAlert(ctx context.Context, q *store.Queries, e store.Persisted
 			}
 			// Malformed alert_id — the deleted PL/pgSQL projector
 			// raised an EXCEPTION here; the live listener logged and
-			// skipped. Keep that non-fatal behaviour during rebuild:
-			// a historical malformed event must not abort the rebuild.
-			return nil
+			// skipped. Report it as skippable: the live listener
+			// logs-and-swallows (restoring the lost log line), and
+			// RebuildAll skips-and-continues instead of aborting on one
+			// bad historical row.
+			return fmt.Errorf("security_alert projector: malformed SecurityAlertAcknowledged %s: %w: %w",
+				e.ID, err, store.ErrSkipEvent)
 		}
 		rows, err := q.AcknowledgeSecurityAlertProjection(ctx, params)
 		if err != nil {

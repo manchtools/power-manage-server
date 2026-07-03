@@ -378,6 +378,14 @@ var AllRebuildTargets = []rebuildTarget{
 // target name that does not exist in AllRebuildTargets.
 var ErrUnknownTarget = errors.New("unknown rebuild target")
 
+// ErrSkipEvent lets a projector's apply function report an event it
+// cannot project (e.g. a malformed historical payload) as skippable
+// rather than fatal: the live listener logs-and-swallows it like any
+// error, and RebuildAll skips it and continues instead of aborting the
+// whole rebuild on one bad historical row. Return it wrapped for
+// context; the rebuild dispatcher matches it with errors.Is.
+var ErrSkipEvent = errors.New("projector: event skipped (unprojectable)")
+
 // RebuildAll truncates and re-applies the named projection targets
 // from the event store. An empty targets slice rebuilds every
 // registered target in dependency order.
@@ -510,6 +518,18 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 		}
 		for _, ev := range batch {
 			if err := apply(ctx, q, ev); err != nil {
+				if errors.Is(err, ErrSkipEvent) {
+					// A malformed historical event must not abort the
+					// rebuild; log it and move on (unlike the fatal path,
+					// which rolls back the whole target).
+					if s.logger != nil {
+						s.logger.Warn("rebuild: skipping unprojectable event",
+							"target", t.Name, "event_id", ev.ID, "event_type", ev.EventType, "error", err)
+					}
+					lastSeq = ev.SequenceNum
+					total++
+					continue
+				}
 				return 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
 			}
 			lastSeq = ev.SequenceNum

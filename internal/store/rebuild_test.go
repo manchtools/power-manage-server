@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -359,6 +360,39 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	).Scan(&count))
 	assert.Equal(t, 1, count,
 		"projection must survive the failed rebuild; finding zero rows means either the guard ran too late or the outer transaction failed to roll back a destructive op")
+}
+
+// TestRebuildAll_SkipEventIsNonFatal pins the ErrSkipEvent contract: an
+// applier that reports an unprojectable historical event (e.g. a
+// malformed payload) via store.ErrSkipEvent must NOT abort the rebuild —
+// the event is skipped and the target completes, unlike a plain error
+// which rolls the whole target back (TestRebuildAll_TransactionalAtomicity).
+func TestRebuildAll_SkipEventIsNonFatal(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	actorID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	roleID := testutil.CreateTestRole(t, st, actorID, "skip-role-"+testutil.NewID(), []string{"GetDevice"})
+
+	// Every replayed event reports itself as skippable. A fatal error
+	// here would roll back the target's TRUNCATE and RebuildAll would
+	// return an error; ErrSkipEvent must instead let it succeed.
+	st.RegisterRebuildApply("roles", func(context.Context, *store.Queries, store.PersistedEvent) error {
+		return fmt.Errorf("forced skip: %w", store.ErrSkipEvent)
+	})
+
+	res, err := st.RebuildAll(ctx, "roles")
+	require.NoError(t, err, "ErrSkipEvent must not abort the rebuild")
+	require.NotNil(t, res)
+
+	// The role's create event was skipped, so the truncated projection
+	// stays empty — proving the skip path ran (counted, not applied) and
+	// did not fatally roll back.
+	var after int
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		`SELECT COUNT(*) FROM roles_projection WHERE id = $1`, roleID,
+	).Scan(&after))
+	assert.Equal(t, 0, after, "skipped events must not be applied, but the rebuild must still complete")
 }
 
 // TestRebuildAll_TransactionalAtomicity forces the roles applier to
