@@ -3,9 +3,10 @@
 - Status: accepted
 - Date: 2026-07-03
 - Related: manchtools/power-manage-server#495 (guard family + lps_keypair
-  event-sourcing); #496 (mutating RPCs with no audit event); #497 (replay
-  gaps); ADR 0026 (event-sourcing audit model); ADR 0028 (LPS sealed
-  transport — amended by this ADR); ADR 0009 (AES-GCM AAD at rest).
+  event-sourcing); #496 (six mutating RPCs given audit events — CLOSED in
+  this change); #497 (projection replay gaps — CLOSED in this change);
+  ADR 0026 (event-sourcing audit model); ADR 0028 (LPS sealed transport —
+  amended by this ADR); ADR 0009 (AES-GCM AAD at rest).
 
 ## Context
 
@@ -100,9 +101,24 @@ singleton `lps_keypair/global` stream:
 - The guard family makes new bypasses unmergeable: a new mutating RPC
   without an event, a new direct write, or a new unclassified table each
   fail a test with a targeted message.
-- Known debts are explicit and tracked: six RPCs mutate without events
-  (#496); several projections are not replay-covered, two of which a users
-  rebuild actively destroys today (#497). Fixing one forces its registry
-  entry's removal — the registries can only shrink honestly.
+- The contract holds with NO tracked debt. Both escape-hatch registries are
+  empty:
+  - Every mutating RPC appends an event. #496 closed the six that did not
+    (`DispatchOSQuery`, `QueryDeviceLogs`, `RefreshDeviceInventory`,
+    `CreateLuksToken`, `Logout`, `RefreshToken`) with typed audit events;
+    the RPC guard's `knownGaps` map is empty.
+  - Every projection replays 1:1. #497 closed the gaps by adding rebuild
+    targets for all previously-unreplayable projections — including the
+    three a users rebuild used to DESTROY (RBAC grants via `user_roles`,
+    2FA via `totp`, SSO links via `identity_links`); the schema guard's
+    `knownUnreplayableTables` map is empty.
+- Rebuild targets are FK-ordered in `AllRebuildTargets` (children after
+  parents). Two cases are subtle and load-bearing: `identity_providers`
+  runs BEFORE `scim_group_mappings` (its `TRUNCATE … CASCADE` wipes the
+  SCIM mappings, so they must be replayed after), and `totp` /
+  `identity_links` run AFTER `users` (they are FK children the users
+  CASCADE wipes). The singleton `server_settings` target re-seeds the
+  `global` row before replaying, since a plain TRUNCATE would leave the
+  UPDATE-only projector with nothing to update.
 - `InsertLpsKeypair` is gone from the generated query set; the projector
   owns the only write (`UpsertLpsKeypair`).
