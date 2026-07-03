@@ -163,6 +163,20 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// lps_keypair (#495): the singleton sealing-keypair row is a projection
 	// of the lps_keypair/global stream; replay reproduces it 1:1.
 	st.RegisterRebuildApply("lps_keypair", ApplyLpsKeypair)
+	// #497: close the replay gaps — every projection stream now has a
+	// rebuild target so a full replay reproduces RBAC grants, 2FA, SSO
+	// links/providers, security alerts, compliance, and the encrypted
+	// secret history. FK-ordered in AllRebuildTargets (children after
+	// parents); each Apply* returns errors so a rebuild fails loudly.
+	st.RegisterRebuildApply("user_roles", ApplyUserRole)
+	st.RegisterRebuildApply("totp", ApplyTotp)
+	st.RegisterRebuildApply("identity_providers", ApplyIdentityProvider)
+	st.RegisterRebuildApply("security_alerts", ApplySecurityAlert)
+	st.RegisterRebuildApply("lps_passwords", ApplyLpsPassword)
+	st.RegisterRebuildApply("luks_keys", ApplyLuksKey)
+	st.RegisterRebuildApply("server_settings", ApplyServerSettingsRebuild)
+	st.RegisterRebuildApply("compliance_policies", ApplyCompliancePolicy)
+	st.RegisterRebuildApply("compliance_results", ApplyCompliance)
 }
 
 // loggerFor returns a sub-logger tagged with the projector

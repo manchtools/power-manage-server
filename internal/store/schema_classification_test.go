@@ -39,7 +39,7 @@ import (
 // to reproduce them (no rebuild target touches them).
 var operationalTables = map[string]string{
 	"auth_states":       "short-lived OIDC flow rows (state/nonce/PKCE), consumed on first read; in PG so ANY control replica can complete the callback (no sticky sessions); loss = user redoes login",
-	"revoked_tokens":    "JWT refresh-token denylist, TTL-bounded by token expiry; primary operational security state — becomes a projection once #496 adds logout/refresh events",
+	"revoked_tokens":    "JWT refresh-token denylist, TTL-bounded by token expiry; primary operational security state (the denylist must be authoritative and immediately consistent, not an eventually-projected view). Logout/RefreshToken now audit-log the session lifecycle (#496), but the denylist row itself stays operational — it is not reconstructable from an audit event alone",
 	"luks_tokens":       "hashed one-time LUKS enrollment tokens (WS10); single-use by design, loss = operator re-issues; deliberately not replayable",
 	"osquery_results":   "transient result staging for DispatchOSQuery — agent reply fills, reads expire; loss = re-run the query",
 	"log_query_results": "transient result staging for QueryDeviceLogs — same lifecycle as osquery_results",
@@ -60,22 +60,12 @@ var cascadeRederivedTables = map[string]string{
 
 // knownUnreplayableTables is registry 5: tables whose content comes from the
 // event stream but which NO rebuild target replays — replay-coverage gaps,
-// not sanctioned designs (#497). Each fix (adding the rebuild target) makes
-// the overlap check above fail until the entry is removed.
-var knownUnreplayableTables = map[string]string{
-	"user_roles_projection":                   "#497 — grants ride the user_role stream, which no target replays; a replay into an empty schema loses every post-creation grant (no FK, so an in-place rebuild merely leaves the rows untouched)",
-	"server_settings_projection":              "#497 — ServerSettingUpdated has a listener but no rebuild target (singleton seeded by migration)",
-	"totp_projection":                         "#497 — FK child of users_projection: a users rebuild CASCADE-WIPES all TOTP enrollments and nothing replays the totp stream",
-	"security_alerts_projection":              "#497 — security_alert stream has a listener but no rebuild target",
-	"lps_passwords_projection":                "#497 — no target replays the lps_password stream; a replay into an empty schema loses the (encrypted) password history the events carry",
-	"luks_keys_projection":                    "#497 — same exposure as lps_passwords_projection for the luks_key stream",
-	"identity_providers_projection":           "#497 — identity_provider stream has a listener but no rebuild target",
-	"identity_links_projection":               "#497 — FK child of users_projection: a users rebuild CASCADE-WIPES all SSO identity links and nothing replays the identity_link stream",
-	"compliance_policies_projection":          "#497 — ApplyCompliancePolicy exists but is not registered for rebuild",
-	"compliance_policy_rules_projection":      "#497 — ApplyCompliancePolicy exists but is not registered for rebuild",
-	"compliance_policy_evaluation_projection": "#497 — compliance evaluation stream not replayed by any target",
-	"compliance_results_projection":           "#497 — ApplyCompliance exists but is not registered for rebuild",
-}
+// not sanctioned designs. #497 CLOSED every gap (user_roles, totp,
+// identity_providers+links, security_alerts, lps_passwords, luks_keys,
+// server_settings, and the compliance projections all have rebuild targets
+// now), so the map is intentionally EMPTY: every projection is replayable and
+// a future gap must be FIXED, not parked here.
+var knownUnreplayableTables = map[string]string{}
 
 // TestSchemaTotallyClassified enumerates every base table in the live test
 // schema and forces it into exactly one classification. Includes its own

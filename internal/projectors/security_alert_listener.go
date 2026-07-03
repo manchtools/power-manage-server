@@ -35,7 +35,12 @@ import (
 // via ON CONFLICT (event_id) DO NOTHING, so a re-fire on crash
 // recovery is safe.
 //
-// Refs #96, tracker #107.
+// Live dispatch wraps ApplySecurityAlert and logs-and-swallows; the
+// rebuild path (#497) registers ApplySecurityAlert via
+// RegisterRebuildApply so RebuildAll re-derives the projection from the
+// event store.
+//
+// Refs #96, tracker #107, #497.
 func SecurityAlertListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		// Match the SearchListener factory contract: never return
@@ -44,58 +49,64 @@ func SecurityAlertListener(st *store.Store, logger *slog.Logger) store.EventList
 	}
 
 	return func(ctx context.Context, e store.PersistedEvent) {
-		// Filter at the top so we don't pay the projector function
-		// call cost for every event flowing through the store.
-		if e.StreamType != "device" {
-			return
-		}
-		switch e.EventType {
-		case string(eventtypes.SecurityAlert):
-			params, err := SecurityAlertProjectionFromEvent(e)
-			if err != nil {
-				if errors.Is(err, ErrIgnoredEvent) {
-					return
-				}
-				logger.Warn("security_alert projector: failed to derive insert params",
-					"event_id", e.ID, "error", err)
-				return
-			}
-			if err := st.Queries().InsertSecurityAlertProjection(ctx, params); err != nil {
-				logger.Warn("security_alert projector: failed to insert projection row",
-					"event_id", e.ID, "device_id", e.StreamID, "error", err)
-			}
-
-		case string(eventtypes.SecurityAlertAcknowledged):
-			params, err := SecurityAlertAckParamsFromEvent(e)
-			if err != nil {
-				if errors.Is(err, ErrIgnoredEvent) {
-					return
-				}
-				// Malformed alert_id — log and skip. The deleted
-				// PL/pgSQL projector raised an EXCEPTION in this
-				// case so a sidecar trigger could catch it and
-				// write to plpgsql_projection_errors. Post-commit
-				// listener equivalent: log to stderr via slog.Warn
-				// so the operator sees it and can correlate with
-				// the event.
-				logger.Warn("security_alert projector: invalid SecurityAlertAcknowledged payload",
-					"event_id", e.ID, "error", err)
-				return
-			}
-			rows, err := st.Queries().AcknowledgeSecurityAlertProjection(ctx, params)
-			if err != nil {
-				logger.Warn("security_alert projector: failed to acknowledge alert",
-					"event_id", e.ID, "alert_id", params.Column1, "error", err)
-				return
-			}
-			if rows == 0 {
-				// Out-of-order replay (ack arrived before the
-				// alert insert reached the projection) or an alert
-				// that's been purged. Same warning the deleted
-				// PL/pgSQL projector raised.
-				logger.Warn("security_alert projector: SecurityAlertAcknowledged references unknown alert_id",
-					"event_id", e.ID, "alert_id", params.Column1)
-			}
+		if err := ApplySecurityAlert(ctx, st.Queries(), e); err != nil {
+			logger.Warn("security_alert projector: failed to apply event",
+				"event_id", e.ID, "event_type", e.EventType, "error", err)
 		}
 	}
+}
+
+// ApplySecurityAlert is the transactional core of the security_alert
+// projector: it writes through the supplied Queries (the rebuild tx or
+// the live autocommit handle) and RETURNS errors instead of
+// logging-and-swallowing, so a rebuild fails loudly rather than
+// producing a partial projection.
+//
+// The stream guard filters on "device" (security alerts ride the device
+// stream), not "security_alert".
+func ApplySecurityAlert(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	// Filter at the top so we don't pay the projector function
+	// call cost for every event flowing through the store.
+	if e.StreamType != "device" {
+		return nil
+	}
+	switch e.EventType {
+	case string(eventtypes.SecurityAlert):
+		params, err := SecurityAlertProjectionFromEvent(e)
+		if err != nil {
+			if errors.Is(err, ErrIgnoredEvent) {
+				return nil
+			}
+			return err
+		}
+		return q.InsertSecurityAlertProjection(ctx, params)
+
+	case string(eventtypes.SecurityAlertAcknowledged):
+		params, err := SecurityAlertAckParamsFromEvent(e)
+		if err != nil {
+			if errors.Is(err, ErrIgnoredEvent) {
+				return nil
+			}
+			// Malformed alert_id — the deleted PL/pgSQL projector
+			// raised an EXCEPTION here; the live listener logged and
+			// skipped. Keep that non-fatal behaviour during rebuild:
+			// a historical malformed event must not abort the rebuild.
+			return nil
+		}
+		rows, err := q.AcknowledgeSecurityAlertProjection(ctx, params)
+		if err != nil {
+			return err
+		}
+		if rows == 0 {
+			// Out-of-order replay (ack arrived before the alert
+			// insert reached the projection) or an alert that's been
+			// purged. Non-fatal — nothing to acknowledge, so nothing
+			// to do. The live listener logged a warning here; during
+			// rebuild the ordering is stable so this is a benign
+			// no-op.
+			return nil
+		}
+		return nil
+	}
+	return nil
 }

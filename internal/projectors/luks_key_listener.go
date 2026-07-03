@@ -37,7 +37,14 @@ import (
 // an old LuksKeyRotated would corrupt is_current and insert a stale
 // duplicate underneath the real key.
 //
-// Wired in projectors.WireAll. Refs #99, tracker #107, audit N007.
+// Live dispatch wraps ApplyLuksKey (opening its own WithTx for the
+// LuksKeyRotated multi-write case so the three writes stay atomic on the
+// autocommit pool); the rebuild path (#497) registers ApplyLuksKey via
+// RegisterRebuildApply — the rebuild dispatcher already runs inside one
+// transaction and passes q bound to it, so every write executes directly
+// on q with no nested transaction.
+//
+// Wired in projectors.WireAll. Refs #99, tracker #107, audit N007, #497.
 func LuksKeyListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		return func(context.Context, store.PersistedEvent) {}
@@ -46,93 +53,113 @@ func LuksKeyListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		if e.StreamType != "luks_key" {
 			return
 		}
-
-		switch e.EventType {
-		case string(eventtypes.LuksKeyRotated):
-			applyLuksKeyRotated(ctx, st, logger, e)
-		case string(eventtypes.LuksDeviceKeyRevocationDispatched):
-			applyLuksRevocation(ctx, st, logger, e, LuksRevocationDispatchedFromEvent)
-		case string(eventtypes.LuksDeviceKeyRevoked):
-			applyLuksRevocation(ctx, st, logger, e, LuksRevokedFromEvent)
-		case string(eventtypes.LuksDeviceKeyRevocationFailed):
-			applyLuksRevocation(ctx, st, logger, e, LuksRevocationFailedFromEvent)
+		// LuksKeyRotated is a three-write cascade — route it through
+		// WithTx on the live path so the writes stay atomic on the
+		// autocommit pool. The single-write revocation events go on the
+		// pool directly. Both share ApplyLuksKey's body via the
+		// tx-bound / pool-bound Queries.
+		if e.EventType == string(eventtypes.LuksKeyRotated) {
+			if err := st.WithTx(ctx, func(q *store.Queries) error {
+				return ApplyLuksKey(ctx, q, e)
+			}); err != nil {
+				logger.Warn("luks_key projector: failed to apply event",
+					"event_id", e.ID, "event_type", e.EventType, "error", err)
+			}
+			return
 		}
-		// Every other event_type (incl. LuksDeviceKeyRevocationRequested)
-		// is silently ignored — same behaviour as the deleted PL/pgSQL
-		// projector's CASE ... ELSE NULL.
+		if err := ApplyLuksKey(ctx, st.Queries(), e); err != nil {
+			logger.Warn("luks_key projector: failed to apply event",
+				"event_id", e.ID, "event_type", e.EventType, "error", err)
+		}
 	}
 }
 
-func applyLuksKeyRotated(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
+// ApplyLuksKey is the transactional core of the luks_key projector: it
+// writes through the supplied Queries and RETURNS errors instead of
+// logging-and-swallowing. Every write runs directly on q — the caller
+// supplies the transaction (WithTx for LuksKeyRotated on the live path,
+// the rebuild tx on the rebuild path), so ApplyLuksKey does NOT open a
+// nested transaction of its own.
+//
+// LuksDeviceKeyRevocationRequested and every other event_type are
+// silently ignored — same behaviour as the deleted PL/pgSQL projector's
+// CASE ... ELSE NULL.
+func ApplyLuksKey(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "luks_key" {
+		return nil
+	}
+	switch e.EventType {
+	case string(eventtypes.LuksKeyRotated):
+		return applyLuksKeyRotated(ctx, q, e)
+	case string(eventtypes.LuksDeviceKeyRevocationDispatched):
+		return applyLuksRevocation(ctx, q, e, LuksRevocationDispatchedFromEvent)
+	case string(eventtypes.LuksDeviceKeyRevoked):
+		return applyLuksRevocation(ctx, q, e, LuksRevokedFromEvent)
+	case string(eventtypes.LuksDeviceKeyRevocationFailed):
+		return applyLuksRevocation(ctx, q, e, LuksRevocationFailedFromEvent)
+	}
+	return nil
+}
+
+func applyLuksKeyRotated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	payload, err := LuksKeyRotatedFromEvent(e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
-			return
+			return nil
 		}
-		logger.Warn("luks_key projector: invalid LuksKeyRotated payload",
-			"event_id", e.ID, "error", err)
-		return
+		return err
 	}
 	projVer := e.SequenceNum
 
-	if err := st.WithTx(ctx, func(q *store.Queries) error {
-		n, err := q.MarkLuksKeysNotCurrent(ctx, db.MarkLuksKeysNotCurrentParams{
-			DeviceID:          payload.DeviceID,
-			ActionID:          payload.ActionID,
-			DevicePath:        payload.DevicePath,
-			ProjectionVersion: projVer,
-		})
-		if err != nil {
-			return err
-		}
-		// n==0 has TWO causes that the rest of the code path
-		// handles oppositely (audit N007, mirrors LPS F020/F021):
-		//   1. Stale replay: rows exist for (device, action, path)
-		//      but their projection_version is >= the replaying
-		//      event's sequence_num. The rotation has already been
-		//      projected — skip the insert.
-		//   2. First rotation for this triple: no rows exist at
-		//      all. The UPDATE matched nothing because there was
-		//      nothing to flip. Proceed to insert.
-		// Disambiguate via an existence check; only the stale case
-		// skips.
-		if n == 0 {
-			exists, err := q.LuksKeyExistsForDeviceActionPath(ctx, db.LuksKeyExistsForDeviceActionPathParams{
-				DeviceID:   payload.DeviceID,
-				ActionID:   payload.ActionID,
-				DevicePath: payload.DevicePath,
-			})
-			if err != nil {
-				return err
-			}
-			if exists {
-				return nil
-			}
-		}
-		if err := q.InsertLuksKey(ctx, db.InsertLuksKeyParams{
-			DeviceID:          payload.DeviceID,
-			ActionID:          payload.ActionID,
-			DevicePath:        payload.DevicePath,
-			Passphrase:        payload.Passphrase,
-			RotatedAt:         payload.RotatedAt,
-			RotationReason:    payload.RotationReason,
-			ProjectionVersion: projVer,
-		}); err != nil {
-			return err
-		}
-		return q.TrimLuksKeysToLast3(ctx, db.TrimLuksKeysToLast3Params{
+	n, err := q.MarkLuksKeysNotCurrent(ctx, db.MarkLuksKeysNotCurrentParams{
+		DeviceID:          payload.DeviceID,
+		ActionID:          payload.ActionID,
+		DevicePath:        payload.DevicePath,
+		ProjectionVersion: projVer,
+	})
+	if err != nil {
+		return err
+	}
+	// n==0 has TWO causes that the rest of the code path
+	// handles oppositely (audit N007, mirrors LPS F020/F021):
+	//   1. Stale replay: rows exist for (device, action, path)
+	//      but their projection_version is >= the replaying
+	//      event's sequence_num. The rotation has already been
+	//      projected — skip the insert.
+	//   2. First rotation for this triple: no rows exist at
+	//      all. The UPDATE matched nothing because there was
+	//      nothing to flip. Proceed to insert.
+	// Disambiguate via an existence check; only the stale case
+	// skips.
+	if n == 0 {
+		exists, err := q.LuksKeyExistsForDeviceActionPath(ctx, db.LuksKeyExistsForDeviceActionPathParams{
 			DeviceID:   payload.DeviceID,
 			ActionID:   payload.ActionID,
 			DevicePath: payload.DevicePath,
 		})
-	}); err != nil {
-		logger.Warn("luks_key projector: failed to apply LuksKeyRotated",
-			"event_id", e.ID,
-			"device_id", payload.DeviceID,
-			"action_id", payload.ActionID,
-			"device_path", payload.DevicePath,
-			"error", err)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
 	}
+	if err := q.InsertLuksKey(ctx, db.InsertLuksKeyParams{
+		DeviceID:          payload.DeviceID,
+		ActionID:          payload.ActionID,
+		DevicePath:        payload.DevicePath,
+		Passphrase:        payload.Passphrase,
+		RotatedAt:         payload.RotatedAt,
+		RotationReason:    payload.RotationReason,
+		ProjectionVersion: projVer,
+	}); err != nil {
+		return err
+	}
+	return q.TrimLuksKeysToLast3(ctx, db.TrimLuksKeysToLast3Params{
+		DeviceID:   payload.DeviceID,
+		ActionID:   payload.ActionID,
+		DevicePath: payload.DevicePath,
+	})
 }
 
 // applyLuksRevocation is generic across the three revocation event
@@ -141,36 +168,25 @@ func applyLuksKeyRotated(ctx context.Context, st *store.Store, logger *slog.Logg
 // timestamp key + status value; the writer is identical.
 func applyLuksRevocation(
 	ctx context.Context,
-	st *store.Store,
-	logger *slog.Logger,
+	q *store.Queries,
 	e store.PersistedEvent,
 	decode func(store.PersistedEvent) (LuksRevocationPayload, error),
-) {
+) error {
 	payload, err := decode(e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
-			return
+			return nil
 		}
-		logger.Warn("luks_key projector: invalid revocation payload",
-			"event_id", e.ID, "event_type", e.EventType, "error", err)
-		return
+		return err
 	}
 	at := payload.At
-	if err := st.Queries().UpdateLuksKeyRevocationStatus(ctx, db.UpdateLuksKeyRevocationStatusParams{
+	return q.UpdateLuksKeyRevocationStatus(ctx, db.UpdateLuksKeyRevocationStatusParams{
 		DeviceID:         payload.DeviceID,
 		ActionID:         payload.ActionID,
 		RevocationStatus: stringPtr(payload.Status),
 		RevocationError:  payload.Error,
 		RevocationAt:     &at,
-	}); err != nil {
-		logger.Warn("luks_key projector: failed to update revocation_status",
-			"event_id", e.ID,
-			"event_type", e.EventType,
-			"device_id", payload.DeviceID,
-			"action_id", payload.ActionID,
-			"status", payload.Status,
-			"error", err)
-	}
+	})
 }
 
 func stringPtr(s string) *string { return &s }

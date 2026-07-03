@@ -18,72 +18,66 @@ import (
 //   - UserRoleAssigned: INSERT … ON CONFLICT DO NOTHING (replay-safe)
 //   - UserRoleRevoked:  DELETE WHERE (user_id, role_id)
 //
-// Wired in projectors.WireAll. Refs #102, tracker #107.
+// Live dispatch wraps ApplyUserRole and logs-and-swallows; the rebuild path
+// (#497) registers ApplyUserRole via RegisterRebuildApply so RebuildAll
+// re-derives every post-creation grant from the event store. Before #497 the
+// user_role stream was replayed by NO target — a full rebuild silently lost
+// every grant made after account creation.
+//
+// Wired in projectors.WireAll. Refs #102, tracker #107, #497.
 func UserRoleListener(st *store.Store, logger *slog.Logger) store.EventListener {
 	if st == nil {
 		return func(context.Context, store.PersistedEvent) {}
 	}
 	return func(ctx context.Context, e store.PersistedEvent) {
-		if e.StreamType != "user_role" {
-			return
-		}
-		switch e.EventType {
-		case string(eventtypes.UserRoleAssigned):
-			applyUserRoleAssigned(ctx, st, logger, e)
-		case string(eventtypes.UserRoleRevoked):
-			applyUserRoleRevoked(ctx, st, logger, e)
+		if err := ApplyUserRole(ctx, st.Queries(), e); err != nil {
+			logger.Warn("user_role projector: failed to apply event",
+				"event_id", e.ID, "event_type", e.EventType, "error", err)
 		}
 	}
 }
 
-func applyUserRoleAssigned(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
-	payload, err := UserRoleAssignedFromEvent(e)
-	if err != nil {
-		if errors.Is(err, ErrIgnoredEvent) {
-			return
+// ApplyUserRole is the transactional core of the user_role projector: it
+// writes through the supplied Queries (the rebuild tx or the live autocommit
+// handle) and RETURNS errors instead of logging-and-swallowing, so a rebuild
+// fails loudly rather than producing a partial RBAC projection.
+func ApplyUserRole(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "user_role" {
+		return nil
+	}
+	switch e.EventType {
+	case string(eventtypes.UserRoleAssigned):
+		payload, err := UserRoleAssignedFromEvent(e)
+		if err != nil {
+			if errors.Is(err, ErrIgnoredEvent) {
+				return nil
+			}
+			return err
 		}
-		logger.Warn("user_role projector: invalid UserRoleAssigned payload",
-			"event_id", e.ID, "error", err)
-		return
-	}
-	if err := st.Queries().InsertUserRoleProjection(ctx, db.InsertUserRoleProjectionParams{
-		UserID:            payload.UserID,
-		RoleID:            payload.RoleID,
-		ScopeKind:         payload.ScopeKind,
-		ScopeID:           payload.ScopeID,
-		AssignedAt:        e.OccurredAt,
-		AssignedBy:        payload.AssignedBy,
-		ProjectionVersion: e.SequenceNum,
-	}); err != nil {
-		logger.Warn("user_role projector: failed to insert UserRoleAssigned",
-			"event_id", e.ID,
-			"user_id", payload.UserID,
-			"role_id", payload.RoleID,
-			"error", err)
-	}
-}
-
-func applyUserRoleRevoked(ctx context.Context, st *store.Store, logger *slog.Logger, e store.PersistedEvent) {
-	payload, err := UserRoleRevokedFromEvent(e)
-	if err != nil {
-		if errors.Is(err, ErrIgnoredEvent) {
-			return
+		return q.InsertUserRoleProjection(ctx, db.InsertUserRoleProjectionParams{
+			UserID:            payload.UserID,
+			RoleID:            payload.RoleID,
+			ScopeKind:         payload.ScopeKind,
+			ScopeID:           payload.ScopeID,
+			AssignedAt:        e.OccurredAt,
+			AssignedBy:        payload.AssignedBy,
+			ProjectionVersion: e.SequenceNum,
+		})
+	case string(eventtypes.UserRoleRevoked):
+		payload, err := UserRoleRevokedFromEvent(e)
+		if err != nil {
+			if errors.Is(err, ErrIgnoredEvent) {
+				return nil
+			}
+			return err
 		}
-		logger.Warn("user_role projector: invalid UserRoleRevoked payload",
-			"event_id", e.ID, "error", err)
-		return
+		return q.DeleteUserRoleProjection(ctx, db.DeleteUserRoleProjectionParams{
+			UserID:            payload.UserID,
+			RoleID:            payload.RoleID,
+			ScopeKind:         payload.ScopeKind,
+			ScopeID:           payload.ScopeID,
+			ProjectionVersion: e.SequenceNum,
+		})
 	}
-	if err := st.Queries().DeleteUserRoleProjection(ctx, db.DeleteUserRoleProjectionParams{
-		UserID:            payload.UserID,
-		RoleID:            payload.RoleID,
-		ScopeKind:         payload.ScopeKind,
-		ScopeID:           payload.ScopeID,
-		ProjectionVersion: e.SequenceNum,
-	}); err != nil {
-		logger.Warn("user_role projector: failed to delete user_roles_projection row",
-			"event_id", e.ID,
-			"user_id", payload.UserID,
-			"role_id", payload.RoleID,
-			"error", err)
-	}
+	return nil
 }

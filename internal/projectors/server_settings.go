@@ -3,6 +3,7 @@ package projectors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -65,5 +66,38 @@ func ApplyServerSettingsUpdate(ctx context.Context, st *store.Store, u ServerSet
 		SshAccessForAll:         u.SshAccessForAll,
 		UpdatedAt:               u.OccurredAt,
 		ProjectionVersion:       u.ProjectionVersion,
+	})
+}
+
+// ApplyServerSettingsRebuild is the rebuild applier for the singleton
+// server_settings_projection (#497). A rebuild TRUNCATEs the table, dropping
+// the migration-seeded 'global' row; the projector's UPDATE ... WHERE id =
+// 'global' would then match nothing and the current settings would be lost.
+//
+// Every replayed event first ensures the seed row exists (idempotent INSERT
+// at projection_version 0), then applies the COALESCE UPDATE. Seeding on
+// every event — rather than once — keeps the applier stateless and correct
+// whether it replays one event or a thousand; ON CONFLICT DO NOTHING makes
+// the repeat seeds free. Non-ServerSettingUpdated events on the stream
+// (there are none today) no-op via the decoder's ErrIgnoredEvent.
+func ApplyServerSettingsRebuild(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "server_settings" {
+		return nil
+	}
+	payload, err := ServerSettingsUpdatedFromEvent(e)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	if err := q.SeedServerSettings(ctx); err != nil {
+		return err
+	}
+	return q.UpdateServerSettings(ctx, db.UpdateServerSettingsParams{
+		UserProvisioningEnabled: payload.UserProvisioningEnabled,
+		SshAccessForAll:         payload.SshAccessForAll,
+		UpdatedAt:               e.OccurredAt,
+		ProjectionVersion:       e.SequenceNum,
 	})
 }

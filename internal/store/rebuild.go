@@ -113,10 +113,33 @@ type rebuildTarget struct {
 var AllRebuildTargets = []rebuildTarget{
 	{
 		// Applied by projectors.ApplyUser via projectors.WireAll.
+		// NOTE (#497): TRUNCATE users_projection CASCADE wipes its FK
+		// children totp_projection and identity_links_projection. Their
+		// own targets below (declared AFTER users) re-derive them from the
+		// totp / identity_provider streams — order is load-bearing.
 		Name:        "users",
 		Tables:      []string{"users_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"user"},
+	},
+	{
+		// Applied by projectors.ApplyUserRole via projectors.WireAll (#497).
+		// user_roles_projection carries NO FK to users_projection, so the
+		// users CASCADE never wiped it and NO target replayed the user_role
+		// stream — a full rebuild silently dropped every post-creation
+		// grant (RBAC data loss). Explicit TRUNCATE + replay fixes it.
+		Name:        "user_roles",
+		Tables:      []string{"user_roles_projection"},
+		StreamTypes: []string{"user_role"},
+	},
+	{
+		// Applied by projectors.ApplyTotp via projectors.WireAll (#497).
+		// totp_projection is an FK child of users_projection, so the users
+		// CASCADE above wiped it; this target (running AFTER users) replays
+		// the totp stream so 2FA enrollments survive a full rebuild.
+		Name:        "totp",
+		Tables:      []string{"totp_projection"},
+		StreamTypes: []string{"totp"},
 	},
 	{
 		// Applied by projectors.ApplyToken via projectors.WireAll.
@@ -219,6 +242,27 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"role"},
 	},
 	{
+		// Applied by projectors.ApplyIdentityProvider via projectors.WireAll
+		// (#497). The identity_provider stream drives BOTH
+		// identity_providers_projection and its FK child
+		// identity_links_projection (links reference provider_id AND
+		// user_id). One target, both tables: replaying in sequence order
+		// writes providers before the links that reference them.
+		//
+		// Ordering is load-bearing: TRUNCATE identity_providers_projection
+		// CASCADE also wipes scim_group_mapping_projection and auth_states
+		// (both FK-reference the provider). So this target MUST run BEFORE
+		// scim_group_mappings (declared below) — otherwise it would wipe
+		// the freshly-rebuilt SCIM mappings. auth_states is transient OIDC
+		// flow state (operational); losing it in a rebuild is expected.
+		// identity_links also FK-references users_projection, replayed
+		// above — so those references resolve too.
+		Name:        "identity_providers",
+		Tables:      []string{"identity_providers_projection", "identity_links_projection"},
+		Cascade:     true,
+		StreamTypes: []string{"identity_provider"},
+	},
+	{
 		// Applied by projectors.ApplyUserGroup via projectors.WireAll.
 		// `TRUNCATE user_groups_projection CASCADE` walks the FK graph
 		// and truncates every table that references
@@ -266,6 +310,67 @@ var AllRebuildTargets = []rebuildTarget{
 		Name:        "lps_keypair",
 		Tables:      []string{"lps_keypair"},
 		StreamTypes: []string{"lps_keypair"},
+	},
+	// ---- #497 replay-gap closures ----
+	{
+		// Applied by projectors.ApplySecurityAlert via projectors.WireAll.
+		// Security alerts ride the DEVICE stream (SecurityAlert /
+		// SecurityAlertAcknowledged). No FK to devices_projection, so the
+		// devices CASCADE never wiped it and no target replayed it — this
+		// target TRUNCATEs + replays. event_id FK-references events, which
+		// always exist. Runs after devices for locality; order-independent
+		// (no projection FK).
+		Name:        "security_alerts",
+		Tables:      []string{"security_alerts_projection"},
+		StreamTypes: []string{"device"},
+	},
+	{
+		// Applied by projectors.ApplyLpsPassword via projectors.WireAll.
+		// Replays the lps_password stream so the encrypted rotated-password
+		// HISTORY survives a full rebuild (the payload ciphertexts carry
+		// it). No projection FK; order-independent.
+		Name:        "lps_passwords",
+		Tables:      []string{"lps_passwords_projection"},
+		StreamTypes: []string{"lps_password"},
+	},
+	{
+		// Applied by projectors.ApplyLuksKey via projectors.WireAll.
+		// Replays the luks_key stream — encrypted LUKS key history +
+		// revocation lifecycle. No projection FK; order-independent.
+		Name:        "luks_keys",
+		Tables:      []string{"luks_keys_projection"},
+		StreamTypes: []string{"luks_key"},
+	},
+	{
+		// Applied by projectors.ApplyServerSettingsRebuild via
+		// projectors.WireAll. server_settings_projection is a SINGLETON
+		// seeded by migration 008; a plain TRUNCATE would drop the row and
+		// the UPDATE-only projector would then no-op. The rebuild applier
+		// re-seeds the 'global' row before applying, then replays
+		// ServerSettingUpdated events so current settings are reproduced.
+		Name:        "server_settings",
+		Tables:      []string{"server_settings_projection"},
+		StreamTypes: []string{"server_settings"},
+	},
+	{
+		// Applied by projectors.ApplyCompliancePolicy via projectors.WireAll.
+		// Replays the compliance_policy stream into the policy + rules
+		// projections (the applier's per-event branch writes both, and
+		// re-derives compliance_policy_evaluation_projection via the
+		// in-tx reevaluator). CASCADE so the rules/eval children start
+		// clean; policy row is written before the rules that reference it.
+		Name:        "compliance_policies",
+		Tables:      []string{"compliance_policies_projection", "compliance_policy_rules_projection", "compliance_policy_evaluation_projection"},
+		Cascade:     true,
+		StreamTypes: []string{"compliance_policy"},
+	},
+	{
+		// Applied by projectors.ApplyCompliance via projectors.WireAll.
+		// Replays the compliance stream (device-reported results). No
+		// projection FK; order-independent.
+		Name:        "compliance_results",
+		Tables:      []string{"compliance_results_projection"},
+		StreamTypes: []string{"compliance"},
 	},
 }
 
