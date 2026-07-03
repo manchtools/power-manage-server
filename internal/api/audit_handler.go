@@ -131,6 +131,13 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 		// `passphrase` at the top level.
 		"LuksKeyRotated": {paths: []string{"passphrase"}},
 	},
+	"lps_keypair": {
+		// #495: the singleton LpsKeypairGenerated event carries the
+		// enc:v2-encrypted control private key at top-level
+		// "private_key_enc". Even the ciphertext must not surface through
+		// ListAuditEvents — same posture as the LPS/LUKS/TOTP secrets above.
+		string(eventtypes.LpsKeypairGenerated): {paths: []string{"private_key_enc"}},
+	},
 	"totp": {
 		// WS10 #8: TOTP setup persists the AES-GCM secret ciphertext and
 		// the backup-code bcrypt hashes; regeneration persists fresh

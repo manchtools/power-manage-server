@@ -141,9 +141,14 @@ func TestSchemaTotallyClassified(t *testing.T) {
 
 	// Red phase (AC4): an unclassified probe table MUST be flagged, or the
 	// discovery is broken and the real assertion below would pass vacuously.
+	// t.Cleanup guarantees the drop even if an assertion below FailNow()s,
+	// so a mid-test failure can't leave the probe polluting the template DB.
 	const probe = "zz_495_unclassified_probe"
 	_, err := st.TestingPool().Exec(ctx, "CREATE TABLE "+probe+" (id INT)")
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = st.TestingPool().Exec(context.Background(), "DROP TABLE IF EXISTS "+probe)
+	})
 	probeTables := listBaseTables(t, ctx, st)
 	require.Contains(t, probeTables, probe, "probe table must be discovered")
 	require.Empty(t, classify(probe), "probe table must be UNclassified — the guard would never fire")
