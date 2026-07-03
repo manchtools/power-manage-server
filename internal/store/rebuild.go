@@ -126,8 +126,15 @@ var AllRebuildTargets = []rebuildTarget{
 	},
 	{
 		// Applied by projectors.ApplyDevice via projectors.WireAll.
+		// device_assigned_users_projection / device_assigned_groups_
+		// projection are listed EXPLICITLY (#495): they carry no FK to
+		// devices_projection, so the CASCADE never reaches them — the
+		// applier re-derives both from DeviceAssigned/Unassigned and
+		// DeviceGroupAssigned/Unassigned replay, and without the
+		// TRUNCATE pre-rebuild rows would leak through its upserts
+		// (same clean-slate rationale as action_set_members_projection).
 		Name:        "devices",
-		Tables:      []string{"devices_projection"},
+		Tables:      []string{"devices_projection", "device_assigned_users_projection", "device_assigned_groups_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"device"},
 	},
@@ -167,12 +174,16 @@ var AllRebuildTargets = []rebuildTarget{
 	},
 	{
 		// Applied by projectors.ApplyDefinition (a thin alias to
-		// ApplyAction) via projectors.WireAll. `TRUNCATE
-		// definitions_projection CASCADE` wipes
-		// definition_members_projection (FK reference), which the
-		// applier then re-derives from DefinitionMember* events.
+		// ApplyAction) via projectors.WireAll.
+		// definition_members_projection is listed EXPLICITLY (#495): it
+		// carries no FK to definitions_projection (composite PK only),
+		// so the CASCADE never reached it — the previous comment
+		// claiming it did was wrong against the live schema. Same
+		// clean-slate rationale as action_set_members_projection above:
+		// without the TRUNCATE, pre-rebuild member rows would leak
+		// through the applier's upserts.
 		Name:        "definitions",
-		Tables:      []string{"definitions_projection"},
+		Tables:      []string{"definitions_projection", "definition_members_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"definition"},
 	},
