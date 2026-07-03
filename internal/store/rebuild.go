@@ -247,6 +247,15 @@ var AllRebuildTargets = []rebuildTarget{
 		Tables:      []string{"scim_group_mapping_projection"},
 		StreamTypes: []string{"scim_group_mapping"},
 	},
+	{
+		// Applied by projectors.ApplyLpsKeypair via projectors.WireAll.
+		// Singleton projection of the control server's LPS sealing
+		// keypair (#495) — one LpsKeypairGenerated event, one row.
+		// No FK dependencies; order-independent.
+		Name:        "lps_keypair",
+		Tables:      []string{"lps_keypair"},
+		StreamTypes: []string{"lps_keypair"},
+	},
 }
 
 // ErrUnknownTarget is returned when RebuildAll is called with a

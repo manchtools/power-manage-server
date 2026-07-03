@@ -188,10 +188,10 @@ func TestEventAppendGuardListsAreReal(t *testing.T) {
 // set, immediately after the event append, with a compensating-event
 // rollback (see persistActionSignature / rollbackUnsignedCreate).
 var allowedDirectWrites = map[string]string{
-	// First-boot LPS sealing keypair — a single global infra row (#483, ADR
-	// 0028). Advisory-lock serialized, ON CONFLICT DO NOTHING; not domain
-	// state, deliberately not event-sourced.
-	"lps_keypair.go:InsertLpsKeypair": "by-design non-event-sourced infra row (#483)",
+	// NOTE(#495): the lps_keypair row — historically the one Postgres write
+	// bypassing the event store (#483 / ADR 0028) — is now a real projection
+	// of LpsKeypairGenerated; EnsureLpsKeypair appends, the projector writes.
+	// No allowlist entry exists for it, and none may be re-added.
 
 	// Two-phase sign-after-append: the signature/params-canonical columns are
 	// backfilled onto the projection row AFTER appendEvent(ActionCreated /

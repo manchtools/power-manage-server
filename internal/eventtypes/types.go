@@ -133,6 +133,11 @@ const (
 	// lps_password stream
 	LpsPasswordRotated EventType = "LpsPasswordRotated"
 
+	// lps_keypair stream — singleton ("global"); exactly one
+	// LpsKeypairGenerated per deployment (#495). The lps_keypair table is
+	// its projection.
+	LpsKeypairGenerated EventType = "LpsKeypairGenerated"
+
 	// luks_key stream
 	LuksKeyRotated                    EventType = "LuksKeyRotated"
 	LuksDeviceKeyRevocationRequested  EventType = "LuksDeviceKeyRevocationRequested"
@@ -255,6 +260,7 @@ func All() []EventType {
 		IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated, IdentityLinked,
 		IdentityLinkLoginUpdated, IdentityUnlinked,
 		LpsPasswordRotated,
+		LpsKeypairGenerated,
 		LuksKeyRotated, LuksDeviceKeyRevocationRequested, LuksDeviceKeyRevocationDispatched,
 		LuksDeviceKeyRevoked, LuksDeviceKeyRevocationFailed,
 		RoleCreated, RoleUpdated, RoleDeleted,

@@ -40,6 +40,10 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "lps_password_projector"),
 	))
+	st.RegisterEventListener(LpsKeypairListener(
+		st,
+		loggerFor(logger, "lps_keypair_projector"),
+	))
 	st.RegisterEventListener(LuksKeyListener(
 		st,
 		loggerFor(logger, "luks_key_projector"),
@@ -156,6 +160,9 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("executions", ApplyExecution)
 	st.RegisterRebuildApply("devices", ApplyDevice)
 	st.RegisterRebuildApply("users", ApplyUser)
+	// lps_keypair (#495): the singleton sealing-keypair row is a projection
+	// of the lps_keypair/global stream; replay reproduces it 1:1.
+	st.RegisterRebuildApply("lps_keypair", ApplyLpsKeypair)
 }
 
 // loggerFor returns a sub-logger tagged with the projector
