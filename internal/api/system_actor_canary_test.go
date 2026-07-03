@@ -48,6 +48,12 @@ var knownSystemActorSites = map[string]string{
 	// LUKS device-key revocation lifecycle is recorded by the server.
 	"device_handler.go:RevokeLuksDeviceKey": "server records the LUKS device-key revocation lifecycle event",
 
+	// LPS sealing keypair is boot infrastructure the control server owns
+	// (#495): both the fresh-generation append and the upgrade backfill of
+	// the singleton LpsKeypairGenerated event have no user actor.
+	"lps_keypair.go:EnsureLpsKeypair":         "server generates the singleton LPS sealing keypair at boot; no user actor",
+	"lps_keypair.go:backfillLpsKeypairStream": "server backfills the LpsKeypairGenerated event for pre-#495 deployments; no user actor",
+
 	// Settings changes that cascade into server-owned system actions at boot or
 	// on a bulk toggle — no per-user actor.
 	"settings_handler.go:UpdateServerSettings":          "settings change cascades server-owned system actions",

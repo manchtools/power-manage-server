@@ -30,25 +30,28 @@ func (q *Queries) GetLpsKeypair(ctx context.Context) (GetLpsKeypairRow, error) {
 	return i, err
 }
 
-const insertLpsKeypair = `-- name: InsertLpsKeypair :execrows
-INSERT INTO lps_keypair (id, public_key, private_key_enc)
-VALUES ('global', $1, $2)
-ON CONFLICT (id) DO NOTHING
+const upsertLpsKeypair = `-- name: UpsertLpsKeypair :exec
+INSERT INTO lps_keypair (id, public_key, private_key_enc, created_at)
+VALUES ('global', $1, $2, $3)
+ON CONFLICT (id) DO UPDATE
+SET public_key      = EXCLUDED.public_key,
+    private_key_enc = EXCLUDED.private_key_enc,
+    created_at      = EXCLUDED.created_at
 `
 
-type InsertLpsKeypairParams struct {
-	PublicKey     []byte `json:"public_key"`
-	PrivateKeyEnc string `json:"private_key_enc"`
+type UpsertLpsKeypairParams struct {
+	PublicKey     []byte             `json:"public_key"`
+	PrivateKeyEnc string             `json:"private_key_enc"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
-// First-writer-wins under the EnsureLpsKeypair advisory lock. ON CONFLICT
-// DO NOTHING makes a lost race (another replica inserted between our read
-// and write) harmless: :execrows returns 0 and the caller re-reads the
-// winning row rather than clobbering it.
-func (q *Queries) InsertLpsKeypair(ctx context.Context, arg InsertLpsKeypairParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertLpsKeypair, arg.PublicKey, arg.PrivateKeyEnc)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// Projector write for LpsKeypairGenerated (#495): the lps_keypair table is a
+// projection of the singleton lps_keypair/global stream. Idempotent overwrite
+// so a rebuild replay and a live listener re-delivery both converge on the
+// event's values. First-writer-wins now lives at the EVENT layer — the
+// UNIQUE(stream_type, stream_id, stream_version) constraint rejects the
+// losing replica's version-1 append (see api.EnsureLpsKeypair).
+func (q *Queries) UpsertLpsKeypair(ctx context.Context, arg UpsertLpsKeypairParams) error {
+	_, err := q.db.Exec(ctx, upsertLpsKeypair, arg.PublicKey, arg.PrivateKeyEnc, arg.CreatedAt)
+	return err
 }

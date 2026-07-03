@@ -15,6 +15,8 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -130,6 +132,30 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 		"device_id", msg.DeviceId,
 		"table", tableName,
 	)
+
+	// Audit (#496): record who queried what on which device. Best-effort —
+	// the dispatch already succeeded, so a failed append must not undo it;
+	// log loudly (mirrors the UserLoggedIn audit-gap pattern).
+	if userCtx, aerr := requireAuth(ctx); aerr == nil {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   msg.DeviceId,
+			EventType:  string(eventtypes.OSQueryDispatched),
+			Data: payloads.OSQueryDispatched{
+				DeviceID:  msg.DeviceId,
+				QueryID:   queryID,
+				TableName: tableName,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}); err != nil {
+			h.logger.Error("AUDIT GAP: failed to append OSQueryDispatched; dispatch already succeeded",
+				"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for OSQueryDispatched; dispatch already succeeded",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", aerr)
+	}
 
 	return connect.NewResponse(&pm.DispatchOSQueryResponse{
 		QueryId: queryID,
@@ -286,6 +312,26 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	h.logger.Info("inventory refresh dispatched to device",
 		"device_id", msg.DeviceId,
 	)
+
+	// Audit (#496): record who requested the inventory refresh. Best-effort.
+	if userCtx, aerr := requireAuth(ctx); aerr == nil {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   msg.DeviceId,
+			EventType:  string(eventtypes.DeviceInventoryRefreshRequested),
+			Data: payloads.DeviceInventoryRefreshRequested{
+				DeviceID: msg.DeviceId,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}); err != nil {
+			h.logger.Error("AUDIT GAP: failed to append DeviceInventoryRefreshRequested; dispatch already succeeded",
+				"device_id", msg.DeviceId, "error", err)
+		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for DeviceInventoryRefreshRequested; dispatch already succeeded",
+			"device_id", msg.DeviceId, "error", aerr)
+	}
 
 	return connect.NewResponse(&pm.RefreshDeviceInventoryResponse{}), nil
 }

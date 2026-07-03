@@ -27,6 +27,24 @@ func (q *Queries) GetServerSettings(ctx context.Context) (ServerSettingsProjecti
 	return i, err
 }
 
+const seedServerSettings = `-- name: SeedServerSettings :exec
+INSERT INTO server_settings_projection (id, projection_version)
+VALUES ('global', 0)
+ON CONFLICT (id) DO NOTHING
+`
+
+// Re-seeds the singleton 'global' row at projection_version 0 (#497). A
+// rebuild TRUNCATEs the table, dropping the migration-seeded row; the
+// UPDATE-only projector would then no-op forever. The rebuild applier calls
+// this first so the subsequent ServerSettingUpdated replays (all at
+// projection_version > 0) land on a present row. Idempotent: ON CONFLICT DO
+// NOTHING means a live-path call (row already present) is a no-op, and it
+// never clobbers a rebuilt row's settings.
+func (q *Queries) SeedServerSettings(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, seedServerSettings)
+	return err
+}
+
 const updateServerSettings = `-- name: UpdateServerSettings :exec
 UPDATE server_settings_projection
 SET user_provisioning_enabled = COALESCE($1::BOOLEAN, user_provisioning_enabled),

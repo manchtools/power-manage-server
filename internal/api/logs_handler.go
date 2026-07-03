@@ -12,6 +12,8 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 
@@ -114,6 +116,30 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 		"query_id", queryID,
 		"device_id", msg.DeviceId,
 	)
+
+	// Audit (#496): record who pulled logs off which device, with the query
+	// scope (unit/priority) — never any log content. Best-effort.
+	if userCtx, aerr := requireAuth(ctx); aerr == nil {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "device",
+			StreamID:   msg.DeviceId,
+			EventType:  string(eventtypes.DeviceLogsQueried),
+			Data: payloads.DeviceLogsQueried{
+				DeviceID: msg.DeviceId,
+				QueryID:  queryID,
+				Unit:     msg.Unit,
+				Priority: msg.Priority,
+			},
+			ActorType: "user",
+			ActorID:   userCtx.ID,
+		}); err != nil {
+			h.logger.Error("AUDIT GAP: failed to append DeviceLogsQueried; dispatch already succeeded",
+				"query_id", queryID, "device_id", msg.DeviceId, "error", err)
+		}
+	} else {
+		h.logger.Error("AUDIT GAP: could not resolve actor for DeviceLogsQueried; dispatch already succeeded",
+			"query_id", queryID, "device_id", msg.DeviceId, "error", aerr)
+	}
 
 	return connect.NewResponse(&pm.QueryDeviceLogsResponse{
 		QueryId: queryID,

@@ -81,6 +81,13 @@ const (
 	DeviceGroupAssigned   EventType = "DeviceGroupAssigned"
 	DeviceGroupUnassigned EventType = "DeviceGroupUnassigned"
 	DeviceSyncIntervalSet EventType = "DeviceSyncIntervalSet"
+	// Audit-only device-read/dispatch events (#496). They record who pulled
+	// what off which device; ApplyDevice does not materialise them (no
+	// projection change — the result tables are transient operational state).
+	OSQueryDispatched               EventType = "OSQueryDispatched"
+	DeviceLogsQueried               EventType = "DeviceLogsQueried"
+	DeviceInventoryRefreshRequested EventType = "DeviceInventoryRefreshRequested"
+	LuksTokenCreated                EventType = "LuksTokenCreated"
 
 	// device_group stream
 	DeviceGroupCreated              EventType = "DeviceGroupCreated"
@@ -132,6 +139,11 @@ const (
 
 	// lps_password stream
 	LpsPasswordRotated EventType = "LpsPasswordRotated"
+
+	// lps_keypair stream — singleton ("global"); exactly one
+	// LpsKeypairGenerated per deployment (#495). The lps_keypair table is
+	// its projection.
+	LpsKeypairGenerated EventType = "LpsKeypairGenerated"
 
 	// luks_key stream
 	LuksKeyRotated                    EventType = "LuksKeyRotated"
@@ -187,15 +199,20 @@ const (
 	TOTPBackupCodesRegenerated EventType = "TOTPBackupCodesRegenerated"
 
 	// user stream
-	UserCreatedWithRoles            EventType = "UserCreatedWithRoles"
-	UserProfileUpdated              EventType = "UserProfileUpdated"
-	UserEmailChanged                EventType = "UserEmailChanged"
-	UserPasswordChanged             EventType = "UserPasswordChanged"
-	UserRoleChanged                 EventType = "UserRoleChanged"
-	UserSessionInvalidated          EventType = "UserSessionInvalidated"
-	UserDisabled                    EventType = "UserDisabled"
-	UserEnabled                     EventType = "UserEnabled"
-	UserLoggedIn                    EventType = "UserLoggedIn"
+	UserCreatedWithRoles   EventType = "UserCreatedWithRoles"
+	UserProfileUpdated     EventType = "UserProfileUpdated"
+	UserEmailChanged       EventType = "UserEmailChanged"
+	UserPasswordChanged    EventType = "UserPasswordChanged"
+	UserRoleChanged        EventType = "UserRoleChanged"
+	UserSessionInvalidated EventType = "UserSessionInvalidated"
+	UserDisabled           EventType = "UserDisabled"
+	UserEnabled            EventType = "UserEnabled"
+	UserLoggedIn           EventType = "UserLoggedIn"
+	// Session lifecycle audit (#496). Counterparts to UserLoggedIn;
+	// audit-only (ApplyUser does not materialise them — the JWT denylist is
+	// operational state in revoked_tokens, not a user_projection column).
+	UserLoggedOut                   EventType = "UserLoggedOut"
+	UserSessionRefreshed            EventType = "UserSessionRefreshed"
 	UserDeleted                     EventType = "UserDeleted"
 	UserSshKeyAdded                 EventType = "UserSshKeyAdded"
 	UserSshKeyRemoved               EventType = "UserSshKeyRemoved"
@@ -246,6 +263,7 @@ func All() []EventType {
 		DeviceRegistered, DeviceSeen, DeviceHeartbeat, DeviceCertRenewed, DeviceLabelsUpdated,
 		DeviceLabelSet, DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
 		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet,
+		OSQueryDispatched, DeviceLogsQueried, DeviceInventoryRefreshRequested, LuksTokenCreated,
 		DeviceGroupCreated, DeviceGroupRenamed, DeviceGroupDescriptionUpdated, DeviceGroupQueryUpdated,
 		DeviceGroupSyncIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
 		DeviceGroupMemberRemoved, DeviceGroupMembersReevaluated, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
@@ -255,6 +273,7 @@ func All() []EventType {
 		IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated, IdentityLinked,
 		IdentityLinkLoginUpdated, IdentityUnlinked,
 		LpsPasswordRotated,
+		LpsKeypairGenerated,
 		LuksKeyRotated, LuksDeviceKeyRevocationRequested, LuksDeviceKeyRevocationDispatched,
 		LuksDeviceKeyRevoked, LuksDeviceKeyRevocationFailed,
 		RoleCreated, RoleUpdated, RoleDeleted,
@@ -266,7 +285,7 @@ func All() []EventType {
 		TokenCreated, TokenRenamed, TokenUsed, TokenDisabled, TokenEnabled, TokenDeleted,
 		TOTPSetupInitiated, TOTPVerified, TOTPDisabled, TOTPBackupCodeUsed, TOTPBackupCodesRegenerated,
 		UserCreatedWithRoles, UserProfileUpdated, UserEmailChanged, UserPasswordChanged, UserRoleChanged,
-		UserSessionInvalidated, UserDisabled, UserEnabled, UserLoggedIn, UserDeleted,
+		UserSessionInvalidated, UserDisabled, UserEnabled, UserLoggedIn, UserLoggedOut, UserSessionRefreshed, UserDeleted,
 		UserSshKeyAdded, UserSshKeyRemoved, UserSshSettingsUpdated, UserLinuxUsernameChanged,
 		UserSystemActionLinked, UserProvisioningSettingsUpdated,
 		UserRoleAssigned, UserRoleRevoked,

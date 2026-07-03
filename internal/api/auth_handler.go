@@ -13,6 +13,7 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -286,6 +287,22 @@ func (h *AuthHandler) RefreshToken(ctx context.Context, req *connect.Request[pm.
 		RefreshToken: tokens.RefreshToken,
 	})
 
+	// Audit (#496): record the session rotation. High-frequency by nature;
+	// audit completeness is the deliberate default (a noisy audit view is
+	// filtered, not silenced). Best-effort — the new tokens are already
+	// minted, so a failed append must not fail the refresh.
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   result.Claims.UserID,
+		EventType:  string(eventtypes.UserSessionRefreshed),
+		Data:       payloads.UserSessionRefreshed{OldJTI: result.OldJTI},
+		ActorType:  "user",
+		ActorID:    result.Claims.UserID,
+	}); err != nil {
+		h.logger.Error("AUDIT GAP: failed to append UserSessionRefreshed; token refresh proceeded",
+			"user_id", result.Claims.UserID, "error", err)
+	}
+
 	return resp, nil
 }
 
@@ -302,6 +319,20 @@ func (h *AuthHandler) Logout(ctx context.Context, req *connect.Request[pm.Logout
 		if err == nil && claims.ID != "" {
 			if _, err := h.store.Repos().RevokedToken.Revoke(ctx, claims.ID, claims.ExpiresAt.Time); err != nil {
 				h.logger.Warn("failed to revoke token on logout", "jti", claims.ID, "error", err)
+			}
+			// Audit (#496): the session was ended. The JTI is a session id,
+			// not a credential. Best-effort — the revocation is what matters
+			// for security; a failed audit append must not fail logout.
+			if aerr := h.store.AppendEvent(ctx, store.Event{
+				StreamType: "user",
+				StreamID:   claims.UserID,
+				EventType:  string(eventtypes.UserLoggedOut),
+				Data:       payloads.UserLoggedOut{JTI: claims.ID},
+				ActorType:  "user",
+				ActorID:    claims.UserID,
+			}); aerr != nil {
+				h.logger.Error("AUDIT GAP: failed to append UserLoggedOut; logout proceeded",
+					"user_id", claims.UserID, "jti", claims.ID, "error", aerr)
 			}
 		}
 	}

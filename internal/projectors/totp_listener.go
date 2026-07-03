@@ -37,108 +37,98 @@ func TotpListener(st *store.Store, logger *slog.Logger) store.EventListener {
 		return func(context.Context, store.PersistedEvent) {}
 	}
 	return func(ctx context.Context, e store.PersistedEvent) {
-		if e.StreamType != "totp" {
-			return
-		}
-
-		payload, err := decodeTotpPayload(e)
-		if err != nil {
-			if errors.Is(err, ErrIgnoredEvent) {
-				return
-			}
-			logger.Warn("totp projector: invalid event payload",
+		if err := ApplyTotp(ctx, st.Queries(), e); err != nil {
+			logger.Warn("totp projector: failed to apply event",
 				"event_id", e.ID, "event_type", e.EventType, "error", err)
-			return
-		}
-
-		q := st.Queries()
-		updatedAt := e.OccurredAt
-		userID := e.StreamID
-
-		switch e.EventType {
-		case string(eventtypes.TOTPSetupInitiated):
-			if err := q.UpsertTotpProjection(ctx, db.UpsertTotpProjectionParams{
-				UserID:            userID,
-				SecretEncrypted:   payload.SecretEncrypted,
-				BackupCodesHash:   payload.BackupCodesHash,
-				CreatedAt:         updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to upsert TOTPSetupInitiated",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-
-		case string(eventtypes.TOTPVerified):
-			if err := q.VerifyTotpProjection(ctx, db.VerifyTotpProjectionParams{
-				UserID:            userID,
-				UpdatedAt:         updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to flip totp_projection to verified",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-			if err := q.SetUserTotpEnabled(ctx, db.SetUserTotpEnabledParams{
-				ID:                userID,
-				TotpEnabled:       true,
-				UpdatedAt:         &updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=TRUE",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-			if err := enqueueDynamicUserGroupsForUser(ctx, q, userID); err != nil {
-				logger.Warn("totp projector: failed to enqueue dynamic user groups",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-
-		case string(eventtypes.TOTPDisabled):
-			if err := q.DeleteTotpProjection(ctx, userID); err != nil {
-				logger.Warn("totp projector: failed to delete totp_projection row",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-			if err := q.SetUserTotpEnabled(ctx, db.SetUserTotpEnabledParams{
-				ID:                userID,
-				TotpEnabled:       false,
-				UpdatedAt:         &updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to flip users_projection.totp_enabled=FALSE",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-			if err := enqueueDynamicUserGroupsForUser(ctx, q, userID); err != nil {
-				logger.Warn("totp projector: failed to enqueue dynamic user groups",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
-
-		case string(eventtypes.TOTPBackupCodeUsed):
-			if payload.Index == nil {
-				logger.Warn("totp projector: TOTPBackupCodeUsed missing index field",
-					"event_id", e.ID, "user_id", userID)
-				return
-			}
-			// PL/pgSQL projector: backup_codes_used[(idx)::int + 1]
-			// — convert 0-based event index to the 1-based Postgres
-			// array index here so the SQL stays clean.
-			if err := q.MarkTotpBackupCodeUsed(ctx, db.MarkTotpBackupCodeUsedParams{
-				UserID:            userID,
-				Column2:           int32(*payload.Index + 1),
-				UpdatedAt:         updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to mark backup code used",
-					"event_id", e.ID, "user_id", userID, "index", *payload.Index, "error", err)
-			}
-
-		case string(eventtypes.TOTPBackupCodesRegenerated):
-			if err := q.RegenerateTotpBackupCodes(ctx, db.RegenerateTotpBackupCodesParams{
-				UserID:            userID,
-				BackupCodesHash:   payload.BackupCodesHash,
-				UpdatedAt:         updatedAt,
-				ProjectionVersion: e.SequenceNum,
-			}); err != nil {
-				logger.Warn("totp projector: failed to regenerate backup codes",
-					"event_id", e.ID, "user_id", userID, "error", err)
-			}
 		}
 	}
+}
+
+// ApplyTotp is the transactional core of the TOTP projector: writes through
+// the supplied Queries and returns errors. Live dispatch wraps it
+// (log-and-swallow); the rebuild path (#497) registers it via
+// RegisterRebuildApply so a users rebuild — which CASCADE-wipes the
+// FK-child totp_projection — is followed by a totp target that replays the
+// enrollments. The cross-stream users_projection.totp_enabled write is safe
+// during rebuild because the totp target runs AFTER users.
+func ApplyTotp(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	if e.StreamType != "totp" {
+		return nil
+	}
+	payload, err := decodeTotpPayload(e)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+
+	updatedAt := e.OccurredAt
+	userID := e.StreamID
+
+	switch e.EventType {
+	case string(eventtypes.TOTPSetupInitiated):
+		return q.UpsertTotpProjection(ctx, db.UpsertTotpProjectionParams{
+			UserID:            userID,
+			SecretEncrypted:   payload.SecretEncrypted,
+			BackupCodesHash:   payload.BackupCodesHash,
+			CreatedAt:         updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		})
+
+	case string(eventtypes.TOTPVerified):
+		if err := q.VerifyTotpProjection(ctx, db.VerifyTotpProjectionParams{
+			UserID:            userID,
+			UpdatedAt:         updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		}); err != nil {
+			return err
+		}
+		if err := q.SetUserTotpEnabled(ctx, db.SetUserTotpEnabledParams{
+			ID:                userID,
+			TotpEnabled:       true,
+			UpdatedAt:         &updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		}); err != nil {
+			return err
+		}
+		return enqueueDynamicUserGroupsForUser(ctx, q, userID)
+
+	case string(eventtypes.TOTPDisabled):
+		if err := q.DeleteTotpProjection(ctx, userID); err != nil {
+			return err
+		}
+		if err := q.SetUserTotpEnabled(ctx, db.SetUserTotpEnabledParams{
+			ID:                userID,
+			TotpEnabled:       false,
+			UpdatedAt:         &updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		}); err != nil {
+			return err
+		}
+		return enqueueDynamicUserGroupsForUser(ctx, q, userID)
+
+	case string(eventtypes.TOTPBackupCodeUsed):
+		if payload.Index == nil {
+			// A malformed event that the live projector logged-and-skipped;
+			// keep the same non-fatal behaviour during rebuild.
+			return nil
+		}
+		// Convert 0-based event index to the 1-based Postgres array index.
+		return q.MarkTotpBackupCodeUsed(ctx, db.MarkTotpBackupCodeUsedParams{
+			UserID:            userID,
+			Column2:           int32(*payload.Index + 1),
+			UpdatedAt:         updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		})
+
+	case string(eventtypes.TOTPBackupCodesRegenerated):
+		return q.RegenerateTotpBackupCodes(ctx, db.RegenerateTotpBackupCodesParams{
+			UserID:            userID,
+			BackupCodesHash:   payload.BackupCodesHash,
+			UpdatedAt:         updatedAt,
+			ProjectionVersion: e.SequenceNum,
+		})
+	}
+	return nil
 }

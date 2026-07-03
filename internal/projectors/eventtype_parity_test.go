@@ -28,6 +28,17 @@ var unprojectedAllowlist = map[eventtypes.EventType]string{
 	eventtypes.TerminalSessionTerminated:        "terminal_sessions written directly by api/terminal_handler",
 	eventtypes.TerminalAdminMembershipRevoked:   "consumed by api/system_actions reconciler, not a projection",
 	eventtypes.LuksDeviceKeyRevocationRequested: "triggers async revocation dispatch in api/device_handler, no projection",
+	// #496 audit-only events: they record WHO did WHAT to WHICH
+	// device/session for the audit log; there is no projection to
+	// materialise (the underlying result/token/denylist tables are
+	// transient operational state, and users_projection needs no new
+	// column for a logout/refresh).
+	eventtypes.OSQueryDispatched:               "audit-only (#496): who dispatched an osquery read; no projection",
+	eventtypes.DeviceLogsQueried:               "audit-only (#496): who queried device logs; no projection",
+	eventtypes.DeviceInventoryRefreshRequested: "audit-only (#496): who refreshed inventory; no projection",
+	eventtypes.LuksTokenCreated:                "audit-only (#496): who issued a LUKS token; no projection",
+	eventtypes.UserLoggedOut:                   "audit-only (#496): session end; the denylist row is operational state",
+	eventtypes.UserSessionRefreshed:            "audit-only (#496): session rotation; no projection",
 }
 
 // TestEventTypes_AllHandledByProjectorOrAllowlisted is a self-discovering guard

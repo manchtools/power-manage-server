@@ -106,3 +106,13 @@ catch that drift.
 - `StoreLuksKey` has the same gateway-visible-cleartext shape; the primitive and
   key distribution built here make sealing it a small follow-up (tracked
   separately).
+
+## Amendment (2026-07-03 — #495 / ADR 0029)
+
+The Context's characterization of `lps_keypair` as infrastructure state that
+"does not go through the event store / projector machinery" is superseded.
+The keypair is now event-sourced: `EnsureLpsKeypair` appends a singleton
+`LpsKeypairGenerated` event (OCC, version 1 — the stream-version uniqueness
+replaces the advisory lock) and the `lps_keypair` table is a projection with
+a rebuild target. Key bytes, AAD context, and the signed public key agents
+receive are unchanged. See ADR 0029 for the contract this closes.
