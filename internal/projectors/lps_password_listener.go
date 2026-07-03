@@ -3,6 +3,7 @@ package projectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -93,7 +94,11 @@ func ApplyLpsPassword(ctx context.Context, q *store.Queries, e store.PersistedEv
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
 		}
-		return err
+		// A malformed historical payload must not abort the whole
+		// lps_passwords rebuild; report it skippable so the live listener
+		// logs-and-swallows and RebuildAll skips-and-continues.
+		return fmt.Errorf("lps_password projector: malformed LpsPasswordRotated %s: %w: %w",
+			e.ID, err, store.ErrSkipEvent)
 	}
 
 	projVer := e.SequenceNum

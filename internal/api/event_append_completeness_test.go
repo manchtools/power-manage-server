@@ -194,9 +194,9 @@ var allowedDirectWrites = map[string]string{
 	"system_action_store.go:UpdateSignature": "same sign-after-append backfill for system-managed actions",
 
 	// JWT refresh-token revocation list — TTL'd session infra rows, not
-	// domain state. (The MISSING Logout/RefreshToken audit events are a
-	// separate finding: knownGaps / #496.)
-	"auth_handler.go:Revoke": "revoked_tokens session-infra row (WS11); audit-event gap tracked separately in #496",
+	// domain state. Logout/RefreshToken now audit-log the session lifecycle
+	// (#496); only this denylist row stays by-design non-event-sourced.
+	"auth_handler.go:Revoke": "revoked_tokens session-infra row (WS11); the RPC audit event is appended (#496), the denylist row itself is not event-sourced",
 
 	// Short-lived OIDC flow rows: staged at GetSSOLoginURL, destructively
 	// consumed on first read at SSOCallback (replay defense). Flow infra;
@@ -207,17 +207,18 @@ var allowedDirectWrites = map[string]string{
 	// One-time LUKS key-storage tokens (hashed at rest, WS10): staged by
 	// CreateLuksToken, redeemed exactly once by the agent via the internal
 	// proxy. The resulting key STORAGE is event-sourced (ProxyStoreLuksKey
-	// appends). (CreateLuksToken's missing audit event: knownGaps / #496.)
-	"device_handler.go:CreateToken":    "luks_tokens one-time token row (WS10); audit-event gap tracked separately in #496",
+	// appends). CreateLuksToken now appends its own audit event (#496).
+	"device_handler.go:CreateToken":    "luks_tokens one-time token row (WS10); the RPC audit event is appended (#496), the token row itself is not event-sourced",
 	"internal_handler.go:ConsumeToken": "destructive one-time redemption of the luks_tokens row; key storage itself is event-sourced",
 
 	// Async result staging for device-pull operations: a pending row is
 	// created at dispatch, expired on signing/enqueue failure or read-side
 	// timeout; the agent's reply fills it via the inbox path. Transient
-	// operational state. (The missing DISPATCH audit events: knownGaps/#496.)
-	"osquery_handler.go:CreateResult":          "osquery_results staging row; dispatch audit gap tracked in #496",
+	// operational state. DispatchOSQuery/QueryDeviceLogs now audit the
+	// dispatch (#496); only these staging rows stay non-event-sourced.
+	"osquery_handler.go:CreateResult":          "osquery_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
 	"osquery_handler.go:ExpirePendingResult":   "timeout/failure bookkeeping on the osquery_results staging row",
-	"logs_handler.go:CreateQueryResult":        "log_query_results staging row; dispatch audit gap tracked in #496",
+	"logs_handler.go:CreateQueryResult":        "log_query_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
 	"logs_handler.go:ExpirePendingQueryResult": "timeout/failure bookkeeping on the log_query_results staging row",
 
 	// Live terminal-session operational inventory, written ALONGSIDE the

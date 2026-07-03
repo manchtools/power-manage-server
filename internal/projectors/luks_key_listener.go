@@ -3,6 +3,7 @@ package projectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
@@ -107,7 +108,11 @@ func applyLuksKeyRotated(ctx context.Context, q *store.Queries, e store.Persiste
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
 		}
-		return err
+		// A malformed historical payload must not abort the whole luks_keys
+		// rebuild; report it skippable so the live listener logs-and-swallows
+		// and RebuildAll skips-and-continues.
+		return fmt.Errorf("luks_key projector: malformed LuksKeyRotated %s: %w: %w",
+			e.ID, err, store.ErrSkipEvent)
 	}
 	projVer := e.SequenceNum
 
