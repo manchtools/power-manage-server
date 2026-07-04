@@ -139,7 +139,7 @@ fi
 
 ## Emergency projection rebuild: `rebuild-projections`
 
-<!-- docref: begin src=cmd/control/main.go#@rebuild-subcommand -->
+<!-- docref: begin src=cmd/control/main.go#@rebuild-subcommand:2d8f0710 -->
 If a projection table is corrupted or inconsistent with the event store
 (manual edit, projector bug, partial restore), the Control binary can
 replay it from the event log. This is **destructive** — the selected
@@ -156,7 +156,7 @@ docker compose exec control control rebuild-projections users devices
 ```
 <!-- docref: end -->
 
-<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections -->
+<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:233aab6e -->
 The command prints the resolved target list before touching anything. A
 partial selection is widened automatically when a selected table's
 `TRUNCATE ... CASCADE` would wipe tables owned by other targets — a
