@@ -3,15 +3,13 @@ package store
 import (
 	"context"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // LuksKey is one rotated LUKS passphrase record for a (device,
 // action) pair. Passphrase is the decrypted secret — same blast-
 // radius rule as LPS: treat values as sensitive in callers.
 type LuksKey struct {
-	ID               uuid.UUID
+	ID               string
 	DeviceID         string
 	ActionID         string
 	DevicePath       string
@@ -29,7 +27,7 @@ type LuksKey struct {
 // when retrieving the current LUKS key. Tokens carry the minimum
 // password requirements the rotation must satisfy.
 type LuksToken struct {
-	ID         uuid.UUID
+	ID         string
 	DeviceID   string
 	ActionID   string
 	Token      string

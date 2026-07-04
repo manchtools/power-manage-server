@@ -8,8 +8,6 @@ package generated
 import (
 	"context"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 const acknowledgeSecurityAlertProjection = `-- name: AcknowledgeSecurityAlertProjection :execrows
@@ -17,11 +15,11 @@ UPDATE security_alerts_projection
 SET acknowledged = TRUE,
     acknowledged_at = $2,
     acknowledged_by = $3
-WHERE event_id = $1::uuid
+WHERE event_id = $1
 `
 
 type AcknowledgeSecurityAlertProjectionParams struct {
-	Column1        uuid.UUID  `json:"column_1"`
+	EventID        string     `json:"event_id"`
 	AcknowledgedAt *time.Time `json:"acknowledged_at"`
 	AcknowledgedBy *string    `json:"acknowledged_by"`
 }
@@ -32,7 +30,7 @@ type AcknowledgeSecurityAlertProjectionParams struct {
 // log it for operator visibility — matching the RAISE EXCEPTION
 // contract the deleted PL/pgSQL projector had.
 func (q *Queries) AcknowledgeSecurityAlertProjection(ctx context.Context, arg AcknowledgeSecurityAlertProjectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, acknowledgeSecurityAlertProjection, arg.Column1, arg.AcknowledgedAt, arg.AcknowledgedBy)
+	result, err := q.db.Exec(ctx, acknowledgeSecurityAlertProjection, arg.EventID, arg.AcknowledgedAt, arg.AcknowledgedBy)
 	if err != nil {
 		return 0, err
 	}
@@ -85,7 +83,7 @@ WHERE event_id = $1
 `
 
 type GetSecurityAlertRow struct {
-	EventID        uuid.UUID  `json:"event_id"`
+	EventID        string     `json:"event_id"`
 	DeviceID       string     `json:"device_id"`
 	AlertType      string     `json:"alert_type"`
 	Message        string     `json:"message"`
@@ -96,7 +94,7 @@ type GetSecurityAlertRow struct {
 	AcknowledgedBy *string    `json:"acknowledged_by"`
 }
 
-func (q *Queries) GetSecurityAlert(ctx context.Context, eventID uuid.UUID) (GetSecurityAlertRow, error) {
+func (q *Queries) GetSecurityAlert(ctx context.Context, eventID string) (GetSecurityAlertRow, error) {
 	row := q.db.QueryRow(ctx, getSecurityAlert, eventID)
 	var i GetSecurityAlertRow
 	err := row.Scan(
@@ -115,18 +113,19 @@ func (q *Queries) GetSecurityAlert(ctx context.Context, eventID uuid.UUID) (GetS
 
 const insertSecurityAlertProjection = `-- name: InsertSecurityAlertProjection :exec
 INSERT INTO security_alerts_projection (
-    event_id, device_id, alert_type, message, details, raised_at
-) VALUES ($1, $2, $3, $4, $5, $6)
+    event_id, device_id, alert_type, message, details, raised_at, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (event_id) DO NOTHING
 `
 
 type InsertSecurityAlertProjectionParams struct {
-	EventID   uuid.UUID `json:"event_id"`
+	EventID   string    `json:"event_id"`
 	DeviceID  string    `json:"device_id"`
 	AlertType string    `json:"alert_type"`
 	Message   string    `json:"message"`
 	Details   []byte    `json:"details"`
 	RaisedAt  time.Time `json:"raised_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Write-side queries for the Go projector that replaced
@@ -142,6 +141,7 @@ func (q *Queries) InsertSecurityAlertProjection(ctx context.Context, arg InsertS
 		arg.Message,
 		arg.Details,
 		arg.RaisedAt,
+		arg.CreatedAt,
 	)
 	return err
 }
@@ -166,7 +166,7 @@ type ListSecurityAlertsForDeviceParams struct {
 }
 
 type ListSecurityAlertsForDeviceRow struct {
-	EventID        uuid.UUID  `json:"event_id"`
+	EventID        string     `json:"event_id"`
 	DeviceID       string     `json:"device_id"`
 	AlertType      string     `json:"alert_type"`
 	Message        string     `json:"message"`
@@ -237,7 +237,7 @@ type ListUnacknowledgedSecurityAlertsParams struct {
 }
 
 type ListUnacknowledgedSecurityAlertsRow struct {
-	EventID        uuid.UUID  `json:"event_id"`
+	EventID        string     `json:"event_id"`
 	DeviceID       string     `json:"device_id"`
 	AlertType      string     `json:"alert_type"`
 	Message        string     `json:"message"`

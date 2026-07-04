@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -353,7 +353,7 @@ func TestRoleListener_StaleDeleteReplayDoesNotNukeMemberships(t *testing.T) {
 	staleAt := live.CreatedAt
 	listener := projectors.RoleListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "role",
 		StreamID:    roleID,

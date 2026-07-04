@@ -150,6 +150,9 @@ func applyLuksKeyRotated(ctx context.Context, q *store.Queries, e store.Persiste
 		}
 	}
 	if err := q.InsertLuksKey(ctx, db.InsertLuksKeyParams{
+		// The rotating event's ULID: deterministic under replay
+		// (F-15 / spec 20) — a rebuild reproduces the same row id.
+		ID:                e.ID,
 		DeviceID:          payload.DeviceID,
 		ActionID:          payload.ActionID,
 		DevicePath:        payload.DevicePath,
@@ -157,6 +160,9 @@ func applyLuksKeyRotated(ctx context.Context, q *store.Queries, e store.Persiste
 		RotatedAt:         payload.RotatedAt,
 		RotationReason:    payload.RotationReason,
 		ProjectionVersion: projVer,
+		// created_at from the event, not now(): a rebuild must
+		// reproduce the row byte-identically (spec 21 AC 6).
+		CreatedAt: e.OccurredAt,
 	}); err != nil {
 		return err
 	}

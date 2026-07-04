@@ -11,16 +11,17 @@ import (
 
 const appendEvent = `-- name: AppendEvent :one
 INSERT INTO events (
-    stream_type, stream_id, stream_version,
+    id, stream_type, stream_id, stream_version,
     event_type, data, metadata,
     actor_type, actor_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING id, sequence_num, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id, occurred_at
 `
 
 type AppendEventParams struct {
+	ID            string `json:"id"`
 	StreamType    string `json:"stream_type"`
 	StreamID      string `json:"stream_id"`
 	StreamVersion int32  `json:"stream_version"`
@@ -31,8 +32,11 @@ type AppendEventParams struct {
 	ActorID       string `json:"actor_id"`
 }
 
+// id is a ULID minted in Go (F-15 / spec 20) — the DB never mints a
+// random identifier.
 func (q *Queries) AppendEvent(ctx context.Context, arg AppendEventParams) (Event, error) {
 	row := q.db.QueryRow(ctx, appendEvent,
+		arg.ID,
 		arg.StreamType,
 		arg.StreamID,
 		arg.StreamVersion,

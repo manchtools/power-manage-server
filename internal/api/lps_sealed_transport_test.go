@@ -67,12 +67,12 @@ func TestEnsureLpsKeypair_IdempotentAndConcurrent(t *testing.T) {
 		assert.Equal(t, pub1, pubs[i], "all concurrent callers must see the same key")
 	}
 
-	// Exactly one row, and the stored private key is encrypted (enc:v2), never
-	// the raw 32 bytes.
+	// Exactly one row, and the stored private key is encrypted (the single
+	// AAD-bound enc:v1 format, spec 20), never the raw 32 bytes.
 	row, err := st.Queries().GetLpsKeypair(ctx)
 	require.NoError(t, err)
 	assert.NotEqual(t, string(priv1.Bytes()), row.PrivateKeyEnc, "private key stored in cleartext")
-	assert.Contains(t, row.PrivateKeyEnc, "enc:v2:", "private key must be AAD-encrypted at rest")
+	assert.Contains(t, row.PrivateKeyEnc, "enc:v1:", "private key must be AAD-encrypted at rest")
 
 	// A nil encryptor is refused — the key cannot be protected at rest.
 	freshDB := testutil.SetupPostgres(t)

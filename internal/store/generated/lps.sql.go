@@ -96,11 +96,12 @@ func (q *Queries) GetLpsPasswordHistory(ctx context.Context, deviceID string) ([
 
 const insertLpsPassword = `-- name: InsertLpsPassword :exec
 INSERT INTO lps_passwords_projection
-    (device_id, action_id, username, password, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+    (id, device_id, action_id, username, password, rotated_at, rotation_reason, projection_version, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertLpsPasswordParams struct {
+	ID                string    `json:"id"`
 	DeviceID          string    `json:"device_id"`
 	ActionID          string    `json:"action_id"`
 	Username          string    `json:"username"`
@@ -108,6 +109,7 @@ type InsertLpsPasswordParams struct {
 	RotatedAt         time.Time `json:"rotated_at"`
 	RotationReason    string    `json:"rotation_reason"`
 	ProjectionVersion int64     `json:"projection_version"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Step 2 of LpsPasswordRotated projection. Inserts the new row only
@@ -116,8 +118,11 @@ type InsertLpsPasswordParams struct {
 // short-circuits when n==0, so this insert never runs against a
 // stale event. projection_version on the new row is the same
 // sequence_num that just guarded step 1.
+// id is the rotating event's ULID (F-15 / spec 20) — deterministic
+// under replay, supplied by the projector.
 func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordParams) error {
 	_, err := q.db.Exec(ctx, insertLpsPassword,
+		arg.ID,
 		arg.DeviceID,
 		arg.ActionID,
 		arg.Username,
@@ -125,6 +130,7 @@ func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordPa
 		arg.RotatedAt,
 		arg.RotationReason,
 		arg.ProjectionVersion,
+		arg.CreatedAt,
 	)
 	return err
 }

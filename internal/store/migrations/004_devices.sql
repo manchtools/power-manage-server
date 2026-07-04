@@ -87,7 +87,9 @@ CREATE TABLE public.log_query_results (
 --
 
 CREATE TABLE public.lps_passwords_projection (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    -- The rotating event's ULID (F-15 / spec 20): deterministic under
+    -- replay, supplied by the projector, never DB-minted.
+    id text NOT NULL,
     device_id text NOT NULL,
     action_id text NOT NULL,
     username text NOT NULL,
@@ -104,7 +106,9 @@ CREATE TABLE public.lps_passwords_projection (
 --
 
 CREATE TABLE public.luks_keys_projection (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    -- The rotating event's ULID (F-15 / spec 20): deterministic under
+    -- replay, supplied by the projector, never DB-minted.
+    id text NOT NULL,
     device_id text NOT NULL,
     action_id text NOT NULL,
     device_path text NOT NULL,
@@ -124,7 +128,8 @@ CREATE TABLE public.luks_keys_projection (
 --
 
 CREATE TABLE public.luks_tokens (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    -- ULID minted in Go at token creation (F-15 / spec 20).
+    id text NOT NULL,
     device_id text NOT NULL,
     action_id text NOT NULL,
     token text NOT NULL,
@@ -156,7 +161,8 @@ CREATE TABLE public.osquery_results (
 --
 
 CREATE TABLE public.security_alerts_projection (
-    event_id uuid NOT NULL,
+    -- The raising event's ULID (F-15 / spec 20).
+    event_id text NOT NULL,
     device_id text NOT NULL,
     alert_type text NOT NULL,
     message text NOT NULL,

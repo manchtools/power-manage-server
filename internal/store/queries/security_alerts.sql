@@ -58,8 +58,8 @@ WHERE device_id = $1
 --
 -- name: InsertSecurityAlertProjection :exec
 INSERT INTO security_alerts_projection (
-    event_id, device_id, alert_type, message, details, raised_at
-) VALUES ($1, $2, $3, $4, $5, $6)
+    event_id, device_id, alert_type, message, details, raised_at, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (event_id) DO NOTHING;
 
 -- AcknowledgeSecurityAlertProjection updates the ack columns. Returns
@@ -73,4 +73,4 @@ UPDATE security_alerts_projection
 SET acknowledged = TRUE,
     acknowledged_at = $2,
     acknowledged_by = $3
-WHERE event_id = $1::uuid;
+WHERE event_id = $1;

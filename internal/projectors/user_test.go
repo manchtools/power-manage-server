@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -746,7 +746,7 @@ func TestUserListener_StaleDeleteReplayDoesNotNukeIdentityLinks(t *testing.T) {
 	staleAt := *live.CreatedAt
 	listener := projectors.UserListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "user",
 		StreamID:    userID,
@@ -820,7 +820,7 @@ func TestUserListener_StaleDisableAfterReEnableKeepsSessionMonotonic(t *testing.
 	// changes.
 	listener := projectors.UserListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: staleVer,
 		StreamType:  "user",
 		StreamID:    userID,

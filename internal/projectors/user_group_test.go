@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -737,7 +737,7 @@ func TestUserGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	older := live.ProjectionVersion - 5
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID,
@@ -795,7 +795,7 @@ func TestUserGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	older := live.ProjectionVersion - 5
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID + ":" + userID,
@@ -849,7 +849,7 @@ func TestUserGroupListener_StaleMembersRebuiltDoesNotOverwrite(t *testing.T) {
 	older := live.ProjectionVersion - 5
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID,
@@ -932,7 +932,7 @@ func TestUserGroupListener_StaleRoleAssignedDoesNotReinsertRevoked(t *testing.T)
 	older := live.ProjectionVersion - 5
 	listener := projectors.UserGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "user_group",
 		StreamID:    groupID + ":role:" + roleID,

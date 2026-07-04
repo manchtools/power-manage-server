@@ -86,6 +86,58 @@ func seedRichFixture(t *testing.T, st *store.Store) {
 	enc := testutil.NewEncryptor(t)
 	providerID := testutil.CreateTestIdentityProvider(t, st, enc, adminID, "Fidelity IdP", "fidelity-"+testutil.NewID()[:8])
 	testutil.EnableSCIMForProvider(t, st, adminID, providerID)
+
+	// Secret-history + security-alert projections: their row ids are the
+	// rotating/raising event's ULID (spec 20 / F-15) — before that
+	// change they were DB-minted random uuids, which a rebuild silently
+	// re-minted. These rows make the round-trip prove the determinism.
+	rotatedAt := "2026-07-01T10:00:00Z"
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "lps_password",
+		StreamID:   deviceID + ":" + actionID + ":root",
+		EventType:  "LpsPasswordRotated",
+		Data: map[string]any{
+			"device_id": deviceID, "action_id": actionID, "username": "root",
+			"password": "enc:v1:fixture-lps", "rotated_at": rotatedAt, "rotation_reason": "scheduled",
+		},
+		ActorType: "device",
+		ActorID:   deviceID,
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "luks_key",
+		StreamID:   deviceID + ":" + actionID + ":/dev/sda2",
+		EventType:  "LuksKeyRotated",
+		Data: map[string]any{
+			"device_id": deviceID, "action_id": actionID, "device_path": "/dev/sda2",
+			"passphrase": "enc:v1:fixture-luks", "rotated_at": rotatedAt, "rotation_reason": "scheduled",
+		},
+		ActorType: "device",
+		ActorID:   deviceID,
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "SecurityAlert",
+		Data: map[string]any{
+			"alert_type": "fidelity-probe", "message": "round-trip fixture alert",
+		},
+		ActorType: "device",
+		ActorID:   deviceID,
+	}))
+	// Acknowledge it by the raising event's ULID so the ack column set
+	// (a projection UPDATE keyed by the id) is exercised too.
+	var alertEventID string
+	require.NoError(t, st.TestingPool().QueryRow(ctx,
+		`SELECT id FROM events WHERE event_type = 'SecurityAlert' AND stream_id = $1
+		 ORDER BY sequence_num DESC LIMIT 1`, deviceID).Scan(&alertEventID))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "SecurityAlertAcknowledged",
+		Data:       map[string]any{"alert_id": alertEventID, "acknowledged_by": adminID},
+		ActorType:  "user",
+		ActorID:    adminID,
+	}))
 }
 
 // TestRebuildAll_FullFidelityRoundTrip pins spec 21 AC 6: a no-arg

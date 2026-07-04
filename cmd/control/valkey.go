@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
-	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/server/internal/api"
@@ -293,7 +292,7 @@ func configureTerminalAdminFanout(cfg *Config, termHandler *api.TerminalHandler,
 // panic can't crash the server. (Round-5 review fix.)
 func auditIndexListener(idx *search.Index, logger *slog.Logger) store.EventListener {
 	return func(_ context.Context, ev store.PersistedEvent) {
-		id := ulid.ULID(ev.ID).String()
+		id := ev.ID
 		data := &taskqueue.SearchEntityData{
 			EventType:  ev.EventType,
 			StreamType: ev.StreamType,

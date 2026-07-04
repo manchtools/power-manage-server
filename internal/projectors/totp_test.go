@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -263,4 +262,3 @@ func pollForUserTotpEnabled(t *testing.T, st *store.Store, userID string, want b
 // future edit accidentally removes them from the test bodies.
 var _ = json.Marshal
 var _ = errors.Is
-var _ = uuid.New

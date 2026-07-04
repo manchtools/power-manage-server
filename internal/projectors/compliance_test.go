@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -185,8 +185,8 @@ func appendComplianceResultUpdated(t *testing.T, st *store.Store, deviceID, acti
 func TestComplianceListener_UpsertLifecycle(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
 		"device_id":        deviceID,
@@ -237,8 +237,8 @@ func TestComplianceListener_UpsertLifecycle(t *testing.T) {
 func TestComplianceListener_UpsertPreservesActionNameOnEmptyReplay(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
 		"device_id":        deviceID,
@@ -270,8 +270,8 @@ func TestComplianceListener_UpsertPreservesActionNameOnEmptyReplay(t *testing.T)
 func TestComplianceListener_DeleteLifecycle(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
 		"device_id":   deviceID,
@@ -309,8 +309,8 @@ func TestComplianceListener_DeleteLifecycle(t *testing.T) {
 func TestComplianceListener_StaleUpdateRejected(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
 		"device_id":   deviceID,
@@ -330,7 +330,7 @@ func TestComplianceListener_StaleUpdateRejected(t *testing.T) {
 	older := currentVersion - 5
 	listener := projectors.ComplianceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "compliance",
 		StreamID:    deviceID + "_" + actionID,
@@ -366,8 +366,8 @@ func TestComplianceListener_StaleUpdateRejected(t *testing.T) {
 func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	appendComplianceResultUpdated(t, st, deviceID, actionID, map[string]any{
 		"device_id":   deviceID,
@@ -407,7 +407,7 @@ func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
 	// Drive the listener directly with the OLDER Removed sequence.
 	listener := projectors.ComplianceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: staleRemovedSeq,
 		StreamType:  "compliance",
 		StreamID:    deviceID + "_" + actionID,
@@ -433,8 +433,8 @@ func TestComplianceListener_StaleRemovedDoesNotWipeRevivedRow(t *testing.T) {
 func TestComplianceListener_IgnoresWrongStreamType(t *testing.T) {
 	st := setupComplianceResultStore(t)
 	ctx := context.Background()
-	deviceID := "dev-" + uuid.NewString()
-	actionID := "act-" + uuid.NewString()
+	deviceID := "dev-" + ulid.Make().String()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "device", // wrong stream

@@ -17,7 +17,10 @@
 --
 
 CREATE TABLE public.events (
-    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    -- ULID minted in Go by AppendEvent (F-15 / spec 20): the DB never
+    -- mints a random identifier, so an event row is fully determined
+    -- by its insert and replay-derived state can reference it stably.
+    id text NOT NULL,
     sequence_num bigint NOT NULL,
     stream_type text NOT NULL,
     stream_id text NOT NULL,

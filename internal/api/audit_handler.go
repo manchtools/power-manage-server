@@ -7,7 +7,6 @@ import (
 	"sort"
 
 	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
@@ -426,7 +425,7 @@ func splitArraySuffix(seg string) []string {
 
 func eventToProto(e db.Event) *pm.AuditEvent {
 	event := &pm.AuditEvent{
-		Id:         ulid.ULID(e.ID).String(),
+		Id:         e.ID,
 		EventType:  e.EventType,
 		StreamType: e.StreamType,
 		StreamId:   e.StreamID,
