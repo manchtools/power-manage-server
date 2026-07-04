@@ -166,7 +166,7 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
 		EventType:  string(eventtypes.TOTPVerified),
-		Data:       map[string]any{},
+		Data:       payloads.TOTPVerified{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
 	}, "failed to verify TOTP"); err != nil {
@@ -210,7 +210,7 @@ func (h *TOTPHandler) DisableTOTP(ctx context.Context, req *connect.Request[pm.D
 		StreamType: "totp",
 		StreamID:   userCtx.ID,
 		EventType:  string(eventtypes.TOTPDisabled),
-		Data:       map[string]any{},
+		Data:       payloads.TOTPDisabled{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
 	}, "failed to disable TOTP"); err != nil {
@@ -251,7 +251,7 @@ func (h *TOTPHandler) AdminDisableUserTOTP(ctx context.Context, req *connect.Req
 		StreamType: "totp",
 		StreamID:   targetUserID,
 		EventType:  string(eventtypes.TOTPDisabled),
-		Data:       map[string]any{"admin": true},
+		Data:       payloads.TOTPDisabled{Admin: true},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
 	}, "failed to disable TOTP"); err != nil {
@@ -421,7 +421,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 				StreamType: "totp",
 				StreamID:   claims.UserID,
 				EventType:  string(eventtypes.TOTPBackupCodeUsed),
-				Data:       map[string]any{"index": idx},
+				Data:       payloads.TOTPBackupCodeUsed{Index: idx},
 				ActorType:  "user",
 				ActorID:    claims.UserID,
 			}, expectedVersion)
@@ -466,7 +466,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 					StreamType: "totp",
 					StreamID:   claims.UserID,
 					EventType:  string(eventtypes.TOTPBackupCodeUsed),
-					Data:       map[string]any{"index": retryIdx},
+					Data:       payloads.TOTPBackupCodeUsed{Index: retryIdx},
 					ActorType:  "user",
 					ActorID:    claims.UserID,
 				}, retryExpectedVersion)
@@ -542,7 +542,7 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		StreamType: "user",
 		StreamID:   claims.UserID,
 		EventType:  string(eventtypes.UserLoggedIn),
-		Data:       map[string]any{},
+		Data:       payloads.UserLoggedIn{},
 		ActorType:  "user",
 		ActorID:    claims.UserID,
 	}); err != nil {

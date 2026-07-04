@@ -285,6 +285,19 @@ func TestLinkOrCreate_ExistingLink_UpdatesLogin(t *testing.T) {
 		"existing live link must update login, got: %v", eventTypes(appender))
 	assert.Equal(t, 0, countEventsOfType(appender, "IdentityLinked"),
 		"must not emit a fresh IdentityLinked for an already-linked user")
+
+	// #507 / spec 19: the login-update payload carries PII
+	// (external_email/external_name), so it must name the owning user —
+	// the crypto-shred layer resolves the DEK owner from user_id.
+	for _, e := range appender.events {
+		if e.EventType != "IdentityLinkLoginUpdated" {
+			continue
+		}
+		upd, ok := e.Data.(payloads.IdentityLinkLoginUpdated)
+		require.True(t, ok, "login update must emit the shared payloads struct, got %T", e.Data)
+		assert.Equal(t, "user-1", upd.UserID,
+			"IdentityLinkLoginUpdated must carry the DEK-owner user_id")
+	}
 }
 
 // TestLinkOrCreate_SoftDeletedLinkedUser_CleansUpAndFallsThrough pins WS5 #3: a

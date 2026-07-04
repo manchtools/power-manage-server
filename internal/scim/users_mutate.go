@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -68,11 +69,9 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEmailChanged),
-			Data: map[string]any{
-				"email": newEmail,
-			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
+			Data:       payloads.UserEmailChanged{Email: &newEmail},
+			ActorType:  "scim",
+			ActorID:    provider.ID,
 		})
 		if err != nil {
 			h.logger.Error("failed to update user email", "error", err)
@@ -87,7 +86,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDisabled),
-			Data:       map[string]any{},
+			Data:       payloads.UserDisabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		}); err != nil {
@@ -100,7 +99,7 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEnabled),
-			Data:       map[string]any{},
+			Data:       payloads.UserEnabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		}); err != nil {
@@ -119,10 +118,13 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserProfileUpdated),
-			Data: map[string]any{
-				"display_name": newDisplayName,
-				"given_name":   newGivenName,
-				"family_name":  newFamilyName,
+			// Pointers always set: SCIM is the source of truth, so an
+			// empty field is an explicit "" on the wire (overwrite,
+			// matching the legacy map emit) — never nil (preserve).
+			Data: payloads.UserProfileUpdated{
+				DisplayName: &newDisplayName,
+				GivenName:   &newGivenName,
+				FamilyName:  &newFamilyName,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -268,7 +270,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.Ide
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserDisabled),
-				Data:       map[string]any{},
+				Data:       payloads.UserDisabled{},
 				ActorType:  "scim",
 				ActorID:    provider.ID,
 			})
@@ -277,7 +279,7 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.Ide
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserEnabled),
-				Data:       map[string]any{},
+				Data:       payloads.UserEnabled{},
 				ActorType:  "scim",
 				ActorID:    provider.ID,
 			})
@@ -293,11 +295,9 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.Ide
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserEmailChanged),
-				Data: map[string]any{
-					"email": email,
-				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
+				Data:       payloads.UserEmailChanged{Email: &email},
+				ActorType:  "scim",
+				ActorID:    provider.ID,
 			})
 		}
 
@@ -320,11 +320,9 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.Ide
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserEmailChanged),
-				Data: map[string]any{
-					"email": email,
-				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
+				Data:       payloads.UserEmailChanged{Email: &email},
+				ActorType:  "scim",
+				ActorID:    provider.ID,
 			})
 		}
 
@@ -334,17 +332,19 @@ func (h *Handler) handleUserPatchReplace(ctx context.Context, provider store.Ide
 		if !ok {
 			return fmt.Errorf("invalid name value")
 		}
-		data := map[string]any{}
+		// Partial update: only the supplied fields get pointers, so
+		// omitted keys stay off the wire (projector preserves them).
+		var data payloads.UserProfileUpdated
 		if gn, ok := nameMap["givenName"].(string); ok {
-			data["given_name"] = gn
+			data.GivenName = &gn
 		}
 		if fn, ok := nameMap["familyName"].(string); ok {
-			data["family_name"] = fn
+			data.FamilyName = &fn
 		}
 		if fm, ok := nameMap["formatted"].(string); ok {
-			data["display_name"] = fm
+			data.DisplayName = &fm
 		}
-		if len(data) > 0 {
+		if data != (payloads.UserProfileUpdated{}) {
 			return h.store.AppendEvent(ctx, store.Event{
 				StreamType: "user",
 				StreamID:   userID,

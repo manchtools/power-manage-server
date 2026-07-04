@@ -16,3 +16,24 @@ type TOTPSetupInitiated struct {
 type TOTPBackupCodesRegenerated struct {
 	BackupCodesHash []string `json:"backup_codes_hash"`
 }
+
+// TOTPVerified is the wire shape for TOTPVerified. Deliberately empty
+// — the projector flips the enabled flag off the event's stream_id
+// alone; the zero struct marshals to `{}`, byte-identical to the
+// legacy map[string]any{} payload.
+type TOTPVerified struct{}
+
+// TOTPDisabled is the wire shape for TOTPDisabled. admin marks the
+// AdminDisableUserTOTP path (audit context: the actor disabled someone
+// ELSE's TOTP); the self-service path emits the zero struct, which
+// marshals to `{}` exactly like the legacy payload.
+type TOTPDisabled struct {
+	Admin bool `json:"admin,omitempty"`
+}
+
+// TOTPBackupCodeUsed is the wire shape for TOTPBackupCodeUsed. Index
+// is the position of the consumed code in the backup_codes_hash slice
+// — the projector NULLs that slot so the code is single-use.
+type TOTPBackupCodeUsed struct {
+	Index int `json:"index"`
+}

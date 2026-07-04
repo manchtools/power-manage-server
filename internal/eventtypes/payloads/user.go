@@ -81,13 +81,24 @@ type UserLinuxUsernameChanged struct {
 	LinuxUsername *string `json:"linux_username,omitempty"`
 }
 
-// UserLoggedIn is the wire shape for the UserLoggedIn audit event the
-// SSO callback handler appends after a successful authentication. The
-// projector reads only `provider` to denormalise "what IdP did this
-// user last authenticate via" onto users_projection.
+// UserLoggedIn is the wire shape for the UserLoggedIn audit event
+// appended after a successful authentication. SSO logins carry the
+// provider slug; local-credential logins (password, TOTP step-up)
+// have no provider and emit the zero struct — omitempty keeps that
+// byte-identical to the legacy `{}` payload.
 type UserLoggedIn struct {
-	Provider string `json:"provider"`
+	Provider string `json:"provider,omitempty"`
 }
+
+// UserDeleted / UserDisabled / UserEnabled are the wire shapes for the
+// user lifecycle toggles. Deliberately empty — the projector keys off
+// the event's stream_id alone; the zero structs marshal to `{}`,
+// byte-identical to the legacy map[string]any{} payloads.
+type UserDeleted struct{}
+
+type UserDisabled struct{}
+
+type UserEnabled struct{}
 
 // UserSystemActionLinked is the wire shape for UserSystemActionLinked.
 // Field selects which of the three system_*_action_id columns gets

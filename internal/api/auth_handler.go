@@ -184,7 +184,7 @@ func (h *AuthHandler) Login(ctx context.Context, req *connect.Request[pm.LoginRe
 		StreamType: "user",
 		StreamID:   user.ID,
 		EventType:  string(eventtypes.UserLoggedIn),
-		Data:       map[string]any{},
+		Data:       payloads.UserLoggedIn{},
 		ActorType:  "user",
 		ActorID:    user.ID,
 	}); err != nil {

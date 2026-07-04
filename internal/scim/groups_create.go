@@ -12,6 +12,7 @@ import (
 	"net/http"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -59,10 +60,10 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
 				EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-				Data: map[string]any{
-					"provider_id":       provider.ID,
-					"scim_group_id":     scimGroupID,
-					"scim_display_name": scimGroup.DisplayName,
+				Data: payloads.SCIMGroupMappingUpdated{
+					ProviderID:      provider.ID,
+					SCIMGroupID:     scimGroupID,
+					SCIMDisplayName: &scimGroup.DisplayName,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -71,8 +72,10 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				StreamType: "user_group",
 				StreamID:   existing.UserGroupID,
 				EventType:  string(eventtypes.UserGroupUpdated),
-				Data: map[string]any{
-					"name": scimGroup.DisplayName,
+				// nil Description = preserve the existing one (SCIM
+				// only renames; the description is server-owned).
+				Data: payloads.UserGroupUpdated{
+					Name: scimGroup.DisplayName,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -97,9 +100,9 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
 				EventType:  string(eventtypes.SCIMGroupUnmapped),
-				Data: map[string]any{
-					"provider_id":   provider.ID,
-					"scim_group_id": existing.SCIMGroupID,
+				Data: payloads.SCIMGroupUnmapped{
+					ProviderID:  provider.ID,
+					SCIMGroupID: existing.SCIMGroupID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -123,9 +126,9 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		StreamType: "user_group",
 		StreamID:   userGroupID,
 		EventType:  string(eventtypes.UserGroupCreated),
-		Data: map[string]any{
-			"name":        scimGroup.DisplayName,
-			"description": fmt.Sprintf("SCIM-provisioned group from %s", provider.Name),
+		Data: payloads.UserGroupCreated{
+			Name:        scimGroup.DisplayName,
+			Description: fmt.Sprintf("SCIM-provisioned group from %s", provider.Name),
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -142,11 +145,11 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		StreamType: "scim_group_mapping",
 		StreamID:   mappingID,
 		EventType:  string(eventtypes.SCIMGroupMapped),
-		Data: map[string]any{
-			"provider_id":       provider.ID,
-			"scim_group_id":     scimGroupID,
-			"scim_display_name": scimGroup.DisplayName,
-			"user_group_id":     userGroupID,
+		Data: payloads.SCIMGroupMapped{
+			ProviderID:      provider.ID,
+			SCIMGroupID:     scimGroupID,
+			SCIMDisplayName: &scimGroup.DisplayName,
+			UserGroupID:     userGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -170,9 +173,9 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupMemberAdded),
-			Data: map[string]any{
-				"group_id": userGroupID,
-				"user_id":  member.Value,
+			Data: payloads.UserGroupMemberAdded{
+				GroupID: userGroupID,
+				UserID:  member.Value,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,

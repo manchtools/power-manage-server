@@ -2,6 +2,7 @@ package scim_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -126,4 +127,37 @@ func TestCreateUser_AutoLinkByEmail_RequiresVerifiedSignal(t *testing.T) {
 		w := postSCIMUser(t, env, "fresh-"+testutil.NewID()[:6]+"@corp.com")
 		assert.Equal(t, http.StatusCreated, w.Code, "no matching local account → create new: %s", w.Body.String())
 	})
+}
+
+// TestReplaceUser_LoginUpdatedCarriesUserID pins the #507 / spec 19
+// contract on the SCIM sync path: the IdentityLinkLoginUpdated event
+// carries PII (external_email/external_name), so its payload must name
+// the owning user — the crypto-shred layer resolves the DEK owner from
+// data->>'user_id'.
+func TestReplaceUser_LoginUpdatedCarriesUserID(t *testing.T) {
+	env := setupSCIM(t)
+
+	email := "louu-" + testutil.NewID()[:6] + "@corp.com"
+	w := postSCIMUser(t, env, email)
+	require.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	userID := created["id"].(string)
+
+	// PUT triggers syncIdentityLink → IdentityLinkLoginUpdated.
+	put := scimReq(t, env, env.slug, env.token, http.MethodPut, "/Users/"+userID, map[string]any{
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName": email,
+		"name":     map[string]any{"givenName": "Lou", "familyName": "Update"},
+		"active":   true,
+	})
+	require.Equal(t, http.StatusOK, put.Code, "%s", put.Body.String())
+
+	var gotUserID string
+	require.NoError(t, env.st.TestingPool().QueryRow(context.Background(),
+		`SELECT data->>'user_id' FROM events
+		 WHERE event_type = 'IdentityLinkLoginUpdated'
+		 ORDER BY sequence_num DESC LIMIT 1`).Scan(&gotUserID))
+	assert.Equal(t, userID, gotUserID,
+		"IdentityLinkLoginUpdated must carry the DEK-owner user_id")
 }

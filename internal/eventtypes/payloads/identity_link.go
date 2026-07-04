@@ -14,14 +14,17 @@ type IdentityLinked struct {
 	ExternalName  string `json:"external_name,omitempty"`
 }
 
-// IdentityLinkLoginUpdated is the wire shape for the SSO refresh path
-// — the user already has a link, but the IdP's claims drifted (display
-// name, email). The projector updates the existing row's denormalised
-// external_email / external_name. user_id is intentionally omitted
-// here (the link is keyed by the (provider_id, external_id) tuple
-// alone — the user_id is loaded by the projector from the existing
-// row).
+// IdentityLinkLoginUpdated is the wire shape for the SSO/SCIM refresh
+// path — the user already has a link, but the IdP's claims drifted
+// (display name, email). The projector updates the existing row's
+// denormalised external_email / external_name, keyed by the
+// (provider_id, external_id) tuple. user_id names the owning user:
+// the projector doesn't need it (the tuple keys the row), but spec 19
+// does — external_email/external_name are PII, and the crypto-shred
+// layer resolves the DEK owner from this field (#507). Events emitted
+// before the field existed decode with UserID == "".
 type IdentityLinkLoginUpdated struct {
+	UserID        string `json:"user_id"`
 	ProviderID    string `json:"provider_id"`
 	ExternalID    string `json:"external_id"`
 	ExternalEmail string `json:"external_email,omitempty"`

@@ -110,7 +110,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 				StreamType: "identity_provider",
 				StreamID:   link.ID,
 				EventType:  string(eventtypes.IdentityUnlinked),
-				Data:       map[string]any{},
+				Data:       payloads.IdentityUnlinked{UserID: link.UserID, ProviderID: link.ProviderID},
 				ActorType:  "system",
 				ActorID:    "sso",
 			}); err != nil {
@@ -126,6 +126,7 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 				StreamID:   link.ID,
 				EventType:  string(eventtypes.IdentityLinkLoginUpdated),
 				Data: payloads.IdentityLinkLoginUpdated{
+					UserID:        link.UserID,
 					ProviderID:    provider.ID,
 					ExternalID:    claims.Subject,
 					ExternalEmail: claims.Email,

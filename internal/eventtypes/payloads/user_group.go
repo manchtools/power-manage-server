@@ -13,11 +13,15 @@ type UserGroupCreated struct {
 	DynamicQuery string `json:"dynamic_query"`
 }
 
-// UserGroupUpdated is the wire shape for UserGroupUpdated. Same
-// always-emit semantics as UserGroupCreated.
+// UserGroupUpdated is the wire shape for UserGroupUpdated. The
+// pointer Description mirrors the projector's update-vs-preserve
+// contract: non-nil = write the value (including explicit ""), nil =
+// key absent on the wire = preserve the existing description. The
+// SCIM rename path relies on nil-preserve (it only carries the name);
+// the API update path always sets the pointer.
 type UserGroupUpdated struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
 }
 
 // UserGroupMaintenanceWindowSet is the wire shape for the
