@@ -88,7 +88,7 @@ func TestEnsureAdminUser_RequiresWireAllFirst(t *testing.T) {
 		// Production order as of #317: listeners registered first.
 		projectors.WireAll(st, logger)
 
-		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
+		err := ensureAdminUser(ctx, st, nil, "admin@example.com", "test-password", logger)
 		require.NoError(t, err, "ensureAdminUser succeeds")
 
 		user, err := st.Repos().User.GetByEmail(ctx, "admin@example.com")
@@ -108,7 +108,7 @@ func TestEnsureAdminUser_RequiresWireAllFirst(t *testing.T) {
 		// would pass and the production-correct branch above would fail.
 		st := testutil.SetupPostgresWithoutProjectors(t)
 
-		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
+		err := ensureAdminUser(ctx, st, nil, "admin@example.com", "test-password", logger)
 		require.NoError(t, err,
 			"AppendEvent succeeds — the bug is the silent projection skip, not the emit")
 

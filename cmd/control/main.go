@@ -219,6 +219,11 @@ func main() {
 		os.Exit(1)
 	}
 	st.SetPIISealer(piiSealer)
+	piiMinter, err := pii.NewMinter(encryptor, st.Repos().UserEncryptionKey)
+	if err != nil {
+		logger.Error("failed to initialize PII minter", "error", err)
+		os.Exit(1)
+	}
 	piiOpener, err := pii.NewOpener(encryptor, st.Repos().UserEncryptionKey)
 	if err != nil {
 		logger.Error("failed to initialize PII opener", "error", err)
@@ -260,7 +265,7 @@ func main() {
 	// Bootstrap admin user (event-sourced via UserCreatedWithRoles).
 	// Runs after WireAll so UserListener materialises users_projection.
 	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
-		if err := ensureAdminUser(ctx, st, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
+		if err := ensureAdminUser(ctx, st, piiMinter, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
 			logger.Error("failed to create admin user", "error", err)
 			os.Exit(1)
 		}
