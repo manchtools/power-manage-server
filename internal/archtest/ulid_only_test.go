@@ -78,7 +78,9 @@ func TestULIDOnlyIdentifiers(t *testing.T) {
 				}
 			}
 		}
-		f.Close()
+		if cerr := f.Close(); cerr != nil {
+			t.Fatalf("close %s: %v", e.Name(), cerr)
+		}
 		if err := sc.Err(); err != nil {
 			t.Fatalf("scan %s: %v", e.Name(), err)
 		}
