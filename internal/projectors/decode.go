@@ -1,9 +1,11 @@
 package projectors
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -38,6 +40,55 @@ func decodePayload[T any](e store.PersistedEvent, streamType string, eventType e
 	var p T
 	if err := json.Unmarshal(e.Data, &p); err != nil {
 		return zero, fmt.Errorf("projector: invalid %s payload: %w", eventType, err)
+	}
+	return p, nil
+}
+
+// PIIOpener decrypts sealed pii:"true" fields on a decoded wire
+// payload, in place. Implemented by internal/pii.Opener; wired at boot
+// via SetPIIOpener alongside WireAll (the interface lives here to keep
+// projectors free of a pii-package dependency).
+type PIIOpener interface {
+	OpenDecoded(ctx context.Context, streamType, streamID string, payload any) error
+}
+
+// piiOpener is boot-once wiring state, same posture as the store's
+// listener registry. Nil is tolerated ONLY while no sealed PII exists
+// (fresh boot paths, tests that never mint DEKs) — decodePayloadPII
+// fails loudly if ciphertext shows up with no opener wired, so a
+// mis-wired deployment can never silently project ciphertext.
+var piiOpener PIIOpener
+
+// SetPIIOpener wires the PII opener (spec 19). Call at boot, before
+// any projection traffic.
+func SetPIIOpener(o PIIOpener) { piiOpener = o }
+
+// decodePayloadPII is decodePayload for PII-bearing payload types:
+// after the JSON decode it opens sealed fields under the subject's
+// DEK (spec 19 AC 4). Needs the caller's ctx for the key lookup —
+// which is why the PII-bearing *FromEvent decoders take a ctx while
+// the rest of the projector surface stays context-free.
+//
+// Error contract (the AC 9/10 split, surfaced from pii.Opener):
+//   - pii.ErrErased (missing DEK row) wraps through — the caller
+//     projects the redaction sentinel for erased users;
+//   - any other open failure (unwrappable DEK, tampered ciphertext)
+//     is a hard error that aborts the projection/rebuild.
+func decodePayloadPII[T any](ctx context.Context, e store.PersistedEvent, streamType string, eventType eventtypes.EventType) (T, error) {
+	p, err := decodePayload[T](e, streamType, eventType)
+	if err != nil {
+		return p, err
+	}
+	if !crypto.HasSealedPII(p) {
+		return p, nil // legacy plaintext / factory-seeded events need no DEK
+	}
+	if piiOpener == nil {
+		var zero T
+		return zero, fmt.Errorf("projector: %s carries sealed PII but no PII opener is wired (SetPIIOpener at boot) — refusing to project ciphertext", eventType)
+	}
+	if err := piiOpener.OpenDecoded(ctx, e.StreamType, e.StreamID, &p); err != nil {
+		var zero T
+		return zero, fmt.Errorf("projector: %s: %w", eventType, err)
 	}
 	return p, nil
 }
