@@ -161,3 +161,56 @@ func TestReplaceUser_LoginUpdatedCarriesUserID(t *testing.T) {
 	assert.Equal(t, userID, gotUserID,
 		"IdentityLinkLoginUpdated must carry the DEK-owner user_id")
 }
+
+// TestReplaceUser_ExplicitEmptyNameClearsProfile pins the SCIM
+// source-of-truth contract on profile sync: a PUT that carries an
+// explicit empty name object CLEARS the profile fields (pointer
+// semantics: present-but-"" = overwrite), while a PUT that omits the
+// name object entirely PRESERVES them (absent = not asserted). The
+// old gate skipped the event whenever every computed value was empty,
+// making an explicit clear impossible (local CR finding on #507).
+func TestReplaceUser_ExplicitEmptyNameClearsProfile(t *testing.T) {
+	env := setupSCIM(t)
+
+	email := "clear-" + testutil.NewID()[:6] + "@corp.com"
+	w := scimReq(t, env, env.slug, env.token, http.MethodPost, "/Users", map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   email,
+		"externalId": "ext-" + testutil.NewID(),
+		"active":     true,
+		"name":       map[string]any{"givenName": "Lou", "familyName": "Update"},
+	})
+	require.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	userID := created["id"].(string)
+
+	seeded, err := env.st.Queries().GetUserByID(context.Background(), userID)
+	require.NoError(t, err)
+	require.Equal(t, "Lou", seeded.GivenName, "seed sanity: given_name populated")
+
+	// PUT with NO name object — profile must be preserved.
+	put := scimReq(t, env, env.slug, env.token, http.MethodPut, "/Users/"+userID, map[string]any{
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName": email,
+		"active":   true,
+	})
+	require.Equal(t, http.StatusOK, put.Code, "%s", put.Body.String())
+	kept, err := env.st.Queries().GetUserByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, "Lou", kept.GivenName, "omitted name object must not touch the profile")
+
+	// PUT with an explicit EMPTY name object — profile must clear.
+	put = scimReq(t, env, env.slug, env.token, http.MethodPut, "/Users/"+userID, map[string]any{
+		"schemas":  []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName": email,
+		"active":   true,
+		"name":     map[string]any{},
+	})
+	require.Equal(t, http.StatusOK, put.Code, "%s", put.Body.String())
+	cleared, err := env.st.Queries().GetUserByID(context.Background(), userID)
+	require.NoError(t, err)
+	assert.Empty(t, cleared.GivenName, "explicit empty name object must clear given_name")
+	assert.Empty(t, cleared.FamilyName, "explicit empty name object must clear family_name")
+	assert.Empty(t, cleared.DisplayName, "explicit empty name object must clear display_name")
+}

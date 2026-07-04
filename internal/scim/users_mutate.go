@@ -113,7 +113,11 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	newDisplayName := formatExternalName(scimUser.Name)
 	newGivenName := safeNameField(scimUser.Name, "given")
 	newFamilyName := safeNameField(scimUser.Name, "family")
-	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+	// Gate on "name object asserted" rather than "any value non-empty":
+	// SCIM is the source of truth, so an explicitly empty name object
+	// clears the profile ("" overwrite), while an omitted one preserves
+	// it. The old any-non-empty gate made an explicit clear impossible.
+	if scimUser.Name != nil {
 		if err := h.store.AppendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,

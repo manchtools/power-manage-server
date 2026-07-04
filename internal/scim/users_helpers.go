@@ -82,7 +82,11 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 	newDisplayName := formatExternalName(name)
 	newGivenName := safeNameField(name, "given")
 	newFamilyName := safeNameField(name, "family")
-	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+	// Gate on "name object asserted" rather than "any value non-empty":
+	// SCIM is the source of truth, so an explicitly empty name object
+	// clears the profile ("" overwrite), while an omitted one preserves
+	// it. The old any-non-empty gate made an explicit clear impossible.
+	if name != nil {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
