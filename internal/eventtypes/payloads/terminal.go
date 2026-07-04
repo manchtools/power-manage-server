@@ -42,7 +42,7 @@ type TerminalSessionTerminated struct {
 //     ("ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED" / "_FULL").
 type TerminalAdminMembershipRevoked struct {
 	UserID        string `json:"user_id"`
-	LinuxUsername string `json:"linux_username"`
+	LinuxUsername string `json:"linux_username" pii:"true"`
 	ActionID      string `json:"action_id"`
 	AccessLevel   string `json:"access_level"`
 }

@@ -10,8 +10,8 @@ type IdentityLinked struct {
 	UserID        string `json:"user_id"`
 	ProviderID    string `json:"provider_id"`
 	ExternalID    string `json:"external_id"`
-	ExternalEmail string `json:"external_email,omitempty"`
-	ExternalName  string `json:"external_name,omitempty"`
+	ExternalEmail string `json:"external_email,omitempty" pii:"true"`
+	ExternalName  string `json:"external_name,omitempty" pii:"true"`
 }
 
 // IdentityLinkLoginUpdated is the wire shape for the SSO/SCIM refresh
@@ -27,6 +27,6 @@ type IdentityLinkLoginUpdated struct {
 	UserID        string `json:"user_id"`
 	ProviderID    string `json:"provider_id"`
 	ExternalID    string `json:"external_id"`
-	ExternalEmail string `json:"external_email,omitempty"`
-	ExternalName  string `json:"external_name,omitempty"`
+	ExternalEmail string `json:"external_email,omitempty" pii:"true"`
+	ExternalName  string `json:"external_name,omitempty" pii:"true"`
 }
