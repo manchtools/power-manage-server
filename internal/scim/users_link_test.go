@@ -35,6 +35,9 @@ func setProviderFlags(t *testing.T, env *scimTestEnv, providerID string, flags m
 func createPasswordlessUser(t *testing.T, env *scimTestEnv, email string) string {
 	t.Helper()
 	id := testutil.NewID()
+	// Spec 19: the SCIM auto-link path emits typed IdentityLinked PII
+	// for this user — the sealer fails closed without a DEK.
+	testutil.MintTestUserDEK(t, env.st, id)
 	require.NoError(t, env.st.AppendEvent(context.Background(), store.Event{
 		StreamType: "user",
 		StreamID:   id,

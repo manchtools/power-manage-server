@@ -223,12 +223,12 @@ func SetupPostgres(t *testing.T) *store.Store {
 	// the fixed test KEK (the same key NewEncryptor returns, so factory
 	// seeds and handler paths agree). Typed PII-bearing emits are sealed
 	// fail-closed; projectors decrypt on build.
-	wirePIIEnvelope(t, st)
+	WirePIIEnvelope(t, st)
 
 	return st
 }
 
-// wirePIIEnvelope mirrors cmd/control/main.go's spec-19 wiring for the
+// WirePIIEnvelope mirrors cmd/control/main.go's spec-19 wiring for the
 // test store: sealer on the append path, opener on the projector
 // decode path, both under the fixed test KEK.
 //
@@ -236,7 +236,7 @@ func SetupPostgres(t *testing.T) *store.Store {
 // repo is per-test-database — safe ONLY because integration tests run
 // serially (same standing assumption as createMu above): each test
 // re-wires the opener to its own store before any projection traffic.
-func wirePIIEnvelope(t *testing.T, st *store.Store) {
+func WirePIIEnvelope(t *testing.T, st *store.Store) {
 	t.Helper()
 	kek := NewEncryptor(t)
 	sealer, err := pii.NewSealer(kek, st.Repos().UserEncryptionKey)
@@ -249,6 +249,11 @@ func wirePIIEnvelope(t *testing.T, st *store.Store) {
 		t.Fatalf("testutil: wire PII opener: %v", err)
 	}
 	projectors.SetPIIOpener(opener)
+	minter, err := pii.NewMinter(kek, st.Repos().UserEncryptionKey)
+	if err != nil {
+		t.Fatalf("testutil: wire PII minter: %v", err)
+	}
+	st.SetPIIMinter(minter)
 }
 
 // MintTestUserDEK mints a DEK for a test user under the fixed test
@@ -256,11 +261,7 @@ func wirePIIEnvelope(t *testing.T, st *store.Store) {
 // tests exercising the fail-closed path simply skip it.
 func MintTestUserDEK(t *testing.T, st *store.Store, userID string) {
 	t.Helper()
-	minter, err := pii.NewMinter(NewEncryptor(t), st.Repos().UserEncryptionKey)
-	if err != nil {
-		t.Fatalf("testutil: build PII minter: %v", err)
-	}
-	if err := minter.MintUserDEK(context.Background(), userID); err != nil {
+	if err := st.MintUserDEK(context.Background(), userID); err != nil {
 		t.Fatalf("testutil: mint DEK for %s: %v", userID, err)
 	}
 }

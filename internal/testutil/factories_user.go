@@ -47,6 +47,12 @@ func CreateTestUser(t *testing.T, st *store.Store, email, password, role string)
 		roleIDs = []string{adminRole.ID}
 	}
 
+	// Spec 19: every provisioning path mints the user's DEK before the
+	// first event. The factory's own creation event is an (unsealed)
+	// map payload, but handler tests emit TYPED PII events for this
+	// user afterwards and the sealer fails closed without a key.
+	MintTestUserDEK(t, st, id)
+
 	if err := st.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   id,

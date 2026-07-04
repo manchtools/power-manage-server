@@ -44,9 +44,12 @@ type Querier interface {
 	GetUserGroupRoles(ctx context.Context, groupID string) ([]db.RolesProjection, error)
 }
 
-// EventAppender is the interface for appending events.
+// EventAppender is the interface for appending events. MintUserDEK
+// mirrors store.MintUserDEK: the SSO auto-create path provisions users
+// and must mint their DEK before the creation event (spec 19 AC 1).
 type EventAppender interface {
 	AppendEvent(ctx context.Context, event EventInput) error
+	MintUserDEK(ctx context.Context, userID string) error
 }
 
 // EventInput is a simplified event structure for the linker. Data is
@@ -222,6 +225,12 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 		var roleIDs []string
 		if provider.DefaultRoleID != "" {
 			roleIDs = []string{provider.DefaultRoleID}
+		}
+
+		// Spec 19 AC 1: mint the user's DEK BEFORE the creation event —
+		// the sealer fails closed without it.
+		if err := l.appender.MintUserDEK(ctx, userID); err != nil {
+			return nil, fmt.Errorf("mint user encryption key: %w", err)
 		}
 
 		// Create user without password (compound event lands the

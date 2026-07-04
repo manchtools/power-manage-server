@@ -152,6 +152,10 @@ type Store struct {
 	// Wired via SetPIISealer from boot code / the test fixture,
 	// boot-once posture like logger/repos.
 	piiSealer PIISealer
+
+	// piiMinter mints per-user DEKs at creation (spec 19 AC 1). Wired
+	// via SetPIIMinter alongside the sealer.
+	piiMinter PIIMinter
 }
 
 // PIISealer seals the PII fields of an event's typed payload under the
@@ -159,6 +163,36 @@ type Store struct {
 // no-op when unset (bootstrap paths that predate the wiring).
 type PIISealer interface {
 	SealEvent(ctx context.Context, e Event) (Event, error)
+}
+
+// PIIMinter mints a user's DEK at creation time (spec 19 AC 1).
+// Implemented by internal/pii.Minter; exposed through the Store so
+// every user-provisioning path (API handler, SCIM, SSO linker,
+// bootstrap) can mint without new constructor plumbing.
+type PIIMinter interface {
+	MintUserDEK(ctx context.Context, userID string) error
+}
+
+// SetPIIMinter wires the DEK minter. Boot-once posture matching
+// SetPIISealer.
+func (s *Store) SetPIIMinter(m PIIMinter) {
+	s.listenersMu.Lock()
+	s.piiMinter = m
+	s.listenersMu.Unlock()
+}
+
+// MintUserDEK mints the DEK for a newly created user. FAIL-CLOSED when
+// no minter is wired: a creation path proceeding without a key would
+// immediately hit the sealer's fail-closed append anyway — erroring
+// here names the real problem.
+func (s *Store) MintUserDEK(ctx context.Context, userID string) error {
+	s.listenersMu.RLock()
+	m := s.piiMinter
+	s.listenersMu.RUnlock()
+	if m == nil {
+		return fmt.Errorf("store: no PII minter wired (SetPIIMinter at boot) — cannot provision user %s", userID)
+	}
+	return m.MintUserDEK(ctx, userID)
 }
 
 // SetPIISealer wires the PII envelope sealer (spec 19). Boot-once

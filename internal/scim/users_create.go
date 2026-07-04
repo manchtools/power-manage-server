@@ -175,6 +175,14 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		roleIDs = []string{provider.DefaultRoleID}
 	}
 
+	// Spec 19 AC 1: mint the user's DEK BEFORE the creation event —
+	// the sealer fails closed without it.
+	if err := h.store.MintUserDEK(ctx, userID); err != nil {
+		h.logger.Error("failed to mint user encryption key via SCIM", "user_id", userID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+
 	err = h.store.AppendEvent(ctx, store.Event{
 		StreamType: "user",
 		StreamID:   userID,

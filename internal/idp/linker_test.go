@@ -70,6 +70,7 @@ func (m *mockQuerier) GetNextLinuxUID(_ context.Context) (int32, error) {
 // mockAppender captures appended events for inspection.
 type mockAppender struct {
 	events []EventInput
+	minted []string
 }
 
 // TestGroupIsAdminBearing pins the SSO admin-group audit decision (#9): only a
@@ -102,6 +103,13 @@ func TestGroupIsAdminBearing(t *testing.T) {
 
 func (m *mockAppender) AppendEvent(_ context.Context, event EventInput) error {
 	m.events = append(m.events, event)
+	return nil
+}
+
+// MintUserDEK records minted user ids so tests can assert the SSO
+// auto-create path mints before it appends (spec 19 AC 1).
+func (m *mockAppender) MintUserDEK(_ context.Context, userID string) error {
+	m.minted = append(m.minted, userID)
 	return nil
 }
 
@@ -140,6 +148,11 @@ func TestLinkOrCreate_AutoCreateUserIncludesLinuxFields(t *testing.T) {
 		}
 	}
 	require.NotNil(t, userCreatedEvent, "expected a UserCreatedWithRoles event to be emitted")
+
+	// Spec 19 AC 1: the SSO auto-create path mints the user's DEK
+	// BEFORE the creation event is appended.
+	require.Contains(t, appender.minted, result.UserID,
+		"auto-created user must get a DEK minted (the sealer fails closed without it)")
 
 	// Linker emits a typed payloads.UserCreatedWithRoles after the
 	// PR-F sweep — assert the typed shape directly. Pointer fields

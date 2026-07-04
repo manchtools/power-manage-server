@@ -103,6 +103,14 @@ func (h *UserHandler) CreateUser(ctx context.Context, req *connect.Request[pm.Cr
 		}
 	}
 
+	// Spec 19 AC 1: mint the user's DEK BEFORE the creation event —
+	// the event carries PII the sealer needs the key for; without it
+	// the append fails closed.
+	if err := h.store.MintUserDEK(ctx, id); err != nil {
+		h.logger.Error("failed to mint user encryption key", "user_id", id, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to create user")
+	}
+
 	// Emit UserCreatedWithRoles compound event - one event, one
 	// projector tx. The pre-#135 partial-write window between the
 	// user row INSERT and the per-role INSERTs is no longer

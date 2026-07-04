@@ -15,11 +15,10 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
-	"github.com/manchtools/power-manage/server/internal/pii"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-func ensureAdminUser(ctx context.Context, st *store.Store, minter *pii.Minter, email, password string, logger *slog.Logger) error {
+func ensureAdminUser(ctx context.Context, st *store.Store, email, password string, logger *slog.Logger) error {
 	// Check if user exists via the projection
 	_, err := st.Repos().User.GetByEmail(ctx, email)
 	if err == nil {
@@ -37,7 +36,7 @@ func ensureAdminUser(ctx context.Context, st *store.Store, minter *pii.Minter, e
 
 	// Mint the user's DEK BEFORE the creation event: the event carries
 	// PII (email) the sealer needs the key for (spec 19 AC 1/6).
-	if err := minter.MintUserDEK(ctx, id); err != nil {
+	if err := st.MintUserDEK(ctx, id); err != nil {
 		return fmt.Errorf("mint encryption key for bootstrap admin: %w", err)
 	}
 
