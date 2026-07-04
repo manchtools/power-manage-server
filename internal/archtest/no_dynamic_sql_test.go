@@ -24,6 +24,7 @@ var sqlMethodNames = map[string]bool{
 // line moves. assertNoStale fails the build if any entry stops matching.
 var dynamicSQLAllowlist = map[string]string{
 	"internal/store/rebuild.go :: tx.Exec(ctx, stmt)": "DDL `TRUNCATE TABLE <name>` during projection rebuild: the table name comes from the trusted in-process rebuildTarget registry (t.Tables), never from request input, and table identifiers cannot be bound as SQL parameters.",
+	"internal/store/rebuild.go :: tx.Exec(ctx, seed)": "Post-TRUNCATE re-seed during projection rebuild (spec 21): `seed` ranges over rebuildTarget.SeedSQL, whose only values are the package-level seed*SQL string CONSTANTS mirroring 008_seeds.sql — compile-time fixed, never request input.",
 	"internal/testutil/postgres.go :: shared.admin.ExecContext(ctx, fmt.Sprintf(`CREATE DATABASE %q TEMPLATE %q`, dbName, templateDatabase))": "Test harness only: per-test database isolation. `CREATE DATABASE` is DDL whose database/template identifiers cannot be bound as parameters; dbName is a fixed internal format (pm_test_<n>), never request input.",
 	"internal/testutil/postgres.go :: shared.admin.ExecContext(dropCtx, fmt.Sprintf(`DROP DATABASE IF EXISTS %q WITH (FORCE)`, dbName))":      "Test harness only: per-test database teardown. `DROP DATABASE` is DDL whose database identifier cannot be bound as a parameter; dbName is a fixed internal format (pm_test_<n>), never request input.",
 }
