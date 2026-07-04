@@ -85,6 +85,20 @@ func countRows(t *testing.T, st *store.Store, query string, args ...any) int {
 	return n
 }
 
+// findTargetResult returns the named entry of a RebuildResult. The run
+// set may be wider than the requested targets (cascade-safe expansion),
+// so callers must locate their target rather than index by position.
+func findTargetResult(t *testing.T, res store.RebuildResult, name string) store.TargetResult {
+	t.Helper()
+	for _, tr := range res.Targets {
+		if tr.Name == name {
+			return tr
+		}
+	}
+	t.Fatalf("target %q missing from rebuild result: %v", name, res.Targets)
+	return store.TargetResult{}
+}
+
 // TestRebuildAll_PartialUsers_CascadeChildrenSurvive pins spec 21 AC 4/5:
 // a users-only rebuild auto-includes every target needed to re-derive the
 // tables its CASCADE wipes, so TOTP enrollments, identity links, and

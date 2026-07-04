@@ -194,9 +194,10 @@ func TestRebuildAll_PortedProjector_RoundTrip(t *testing.T) {
 
 	res, err := st.RebuildAll(ctx, "roles")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.Equal(t, "roles", res.Targets[0].Name)
-	assert.Greater(t, res.Targets[0].EventsApplied, int64(0),
+	// The run set is wider than "roles" (cascade-safe expansion, spec 21
+	// AC 4); this test cares about the roles target's replay.
+	roles := findTargetResult(t, res, "roles")
+	assert.Greater(t, roles.EventsApplied, int64(0),
 		"at least the RoleCreated event must have been replayed")
 
 	after, err := st.Queries().GetRoleByID(ctx, roleID)
@@ -349,7 +350,11 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
 	assert.Contains(t, err.Error(), "no Go applier registered",
 		"error must name the missing-applier failure mode so operators can wire WireAll")
-	assert.Contains(t, err.Error(), "roles",
+	// Cascade-safe expansion widens the run beyond "roles", and with
+	// WireAll skipped EVERY target lacks its applier — the first one in
+	// canonical order fails. Which one that is depends on the FK graph,
+	// so assert the error names *a* target, not a specific one.
+	assert.Contains(t, err.Error(), `rebuild target "`,
 		"error must name the offending target")
 
 	// The canary row must still be there. As called out above,
