@@ -51,6 +51,40 @@ func PIIFieldNames(payload any) []string {
 	return names
 }
 
+// HasSealedPII reports whether any pii-tagged field of the payload
+// currently holds pii:v1 ciphertext. Projectors use it as the fast
+// path: events appended before envelope encryption (or seeded by test
+// factories as plain maps) carry plaintext and need no DEK at all.
+func HasSealedPII(payload any) bool {
+	v := reflect.ValueOf(payload)
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		if t.Field(i).Tag.Get(piiTag) != "true" {
+			continue
+		}
+		f := v.Field(i)
+		if f.Kind() == reflect.Pointer {
+			if f.IsNil() {
+				continue
+			}
+			f = f.Elem()
+		}
+		if f.Kind() == reflect.String && strings.HasPrefix(f.String(), piiPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // SealPayloadPII returns a COPY of the payload with every pii-tagged
 // field sealed under the DEK (field-bound AAD). The input is never
 // mutated. Payloads without tags are returned unchanged. Only string
