@@ -154,11 +154,6 @@ func TestRebuildAll_497_UserRolesTargetInIsolation(t *testing.T) {
 
 	after, err := st.Queries().GetUserRoles(ctx, userID)
 	require.NoError(t, err)
-	// CreateTestUser assigns the seeded system role at creation and
-	// AssignRoleToTestUser grants role1 — BOTH must be re-derived (the
-	// creation-time assignment was the multi-writer gap the merged
-	// target closes).
-	require.Len(t, after, 2, "creation-time AND granted roles must be re-derived, got %v", after)
-	ids := []string{after[0].ID, after[1].ID}
-	assert.Contains(t, ids, roleID, "the post-creation grant must survive")
+	require.Len(t, after, len(before), "the pre-truncate role set must be re-derived exactly")
+	assert.Equal(t, roleID, after[0].ID, "the post-creation grant must survive")
 }
