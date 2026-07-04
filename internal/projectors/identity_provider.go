@@ -1,11 +1,13 @@
 package projectors
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -258,14 +260,11 @@ func IdentityProviderUpdatedFromEvent(e store.PersistedEvent) (IdentityProviderU
 
 // IdentityLinkedFromEvent decodes IdentityLinked. user_id, provider_id
 // and external_id are required (composite key on the projection).
-func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	raw, err := decodePayload[struct {
-		UserID        string  `json:"user_id"`
-		ProviderID    string  `json:"provider_id"`
-		ExternalID    string  `json:"external_id"`
-		ExternalEmail *string `json:"external_email,omitempty"`
-		ExternalName  *string `json:"external_name,omitempty"`
-	}](e, "identity_provider", eventtypes.IdentityLinked)
+func IdentityLinkedFromEvent(ctx context.Context, e store.PersistedEvent) (IdentityLinkPayload, error) {
+	// Decodes via the shared TAGGED payloads struct: an untagged inline
+	// shape would let sealed pii:v1 ciphertext pass into the projection
+	// unnoticed (spec 19 AC 4).
+	raw, err := decodePayloadPII[payloads.IdentityLinked](ctx, e, "identity_provider", eventtypes.IdentityLinked)
 	if err != nil {
 		return IdentityLinkPayload{}, err
 	}
@@ -277,28 +276,18 @@ func IdentityLinkedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error
 	case raw.ExternalID == "":
 		return IdentityLinkPayload{}, fmt.Errorf("projector: IdentityLinked requires external_id")
 	}
-	out := IdentityLinkPayload{
+	return IdentityLinkPayload{
 		ID: e.StreamID, UserID: raw.UserID, ProviderID: raw.ProviderID, ExternalID: raw.ExternalID,
-	}
-	if raw.ExternalEmail != nil {
-		out.ExternalEmail = *raw.ExternalEmail
-	}
-	if raw.ExternalName != nil {
-		out.ExternalName = *raw.ExternalName
-	}
-	return out, nil
+		ExternalEmail: raw.ExternalEmail,
+		ExternalName:  raw.ExternalName,
+	}, nil
 }
 
 // IdentityLinkLoginUpdatedFromEvent decodes IdentityLinkLoginUpdated.
 // provider_id + external_id are the lookup key; external_email and
 // external_name are NULLIF-semantic (empty preserves existing).
-func IdentityLinkLoginUpdatedFromEvent(e store.PersistedEvent) (IdentityLinkPayload, error) {
-	raw, err := decodePayload[struct {
-		ProviderID    string `json:"provider_id"`
-		ExternalID    string `json:"external_id"`
-		ExternalEmail string `json:"external_email"`
-		ExternalName  string `json:"external_name"`
-	}](e, "identity_provider", eventtypes.IdentityLinkLoginUpdated)
+func IdentityLinkLoginUpdatedFromEvent(ctx context.Context, e store.PersistedEvent) (IdentityLinkPayload, error) {
+	raw, err := decodePayloadPII[payloads.IdentityLinkLoginUpdated](ctx, e, "identity_provider", eventtypes.IdentityLinkLoginUpdated)
 	if err != nil {
 		return IdentityLinkPayload{}, err
 	}

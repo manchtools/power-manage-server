@@ -79,16 +79,25 @@ func decodePayloadPII[T any](ctx context.Context, e store.PersistedEvent, stream
 	if err != nil {
 		return p, err
 	}
-	if !crypto.HasSealedPII(p) {
-		return p, nil // legacy plaintext / factory-seeded events need no DEK
-	}
-	if piiOpener == nil {
+	if err := openSealedPII(ctx, e, &p); err != nil {
 		var zero T
-		return zero, fmt.Errorf("projector: %s carries sealed PII but no PII opener is wired (SetPIIOpener at boot) — refusing to project ciphertext", eventType)
-	}
-	if err := piiOpener.OpenDecoded(ctx, e.StreamType, e.StreamID, &p); err != nil {
-		var zero T
-		return zero, fmt.Errorf("projector: %s: %w", eventType, err)
+		return zero, err
 	}
 	return p, nil
+}
+
+// openSealedPII opens sealed fields on an already-decoded wire payload
+// (pointer). Shared by decodePayloadPII and the empty-tolerant custom
+// decoders that cannot route through it.
+func openSealedPII(ctx context.Context, e store.PersistedEvent, payload any) error {
+	if !crypto.HasSealedPII(payload) {
+		return nil // legacy plaintext / factory-seeded events need no DEK
+	}
+	if piiOpener == nil {
+		return fmt.Errorf("projector: %s carries sealed PII but no PII opener is wired (SetPIIOpener at boot) — refusing to project ciphertext", e.EventType)
+	}
+	if err := piiOpener.OpenDecoded(ctx, e.StreamType, e.StreamID, payload); err != nil {
+		return fmt.Errorf("projector: %s: %w", e.EventType, err)
+	}
+	return nil
 }

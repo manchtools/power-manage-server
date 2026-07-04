@@ -614,7 +614,7 @@ func TestIdentityProviderUpdatedFromEvent_Pure(t *testing.T) {
 // are optional and present-empty collapses to "".
 func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with all fields", func(t *testing.T) {
-		got, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		got, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-1",
 			EventType: "IdentityLinked",
 			Data: jsonOrFail(t, map[string]any{
@@ -635,7 +635,7 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("optional fields absent → empty strings", func(t *testing.T) {
-		got, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		got, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-2",
 			EventType: "IdentityLinked",
 			Data: jsonOrFail(t, map[string]any{
@@ -660,7 +660,7 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 					}
 					payload[k] = v
 				}
-				_, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+				_, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 					StreamType: "identity_provider", StreamID: "link-x",
 					EventType: "IdentityLinked",
 					Data:      jsonOrFail(t, payload),
@@ -673,7 +673,7 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("empty payload returns error (not ErrIgnoredEvent)", func(t *testing.T) {
-		_, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		_, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-empty",
 			EventType: "IdentityLinked",
 			Data:      nil,
@@ -684,7 +684,7 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("invalid JSON returns wrapped error", func(t *testing.T) {
-		_, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		_, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-bad",
 			EventType: "IdentityLinked",
 			Data:      []byte("not json"),
@@ -694,11 +694,11 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("wrong stream/event type → ErrIgnoredEvent", func(t *testing.T) {
-		_, err := projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		_, err := projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", EventType: "IdentityLinked",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
-		_, err = projectors.IdentityLinkedFromEvent(store.PersistedEvent{
+		_, err = projectors.IdentityLinkedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", EventType: "IdentityProviderCreated",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
@@ -713,7 +713,7 @@ func TestIdentityLinkedFromEvent_Pure(t *testing.T) {
 // the empty-string case.
 func TestIdentityLinkLoginUpdatedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
-		got, err := projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+		got, err := projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-1",
 			EventType: "IdentityLinkLoginUpdated",
 			Data: jsonOrFail(t, map[string]any{
@@ -733,7 +733,7 @@ func TestIdentityLinkLoginUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("empty external_email/name forwarded as empty strings", func(t *testing.T) {
-		got, err := projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+		got, err := projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-2",
 			EventType: "IdentityLinkLoginUpdated",
 			Data: jsonOrFail(t, map[string]any{
@@ -760,7 +760,7 @@ func TestIdentityLinkLoginUpdatedFromEvent_Pure(t *testing.T) {
 					}
 					payload[k] = v
 				}
-				_, err := projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+				_, err := projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 					StreamType: "identity_provider", StreamID: "link-x",
 					EventType: "IdentityLinkLoginUpdated",
 					Data:      jsonOrFail(t, payload),
@@ -773,7 +773,7 @@ func TestIdentityLinkLoginUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("empty payload returns error", func(t *testing.T) {
-		_, err := projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+		_, err := projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", StreamID: "link-empty",
 			EventType: "IdentityLinkLoginUpdated",
 			Data:      nil,
@@ -783,11 +783,11 @@ func TestIdentityLinkLoginUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("wrong stream/event type → ErrIgnoredEvent", func(t *testing.T) {
-		_, err := projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+		_, err := projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", EventType: "IdentityLinkLoginUpdated",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
-		_, err = projectors.IdentityLinkLoginUpdatedFromEvent(store.PersistedEvent{
+		_, err = projectors.IdentityLinkLoginUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "identity_provider", EventType: "IdentityLinked",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))

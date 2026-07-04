@@ -28,7 +28,7 @@ import (
 // slice when the key is missing.
 func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with all fields and role_ids", func(t *testing.T) {
-		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		got, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserCreatedWithRoles", ActorID: "actor",
 			Data: jsonOrFail(t, map[string]any{
 				"email":              "a@b.com",
@@ -58,7 +58,7 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("defaults: missing password_hash + role + profile + linux_uid + role_ids", func(t *testing.T) {
-		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		got, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-2", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{"email": "x@y.com"}),
 		})
@@ -73,7 +73,7 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("explicit empty role_ids -> empty slice", func(t *testing.T) {
-		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		got, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-empty-roles", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{
 				"email":    "x@y.com",
@@ -85,7 +85,7 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("missing email fails", func(t *testing.T) {
-		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		_, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-3", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
@@ -100,7 +100,7 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 		// SQL NULL i.e. missing keys). Rejecting explicit "" would
 		// silently rewrite historical replay events. Same for email
 		// (which would have been INSERTed as ""). CR catch on PR #183.
-		got, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		got, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-empty", EventType: "UserCreatedWithRoles",
 			Data: jsonOrFail(t, map[string]any{"email": "", "role": ""}),
 		})
@@ -110,18 +110,18 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("wrong stream/event type -> ErrIgnoredEvent", func(t *testing.T) {
-		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		_, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "device", EventType: "UserCreatedWithRoles",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
-		_, err = projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		_, err = projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", EventType: "UserDisabled",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
 	})
 
 	t.Run("malformed payload bytes is a validation error", func(t *testing.T) {
-		_, err := projectors.UserCreatedWithRolesFromEvent(store.PersistedEvent{
+		_, err := projectors.UserCreatedWithRolesFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", EventType: "UserCreatedWithRoles",
 			Data: []byte("not json"),
 		})
@@ -134,7 +134,7 @@ func TestUserCreatedWithRolesFromEvent_Pure(t *testing.T) {
 // to "" when missing (matches PL/pgSQL COALESCE-to-"").
 func TestUserProfileUpdatedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path with all fields", func(t *testing.T) {
-		got, err := projectors.UserProfileUpdatedFromEvent(store.PersistedEvent{
+		got, err := projectors.UserProfileUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserProfileUpdated",
 			Data: jsonOrFail(t, map[string]any{
 				"display_name":       "Bob",
@@ -152,7 +152,7 @@ func TestUserProfileUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("missing keys default to ''", func(t *testing.T) {
-		got, err := projectors.UserProfileUpdatedFromEvent(store.PersistedEvent{
+		got, err := projectors.UserProfileUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserProfileUpdated",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
@@ -162,7 +162,7 @@ func TestUserProfileUpdatedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("wrong event type -> ErrIgnoredEvent", func(t *testing.T) {
-		_, err := projectors.UserProfileUpdatedFromEvent(store.PersistedEvent{
+		_, err := projectors.UserProfileUpdatedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", EventType: "UserCreatedWithRoles",
 		})
 		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
@@ -172,7 +172,7 @@ func TestUserProfileUpdatedFromEvent_Pure(t *testing.T) {
 // TestUserEmailChangedFromEvent_Pure — email is required.
 func TestUserEmailChangedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
-		got, err := projectors.UserEmailChangedFromEvent(store.PersistedEvent{
+		got, err := projectors.UserEmailChangedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserEmailChanged",
 			Data: jsonOrFail(t, map[string]any{"email": "new@e.com"}),
 		})
@@ -181,7 +181,7 @@ func TestUserEmailChangedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("missing email fails", func(t *testing.T) {
-		_, err := projectors.UserEmailChangedFromEvent(store.PersistedEvent{
+		_, err := projectors.UserEmailChangedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserEmailChanged",
 			Data: jsonOrFail(t, map[string]any{}),
 		})
@@ -190,7 +190,7 @@ func TestUserEmailChangedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("explicit empty email round-trips (PL/pgSQL parity)", func(t *testing.T) {
-		got, err := projectors.UserEmailChangedFromEvent(store.PersistedEvent{
+		got, err := projectors.UserEmailChangedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserEmailChanged",
 			Data: jsonOrFail(t, map[string]any{"email": ""}),
 		})
@@ -349,7 +349,7 @@ func TestUserSshSettingsUpdatedFromEvent_Pure(t *testing.T) {
 // required (NOT NULL column in the projection schema).
 func TestUserLinuxUsernameChangedFromEvent_Pure(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
-		got, err := projectors.UserLinuxUsernameChangedFromEvent(store.PersistedEvent{
+		got, err := projectors.UserLinuxUsernameChangedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserLinuxUsernameChanged",
 			Data: jsonOrFail(t, map[string]any{"linux_username": "newname"}),
 		})
@@ -358,7 +358,7 @@ func TestUserLinuxUsernameChangedFromEvent_Pure(t *testing.T) {
 	})
 
 	t.Run("missing key fails", func(t *testing.T) {
-		_, err := projectors.UserLinuxUsernameChangedFromEvent(store.PersistedEvent{
+		_, err := projectors.UserLinuxUsernameChangedFromEvent(context.Background(), store.PersistedEvent{
 			StreamType: "user", StreamID: "u-1", EventType: "UserLinuxUsernameChanged",
 			Data: jsonOrFail(t, map[string]any{}),
 		})

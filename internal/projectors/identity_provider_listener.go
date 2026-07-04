@@ -244,7 +244,7 @@ func applyIdentityProviderSCIMTokenRotated(ctx context.Context, q *store.Queries
 }
 
 func applyIdentityLinked(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := IdentityLinkedFromEvent(e)
+	payload, err := IdentityLinkedFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
@@ -264,7 +264,7 @@ func applyIdentityLinked(ctx context.Context, q *store.Queries, e store.Persiste
 }
 
 func applyIdentityLinkLoginUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := IdentityLinkLoginUpdatedFromEvent(e)
+	payload, err := IdentityLinkLoginUpdatedFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil

@@ -144,7 +144,7 @@ func ApplyUser(ctx context.Context, q *store.Queries, e store.PersistedEvent) er
 // rebuild that re-applies the event against an existing role row
 // is a no-op rather than a constraint violation.
 func applyUserCreatedWithRoles(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := UserCreatedWithRolesFromEvent(e)
+	payload, err := UserCreatedWithRolesFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
@@ -207,7 +207,7 @@ func enqueueDynamicUserGroupsForUser(ctx context.Context, q *store.Queries, user
 }
 
 func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := UserProfileUpdatedFromEvent(e)
+	payload, err := UserProfileUpdatedFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
@@ -232,7 +232,7 @@ func applyUserProfileUpdated(ctx context.Context, q *store.Queries, e store.Pers
 }
 
 func applyUserEmailChanged(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := UserEmailChangedFromEvent(e)
+	payload, err := UserEmailChangedFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
@@ -440,7 +440,7 @@ func applyUserSshSettingsUpdated(ctx context.Context, q *store.Queries, e store.
 }
 
 func applyUserLinuxUsernameChanged(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
-	payload, err := UserLinuxUsernameChangedFromEvent(e)
+	payload, err := UserLinuxUsernameChangedFromEvent(ctx, e)
 	if err != nil {
 		if errors.Is(err, ErrIgnoredEvent) {
 			return nil
