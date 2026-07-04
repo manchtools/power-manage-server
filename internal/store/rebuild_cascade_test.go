@@ -42,6 +42,11 @@ func seedUsersCascadeChildren(t *testing.T, st *store.Store) (userID, linkID, gr
 		ActorID:   userID,
 	}))
 
+	// identity_links_projection FKs onto identity_providers_projection,
+	// so the link needs a real provider row.
+	enc := testutil.NewEncryptor(t)
+	providerID := testutil.CreateTestIdentityProvider(t, st, enc, userID, "Cascade IdP", "cascade-"+testutil.NewID()[:8])
+
 	linkID = testutil.NewID()
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
@@ -49,7 +54,7 @@ func seedUsersCascadeChildren(t *testing.T, st *store.Store) (userID, linkID, gr
 		EventType:  "IdentityLinked",
 		Data: map[string]any{
 			"user_id":        userID,
-			"provider_id":    testutil.NewID(),
+			"provider_id":    providerID,
 			"external_id":    "ext-" + linkID,
 			"external_email": "cascade@example.com",
 		},

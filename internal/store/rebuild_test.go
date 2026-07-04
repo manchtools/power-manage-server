@@ -44,13 +44,13 @@ func TestRebuildAll_RoundTripsThroughEventStore(t *testing.T) {
 	_, err = st.Queries().GetUserByID(ctx, userID)
 	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
 
-	// RebuildAll for just this target replays every 'user' event
-	// through the projector and recreates the row.
+	// RebuildAll for this target replays every 'user' event through the
+	// projector and recreates the row. The run set is wider than
+	// "users" (cascade-safe expansion, spec 21 AC 4).
 	res, err := st.RebuildAll(ctx, "users")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.Equal(t, "users", res.Targets[0].Name)
-	assert.Greater(t, res.Targets[0].EventsApplied, int64(0),
+	users := findTargetResult(t, res, "users")
+	assert.Greater(t, users.EventsApplied, int64(0),
 		"at least the UserCreated event must have been replayed")
 
 	after, err := st.Queries().GetUserByID(ctx, userID)

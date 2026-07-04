@@ -100,7 +100,43 @@ type rebuildTarget struct {
 	Tables      []string
 	Cascade     bool
 	StreamTypes []string
+	// SeedSQL re-applies migration-seeded rows after the TRUNCATE and
+	// before the replay. Some projection tables carry rows that exist
+	// only as migration seeds, not as events (the system roles, the
+	// server-settings 'global' row) — without re-seeding, a rebuild
+	// silently destroys them (found by the full-fidelity round-trip,
+	// spec 21 AC 6). Each statement MIRRORS its migration seed
+	// byte-for-byte (fixed timestamps, no NOW()); the round-trip test
+	// fails if the two drift.
+	SeedSQL []string
 }
+
+// Rebuild seeds — mirrors of the 008_seeds.sql migration inserts (see
+// SeedSQL above for why these exist twice). The system-role permission
+// arrays are only the initial snapshot; auth.ReconcileSystemRoles
+// refreshes them from the code registry on boot and after a CLI
+// rebuild.
+const (
+	seedServerSettingsSQL = `INSERT INTO server_settings_projection (id, updated_at)
+VALUES ('global', '2026-01-01 00:00:00+00')
+ON CONFLICT (id) DO NOTHING`
+
+	seedAdminRoleSQL = `INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, updated_at, projection_version)
+VALUES (
+    '00000000000000000000000001', 'Admin', 'Full system access',
+    '{GetCurrentUser,GetUser,GetUser:self,ListUsers,CreateUser,UpdateUserEmail,UpdateUserEmail:self,UpdateUserPassword,UpdateUserPassword:self,SetUserDisabled,UpdateUserProfile,UpdateUserProfile:self,DeleteUser,UpdateUserSshSettings,UpdateUserSshSettings:self,UpdateUserLinuxUsername,UpdateUserLinuxUsername:self,AddUserSshKey,AddUserSshKey:self,RemoveUserSshKey,RemoveUserSshKey:self,ListDevices,ListDevices:assigned,GetDevice,GetDevice:assigned,SetDeviceLabel,RemoveDeviceLabel,AssignDevice,UnassignDevice,ListDeviceAssignees,SetDeviceSyncInterval,TriggerAgentUpdate,DeleteDevice,CreateToken,CreateToken:self,GetToken,ListTokens,RenameToken,SetTokenDisabled,DeleteToken,CreateAction,GetAction,ListActions,RenameAction,UpdateActionDescription,UpdateActionParams,DeleteAction,CreateActionSet,GetActionSet,ListActionSets,RenameActionSet,UpdateActionSetDescription,DeleteActionSet,AddActionToSet,RemoveActionFromSet,ReorderActionInSet,CreateDefinition,GetDefinition,ListDefinitions,RenameDefinition,UpdateDefinitionDescription,DeleteDefinition,AddActionSetToDefinition,RemoveActionSetFromDefinition,ReorderActionSetInDefinition,CreateDeviceGroup,GetDeviceGroup,ListDeviceGroups,ListDeviceGroupsForDevice,RenameDeviceGroup,UpdateDeviceGroupDescription,UpdateDeviceGroupQuery,DeleteDeviceGroup,AddDeviceToGroup,RemoveDeviceFromGroup,ValidateDynamicQuery,EvaluateDynamicGroup,SetDeviceGroupSyncInterval,CreateAssignment,DeleteAssignment,ListAssignments,GetDeviceAssignments,GetUserAssignments,SetUserSelection,ListAvailableActions,DispatchAction,DispatchToMultiple,DispatchAssignedActions,DispatchActionSet,DispatchDefinition,DispatchToGroup,DispatchInstantAction,GetExecution,ListExecutions,DispatchOSQuery,GetOSQueryResult,GetDeviceInventory,RefreshDeviceInventory,QueryDeviceLogs,GetDeviceLogResult,GetDeviceCompliance,GetDeviceCompliance:assigned,CreateCompliancePolicy,GetCompliancePolicy,ListCompliancePolicies,RenameCompliancePolicy,UpdateCompliancePolicyDescription,DeleteCompliancePolicy,AddCompliancePolicyRule,RemoveCompliancePolicyRule,UpdateCompliancePolicyRule,GetDeviceCompliancePolicyStatus,GetDeviceCompliancePolicyStatus:assigned,ListAuditEvents,GetDeviceLpsPasswords,GetDeviceLuksKeys,CreateLuksToken,RevokeLuksDeviceKey,SetupTOTP,VerifyTOTP,DisableTOTP,AdminDisableUserTOTP,GetTOTPStatus,RegenerateBackupCodes,CreateRole,GetRole,ListRoles,UpdateRole,DeleteRole,AssignRoleToUser,RevokeRoleFromUser,ListPermissions,CreateUserGroup,GetUserGroup,ListUserGroups,UpdateUserGroup,DeleteUserGroup,AddUserToGroup,RemoveUserFromGroup,AssignRoleToUserGroup,RevokeRoleFromUserGroup,ListUserGroupsForUser,UpdateUserGroupQuery,ValidateUserGroupQuery,EvaluateDynamicUserGroup,CreateIdentityProvider,GetIdentityProvider,ListIdentityProviders,UpdateIdentityProvider,DeleteIdentityProvider,EnableSCIM,DisableSCIM,RotateSCIMToken,ListIdentityLinks,UnlinkIdentity,Search,RebuildSearchIndex,GetServerSettings,UpdateServerSettings,SetUserProvisioningEnabled}',
+    TRUE, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00', 0
+)
+ON CONFLICT (id) DO NOTHING`
+
+	seedUserRoleSQL = `INSERT INTO roles_projection (id, name, description, permissions, is_system, created_at, updated_at, projection_version)
+VALUES (
+    '00000000000000000000000002', 'User', 'Basic user access',
+    '{GetCurrentUser,GetUser:self,UpdateUserEmail:self,UpdateUserPassword:self,UpdateUserProfile:self,UpdateUserSshSettings:self,SetupTOTP,VerifyTOTP,DisableTOTP,GetTOTPStatus,RegenerateBackupCodes,ListDevices:assigned,GetDevice:assigned,CreateToken:self,SetUserSelection,ListAvailableActions,ListIdentityLinks,UnlinkIdentity,GetDeviceCompliance:assigned,AddUserSshKey:self,RemoveUserSshKey:self,StopTerminal}',
+    TRUE, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00+00', 0
+)
+ON CONFLICT (id) DO NOTHING`
+)
 
 // AllRebuildTargets enumerates every replay-able projection.
 //
@@ -118,25 +154,23 @@ type rebuildTarget struct {
 // replay and the projection will stay stale.
 var AllRebuildTargets = []rebuildTarget{
 	{
-		// Applied by projectors.ApplyUser via projectors.WireAll.
+		// Applied by projectors.ApplyUserWithRoles via projectors.WireAll.
 		// NOTE (#497): TRUNCATE users_projection CASCADE wipes its FK
 		// children totp_projection and identity_links_projection. Their
 		// own targets below (declared AFTER users) re-derive them from the
 		// totp / identity_provider streams — order is load-bearing.
+		//
+		// user_roles_projection is co-owned by this target (spec 21 /
+		// AC 6 finding): it has TWO writers — ApplyUser inserts the
+		// creation-time role_ids from UserCreatedWithRoles (user
+		// stream), ApplyUserRole applies post-creation grants
+		// (user_role stream). As separate targets, whichever TRUNCATEd
+		// second wiped the other's replay. One target over both tables
+		// and both streams replays everything in true sequence order.
 		Name:        "users",
-		Tables:      []string{"users_projection"},
+		Tables:      []string{"users_projection", "user_roles_projection"},
 		Cascade:     true,
-		StreamTypes: []string{"user"},
-	},
-	{
-		// Applied by projectors.ApplyUserRole via projectors.WireAll (#497).
-		// user_roles_projection carries NO FK to users_projection, so the
-		// users CASCADE never wiped it and NO target replayed the user_role
-		// stream — a full rebuild silently dropped every post-creation
-		// grant (RBAC data loss). Explicit TRUNCATE + replay fixes it.
-		Name:        "user_roles",
-		Tables:      []string{"user_roles_projection"},
-		StreamTypes: []string{"user_role"},
+		StreamTypes: []string{"user", "user_role"},
 	},
 	{
 		// Applied by projectors.ApplyTotp via projectors.WireAll (#497).
@@ -241,11 +275,17 @@ var AllRebuildTargets = []rebuildTarget{
 		StreamTypes: []string{"user_selection"},
 	},
 	{
-		// Applied by projectors.ApplyRole via projectors.WireAll.
+		// Applied by projectors.ApplyRole via projectors.WireAll. The
+		// system Admin/User roles exist only as migration seeds (no
+		// RoleCreated events), so they are re-seeded post-TRUNCATE;
+		// auth.ReconcileSystemRoles then refreshes their permission
+		// arrays from the code registry (boot and the rebuild CLI both
+		// run it).
 		Name:        "roles",
 		Tables:      []string{"roles_projection"},
 		Cascade:     true,
 		StreamTypes: []string{"role"},
+		SeedSQL:     []string{seedAdminRoleSQL, seedUserRoleSQL},
 	},
 	{
 		// Applied by projectors.ApplyIdentityProvider via projectors.WireAll
@@ -354,9 +394,14 @@ var AllRebuildTargets = []rebuildTarget{
 		// the UPDATE-only projector would then no-op. The rebuild applier
 		// re-seeds the 'global' row before applying, then replays
 		// ServerSettingUpdated events so current settings are reproduced.
+		// SeedSQL covers the ZERO-event case: without it a rebuild of a
+		// deployment that never changed a setting deletes the 'global'
+		// row entirely (the applier's per-event seed never fires) and
+		// every settings read starts failing.
 		Name:        "server_settings",
 		Tables:      []string{"server_settings_projection"},
 		StreamTypes: []string{"server_settings"},
+		SeedSQL:     []string{seedServerSettingsSQL},
 	},
 	{
 		// Applied by projectors.ApplyCompliancePolicy via projectors.WireAll.
@@ -470,6 +515,15 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (a
 		}
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return 0, 0, fmt.Errorf("truncate %s: %w", table, err)
+		}
+	}
+
+	// Re-apply migration-seeded rows BEFORE the replay: seeded rows are
+	// not event-sourced, and replayed events may legitimately UPDATE
+	// them (ServerSettingUpdated mutates the seeded 'global' row).
+	for _, seed := range t.SeedSQL {
+		if _, err := tx.Exec(ctx, seed); err != nil {
+			return 0, 0, fmt.Errorf("re-seed %s: %w", t.Name, err)
 		}
 	}
 
