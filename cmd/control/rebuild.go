@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/doctor"
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -105,6 +106,17 @@ func runRebuildProjections(args []string) int {
 		fmt.Printf("  %-24s applied=%-8d skipped=%-6d %s\n",
 			tr.Name, tr.EventsApplied, tr.Skipped, tr.Duration.Round(time.Millisecond))
 	}
+
+	// System-role permissions are reconciler-owned (the Go registry is
+	// the single source of truth; migration 009 blanked the SQL
+	// literals), so a rebuild re-seeds the Admin/User rows with empty
+	// arrays. Boot reconciles them too, but re-running it here makes
+	// the rebuilt DB immediately correct without a control restart.
+	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
+		fmt.Fprintf(os.Stderr, "rebuild-projections: rebuild succeeded but reconciling system-role permissions failed: %v\nrestart the control server (its boot reconciler is fatal-on-failure) before relying on RBAC\n", err)
+		return 1
+	}
+
 	fmt.Printf("done in %s\n", res.TotalDuration.Round(time.Millisecond))
 	return 0
 }
