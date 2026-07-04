@@ -131,3 +131,40 @@ func ResolveSubject(streamType, streamID string, payload any) (string, error) {
 	}
 	return "", fmt.Errorf("pii: payload %T carries PII but resolves no subject — off-stream PII must populate a user_id field (spec 19 AC 3)", payload)
 }
+
+// Minter mints per-user DEKs at user creation (spec 19 AC 1). One
+// narrow dependency handed to every user-provisioning path — the API
+// handler, SCIM, the SSO linker, and the bootstrap admin seed — so a
+// creation path can never forget the key the sealer will fail-closed
+// without.
+type Minter struct {
+	kek  *crypto.Encryptor
+	keys store.UserEncryptionKeyRepo
+}
+
+// NewMinter builds the minter; both dependencies are mandatory.
+func NewMinter(kek *crypto.Encryptor, keys store.UserEncryptionKeyRepo) (*Minter, error) {
+	if kek == nil {
+		return nil, errors.New("pii: minter requires the at-rest KEK")
+	}
+	if keys == nil {
+		return nil, errors.New("pii: minter requires the user_encryption_keys repo")
+	}
+	return &Minter{kek: kek, keys: keys}, nil
+}
+
+// MintUserDEK mints and stores a wrapped DEK for a new user. Must run
+// BEFORE the user's first event is appended (the creation event itself
+// carries PII the sealer needs the key for). First-write-wins under
+// the hood: re-running for an existing user never replaces a key that
+// may already have sealed PII.
+func (m *Minter) MintUserDEK(ctx context.Context, userID string) error {
+	wrapped, err := crypto.GenerateWrappedDEK(m.kek, userID)
+	if err != nil {
+		return err
+	}
+	if _, err := m.keys.Mint(ctx, userID, wrapped); err != nil {
+		return err
+	}
+	return nil
+}
