@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -679,7 +679,7 @@ func TestDeviceListener_StaleDeleteReplayDoesNotNukeAssignments(t *testing.T) {
 	staleAt := *live.RegisteredAt
 	listener := projectors.DeviceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "device",
 		StreamID:    deviceID,
@@ -763,7 +763,7 @@ func TestDeviceListener_StaleUnassignedAfterReAssignDoesNotWipeRow(t *testing.T)
 	staleAt := *getDeviceRegisteredAt(t, st, ctx, deviceID)
 	listener := projectors.DeviceListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: stale,
 		StreamType:  "device",
 		StreamID:    deviceID,

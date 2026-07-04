@@ -44,7 +44,7 @@ func (l *Lps) ListHistory(ctx context.Context, deviceID string) ([]store.LpsPass
 
 func lpsFromRow(r generated.LpsPasswordsProjection) store.LpsPassword {
 	return store.LpsPassword{
-		ID:             r.ID.String(),
+		ID:             r.ID,
 		DeviceID:       r.DeviceID,
 		ActionID:       r.ActionID,
 		Username:       r.Username,

@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -1382,7 +1381,7 @@ func (idx *Index) warmAuditEvents(ctx context.Context) (int, error) {
 
 		pipe := idx.rdb.Pipeline()
 		for _, e := range events {
-			id := ulid.ULID(e.ID).String()
+			id := e.ID
 			eventFields := map[string]any{
 				"event_type":  e.EventType,
 				"stream_type": e.StreamType,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // pgx database/sql driver
+	"github.com/oklog/ulid/v2"
 	"github.com/pressly/goose/v3"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
@@ -595,6 +596,7 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 		}
 
 		row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
+			ID:            ulid.Make().String(),
 			StreamType:    event.StreamType,
 			StreamID:      event.StreamID,
 			StreamVersion: version + 1,
@@ -635,6 +637,7 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 	}
 
 	row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
+		ID:            ulid.Make().String(),
 		StreamType:    event.StreamType,
 		StreamID:      event.StreamID,
 		StreamVersion: expectedVersion,

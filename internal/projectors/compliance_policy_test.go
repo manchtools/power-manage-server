@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -300,7 +300,7 @@ func createTestCompliancePolicy(t *testing.T, st *store.Store, actorID, name str
 // policies don't collide. Mirrors testutil.NewID() but lives here so
 // the helper file isn't dragged into testutil for one type.
 func newCompliancePolicyID() string {
-	return "cp-" + uuid.NewString()
+	return "cp-" + ulid.Make().String()
 }
 
 // TestCompliancePolicyListener_CreateRenameDescription covers the three
@@ -349,8 +349,8 @@ func TestCompliancePolicyListener_RuleLifecycle(t *testing.T) {
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "lifecycle")
-	actionA := "act-" + uuid.NewString()
-	actionB := "act-" + uuid.NewString()
+	actionA := "act-" + ulid.Make().String()
+	actionB := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -412,7 +412,7 @@ func TestCompliancePolicyListener_RuleAddedUpsertReplacesFields(t *testing.T) {
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "upsert")
-	actionID := "act-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -450,7 +450,7 @@ func TestCompliancePolicyListener_RuleAddedPreservesActionNameOnEmptyReplay(t *t
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "preserve")
-	actionID := "act-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -488,8 +488,8 @@ func TestCompliancePolicyListener_DeleteCascadesRulesAndEvaluations(t *testing.T
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "to-delete")
-	actionID := "act-" + uuid.NewString()
-	deviceID := "dev-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
+	deviceID := "dev-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -547,9 +547,9 @@ func TestCompliancePolicyListener_RuleRemovedWipesEvaluations(t *testing.T) {
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "rule-removed-evals")
-	actionA := "act-" + uuid.NewString()
-	actionB := "act-" + uuid.NewString()
-	deviceID := "dev-" + uuid.NewString()
+	actionA := "act-" + ulid.Make().String()
+	actionB := "act-" + ulid.Make().String()
+	deviceID := "dev-" + ulid.Make().String()
 
 	for _, aid := range []string{actionA, actionB} {
 		require.NoError(t, st.AppendEvent(ctx, store.Event{
@@ -627,7 +627,7 @@ func TestCompliancePolicyListener_StaleDeleteReplayDoesNotNukeRules(t *testing.T
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "live-policy")
-	actionID := "act-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -644,7 +644,7 @@ func TestCompliancePolicyListener_StaleDeleteReplayDoesNotNukeRules(t *testing.T
 	older := live.ProjectionVersion - 5
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,
@@ -681,7 +681,7 @@ func TestCompliancePolicyListener_StaleRuleAddedDoesNotResurrectRemoved(t *testi
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "stale-rule-add")
-	actionID := "act-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -702,7 +702,7 @@ func TestCompliancePolicyListener_StaleRuleAddedDoesNotResurrectRemoved(t *testi
 	older := live.ProjectionVersion - 5
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,
@@ -734,7 +734,7 @@ func TestCompliancePolicyListener_StaleRuleUpdatedDoesNotChangeGrace(t *testing.
 	st := setupComplianceTestStore(t)
 	ctx := context.Background()
 	policyID := createTestCompliancePolicy(t, st, "u", "stale-rule-update")
-	actionID := "act-" + uuid.NewString()
+	actionID := "act-" + ulid.Make().String()
 
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "compliance_policy", StreamID: policyID, EventType: "CompliancePolicyRuleAdded",
@@ -754,7 +754,7 @@ func TestCompliancePolicyListener_StaleRuleUpdatedDoesNotChangeGrace(t *testing.
 	older := live.ProjectionVersion - 5
 	listener := projectors.CompliancePolicyListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "compliance_policy",
 		StreamID:    policyID,

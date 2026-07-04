@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -556,7 +556,7 @@ func TestExecutionListener_StaleReplayRejected(t *testing.T) {
 	older := currentVersion - 5
 	listener := projectors.ExecutionListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "execution",
 		StreamID:    execID,

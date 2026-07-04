@@ -135,6 +135,9 @@ func ApplyLpsPassword(ctx context.Context, q *store.Queries, e store.PersistedEv
 		}
 	}
 	if err := q.InsertLpsPassword(ctx, db.InsertLpsPasswordParams{
+		// The rotating event's ULID: deterministic under replay
+		// (F-15 / spec 20) — a rebuild reproduces the same row id.
+		ID:                e.ID,
 		DeviceID:          payload.DeviceID,
 		ActionID:          payload.ActionID,
 		Username:          payload.Username,

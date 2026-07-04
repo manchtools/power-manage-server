@@ -7,7 +7,6 @@ package generated
 import (
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
@@ -219,7 +218,7 @@ type DynamicUserGroupEvaluationQueue struct {
 }
 
 type Event struct {
-	ID            uuid.UUID `json:"id"`
+	ID            string    `json:"id"`
 	SequenceNum   int64     `json:"sequence_num"`
 	StreamType    string    `json:"stream_type"`
 	StreamID      string    `json:"stream_id"`
@@ -318,7 +317,7 @@ type LpsKeypair struct {
 }
 
 type LpsPasswordsProjection struct {
-	ID                uuid.UUID `json:"id"`
+	ID                string    `json:"id"`
 	DeviceID          string    `json:"device_id"`
 	ActionID          string    `json:"action_id"`
 	Username          string    `json:"username"`
@@ -331,7 +330,7 @@ type LpsPasswordsProjection struct {
 }
 
 type LuksKeysProjection struct {
-	ID                uuid.UUID  `json:"id"`
+	ID                string     `json:"id"`
 	DeviceID          string     `json:"device_id"`
 	ActionID          string     `json:"action_id"`
 	DevicePath        string     `json:"device_path"`
@@ -347,7 +346,7 @@ type LuksKeysProjection struct {
 }
 
 type LuksToken struct {
-	ID         uuid.UUID `json:"id"`
+	ID         string    `json:"id"`
 	DeviceID   string    `json:"device_id"`
 	ActionID   string    `json:"action_id"`
 	Token      string    `json:"token"`
@@ -400,7 +399,7 @@ type ScimGroupMappingProjection struct {
 }
 
 type SecurityAlertsProjection struct {
-	EventID        uuid.UUID  `json:"event_id"`
+	EventID        string     `json:"event_id"`
 	DeviceID       string     `json:"device_id"`
 	AlertType      string     `json:"alert_type"`
 	Message        string     `json:"message"`

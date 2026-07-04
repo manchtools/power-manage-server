@@ -150,6 +150,9 @@ func applyLuksKeyRotated(ctx context.Context, q *store.Queries, e store.Persiste
 		}
 	}
 	if err := q.InsertLuksKey(ctx, db.InsertLuksKeyParams{
+		// The rotating event's ULID: deterministic under replay
+		// (F-15 / spec 20) — a rebuild reproduces the same row id.
+		ID:                e.ID,
 		DeviceID:          payload.DeviceID,
 		ActionID:          payload.ActionID,
 		DevicePath:        payload.DevicePath,

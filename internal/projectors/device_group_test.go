@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -638,7 +638,7 @@ func TestDeviceGroupListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	staleAt := *live.CreatedAt
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,
@@ -692,7 +692,7 @@ func TestDeviceGroupListener_StaleQueryUpdatedDoesNotNukeMembers(t *testing.T) {
 	staleAt := *live.CreatedAt
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,
@@ -758,7 +758,7 @@ func TestDeviceGroupListener_StaleMemberAddedDoesNotRecreateMembership(t *testin
 	staleAt := *live.CreatedAt
 	listener := projectors.DeviceGroupListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "device_group",
 		StreamID:    groupID,

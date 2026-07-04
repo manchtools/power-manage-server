@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -57,6 +59,7 @@ func (l *Luks) GetCurrentForAction(ctx context.Context, key store.LuksKeyByActio
 
 func (l *Luks) CreateToken(ctx context.Context, p store.CreateLuksTokenParams) (store.LuksToken, error) {
 	row, err := l.q.CreateLuksToken(ctx, generated.CreateLuksTokenParams{
+		ID:         ulid.Make().String(),
 		DeviceID:   p.DeviceID,
 		ActionID:   p.ActionID,
 		Token:      p.Token,

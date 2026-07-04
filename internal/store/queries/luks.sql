@@ -50,9 +50,11 @@ WHERE device_id = $1
 -- and a sibling row already exists, so this insert never runs against
 -- a stale event. projection_version on the new row is the same
 -- sequence_num that just guarded step 1.
+-- id is the rotating event's ULID (F-15 / spec 20) — deterministic
+-- under replay, supplied by the projector.
 INSERT INTO luks_keys_projection
-    (device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+    (id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: LuksKeyExistsForDeviceActionPath :one
 -- Companion to the asymmetric stale-replay guard in
@@ -101,8 +103,9 @@ WHERE device_id  = $1
   AND is_current = TRUE;
 
 -- name: CreateLuksToken :one
-INSERT INTO luks_tokens (device_id, action_id, token, min_length, complexity, expires_at)
-VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '15 minutes')
+-- id is a ULID minted in Go (F-15 / spec 20).
+INSERT INTO luks_tokens (id, device_id, action_id, token, min_length, complexity, expires_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW() + INTERVAL '15 minutes')
 RETURNING *;
 
 -- name: ValidateAndConsumeLuksToken :one

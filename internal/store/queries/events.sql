@@ -1,10 +1,12 @@
 -- name: AppendEvent :one
+-- id is a ULID minted in Go (F-15 / spec 20) — the DB never mints a
+-- random identifier.
 INSERT INTO events (
-    stream_type, stream_id, stream_version,
+    id, stream_type, stream_id, stream_version,
     event_type, data, metadata,
     actor_type, actor_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8
+    $1, $2, $3, $4, $5, $6, $7, $8, $9
 )
 RETURNING *;
 

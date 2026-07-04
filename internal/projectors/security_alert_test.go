@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +23,7 @@ import (
 // share this function so they cannot diverge.
 func TestSecurityAlertProjectionFromEvent_Pure(t *testing.T) {
 	occurredAt := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
-	eventID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	eventID := "01J111111111111111111111111111"
 
 	t.Run("happy path with all fields", func(t *testing.T) {
 		payload, _ := json.Marshal(map[string]any{
@@ -88,12 +87,12 @@ func TestSecurityAlertProjectionFromEvent_Pure(t *testing.T) {
 }
 
 func TestSecurityAlertAckParamsFromEvent_Pure(t *testing.T) {
-	alertID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	alertID := "01J222222222222222222222222222"
 	occurredAt := time.Date(2026, 5, 4, 13, 0, 0, 0, time.UTC)
 
 	t.Run("happy path", func(t *testing.T) {
 		payload, _ := json.Marshal(map[string]any{
-			"alert_id":        alertID.String(),
+			"alert_id":        alertID,
 			"acknowledged_by": "admin@example.com",
 		})
 		got, err := projectors.SecurityAlertAckParamsFromEvent(store.PersistedEvent{
@@ -101,7 +100,7 @@ func TestSecurityAlertAckParamsFromEvent_Pure(t *testing.T) {
 			Data: payload, OccurredAt: occurredAt,
 		})
 		require.NoError(t, err)
-		assert.Equal(t, alertID, got.Column1)
+		assert.Equal(t, alertID, got.EventID)
 		require.NotNil(t, got.AcknowledgedAt)
 		assert.Equal(t, occurredAt, *got.AcknowledgedAt)
 		require.NotNil(t, got.AcknowledgedBy)
@@ -186,7 +185,7 @@ func TestSecurityAlertListener_EndToEnd(t *testing.T) {
 		StreamID:   deviceID,
 		EventType:  "SecurityAlertAcknowledged",
 		Data: map[string]any{
-			"alert_id":        got.EventID.String(),
+			"alert_id":        got.EventID,
 			"acknowledged_by": "ops@example.com",
 		},
 		ActorType: "user",

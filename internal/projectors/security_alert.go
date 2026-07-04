@@ -24,8 +24,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/uuid"
-
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -98,16 +96,12 @@ func SecurityAlertAckParamsFromEvent(e store.PersistedEvent) (db.AcknowledgeSecu
 			fmt.Errorf("projector: invalid SecurityAlertAcknowledged payload: %w", err)
 	}
 
-	alertID, err := uuid.Parse(data.AlertID)
-	if err != nil {
-		return db.AcknowledgeSecurityAlertProjectionParams{},
-			fmt.Errorf("projector: invalid alert_id %q in SecurityAlertAcknowledged: %w", data.AlertID, err)
-	}
+	alertID := data.AlertID
 
 	occurredAt := e.OccurredAt
 	ackBy := data.AcknowledgedBy
 	return db.AcknowledgeSecurityAlertProjectionParams{
-		Column1:        alertID,
+		EventID:        alertID,
 		AcknowledgedAt: &occurredAt,
 		AcknowledgedBy: &ackBy,
 	}, nil

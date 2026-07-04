@@ -73,4 +73,4 @@ UPDATE security_alerts_projection
 SET acknowledged = TRUE,
     acknowledged_at = $2,
     acknowledged_by = $3
-WHERE event_id = $1::uuid;
+WHERE event_id = $1;

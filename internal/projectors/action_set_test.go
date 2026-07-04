@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -426,7 +426,7 @@ func TestActionSetListener_StaleMemberRemovedDoesNotWipeLiveMembership(t *testin
 	older := before.ProjectionVersion - 5
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID: uuid.New(), SequenceNum: older,
+		ID: ulid.Make().String(), SequenceNum: older,
 		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberRemoved",
 		Data: jsonOrFail(t, map[string]any{"action_id": "act-A"}), ActorType: "user", ActorID: "u",
 	})
@@ -467,7 +467,7 @@ func TestActionSetListener_StaleMemberReorderedDoesNotClobberPosition(t *testing
 	older := before.ProjectionVersion - 5
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID: uuid.New(), SequenceNum: older,
+		ID: ulid.Make().String(), SequenceNum: older,
 		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberReordered",
 		Data: jsonOrFail(t, map[string]any{"action_id": "act-A", "sort_order": 99}), ActorType: "user", ActorID: "u",
 	})
@@ -501,7 +501,7 @@ func TestActionSetListener_RecountAfterStaleEventStaysCorrect(t *testing.T) {
 	older := before.ProjectionVersion - 5
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID: uuid.New(), SequenceNum: older,
+		ID: ulid.Make().String(), SequenceNum: older,
 		StreamType: "action_set", StreamID: setID, EventType: "ActionSetMemberAdded",
 		Data: jsonOrFail(t, map[string]any{"action_id": "act-STALE", "sort_order": 0}), ActorType: "user", ActorID: "u",
 	})
@@ -680,7 +680,7 @@ func TestActionSetListener_StaleDeleteReplayDoesNotNukeMembers(t *testing.T) {
 	staleAt := *live.CreatedAt
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "action_set",
 		StreamID:    setID,
@@ -754,7 +754,7 @@ func TestActionSetListener_StaleMemberAddedDoesNotRecreateMembership(t *testing.
 	staleAt := *live.UpdatedAt
 	listener := projectors.ActionSetListener(st, slog.Default())
 	listener(ctx, store.PersistedEvent{
-		ID:          uuid.New(),
+		ID:          ulid.Make().String(),
 		SequenceNum: older,
 		StreamType:  "action_set",
 		StreamID:    setID,
