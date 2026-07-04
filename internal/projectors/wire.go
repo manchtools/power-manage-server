@@ -159,7 +159,10 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("definitions", ApplyDefinition)
 	st.RegisterRebuildApply("executions", ApplyExecution)
 	st.RegisterRebuildApply("devices", ApplyDevice)
-	st.RegisterRebuildApply("users", ApplyUser)
+	// The users target replays BOTH the user and user_role streams:
+	// user_roles_projection is co-owned by ApplyUser (creation-time
+	// role_ids) and ApplyUserRole (grants) — see ApplyUserWithRoles.
+	st.RegisterRebuildApply("users", ApplyUserWithRoles)
 	// lps_keypair (#495): the singleton sealing-keypair row is a projection
 	// of the lps_keypair/global stream; replay reproduces it 1:1.
 	st.RegisterRebuildApply("lps_keypair", ApplyLpsKeypair)
@@ -168,7 +171,6 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// links/providers, security alerts, compliance, and the encrypted
 	// secret history. FK-ordered in AllRebuildTargets (children after
 	// parents); each Apply* returns errors so a rebuild fails loudly.
-	st.RegisterRebuildApply("user_roles", ApplyUserRole)
 	st.RegisterRebuildApply("totp", ApplyTotp)
 	st.RegisterRebuildApply("identity_providers", ApplyIdentityProvider)
 	st.RegisterRebuildApply("security_alerts", ApplySecurityAlert)
