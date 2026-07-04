@@ -87,7 +87,7 @@ func TestSecurityAlertProjectionFromEvent_Pure(t *testing.T) {
 }
 
 func TestSecurityAlertAckParamsFromEvent_Pure(t *testing.T) {
-	alertID := "01J222222222222222222222222222"
+	alertID := "01J22222222222222222222222" // valid 26-char ULID
 	occurredAt := time.Date(2026, 5, 4, 13, 0, 0, 0, time.UTC)
 
 	t.Run("happy path", func(t *testing.T) {
