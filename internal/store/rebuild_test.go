@@ -385,6 +385,15 @@ func TestRebuildAll_SkipEventIsNonFatal(t *testing.T) {
 	require.NoError(t, err, "ErrSkipEvent must not abort the rebuild")
 	require.NotNil(t, res)
 
+	// F-14 / spec 21 AC 7: skipped events are reported SEPARATELY from
+	// applied ones — an operator must see that N events were
+	// unprojectable, not a total that silently conflates both.
+	require.Len(t, res.Targets, 1)
+	assert.Zero(t, res.Targets[0].EventsApplied,
+		"a skipped event must not count as applied")
+	assert.Positive(t, res.Targets[0].Skipped,
+		"skipped events must surface in the Skipped counter")
+
 	// The role's create event was skipped, so the truncated projection
 	// stays empty — proving the skip path ran (counted, not applied) and
 	// did not fatally roll back.
