@@ -174,8 +174,10 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		return m, fmt.Errorf("create user group: %w", err)
 	}
 
-	// Remove old mapping
-	h.appendEvent(ctx, store.Event{
+	// Remove old mapping. Fail hard: if the unmap append fails, creating
+	// the replacement below would leave the stale mapping active alongside
+	// the new one — two mappings for one SCIM group id.
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   m.ID,
 		EventType:  string(eventtypes.SCIMGroupUnmapped),
@@ -185,7 +187,9 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		},
 		ActorType: "scim",
 		ActorID:   providerID,
-	})
+	}); err != nil {
+		return m, fmt.Errorf("unmap old SCIM group mapping: %w", err)
+	}
 
 	// Create new mapping pointing to the new user group
 	newMappingID := newULID()

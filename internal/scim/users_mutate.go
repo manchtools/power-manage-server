@@ -133,7 +133,12 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			ActorType: "scim",
 			ActorID:   provider.ID,
 		}); err != nil {
-			h.logger.Warn("failed to update user profile via SCIM", "error", err)
+			// Fail the request like the email/status branches above: a
+			// 200 after a dropped source-of-truth profile update would
+			// silently desync PM from the IdP.
+			h.logger.Error("failed to update user profile via SCIM", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update user profile")
+			return
 		}
 	}
 
