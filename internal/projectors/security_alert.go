@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -77,11 +79,10 @@ func SecurityAlertProjectionFromEvent(e store.PersistedEvent) (db.InsertSecurity
 // apply a `SecurityAlertAcknowledged` event to the projection.
 // Same purity contract as SecurityAlertProjectionFromEvent.
 //
-// alert_id arrives as a string in the event data and must round-trip
-// to a UUID for the WHERE clause to hit the primary-key index. A
-// malformed UUID is propagated as a validation error rather than
-// silently full-scanning and matching nothing — matches the deleted
-// PL/pgSQL projector's `(event.data->>'alert_id')::uuid` behaviour.
+// alert_id is the raising event's ULID (F-15 / spec 20). A malformed
+// id is propagated as a validation error rather than silently matching
+// nothing in the WHERE clause — the same fail-loud contract the
+// retired `(event.data->>'alert_id')::uuid` cast enforced.
 func SecurityAlertAckParamsFromEvent(e store.PersistedEvent) (db.AcknowledgeSecurityAlertProjectionParams, error) {
 	if e.StreamType != "device" || e.EventType != string(eventtypes.SecurityAlertAcknowledged) {
 		return db.AcknowledgeSecurityAlertProjectionParams{}, ErrIgnoredEvent
@@ -97,6 +98,10 @@ func SecurityAlertAckParamsFromEvent(e store.PersistedEvent) (db.AcknowledgeSecu
 	}
 
 	alertID := data.AlertID
+	if _, err := ulid.Parse(alertID); err != nil {
+		return db.AcknowledgeSecurityAlertProjectionParams{},
+			fmt.Errorf("projector: invalid alert_id %q in SecurityAlertAcknowledged: %w", alertID, err)
+	}
 
 	occurredAt := e.OccurredAt
 	ackBy := data.AcknowledgedBy
