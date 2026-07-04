@@ -53,15 +53,15 @@ func (h *IDPHandler) CreateIdentityProvider(ctx context.Context, req *connect.Re
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to check slug")
 	}
 
-	// Encrypt client secret
-	encryptedSecret, err := h.enc.Encrypt(req.Msg.ClientSecret)
-	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
-	}
-
 	groupMappingJSON, _ := json.Marshal(req.Msg.GroupMapping)
 
 	id := newULID()
+
+	// Encrypt client secret bound to this provider row (spec 20 / F-06).
+	encryptedSecret, err := h.enc.EncryptWithContext(req.Msg.ClientSecret, crypto.RowAAD(id, crypto.PurposeIdPClientSecret))
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
+	}
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   id,
@@ -207,7 +207,7 @@ func (h *IDPHandler) UpdateIdentityProvider(ctx context.Context, req *connect.Re
 	}
 
 	if req.Msg.ClientSecret != "" {
-		encryptedSecret, err := h.enc.Encrypt(req.Msg.ClientSecret)
+		encryptedSecret, err := h.enc.EncryptWithContext(req.Msg.ClientSecret, crypto.RowAAD(req.Msg.Id, crypto.PurposeIdPClientSecret))
 		if err != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt client secret")
 		}

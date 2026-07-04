@@ -184,8 +184,8 @@ func (h *SSOHandler) GetSSOLoginURL(ctx context.Context, req *connect.Request[pm
 		return nil, apiErrorCtx(ctx, ErrProviderDisabled, connect.CodeFailedPrecondition, "provider is disabled")
 	}
 
-	// Decrypt client secret
-	clientSecret, err := h.enc.Decrypt(provider.ClientSecretEncrypted)
+	// Decrypt client secret bound to this provider row (spec 20 / F-06).
+	clientSecret, err := h.enc.DecryptWithContext(provider.ClientSecretEncrypted, crypto.RowAAD(provider.ID, crypto.PurposeIdPClientSecret))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
 	}
@@ -289,8 +289,8 @@ func (h *SSOHandler) SSOCallback(ctx context.Context, req *connect.Request[pm.SS
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "slug mismatch")
 	}
 
-	// Decrypt client secret
-	clientSecret, err := h.enc.Decrypt(provider.ClientSecretEncrypted)
+	// Decrypt client secret bound to this provider row (spec 20 / F-06).
+	clientSecret, err := h.enc.DecryptWithContext(provider.ClientSecretEncrypted, crypto.RowAAD(provider.ID, crypto.PurposeIdPClientSecret))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt client secret")
 	}

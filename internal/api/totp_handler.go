@@ -99,8 +99,8 @@ func (h *TOTPHandler) SetupTOTP(ctx context.Context, req *connect.Request[pm.Set
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate backup codes")
 	}
 
-	// Encrypt the TOTP secret
-	encryptedSecret, err := h.encryptor.Encrypt(key.Secret())
+	// Encrypt the TOTP secret bound to this user row (spec 20 / F-06).
+	encryptedSecret, err := h.encryptor.EncryptWithContext(key.Secret(), crypto.RowAAD(userCtx.ID, crypto.PurposeTOTPSecret))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt TOTP secret")
 	}
@@ -151,8 +151,8 @@ func (h *TOTPHandler) VerifyTOTP(ctx context.Context, req *connect.Request[pm.Ve
 		return nil, apiErrorCtx(ctx, ErrTOTPAlreadyEnabled, connect.CodeFailedPrecondition, "TOTP is already enabled")
 	}
 
-	// Decrypt secret and validate code
-	secret, err := h.encryptor.Decrypt(totpRecord.SecretEncrypted)
+	// Decrypt secret bound to this user row (spec 20 / F-06).
+	secret, err := h.encryptor.DecryptWithContext(totpRecord.SecretEncrypted, crypto.RowAAD(userCtx.ID, crypto.PurposeTOTPSecret))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt TOTP secret")
 	}
@@ -382,8 +382,8 @@ func (h *TOTPHandler) VerifyLoginTOTP(ctx context.Context, req *connect.Request[
 		return nil, apiErrorCtx(ctx, ErrTOTPNotEnabled, connect.CodeFailedPrecondition, "TOTP is not enabled")
 	}
 
-	// Decrypt secret
-	secret, err := h.encryptor.Decrypt(totpRecord.SecretEncrypted)
+	// Decrypt secret bound to this user row (spec 20 / F-06).
+	secret, err := h.encryptor.DecryptWithContext(totpRecord.SecretEncrypted, crypto.RowAAD(claims.UserID, crypto.PurposeTOTPSecret))
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt TOTP secret")
 	}

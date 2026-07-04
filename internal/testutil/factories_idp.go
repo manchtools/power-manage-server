@@ -39,7 +39,7 @@ func SetupTOTP(t *testing.T, st *store.Store, enc *crypto.Encryptor, userID, ema
 		t.Fatalf("generate TOTP key: %v", err)
 	}
 
-	encryptedSecret, err := enc.Encrypt(key.Secret())
+	encryptedSecret, err := enc.EncryptWithContext(key.Secret(), crypto.RowAAD(userID, crypto.PurposeTOTPSecret))
 	if err != nil {
 		t.Fatalf("encrypt TOTP secret: %v", err)
 	}
@@ -93,7 +93,7 @@ func SetupTOTPCheapBackup(t *testing.T, st *store.Store, enc *crypto.Encryptor, 
 	if err != nil {
 		t.Fatalf("generate TOTP key: %v", err)
 	}
-	encryptedSecret, err := enc.Encrypt(key.Secret())
+	encryptedSecret, err := enc.EncryptWithContext(key.Secret(), crypto.RowAAD(userID, crypto.PurposeTOTPSecret))
 	if err != nil {
 		t.Fatalf("encrypt TOTP secret: %v", err)
 	}
@@ -136,7 +136,7 @@ func CreateTestIdentityProvider(t *testing.T, st *store.Store, enc *crypto.Encry
 	ctx := context.Background()
 	id := NewID()
 
-	encSecret, err := enc.Encrypt("test-client-secret")
+	encSecret, err := enc.EncryptWithContext("test-client-secret", crypto.RowAAD(id, crypto.PurposeIdPClientSecret))
 	if err != nil {
 		t.Fatalf("encrypt test secret: %v", err)
 	}
