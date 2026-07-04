@@ -136,3 +136,38 @@ if [ "$code" -ge 100 ] || [ "$code" -eq 2 ]; then
   echo "doctor found critical issues (exit $code)"; exit 1
 fi
 ```
+
+## Emergency projection rebuild: `rebuild-projections`
+
+<!-- docref: begin src=cmd/control/main.go#@rebuild-subcommand:2d8f0710 -->
+If a projection table is corrupted or inconsistent with the event store
+(manual edit, projector bug, partial restore), the Control binary can
+replay it from the event log. This is **destructive** — the selected
+projection tables are truncated and rebuilt inside one transaction — so
+it is deliberately CLI-only: running it requires shell access to the
+Control container, and there is no remote RPC equivalent.
+
+```bash
+# rebuild every projection from the event store
+docker compose exec control control rebuild-projections
+
+# rebuild only the named targets (plus whatever cascade safety adds)
+docker compose exec control control rebuild-projections users devices
+```
+<!-- docref: end -->
+
+<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:233aab6e -->
+The command prints the resolved target list before touching anything. A
+partial selection is widened automatically when a selected table's
+`TRUNCATE ... CASCADE` would wipe tables owned by other targets — a
+partial rebuild never destroys data it does not replay. Each target
+reports events applied and events skipped (unprojectable historical
+payloads) separately. Everything runs in a single transaction: a failure
+rolls back to the pre-rebuild state. After a successful rebuild the
+system-role permissions are re-reconciled from the code registry, so no
+Control restart is needed.
+
+Exit codes: `0` success · `1` rebuild failed (rolled back) · `2` could
+not run (bad flags, unknown target, no database). `--env-file <path>`
+works like doctor's (default `.env`).
+<!-- docref: end -->

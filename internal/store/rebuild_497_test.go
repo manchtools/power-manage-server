@@ -81,7 +81,7 @@ func TestRebuildAll_497_ReplaysEveryProjection(t *testing.T) {
 		names[tr.Name] = true
 	}
 	for _, required := range []string{
-		"user_roles", "totp", "identity_providers", "security_alerts",
+		"users", "totp", "identity_providers", "security_alerts",
 		"lps_passwords", "luks_keys", "server_settings",
 		"compliance_policies", "compliance_results",
 	} {
@@ -122,8 +122,11 @@ func TestRebuildAll_497_ReplaysEveryProjection(t *testing.T) {
 	assert.True(t, settingsAfter.SshAccessForAll, "the ServerSettingUpdated value must survive the rebuild")
 }
 
-// TestRebuildAll_497_UserRolesTargetInIsolation pins the RBAC target on its
-// own: a targeted rebuild of user_roles reproduces the grant.
+// TestRebuildAll_497_UserRolesTargetInIsolation pins the RBAC replay
+// through the merged users target (spec 21: user_roles_projection is
+// co-owned by ApplyUser and ApplyUserRole, so the "user_roles" target
+// was folded into "users"): a targeted rebuild reproduces BOTH the
+// creation-time role_ids and the post-creation grant.
 func TestRebuildAll_497_UserRolesTargetInIsolation(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
@@ -144,13 +147,13 @@ func TestRebuildAll_497_UserRolesTargetInIsolation(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, gone, "precondition: the truncate took")
 
-	res, err := st.RebuildAll(ctx, "user_roles")
+	res, err := st.RebuildAll(ctx, "users")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.Positive(t, res.Targets[0].EventsApplied, "the UserRoleAssigned event must replay")
+	users := findTargetResult(t, res, "users")
+	assert.Positive(t, users.EventsApplied, "the user + user_role events must replay")
 
 	after, err := st.Queries().GetUserRoles(ctx, userID)
 	require.NoError(t, err)
-	require.Len(t, after, 1, "the grant must be re-derived from the user_role stream")
-	assert.Equal(t, roleID, after[0].ID)
+	require.Len(t, after, len(before), "the pre-truncate role set must be re-derived exactly")
+	assert.Equal(t, roleID, after[0].ID, "the post-creation grant must survive")
 }

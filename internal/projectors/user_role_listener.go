@@ -37,6 +37,24 @@ func UserRoleListener(st *store.Store, logger *slog.Logger) store.EventListener 
 	}
 }
 
+// ApplyUserWithRoles is the rebuild applier for the merged "users"
+// target (spec 21 AC 6 finding): user_roles_projection has TWO writers
+// — ApplyUser inserts the creation-time role_ids carried by
+// UserCreatedWithRoles (user stream) and ApplyUserRole applies
+// post-creation grants (user_role stream). As separate rebuild targets,
+// whichever TRUNCATEd second silently wiped the other applier's
+// replayed rows. The merged target replays BOTH streams in true
+// sequence order through this dispatcher.
+func ApplyUserWithRoles(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	switch e.StreamType {
+	case "user":
+		return ApplyUser(ctx, q, e)
+	case "user_role":
+		return ApplyUserRole(ctx, q, e)
+	}
+	return nil
+}
+
 // ApplyUserRole is the transactional core of the user_role projector: it
 // writes through the supplied Queries (the rebuild tx or the live autocommit
 // handle) and RETURNS errors instead of logging-and-swallowing, so a rebuild

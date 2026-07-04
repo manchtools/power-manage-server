@@ -85,6 +85,15 @@ func main() {
 	}
 	// docref: end doctor-subcommand
 
+	// `control rebuild-projections [target…]` is the operator entry point
+	// for the emergency projection replay (spec 21 / #505). Like doctor it
+	// intercepts before parseFlags and never boots the server.
+	// docref: begin rebuild-subcommand
+	if len(os.Args) > 1 && os.Args[1] == "rebuild-projections" {
+		os.Exit(runRebuildProjections(os.Args[2:]))
+	}
+	// docref: end rebuild-subcommand
+
 	cfg := parseFlags()
 
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)

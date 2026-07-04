@@ -44,13 +44,13 @@ func TestRebuildAll_RoundTripsThroughEventStore(t *testing.T) {
 	_, err = st.Queries().GetUserByID(ctx, userID)
 	require.Error(t, err, "post-truncate fetch must fail; if it doesn't the truncate didn't take")
 
-	// RebuildAll for just this target replays every 'user' event
-	// through the projector and recreates the row.
+	// RebuildAll for this target replays every 'user' event through the
+	// projector and recreates the row. The run set is wider than
+	// "users" (cascade-safe expansion, spec 21 AC 4).
 	res, err := st.RebuildAll(ctx, "users")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.Equal(t, "users", res.Targets[0].Name)
-	assert.Greater(t, res.Targets[0].EventsApplied, int64(0),
+	users := findTargetResult(t, res, "users")
+	assert.Greater(t, users.EventsApplied, int64(0),
 		"at least the UserCreated event must have been replayed")
 
 	after, err := st.Queries().GetUserByID(ctx, userID)
@@ -81,8 +81,10 @@ func TestRebuildAll_StreamsAcrossBatchBoundary(t *testing.T) {
 
 	res, err := st.RebuildAll(ctx, "users")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.GreaterOrEqual(t, res.Targets[0].EventsApplied, int64(len(ids)),
+	// Cascade-safe expansion (spec 21 AC 4) widens the run beyond
+	// "users"; this test only cares about the users target's batching.
+	users := findTargetResult(t, res, "users")
+	assert.GreaterOrEqual(t, users.EventsApplied, int64(len(ids)),
 		"every seeded user's events must replay across the batch boundary")
 
 	for _, id := range ids {
@@ -192,9 +194,10 @@ func TestRebuildAll_PortedProjector_RoundTrip(t *testing.T) {
 
 	res, err := st.RebuildAll(ctx, "roles")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.Equal(t, "roles", res.Targets[0].Name)
-	assert.Greater(t, res.Targets[0].EventsApplied, int64(0),
+	// The run set is wider than "roles" (cascade-safe expansion, spec 21
+	// AC 4); this test cares about the roles target's replay.
+	roles := findTargetResult(t, res, "roles")
+	assert.Greater(t, roles.EventsApplied, int64(0),
 		"at least the RoleCreated event must have been replayed")
 
 	after, err := st.Queries().GetRoleByID(ctx, roleID)
@@ -347,7 +350,11 @@ func TestRebuildAll_GoApplierMissingFailsLoudly(t *testing.T) {
 	require.Error(t, err, "rebuild must fail when the Go applier is unwired and Function is empty")
 	assert.Contains(t, err.Error(), "no Go applier registered",
 		"error must name the missing-applier failure mode so operators can wire WireAll")
-	assert.Contains(t, err.Error(), "roles",
+	// Cascade-safe expansion widens the run beyond "roles", and with
+	// WireAll skipped EVERY target lacks its applier — the first one in
+	// canonical order fails. Which one that is depends on the FK graph,
+	// so assert the error names *a* target, not a specific one.
+	assert.Contains(t, err.Error(), `rebuild target "`,
 		"error must name the offending target")
 
 	// The canary row must still be there. As called out above,
@@ -384,6 +391,24 @@ func TestRebuildAll_SkipEventIsNonFatal(t *testing.T) {
 	res, err := st.RebuildAll(ctx, "roles")
 	require.NoError(t, err, "ErrSkipEvent must not abort the rebuild")
 	require.NotNil(t, res)
+
+	// F-14 / spec 21 AC 7: skipped events are reported SEPARATELY from
+	// applied ones — an operator must see that N events were
+	// unprojectable, not a total that silently conflates both. The run
+	// set is wider than just "roles": cascade-safe expansion (AC 4)
+	// pulls in the targets whose tables the roles CASCADE reaches, so
+	// locate the roles entry rather than assuming a single result.
+	var rolesResult *store.TargetResult
+	for i := range res.Targets {
+		if res.Targets[i].Name == "roles" {
+			rolesResult = &res.Targets[i]
+		}
+	}
+	require.NotNil(t, rolesResult, "roles target missing from result: %v", res.Targets)
+	assert.Zero(t, rolesResult.EventsApplied,
+		"a skipped event must not count as applied")
+	assert.Positive(t, rolesResult.Skipped,
+		"skipped events must surface in the Skipped counter")
 
 	// The role's create event was skipped, so the truncated projection
 	// stays empty — proving the skip path ran (counted, not applied) and
