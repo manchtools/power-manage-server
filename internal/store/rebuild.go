@@ -66,7 +66,13 @@ type RebuildResult struct {
 type TargetResult struct {
 	Name          string
 	EventsApplied int64
-	Duration      time.Duration
+	// Skipped counts events the applier reported unprojectable via
+	// ErrSkipEvent (malformed historical payloads). Surfaced separately
+	// from EventsApplied (F-14 / spec 21 AC 7) so an operator can see
+	// that N events were NOT reproduced rather than reading a total
+	// that silently conflates applied and skipped.
+	Skipped  int64
+	Duration time.Duration
 }
 
 // rebuildTarget is the in-Go replacement for one PL/pgSQL
@@ -412,15 +418,25 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(targets))}
 
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		for _, t := range targets {
+		// Cascade safety (spec 21 AC 4 / F-03): a partial selection is
+		// widened so no TRUNCATE ... CASCADE wipes a table whose
+		// replaying target is missing from the run. Computed inside the
+		// rebuild transaction so the FK graph read and the TRUNCATEs
+		// see one consistent schema snapshot.
+		expanded, expErr := expandCascadeClosure(ctx, tx, targets)
+		if expErr != nil {
+			return expErr
+		}
+		for _, t := range expanded {
 			tStart := s.now()
-			applied, runErr := s.runOneTarget(ctx, tx, t)
+			applied, skipped, runErr := s.runOneTarget(ctx, tx, t)
 			if runErr != nil {
 				return fmt.Errorf("rebuild target %q: %w", t.Name, runErr)
 			}
 			result.Targets = append(result.Targets, TargetResult{
 				Name:          t.Name,
 				EventsApplied: applied,
+				Skipped:       skipped,
 				Duration:      s.now().Sub(tStart),
 			})
 		}
@@ -441,10 +457,10 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 // before holding ACCESS EXCLUSIVE on the projection tables — this
 // turns the #125 footgun (silent no-op against a freshly truncated
 // projection) into a clear error.
-func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (int64, error) {
+func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (applied, skipped int64, err error) {
 	apply := s.rebuildApplyFor(t.Name)
 	if apply == nil {
-		return 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+		return 0, 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
 	}
 
 	for _, table := range t.Tables {
@@ -453,7 +469,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 			stmt += " CASCADE"
 		}
 		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return 0, fmt.Errorf("truncate %s: %w", table, err)
+			return 0, 0, fmt.Errorf("truncate %s: %w", table, err)
 		}
 	}
 
@@ -468,7 +484,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (i
 // transaction.
 //
 // Refs manchtools/power-manage-server#125.
-func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply) (int64, error) {
+func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply) (applied, skipped int64, err error) {
 	q := s.queries.WithTx(tx)
 
 	// Stream in keyset-paginated batches rather than buffering the entire
@@ -480,10 +496,7 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 	// then the cursor (sequence_num, which is monotonic and unique) advances.
 	// Memory is bounded to one batch; order and the snapshot are preserved
 	// because the events table is append-only and read within this tx.
-	var (
-		total   int64
-		lastSeq int64 // sequence_num is a positive bigserial, so 0 precedes all
-	)
+	var lastSeq int64 // sequence_num is a positive bigserial, so 0 precedes all
 	for {
 		rows, err := tx.Query(ctx,
 			`SELECT id, sequence_num, stream_type, stream_id, stream_version,
@@ -495,7 +508,7 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 			t.StreamTypes, lastSeq, rebuildBatchSize,
 		)
 		if err != nil {
-			return 0, fmt.Errorf("load events for %s: %w", t.Name, err)
+			return 0, 0, fmt.Errorf("load events for %s: %w", t.Name, err)
 		}
 		batch := make([]PersistedEvent, 0, rebuildBatchSize)
 		for rows.Next() {
@@ -505,13 +518,13 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 				&ev.EventType, &ev.Data, &ev.Metadata, &ev.ActorType, &ev.ActorID, &ev.OccurredAt,
 			); err != nil {
 				rows.Close()
-				return 0, fmt.Errorf("scan event row for %s: %w", t.Name, err)
+				return 0, 0, fmt.Errorf("scan event row for %s: %w", t.Name, err)
 			}
 			batch = append(batch, ev)
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
-			return 0, fmt.Errorf("iterate events for %s: %w", t.Name, err)
+			return 0, 0, fmt.Errorf("iterate events for %s: %w", t.Name, err)
 		}
 		if len(batch) == 0 {
 			break
@@ -521,25 +534,26 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 				if errors.Is(err, ErrSkipEvent) {
 					// A malformed historical event must not abort the
 					// rebuild; log it and move on (unlike the fatal path,
-					// which rolls back the whole target).
+					// which rolls back the whole target). Counted as
+					// Skipped, NOT applied (F-14 / spec 21 AC 7).
 					if s.logger != nil {
 						s.logger.Warn("rebuild: skipping unprojectable event",
 							"target", t.Name, "event_id", ev.ID, "event_type", ev.EventType, "error", err)
 					}
 					lastSeq = ev.SequenceNum
-					total++
+					skipped++
 					continue
 				}
-				return 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
+				return 0, 0, fmt.Errorf("apply event %s for %s: %w", ev.ID, t.Name, err)
 			}
 			lastSeq = ev.SequenceNum
-			total++
+			applied++
 		}
 		if len(batch) < rebuildBatchSize {
 			break
 		}
 	}
-	return total, nil
+	return applied, skipped, nil
 }
 
 // selectTargets resolves operator-supplied names to their
@@ -573,6 +587,157 @@ func selectTargets(names []string) ([]rebuildTarget, error) {
 		}
 		sort.Strings(unknown)
 		return nil, fmt.Errorf("%w: %s", ErrUnknownTarget, strings.Join(unknown, ", "))
+	}
+	return out, nil
+}
+
+// ResolveTargets reports the exact target set a RebuildAll with the same
+// names would run — the named targets plus every target auto-included
+// for cascade safety — in canonical order, without touching any data.
+// The rebuild-projections CLI calls it to print the plan before running;
+// RebuildAll recomputes the same expansion inside its transaction.
+func (s *Store) ResolveTargets(ctx context.Context, targetNames ...string) ([]string, error) {
+	targets, err := selectTargets(targetNames)
+	if err != nil {
+		return nil, err
+	}
+	expanded, err := expandCascadeClosure(ctx, s.pool, targets)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(expanded))
+	for i, t := range expanded {
+		names[i] = t.Name
+	}
+	return names, nil
+}
+
+// pgxQuerier is the read surface expandCascadeClosure needs — satisfied
+// by both *pgxpool.Pool (ResolveTargets preview) and pgx.Tx (the rebuild
+// transaction itself).
+type pgxQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// expandCascadeClosure widens a partial target selection until no
+// `TRUNCATE ... CASCADE` in the run can wipe a table whose content will
+// not be replayed (spec 21 AC 4 / F-03 — the #497 data-loss class via
+// the partial path). The FK graph is read live from pg_constraint, so
+// the expansion tracks schema reality rather than a hand-list.
+//
+// Rules, iterated to a fixpoint (an auto-included target can itself
+// cascade further):
+//
+//   - a cascade-closure table owned by a target (listed in its Tables)
+//     pulls that target into the run — it gets truncated, so it must be
+//     replayed;
+//   - a closure table owned by NO target is a cascade-rederived child
+//     (schema_classification_test.go registry 3): its rows come back
+//     when its FK parents' appliers replay, so every owned parent's
+//     target is pulled in instead. This is what catches the
+//     second-order case — user_group_members_projection is wiped via
+//     its users_projection FK but re-derived by the user_groups target;
+//   - a closure table with no owner and no owned FK parent cannot be
+//     re-derived by any replay: refuse rather than truncate it.
+//
+// A full (no-arg) rebuild already selects every target, so the
+// expansion is a no-op there.
+func expandCascadeClosure(ctx context.Context, q pgxQuerier, selected []rebuildTarget) ([]rebuildTarget, error) {
+	rows, err := q.Query(ctx, `
+		SELECT DISTINCT child.relname, parent.relname
+		FROM pg_constraint c
+		JOIN pg_class child  ON child.oid  = c.conrelid
+		JOIN pg_class parent ON parent.oid = c.confrelid
+		JOIN pg_namespace n  ON n.oid = child.relnamespace
+		WHERE c.contype = 'f' AND n.nspname = 'public'`)
+	if err != nil {
+		return nil, fmt.Errorf("read FK graph for cascade-safe rebuild: %w", err)
+	}
+	childrenOf := map[string][]string{}
+	parentsOf := map[string][]string{}
+	for rows.Next() {
+		var child, parent string
+		if err := rows.Scan(&child, &parent); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan FK edge: %w", err)
+		}
+		childrenOf[parent] = append(childrenOf[parent], child)
+		parentsOf[child] = append(parentsOf[child], parent)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate FK edges: %w", err)
+	}
+
+	ownerIdx := map[string]int{} // table -> AllRebuildTargets index
+	for i, t := range AllRebuildTargets {
+		for _, tbl := range t.Tables {
+			ownerIdx[tbl] = i
+		}
+	}
+
+	inRun := map[string]bool{}
+	for _, t := range selected {
+		inRun[t.Name] = true
+	}
+
+	include := func(idx int) bool {
+		name := AllRebuildTargets[idx].Name
+		if inRun[name] {
+			return false
+		}
+		inRun[name] = true
+		return true
+	}
+
+	for grew := true; grew; {
+		grew = false
+
+		// Cascade closure of the current run's CASCADE-truncated tables.
+		var queue []string
+		for _, t := range AllRebuildTargets {
+			if inRun[t.Name] && t.Cascade {
+				queue = append(queue, t.Tables...)
+			}
+		}
+		closure := map[string]bool{}
+		for len(queue) > 0 {
+			tbl := queue[0]
+			queue = queue[1:]
+			if closure[tbl] {
+				continue
+			}
+			closure[tbl] = true
+			queue = append(queue, childrenOf[tbl]...)
+		}
+
+		for tbl := range closure {
+			if idx, owned := ownerIdx[tbl]; owned {
+				if include(idx) {
+					grew = true
+				}
+				continue
+			}
+			ownedParent := false
+			for _, parent := range parentsOf[tbl] {
+				if idx, owned := ownerIdx[parent]; owned {
+					ownedParent = true
+					if include(idx) {
+						grew = true
+					}
+				}
+			}
+			if !ownedParent {
+				return nil, fmt.Errorf("rebuild: TRUNCATE ... CASCADE would wipe %q, which no rebuild target replays and whose FK parents own no target either — refusing to destroy unreplayable state", tbl)
+			}
+		}
+	}
+
+	out := make([]rebuildTarget, 0, len(inRun))
+	for _, t := range AllRebuildTargets {
+		if inRun[t.Name] {
+			out = append(out, t)
+		}
 	}
 	return out, nil
 }

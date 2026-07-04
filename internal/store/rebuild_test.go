@@ -81,8 +81,10 @@ func TestRebuildAll_StreamsAcrossBatchBoundary(t *testing.T) {
 
 	res, err := st.RebuildAll(ctx, "users")
 	require.NoError(t, err)
-	require.Len(t, res.Targets, 1)
-	assert.GreaterOrEqual(t, res.Targets[0].EventsApplied, int64(len(ids)),
+	// Cascade-safe expansion (spec 21 AC 4) widens the run beyond
+	// "users"; this test only cares about the users target's batching.
+	users := findTargetResult(t, res, "users")
+	assert.GreaterOrEqual(t, users.EventsApplied, int64(len(ids)),
 		"every seeded user's events must replay across the batch boundary")
 
 	for _, id := range ids {
@@ -387,11 +389,20 @@ func TestRebuildAll_SkipEventIsNonFatal(t *testing.T) {
 
 	// F-14 / spec 21 AC 7: skipped events are reported SEPARATELY from
 	// applied ones — an operator must see that N events were
-	// unprojectable, not a total that silently conflates both.
-	require.Len(t, res.Targets, 1)
-	assert.Zero(t, res.Targets[0].EventsApplied,
+	// unprojectable, not a total that silently conflates both. The run
+	// set is wider than just "roles": cascade-safe expansion (AC 4)
+	// pulls in the targets whose tables the roles CASCADE reaches, so
+	// locate the roles entry rather than assuming a single result.
+	var rolesResult *store.TargetResult
+	for i := range res.Targets {
+		if res.Targets[i].Name == "roles" {
+			rolesResult = &res.Targets[i]
+		}
+	}
+	require.NotNil(t, rolesResult, "roles target missing from result: %v", res.Targets)
+	assert.Zero(t, rolesResult.EventsApplied,
 		"a skipped event must not count as applied")
-	assert.Positive(t, res.Targets[0].Skipped,
+	assert.Positive(t, rolesResult.Skipped,
 		"skipped events must surface in the Skipped counter")
 
 	// The role's create event was skipped, so the truncated projection
