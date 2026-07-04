@@ -42,8 +42,8 @@ WHERE device_id = $1
 -- id is the rotating event's ULID (F-15 / spec 20) — deterministic
 -- under replay, supplied by the projector.
 INSERT INTO lps_passwords_projection
-    (id, device_id, action_id, username, password, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+    (id, device_id, action_id, username, password, rotated_at, rotation_reason, projection_version, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: LpsPasswordExistsForDeviceUsername :one
 -- Companion to the asymmetric stale-replay guard in

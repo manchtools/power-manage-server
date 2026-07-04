@@ -145,6 +145,9 @@ func ApplyLpsPassword(ctx context.Context, q *store.Queries, e store.PersistedEv
 		RotatedAt:         payload.RotatedAt,
 		RotationReason:    payload.RotationReason,
 		ProjectionVersion: projVer,
+		// created_at from the event, not now(): a rebuild must
+		// reproduce the row byte-identically (spec 21 AC 6).
+		CreatedAt: e.OccurredAt,
 	}); err != nil {
 		return err
 	}

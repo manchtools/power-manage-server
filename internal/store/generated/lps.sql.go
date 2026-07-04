@@ -96,8 +96,8 @@ func (q *Queries) GetLpsPasswordHistory(ctx context.Context, deviceID string) ([
 
 const insertLpsPassword = `-- name: InsertLpsPassword :exec
 INSERT INTO lps_passwords_projection
-    (id, device_id, action_id, username, password, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (id, device_id, action_id, username, password, rotated_at, rotation_reason, projection_version, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertLpsPasswordParams struct {
@@ -109,6 +109,7 @@ type InsertLpsPasswordParams struct {
 	RotatedAt         time.Time `json:"rotated_at"`
 	RotationReason    string    `json:"rotation_reason"`
 	ProjectionVersion int64     `json:"projection_version"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Step 2 of LpsPasswordRotated projection. Inserts the new row only
@@ -129,6 +130,7 @@ func (q *Queries) InsertLpsPassword(ctx context.Context, arg InsertLpsPasswordPa
 		arg.RotatedAt,
 		arg.RotationReason,
 		arg.ProjectionVersion,
+		arg.CreatedAt,
 	)
 	return err
 }

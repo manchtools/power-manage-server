@@ -72,6 +72,9 @@ func SecurityAlertProjectionFromEvent(e store.PersistedEvent) (db.InsertSecurity
 		Message:   data.Message,
 		Details:   []byte(data.Details),
 		RaisedAt:  e.OccurredAt,
+		// created_at from the event, not now(): a rebuild must
+		// reproduce the row byte-identically (spec 21 AC 6).
+		CreatedAt: e.OccurredAt,
 	}, nil
 }
 

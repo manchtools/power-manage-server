@@ -175,8 +175,8 @@ func (q *Queries) GetLuksKeyHistory(ctx context.Context, deviceID string) ([]Luk
 
 const insertLuksKey = `-- name: InsertLuksKey :exec
 INSERT INTO luks_keys_projection
-    (id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    (id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertLuksKeyParams struct {
@@ -188,6 +188,7 @@ type InsertLuksKeyParams struct {
 	RotatedAt         time.Time `json:"rotated_at"`
 	RotationReason    string    `json:"rotation_reason"`
 	ProjectionVersion int64     `json:"projection_version"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 // Step 2 of LuksKeyRotated projection. Inserts the new row only when
@@ -208,6 +209,7 @@ func (q *Queries) InsertLuksKey(ctx context.Context, arg InsertLuksKeyParams) er
 		arg.RotatedAt,
 		arg.RotationReason,
 		arg.ProjectionVersion,
+		arg.CreatedAt,
 	)
 	return err
 }

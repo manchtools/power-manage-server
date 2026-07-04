@@ -113,8 +113,8 @@ func (q *Queries) GetSecurityAlert(ctx context.Context, eventID string) (GetSecu
 
 const insertSecurityAlertProjection = `-- name: InsertSecurityAlertProjection :exec
 INSERT INTO security_alerts_projection (
-    event_id, device_id, alert_type, message, details, raised_at
-) VALUES ($1, $2, $3, $4, $5, $6)
+    event_id, device_id, alert_type, message, details, raised_at, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (event_id) DO NOTHING
 `
 
@@ -125,6 +125,7 @@ type InsertSecurityAlertProjectionParams struct {
 	Message   string    `json:"message"`
 	Details   []byte    `json:"details"`
 	RaisedAt  time.Time `json:"raised_at"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Write-side queries for the Go projector that replaced
@@ -140,6 +141,7 @@ func (q *Queries) InsertSecurityAlertProjection(ctx context.Context, arg InsertS
 		arg.Message,
 		arg.Details,
 		arg.RaisedAt,
+		arg.CreatedAt,
 	)
 	return err
 }

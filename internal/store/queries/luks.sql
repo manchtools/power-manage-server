@@ -53,8 +53,8 @@ WHERE device_id = $1
 -- id is the rotating event's ULID (F-15 / spec 20) — deterministic
 -- under replay, supplied by the projector.
 INSERT INTO luks_keys_projection
-    (id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+    (id, device_id, action_id, device_path, passphrase, rotated_at, rotation_reason, projection_version, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 
 -- name: LuksKeyExistsForDeviceActionPath :one
 -- Companion to the asymmetric stale-replay guard in
