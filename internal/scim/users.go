@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -229,7 +230,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
 		EventType:  string(eventtypes.IdentityUnlinked),
-		Data:       map[string]any{},
+		Data:       payloads.IdentityUnlinked{UserID: userID, ProviderID: provider.ID},
 		ActorType:  "scim",
 		ActorID:    provider.ID,
 	}); err != nil {
@@ -262,7 +263,7 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDeleted),
-			Data:       map[string]any{},
+			Data:       payloads.UserDeleted{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})

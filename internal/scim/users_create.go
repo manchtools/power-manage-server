@@ -18,6 +18,7 @@ import (
 	"net/http"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -122,12 +123,12 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 				StreamType: "identity_provider",
 				StreamID:   linkID,
 				EventType:  string(eventtypes.IdentityLinked),
-				Data: map[string]any{
-					"user_id":        existingUser.ID,
-					"provider_id":    provider.ID,
-					"external_id":    externalID,
-					"external_email": email,
-					"external_name":  formatExternalName(scimUser.Name),
+				Data: payloads.IdentityLinked{
+					UserID:        existingUser.ID,
+					ProviderID:    provider.ID,
+					ExternalID:    externalID,
+					ExternalEmail: email,
+					ExternalName:  formatExternalName(scimUser.Name),
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -178,14 +179,16 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		StreamType: "user",
 		StreamID:   userID,
 		EventType:  string(eventtypes.UserCreatedWithRoles),
-		Data: map[string]any{
-			"email":          email,
-			"display_name":   formatExternalName(scimUser.Name),
-			"given_name":     safeNameField(scimUser.Name, "given"),
-			"family_name":    safeNameField(scimUser.Name, "family"),
-			"linux_username": linuxUsername,
-			"linux_uid":      linuxUID,
-			"role_ids":       roleIDs,
+		// Pointers always set (possibly to ""): SCIM asserts every
+		// field, mirroring the legacy always-present map keys.
+		Data: payloads.UserCreatedWithRoles{
+			Email:         &email,
+			DisplayName:   ptr(formatExternalName(scimUser.Name)),
+			GivenName:     ptr(safeNameField(scimUser.Name, "given")),
+			FamilyName:    ptr(safeNameField(scimUser.Name, "family")),
+			LinuxUsername: &linuxUsername,
+			LinuxUID:      &linuxUID,
+			RoleIDs:       roleIDs,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -202,12 +205,12 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		StreamType: "identity_provider",
 		StreamID:   linkID,
 		EventType:  string(eventtypes.IdentityLinked),
-		Data: map[string]any{
-			"user_id":        userID,
-			"provider_id":    provider.ID,
-			"external_id":    externalID,
-			"external_email": email,
-			"external_name":  formatExternalName(scimUser.Name),
+		Data: payloads.IdentityLinked{
+			UserID:        userID,
+			ProviderID:    provider.ID,
+			ExternalID:    externalID,
+			ExternalEmail: email,
+			ExternalName:  formatExternalName(scimUser.Name),
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,
@@ -225,7 +228,7 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
-				Data:       map[string]any{"user_provisioning_enabled": true},
+				Data:       payloads.UserProvisioningSettingsUpdated{UserProvisioningEnabled: ptr(true)},
 				ActorType:  "system",
 				ActorID:    "scim",
 			}); err != nil {
@@ -237,10 +240,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserSshSettingsUpdated),
-				Data: map[string]any{
-					"ssh_access_enabled": true,
-					"ssh_allow_pubkey":   true,
-					"ssh_allow_password": false,
+				Data: payloads.UserSshSettingsUpdated{
+					SshAccessEnabled: ptr(true),
+					SshAllowPubkey:   ptr(true),
+					SshAllowPassword: ptr(false),
 				},
 				ActorType: "system",
 				ActorID:   "scim",

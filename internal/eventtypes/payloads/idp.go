@@ -18,6 +18,17 @@ type IdentityProviderSCIMTokenRotated struct {
 	ScimTokenHash string `json:"scim_token_hash"`
 }
 
+// IdentityProviderDeleted is the wire shape for IdentityProviderDeleted.
+// Deliberately empty — the projector soft-deletes off stream_id and
+// cascades the scim_group_mapping DELETE; `{}` on the wire matches the
+// legacy map payload.
+type IdentityProviderDeleted struct{}
+
+// IdentityProviderSCIMDisabled is the wire shape for
+// IdentityProviderSCIMDisabled. Deliberately empty — the projector
+// clears the token hash + cascades off stream_id alone.
+type IdentityProviderSCIMDisabled struct{}
+
 // IdentityProviderCreated is the wire shape for the IdentityProviderCreated
 // event. ClientSecretEncrypted is the AES-GCM ciphertext (the raw
 // secret never enters the event store; the audit-log redactor also

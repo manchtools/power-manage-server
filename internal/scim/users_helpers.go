@@ -18,6 +18,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
@@ -28,6 +29,11 @@ func newULID() string {
 	entropy := ulid.Monotonic(rand.Reader, 0)
 	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }
+
+// ptr lifts a value into a pointer for the payloads structs whose
+// pointer fields mean "explicitly present on the wire" — SCIM is the
+// source of truth and always emits the field, even when empty.
+func ptr[T any](v T) *T { return &v }
 
 // syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
 // SCIM is treated as the source of truth — any differences are overwritten.
@@ -44,7 +50,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEmailChanged),
-			Data:       map[string]any{"email": email},
+			Data:       payloads.UserEmailChanged{Email: &email},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
@@ -57,7 +63,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDisabled),
-			Data:       map[string]any{},
+			Data:       payloads.UserDisabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
@@ -66,7 +72,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEnabled),
-			Data:       map[string]any{},
+			Data:       payloads.UserEnabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
@@ -76,15 +82,22 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 	newDisplayName := formatExternalName(name)
 	newGivenName := safeNameField(name, "given")
 	newFamilyName := safeNameField(name, "family")
-	if newDisplayName != "" || newGivenName != "" || newFamilyName != "" {
+	// Gate on "name object asserted" rather than "any value non-empty":
+	// SCIM is the source of truth, so an explicitly empty name object
+	// clears the profile ("" overwrite), while an omitted one preserves
+	// it. The old any-non-empty gate made an explicit clear impossible.
+	if name != nil {
 		h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserProfileUpdated),
-			Data: map[string]any{
-				"display_name": newDisplayName,
-				"given_name":   newGivenName,
-				"family_name":  newFamilyName,
+			// Pointers always set: SCIM is the source of truth, so an
+			// empty field is an explicit "" on the wire (overwrite,
+			// matching the legacy map emit) — never nil (preserve).
+			Data: payloads.UserProfileUpdated{
+				DisplayName: &newDisplayName,
+				GivenName:   &newGivenName,
+				FamilyName:  &newFamilyName,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -111,11 +124,12 @@ func (h *Handler) syncIdentityLink(ctx context.Context, provider store.IdentityP
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
 		EventType:  string(eventtypes.IdentityLinkLoginUpdated),
-		Data: map[string]any{
-			"provider_id":    provider.ID,
-			"external_id":    link.ExternalID,
-			"external_email": email,
-			"external_name":  formatExternalName(name),
+		Data: payloads.IdentityLinkLoginUpdated{
+			UserID:        userID,
+			ProviderID:    provider.ID,
+			ExternalID:    link.ExternalID,
+			ExternalEmail: email,
+			ExternalName:  formatExternalName(name),
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,

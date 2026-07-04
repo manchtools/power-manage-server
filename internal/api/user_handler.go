@@ -417,8 +417,10 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 
 	// Emit appropriate event
 	eventType := string(eventtypes.UserEnabled)
+	var data any = payloads.UserEnabled{}
 	if req.Msg.Disabled {
 		eventType = string(eventtypes.UserDisabled)
+		data = payloads.UserDisabled{}
 	}
 
 	appendDisable := func() error {
@@ -426,7 +428,7 @@ func (h *UserHandler) SetUserDisabled(ctx context.Context, req *connect.Request[
 			StreamType: "user",
 			StreamID:   req.Msg.Id,
 			EventType:  eventType,
-			Data:       map[string]any{},
+			Data:       data,
 			ActorType:  "user",
 			ActorID:    userCtx.ID,
 		}); err != nil {
@@ -489,7 +491,7 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 			StreamType: "user",
 			StreamID:   req.Msg.Id,
 			EventType:  string(eventtypes.UserDeleted),
-			Data:       map[string]any{},
+			Data:       payloads.UserDeleted{},
 			ActorType:  "user",
 			ActorID:    userCtx.ID,
 		}); err != nil {

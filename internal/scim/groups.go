@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -206,9 +207,9 @@ func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
 		StreamType: "scim_group_mapping",
 		StreamID:   mapping.ID,
 		EventType:  string(eventtypes.SCIMGroupUnmapped),
-		Data: map[string]any{
-			"provider_id":   provider.ID,
-			"scim_group_id": mapping.SCIMGroupID,
+		Data: payloads.SCIMGroupUnmapped{
+			ProviderID:  provider.ID,
+			SCIMGroupID: mapping.SCIMGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   provider.ID,

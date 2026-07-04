@@ -772,7 +772,7 @@ func TestRoundtrip_UserGroupCreated(t *testing.T) {
 }
 
 func TestRoundtrip_UserGroupUpdated(t *testing.T) {
-	in := payloads.UserGroupUpdated{Name: "ops", Description: "ops team"}
+	in := payloads.UserGroupUpdated{Name: "ops", Description: ptr("ops team")}
 	raw, err := json.Marshal(in)
 	require.NoError(t, err)
 	var out payloads.UserGroupUpdated
@@ -961,4 +961,131 @@ func TestRoundtrip_DeviceGroupMaintenanceWindowSet(t *testing.T) {
 	var out payloads.DeviceGroupMaintenanceWindowSet
 	require.NoError(t, json.Unmarshal(raw, &out))
 	assert.Equal(t, in, out)
+}
+
+// UserGroupUpdated's nil Description must stay OFF the wire — the
+// projector reads a missing key as "preserve the existing description"
+// (the SCIM rename path depends on this; an accidental always-emit
+// would wipe descriptions on every SCIM group rename).
+func TestUserGroupUpdated_NilDescriptionOmitsKey(t *testing.T) {
+	raw, err := json.Marshal(payloads.UserGroupUpdated{Name: "ops"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"name":"ops"}`, string(raw))
+}
+
+func TestRoundtrip_IdentityLinked(t *testing.T) {
+	in := payloads.IdentityLinked{
+		UserID:        "01USER",
+		ProviderID:    "01PROV",
+		ExternalID:    "ext-1",
+		ExternalEmail: "a@b.com",
+		ExternalName:  "Alice Example",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.IdentityLinked
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+// user_id was added to IdentityLinkLoginUpdated for spec 19 (#507):
+// external_email/external_name are PII and the crypto-shred layer
+// resolves the DEK owner from this field. The roundtrip pins the key;
+// events emitted before the field existed decode with UserID == "".
+func TestRoundtrip_IdentityLinkLoginUpdated(t *testing.T) {
+	in := payloads.IdentityLinkLoginUpdated{
+		UserID:        "01USER",
+		ProviderID:    "01PROV",
+		ExternalID:    "ext-1",
+		ExternalEmail: "a@b.com",
+		ExternalName:  "Alice Example",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"user_id":"01USER"`)
+	var out payloads.IdentityLinkLoginUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+
+	legacy := []byte(`{"provider_id":"01PROV","external_id":"ext-1"}`)
+	var old payloads.IdentityLinkLoginUpdated
+	require.NoError(t, json.Unmarshal(legacy, &old))
+	assert.Empty(t, old.UserID, "pre-#507 events must decode with empty UserID")
+}
+
+func TestRoundtrip_SCIMGroupMapped(t *testing.T) {
+	in := payloads.SCIMGroupMapped{
+		ProviderID:      "01PROV",
+		SCIMGroupID:     "scim-g-1",
+		SCIMDisplayName: ptr("Ops"),
+		UserGroupID:     "01GROUP",
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.SCIMGroupMapped
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_SCIMGroupUnmapped(t *testing.T) {
+	in := payloads.SCIMGroupUnmapped{ProviderID: "01PROV", SCIMGroupID: "scim-g-1"}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out payloads.SCIMGroupUnmapped
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_SCIMGroupMappingUpdated(t *testing.T) {
+	in := payloads.SCIMGroupMappingUpdated{
+		ProviderID:      "01PROV",
+		SCIMGroupID:     "scim-g-1",
+		SCIMDisplayName: ptr(""),
+	}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	// Explicit "" stays ON the wire (pointer set) — matches the legacy
+	// always-present map key; nil would mean "preserve" to the decoder.
+	assert.Contains(t, string(raw), `"scim_display_name":""`)
+	var out payloads.SCIMGroupMappingUpdated
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+func TestRoundtrip_TOTPBackupCodeUsed(t *testing.T) {
+	in := payloads.TOTPBackupCodeUsed{Index: 0}
+	raw, err := json.Marshal(in)
+	require.NoError(t, err)
+	// Index 0 is a valid slot and must stay on the wire (no omitempty).
+	assert.JSONEq(t, `{"index":0}`, string(raw))
+	var out payloads.TOTPBackupCodeUsed
+	require.NoError(t, json.Unmarshal(raw, &out))
+	assert.Equal(t, in, out)
+}
+
+// The empty lifecycle payloads must marshal to `{}`, byte-identical to
+// the legacy map[string]any{} emits, so the wire format is unchanged
+// by the #507 typed-struct conversion.
+func TestEmptyPayloads_MarshalToEmptyObject(t *testing.T) {
+	for name, v := range map[string]any{
+		"TOTPVerified":                 payloads.TOTPVerified{},
+		"TOTPDisabled (self-service)":  payloads.TOTPDisabled{},
+		"UserDeleted":                  payloads.UserDeleted{},
+		"UserDisabled":                 payloads.UserDisabled{},
+		"UserEnabled":                  payloads.UserEnabled{},
+		"IdentityProviderDeleted":      payloads.IdentityProviderDeleted{},
+		"IdentityProviderSCIMDisabled": payloads.IdentityProviderSCIMDisabled{},
+		"UserLoggedIn (local login)":   payloads.UserLoggedIn{},
+	} {
+		raw, err := json.Marshal(v)
+		require.NoError(t, err, name)
+		assert.Equal(t, `{}`, string(raw), name)
+	}
+}
+
+// The admin variant of TOTPDisabled carries the audit marker.
+func TestTOTPDisabled_AdminVariant(t *testing.T) {
+	raw, err := json.Marshal(payloads.TOTPDisabled{Admin: true})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"admin":true}`, string(raw))
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -69,9 +70,9 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberAdded),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberAdded{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -88,9 +89,9 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberRemoved{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -163,9 +164,9 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		StreamType: "user_group",
 		StreamID:   newGroupID,
 		EventType:  string(eventtypes.UserGroupCreated),
-		Data: map[string]any{
-			"name":        m.SCIMDisplayName,
-			"description": "SCIM-provisioned group (restored)",
+		Data: payloads.UserGroupCreated{
+			Name:        m.SCIMDisplayName,
+			Description: "SCIM-provisioned group (restored)",
 		},
 		ActorType: "scim",
 		ActorID:   providerID,
@@ -173,18 +174,22 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		return m, fmt.Errorf("create user group: %w", err)
 	}
 
-	// Remove old mapping
-	h.appendEvent(ctx, store.Event{
+	// Remove old mapping. Fail hard: if the unmap append fails, creating
+	// the replacement below would leave the stale mapping active alongside
+	// the new one — two mappings for one SCIM group id.
+	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "scim_group_mapping",
 		StreamID:   m.ID,
 		EventType:  string(eventtypes.SCIMGroupUnmapped),
-		Data: map[string]any{
-			"provider_id":   providerID,
-			"scim_group_id": m.SCIMGroupID,
+		Data: payloads.SCIMGroupUnmapped{
+			ProviderID:  providerID,
+			SCIMGroupID: m.SCIMGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   providerID,
-	})
+	}); err != nil {
+		return m, fmt.Errorf("unmap old SCIM group mapping: %w", err)
+	}
 
 	// Create new mapping pointing to the new user group
 	newMappingID := newULID()
@@ -192,11 +197,11 @@ func (h *Handler) restoreOrphanedGroup(ctx context.Context, providerID string, m
 		StreamType: "scim_group_mapping",
 		StreamID:   newMappingID,
 		EventType:  string(eventtypes.SCIMGroupMapped),
-		Data: map[string]any{
-			"provider_id":       providerID,
-			"scim_group_id":     m.SCIMGroupID,
-			"scim_display_name": m.SCIMDisplayName,
-			"user_group_id":     newGroupID,
+		Data: payloads.SCIMGroupMapped{
+			ProviderID:      providerID,
+			SCIMGroupID:     m.SCIMGroupID,
+			SCIMDisplayName: &m.SCIMDisplayName,
+			UserGroupID:     newGroupID,
 		},
 		ActorType: "scim",
 		ActorID:   providerID,

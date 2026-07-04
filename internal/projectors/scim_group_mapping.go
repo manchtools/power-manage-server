@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -35,12 +36,7 @@ type SCIMGroupMappingUpdatedPayload struct {
 
 // SCIMGroupMappedFromEvent decodes SCIMGroupMapped.
 func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, error) {
-	raw, err := decodePayload[struct {
-		ProviderID      string  `json:"provider_id"`
-		SCIMGroupID     string  `json:"scim_group_id"`
-		SCIMDisplayName *string `json:"scim_display_name,omitempty"`
-		UserGroupID     string  `json:"user_group_id"`
-	}](e, "scim_group_mapping", eventtypes.SCIMGroupMapped)
+	raw, err := decodePayload[payloads.SCIMGroupMapped](e, "scim_group_mapping", eventtypes.SCIMGroupMapped)
 	if err != nil {
 		return SCIMGroupMappedPayload{}, err
 	}
@@ -66,10 +62,7 @@ func SCIMGroupMappedFromEvent(e store.PersistedEvent) (SCIMGroupMappedPayload, e
 
 // SCIMGroupUnmappedFromEvent decodes SCIMGroupUnmapped.
 func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayload, error) {
-	raw, err := decodePayload[struct {
-		ProviderID  string `json:"provider_id"`
-		SCIMGroupID string `json:"scim_group_id"`
-	}](e, "scim_group_mapping", eventtypes.SCIMGroupUnmapped)
+	raw, err := decodePayload[payloads.SCIMGroupUnmapped](e, "scim_group_mapping", eventtypes.SCIMGroupUnmapped)
 	if err != nil {
 		return SCIMGroupUnmappedPayload{}, err
 	}
@@ -86,11 +79,7 @@ func SCIMGroupUnmappedFromEvent(e store.PersistedEvent) (SCIMGroupUnmappedPayloa
 // Only scim_display_name is updatable; pointer field preserves
 // "missing → no update" via COALESCE.
 func SCIMGroupMappingUpdatedFromEvent(e store.PersistedEvent) (SCIMGroupMappingUpdatedPayload, error) {
-	raw, err := decodePayload[struct {
-		ProviderID      string  `json:"provider_id"`
-		SCIMGroupID     string  `json:"scim_group_id"`
-		SCIMDisplayName *string `json:"scim_display_name,omitempty"`
-	}](e, "scim_group_mapping", eventtypes.SCIMGroupMappingUpdated)
+	raw, err := decodePayload[payloads.SCIMGroupMappingUpdated](e, "scim_group_mapping", eventtypes.SCIMGroupMappingUpdated)
 	if err != nil {
 		return SCIMGroupMappingUpdatedPayload{}, err
 	}

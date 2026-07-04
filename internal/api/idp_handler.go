@@ -264,7 +264,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 		StreamType: "identity_provider",
 		StreamID:   providerID,
 		EventType:  string(eventtypes.IdentityProviderDeleted),
-		Data:       map[string]any{},
+		Data:       payloads.IdentityProviderDeleted{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
 	}, "failed to delete provider"); err != nil {
@@ -277,7 +277,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 			StreamType: "identity_provider",
 			StreamID:   link.ID,
 			EventType:  string(eventtypes.IdentityUnlinked),
-			Data:       map[string]any{},
+			Data:       payloads.IdentityUnlinked{UserID: link.UserID, ProviderID: providerID},
 			ActorType:  "user",
 			ActorID:    userCtx.ID,
 		}); err != nil {
@@ -312,7 +312,7 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 					StreamType: "user",
 					StreamID:   link.UserID,
 					EventType:  string(eventtypes.UserDeleted),
-					Data:       map[string]any{},
+					Data:       payloads.UserDeleted{},
 					ActorType:  "user",
 					ActorID:    userCtx.ID,
 				})
@@ -409,7 +409,7 @@ func (h *IDPHandler) DisableSCIM(ctx context.Context, req *connect.Request[pm.Di
 		StreamType: "identity_provider",
 		StreamID:   req.Msg.Id,
 		EventType:  string(eventtypes.IdentityProviderSCIMDisabled),
-		Data:       map[string]any{},
+		Data:       payloads.IdentityProviderSCIMDisabled{},
 		ActorType:  "user",
 		ActorID:    userCtx.ID,
 	}, "failed to disable SCIM"); err != nil {

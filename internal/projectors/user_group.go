@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -87,16 +88,13 @@ type UserGroupUpdatedPayload struct {
 	Description *string
 }
 
-type userGroupUpdatedRaw struct {
-	Name        string  `json:"name"`
-	Description *string `json:"description,omitempty"`
-}
-
 // UserGroupUpdatedFromEvent decodes UserGroupUpdated. The pointer
 // Description signals "update" vs "preserve": non-nil = update with
-// the value (incl. empty string); nil = preserve.
+// the value (incl. empty string); nil = preserve. Decodes via the
+// shared payloads struct — the emit sites (API handler, SCIM rename)
+// construct the same type, so a wire-key drift fails at compile time.
 func UserGroupUpdatedFromEvent(e store.PersistedEvent) (UserGroupUpdatedPayload, error) {
-	raw, err := decodePayload[userGroupUpdatedRaw](e, "user_group", eventtypes.UserGroupUpdated)
+	raw, err := decodePayload[payloads.UserGroupUpdated](e, "user_group", eventtypes.UserGroupUpdated)
 	if err != nil {
 		return UserGroupUpdatedPayload{}, err
 	}

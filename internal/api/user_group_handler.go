@@ -232,7 +232,7 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		EventType:  string(eventtypes.UserGroupUpdated),
 		Data: payloads.UserGroupUpdated{
 			Name:        req.Msg.Name,
-			Description: req.Msg.Description,
+			Description: &req.Msg.Description,
 		},
 		ActorType: "user",
 		ActorID:   userCtx.ID,

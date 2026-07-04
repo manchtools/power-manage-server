@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -57,10 +58,10 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
 			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-			Data: map[string]any{
-				"provider_id":       provider.ID,
-				"scim_group_id":     mapping.SCIMGroupID,
-				"scim_display_name": scimGroup.DisplayName,
+			Data: payloads.SCIMGroupMappingUpdated{
+				ProviderID:      provider.ID,
+				SCIMGroupID:     mapping.SCIMGroupID,
+				SCIMDisplayName: &scimGroup.DisplayName,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -70,8 +71,10 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 			StreamType: "user_group",
 			StreamID:   groupID,
 			EventType:  string(eventtypes.UserGroupUpdated),
-			Data: map[string]any{
-				"name": scimGroup.DisplayName,
+			// nil Description = preserve the existing one (SCIM
+			// only renames; the description is server-owned).
+			Data: payloads.UserGroupUpdated{
+				Name: scimGroup.DisplayName,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -195,9 +198,9 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.Identi
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupMemberAdded),
-			Data: map[string]any{
-				"group_id": groupID,
-				"user_id":  userID,
+			Data: payloads.UserGroupMemberAdded{
+				GroupID: groupID,
+				UserID:  userID,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -219,9 +222,9 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberRemoved{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -239,9 +242,9 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
-				Data: map[string]any{
-					"group_id": groupID,
-					"user_id":  userID,
+				Data: payloads.UserGroupMemberRemoved{
+					GroupID: groupID,
+					UserID:  userID,
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
@@ -265,10 +268,10 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 			StreamType: "scim_group_mapping",
 			StreamID:   mapping.ID,
 			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-			Data: map[string]any{
-				"provider_id":       provider.ID,
-				"scim_group_id":     mapping.SCIMGroupID,
-				"scim_display_name": name,
+			Data: payloads.SCIMGroupMappingUpdated{
+				ProviderID:      provider.ID,
+				SCIMGroupID:     mapping.SCIMGroupID,
+				SCIMDisplayName: &name,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -278,8 +281,9 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 			StreamType: "user_group",
 			StreamID:   groupID,
 			EventType:  string(eventtypes.UserGroupUpdated),
-			Data: map[string]any{
-				"name": name,
+			// nil Description = preserve (SCIM only renames).
+			Data: payloads.UserGroupUpdated{
+				Name: name,
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
@@ -316,9 +320,9 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  string(eventtypes.UserGroupMemberAdded),
-					Data: map[string]any{
-						"group_id": groupID,
-						"user_id":  userID,
+					Data: payloads.UserGroupMemberAdded{
+						GroupID: groupID,
+						UserID:  userID,
 					},
 					ActorType: "scim",
 					ActorID:   provider.ID,
@@ -335,9 +339,9 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  string(eventtypes.UserGroupMemberRemoved),
-					Data: map[string]any{
-						"group_id": groupID,
-						"user_id":  userID,
+					Data: payloads.UserGroupMemberRemoved{
+						GroupID: groupID,
+						UserID:  userID,
 					},
 					ActorType: "scim",
 					ActorID:   provider.ID,
