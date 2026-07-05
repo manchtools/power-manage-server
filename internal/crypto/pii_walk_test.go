@@ -98,3 +98,25 @@ func TestOpenPayloadPII_WrongDEKFails(t *testing.T) {
 	require.Error(t, crypto.OpenPayloadPII(dekB, &out),
 		"opening under another user's DEK must fail, never return garbage")
 }
+
+func TestRedactPayloadPII_SetsSentinelOnTaggedFieldsOnly(t *testing.T) {
+	name := "Alice Example"
+	p := walkFixture{Email: "alice@example.com", DisplayName: &name, Untagged: "keep", Count: 7}
+	require.NoError(t, crypto.RedactPayloadPII(&p))
+	assert.Equal(t, crypto.RedactionSentinel, p.Email, "tagged string field collapses to the sentinel")
+	require.NotNil(t, p.DisplayName)
+	assert.Equal(t, crypto.RedactionSentinel, *p.DisplayName, "tagged pointer field collapses to the sentinel")
+	assert.Equal(t, "keep", p.Untagged, "untagged fields are untouched")
+	assert.Equal(t, 7, p.Count)
+}
+
+func TestRedactPayloadPII_NilPointerFieldStaysNil(t *testing.T) {
+	p := walkFixture{Email: "x@y.com", DisplayName: nil}
+	require.NoError(t, crypto.RedactPayloadPII(&p))
+	assert.Equal(t, crypto.RedactionSentinel, p.Email)
+	assert.Nil(t, p.DisplayName, "an absent optional PII field has nothing to redact")
+}
+
+func TestRedactPayloadPII_RejectsNonPointer(t *testing.T) {
+	require.Error(t, crypto.RedactPayloadPII(walkFixture{}), "must be a non-nil pointer to a struct")
+}
