@@ -3,6 +3,8 @@ package archive_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -107,9 +109,11 @@ func TestFilesystem_TamperDetected(t *testing.T) {
 	err = archive.Verify(ctx, st, "sealed-1")
 	require.Error(t, err, "a flipped byte must break the integrity seal (AC 22)")
 
-	// The reported sha still matches the untampered original (recorded
-	// out of band by the prune event), so a re-hash mismatches it too.
-	assert.NotEmpty(t, info.SHA256)
+	// The reported sha is the hash of the untampered original (recorded
+	// out of band by the prune event), so a re-hash of the flipped bytes
+	// mismatches it — the seal is what the prune event pins.
+	want := sha256.Sum256([]byte("the original sealed contents"))
+	assert.Equal(t, hex.EncodeToString(want[:]), info.SHA256)
 }
 
 func TestFilesystem_List(t *testing.T) {
