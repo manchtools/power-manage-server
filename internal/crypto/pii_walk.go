@@ -60,6 +60,13 @@ func RedactPayloadPII(payload any) error {
 			np := reflect.New(f.Type.Elem())
 			np.Elem().SetString(RedactionSentinel)
 			fv.Set(np)
+		default:
+			// Fail closed, exactly like walkPII: an un-redactable
+			// tagged field would leave real PII in an "erased" row.
+			// The AC 3 guard already blocks such a field from merging
+			// (its seal/open round-trip fails), so this is belt-and-
+			// braces — but the two walkers must agree.
+			return fmt.Errorf("crypto: pii:\"true\" on unsupported field kind %s (%s.%s) — only string and *string carry PII", f.Type.Kind(), t.Name(), f.Name)
 		}
 	}
 	return nil

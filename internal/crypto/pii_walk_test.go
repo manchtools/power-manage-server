@@ -120,3 +120,13 @@ func TestRedactPayloadPII_NilPointerFieldStaysNil(t *testing.T) {
 func TestRedactPayloadPII_RejectsNonPointer(t *testing.T) {
 	require.Error(t, crypto.RedactPayloadPII(walkFixture{}), "must be a non-nil pointer to a struct")
 }
+
+func TestRedactPayloadPII_FailsClosedOnUnsupportedKind(t *testing.T) {
+	// A tagged field that is neither string nor *string must error,
+	// matching walkPII — never leave real PII in an "erased" row.
+	type bad struct {
+		Nums []string `json:"nums" pii:"true"`
+	}
+	require.Error(t, crypto.RedactPayloadPII(&bad{Nums: []string{"secret"}}),
+		"an unsupported tagged kind must fail closed, not be silently skipped")
+}
