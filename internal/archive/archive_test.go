@@ -160,3 +160,33 @@ func TestFilesystem_RejectsReservedRefNamespaces(t *testing.T) {
 		assert.Error(t, err, "reserved/unsafe ref %q must be rejected", ref)
 	}
 }
+
+// TestFilesystem_List_UnreadableSealDoesNotHideOthers pins the CR
+// resilience fix: a missing/unreadable seal marks THAT entry
+// (SHA256 == "") rather than failing the whole List and hiding every
+// safely-archived artifact.
+func TestFilesystem_List_UnreadableSealDoesNotHideOthers(t *testing.T) {
+	dir := t.TempDir()
+	st, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: dir})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	_, err = st.Put(ctx, "good-1", strings.NewReader("good"))
+	require.NoError(t, err)
+	_, err = st.Put(ctx, "bad-1", strings.NewReader("bad"))
+	require.NoError(t, err)
+
+	// Remove one artifact's seal — simulating the fsync-gap / tamper case.
+	require.NoError(t, os.Remove(filepath.Join(dir, "bad-1.sha256")))
+
+	infos, err := st.List(ctx)
+	require.NoError(t, err, "List must not fail wholesale on one bad seal")
+	byRef := map[string]string{}
+	for _, i := range infos {
+		byRef[i.Ref] = i.SHA256
+	}
+	assert.NotEmpty(t, byRef["good-1"], "the good artifact keeps its seal")
+	sha, listed := byRef["bad-1"]
+	assert.True(t, listed, "the seal-less artifact is still surfaced")
+	assert.Empty(t, sha, "its missing seal shows as SHA256==\"\"")
+}
