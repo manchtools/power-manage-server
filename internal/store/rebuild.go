@@ -526,6 +526,20 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, up
 	return s.dispatchViaGoApplier(ctx, tx, t, apply, 0, upToSeq)
 }
 
+// replayTargetAfter replays a target's events with sequence_num > fromSeq
+// through its registered applier WITHOUT truncating or re-seeding — the
+// projection already holds state @ fromSeq (restored from a snapshot),
+// and the appliers upsert/delete forward from there exactly as the live
+// listener did on the way to that state (spec 19 AC 21). Contrast
+// runOneTarget, which starts from an empty table and replays everything.
+func (s *Store) replayTargetAfter(ctx context.Context, tx pgx.Tx, t rebuildTarget, fromSeq int64) (applied, skipped int64, err error) {
+	apply := s.rebuildApplyFor(t.Name)
+	if apply == nil {
+		return 0, 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+	}
+	return s.dispatchViaGoApplier(ctx, tx, t, apply, fromSeq, 0)
+}
+
 // dispatchViaGoApplier replays every event matching the target's
 // stream types through the registered Go applier. Loads the full
 // event row into Go (the applier needs the payload, actor, and
