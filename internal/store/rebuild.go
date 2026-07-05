@@ -523,7 +523,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, up
 		}
 	}
 
-	return s.dispatchViaGoApplier(ctx, tx, t, apply, upToSeq)
+	return s.dispatchViaGoApplier(ctx, tx, t, apply, 0, upToSeq)
 }
 
 // dispatchViaGoApplier replays every event matching the target's
@@ -534,7 +534,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, up
 // transaction.
 //
 // Refs manchtools/power-manage-server#125.
-func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply, upToSeq int64) (applied, skipped int64, err error) {
+func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply, fromSeq, upToSeq int64) (applied, skipped int64, err error) {
 	q := s.queries.WithTx(tx)
 
 	// Stream in keyset-paginated batches rather than buffering the entire
@@ -546,7 +546,11 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 	// then the cursor (sequence_num, which is monotonic and unique) advances.
 	// Memory is bounded to one batch; order and the snapshot are preserved
 	// because the events table is append-only and read within this tx.
-	var lastSeq int64 // sequence_num is a positive bigserial, so 0 precedes all
+	// lastSeq is the keyset cursor: the query fetches sequence_num > lastSeq.
+	// Seeding it with fromSeq skips events already captured in a restored
+	// snapshot (the restore + replay-`>N` path); a full rebuild passes 0,
+	// which precedes every positive bigserial sequence_num.
+	lastSeq := fromSeq
 	for {
 		rows, err := tx.Query(ctx,
 			`SELECT id, sequence_num, stream_type, stream_id, stream_version,
