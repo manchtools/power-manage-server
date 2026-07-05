@@ -17,6 +17,11 @@ import (
 // archive is self-verifying offline (AC 22) without the live system.
 const sealSuffix = ".sha256"
 
+// probePrefix names the writability-probe temp files newFilesystem
+// creates; refs may not collide with it (nor with sealSuffix / the
+// temp infix — see refPath).
+const probePrefix = ".pm-archive-probe-"
+
 // filesystem is the v1 ArchiveStore backend: one directory of sealed
 // artifacts on operator-configured storage (the deployment runs it on
 // encrypted disk — see the spec's deployment requirement).
@@ -53,10 +58,33 @@ func newFilesystem(dir string) (*filesystem, error) {
 // traversal): refs are prune checkpoints minted internally, but a
 // backend must never trust a ref to compose a path unchecked.
 func (f *filesystem) refPath(ref string) (string, error) {
-	if ref == "" || strings.ContainsAny(ref, `/\`) || strings.Contains(ref, "..") {
+	if ref == "" || strings.ContainsAny(ref, `/\`) || strings.Contains(ref, "..") ||
+		strings.HasSuffix(ref, sealSuffix) || strings.Contains(ref, ".tmp-") ||
+		strings.HasPrefix(ref, probePrefix) {
+		// Also reject refs that collide with the backend's own naming
+		// namespaces — a ref ending in .sha256 / containing .tmp- / with
+		// the probe prefix would be silently skipped by List or mistaken
+		// for a seal, so an operator would believe data was never
+		// archived (CR).
 		return "", fmt.Errorf("archive: invalid ref %q", ref)
 	}
 	return filepath.Join(f.dir, ref), nil
+}
+
+// syncDir fsyncs the archive directory so a rename or newly-created
+// sidecar survives a crash. Load-bearing: the archive is the ONLY copy
+// of the events the prune step subsequently deletes — a rename that
+// isn't durable is silent data loss on power-loss (CR).
+func (f *filesystem) syncDir() error {
+	d, err := os.Open(f.dir)
+	if err != nil {
+		return fmt.Errorf("archive: open dir for fsync: %w", err)
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return fmt.Errorf("archive: fsync dir: %w", err)
+	}
+	return nil
 }
 
 func (f *filesystem) Put(ctx context.Context, ref string, r io.Reader) (ArchiveInfo, error) {
@@ -99,6 +127,12 @@ func (f *filesystem) Put(ctx context.Context, ref string, r io.Reader) (ArchiveI
 	if err := os.Rename(tmpName, dst); err != nil {
 		_ = os.Remove(dst + sealSuffix)
 		return ArchiveInfo{}, fmt.Errorf("archive: publish %s: %w", ref, err)
+	}
+	// fsync the directory so the seal-file creation AND the rename are
+	// durable before we report success — the caller (prune worker) only
+	// deletes events after a durable archive lands (AC 28).
+	if err := f.syncDir(); err != nil {
+		return ArchiveInfo{}, err
 	}
 	return ArchiveInfo{Ref: ref, Size: n, SHA256: sum}, nil
 }
