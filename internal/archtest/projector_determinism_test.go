@@ -36,11 +36,15 @@ import (
 
 // mapRangeAllowlist lists the only sanctioned map iterations in the
 // projector set, each with the reason its loop body is order-independent.
-// Keyed "<module-rel path> :: <ranged expression>". assertNoStale fails
-// the build if an entry stops matching.
+// Keyed "<module-rel path> :: <enclosing func> :: <ranged expression>" —
+// the enclosing function makes each entry SITE-unique (CR): a new
+// `range payload.Labels` elsewhere in the same file must justify itself
+// rather than inherit an existing exemption. assertNoStale fails the
+// build if an entry stops matching.
 var mapRangeAllowlist = map[string]string{
-	"internal/projectors/device.go :: any":                     "map→map transform (raw JSON labels → map[string]string): writes only out[k] per key, no I/O, no ordering side effects — the resulting map is identical regardless of iteration order.",
-	"internal/projectors/device_listener.go :: payload.Labels": "Per-key SetDeviceLabel upsert (ON CONFLICT (device_id, key)): each key writes exactly its own row, so the final device_labels row set is identical regardless of iteration order.",
+	"internal/projectors/device.go :: decodeLabelsMap :: any":                              "map→map transform (raw JSON labels → map[string]string): writes only out[k] per key, no I/O, no ordering side effects — the resulting map is identical regardless of iteration order.",
+	"internal/projectors/device_listener.go :: applyDeviceRegistered :: payload.Labels":    "Per-key SetDeviceLabel upsert (ON CONFLICT (device_id, key)): each key writes exactly its own row, so the final device_labels row set is identical regardless of iteration order.",
+	"internal/projectors/device_listener.go :: applyDeviceLabelsUpdated :: payload.Labels": "Per-key SetDeviceLabel upsert after the full-replace DELETE: each key writes exactly its own row, so the final device_labels row set is identical regardless of iteration order.",
 }
 
 // TestProjectorDeterminism pins spec 19 AC 17a for the projector set.
@@ -104,7 +108,7 @@ func TestProjectorDeterminism(t *testing.T) {
 			if !looksMapTyped(rs.X, localMaps, mapFields) {
 				return true
 			}
-			key := gf.rel + " :: " + render(gf.fset, rs.X)
+			key := gf.rel + " :: " + enclosingFuncName(gf.ast, rs.Pos()) + " :: " + render(gf.fset, rs.X)
 			if allow.exempt(key) {
 				return true
 			}

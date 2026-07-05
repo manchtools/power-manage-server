@@ -50,20 +50,50 @@ func (s *Store) RebuildAllFromArchive(ctx context.Context, archived []PersistedE
 	// after the check passed and leave a silent gap.
 	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		// Completeness (spec 19 AC 21): the live marker chain is the
-		// authoritative ledger of what was pruned. The archived slice must
-		// reach at least the LATEST recorded checkpoint — a later archive
-		// alone no longer contains events ≤ an earlier N (they were
-		// already deleted when it was written), and a stale earlier
-		// archive misses (N_old, N_latest]. Refuse rather than restore
-		// with a silent hole. Checked in-tx, before any TRUNCATE.
-		var latestMarker int64
-		if err := tx.QueryRow(ctx,
-			`SELECT COALESCE(MAX((data->>'up_to_seq')::bigint), 0) FROM events WHERE event_type = $1`,
-			EventLogPrunedType).Scan(&latestMarker); err != nil {
+		// authoritative ledger of what was pruned, and the slice must be
+		// the FULL chain, not one artifact. Two checks, in-tx, before any
+		// TRUNCATE:
+		//
+		//  1. The slice reaches the LATEST checkpoint — a stale earlier
+		//     archive misses (N_old, N_latest].
+		//  2. The slice contains EVERY marker's checkpoint event (the
+		//     event with sequence_num == up_to_seq). That event exists in
+		//     exactly ONE archive — its own: it is non-marker (checkpoint
+		//     selection excludes markers), it was deleted by its own prune,
+		//     so every LATER archive was written after it left the live
+		//     log. A latest-archive-only slice reaches N_latest (passes
+		//     check 1) yet misses every earlier range — check 2 refuses it.
+		rows, err := tx.Query(ctx,
+			`SELECT (data->>'up_to_seq')::bigint FROM events WHERE event_type = $1 ORDER BY sequence_num`,
+			EventLogPrunedType)
+		if err != nil {
 			return fmt.Errorf("restore: read prune marker chain: %w", err)
 		}
-		if latestMarker > upToSeq {
-			return fmt.Errorf("restore: archived history (≤ %d) does not cover the latest prune checkpoint %d — chain ALL retention archives per the EventLogPruned markers, not a single artifact", upToSeq, latestMarker)
+		var checkpoints []int64
+		for rows.Next() {
+			var n int64
+			if err := rows.Scan(&n); err != nil {
+				rows.Close()
+				return fmt.Errorf("restore: scan marker checkpoint: %w", err)
+			}
+			checkpoints = append(checkpoints, n)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("restore: iterate marker chain: %w", err)
+		}
+
+		haveSeq := make(map[int64]bool, len(archived))
+		for _, e := range archived {
+			haveSeq[e.SequenceNum] = true
+		}
+		for _, cp := range checkpoints {
+			if cp > upToSeq {
+				return fmt.Errorf("restore: archived history (≤ %d) does not cover the latest prune checkpoint %d — chain ALL retention archives per the EventLogPruned markers, not a single artifact", upToSeq, cp)
+			}
+			if !haveSeq[cp] {
+				return fmt.Errorf("restore: archived history is missing the checkpoint event for prune marker %d — that event exists only in that range's own archive, so the slice is not the full marker chain (a latest archive alone does not contain earlier pruned ranges)", cp)
+			}
 		}
 
 		for _, t := range AllRebuildTargets {

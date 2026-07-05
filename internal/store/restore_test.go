@@ -218,6 +218,38 @@ func TestRebuildAllFromArchive_RefusesIncompleteArchive(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not cover")
 }
 
+// TestRebuildAllFromArchive_RefusesLatestArchiveOnly pins the other half
+// of the completeness check (CR): the LATEST archive alone reaches the
+// latest checkpoint (max seq == N2), but after a second prune it no
+// longer contains events ≤ N1 — they were already deleted when it was
+// written. Every marker's checkpoint event (seq == up_to_seq) exists in
+// exactly ONE archive (its own: later prunes deleted it from the live
+// log before their archives were written), so a slice missing any
+// marker's checkpoint event cannot be the full chain and must be
+// refused.
+func TestRebuildAllFromArchive_RefusesLatestArchiveOnly(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	testutil.CreateTestUser(t, st, "lat1-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	cp1 := maxSeq(t, st)
+	_, err := st.PruneEventsUpTo(ctx, cp1, "prune-lat-1", "sha1")
+	require.NoError(t, err)
+
+	testutil.CreateTestUser(t, st, "lat2-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	cp2 := maxSeq(t, st)
+	// What archive 2 holds: the events surviving ≤ N2 at prune-2 time —
+	// (N1, N2] plus marker 1, but NOTHING ≤ N1.
+	archive2 := collectArchivedEvents(t, st, cp2)
+	_, err = st.PruneEventsUpTo(ctx, cp2, "prune-lat-2", "sha2")
+	require.NoError(t, err)
+
+	_, err = st.RebuildAllFromArchive(ctx, archive2)
+	require.Error(t, err,
+		"the latest archive alone reaches N2 but misses everything ≤ N1 — restore must demand the full marker chain")
+	assert.Contains(t, err.Error(), "checkpoint")
+}
+
 // pruneWorker builds a retention worker over a real fs archive whose
 // clock is far in the future, so every already-appended event is
 // prune-eligible (positive window + safety floor both satisfied).

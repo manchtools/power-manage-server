@@ -69,8 +69,15 @@ func LoadArchivedHistory(ctx context.Context, st *store.Store, arch archive.Arch
 		}
 		// Later archives re-contain earlier EventLogPruned markers (they
 		// survive pruning, so they are ≤ the later checkpoint); dedupe by
-		// event id so the concatenation is each event exactly once.
+		// event id so the concatenation is each event exactly once. A row
+		// BEYOND its own archive's checkpoint cannot legitimately exist
+		// (writeArtifact bounds ≤ N) — refuse it rather than let it skew
+		// the restore's live-replay cutoff (max archived seq) past events
+		// that were never archived.
 		for _, ev := range evs {
+			if ev.SequenceNum > m.UpToSeq {
+				return nil, fmt.Errorf("retention: archive %s contains event %s (seq %d) beyond its checkpoint %d — malformed artifact; refusing to restore", m.ArchiveRef, ev.ID, ev.SequenceNum, m.UpToSeq)
+			}
 			if !seen[ev.ID] {
 				seen[ev.ID] = true
 				out = append(out, ev)
