@@ -75,20 +75,26 @@ func (f *filesystem) refPath(ref string) (string, error) {
 // returning — os.WriteFile does not, so a seal could be empty/truncated
 // after power loss even though the dir entry survives, which would fail
 // a fully-archived ref's later verification (CR).
-func writeFileSync(path string, data []byte) error {
+func writeFileSync(path string, data []byte) (err error) {
 	fh, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
+	// Close on every path, preserving the primary error but never
+	// swallowing a Close failure (a discarded close on a writable handle
+	// can hide data loss — os-coding-guard / CodeQL).
+	defer func() {
+		if cerr := fh.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("archive: close seal: %w", cerr)
+		}
+	}()
 	if _, err := fh.Write(data); err != nil {
-		fh.Close()
 		return err
 	}
 	if err := fh.Sync(); err != nil {
-		fh.Close()
 		return err
 	}
-	return fh.Close()
+	return nil
 }
 
 // syncDir fsyncs the archive directory so a rename or newly-created
