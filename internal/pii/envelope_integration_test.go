@@ -135,6 +135,48 @@ func TestEnvelope_FailClosedAppend(t *testing.T) {
 	assert.Zero(t, n, "no event row may exist after a refused append")
 }
 
+// TestEnvelope_ErasedSubjectProjectsSentinel pins AC 9 at the decode
+// seam: once a subject's DEK row is gone, replaying (or rebuilding) a
+// PII-bearing event for them projects the redaction sentinel and
+// COMPLETES — it does not abort the projection/rebuild. This is the
+// scenario PR B's crypto-shred creates; here we simulate it by
+// removing the key row directly.
+func TestEnvelope_ErasedSubjectProjectsSentinel(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	userID := testutil.CreateTestUser(t, st, "erased-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	display := "Soon To Be Erased"
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   userID,
+		EventType:  string(eventtypes.UserProfileUpdated),
+		Data:       payloads.UserProfileUpdated{DisplayName: &display},
+		ActorType:  "user",
+		ActorID:    userID,
+	}))
+	// Sanity: with the key intact the projection holds plaintext.
+	u, err := st.Repos().User.Get(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, display, u.DisplayName)
+
+	// Simulate the crypto-shred: destroy the DEK row. (PR B routes this
+	// through the shared delete flow; the projection effect is the same.)
+	shredded, err := st.Repos().UserEncryptionKey.Shred(ctx, userID)
+	require.NoError(t, err)
+	require.True(t, shredded)
+
+	// A full rebuild must NOT abort on the now-unreadable PII event —
+	// it projects the sentinel and completes (AC 9).
+	_, err = st.RebuildAll(ctx)
+	require.NoError(t, err, "rebuild must complete for an erased subject, not abort")
+
+	u2, err := st.Repos().User.Get(ctx, userID)
+	require.NoError(t, err)
+	assert.Equal(t, "[redacted]", u2.DisplayName,
+		"an erased subject's PII must reproduce as the redaction sentinel")
+}
+
 // TestEnvelope_MintIsFirstWriteWins pins the Mint contract backing
 // AC 15's groundwork: a second mint for the same user NEVER replaces
 // the key that may already have sealed PII.

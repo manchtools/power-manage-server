@@ -48,8 +48,9 @@ func decodePayload[T any](e store.PersistedEvent, streamType string, eventType e
 
 // PIIOpener decrypts sealed pii:"true" fields on a decoded wire
 // payload, in place. Implemented by internal/pii.Opener; wired at boot
-// via SetPIIOpener alongside WireAll (the interface lives here to keep
-// projectors free of a pii-package dependency).
+// via SetPIIOpener alongside WireAll. OpenDecoded returns pii.ErrErased
+// when the subject's DEK row is gone — openSealedPII catches it and
+// redacts rather than aborting (AC 9).
 type PIIOpener interface {
 	OpenDecoded(ctx context.Context, streamType, streamID string, payload any) error
 }
