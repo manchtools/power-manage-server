@@ -1,0 +1,123 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strconv"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
+
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/store/generated"
+)
+
+// pruneStreamType / pruneStreamID name the singleton retention stream
+// the EventLogPruned chain lives on. A dedicated stream keeps prune
+// bookkeeping off the domain streams and gives the OCC version a stable
+// home.
+const (
+	pruneStreamType = "retention"
+	pruneStreamID   = "global"
+)
+
+// EventLogPrunedType is the event-type string appended by PruneEventsUpTo.
+// Declared here (not imported from eventtypes) so the store package
+// stays free of the eventtypes dependency, matching the rest of the
+// append path; the value is pinned to eventtypes.EventLogPruned by a
+// guard test.
+const EventLogPrunedType = "EventLogPruned"
+
+// PruneEventsUpTo is the ONE sanctioned mutation of the append-only
+// event log (spec 19 AC 19). In a single transaction it:
+//
+//  1. appends the EventLogPruned marker FIRST (so its sequence_num is
+//     > upToSeq and it therefore survives this prune and every later
+//     one — AC 24);
+//  2. sets the transaction-scoped guards the append-only trigger
+//     requires (pm.prune_active + pm.prune_up_to_seq);
+//  3. DELETEs events with sequence_num <= upToSeq, EXCEPT EventLogPruned
+//     markers (the prune chain stays visible in the live log — AC 24).
+//
+// The trigger's own range bound (OLD.sequence_num <= pm.prune_up_to_seq)
+// plus this method's WHERE clause are defense in depth: neither alone
+// can delete an event beyond the archived checkpoint. Callers must have
+// durably written the sealed archive for upToSeq BEFORE calling this
+// (archive-then-delete ordering — AC 28); this method only performs the
+// delete leg.
+//
+// Returns the number of events deleted.
+func (s *Store) PruneEventsUpTo(ctx context.Context, upToSeq int64, archiveRef, archiveSHA256 string) (int64, error) {
+	if upToSeq <= 0 {
+		return 0, fmt.Errorf("prune: upToSeq must be positive, got %d", upToSeq)
+	}
+	if archiveRef == "" || archiveSHA256 == "" {
+		return 0, fmt.Errorf("prune: archive ref and sha256 are required (archive must land before delete)")
+	}
+
+	marker, err := json.Marshal(payloads.EventLogPruned{
+		UpToSeq:       upToSeq,
+		ArchiveRef:    archiveRef,
+		ArchiveSHA256: archiveSHA256,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("prune: marshal EventLogPruned: %w", err)
+	}
+
+	var deleted int64
+	var appended PersistedEvent
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		q := s.queries.WithTx(tx)
+
+		// (1) Append the EventLogPruned marker first — it lands with a
+		// sequence_num strictly greater than every existing event, so
+		// the DELETE below (and any future prune) leaves it in place.
+		version, verr := q.GetStreamVersion(ctx, generated.GetStreamVersionParams{
+			StreamType: pruneStreamType, StreamID: pruneStreamID,
+		})
+		if verr != nil {
+			return fmt.Errorf("prune: get retention stream version: %w", verr)
+		}
+		row, aerr := q.AppendEvent(ctx, generated.AppendEventParams{
+			ID:            ulid.Make().String(),
+			StreamType:    pruneStreamType,
+			StreamID:      pruneStreamID,
+			StreamVersion: version + 1,
+			EventType:     EventLogPrunedType,
+			Data:          marker,
+			Metadata:      []byte("{}"),
+			ActorType:     "system",
+			ActorID:       "retention",
+		})
+		if aerr != nil {
+			return fmt.Errorf("prune: append EventLogPruned: %w", aerr)
+		}
+		appended = row
+
+		// (2) Set the transaction-scoped guards the append-only trigger
+		// checks. SET LOCAL is auto-cleared at COMMIT/ROLLBACK, so it
+		// never leaks to the next pooled checkout.
+		if _, err := tx.Exec(ctx, `SELECT set_config('pm.prune_active', 'on', true)`); err != nil {
+			return fmt.Errorf("prune: set guard: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT set_config('pm.prune_up_to_seq', $1, true)`, strconv.FormatInt(upToSeq, 10)); err != nil {
+			return fmt.Errorf("prune: set range guard: %w", err)
+		}
+
+		// (3) Delete history ≤ N, EXCEPT the EventLogPruned chain.
+		tag, derr := tx.Exec(ctx,
+			`DELETE FROM events WHERE sequence_num <= $1 AND event_type <> $2`,
+			upToSeq, EventLogPrunedType)
+		if derr != nil {
+			return fmt.Errorf("prune: delete events ≤ %d: %w", upToSeq, derr)
+		}
+		deleted = tag.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	s.fireListeners(ctx, appended)
+	return deleted, nil
+}
