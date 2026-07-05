@@ -69,11 +69,13 @@ func SetPIIOpener(o PIIOpener) { piiOpener = o }
 // which is why the PII-bearing *FromEvent decoders take a ctx while
 // the rest of the projector surface stays context-free.
 //
-// Error contract (the AC 9/10 split, surfaced from pii.Opener):
-//   - pii.ErrErased (missing DEK row) wraps through — the caller
-//     projects the redaction sentinel for erased users;
-//   - any other open failure (unwrappable DEK, tampered ciphertext)
-//     is a hard error that aborts the projection/rebuild.
+// The AC 9/10 split is handled HERE, not bubbled to callers:
+//   - subject's DEK gone (pii.ErrErased) → the tagged fields collapse
+//     to the redaction sentinel and decode SUCCEEDS (the graceful
+//     erased state — replaying a PII event for a shredded user must
+//     project the sentinel, never abort);
+//   - any other open failure (unwrappable DEK, tampered ciphertext) →
+//     a hard error that aborts the projection/rebuild.
 func decodePayloadPII[T any](ctx context.Context, e store.PersistedEvent, streamType string, eventType eventtypes.EventType) (T, error) {
 	p, err := decodePayload[T](e, streamType, eventType)
 	if err != nil {
@@ -88,7 +90,8 @@ func decodePayloadPII[T any](ctx context.Context, e store.PersistedEvent, stream
 
 // openSealedPII opens sealed fields on an already-decoded wire payload
 // (pointer). Shared by decodePayloadPII and the empty-tolerant custom
-// decoders that cannot route through it.
+// decoders that cannot route through it. On pii.ErrErased it redacts
+// in place and returns nil (AC 9); any other failure propagates.
 func openSealedPII(ctx context.Context, e store.PersistedEvent, payload any) error {
 	if !crypto.HasSealedPII(payload) {
 		return nil // legacy plaintext / factory-seeded events need no DEK
@@ -97,6 +100,16 @@ func openSealedPII(ctx context.Context, e store.PersistedEvent, payload any) err
 		return fmt.Errorf("projector: %s carries sealed PII but no PII opener is wired (SetPIIOpener at boot) — refusing to project ciphertext", e.EventType)
 	}
 	if err := piiOpener.OpenDecoded(ctx, e.StreamType, e.StreamID, payload); err != nil {
+		if errors.Is(err, pii.ErrErased) {
+			// Subject crypto-shredded: the sealed value is
+			// unrecoverable BY DESIGN. Project the sentinel and
+			// complete (AC 9) rather than abort a live projection or
+			// a full rebuild.
+			if rerr := crypto.RedactPayloadPII(payload); rerr != nil {
+				return fmt.Errorf("projector: %s: redact erased PII: %w", e.EventType, rerr)
+			}
+			return nil
+		}
 		return fmt.Errorf("projector: %s: %w", e.EventType, err)
 	}
 	return nil
