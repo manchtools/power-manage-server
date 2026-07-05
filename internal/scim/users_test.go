@@ -138,3 +138,63 @@ func TestGetNextLinuxUID_ReturnsPositive(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, uid, int32(0), "GetNextLinuxUID must return a positive UID")
 }
+
+// TestSCIMDeleteUser_ShredsDEK pins spec 19 AC 8: the SCIM DELETE path
+// (last identity link removed → UserDeleted) routes through the SAME
+// shared shred flow as the API DeleteUser — the user's DEK is
+// destroyed, not merely soft-deleted.
+func TestSCIMDeleteUser_ShredsDEK(t *testing.T) {
+	env := setupSCIM(t)
+	ctx := context.Background()
+
+	user := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   "shred-scim-" + testutil.NewID()[:6] + "@example.com",
+		"externalId": "ext-shred-" + testutil.NewID()[:6],
+	}
+	createResp := env.request("POST", "/Users", user)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(createResp.Body.Bytes(), &created))
+	userID := created["id"].(string)
+
+	// Precondition: SCIM-created user has a DEK (AC 1, SCIM path).
+	_, err := env.st.Repos().UserEncryptionKey.Get(ctx, userID)
+	require.NoError(t, err, "SCIM-created user must have a DEK")
+
+	w := env.request("DELETE", "/Users/"+userID)
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	_, err = env.st.Repos().UserEncryptionKey.Get(ctx, userID)
+	assert.True(t, store.IsNotFound(err), "SCIM delete must crypto-shred the DEK (AC 8)")
+}
+
+// TestSCIMDisable_DoesNotShred pins the Security-considerations note:
+// SCIM PATCH active=false emits UserDisabled and must NOT shred — a
+// disable is not a delete, the DEK stays intact.
+func TestSCIMDisable_DoesNotShred(t *testing.T) {
+	env := setupSCIM(t)
+	ctx := context.Background()
+
+	user := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   "disable-scim-" + testutil.NewID()[:6] + "@example.com",
+		"externalId": "ext-disable-" + testutil.NewID()[:6],
+		"active":     true,
+	}
+	createResp := env.request("POST", "/Users", user)
+	require.Equal(t, http.StatusCreated, createResp.Code)
+	var created map[string]any
+	require.NoError(t, json.Unmarshal(createResp.Body.Bytes(), &created))
+	userID := created["id"].(string)
+
+	patch := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"},
+		"Operations": []map[string]any{{"op": "replace", "path": "active", "value": false}},
+	}
+	w := env.request("PATCH", "/Users/"+userID, patch)
+	require.Equal(t, http.StatusOK, w.Code, "%s", w.Body.String())
+
+	_, err := env.st.Repos().UserEncryptionKey.Get(ctx, userID)
+	require.NoError(t, err, "disable must NOT shred the DEK — a disabled user is not erased")
+}
