@@ -38,6 +38,41 @@ func eligibleWorker(t *testing.T, st *store.Store, arch archive.ArchiveStore) *r
 	return w
 }
 
+// TestPrune_ArchiveIsIndependentlyReplayable pins AC 22 (independent
+// replay): the artifact a prune seals holds the snapshot @ N AND every
+// event ≤ N, recoverable from the archive bytes alone via ReadArtifact —
+// no live database needed. This is the offline-audit / restore contract.
+func TestPrune_ArchiveIsIndependentlyReplayable(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	arch, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	testutil.CreateTestUser(t, st, "arc-"+testutil.NewID()[:8]+"@test.com", "pass", "admin")
+	testutil.CreateTestDevice(t, st, "arc-host-"+testutil.NewID()[:6])
+
+	w := eligibleWorker(t, st, arch)
+	res, err := w.Prune(ctx)
+	require.NoError(t, err)
+	require.True(t, res.Pruned)
+
+	// Read the sealed artifact back from the archive bytes alone.
+	rc, err := arch.Get(ctx, res.ArchiveRef)
+	require.NoError(t, err)
+	defer rc.Close()
+	snap, events, err := retention.ReadArtifact(rc)
+	require.NoError(t, err)
+
+	// The snapshot is state @ the pruned checkpoint and is non-empty.
+	assert.Equal(t, res.Checkpoint, snap.UpToSeq)
+	assert.NotEmpty(t, snap.Rows("users_projection"), "snapshot must carry projection state")
+
+	// Every deleted event is preserved in the archive — the log ≤ N is
+	// fully recoverable offline.
+	assert.Len(t, events, int(res.EventsDeleted),
+		"archive must hold exactly the events the prune removed from the live log")
+}
+
 func securityAlertCount(t *testing.T, st *store.Store) int64 {
 	t.Helper()
 	var n int64
