@@ -34,9 +34,10 @@ func (s Snapshot) Rows(table string) []json.RawMessage { return s.Data[table] }
 //
 // Deliberately NOT the operational tables (auth_states, revoked_tokens,
 // luks_tokens, *_results, terminal_sessions, device_inventory,
-// user_encryption_keys, lps_keypair) — appliers never write those
-// during replay, and user_encryption_keys must never be shadowed (the
-// DEK lookup during PII decrypt must hit the live table).
+// user_encryption_keys) — appliers never write those during replay, and
+// user_encryption_keys must never be shadowed (the DEK lookup during
+// PII decrypt-on-project must hit the LIVE table, or the bounded replay
+// would fail-closed on every sealed field).
 func snapshotTables(ctx context.Context, q pgxQuerier) ([]string, error) {
 	set := map[string]bool{}
 	// Authoritative: every rebuild-target table (covers non-projection
