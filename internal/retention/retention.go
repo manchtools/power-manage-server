@@ -14,7 +14,6 @@ package retention
 
 import (
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -131,11 +130,16 @@ func (w *Worker) pruneLocked(ctx context.Context) (PruneResult, error) {
 	// the same checkpoint overwrites the same artifact rather than orphaning
 	// a duplicate.
 	ref := fmt.Sprintf("prune-%020d", checkpoint)
-	artifact, err := w.buildArtifact(ctx, checkpoint)
-	if err != nil {
-		return PruneResult{}, err
-	}
-	info, err := w.archive.Put(ctx, ref, bytes.NewReader(artifact))
+	// Stream the artifact straight into the archive through a pipe: the
+	// events are gzip-encoded and written as they are read from the DB,
+	// never materializing the whole (potentially hundreds-of-MB) blob in
+	// RAM — the ArchiveStore.Put streaming contract the spec is built on.
+	pr, pw := io.Pipe()
+	go func() { pw.CloseWithError(w.writeArtifact(ctx, pw, checkpoint)) }()
+	info, err := w.archive.Put(ctx, ref, pr)
+	// If Put stopped reading early (its own error), unblock the writer
+	// goroutine's next Write so it cannot leak; a no-op once pr is at EOF.
+	_ = pr.CloseWithError(err)
 	if err != nil {
 		return PruneResult{}, fmt.Errorf("retention: seal archive %s: %w", ref, err)
 	}
@@ -156,29 +160,30 @@ func (w *Worker) pruneLocked(ctx context.Context) (PruneResult, error) {
 	}, nil
 }
 
-// buildArtifact serializes the archived events ≤ N as a gzip'd JSON-lines
-// blob: a header line ({version, up_to_seq}) then one raw event row
-// (to_jsonb) per line. The events carry PII as DEK-sealed ciphertext, so
-// the artifact holds no plaintext PII (spec 19). Independently replayable
-// offline for out-of-band audit or restore (AC 21/22) — no live system,
-// no projection dump.
-func (w *Worker) buildArtifact(ctx context.Context, upToSeq int64) ([]byte, error) {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
+// writeArtifact streams the archived events ≤ N to dst as a gzip'd
+// JSON-lines blob: a header line ({version, up_to_seq}) then one raw
+// event row (to_jsonb) per line. Events are encoded as StreamEventsUpTo
+// yields them, so memory stays bounded regardless of backlog size (the
+// spec's streaming ArchiveStore contract). The events carry PII as
+// DEK-sealed ciphertext, so the artifact holds no plaintext PII (spec 19).
+// Independently replayable offline for out-of-band audit or restore
+// (AC 21/22) — no live system, no projection dump.
+func (w *Worker) writeArtifact(ctx context.Context, dst io.Writer, upToSeq int64) error {
+	gz := gzip.NewWriter(dst)
 	enc := json.NewEncoder(gz)
 
 	if err := enc.Encode(artifactHeader{Version: 1, UpToSeq: upToSeq}); err != nil {
-		return nil, fmt.Errorf("retention: encode artifact header: %w", err)
+		return fmt.Errorf("retention: encode artifact header: %w", err)
 	}
 	if err := w.store.StreamEventsUpTo(ctx, upToSeq, func(raw json.RawMessage) error {
 		return enc.Encode(archivedEvent{Event: raw})
 	}); err != nil {
-		return nil, fmt.Errorf("retention: encode archived events: %w", err)
+		return fmt.Errorf("retention: encode archived events: %w", err)
 	}
 	if err := gz.Close(); err != nil {
-		return nil, fmt.Errorf("retention: finalize artifact: %w", err)
+		return fmt.Errorf("retention: finalize artifact: %w", err)
 	}
-	return buf.Bytes(), nil
+	return nil
 }
 
 type artifactHeader struct {

@@ -72,6 +72,14 @@ func (s *Store) RebuildAllFromArchive(ctx context.Context, archived []PersistedE
 // sequence order, the archived events ≤ N (from the slice) followed by
 // the live events > N (from the events table). archived ≤ N < live > N,
 // so concatenation preserves global sequence order for the applier.
+//
+// Boundary: applyEvents replays the whole archived slice, INCLUDING the
+// event at sequence_num == N (upToSeq is the archive checkpoint, the max
+// archived seq). dispatchViaGoApplier's fromSeq is EXCLUSIVE — its query
+// filters `sequence_num > fromSeq` — so passing upToSeq replays strictly
+// > N and event N is applied exactly once. An inclusive lower bound would
+// double-apply N; the byte-identical fidelity test (AC 17) is the standing
+// guard that this boundary stays exclusive.
 func (s *Store) restoreOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, archived []PersistedEvent, upToSeq int64) (applied, skipped int64, err error) {
 	apply := s.rebuildApplyFor(t.Name)
 	if apply == nil {
@@ -80,11 +88,11 @@ func (s *Store) restoreOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget
 	if err := s.truncateAndSeed(ctx, tx, t); err != nil {
 		return 0, 0, err
 	}
-	a1, s1, err := s.applyEvents(ctx, tx, t, apply, archived)
+	a1, s1, err := s.applyEvents(ctx, tx, t, apply, archived) // archived ≤ N, includes N
 	if err != nil {
 		return 0, 0, err
 	}
-	a2, s2, err := s.dispatchViaGoApplier(ctx, tx, t, apply, upToSeq, 0) // from > N, no upper bound (live events)
+	a2, s2, err := s.dispatchViaGoApplier(ctx, tx, t, apply, upToSeq, 0) // live, sequence_num > N (fromSeq exclusive)
 	if err != nil {
 		return 0, 0, err
 	}
