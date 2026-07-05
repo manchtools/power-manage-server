@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -37,27 +38,47 @@ func (s Snapshot) Rows(table string) []json.RawMessage { return s.Data[table] }
 // during replay, and user_encryption_keys must never be shadowed (the
 // DEK lookup during PII decrypt must hit the live table).
 func snapshotTables(ctx context.Context, q pgxQuerier) ([]string, error) {
+	set := map[string]bool{}
+	// Authoritative: every rebuild-target table (covers non-projection
+	// targets like lps_keypair). AllRebuildTargets is the source of
+	// truth for "what appliers rebuild".
+	for _, t := range AllRebuildTargets {
+		for _, tbl := range t.Tables {
+			set[tbl] = true
+		}
+	}
+	// Plus the projection children + evaluation queues an applier
+	// touches during replay that are NOT their own rebuild target
+	// (device_labels, user_ssh_keys, user_group_*_projection, the
+	// dynamic eval queues). Pattern-discovered so a new projection
+	// child is shadowed automatically.
 	rows, err := q.Query(ctx, `
 		SELECT tablename FROM pg_tables
 		WHERE schemaname = 'public'
 		  AND (tablename LIKE '%\_projection'
 		       OR tablename IN ('device_labels', 'user_ssh_keys',
 		                        'dynamic_group_evaluation_queue',
-		                        'dynamic_user_group_evaluation_queue'))
-		ORDER BY tablename`)
+		                        'dynamic_user_group_evaluation_queue'))`)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: discover tables: %w", err)
 	}
 	defer rows.Close()
-	var out []string
 	for rows.Next() {
 		var t string
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
+		set[t] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	sort.Strings(out)
+	return out, nil
 }
 
 // CaptureProjectionSnapshot captures state @ upToSeq — the deterministic
