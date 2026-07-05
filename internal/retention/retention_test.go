@@ -2,6 +2,8 @@ package retention_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +133,14 @@ func eventCount(t *testing.T, st *store.Store) int64 {
 	return n
 }
 
+func maxSeq(t *testing.T, st *store.Store) int64 {
+	t.Helper()
+	var n int64
+	require.NoError(t, st.TestingPool().QueryRow(context.Background(),
+		`SELECT COALESCE(MAX(sequence_num), 0) FROM events`).Scan(&n))
+	return n
+}
+
 func countPruned(t *testing.T, st *store.Store) int64 {
 	t.Helper()
 	var n int64
@@ -230,44 +240,51 @@ func TestPrune_SafetyMarginProtectsRecentEvents(t *testing.T) {
 	assert.Empty(t, infos, "no archive written when nothing is safely prunable")
 }
 
-// TestPrune_CrashResumeIdempotent pins AC 26: re-running at the same
-// checkpoint (e.g. the worker crashed after the archive landed but
-// before/around the delete) completes exactly one prune — the deleted
-// range is already gone, the archive ref is deterministic, and the
-// EventLogPruned count does not double.
+// TestPrune_CrashResumeIdempotent pins AC 26: a worker that crashed AFTER
+// its archive landed but BEFORE the delete resumes cleanly at the SAME
+// checkpoint — the deterministic ref is overwritten (not duplicated), the
+// delete completes, and exactly ONE EventLogPruned is appended.
 func TestPrune_CrashResumeIdempotent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	arch, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
 	require.NoError(t, err)
 	ctx := context.Background()
 	testutil.CreateTestUser(t, st, "crash-"+testutil.NewID()[:8]+"@test.com", "pass", "admin")
+	testutil.CreateTestDevice(t, st, "crash-host-"+testutil.NewID()[:6])
 
 	w := eligibleWorker(t, st, arch)
-	res1, err := w.Prune(ctx)
-	require.NoError(t, err)
-	require.True(t, res1.Pruned)
+	// The checkpoint a run would choose now (future clock → all eligible).
+	checkpoint := maxSeq(t, st)
+	require.Positive(t, checkpoint)
 
-	// A second immediate run: everything eligible is already pruned, so
-	// the new checkpoint is the EventLogPruned marker's own seq or
-	// beyond — but EventLogPruned is excluded from the checkpoint, so
-	// the next checkpoint covers only whatever remains. Re-running must
-	// not corrupt: at most one more prune, no duplicate archive for the
-	// same ref, EventLogPruned count grows by at most one.
-	prunedBefore := countPruned(t, st)
-	res2, err := w.Prune(ctx)
+	// Simulate the crash: the artifact for this checkpoint already landed
+	// at its deterministic ref, but the delete never ran — events ≤ N are
+	// still present and no EventLogPruned exists (the marker is appended in
+	// the same tx as the delete). The stale bytes stand in for a partial
+	// write the resume must overwrite.
+	ref := fmt.Sprintf("prune-%020d", checkpoint) // must match the worker's ref format
+	_, err = arch.Put(ctx, ref, strings.NewReader("stale partial artifact from the crashed run"))
 	require.NoError(t, err)
-	_ = res2
-	assert.LessOrEqual(t, countPruned(t, st)-prunedBefore, int64(1),
-		"a resume must not double-prune the same checkpoint")
+	before := eventCount(t, st)
 
-	// Archives never duplicate a ref.
+	// Resume: a fresh Prune re-selects the SAME checkpoint, overwrites the
+	// same ref, completes the delete, and appends exactly one marker.
+	res, err := w.Prune(ctx)
+	require.NoError(t, err)
+	require.True(t, res.Pruned)
+	assert.Equal(t, checkpoint, res.Checkpoint, "resume must land on the same checkpoint")
+	assert.Equal(t, ref, res.ArchiveRef, "resume must reuse the deterministic ref, not orphan a duplicate")
+
+	assert.Equal(t, int64(1), countPruned(t, st), "exactly one EventLogPruned after the resume")
+	assert.Less(t, eventCount(t, st), before, "the resume completed the delete")
+
+	// Exactly one archive entry at the ref (the stale partial was
+	// overwritten, not duplicated) and it verifies as a real sealed artifact.
 	infos, err := arch.List(ctx)
 	require.NoError(t, err)
-	seen := map[string]bool{}
-	for _, i := range infos {
-		assert.False(t, seen[i.Ref], "no duplicate archive ref")
-		seen[i.Ref] = true
-	}
+	require.Len(t, infos, 1)
+	assert.Equal(t, ref, infos[0].Ref)
+	require.NoError(t, archive.Verify(ctx, arch, ref))
 }
 
 // TestPrune_SingleFlight pins AC 27: while one prune holds the advisory
