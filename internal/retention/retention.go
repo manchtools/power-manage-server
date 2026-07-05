@@ -13,11 +13,13 @@
 package retention
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -186,4 +188,44 @@ type artifactHeader struct {
 
 type archivedEvent struct {
 	Event json.RawMessage `json:"event"`
+}
+
+// ReadArtifact deserializes an artifact produced by buildArtifact,
+// returning the snapshot header and the archived events in sequence
+// order. It needs nothing but the artifact bytes — the archive is
+// independently replayable for out-of-band audit without the live
+// system (spec 19 AC 22). It is also the read leg of the restore path:
+// after a prune, RebuildAll restores the latest snapshot by fetching its
+// archive and handing the parsed snapshot to Store.RebuildAllFromSnapshot.
+func ReadArtifact(r io.Reader) (store.Snapshot, []json.RawMessage, error) {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return store.Snapshot{}, nil, fmt.Errorf("retention: open artifact: %w", err)
+	}
+	defer gz.Close()
+	sc := bufio.NewScanner(gz)
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<26) // allow large snapshot header lines
+
+	if !sc.Scan() {
+		if err := sc.Err(); err != nil {
+			return store.Snapshot{}, nil, fmt.Errorf("retention: read header: %w", err)
+		}
+		return store.Snapshot{}, nil, fmt.Errorf("retention: artifact missing header")
+	}
+	var hdr artifactHeader
+	if err := json.Unmarshal(sc.Bytes(), &hdr); err != nil {
+		return store.Snapshot{}, nil, fmt.Errorf("retention: decode header: %w", err)
+	}
+	var events []json.RawMessage
+	for sc.Scan() {
+		var ev archivedEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			return store.Snapshot{}, nil, fmt.Errorf("retention: decode archived event: %w", err)
+		}
+		events = append(events, ev.Event)
+	}
+	if err := sc.Err(); err != nil {
+		return store.Snapshot{}, nil, fmt.Errorf("retention: scan artifact: %w", err)
+	}
+	return hdr.Snapshot, events, nil
 }
