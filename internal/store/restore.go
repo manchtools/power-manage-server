@@ -44,7 +44,11 @@ func (s *Store) RebuildAllFromArchive(ctx context.Context, archived []PersistedE
 	start := s.now()
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(AllRebuildTargets))}
 
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	// REPEATABLE READ for the same reason as RebuildAll: the completeness
+	// check and the per-target live-event reads (> N) must share one
+	// snapshot, or a prune committing mid-restore could delete live events
+	// after the check passed and leave a silent gap.
+	err := pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		// Completeness (spec 19 AC 21): the live marker chain is the
 		// authoritative ledger of what was pruned. The archived slice must
 		// reach at least the LATEST recorded checkpoint — a later archive

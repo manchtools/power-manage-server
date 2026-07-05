@@ -22,6 +22,13 @@
 --
 -- The per-row EXISTS is cheap: idx_events_type (002) narrows it to the
 -- handful of EventLogPruned rows.
+--
+-- Version floor: pg_current_xact_id() and the xid8→xid cast require
+-- PostgreSQL 13+ (the project pins 17 in tests, 18 in deploy). The
+-- xmin comparison is same-transaction-safe: the prune method appends the
+-- marker in this very transaction with no savepoints, so the marker row's
+-- xmin IS the top-level xid pg_current_xact_id() returns; 32-bit
+-- truncation of the current xid always matches its own xmin.
 
 -- +goose Up
 

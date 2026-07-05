@@ -11,6 +11,7 @@ package store_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,10 +24,58 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/retention"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/testutil"
 )
+
+// TestRebuildAll_ConsistentSnapshotUnderConcurrentPrune pins the
+// guard-vs-replay TOCTOU: RebuildAll checks for pruned history once, then
+// re-reads events per target. If a concurrent prune commits BETWEEN the
+// guard check and a later target's read, a READ COMMITTED transaction
+// (fresh snapshot per statement) silently loses the pruned events
+// mid-replay — the exact data-loss class the guard exists to close. The
+// rebuild transaction must run at REPEATABLE READ so the guard and every
+// replay read share ONE snapshot; the concurrent prune then commits
+// harmlessly after the fact.
+//
+// Deterministic race: the "users" applier (the FIRST rebuild target) is
+// wrapped to commit a full prune on a separate connection before the
+// first user event applies — so every later target's events are already
+// deleted from the live table when that target reads them.
+func TestRebuildAll_ConsistentSnapshotUnderConcurrentPrune(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	testutil.CreateTestUser(t, st, "race-"+testutil.NewID()[:8]+"@test.com", "pass", "admin")
+	testutil.CreateTestDevice(t, st, "race-host-"+testutil.NewID()[:6])
+	checkpoint := maxSeq(t, st)
+	baseline := dumpRebuildTables(t, st)
+
+	pruned := false
+	st.RegisterRebuildApply("users", func(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+		if !pruned {
+			pruned = true
+			// A concurrent prune (separate pool connection) commits while
+			// the rebuild transaction is mid-flight.
+			if _, err := st.PruneEventsUpTo(ctx, checkpoint, "prune-race", "sha-race"); err != nil {
+				return fmt.Errorf("concurrent prune: %w", err)
+			}
+		}
+		return projectors.ApplyUserWithRoles(ctx, q, e)
+	})
+
+	_, err := st.RebuildAll(ctx)
+	require.NoError(t, err)
+	require.True(t, pruned, "the race must actually have fired")
+
+	after := dumpRebuildTables(t, st)
+	for tbl, rows := range baseline {
+		assert.Equalf(t, rows, after[tbl],
+			"projection table %q lost rows to a prune that committed mid-rebuild — the rebuild transaction must hold one consistent snapshot (REPEATABLE READ) across the guard and every replay read", tbl)
+	}
+}
 
 // collectArchivedEvents returns every event ≤ upToSeq as the raw
 // to_jsonb rows the retention artifact would carry — the archived

@@ -2,6 +2,8 @@ package archtest
 
 import (
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 )
@@ -117,6 +119,39 @@ func TestProjectorDeterminism(t *testing.T) {
 	allow.assertNoStale(t)
 }
 
+// TestFileLocalMapIdents_DetectsEveryDeclarationForm pins the detector
+// itself: every way a file can visibly declare a map-typed identifier
+// must be recognized, or a projector ranging over one silently passes
+// the determinism guard (the false-negative CR flagged for
+// `var x = make(map…)`).
+func TestFileLocalMapIdents_DetectsEveryDeclarationForm(t *testing.T) {
+	src := `package p
+func f(param map[string]int) (ret map[string]int) {
+	var typed map[string]bool
+	var inferredMake = make(map[string]int)
+	var inferredLit = map[string]int{"a": 1}
+	shortMake := make(map[string]string)
+	shortLit := map[string]bool{}
+	notAMap := []string{"x"}
+	_ = typed; _ = inferredMake; _ = inferredLit; _ = shortMake; _ = shortLit; _ = notAMap
+	return nil
+}`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "snippet.go", src, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse snippet: %v", err)
+	}
+	got := fileLocalMapIdents(f)
+	for _, want := range []string{"param", "ret", "typed", "inferredMake", "inferredLit", "shortMake", "shortLit"} {
+		if !got[want] {
+			t.Errorf("map-typed identifier %q not detected — a `range %s` would silently evade the determinism guard", want, want)
+		}
+	}
+	if got["notAMap"] {
+		t.Error("slice identifier misclassified as a map")
+	}
+}
+
 // fileLocalMapIdents collects identifier names visibly declared
 // map-typed within one file: var declarations, := / = assignments from a
 // map literal or make(map…), and function parameters/results.
@@ -128,6 +163,16 @@ func fileLocalMapIdents(f *ast.File) map[string]bool {
 			if _, isMap := x.Type.(*ast.MapType); isMap {
 				for _, name := range x.Names {
 					out[name.Name] = true
+				}
+			}
+			// `var x = make(map…)` / `var x = map[…]{…}`: no explicit
+			// type, the map-ness lives in the initializer (CR).
+			for i, val := range x.Values {
+				if i >= len(x.Names) {
+					break
+				}
+				if isMapProducer(val) {
+					out[x.Names[i].Name] = true
 				}
 			}
 		case *ast.AssignStmt:

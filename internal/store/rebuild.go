@@ -466,7 +466,15 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 	start := s.now()
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(targets))}
 
-	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	// REPEATABLE READ: the pruned-history guard below and every per-target
+	// replay read must share ONE snapshot. Under READ COMMITTED each
+	// statement sees a fresh snapshot, so a prune committing between the
+	// guard and a later target's read would silently delete events
+	// mid-replay — reproducing the data-loss class the guard closes
+	// (proven by TestRebuildAll_ConsistentSnapshotUnderConcurrentPrune).
+	// Writes don't overlap a prune's (projections vs events), so no
+	// serialization failures are introduced.
+	err = pgx.BeginTxFunc(ctx, s.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
 		// Fail closed on pruned history (spec 19 AC 21): if any
 		// EventLogPruned marker exists, events ≤ its checkpoint are gone
 		// from the live log — a TRUNCATE-and-replay here would silently
