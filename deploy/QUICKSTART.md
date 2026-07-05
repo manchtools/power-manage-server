@@ -156,18 +156,29 @@ docker compose exec control control rebuild-projections users devices
 ```
 <!-- docref: end -->
 
-<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:233aab6e -->
+<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:3f101b6f -->
 The command prints the resolved target list before touching anything. A
 partial selection is widened automatically when a selected table's
 `TRUNCATE ... CASCADE` would wipe tables owned by other targets — a
 partial rebuild never destroys data it does not replay. Each target
 reports events applied and events skipped (unprojectable historical
-payloads) separately. Everything runs in a single transaction: a failure
-rolls back to the pre-rebuild state. After a successful rebuild the
-system-role permissions are re-reconciled from the code registry, so no
-Control restart is needed.
+payloads) separately. Everything runs in a single transaction (one
+consistent snapshot): a failure rolls back to the pre-rebuild state.
+After a successful rebuild the system-role permissions are re-reconciled
+from the code registry, so no Control restart is needed.
+
+Once audit-log retention has pruned history, a plain rebuild **refuses to
+run** — the surviving live log no longer contains events up to the prune
+checkpoint, and replaying only it would silently lose that state. Pass
+`--archive-dir <path>` (the retention archive directory, filesystem
+backend) instead: the command walks the `EventLogPruned` marker chain,
+verifies every sealed archive against the hash recorded in the
+tamper-evident log, and rebuilds every projection from the archived
+history plus the live events. Target selection is not supported with
+`--archive-dir` — a restore is always a full rebuild.
 
 Exit codes: `0` success · `1` rebuild failed (rolled back) · `2` could
-not run (bad flags, unknown target, no database). `--env-file <path>`
-works like doctor's (default `.env`).
+not run (bad flags, unknown target, no database, pruned history without
+`--archive-dir`). `--env-file <path>` works like doctor's (default
+`.env`).
 <!-- docref: end -->
