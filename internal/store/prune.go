@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/oklog/ulid/v2"
@@ -120,4 +121,44 @@ func (s *Store) PruneEventsUpTo(ctx context.Context, upToSeq int64, archiveRef, 
 	}
 	s.fireListeners(ctx, appended)
 	return deleted, nil
+}
+
+// PruneCheckpointBefore returns the highest sequence_num whose event
+// occurred before cutoff — the prune checkpoint N (spec 19). Returns 0
+// when no event is older than the cutoff (the no-op case, AC 25).
+// EventLogPruned markers are excluded: they are retention bookkeeping,
+// never themselves a prune boundary, and are exempt from pruning.
+func (s *Store) PruneCheckpointBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var n int64
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(MAX(sequence_num), 0) FROM events
+		  WHERE occurred_at < $1 AND event_type <> $2`,
+		cutoff, EventLogPrunedType).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("prune: choose checkpoint before %s: %w", cutoff, err)
+	}
+	return n, nil
+}
+
+// StreamEventsUpTo calls fn with every event (sequence_num <= upToSeq)
+// as a to_jsonb row, in sequence order — the archive payload. Streams
+// row-by-row so a large history is never fully buffered.
+func (s *Store) StreamEventsUpTo(ctx context.Context, upToSeq int64, fn func(json.RawMessage) error) error {
+	rows, err := s.pool.Query(ctx,
+		`SELECT to_jsonb(e) FROM events e WHERE sequence_num <= $1 ORDER BY sequence_num`,
+		upToSeq)
+	if err != nil {
+		return fmt.Errorf("prune: stream events ≤ %d: %w", upToSeq, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return fmt.Errorf("prune: scan archived event: %w", err)
+		}
+		if err := fn(json.RawMessage(raw)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
 }
