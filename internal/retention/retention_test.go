@@ -201,6 +201,35 @@ func TestPrune_NoOp(t *testing.T) {
 	assert.Empty(t, infos, "no archive written on a no-op")
 }
 
+// TestPrune_SafetyMarginProtectsRecentEvents pins the sequence-visibility
+// safeguard: even with a near-zero window, the prune checkpoint may not
+// reach events younger than pruneSafetyMargin (1h). sequence_num is a
+// pre-commit nextval() (not commit-order-safe), so a not-yet-committed
+// append could hold a lower, un-archived sequence_num; the margin keeps
+// the checkpoint far enough in the past that every event at/below it has
+// certainly committed. With a 1ns window and no floor this run would
+// prune the just-created events; with the floor it is a no-op.
+func TestPrune_SafetyMarginProtectsRecentEvents(t *testing.T) {
+	// Real clock (NOT the future-clock helper): the events are seconds old,
+	// so only the safety floor — not the window — can protect them.
+	w, st, arch := newWorker(t, time.Nanosecond)
+	ctx := context.Background()
+	testutil.CreateTestUser(t, st, "recent-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	before := eventCount(t, st)
+
+	res, err := w.Prune(ctx)
+	require.NoError(t, err)
+	assert.True(t, res.Ran)
+	assert.False(t, res.Pruned,
+		"the 1h safety margin must protect just-created events even under a 1ns window")
+	assert.Zero(t, res.EventsDeleted)
+	assert.Equal(t, before, eventCount(t, st), "no recent event deleted")
+	assert.Zero(t, countPruned(t, st))
+	infos, err := arch.List(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, infos, "no archive written when nothing is safely prunable")
+}
+
 // TestPrune_CrashResumeIdempotent pins AC 26: re-running at the same
 // checkpoint (e.g. the worker crashed after the archive landed but
 // before/around the delete) completes exactly one prune — the deleted

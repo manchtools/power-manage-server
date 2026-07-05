@@ -128,6 +128,17 @@ func (s *Store) PruneEventsUpTo(ctx context.Context, upToSeq int64, archiveRef, 
 // when no event is older than the cutoff (the no-op case, AC 25).
 // EventLogPruned markers are excluded: they are retention bookkeeping,
 // never themselves a prune boundary, and are exempt from pruning.
+//
+// Commit-visibility contract: sequence_num is a plain nextval() sequence
+// (assigned pre-commit, NOT commit-order-safe), so a not-yet-committed
+// append can hold a lower, invisible sequence_num. The caller MUST pass a
+// cutoff old enough that every event before it has certainly committed —
+// the retention worker enforces this with pruneSafetyMargin (occurred_at,
+// ≈ transaction start, must be older than max(window, 1h); no append
+// transaction stays open that long). Without that floor the returned N
+// could straddle an in-flight lower sequence_num, and the downstream
+// DELETE (which filters on sequence_num alone) could remove an event that
+// StreamEventsUpTo never archived.
 func (s *Store) PruneCheckpointBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	var n int64
 	err := s.pool.QueryRow(ctx,

@@ -31,6 +31,25 @@ import (
 // dynamic-group keys.
 const advisoryKeyPrune int64 = 0x7072756e65
 
+// pruneSafetyMargin is a hard floor on how recent the prune checkpoint may
+// be, independent of the configured Window. It closes a sequence-visibility
+// race: events.sequence_num is a plain nextval() sequence (assigned before
+// commit, so NOT commit-order-safe) and occurred_at defaults to now() (the
+// transaction's START time). An append transaction that called nextval()
+// but has not yet committed holds a lower, still-invisible sequence_num; if
+// the checkpoint could reach it, StreamEventsUpTo would not archive it yet
+// PruneEventsUpTo's later DELETE (which filters on sequence_num alone) could
+// remove it once it commits — deleting an un-archived event and breaking the
+// archive-before-delete guarantee.
+//
+// The checkpoint only includes events whose occurred_at (≈ transaction
+// start) is older than max(Window, this margin) ago. No append transaction
+// stays open for an hour (appends are sub-second), so every event at or
+// below the checkpoint has long committed and is visible — the race is
+// unreachable regardless of how small Window is configured. Days/months
+// windows dominate this floor, so it is invisible in normal operation.
+const pruneSafetyMargin = time.Hour
+
 // Config parameterizes a prune run.
 type Config struct {
 	// Window is the retention window: events OLDER than now-Window are
@@ -108,7 +127,13 @@ func (w *Worker) Prune(ctx context.Context) (PruneResult, error) {
 
 // pruneLocked is the prune cycle body, run under the advisory lock.
 func (w *Worker) pruneLocked(ctx context.Context) (PruneResult, error) {
+	// Never let the checkpoint reach events younger than the safety margin,
+	// even if Window is configured smaller — see pruneSafetyMargin for the
+	// sequence-visibility race this closes.
 	cutoff := w.now().Add(-w.cfg.Window)
+	if floor := w.now().Add(-pruneSafetyMargin); cutoff.After(floor) {
+		cutoff = floor
+	}
 	checkpoint, err := w.store.PruneCheckpointBefore(ctx, cutoff)
 	if err != nil {
 		return PruneResult{}, fmt.Errorf("retention: choose checkpoint: %w", err)
