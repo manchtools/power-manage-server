@@ -259,7 +259,12 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 		// every device the deleted user was assigned to.
 		user, loadErr := h.store.Repos().User.Get(ctx, userID)
 
-		err = h.store.AppendEvent(ctx, store.Event{
+		// Spec 19 AC 8: the SCIM delete path routes through the SAME
+		// shared shred flow as the API DeleteUser — the DEK is destroyed
+		// and PII redacted identically. (SCIM only reaches here when the
+		// last identity link is removed; disable via active=false emits
+		// UserDisabled and never shreds.)
+		err = h.store.AppendUserDeletionWithShred(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDeleted),

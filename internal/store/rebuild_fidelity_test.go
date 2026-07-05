@@ -46,6 +46,16 @@ func seedRichFixture(t *testing.T, st *store.Store) {
 	adminID := testutil.CreateTestUser(t, st, "fidelity-"+testutil.NewID()[:8]+"@test.com", "pass", "admin")
 	userID, _, groupID := seedUsersCascadeChildren(t, st) // user + TOTP + identity link + group membership
 
+	// A crypto-shredded user (spec 19 AC 11): a rebuild must reproduce
+	// their projection as the redaction sentinel — the delete redaction
+	// and the rebuild share one path, so the full-row dump stays
+	// byte-identical across the prune/rebuild round-trip.
+	erased := testutil.CreateTestUser(t, st, "fidelity-erased-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	require.NoError(t, st.AppendUserDeletionWithShred(ctx, store.Event{
+		StreamType: "user", StreamID: erased, EventType: "UserDeleted",
+		Data: map[string]any{}, ActorType: "user", ActorID: adminID,
+	}))
+
 	roleID := testutil.CreateTestRole(t, st, adminID, "fidelity-role-"+testutil.NewID()[:8], []string{"GetDevice"})
 	require.NoError(t, st.AppendEvent(ctx, store.Event{
 		StreamType: "user_role",

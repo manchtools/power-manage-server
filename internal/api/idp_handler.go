@@ -308,7 +308,10 @@ func (h *IDPHandler) DeleteIdentityProvider(ctx context.Context, req *connect.Re
 			// error) we leave the user in place rather than fail the whole
 			// provider deletion — best-effort, matching the surrounding loop.
 			if err := guardedAdminMutation(ctx, h.store, link.UserID, func() error {
-				return h.store.AppendEvent(ctx, store.Event{
+				// Auto-delete is still a delete: crypto-shred via the shared
+				// flow (spec 19 AC 7) so an orphaned SSO user is erased, not
+				// merely soft-deleted with recoverable PII.
+				return h.store.AppendUserDeletionWithShred(ctx, store.Event{
 					StreamType: "user",
 					StreamID:   link.UserID,
 					EventType:  string(eventtypes.UserDeleted),

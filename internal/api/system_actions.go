@@ -166,8 +166,22 @@ func (m *SystemActionManager) StartReconciliation(ctx context.Context, interval,
 // Idempotent and safe to call after any user mutation.
 func (m *SystemActionManager) SyncUserSystemActions(ctx context.Context, userID string) error {
 	user, err := m.store.Repos().User.Get(ctx, userID)
+	if store.IsNotFound(err) {
+		// Deleted (or never-existed) user: NEVER generate or distribute a
+		// system action for them (spec 19 E / AC 32 — an erased user must
+		// never re-acquire a provisioning action). Graceful skip, not an
+		// error, so a reconcile sweep doesn't log noise for erased users.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("get user: %w", err)
+	}
+	// Explicit fail-closed delete-state check at the generation choke
+	// point (spec 19 AC 32). Does NOT lean on Get's incidental
+	// is_deleted = FALSE filter: if a future Get is changed to return
+	// soft-deleted rows, provisioning must STILL refuse an erased user.
+	if user.IsDeleted {
+		return nil
 	}
 
 	// Skip users with no linux username (shouldn't happen after migration)
