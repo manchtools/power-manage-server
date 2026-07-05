@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -97,6 +98,58 @@ func TestEvents_NonPruneMutationStillRejected(t *testing.T) {
 
 	// Events survived every rejected attempt.
 	assert.Positive(t, eventCount(t, st))
+}
+
+// TestEvents_GuardedDeleteWithoutMarkerRejected pins the spec's double
+// condition on the prune exemption (spec 19 tech design): a DELETE is
+// sanctioned only when the SET LOCAL guard is set AND an EventLogPruned
+// marker was appended in the SAME transaction. A session that sets both
+// guards but appends no marker (e.g. leaked DB credentials trying to
+// silently erase history) must still be rejected — otherwise the
+// tamper-evidence chain has a hole the Go method alone cannot close.
+func TestEvents_GuardedDeleteWithoutMarkerRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	testutil.CreateTestUser(t, st, "nomarker-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	before := eventCount(t, st)
+	require.Positive(t, before)
+
+	_, err := st.TestingPool().Exec(ctx,
+		`BEGIN; SET LOCAL pm.prune_active = 'on'; SET LOCAL pm.prune_up_to_seq = '999999';
+		 DELETE FROM events WHERE sequence_num >= 1; COMMIT;`)
+	require.Error(t, err,
+		"a guarded DELETE with no in-tx EventLogPruned marker must be rejected (double condition)")
+	assert.Contains(t, err.Error(), "append-only")
+	assert.Equal(t, before, eventCount(t, st), "no event may be deleted without the marker")
+}
+
+// TestEvents_MarkerRowsNotDeletableEvenUnderGuard pins AC 24 at the DB
+// layer: EventLogPruned rows themselves are never deletable, even inside
+// a fully-sanctioned prune transaction — the prune chain must stay
+// visible in the live log forever.
+func TestEvents_MarkerRowsNotDeletableEvenUnderGuard(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	testutil.CreateTestUser(t, st, "keepmark-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+
+	// A real prune leaves a marker behind.
+	_, err := st.PruneEventsUpTo(ctx, maxSeq(t, st), "prune-keepmark", "sha")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), countByType(t, st, store.EventLogPrunedType))
+
+	// Even a fully-guarded transaction that appends a fresh marker cannot
+	// delete an existing marker row.
+	markerSeq := maxSeq(t, st) // the marker is the highest surviving event
+	_, err = st.TestingPool().Exec(ctx, fmt.Sprintf(
+		`BEGIN; SET LOCAL pm.prune_active = 'on'; SET LOCAL pm.prune_up_to_seq = '%d';
+		 INSERT INTO events (id, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id)
+		 VALUES ('01JZZZZZZZZZZZZZZZZZZZZZZZ', 'retention', 'global', 999, 'EventLogPruned',
+		         '{"up_to_seq": %d, "archive_ref": "x", "archive_sha256": "x"}', '{}', 'system', 'attacker');
+		 DELETE FROM events WHERE event_type = 'EventLogPruned' AND sequence_num <= %d; COMMIT;`,
+		markerSeq, markerSeq, markerSeq))
+	require.Error(t, err, "EventLogPruned rows must never be deletable, even under a sanctioned guard")
+	assert.GreaterOrEqual(t, countByType(t, st, store.EventLogPrunedType), int64(1),
+		"the prune chain survives")
 }
 
 // TestPruneEventsUpTo_RangeBounded pins that the guard bounds deletion
