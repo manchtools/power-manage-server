@@ -3,10 +3,12 @@ package projectors
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/pii"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
