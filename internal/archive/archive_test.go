@@ -144,3 +144,15 @@ func findArchiveFile(t *testing.T, dir, ref string) string {
 	t.Fatalf("archive file for %q not found in %s", ref, dir)
 	return ""
 }
+
+// TestFilesystem_RejectsReservedRefNamespaces pins the CR-flagged gap:
+// a ref colliding with the backend's own naming (seal suffix, temp
+// infix, probe prefix) is rejected, not silently mis-stored.
+func TestFilesystem_RejectsReservedRefNamespaces(t *testing.T) {
+	st := fsStore(t)
+	ctx := context.Background()
+	for _, ref := range []string{"x.sha256", "a.tmp-1", ".pm-archive-probe-9", "..", "a/b", ""} {
+		_, err := st.Put(ctx, ref, strings.NewReader("data"))
+		assert.Error(t, err, "reserved/unsafe ref %q must be rejected", ref)
+	}
+}

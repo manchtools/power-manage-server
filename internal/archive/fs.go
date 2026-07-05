@@ -44,7 +44,7 @@ func newFilesystem(dir string) (*filesystem, error) {
 		return nil, fmt.Errorf("archive: filesystem path %q is not a directory", dir)
 	}
 	// Probe writability with a temp file so a read-only mount fails now.
-	probe, err := os.CreateTemp(dir, ".pm-archive-probe-*")
+	probe, err := os.CreateTemp(dir, probePrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("archive: filesystem path %q not writable: %w", dir, err)
 	}
@@ -157,7 +157,7 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 	var out []ArchiveInfo
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || strings.HasSuffix(name, sealSuffix) || strings.Contains(name, ".tmp-") || strings.HasPrefix(name, ".pm-archive-probe-") {
+		if e.IsDir() || strings.HasSuffix(name, sealSuffix) || strings.Contains(name, ".tmp-") || strings.HasPrefix(name, probePrefix) {
 			continue
 		}
 		info, err := e.Info()
