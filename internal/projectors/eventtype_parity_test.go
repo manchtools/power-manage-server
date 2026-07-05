@@ -39,6 +39,7 @@ var unprojectedAllowlist = map[eventtypes.EventType]string{
 	eventtypes.LuksTokenCreated:                "audit-only (#496): who issued a LUKS token; no projection",
 	eventtypes.UserLoggedOut:                   "audit-only (#496): session end; the denylist row is operational state",
 	eventtypes.UserSessionRefreshed:            "audit-only (#496): session rotation; no projection",
+	eventtypes.EventLogPruned:                  "retention marker (spec 19): records a prune checkpoint + archive pointer; no projection — doctor reads it directly for retention posture",
 }
 
 // TestEventTypes_AllHandledByProjectorOrAllowlisted is a self-discovering guard

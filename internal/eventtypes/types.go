@@ -244,6 +244,13 @@ const (
 
 	// user_selection stream
 	UserSelectionChanged EventType = "UserSelectionChanged"
+
+	// retention stream — spec 19. Records one prune of the live event
+	// log: history ≤ up_to_seq was sealed into an integrity-checked
+	// archive and then deleted. Carries NO PII and NO key material.
+	// Itself EXEMPT from pruning (AC 24) so the full prune chain stays
+	// visible without opening an archive.
+	EventLogPruned EventType = "EventLogPruned"
 )
 
 // All returns every defined event type. Useful for tests that want to
@@ -293,5 +300,6 @@ func All() []EventType {
 		UserGroupDeleted, UserGroupMemberAdded, UserGroupMemberRemoved, UserGroupRoleAssigned,
 		UserGroupRoleRevoked, UserGroupMembersRebuilt, UserGroupMembersReevaluated,
 		UserSelectionChanged,
+		EventLogPruned,
 	}
 }
