@@ -41,12 +41,15 @@ const EventLogPrunedType = "EventLogPruned"
 //  3. DELETEs events with sequence_num <= upToSeq, EXCEPT EventLogPruned
 //     markers (the prune chain stays visible in the live log — AC 24).
 //
-// The trigger's own range bound (OLD.sequence_num <= pm.prune_up_to_seq)
-// plus this method's WHERE clause are defense in depth: neither alone
-// can delete an event beyond the archived checkpoint. Callers must have
-// durably written the sealed archive for upToSeq BEFORE calling this
-// (archive-then-delete ordering — AC 28); this method only performs the
-// delete leg.
+// The trigger (013) independently enforces the FULL double condition:
+// the SET LOCAL guard, the range bound (OLD.sequence_num <=
+// pm.prune_up_to_seq), the marker exemption, AND an EventLogPruned row
+// appended in the same transaction for the same range — so even a raw
+// SQL session with the guards set cannot delete history without leaving
+// the tamper-evident marker. This method's append-first ordering is what
+// satisfies that trigger check. Callers must have durably written the
+// sealed archive for upToSeq BEFORE calling this (archive-then-delete
+// ordering — AC 28); this method only performs the delete leg.
 //
 // Returns the number of events deleted.
 func (s *Store) PruneEventsUpTo(ctx context.Context, upToSeq int64, archiveRef, archiveSHA256 string) (int64, error) {
