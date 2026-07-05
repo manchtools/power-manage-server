@@ -492,10 +492,14 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	}
 
 	// Refuse to delete the last enabled administrator (#365); run the guard +
-	// UserDeleted append under one advisory lock so concurrent deletes can't
+	// the delete-with-shred under one advisory lock so concurrent deletes can't
 	// both pass and race to zero admins (#369). A no-op for non-admins.
+	//
+	// Spec 19 AC 7/8/14: deletion ALWAYS crypto-shreds — the shared flow
+	// appends UserDeleted and destroys the DEK in one transaction, so there
+	// is no half-erased state and the same shred runs for API + SCIM.
 	err = guardedAdminMutation(ctx, h.store, req.Msg.Id, func() error {
-		if err := h.store.AppendEvent(ctx, store.Event{
+		if err := h.store.AppendUserDeletionWithShred(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   req.Msg.Id,
 			EventType:  string(eventtypes.UserDeleted),
@@ -514,7 +518,10 @@ func (h *UserHandler) DeleteUser(ctx context.Context, req *connect.Request[pm.De
 	// Search-index removal is handled by api.SearchListener (post-commit
 	// dispatch on UserDeleted) — handler-side enqueue removed in N005.
 
-	// Clean up system actions
+	// Clean up system actions using the PRE-delete snapshot loaded above
+	// (spec 19 AC 35: teardown rides on this snapshot, captured before the
+	// shred, so the plaintext linux_username is still available even though
+	// the projection is now redacted).
 	if err := h.systemActions.CleanupDeletedUserActions(ctx, user); err != nil {
 		h.logger.Error("failed to cleanup system actions for deleted user", "user_id", req.Msg.Id, "error", err)
 	}

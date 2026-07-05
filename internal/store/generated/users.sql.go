@@ -656,7 +656,14 @@ const softDeleteUserProjection = `-- name: SoftDeleteUserProjection :execrows
 UPDATE users_projection
 SET is_deleted         = TRUE,
     updated_at         = $2,
-    projection_version = $3
+    projection_version = $3,
+    email              = $4,
+    display_name       = $4,
+    given_name         = $4,
+    family_name        = $4,
+    preferred_username = $4,
+    picture            = $4,
+    linux_username     = $4
 WHERE id = $1
   AND projection_version < $3
 `
@@ -665,6 +672,7 @@ type SoftDeleteUserProjectionParams struct {
 	ID                string     `json:"id"`
 	UpdatedAt         *time.Time `json:"updated_at"`
 	ProjectionVersion int64      `json:"projection_version"`
+	Email             string     `json:"email"`
 }
 
 // UserDeleted handler — first half. Returns rows-affected so the
@@ -674,8 +682,19 @@ type SoftDeleteUserProjectionParams struct {
 // the reconciler would silently nuke a freshly-restored user's
 // identity links (multi-write asymmetric-guard discipline, CR catch
 // on PR #101 pattern).
+//
+// Spec 19 AC 7: overwrite every PII column with the redaction
+// sentinel ($4 = crypto.RedactionSentinel) in the same statement, so
+// an erased user's projection holds no personal data — never
+// ciphertext, never null (the columns are NOT NULL). Live delete and
+// rebuild share this one path, so both redact identically.
 func (q *Queries) SoftDeleteUserProjection(ctx context.Context, arg SoftDeleteUserProjectionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, softDeleteUserProjection, arg.ID, arg.UpdatedAt, arg.ProjectionVersion)
+	result, err := q.db.Exec(ctx, softDeleteUserProjection,
+		arg.ID,
+		arg.UpdatedAt,
+		arg.ProjectionVersion,
+		arg.Email,
+	)
 	if err != nil {
 		return 0, err
 	}

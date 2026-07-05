@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -342,10 +343,15 @@ func applyUserLoggedIn(ctx context.Context, q *store.Queries, e store.PersistedE
 
 func applyUserDeleted(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
 	updatedAt := e.OccurredAt
+	// Spec 19 AC 7: soft-delete AND overwrite every PII column with the
+	// redaction sentinel in one statement. The Email param feeds all
+	// seven PII columns (sqlc names the shared $4 after the first one);
+	// live delete and rebuild both run this, so both redact identically.
 	n, err := q.SoftDeleteUserProjection(ctx, db.SoftDeleteUserProjectionParams{
 		ID:                e.StreamID,
 		UpdatedAt:         &updatedAt,
 		ProjectionVersion: e.SequenceNum,
+		Email:             crypto.RedactionSentinel,
 	})
 	if err != nil {
 		return err
