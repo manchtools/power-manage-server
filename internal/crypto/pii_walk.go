@@ -17,6 +17,54 @@ import (
 // piiTag is the struct tag marking a personal-data field.
 const piiTag = "pii"
 
+// RedactionSentinel is the fixed value every PII field collapses to
+// once its subject is crypto-shredded (spec 19 AC 7/9). Never
+// ciphertext, never null — a stable, obviously-non-personal marker so
+// an erased user's projection rows stay valid (NOT NULL columns) and
+// unmistakably redacted. Shared by the decode path (replaying a PII
+// event for an already-erased user) and the UserDeleted projector
+// (overwriting columns on delete).
+const RedactionSentinel = "[redacted]"
+
+// RedactPayloadPII sets every pii-tagged field of the pointed-to
+// payload to RedactionSentinel, in place. Used when the subject's DEK
+// row is GONE (the graceful erased state): the sealed value can never
+// be recovered, so the projector writes the sentinel instead of
+// aborting (AC 9). payload must be a non-nil pointer to a struct.
+func RedactPayloadPII(payload any) error {
+	v := reflect.ValueOf(payload)
+	if v.Kind() != reflect.Pointer || v.IsNil() {
+		return errors.New("crypto: RedactPayloadPII needs a non-nil pointer to a payload struct")
+	}
+	sv := v.Elem()
+	if sv.Kind() != reflect.Struct {
+		return fmt.Errorf("crypto: RedactPayloadPII payload must be a struct, got %s", sv.Kind())
+	}
+	t := sv.Type()
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Tag.Get(piiTag) != "true" {
+			continue
+		}
+		fv := sv.Field(i)
+		switch {
+		case fv.Kind() == reflect.String:
+			fv.SetString(RedactionSentinel)
+		case fv.Kind() == reflect.Pointer && f.Type.Elem().Kind() == reflect.String:
+			// A nil optional field stays nil — there is nothing to
+			// redact (the column keeps its own default/sentinel); a
+			// present one collapses to the sentinel.
+			if fv.IsNil() {
+				continue
+			}
+			np := reflect.New(f.Type.Elem())
+			np.Elem().SetString(RedactionSentinel)
+			fv.Set(np)
+		}
+	}
+	return nil
+}
+
 // jsonName extracts the wire name from a field's json tag ("email"
 // from `json:"email,omitempty"`); falls back to the Go field name.
 func jsonName(f reflect.StructField) string {
