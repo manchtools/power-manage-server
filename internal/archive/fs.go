@@ -71,6 +71,26 @@ func (f *filesystem) refPath(ref string) (string, error) {
 	return filepath.Join(f.dir, ref), nil
 }
 
+// writeFileSync writes data to path and fsyncs the FILE contents before
+// returning — os.WriteFile does not, so a seal could be empty/truncated
+// after power loss even though the dir entry survives, which would fail
+// a fully-archived ref's later verification (CR).
+func writeFileSync(path string, data []byte) error {
+	fh, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := fh.Write(data); err != nil {
+		fh.Close()
+		return err
+	}
+	if err := fh.Sync(); err != nil {
+		fh.Close()
+		return err
+	}
+	return fh.Close()
+}
+
 // syncDir fsyncs the archive directory so a rename or newly-created
 // sidecar survives a crash. Load-bearing: the archive is the ONLY copy
 // of the events the prune step subsequently deletes — a rename that
@@ -118,10 +138,12 @@ func (f *filesystem) Put(ctx context.Context, ref string, r io.Reader) (ArchiveI
 	}
 	sum := hex.EncodeToString(h.Sum(nil))
 
-	// Write the seal sidecar first, then atomically publish the data
-	// file: Get/List only see a ref whose data is fully written, and a
-	// present data file always has its seal.
-	if err := os.WriteFile(dst+sealSuffix, []byte(sum), 0o600); err != nil {
+	// Write the seal sidecar first (fsync'd — the bytes, not just the
+	// dir entry, must survive power loss, else a fully-archived ref
+	// fails verification later), then atomically publish the data file:
+	// Get/List only see a ref whose data is fully written, and a present
+	// data file always has its durable seal.
+	if err := writeFileSync(dst+sealSuffix, []byte(sum)); err != nil {
 		return ArchiveInfo{}, fmt.Errorf("archive: write seal %s: %w", ref, err)
 	}
 	if err := os.Rename(tmpName, dst); err != nil {
@@ -164,9 +186,14 @@ func (f *filesystem) List(ctx context.Context) ([]ArchiveInfo, error) {
 		if err != nil {
 			return nil, fmt.Errorf("archive: stat %s: %w", name, err)
 		}
+		// An unreadable/missing seal marks THAT entry (SHA256 == "")
+		// rather than failing the whole List — during an incident an
+		// operator most needs to see what IS safely archived. Verify is
+		// the authoritative per-artifact integrity check.
 		seal, err := os.ReadFile(filepath.Join(f.dir, name+sealSuffix))
 		if err != nil {
-			return nil, fmt.Errorf("archive: read seal for %s: %w", name, err)
+			out = append(out, ArchiveInfo{Ref: name, Size: info.Size(), SHA256: ""})
+			continue
 		}
 		out = append(out, ArchiveInfo{Ref: name, Size: info.Size(), SHA256: strings.TrimSpace(string(seal))})
 	}
