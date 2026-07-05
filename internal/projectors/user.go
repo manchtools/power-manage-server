@@ -1,6 +1,7 @@
 package projectors
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -62,8 +63,8 @@ type UserCreatedWithRolesPayload struct {
 // UserCreatedWithRolesFromEvent decodes UserCreatedWithRoles. Returns
 // ErrIgnoredEvent for any other (stream, event_type) so the listener
 // wrapper can silently no-op.
-func UserCreatedWithRolesFromEvent(e store.PersistedEvent) (UserCreatedWithRolesPayload, error) {
-	raw, err := decodePayload[payloads.UserCreatedWithRoles](e, "user", eventtypes.UserCreatedWithRoles)
+func UserCreatedWithRolesFromEvent(ctx context.Context, e store.PersistedEvent) (UserCreatedWithRolesPayload, error) {
+	raw, err := decodePayloadPII[payloads.UserCreatedWithRoles](ctx, e, "user", eventtypes.UserCreatedWithRoles)
 	if err != nil {
 		return UserCreatedWithRolesPayload{}, err
 	}
@@ -134,7 +135,7 @@ type UserProfileUpdatedPayload struct {
 }
 
 // UserProfileUpdatedFromEvent decodes UserProfileUpdated.
-func UserProfileUpdatedFromEvent(e store.PersistedEvent) (UserProfileUpdatedPayload, error) {
+func UserProfileUpdatedFromEvent(ctx context.Context, e store.PersistedEvent) (UserProfileUpdatedPayload, error) {
 	if e.StreamType != "user" || e.EventType != string(eventtypes.UserProfileUpdated) {
 		return UserProfileUpdatedPayload{}, ErrIgnoredEvent
 	}
@@ -145,6 +146,9 @@ func UserProfileUpdatedFromEvent(e store.PersistedEvent) (UserProfileUpdatedPayl
 	var raw payloads.UserProfileUpdated
 	if err := json.Unmarshal(e.Data, &raw); err != nil {
 		return UserProfileUpdatedPayload{}, fmt.Errorf("projector: invalid UserProfileUpdated payload: %w", err)
+	}
+	if err := openSealedPII(ctx, e, &raw); err != nil {
+		return UserProfileUpdatedPayload{}, err
 	}
 	if raw.DisplayName != nil {
 		out.DisplayName = *raw.DisplayName
@@ -179,8 +183,8 @@ type UserEmailChangedPayload struct {
 // missing the column would land as SQL NULL, but the column is
 // NOT NULL, so the original projector relied on the emitter always
 // supplying a non-empty value. Keep that contract here.
-func UserEmailChangedFromEvent(e store.PersistedEvent) (UserEmailChangedPayload, error) {
-	raw, err := decodePayload[payloads.UserEmailChanged](e, "user", eventtypes.UserEmailChanged)
+func UserEmailChangedFromEvent(ctx context.Context, e store.PersistedEvent) (UserEmailChangedPayload, error) {
+	raw, err := decodePayloadPII[payloads.UserEmailChanged](ctx, e, "user", eventtypes.UserEmailChanged)
 	if err != nil {
 		return UserEmailChangedPayload{}, err
 	}
@@ -339,8 +343,8 @@ type UserLinuxUsernameChangedPayload struct {
 }
 
 // UserLinuxUsernameChangedFromEvent decodes UserLinuxUsernameChanged.
-func UserLinuxUsernameChangedFromEvent(e store.PersistedEvent) (UserLinuxUsernameChangedPayload, error) {
-	raw, err := decodePayload[payloads.UserLinuxUsernameChanged](e, "user", eventtypes.UserLinuxUsernameChanged)
+func UserLinuxUsernameChangedFromEvent(ctx context.Context, e store.PersistedEvent) (UserLinuxUsernameChangedPayload, error) {
+	raw, err := decodePayloadPII[payloads.UserLinuxUsernameChanged](ctx, e, "user", eventtypes.UserLinuxUsernameChanged)
 	if err != nil {
 		return UserLinuxUsernameChangedPayload{}, err
 	}

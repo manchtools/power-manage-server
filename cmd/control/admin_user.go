@@ -34,6 +34,12 @@ func ensureAdminUser(ctx context.Context, st *store.Store, email, password strin
 
 	id := ulid.Make().String()
 
+	// Mint the user's DEK BEFORE the creation event: the event carries
+	// PII (email) the sealer needs the key for (spec 19 AC 1/6).
+	if err := st.MintUserDEK(ctx, id); err != nil {
+		return fmt.Errorf("mint encryption key for bootstrap admin: %w", err)
+	}
+
 	// Look up Admin role BEFORE emitting the user-creation event so
 	// the user INSERT and the role assignment land atomically inside
 	// one projector tx (issue #135). If the role lookup fails (no

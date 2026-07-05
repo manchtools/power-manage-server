@@ -6,33 +6,33 @@ package payloads
 // chain relied on — see internal/projectors/user.go for the per-field
 // fallback semantics.
 type UserCreatedWithRoles struct {
-	Email             *string  `json:"email,omitempty"`
+	Email             *string  `json:"email,omitempty" pii:"true"`
 	PasswordHash      *string  `json:"password_hash,omitempty"`
 	Role              *string  `json:"role,omitempty"`
-	DisplayName       *string  `json:"display_name,omitempty"`
-	GivenName         *string  `json:"given_name,omitempty"`
-	FamilyName        *string  `json:"family_name,omitempty"`
-	PreferredUsername *string  `json:"preferred_username,omitempty"`
-	Picture           *string  `json:"picture,omitempty"`
+	DisplayName       *string  `json:"display_name,omitempty" pii:"true"`
+	GivenName         *string  `json:"given_name,omitempty" pii:"true"`
+	FamilyName        *string  `json:"family_name,omitempty" pii:"true"`
+	PreferredUsername *string  `json:"preferred_username,omitempty" pii:"true"`
+	Picture           *string  `json:"picture,omitempty" pii:"true"`
 	Locale            *string  `json:"locale,omitempty"`
-	LinuxUsername     *string  `json:"linux_username,omitempty"`
+	LinuxUsername     *string  `json:"linux_username,omitempty" pii:"true"`
 	LinuxUID          *int32   `json:"linux_uid,omitempty"`
 	RoleIDs           []string `json:"role_ids,omitempty"`
 }
 
 // UserProfileUpdated is the wire shape for UserProfileUpdated.
 type UserProfileUpdated struct {
-	DisplayName       *string `json:"display_name,omitempty"`
-	GivenName         *string `json:"given_name,omitempty"`
-	FamilyName        *string `json:"family_name,omitempty"`
-	PreferredUsername *string `json:"preferred_username,omitempty"`
-	Picture           *string `json:"picture,omitempty"`
+	DisplayName       *string `json:"display_name,omitempty" pii:"true"`
+	GivenName         *string `json:"given_name,omitempty" pii:"true"`
+	FamilyName        *string `json:"family_name,omitempty" pii:"true"`
+	PreferredUsername *string `json:"preferred_username,omitempty" pii:"true"`
+	Picture           *string `json:"picture,omitempty" pii:"true"`
 	Locale            *string `json:"locale,omitempty"`
 }
 
 // UserEmailChanged is the wire shape for UserEmailChanged.
 type UserEmailChanged struct {
-	Email *string `json:"email,omitempty"`
+	Email *string `json:"email,omitempty" pii:"true"`
 }
 
 // UserPasswordChanged is the wire shape for UserPasswordChanged.
@@ -78,7 +78,7 @@ type UserSshSettingsUpdated struct {
 // UserLinuxUsernameChanged is the wire shape for
 // UserLinuxUsernameChanged.
 type UserLinuxUsernameChanged struct {
-	LinuxUsername *string `json:"linux_username,omitempty"`
+	LinuxUsername *string `json:"linux_username,omitempty" pii:"true"`
 }
 
 // UserLoggedIn is the wire shape for the UserLoggedIn audit event

@@ -19,6 +19,8 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
+	"github.com/manchtools/power-manage/server/internal/pii"
+	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/postgres"
@@ -204,6 +206,31 @@ func main() {
 		logger.Error("failed to initialize encryptor", "error", err)
 		os.Exit(1)
 	}
+
+	// Spec 19: PII envelope encryption. The sealer encrypts pii-tagged
+	// payload fields under the subject user's DEK at append (fail-closed
+	// — plaintext PII never reaches the immutable log); the opener
+	// decrypts at projection-build time. Wired BEFORE any bootstrap
+	// event emission (ensureAdminUser below) so the very first user
+	// event is already sealed.
+	piiSealer, err := pii.NewSealer(encryptor, st.Repos().UserEncryptionKey)
+	if err != nil {
+		logger.Error("failed to initialize PII sealer", "error", err)
+		os.Exit(1)
+	}
+	st.SetPIISealer(piiSealer)
+	piiMinter, err := pii.NewMinter(encryptor, st.Repos().UserEncryptionKey)
+	if err != nil {
+		logger.Error("failed to initialize PII minter", "error", err)
+		os.Exit(1)
+	}
+	st.SetPIIMinter(piiMinter)
+	piiOpener, err := pii.NewOpener(encryptor, st.Repos().UserEncryptionKey)
+	if err != nil {
+		logger.Error("failed to initialize PII opener", "error", err)
+		os.Exit(1)
+	}
+	projectors.SetPIIOpener(piiOpener)
 
 	// Initialize action signer (signs actions so agents can verify authenticity)
 	actionSigner := ca.NewActionSigner(certAuth)

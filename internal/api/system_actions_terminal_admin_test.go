@@ -16,6 +16,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -513,9 +514,14 @@ func TestReconcileGlobalTerminalAdmin_EmitsRevokedEvent_OnRemoval(t *testing.T) 
 	var data map[string]any
 	require.NoError(t, json.Unmarshal(events[0].Data, &data))
 	assert.Equal(t, userID, data["user_id"],
-		"event payload must carry the human user_id (audit consumers key on this)")
-	assert.Equal(t, "alice", data["linux_username"],
-		"event payload must carry the bare linux_username (audit composes the pm-tty- prefix itself)")
+		"event payload must carry the human user_id (audit consumers key on this; it addresses the DEK, so it stays plaintext)")
+	// Spec 19: linux_username is PII (derived from the person's name)
+	// and is SEALED under the user's DEK in the event row — never
+	// plaintext. The projector-side opener recovers it where needed.
+	lu, _ := data["linux_username"].(string)
+	assert.True(t, strings.HasPrefix(lu, "pii:v1:"),
+		"linux_username must be sealed in the event payload (spec 19), got %q", lu)
+	assert.NotContains(t, lu, "alice", "the plaintext username must not appear in the event row")
 	assert.Equal(t, limited.ID, data["action_id"],
 		"event payload must point at the affected action")
 	assert.Equal(t, "ADMIN_ACCESS_LEVEL_TERMINAL_ADMIN_LIMITED", data["access_level"],

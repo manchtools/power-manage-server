@@ -143,6 +143,76 @@ type Store struct {
 	// Part of the storage-abstraction tracker (#242). Domains move
 	// from Store.Queries() into Repos fields one wave at a time.
 	repos *Repos
+
+	// piiSealer, when set, transforms every event BEFORE its payload is
+	// marshalled: PII-tagged fields are sealed under the subject user's
+	// DEK (spec 19 / ADR 0030). FAIL-CLOSED contract (AC 6): a sealing
+	// error aborts the append — the log is immutable, so plaintext PII
+	// written once is unerasable forever; an error is always cheaper.
+	// Wired via SetPIISealer from boot code / the test fixture,
+	// boot-once posture like logger/repos.
+	piiSealer PIISealer
+
+	// piiMinter mints per-user DEKs at creation (spec 19 AC 1). Wired
+	// via SetPIIMinter alongside the sealer.
+	piiMinter PIIMinter
+}
+
+// PIISealer seals the PII fields of an event's typed payload under the
+// subject user's DEK. Implemented by internal/pii.Sealer; a nil-safe
+// no-op when unset (bootstrap paths that predate the wiring).
+type PIISealer interface {
+	SealEvent(ctx context.Context, e Event) (Event, error)
+}
+
+// PIIMinter mints a user's DEK at creation time (spec 19 AC 1).
+// Implemented by internal/pii.Minter; exposed through the Store so
+// every user-provisioning path (API handler, SCIM, SSO linker,
+// bootstrap) can mint without new constructor plumbing.
+type PIIMinter interface {
+	MintUserDEK(ctx context.Context, userID string) error
+}
+
+// SetPIIMinter wires the DEK minter. Boot-once posture matching
+// SetPIISealer.
+func (s *Store) SetPIIMinter(m PIIMinter) {
+	s.listenersMu.Lock()
+	s.piiMinter = m
+	s.listenersMu.Unlock()
+}
+
+// MintUserDEK mints the DEK for a newly created user. FAIL-CLOSED when
+// no minter is wired: a creation path proceeding without a key would
+// immediately hit the sealer's fail-closed append anyway — erroring
+// here names the real problem.
+func (s *Store) MintUserDEK(ctx context.Context, userID string) error {
+	s.listenersMu.RLock()
+	m := s.piiMinter
+	s.listenersMu.RUnlock()
+	if m == nil {
+		return fmt.Errorf("store: no PII minter wired (SetPIIMinter at boot) — cannot provision user %s", userID)
+	}
+	return m.MintUserDEK(ctx, userID)
+}
+
+// SetPIISealer wires the PII envelope sealer (spec 19). Boot-once
+// posture matching SetRepos/SetLogger.
+func (s *Store) SetPIISealer(p PIISealer) {
+	s.listenersMu.Lock()
+	s.piiSealer = p
+	s.listenersMu.Unlock()
+}
+
+// sealPII applies the wired sealer to an event, or returns it
+// unchanged when no sealer is wired.
+func (s *Store) sealPII(ctx context.Context, e Event) (Event, error) {
+	s.listenersMu.RLock()
+	sealer := s.piiSealer
+	s.listenersMu.RUnlock()
+	if sealer == nil {
+		return e, nil
+	}
+	return sealer.SealEvent(ctx, e)
 }
 
 // SetLogger plumbs a slog.Logger for fireListeners' panic-recovery
@@ -572,6 +642,14 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 		return fmt.Errorf("event actor_type and actor_id are required")
 	}
 
+	// Seal PII BEFORE marshalling (spec 19 AC 2/6). Fail-closed: an
+	// error here aborts the append — plaintext PII must never reach
+	// the immutable log as a fallback.
+	event, err := s.sealPII(ctx, event)
+	if err != nil {
+		return fmt.Errorf("seal PII: %w", err)
+	}
+
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		return fmt.Errorf("marshal event data: %w", err)
@@ -623,6 +701,12 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 
 // AppendEventWithVersion appends an event with an expected version for optimistic locking.
 func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expectedVersion int32) error {
+	// Same fail-closed PII seal as AppendEvent (spec 19 AC 2/6).
+	event, err := s.sealPII(ctx, event)
+	if err != nil {
+		return fmt.Errorf("seal PII: %w", err)
+	}
+
 	data, err := json.Marshal(event.Data)
 	if err != nil {
 		return fmt.Errorf("marshal event data: %w", err)

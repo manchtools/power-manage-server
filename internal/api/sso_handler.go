@@ -466,6 +466,11 @@ type storeEventAdapter struct {
 	store *store.Store
 }
 
+// MintUserDEK forwards to the store's spec-19 minter seam.
+func (a *storeEventAdapter) MintUserDEK(ctx context.Context, userID string) error {
+	return a.store.MintUserDEK(ctx, userID)
+}
+
 func (a *storeEventAdapter) AppendEvent(ctx context.Context, event idp.EventInput) error {
 	return a.store.AppendEvent(ctx, store.Event{
 		StreamType: event.StreamType,

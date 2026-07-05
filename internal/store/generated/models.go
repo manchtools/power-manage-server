@@ -465,6 +465,12 @@ type TotpProjection struct {
 	ProjectionVersion int64     `json:"projection_version"`
 }
 
+type UserEncryptionKey struct {
+	UserID     string    `json:"user_id"`
+	WrappedDek string    `json:"wrapped_dek"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type UserGroupMembersProjection struct {
 	GroupID           string    `json:"group_id"`
 	UserID            string    `json:"user_id"`

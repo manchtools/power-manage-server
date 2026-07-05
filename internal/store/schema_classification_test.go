@@ -38,13 +38,14 @@ import (
 // state. Ephemeral or primary-operational; a replay neither wipes nor needs
 // to reproduce them (no rebuild target touches them).
 var operationalTables = map[string]string{
-	"auth_states":       "short-lived OIDC flow rows (state/nonce/PKCE), consumed on first read; in PG so ANY control replica can complete the callback (no sticky sessions); loss = user redoes login",
-	"revoked_tokens":    "JWT refresh-token denylist, TTL-bounded by token expiry; primary operational security state (the denylist must be authoritative and immediately consistent, not an eventually-projected view). Logout/RefreshToken now audit-log the session lifecycle (#496), but the denylist row itself stays operational — it is not reconstructable from an audit event alone",
-	"luks_tokens":       "hashed one-time LUKS enrollment tokens (WS10); single-use by design, loss = operator re-issues; deliberately not replayable",
-	"osquery_results":   "transient result staging for DispatchOSQuery — agent reply fills, reads expire; loss = re-run the query",
-	"log_query_results": "transient result staging for QueryDeviceLogs — same lifecycle as osquery_results",
-	"terminal_sessions": "live-session inventory; the audit trail is the TerminalSession* events, the row is liveness state reconciled against the gateway",
-	"device_inventory":  "agent-reported osquery snapshot cache; the device is the source of truth, RefreshDeviceInventory re-populates",
+	"auth_states":          "short-lived OIDC flow rows (state/nonce/PKCE), consumed on first read; in PG so ANY control replica can complete the callback (no sticky sessions); loss = user redoes login",
+	"revoked_tokens":       "JWT refresh-token denylist, TTL-bounded by token expiry; primary operational security state (the denylist must be authoritative and immediately consistent, not an eventually-projected view). Logout/RefreshToken now audit-log the session lifecycle (#496), but the denylist row itself stays operational — it is not reconstructable from an audit event alone",
+	"luks_tokens":          "hashed one-time LUKS enrollment tokens (WS10); single-use by design, loss = operator re-issues; deliberately not replayable",
+	"osquery_results":      "transient result staging for DispatchOSQuery — agent reply fills, reads expire; loss = re-run the query",
+	"log_query_results":    "transient result staging for QueryDeviceLogs — same lifecycle as osquery_results",
+	"terminal_sessions":    "live-session inventory; the audit trail is the TerminalSession* events, the row is liveness state reconciled against the gateway",
+	"device_inventory":     "agent-reported osquery snapshot cache; the device is the source of truth, RefreshDeviceInventory re-populates",
+	"user_encryption_keys": "durable NON-RECOVERABLE crypto-shred key material (spec 19 / ADR 0030): one KEK-wrapped per-user DEK; cannot be event-sourced (would be un-destroyable) or regenerated (random); jointly authoritative with the events table — deleting a row IS the erasure, so no replay may reproduce it",
 }
 
 // cascadeRederivedTables is registry 3. Every entry is mechanically verified

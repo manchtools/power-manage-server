@@ -40,6 +40,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/manchtools/power-manage/server/internal/pii"
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/store"
 	pgrepo "github.com/manchtools/power-manage/server/internal/store/postgres"
@@ -218,7 +219,51 @@ func SetupPostgres(t *testing.T) *store.Store {
 	// sees stale data.
 	projectors.WireAll(st, nil)
 
+	// Wire the spec-19 PII envelope exactly like production boot, using
+	// the fixed test KEK (the same key NewEncryptor returns, so factory
+	// seeds and handler paths agree). Typed PII-bearing emits are sealed
+	// fail-closed; projectors decrypt on build.
+	WirePIIEnvelope(t, st)
+
 	return st
+}
+
+// WirePIIEnvelope mirrors cmd/control/main.go's spec-19 wiring for the
+// test store: sealer on the append path, opener on the projector
+// decode path, both under the fixed test KEK.
+//
+// NOTE: SetPIIOpener is package-global in projectors while the DEK
+// repo is per-test-database — safe ONLY because integration tests run
+// serially (same standing assumption as createMu above): each test
+// re-wires the opener to its own store before any projection traffic.
+func WirePIIEnvelope(t *testing.T, st *store.Store) {
+	t.Helper()
+	kek := NewEncryptor(t)
+	sealer, err := pii.NewSealer(kek, st.Repos().UserEncryptionKey)
+	if err != nil {
+		t.Fatalf("testutil: wire PII sealer: %v", err)
+	}
+	st.SetPIISealer(sealer)
+	opener, err := pii.NewOpener(kek, st.Repos().UserEncryptionKey)
+	if err != nil {
+		t.Fatalf("testutil: wire PII opener: %v", err)
+	}
+	projectors.SetPIIOpener(opener)
+	minter, err := pii.NewMinter(kek, st.Repos().UserEncryptionKey)
+	if err != nil {
+		t.Fatalf("testutil: wire PII minter: %v", err)
+	}
+	st.SetPIIMinter(minter)
+}
+
+// MintTestUserDEK mints a DEK for a test user under the fixed test
+// KEK. Factories call it before appending typed PII-bearing events;
+// tests exercising the fail-closed path simply skip it.
+func MintTestUserDEK(t *testing.T, st *store.Store, userID string) {
+	t.Helper()
+	if err := st.MintUserDEK(context.Background(), userID); err != nil {
+		t.Fatalf("testutil: mint DEK for %s: %v", userID, err)
+	}
 }
 
 // SetupPostgresWithoutProjectors is identical to SetupPostgres but skips

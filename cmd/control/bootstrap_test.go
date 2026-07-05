@@ -87,6 +87,7 @@ func TestEnsureAdminUser_RequiresWireAllFirst(t *testing.T) {
 		st := testutil.SetupPostgresWithoutProjectors(t)
 		// Production order as of #317: listeners registered first.
 		projectors.WireAll(st, logger)
+		testutil.WirePIIEnvelope(t, st)
 
 		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
 		require.NoError(t, err, "ensureAdminUser succeeds")
@@ -107,6 +108,9 @@ func TestEnsureAdminUser_RequiresWireAllFirst(t *testing.T) {
 		// If main.go regresses to the pre-#317 ordering, this branch
 		// would pass and the production-correct branch above would fail.
 		st := testutil.SetupPostgresWithoutProjectors(t)
+		// PII wiring is orthogonal to the listener ordering this test
+		// documents — mint/seal must work for the emit to succeed.
+		testutil.WirePIIEnvelope(t, st)
 
 		err := ensureAdminUser(ctx, st, "admin@example.com", "test-password", logger)
 		require.NoError(t, err,
