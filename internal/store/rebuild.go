@@ -470,7 +470,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 		}
 		for _, t := range expanded {
 			tStart := s.now()
-			applied, skipped, runErr := s.runOneTarget(ctx, tx, t)
+			applied, skipped, runErr := s.runOneTarget(ctx, tx, t, 0) // 0 = unbounded (full rebuild)
 			if runErr != nil {
 				return fmt.Errorf("rebuild target %q: %w", t.Name, runErr)
 			}
@@ -498,7 +498,7 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 // before holding ACCESS EXCLUSIVE on the projection tables — this
 // turns the #125 footgun (silent no-op against a freshly truncated
 // projection) into a clear error.
-func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (applied, skipped int64, err error) {
+func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, upToSeq int64) (applied, skipped int64, err error) {
 	apply := s.rebuildApplyFor(t.Name)
 	if apply == nil {
 		return 0, 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
@@ -523,7 +523,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (a
 		}
 	}
 
-	return s.dispatchViaGoApplier(ctx, tx, t, apply)
+	return s.dispatchViaGoApplier(ctx, tx, t, apply, upToSeq)
 }
 
 // dispatchViaGoApplier replays every event matching the target's
@@ -534,7 +534,7 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget) (a
 // transaction.
 //
 // Refs manchtools/power-manage-server#125.
-func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply) (applied, skipped int64, err error) {
+func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply, upToSeq int64) (applied, skipped int64, err error) {
 	q := s.queries.WithTx(tx)
 
 	// Stream in keyset-paginated batches rather than buffering the entire
@@ -553,9 +553,10 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 			        event_type, data, metadata, actor_type, actor_id, occurred_at
 			   FROM events
 			  WHERE stream_type = ANY($1) AND sequence_num > $2
+			    AND ($4 = 0 OR sequence_num <= $4)
 			  ORDER BY sequence_num
 			  LIMIT $3`,
-			t.StreamTypes, lastSeq, rebuildBatchSize,
+			t.StreamTypes, lastSeq, rebuildBatchSize, upToSeq,
 		)
 		if err != nil {
 			return 0, 0, fmt.Errorf("load events for %s: %w", t.Name, err)
