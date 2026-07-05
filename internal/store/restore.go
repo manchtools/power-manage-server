@@ -45,6 +45,23 @@ func (s *Store) RebuildAllFromArchive(ctx context.Context, archived []PersistedE
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(AllRebuildTargets))}
 
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Completeness (spec 19 AC 21): the live marker chain is the
+		// authoritative ledger of what was pruned. The archived slice must
+		// reach at least the LATEST recorded checkpoint — a later archive
+		// alone no longer contains events ≤ an earlier N (they were
+		// already deleted when it was written), and a stale earlier
+		// archive misses (N_old, N_latest]. Refuse rather than restore
+		// with a silent hole. Checked in-tx, before any TRUNCATE.
+		var latestMarker int64
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX((data->>'up_to_seq')::bigint), 0) FROM events WHERE event_type = $1`,
+			EventLogPrunedType).Scan(&latestMarker); err != nil {
+			return fmt.Errorf("restore: read prune marker chain: %w", err)
+		}
+		if latestMarker > upToSeq {
+			return fmt.Errorf("restore: archived history (≤ %d) does not cover the latest prune checkpoint %d — chain ALL retention archives per the EventLogPruned markers, not a single artifact", upToSeq, latestMarker)
+		}
+
 		for _, t := range AllRebuildTargets {
 			tStart := s.now()
 			applied, skipped, runErr := s.restoreOneTarget(ctx, tx, t, archived, upToSeq)

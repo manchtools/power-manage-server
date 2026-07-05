@@ -425,6 +425,14 @@ var AllRebuildTargets = []rebuildTarget{
 // target name that does not exist in AllRebuildTargets.
 var ErrUnknownTarget = errors.New("unknown rebuild target")
 
+// ErrHistoryPruned is returned when RebuildAll runs against a log whose
+// history has been pruned (an EventLogPruned marker exists): a plain
+// TRUNCATE-and-replay of the surviving events would silently reproduce
+// projections missing all state ≤ N (spec 19 AC 21). Recovery must go
+// through the archive-restore path (RebuildAllFromArchive fed by the
+// marker chain's sealed archives) instead.
+var ErrHistoryPruned = errors.New("event history has been pruned: a plain rebuild would lose all state up to the prune checkpoint; restore from the retention archives instead (rebuild-projections --archive-dir)")
+
 // ErrSkipEvent lets a projector's apply function report an event it
 // cannot project (e.g. a malformed historical payload) as skippable
 // rather than fatal: the live listener logs-and-swallows it like any
@@ -459,6 +467,22 @@ func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildR
 	result := RebuildResult{Targets: make([]TargetResult, 0, len(targets))}
 
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		// Fail closed on pruned history (spec 19 AC 21): if any
+		// EventLogPruned marker exists, events ≤ its checkpoint are gone
+		// from the live log — a TRUNCATE-and-replay here would silently
+		// rebuild projections missing all of that state. Checked inside
+		// the transaction, BEFORE any TRUNCATE, so the refusal leaves the
+		// live projection untouched.
+		var pruned bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM events WHERE event_type = $1)`,
+			EventLogPrunedType).Scan(&pruned); err != nil {
+			return fmt.Errorf("check for pruned history: %w", err)
+		}
+		if pruned {
+			return ErrHistoryPruned
+		}
+
 		// Cascade safety (spec 21 AC 4 / F-03): a partial selection is
 		// widened so no TRUNCATE ... CASCADE wipes a table whose
 		// replaying target is missing from the run. Computed inside the

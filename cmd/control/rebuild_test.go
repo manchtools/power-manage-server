@@ -21,3 +21,9 @@ func TestRunRebuildProjections_HelpIsSuccess(t *testing.T) {
 	code := runRebuildProjections([]string{"-h"})
 	assert.Equal(t, 0, code, "-h is a successful help request, not a failure")
 }
+
+func TestRunRebuildProjections_ArchiveDirWithTargetsIsCouldNotRun(t *testing.T) {
+	t.Setenv("CONTROL_DATABASE_URL", "")
+	code := runRebuildProjections([]string{"--env-file", "/nonexistent/never.env", "--archive-dir", "/tmp/x", "users"})
+	assert.Equal(t, 2, code, "--archive-dir restores every projection; combining it with target selection must exit 2")
+}

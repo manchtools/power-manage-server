@@ -154,6 +154,35 @@ func (s *Store) PruneCheckpointBefore(ctx context.Context, cutoff time.Time) (in
 	return n, nil
 }
 
+// ListPruneMarkers returns every EventLogPruned marker in the live log in
+// sequence order — the authoritative ledger of what was pruned when,
+// where each range's sealed archive lives, and the hash it must match.
+// Markers are exempt from pruning (AC 24), so the chain is always
+// complete; the archive-restore path walks it to load the FULL pruned
+// history (a single later archive no longer contains earlier ranges).
+func (s *Store) ListPruneMarkers(ctx context.Context) ([]payloads.EventLogPruned, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT data FROM events WHERE event_type = $1 ORDER BY sequence_num`,
+		EventLogPrunedType)
+	if err != nil {
+		return nil, fmt.Errorf("prune: list markers: %w", err)
+	}
+	defer rows.Close()
+	var out []payloads.EventLogPruned
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("prune: scan marker: %w", err)
+		}
+		var m payloads.EventLogPruned
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("prune: decode marker: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 // StreamEventsUpTo calls fn with every event (sequence_num <= upToSeq)
 // as a to_jsonb row, in sequence order — the archive payload. Streams
 // row-by-row so a large history is never fully buffered.
