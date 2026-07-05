@@ -39,9 +39,10 @@ func eligibleWorker(t *testing.T, st *store.Store, arch archive.ArchiveStore) *r
 }
 
 // TestPrune_ArchiveIsIndependentlyReplayable pins AC 22 (independent
-// replay): the artifact a prune seals holds the snapshot @ N AND every
-// event ≤ N, recoverable from the archive bytes alone via ReadArtifact —
-// no live database needed. This is the offline-audit / restore contract.
+// replay): the artifact a prune seals holds every ciphertext event ≤ N,
+// recoverable from the archive bytes alone via ReadArtifact — no live
+// database needed. The events ARE the snapshot: replaying them
+// reconstructs state @ N. This is the offline-audit / restore contract.
 func TestPrune_ArchiveIsIndependentlyReplayable(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	arch, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})
@@ -60,12 +61,12 @@ func TestPrune_ArchiveIsIndependentlyReplayable(t *testing.T) {
 	rc, err := arch.Get(ctx, res.ArchiveRef)
 	require.NoError(t, err)
 	defer rc.Close()
-	snap, events, err := retention.ReadArtifact(rc)
+	checkpoint, events, err := retention.ReadArtifact(rc)
 	require.NoError(t, err)
 
-	// The snapshot is state @ the pruned checkpoint and is non-empty.
-	assert.Equal(t, res.Checkpoint, snap.UpToSeq)
-	assert.NotEmpty(t, snap.Rows("users_projection"), "snapshot must carry projection state")
+	// The header records checkpoint N and the archive is non-empty.
+	assert.Equal(t, res.Checkpoint, checkpoint)
+	assert.NotEmpty(t, events, "the archive must preserve all pruned events")
 
 	// Every deleted event is preserved in the archive — the log ≤ N is
 	// fully recoverable offline.
@@ -144,8 +145,8 @@ func countPruned(t *testing.T, st *store.Store) int64 {
 // instead use a wide-enough negative window in the worker; this helper
 // exists for the no-op test to keep events "recent".
 
-// TestPrune_FullCycle pins AC 16-19/28: a run archives {snapshot,
-// events ≤ N} and then deletes events ≤ N with an EventLogPruned marker.
+// TestPrune_FullCycle pins AC 16-19/28: a run archives the ciphertext
+// events ≤ N and then deletes events ≤ N with an EventLogPruned marker.
 func TestPrune_FullCycle(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	arch, err := archive.New(archive.Config{Backend: archive.BackendFilesystem, FilesystemPath: t.TempDir()})

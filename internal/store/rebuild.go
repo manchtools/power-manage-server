@@ -503,41 +503,69 @@ func (s *Store) runOneTarget(ctx context.Context, tx pgx.Tx, t rebuildTarget, up
 	if apply == nil {
 		return 0, 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
 	}
+	if err := s.truncateAndSeed(ctx, tx, t); err != nil {
+		return 0, 0, err
+	}
+	return s.dispatchViaGoApplier(ctx, tx, t, apply, 0, upToSeq)
+}
 
+// truncateAndSeed clears a target's projection tables and re-applies its
+// migration-seeded rows — the clean-slate prelude to a replay. Shared by
+// the full rebuild (runOneTarget) and the snapshot-restore rebuild
+// (restoreOneTarget). The applier lookup is done by the caller BEFORE
+// this runs so a miswired target fails before it holds ACCESS EXCLUSIVE
+// on the tables (the #125 footgun).
+func (s *Store) truncateAndSeed(ctx context.Context, tx pgx.Tx, t rebuildTarget) error {
 	for _, table := range t.Tables {
 		stmt := "TRUNCATE TABLE " + table
 		if t.Cascade {
 			stmt += " CASCADE"
 		}
 		if _, err := tx.Exec(ctx, stmt); err != nil {
-			return 0, 0, fmt.Errorf("truncate %s: %w", table, err)
+			return fmt.Errorf("truncate %s: %w", table, err)
 		}
 	}
-
 	// Re-apply migration-seeded rows BEFORE the replay: seeded rows are
 	// not event-sourced, and replayed events may legitimately UPDATE
 	// them (ServerSettingUpdated mutates the seeded 'global' row).
 	for _, seed := range t.SeedSQL {
 		if _, err := tx.Exec(ctx, seed); err != nil {
-			return 0, 0, fmt.Errorf("re-seed %s: %w", t.Name, err)
+			return fmt.Errorf("re-seed %s: %w", t.Name, err)
 		}
 	}
-
-	return s.dispatchViaGoApplier(ctx, tx, t, apply, 0, upToSeq)
+	return nil
 }
 
-// replayTargetAfter replays a target's events with sequence_num > fromSeq
-// through its registered applier WITHOUT truncating or re-seeding — the
-// projection already holds state @ fromSeq (restored from a snapshot),
-// and the appliers upsert/delete forward from there exactly as the live
-// listener did on the way to that state (spec 19 AC 21). Contrast
-// runOneTarget, which starts from an empty table and replays everything.
-func (s *Store) replayTargetAfter(ctx context.Context, tx pgx.Tx, t rebuildTarget, fromSeq int64) (applied, skipped int64, err error) {
-	apply := s.rebuildApplyFor(t.Name)
-	if apply == nil {
-		return 0, 0, fmt.Errorf("rebuild target %q has no Go applier registered (projectors.WireAll wiring may have drifted)", t.Name)
+// applyEvents replays a caller-supplied, sequence-ordered slice of events
+// through the target's applier — the archived events ≤ N leg of a
+// snapshot-restore rebuild (spec 19 AC 21), where the pruned history is
+// no longer in the live `events` table. Only events matching the
+// target's stream types are applied; the rest are the other targets'
+// concern. Same ErrSkipEvent tolerance as the live-table replay.
+func (s *Store) applyEvents(ctx context.Context, tx pgx.Tx, t rebuildTarget, apply RebuildApply, events []PersistedEvent) (applied, skipped int64, err error) {
+	q := s.queries.WithTx(tx)
+	streams := make(map[string]bool, len(t.StreamTypes))
+	for _, st := range t.StreamTypes {
+		streams[st] = true
 	}
-	return s.dispatchViaGoApplier(ctx, tx, t, apply, fromSeq, 0)
+	for _, ev := range events {
+		if !streams[ev.StreamType] {
+			continue
+		}
+		if err := apply(ctx, q, ev); err != nil {
+			if errors.Is(err, ErrSkipEvent) {
+				if s.logger != nil {
+					s.logger.Warn("restore: skipping unprojectable archived event",
+						"target", t.Name, "event_id", ev.ID, "event_type", ev.EventType, "error", err)
+				}
+				skipped++
+				continue
+			}
+			return 0, 0, fmt.Errorf("apply archived event %s for %s: %w", ev.ID, t.Name, err)
+		}
+		applied++
+	}
+	return applied, skipped, nil
 }
 
 // dispatchViaGoApplier replays every event matching the target's
@@ -561,9 +589,11 @@ func (s *Store) dispatchViaGoApplier(ctx context.Context, tx pgx.Tx, t rebuildTa
 	// Memory is bounded to one batch; order and the snapshot are preserved
 	// because the events table is append-only and read within this tx.
 	// lastSeq is the keyset cursor: the query fetches sequence_num > lastSeq.
-	// Seeding it with fromSeq skips events already captured in a restored
-	// snapshot (the restore + replay-`>N` path); a full rebuild passes 0,
-	// which precedes every positive bigserial sequence_num.
+	// Seeding it with fromSeq skips events already replayed from a restored
+	// snapshot's archived range — the restore path replays archived events
+	// ≤ N and then this replays only the live events > N (fromSeq = N). A
+	// full rebuild passes 0, which precedes every positive bigserial
+	// sequence_num.
 	lastSeq := fromSeq
 	for {
 		rows, err := tx.Query(ctx,

@@ -121,19 +121,17 @@ func (w *Worker) pruneLocked(ctx context.Context) (PruneResult, error) {
 		return PruneResult{Pruned: false}, nil
 	}
 
-	// AC 16/17 — capture state @ N (deterministic replay of events ≤ N,
-	// live projection untouched).
-	snap, err := w.store.CaptureProjectionSnapshot(ctx, checkpoint)
-	if err != nil {
-		return PruneResult{}, fmt.Errorf("retention: capture snapshot @ %d: %w", checkpoint, err)
-	}
-
-	// Serialize {snapshot, events ≤ N} into one artifact and seal it in
-	// the archive. Crash-resume idempotent (AC 26): the ref is
-	// deterministic in N, so re-running at the same checkpoint overwrites
-	// the same artifact rather than orphaning a duplicate.
+	// AC 16/18/21a — the snapshot IS the archived ciphertext events ≤ N:
+	// serialize {events ≤ N} into one artifact and seal it in the archive.
+	// Replaying them reproduces state @ N deterministically (proven by the
+	// full-fidelity round-trip, AC 17), and because they carry PII as
+	// DEK-sealed ciphertext the archive never holds plaintext PII and a
+	// crypto-shredded user restores as the redaction sentinel. Crash-resume
+	// idempotent (AC 26): the ref is deterministic in N, so re-running at
+	// the same checkpoint overwrites the same artifact rather than orphaning
+	// a duplicate.
 	ref := fmt.Sprintf("prune-%020d", checkpoint)
-	artifact, err := w.buildArtifact(ctx, snap, checkpoint)
+	artifact, err := w.buildArtifact(ctx, checkpoint)
 	if err != nil {
 		return PruneResult{}, err
 	}
@@ -158,16 +156,19 @@ func (w *Worker) pruneLocked(ctx context.Context) (PruneResult, error) {
 	}, nil
 }
 
-// buildArtifact serializes {snapshot, events ≤ N} as a gzip'd
-// JSON-lines blob: a header line with the snapshot, then one line per
-// archived event. Independently replayable offline (AC 22).
-func (w *Worker) buildArtifact(ctx context.Context, snap store.Snapshot, upToSeq int64) ([]byte, error) {
+// buildArtifact serializes the archived events ≤ N as a gzip'd JSON-lines
+// blob: a header line ({version, up_to_seq}) then one raw event row
+// (to_jsonb) per line. The events carry PII as DEK-sealed ciphertext, so
+// the artifact holds no plaintext PII (spec 19). Independently replayable
+// offline for out-of-band audit or restore (AC 21/22) — no live system,
+// no projection dump.
+func (w *Worker) buildArtifact(ctx context.Context, upToSeq int64) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	enc := json.NewEncoder(gz)
 
-	if err := enc.Encode(artifactHeader{Version: 1, UpToSeq: upToSeq, Snapshot: snap}); err != nil {
-		return nil, fmt.Errorf("retention: encode snapshot header: %w", err)
+	if err := enc.Encode(artifactHeader{Version: 1, UpToSeq: upToSeq}); err != nil {
+		return nil, fmt.Errorf("retention: encode artifact header: %w", err)
 	}
 	if err := w.store.StreamEventsUpTo(ctx, upToSeq, func(raw json.RawMessage) error {
 		return enc.Encode(archivedEvent{Event: raw})
@@ -181,9 +182,8 @@ func (w *Worker) buildArtifact(ctx context.Context, snap store.Snapshot, upToSeq
 }
 
 type artifactHeader struct {
-	Version  int            `json:"version"`
-	UpToSeq  int64          `json:"up_to_seq"`
-	Snapshot store.Snapshot `json:"snapshot"`
+	Version int   `json:"version"`
+	UpToSeq int64 `json:"up_to_seq"`
 }
 
 type archivedEvent struct {
@@ -191,41 +191,41 @@ type archivedEvent struct {
 }
 
 // ReadArtifact deserializes an artifact produced by buildArtifact,
-// returning the snapshot header and the archived events in sequence
-// order. It needs nothing but the artifact bytes — the archive is
-// independently replayable for out-of-band audit without the live
-// system (spec 19 AC 22). It is also the read leg of the restore path:
-// after a prune, RebuildAll restores the latest snapshot by fetching its
-// archive and handing the parsed snapshot to Store.RebuildAllFromSnapshot.
-func ReadArtifact(r io.Reader) (store.Snapshot, []json.RawMessage, error) {
+// returning the checkpoint N and the archived events (each a to_jsonb
+// event row) in sequence order. It needs nothing but the artifact bytes
+// — the archive is independently replayable for out-of-band audit
+// without the live system (spec 19 AC 22), and it is the read leg of the
+// restore path: after a prune, restore fetches the latest archive, passes
+// these rows through store.DecodeArchivedEvents, and replays them ahead
+// of the live events > N via store.RebuildAllFromArchive.
+func ReadArtifact(r io.Reader) (upToSeq int64, events []json.RawMessage, err error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
-		return store.Snapshot{}, nil, fmt.Errorf("retention: open artifact: %w", err)
+		return 0, nil, fmt.Errorf("retention: open artifact: %w", err)
 	}
 	defer gz.Close()
 	sc := bufio.NewScanner(gz)
-	sc.Buffer(make([]byte, 0, 1<<20), 1<<26) // allow large snapshot header lines
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<26) // tolerate large event rows
 
 	if !sc.Scan() {
 		if err := sc.Err(); err != nil {
-			return store.Snapshot{}, nil, fmt.Errorf("retention: read header: %w", err)
+			return 0, nil, fmt.Errorf("retention: read header: %w", err)
 		}
-		return store.Snapshot{}, nil, fmt.Errorf("retention: artifact missing header")
+		return 0, nil, fmt.Errorf("retention: artifact missing header")
 	}
 	var hdr artifactHeader
 	if err := json.Unmarshal(sc.Bytes(), &hdr); err != nil {
-		return store.Snapshot{}, nil, fmt.Errorf("retention: decode header: %w", err)
+		return 0, nil, fmt.Errorf("retention: decode header: %w", err)
 	}
-	var events []json.RawMessage
 	for sc.Scan() {
 		var ev archivedEvent
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			return store.Snapshot{}, nil, fmt.Errorf("retention: decode archived event: %w", err)
+			return 0, nil, fmt.Errorf("retention: decode archived event: %w", err)
 		}
 		events = append(events, ev.Event)
 	}
 	if err := sc.Err(); err != nil {
-		return store.Snapshot{}, nil, fmt.Errorf("retention: scan artifact: %w", err)
+		return 0, nil, fmt.Errorf("retention: scan artifact: %w", err)
 	}
-	return hdr.Snapshot, events, nil
+	return hdr.UpToSeq, events, nil
 }
