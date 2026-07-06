@@ -28,6 +28,8 @@ type fakeDB struct {
 	deletedErr  error
 	drift       []store.TargetDrift
 	driftErr    error
+	posture     store.RetentionPosture
+	postureErr  error
 }
 
 func (f fakeDB) Ping(context.Context) error { return f.pingErr }
@@ -42,6 +44,9 @@ func (f fakeDB) DeletedUsersWithDEK(context.Context) ([]string, error) {
 }
 func (f fakeDB) ProjectionDrift(context.Context) ([]store.TargetDrift, error) {
 	return f.drift, f.driftErr
+}
+func (f fakeDB) RetentionPosture(context.Context) (store.RetentionPosture, error) {
+	return f.posture, f.postureErr
 }
 
 type fakeCache struct {

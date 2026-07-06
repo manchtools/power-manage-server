@@ -149,6 +149,33 @@ func TestComputeProjectionDrift_PerTableNotMaskedByFreshSibling(t *testing.T) {
 		"and its own high-water, not the target-wide max (which is the fresh sibling's)")
 }
 
+// TestReadRetentionPosture pins the AC 29 data source: log size + oldest
+// event before any prune, and the last-prune marker fields after one.
+func TestReadRetentionPosture(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	testutil.CreateTestUser(t, st, "posture-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+
+	p, err := store.ReadRetentionPosture(ctx, st.TestingPool())
+	require.NoError(t, err)
+	assert.Positive(t, p.EventCount)
+	assert.False(t, p.OldestEventAt.IsZero(), "a non-empty log has an oldest event")
+	assert.Zero(t, p.LastPruneCheckpoint, "never pruned → zero last-prune fields")
+	assert.True(t, p.LastPruneAt.IsZero())
+
+	// After a prune, the marker surfaces as the last-prune posture.
+	cp := maxSeq(t, st)
+	_, err = st.PruneEventsUpTo(ctx, cp, "prune-posture", "sha-posture")
+	require.NoError(t, err)
+
+	p, err = store.ReadRetentionPosture(ctx, st.TestingPool())
+	require.NoError(t, err)
+	assert.Equal(t, cp, p.LastPruneCheckpoint)
+	assert.Equal(t, "prune-posture", p.LastPruneRef)
+	assert.False(t, p.LastPruneAt.IsZero(), "the marker's occurred_at is the last-prune time")
+}
+
 func findTargetDrift(t *testing.T, ds []store.TargetDrift, name string) store.TargetDrift {
 	t.Helper()
 	for _, d := range ds {

@@ -15,12 +15,14 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage-sdk/logging"
 	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/pii"
 	"github.com/manchtools/power-manage/server/internal/projectors"
+	"github.com/manchtools/power-manage/server/internal/retention"
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/postgres"
@@ -75,6 +77,12 @@ type Config struct {
 	// context deadline so a hung query can't pile up missed ticks.
 	SystemActionReconcileInterval time.Duration
 	SystemActionReconcileTimeout  time.Duration
+
+	// Spec 19 audit-log retention (env-only config by decision — no
+	// RPC/UI surface). Retention.Enabled activates the rolling
+	// snapshot+prune worker; validation is fatal at boot (a destructive
+	// feature must never run on a half-read config).
+	Retention retention.EnvConfig
 }
 
 func main() {
@@ -189,6 +197,26 @@ func main() {
 	}
 
 	startStaleExecutionExpiry(ctx, st, logger, time.Now)
+
+	// Spec 19 audit-log retention: rolling snapshot + prune of the event
+	// log. Config was validated at parse time (fatal on violation); the
+	// archive store and worker construction are fatal too — a destructive
+	// worker either boots correctly or the server does not boot.
+	if cfg.Retention.Enabled {
+		arch, err := archive.New(cfg.Retention.ArchiveConfig())
+		if err != nil {
+			logger.Error("failed to initialize retention archive store", "error", err)
+			os.Exit(1)
+		}
+		if err := startRetentionWorker(ctx, st, arch, cfg.Retention, logger); err != nil {
+			logger.Error("failed to start retention worker", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("audit-log retention enabled",
+			"window", cfg.Retention.Window, "interval", cfg.Retention.Interval, "archive_path", cfg.Retention.ArchivePath)
+	} else {
+		logger.Info("audit-log retention disabled (CONTROL_RETENTION_ENABLED=false); the event log grows unbounded")
+	}
 
 	// Start periodic cleanup of stale OSQuery results
 	go runPeriodic(ctx, 5*time.Minute, func() {

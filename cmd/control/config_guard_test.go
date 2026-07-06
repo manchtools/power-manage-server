@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // validJWTSecret is 64 hex chars = 32 decoded bytes, the entropy floor
@@ -129,5 +130,50 @@ func TestValidateConfig_AdminPasswordFloor(t *testing.T) {
 				t.Fatalf("expected this config to pass, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestValidateConfig_RetentionGate pins the spec-19 boot invariant: a
+// destructive retention config either validates fully or the server does
+// not boot. The per-field rules live in retention.EnvConfig.Validate
+// (unit-tested there); this pins that validateConfig actually calls it.
+func TestValidateConfig_RetentionGate(t *testing.T) {
+	base := func() *Config {
+		return &Config{JWTSecret: validJWTSecret, ListenAddr: "127.0.0.1:8081"}
+	}
+
+	// Disabled retention (the default zero value) boots.
+	if err := validateConfig(base()); err != nil {
+		t.Fatalf("disabled retention must boot: %v", err)
+	}
+
+	// Enabled but unconfigured (no window/path) must refuse to boot.
+	cfg := base()
+	cfg.Retention.Enabled = true
+	err := validateConfig(cfg)
+	if err == nil {
+		t.Fatal("enabled retention without window/path must be fatal at boot")
+	}
+	if !strings.Contains(err.Error(), "CONTROL_RETENTION_WINDOW") {
+		t.Fatalf("the error must name the offending variable, got: %v", err)
+	}
+
+	// Enabled with Interval=0 must be fatal: config.ClampInterval
+	// preserves zero (its "0 disables" convention), but retention has an
+	// explicit Enabled flag — a zero interval would panic time.NewTicker.
+	cfg = base()
+	cfg.Retention.Enabled = true
+	cfg.Retention.Window = 90 * 24 * time.Hour
+	cfg.Retention.Backend = "filesystem"
+	cfg.Retention.ArchivePath = "/var/lib/power-manage/archive"
+	cfg.Retention.Interval = 0
+	if err := validateConfig(cfg); err == nil {
+		t.Fatal("enabled retention with a zero interval must be fatal at boot (NewTicker would panic)")
+	}
+
+	// Fully valid enabled config boots.
+	cfg.Retention.Interval = time.Hour
+	if err := validateConfig(cfg); err != nil {
+		t.Fatalf("valid enabled retention must boot: %v", err)
 	}
 }
