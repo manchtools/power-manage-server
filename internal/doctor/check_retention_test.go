@@ -94,13 +94,15 @@ func TestProjectionDriftCheck_HealthyIsOK(t *testing.T) {
 func TestProjectionDriftCheck_DriftIsCritical(t *testing.T) {
 	env := testEnv(nil)
 	env.DB = fakeDB{drift: []store.TargetDrift{
-		{Target: "users", StreamMax: 42, ProjMax: 30, Behind: true},
+		{Target: "users", StreamMax: 42, ProjMax: 40, Behind: true, LaggingTable: "user_roles_projection", LaggingMax: 30},
 		{Target: "devices", StreamMax: 7, ProjMax: 7, Behind: false},
 	}}
 	fs := run1(t, ProjectionDriftCheck{}, env)
 	require.Equal(t, SeverityCritical, worst(fs))
 	txt := findingText(fs)
 	assert.Contains(t, txt, "users")
+	assert.Contains(t, txt, "user_roles_projection", "the finding names the LAGGING table")
+	assert.Contains(t, txt, "applied ≤ 30", "and ITS high-water, not the fresh sibling's target-wide max (40)")
 	assert.Contains(t, txt, "rebuild-projections", "AC 31a remediation points at the rebuild before the next prune")
 }
 

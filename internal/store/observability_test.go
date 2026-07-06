@@ -143,6 +143,10 @@ func TestComputeProjectionDrift_PerTableNotMaskedByFreshSibling(t *testing.T) {
 	users := findTargetDrift(t, drift, "users")
 	assert.True(t, users.Drifted(),
 		"user_roles_projection is behind; a fresh users_projection must not mask it (per-table drift)")
+	assert.Equal(t, "user_roles_projection", users.LaggingTable,
+		"the report names the LAGGING table, not the fresh sibling")
+	assert.Less(t, users.LaggingMax, users.ProjMax,
+		"and its own high-water, not the target-wide max (which is the fresh sibling's)")
 }
 
 func findTargetDrift(t *testing.T, ds []store.TargetDrift, name string) store.TargetDrift {

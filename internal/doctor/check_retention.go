@@ -106,7 +106,9 @@ func (c ProjectionDriftCheck) Run(ctx context.Context, env *Env) ([]Finding, err
 	var behind []string
 	for _, d := range drifts {
 		if d.Drifted() {
-			behind = append(behind, fmt.Sprintf("%s (applied ≤ %d, event log at %d)", d.Target, d.ProjMax, d.StreamMax))
+			// Name the LAGGING table and ITS high-water — the target-wide
+			// max can be a fresh sibling's and would obscure the culprit.
+			behind = append(behind, fmt.Sprintf("%s (table %s applied ≤ %d, event log at %d)", d.Target, d.LaggingTable, d.LaggingMax, d.StreamMax))
 		}
 	}
 	if len(behind) > 0 {

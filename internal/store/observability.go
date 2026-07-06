@@ -93,10 +93,17 @@ type TargetDrift struct {
 	StreamMax int64
 	// ProjMax is the highest projection_version across the target's
 	// version-bearing projection tables — the newest event it applied.
+	// Context only: with several tables a fresh sibling can exceed the
+	// lagging one, so the drift REPORT uses LaggingTable/LaggingMax.
 	ProjMax int64
-	// Behind is the drift verdict: a newer event of a type this projection
-	// has actually applied exists past ProjMax (see ComputeProjectionDrift).
+	// Behind is the drift verdict: some version-bearing table of this
+	// target has a newer applicable event past its own high-water.
 	Behind bool
+	// LaggingTable / LaggingMax name the (first) table that made Behind
+	// true and ITS high-water — the actionable pair for the operator
+	// (empty/zero when not Behind).
+	LaggingTable string
+	LaggingMax   int64
 }
 
 // Drifted reports whether the projection has fallen behind the event log.
@@ -176,8 +183,10 @@ func ComputeProjectionDrift(ctx context.Context, pool *pgxpool.Pool) ([]TargetDr
 			if tableMax > td.ProjMax {
 				td.ProjMax = tableMax
 			}
-			if behind {
+			if behind && !td.Behind {
 				td.Behind = true
+				td.LaggingTable = tbl
+				td.LaggingMax = tableMax
 			}
 		}
 		out = append(out, td)
