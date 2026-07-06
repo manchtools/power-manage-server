@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // --- fakes -------------------------------------------------------------------
@@ -19,11 +21,27 @@ type fakeDB struct {
 	pingErr     error
 	adminExists bool
 	adminErr    error
+
+	liveDEKs    []store.UserDEK
+	liveDEKErr  error
+	deletedDEKs []string
+	deletedErr  error
+	drift       []store.TargetDrift
+	driftErr    error
 }
 
 func (f fakeDB) Ping(context.Context) error { return f.pingErr }
 func (f fakeDB) AdminUserExists(context.Context, string) (bool, error) {
 	return f.adminExists, f.adminErr
+}
+func (f fakeDB) LiveUserWrappedDEKs(context.Context) ([]store.UserDEK, error) {
+	return f.liveDEKs, f.liveDEKErr
+}
+func (f fakeDB) DeletedUsersWithDEK(context.Context) ([]string, error) {
+	return f.deletedDEKs, f.deletedErr
+}
+func (f fakeDB) ProjectionDrift(context.Context) ([]store.TargetDrift, error) {
+	return f.drift, f.driftErr
 }
 
 type fakeCache struct {

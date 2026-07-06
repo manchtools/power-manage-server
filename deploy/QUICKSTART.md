@@ -104,14 +104,18 @@ Flags:
 - `--env-file <path>` — also inspect this `.env` (default `.env`, silently skipped if absent). Values in the file take precedence over the process environment — it is the operator's stored config, the source of truth for what was configured.
 <!-- docref: end -->
 
-<!-- docref: begin src=internal/doctor/registry.go#DefaultChecks:650fcb22 -->
+<!-- docref: begin src=internal/doctor/registry.go#DefaultChecks:293ef4cc -->
 It reports placeholder/weak secrets, mandatory at-rest encryption key, a
 credentialed CORS wildcard, an internal mTLS listener bound to all interfaces, a
 floating `IMAGE_TAG`, certificate file permissions and approaching expiry,
 Postgres/Valkey reachability, Asynq dead-letter depth, search-index presence
 and indexer liveness (reconcile heartbeat), remote-terminal (TTY) routing and
 config consistency (Valkey keyspace notifications, web-listener and TTY-host
-config), and a bootstrap admin still on the default email.
+config), a bootstrap admin still on the default email, the per-user
+encryption-key invariants that crypto-shred erasure depends on (every live
+user's DEK unwraps; no erased user retains one), and projection drift (a
+projection that has stopped applying events, caught before retention prunes
+the source events).
 <!-- docref: end -->
 
 ### Exit codes
