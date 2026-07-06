@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -82,6 +83,56 @@ func DeletedUsersWithDEK(ctx context.Context, pool *pgxpool.Pool) ([]string, err
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// RetentionPosture is the read-only snapshot `control doctor` reports for
+// AC 29: how big/old the live event log is and when retention last acted.
+type RetentionPosture struct {
+	EventCount    int64
+	OldestEventAt time.Time // zero when the log is empty
+	// Last prune, from the newest EventLogPruned marker (zero values when
+	// no prune has ever run).
+	LastPruneAt         time.Time
+	LastPruneCheckpoint int64
+	LastPruneRef        string
+}
+
+// ReadRetentionPosture gathers the AC 29 posture in two cheap queries.
+// Read-only — doctor never mutates or prunes (AC 29).
+func ReadRetentionPosture(ctx context.Context, pool *pgxpool.Pool) (RetentionPosture, error) {
+	var p RetentionPosture
+	var oldest *time.Time
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*), MIN(occurred_at) FROM events`).Scan(&p.EventCount, &oldest); err != nil {
+		return RetentionPosture{}, fmt.Errorf("observability: event log posture: %w", err)
+	}
+	if oldest != nil {
+		p.OldestEventAt = *oldest
+	}
+
+	var upToSeq *int64
+	var ref *string
+	var at *time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT (data->>'up_to_seq')::bigint, data->>'archive_ref', occurred_at
+		FROM events WHERE event_type = $1
+		ORDER BY sequence_num DESC LIMIT 1`,
+		EventLogPrunedType).Scan(&upToSeq, &ref, &at); err != nil {
+		if IsNotFound(err) {
+			return p, nil // never pruned — zero-valued last-prune fields
+		}
+		return RetentionPosture{}, fmt.Errorf("observability: last prune marker: %w", err)
+	}
+	if upToSeq != nil {
+		p.LastPruneCheckpoint = *upToSeq
+	}
+	if ref != nil {
+		p.LastPruneRef = *ref
+	}
+	if at != nil {
+		p.LastPruneAt = *at
+	}
+	return p, nil
 }
 
 // TargetDrift is one rebuild target's projection-freshness comparison.

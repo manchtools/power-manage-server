@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/retention"
 )
 
 // DEKInvariantCheck verifies the per-user encryption-key invariants that
@@ -118,6 +120,92 @@ func (c ProjectionDriftCheck) Run(ctx context.Context, env *Env) ([]Finding, err
 	}
 	return []Finding{ok(c.ID(),
 		fmt.Sprintf("every projection is current with the event log (%d targets checked)", len(drifts)))}, nil
+}
+
+// RetentionPostureCheck reports the audit-log retention posture (spec 19
+// AC 29): oldest live event age, event row count, the configured window,
+// and the last successful prune (checkpoint + time + archive ref). It
+// never mutates or prunes anything.
+//
+// Config-shape violations (enabled but invalid window/backend/path) are
+// Critical: the control server refuses to BOOT on them, so seeing one
+// here means the running server was started before the variable changed —
+// the next restart will fail.
+type RetentionPostureCheck struct{}
+
+func (RetentionPostureCheck) ID() string { return "retention" }
+
+func (c RetentionPostureCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
+	cfg, malformed := retentionEnvConfig(env)
+	if cfg.Enabled && len(malformed) > 0 {
+		// An unparseable duration would otherwise surface as a misleading
+		// "window too small (got 0s)" — name the actual broken value (CR).
+		return []Finding{crit(c.ID(),
+			fmt.Sprintf("retention is enabled but %s — the value is not a valid Go duration (e.g. \"2160h\" for 90 days)", strings.Join(malformed, "; ")),
+			"fix the variable(s) named above; at boot the server falls back to the flag default and may refuse to start")}, nil
+	}
+	if err := cfg.Validate(); err != nil {
+		return []Finding{crit(c.ID(),
+			fmt.Sprintf("retention is enabled but misconfigured: %v", err),
+			"fix the CONTROL_RETENTION_* variable named above; the control server will refuse to boot with this configuration")}, nil
+	}
+
+	if skip, proceed := dbReady(ctx, c, env); !proceed {
+		return skip, nil
+	}
+	p, err := env.DB.RetentionPosture(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read retention posture: %w", err)
+	}
+
+	oldest := "empty log"
+	if !p.OldestEventAt.IsZero() {
+		oldest = fmt.Sprintf("oldest event %s old", env.Now().Sub(p.OldestEventAt).Round(time.Hour))
+	}
+	lastPrune := "never pruned"
+	if !p.LastPruneAt.IsZero() {
+		lastPrune = fmt.Sprintf("last prune at %s (checkpoint %d, archive %s)",
+			p.LastPruneAt.Format(time.RFC3339), p.LastPruneCheckpoint, p.LastPruneRef)
+	}
+
+	if !cfg.Enabled {
+		return []Finding{info(c.ID(),
+			fmt.Sprintf("retention is disabled — the event log grows unbounded (%d events, %s; %s)", p.EventCount, oldest, lastPrune))}, nil
+	}
+	return []Finding{ok(c.ID(),
+		fmt.Sprintf("retention enabled (window %s): %d events, %s; %s", cfg.Window, p.EventCount, oldest, lastPrune))}, nil
+}
+
+// retentionEnvConfig mirrors cmd/control's flag/env mapping for the
+// doctor's standalone read (doctor runs without booting the server).
+// malformed lists human-readable descriptions of duration variables that
+// are set but do not parse — the caller reports them explicitly instead
+// of letting the zero fallback masquerade as a too-small value.
+func retentionEnvConfig(env *Env) (cfg retention.EnvConfig, malformed []string) {
+	enabled := env.Get("CONTROL_RETENTION_ENABLED")
+	backend := env.Get("CONTROL_RETENTION_ARCHIVE_BACKEND")
+	if backend == "" {
+		backend = "filesystem" // the boot-side flag default
+	}
+	parse := func(key string, def time.Duration) time.Duration {
+		raw := env.Get(key)
+		if raw == "" {
+			return def
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			malformed = append(malformed, fmt.Sprintf("%s=%q", key, raw))
+			return def
+		}
+		return d
+	}
+	return retention.EnvConfig{
+		Enabled:     enabled == "true" || enabled == "1",
+		Window:      parse("CONTROL_RETENTION_WINDOW", 0),
+		Backend:     backend,
+		ArchivePath: env.Get("CONTROL_RETENTION_ARCHIVE_PATH"),
+		Interval:    parse("CONTROL_RETENTION_INTERVAL", time.Hour), // the boot-side flag default
+	}, malformed
 }
 
 // sample renders up to three ids for a finding message; user ids are ULIDs

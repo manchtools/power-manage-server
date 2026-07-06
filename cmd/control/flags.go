@@ -50,6 +50,14 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.InternalTLSCert, "internal-tls-cert", "/certs/control.crt", "TLS certificate for internal mTLS listener")
 	flag.StringVar(&cfg.InternalTLSKey, "internal-tls-key", "/certs/control.key", "TLS private key for internal mTLS listener")
 
+	// Spec 19 audit-log retention (disabled by default; env-only in
+	// production, flags provided for parity with the rest of the knobs).
+	flag.BoolVar(&cfg.Retention.Enabled, "retention-enabled", false, "Enable the audit-log retention prune worker (spec 19)")
+	flag.DurationVar(&cfg.Retention.Window, "retention-window", 0, "Retention window: events older than this are archived and pruned (min 24h, e.g. 2160h for 90 days)")
+	flag.StringVar(&cfg.Retention.Backend, "retention-archive-backend", "filesystem", "Cold-archive backend for pruned history (v1: filesystem)")
+	flag.StringVar(&cfg.Retention.ArchivePath, "retention-archive-path", "", "Absolute directory for sealed retention archives (required when retention is enabled)")
+	flag.DurationVar(&cfg.Retention.Interval, "retention-interval", time.Hour, "How often the retention worker checks for prunable history")
+
 	flag.Parse()
 
 	applyEnvOverrides(cfg)
@@ -99,6 +107,12 @@ func applyEnvOverrides(cfg *Config) {
 	config.EnvString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
 	config.EnvString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
 	config.EnvInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
+
+	config.EnvBool(&cfg.Retention.Enabled, "CONTROL_RETENTION_ENABLED", []string{"true", "1"}, []string{"false", "0"})
+	config.EnvDuration(&cfg.Retention.Window, "CONTROL_RETENTION_WINDOW")
+	config.EnvString(&cfg.Retention.Backend, "CONTROL_RETENTION_ARCHIVE_BACKEND")
+	config.EnvString(&cfg.Retention.ArchivePath, "CONTROL_RETENTION_ARCHIVE_PATH")
+	config.EnvDuration(&cfg.Retention.Interval, "CONTROL_RETENTION_INTERVAL")
 }
 
 // clampDurations enforces safe bounds on the duration knobs.
@@ -111,6 +125,13 @@ func clampDurations(cfg *Config) {
 	config.ClampInterval(&cfg.DynamicGroupEvalInterval, 30*time.Minute, 8*time.Hour)
 	config.ClampInterval(&cfg.SystemActionReconcileInterval, 10*time.Second, 8*time.Hour)
 	config.ClampDurationFloor(&cfg.SystemActionReconcileTimeout, 5*time.Minute, 0)
+	// The retention TICK cadence is an operational knob — clamping is safe
+	// (it only changes how often we check). The WINDOW is deliberately NOT
+	// clamped: it decides what history is destroyed, so a bad value is
+	// fatal in validateConfig instead (retention.EnvConfig.Validate).
+	if cfg.Retention.Enabled {
+		config.ClampInterval(&cfg.Retention.Interval, 10*time.Minute, 24*time.Hour)
+	}
 }
 
 // mustValidateConfig enforces the boot-time invariants that turn a
@@ -145,6 +166,11 @@ func validateConfig(cfg *Config) error {
 	// expose a credential-less reflect-any-origin CORS policy to the internet.
 	if cfg.CORSAllowAll && (cfg.TLSEnabled || !listenAddrIsLocalhost(cfg.ListenAddr)) {
 		return fmt.Errorf("CONTROL_CORS_ALLOW_ALL is development-only and must not be set when TLS is enabled or the listen address is not localhost (got %q); set CONTROL_CORS_ORIGINS to an explicit allow-list instead", cfg.ListenAddr)
+	}
+	// Spec 19: retention deletes history — refuse to boot on an invalid
+	// retention config rather than run the prune worker on a guess.
+	if err := cfg.Retention.Validate(); err != nil {
+		return err
 	}
 	return nil
 }

@@ -153,6 +153,9 @@ type DBProbe interface {
 	// ProjectionDrift compares each rebuild target's projection high-water
 	// against the events it should have applied (spec 19 AC 31a).
 	ProjectionDrift(ctx context.Context) ([]store.TargetDrift, error)
+	// RetentionPosture reports event-log size/age and the last prune
+	// (spec 19 AC 29).
+	RetentionPosture(ctx context.Context) (store.RetentionPosture, error)
 }
 
 // CacheProbe is the narrow live-Valkey surface the cache/search/queue checks need.

@@ -11,9 +11,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/retention"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -33,6 +35,49 @@ func runPeriodic(ctx context.Context, interval time.Duration, fn func(), runImme
 			return
 		}
 	}
+}
+
+// startRetentionWorker launches the spec-19 audit-log retention worker:
+// every tick it runs one advisory-lock-single-flighted prune cycle
+// (choose checkpoint → seal ciphertext events ≤ N into the archive →
+// delete ≤ N with the in-tx EventLogPruned marker). Construction errors
+// (nil archive, non-positive window) are returned for a FATAL boot — a
+// destructive worker must not be silently skipped. The first cycle runs
+// immediately: enabled means active, and the worker no-ops when nothing
+// is prune-eligible (its 1h safety floor additionally protects fresh
+// events).
+//
+// The per-tick timeout bounds a wedged DB/archive call so a hung cycle
+// cannot pin its goroutine forever; a slow-but-healthy prune simply
+// delays the next tick (runPeriodic calls fn synchronously).
+func startRetentionWorker(ctx context.Context, st *store.Store, arch archive.ArchiveStore, cfg retention.EnvConfig, logger *slog.Logger) error {
+	w, err := retention.NewWorker(st, arch, retention.Config{Window: cfg.Window}, logger)
+	if err != nil {
+		return err
+	}
+	go runPeriodic(ctx, cfg.Interval, func() {
+		// A panic in one prune cycle must not crash the whole control
+		// server — recover, log, and let the next tick retry (WS15
+		// posture: background jobs are isolated, not load-bearing).
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("retention prune cycle panicked", "panic", r)
+			}
+		}()
+		tickCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+		res, err := w.Prune(tickCtx)
+		if err != nil {
+			logger.Error("retention prune cycle failed", "error", err)
+			return
+		}
+		if !res.Ran {
+			logger.Debug("retention prune skipped — another replica holds the lock")
+		}
+		// Pruned outcomes are logged by the worker itself (checkpoint,
+		// events_deleted, archive_ref); no-op runs stay quiet by design.
+	}, true)
+	return nil
 }
 
 // dynamicQueueBatch is what one drain iteration reports: how many rows

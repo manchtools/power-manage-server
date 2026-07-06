@@ -19,5 +19,6 @@ func DefaultChecks() []Check {
 		AdminCheck{},
 		DEKInvariantCheck{},
 		ProjectionDriftCheck{},
+		RetentionPostureCheck{},
 	}
 }

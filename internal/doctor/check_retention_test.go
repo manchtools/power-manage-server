@@ -3,6 +3,7 @@ package doctor
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,6 +110,71 @@ func TestProjectionDriftCheck_DriftIsCritical(t *testing.T) {
 func TestProjectionDriftCheck_DBDownSkips(t *testing.T) {
 	env := testEnv(nil) // DB nil
 	fs := run1(t, ProjectionDriftCheck{}, env)
+	assert.NotEqual(t, SeverityCritical, worst(fs))
+}
+
+func TestRetentionPostureCheck_DisabledIsInfo(t *testing.T) {
+	env := testEnv(nil) // no CONTROL_RETENTION_* vars
+	env.DB = fakeDB{posture: store.RetentionPosture{
+		EventCount:    1234,
+		OldestEventAt: env.Now().Add(-90 * 24 * time.Hour),
+	}}
+	fs := run1(t, RetentionPostureCheck{}, env)
+	require.Equal(t, SeverityInfo, worst(fs), "disabled retention is posture info, not a failure")
+	txt := findingText(fs)
+	assert.Contains(t, txt, "disabled")
+	assert.Contains(t, txt, "1234 events")
+	assert.Contains(t, txt, "never pruned")
+}
+
+func TestRetentionPostureCheck_EnabledHealthyReportsLastPrune(t *testing.T) {
+	env := testEnv(map[string]string{
+		"CONTROL_RETENTION_ENABLED":      "true",
+		"CONTROL_RETENTION_WINDOW":       "2160h",
+		"CONTROL_RETENTION_ARCHIVE_PATH": "/var/lib/pm/archive",
+	})
+	env.DB = fakeDB{posture: store.RetentionPosture{
+		EventCount:          500,
+		OldestEventAt:       env.Now().Add(-30 * 24 * time.Hour),
+		LastPruneAt:         env.Now().Add(-2 * time.Hour),
+		LastPruneCheckpoint: 4711,
+		LastPruneRef:        "prune-00000000000000004711",
+	}}
+	fs := run1(t, RetentionPostureCheck{}, env)
+	require.Equal(t, SeverityOK, worst(fs))
+	txt := findingText(fs)
+	assert.Contains(t, txt, "2160h", "the configured window is reported")
+	assert.Contains(t, txt, "checkpoint 4711")
+	assert.Contains(t, txt, "prune-00000000000000004711")
+}
+
+func TestRetentionPostureCheck_MisconfiguredIsCritical(t *testing.T) {
+	// Enabled but no window/path: the running server predates the change —
+	// the next restart will refuse to boot. Reported without touching the DB.
+	env := testEnv(map[string]string{"CONTROL_RETENTION_ENABLED": "true"})
+	fs := run1(t, RetentionPostureCheck{}, env)
+	require.Equal(t, SeverityCritical, worst(fs))
+	assert.Contains(t, findingText(fs), "CONTROL_RETENTION_WINDOW")
+}
+
+func TestRetentionPostureCheck_MalformedDurationNamed(t *testing.T) {
+	// "90d" is not a valid Go duration — the finding must name the broken
+	// value instead of a misleading "window too small (got 0s)" (CR).
+	env := testEnv(map[string]string{
+		"CONTROL_RETENTION_ENABLED":      "true",
+		"CONTROL_RETENTION_WINDOW":       "90d",
+		"CONTROL_RETENTION_ARCHIVE_PATH": "/var/lib/pm/archive",
+	})
+	fs := run1(t, RetentionPostureCheck{}, env)
+	require.Equal(t, SeverityCritical, worst(fs))
+	txt := findingText(fs)
+	assert.Contains(t, txt, `CONTROL_RETENTION_WINDOW="90d"`, "the unparseable value is named")
+	assert.Contains(t, txt, "not a valid Go duration")
+}
+
+func TestRetentionPostureCheck_DBDownSkips(t *testing.T) {
+	env := testEnv(nil) // DB nil, retention disabled (valid config)
+	fs := run1(t, RetentionPostureCheck{}, env)
 	assert.NotEqual(t, SeverityCritical, worst(fs))
 }
 

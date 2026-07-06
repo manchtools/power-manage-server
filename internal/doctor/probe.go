@@ -58,6 +58,10 @@ func (p *PGProbe) ProjectionDrift(ctx context.Context) ([]store.TargetDrift, err
 	return store.ComputeProjectionDrift(ctx, p.pool)
 }
 
+func (p *PGProbe) RetentionPosture(ctx context.Context) (store.RetentionPosture, error) {
+	return store.ReadRetentionPosture(ctx, p.pool)
+}
+
 // Close releases the pool.
 func (p *PGProbe) Close() {
 	if p.pool != nil {

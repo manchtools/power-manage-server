@@ -77,6 +77,11 @@ Environment variables override command-line flags:
 | `CONTROL_VALKEY_DB` | Valkey/Redis database number (default: `0`) |
 | `CONTROL_AUTO_UPDATE_REPO` | GitHub repo for agent releases in `owner/repo` format (default: `MANCHTOOLS/power-manage-agent`) |
 | `CONTROL_DISABLE_AUTO_UPDATE` | Disable agent auto-update entirely (set to `true` or `1`). Overrides the `auto_update_agents` server setting. |
+| `CONTROL_RETENTION_ENABLED` | Enable audit-log retention (spec 19): events older than the window are sealed into cold archives and pruned from the live log (default: `false`) |
+| `CONTROL_RETENTION_WINDOW` | Retention window as a Go duration, **min `24h`** (e.g., `2160h` = 90 days). Required when retention is enabled; an invalid value refuses to boot — this knob decides what history is destroyed, so it is never silently clamped. |
+| `CONTROL_RETENTION_ARCHIVE_BACKEND` | Cold-archive backend for pruned history (default and only v1 value: `filesystem`) |
+| `CONTROL_RETENTION_ARCHIVE_PATH` | **Absolute** directory for sealed retention archives. Required when enabled — the archives are the ONLY copy of pruned history; back them up together with `user_encryption_keys`. |
+| `CONTROL_RETENTION_INTERVAL` | How often the retention worker checks for prunable history (default `1h`, clamped `10m`–`24h`) |
 
 ## Setup
 
