@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/server/internal/search"
+	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -40,6 +41,21 @@ func (p *PGProbe) AdminUserExists(ctx context.Context, email string) (bool, erro
 		`SELECT EXISTS(SELECT 1 FROM users_projection WHERE email = $1 AND role = 'admin' AND NOT disabled AND NOT is_deleted)`,
 		email).Scan(&exists)
 	return exists, err
+}
+
+// LiveUserWrappedDEKs / DeletedUsersWithDEK / ProjectionDrift delegate to
+// the store's read-only integrity queries (they depend on projection
+// schema + the rebuild-target registry, which are store-internal).
+func (p *PGProbe) LiveUserWrappedDEKs(ctx context.Context) ([]store.UserDEK, error) {
+	return store.LiveUserWrappedDEKs(ctx, p.pool)
+}
+
+func (p *PGProbe) DeletedUsersWithDEK(ctx context.Context) ([]string, error) {
+	return store.DeletedUsersWithDEK(ctx, p.pool)
+}
+
+func (p *PGProbe) ProjectionDrift(ctx context.Context) ([]store.TargetDrift, error) {
+	return store.ComputeProjectionDrift(ctx, p.pool)
 }
 
 // Close releases the pool.

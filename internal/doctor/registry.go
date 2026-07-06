@@ -17,5 +17,7 @@ func DefaultChecks() []Check {
 		SearchCheck{},
 		TerminalCheck{},
 		AdminCheck{},
+		DEKInvariantCheck{},
+		ProjectionDriftCheck{},
 	}
 }

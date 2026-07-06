@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 // Env is the read-only view the checks run against: a merged config map (process
@@ -142,6 +144,15 @@ type DBProbe interface {
 	// AdminUserExists reports whether an enabled admin user with the given email
 	// exists (used to flag the bootstrap default).
 	AdminUserExists(ctx context.Context, email string) (bool, error)
+	// LiveUserWrappedDEKs returns every non-deleted user with its wrapped DEK
+	// (empty when absent) — the DEK invariant check unwraps each (spec 19 AC 30).
+	LiveUserWrappedDEKs(ctx context.Context) ([]store.UserDEK, error)
+	// DeletedUsersWithDEK returns erased users that still hold a DEK row — the
+	// resurrected-shredded-key anomaly (spec 19 AC 31).
+	DeletedUsersWithDEK(ctx context.Context) ([]string, error)
+	// ProjectionDrift compares each rebuild target's projection high-water
+	// against the events it should have applied (spec 19 AC 31a).
+	ProjectionDrift(ctx context.Context) ([]store.TargetDrift, error)
 }
 
 // CacheProbe is the narrow live-Valkey surface the cache/search/queue checks need.
