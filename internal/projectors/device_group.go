@@ -199,6 +199,37 @@ func DeviceGroupSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceGroupSyn
 	return out, nil
 }
 
+// DeviceGroupInventoryIntervalSetPayload is the decoded per-group
+// inventory-collection interval (spec 22) — a missing key collapses
+// to 0, matching the sync-interval decoder.
+type DeviceGroupInventoryIntervalSetPayload struct {
+	ID                       string
+	InventoryIntervalMinutes int32
+}
+
+type deviceGroupInventoryIntervalSetRaw struct {
+	InventoryIntervalMinutes *int32 `json:"inventory_interval_minutes,omitempty"`
+}
+
+// DeviceGroupInventoryIntervalSetFromEvent decodes DeviceGroupInventoryIntervalSet.
+func DeviceGroupInventoryIntervalSetFromEvent(e store.PersistedEvent) (DeviceGroupInventoryIntervalSetPayload, error) {
+	if e.StreamType != "device_group" || e.EventType != string(eventtypes.DeviceGroupInventoryIntervalSet) {
+		return DeviceGroupInventoryIntervalSetPayload{}, ErrIgnoredEvent
+	}
+	out := DeviceGroupInventoryIntervalSetPayload{ID: e.StreamID}
+	if len(e.Data) == 0 {
+		return out, nil
+	}
+	var raw deviceGroupInventoryIntervalSetRaw
+	if err := json.Unmarshal(e.Data, &raw); err != nil {
+		return DeviceGroupInventoryIntervalSetPayload{}, fmt.Errorf("projector: invalid DeviceGroupInventoryIntervalSet payload: %w", err)
+	}
+	if raw.InventoryIntervalMinutes != nil {
+		out.InventoryIntervalMinutes = *raw.InventoryIntervalMinutes
+	}
+	return out, nil
+}
+
 // DeviceGroupMaintenanceWindowSetPayload mirrors the PL/pgSQL
 // projector's `COALESCE(event.data->'maintenance_window', '{}'::JSONB)`
 // fallback. A missing key collapses to '{}' (held as raw bytes so the

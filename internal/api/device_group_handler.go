@@ -671,6 +671,60 @@ func (h *DeviceGroupHandler) SetDeviceGroupSyncInterval(ctx context.Context, req
 	}), nil
 }
 
+// SetDeviceGroupInventoryInterval sets the inventory-collection
+// interval for a device group (spec 22 AC 2). Member devices resolve
+// their effective interval as device override > MIN across groups >
+// server default; 0 removes this group's contribution.
+func (h *DeviceGroupHandler) SetDeviceGroupInventoryInterval(ctx context.Context, req *connect.Request[pm.SetDeviceGroupInventoryIntervalRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceGroupScope(ctx, "SetDeviceGroupInventoryInterval", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
+	// Bounds at the handler in addition to the validate tag (spec 22
+	// AC 4: boundary AND handler). Non-zero must land in [120, 10080]
+	// minutes (2 h – 7 d).
+	if m := req.Msg.InventoryIntervalMinutes; m != 0 && (m < 120 || m > 10080) {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inventory interval out of range")
+	}
+
+	// Verify group exists
+	_, err = h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceGroupNotFound, "device group not found")
+	}
+
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "device_group",
+		StreamID:   req.Msg.Id,
+		EventType:  string(eventtypes.DeviceGroupInventoryIntervalSet),
+		Data: payloads.DeviceGroupInventoryIntervalSet{
+			InventoryIntervalMinutes: req.Msg.InventoryIntervalMinutes,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}, "failed to set inventory interval"); err != nil {
+		return nil, err
+	}
+
+	group, err := h.store.Repos().DeviceGroup.Get(ctx, req.Msg.Id)
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get device group")
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceGroupResponse{
+		Group: h.deviceGroupToProto(group),
+	}), nil
+}
+
 // SetDeviceGroupMaintenanceWindow replaces the device group's
 // maintenance window. The agent ORs each reaching group's window
 // into a device-side union and gates non-instant action dispatch by
@@ -723,14 +777,15 @@ func (h *DeviceGroupHandler) SetDeviceGroupMaintenanceWindow(ctx context.Context
 
 func (h *DeviceGroupHandler) deviceGroupToProto(g store.DeviceGroup) *pm.DeviceGroup {
 	group := &pm.DeviceGroup{
-		Id:                  g.ID,
-		Name:                g.Name,
-		Description:         g.Description,
-		MemberCount:         g.MemberCount,
-		CreatedBy:           g.CreatedBy,
-		IsDynamic:           g.IsDynamic,
-		SyncIntervalMinutes: g.SyncIntervalMinutes,
-		MaintenanceWindow:   maintenanceWindowFromJSON(g.MaintenanceWindow),
+		Id:                       g.ID,
+		Name:                     g.Name,
+		Description:              g.Description,
+		MemberCount:              g.MemberCount,
+		CreatedBy:                g.CreatedBy,
+		IsDynamic:                g.IsDynamic,
+		SyncIntervalMinutes:      g.SyncIntervalMinutes,
+		InventoryIntervalMinutes: g.InventoryIntervalMinutes,
+		MaintenanceWindow:        maintenanceWindowFromJSON(g.MaintenanceWindow),
 	}
 
 	if g.DynamicQuery != nil {

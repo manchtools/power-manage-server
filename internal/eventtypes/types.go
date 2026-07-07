@@ -81,6 +81,10 @@ const (
 	DeviceGroupAssigned   EventType = "DeviceGroupAssigned"
 	DeviceGroupUnassigned EventType = "DeviceGroupUnassigned"
 	DeviceSyncIntervalSet EventType = "DeviceSyncIntervalSet"
+	// DeviceInventoryIntervalSet is the per-device inventory-collection
+	// interval override (spec 22). 0 = inherit (group minimum, then the
+	// 1440-minute server default).
+	DeviceInventoryIntervalSet EventType = "DeviceInventoryIntervalSet"
 	// Audit-only device-read/dispatch events (#496). They record who pulled
 	// what off which device; ApplyDevice does not materialise them (no
 	// projection change — the result tables are transient operational state).
@@ -90,11 +94,15 @@ const (
 	LuksTokenCreated                EventType = "LuksTokenCreated"
 
 	// device_group stream
-	DeviceGroupCreated              EventType = "DeviceGroupCreated"
-	DeviceGroupRenamed              EventType = "DeviceGroupRenamed"
-	DeviceGroupDescriptionUpdated   EventType = "DeviceGroupDescriptionUpdated"
-	DeviceGroupQueryUpdated         EventType = "DeviceGroupQueryUpdated"
-	DeviceGroupSyncIntervalSet      EventType = "DeviceGroupSyncIntervalSet"
+	DeviceGroupCreated            EventType = "DeviceGroupCreated"
+	DeviceGroupRenamed            EventType = "DeviceGroupRenamed"
+	DeviceGroupDescriptionUpdated EventType = "DeviceGroupDescriptionUpdated"
+	DeviceGroupQueryUpdated       EventType = "DeviceGroupQueryUpdated"
+	DeviceGroupSyncIntervalSet    EventType = "DeviceGroupSyncIntervalSet"
+	// DeviceGroupInventoryIntervalSet is the per-group inventory-collection
+	// interval (spec 22). A device resolves its interval as: device
+	// override, else MIN across its groups, else 1440 minutes.
+	DeviceGroupInventoryIntervalSet EventType = "DeviceGroupInventoryIntervalSet"
 	DeviceGroupMaintenanceWindowSet EventType = "DeviceGroupMaintenanceWindowSet"
 	DeviceGroupMemberAdded          EventType = "DeviceGroupMemberAdded"
 	DeviceGroupMemberRemoved        EventType = "DeviceGroupMemberRemoved"
@@ -269,10 +277,10 @@ func All() []EventType {
 		CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved, CompliancePolicyRuleUpdated,
 		DeviceRegistered, DeviceSeen, DeviceHeartbeat, DeviceCertRenewed, DeviceLabelsUpdated,
 		DeviceLabelSet, DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
-		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet,
+		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet, DeviceInventoryIntervalSet,
 		OSQueryDispatched, DeviceLogsQueried, DeviceInventoryRefreshRequested, LuksTokenCreated,
 		DeviceGroupCreated, DeviceGroupRenamed, DeviceGroupDescriptionUpdated, DeviceGroupQueryUpdated,
-		DeviceGroupSyncIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
+		DeviceGroupSyncIntervalSet, DeviceGroupInventoryIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
 		DeviceGroupMemberRemoved, DeviceGroupMembersReevaluated, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
 		ExecutionCreated, ExecutionScheduled, ExecutionDispatched, ExecutionStarted, ExecutionCompleted,
 		ExecutionFailed, ExecutionTimedOut, ExecutionSkipped, ExecutionCancelled, OutputChunk,

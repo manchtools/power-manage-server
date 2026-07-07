@@ -20,7 +20,11 @@ type DeviceGroup struct {
 	IsDynamic           bool
 	DynamicQuery        *string
 	SyncIntervalMinutes int32
-	MaintenanceWindow   json.RawMessage
+	// InventoryIntervalMinutes is the per-group inventory-collection
+	// interval (spec 22); 0 = no group contribution to a member's
+	// resolved interval.
+	InventoryIntervalMinutes int32
+	MaintenanceWindow        json.RawMessage
 }
 
 // DeviceGroupMember is one row in the device-group membership join,

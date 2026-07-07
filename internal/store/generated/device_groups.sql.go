@@ -222,7 +222,7 @@ func (q *Queries) EnqueueDynamicDeviceGroupEvaluation(ctx context.Context, arg E
 
 const getDeviceGroupByID = `-- name: GetDeviceGroupByID :one
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, inventory_interval_minutes FROM device_groups_projection
 WHERE id = $1 AND is_deleted = FALSE
 `
 
@@ -243,12 +243,13 @@ func (q *Queries) GetDeviceGroupByID(ctx context.Context, id string) (DeviceGrou
 		&i.DynamicQuery,
 		&i.SyncIntervalMinutes,
 		&i.MaintenanceWindow,
+		&i.InventoryIntervalMinutes,
 	)
 	return i, err
 }
 
 const getDeviceGroupByName = `-- name: GetDeviceGroupByName :one
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, inventory_interval_minutes FROM device_groups_projection
 WHERE name = $1 AND is_deleted = FALSE
 `
 
@@ -268,6 +269,7 @@ func (q *Queries) GetDeviceGroupByName(ctx context.Context, name string) (Device
 		&i.DynamicQuery,
 		&i.SyncIntervalMinutes,
 		&i.MaintenanceWindow,
+		&i.InventoryIntervalMinutes,
 	)
 	return i, err
 }
@@ -295,7 +297,7 @@ func (q *Queries) GetDeviceGroupMember(ctx context.Context, arg GetDeviceGroupMe
 }
 
 const getDynamicGroupsNeedingEvaluation = `-- name: GetDynamicGroupsNeedingEvaluation :many
-SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window FROM device_groups_projection g
+SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window, g.inventory_interval_minutes FROM device_groups_projection g
 JOIN dynamic_group_evaluation_queue q ON g.id = q.group_id
 WHERE g.is_deleted = FALSE
 ORDER BY q.queued_at ASC
@@ -324,6 +326,7 @@ func (q *Queries) GetDynamicGroupsNeedingEvaluation(ctx context.Context, limit i
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -607,7 +610,7 @@ func (q *Queries) ListDeviceGroupMembershipsByDevice(ctx context.Context, device
 }
 
 const listDeviceGroups = `-- name: ListDeviceGroups :many
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, inventory_interval_minutes FROM device_groups_projection
 WHERE is_deleted = FALSE
   -- Device-group scope (#3): a direct id-match — when @scope_restricted, the
   -- group itself must be one of @scope_group_ids. Empty array restricts to nothing.
@@ -650,6 +653,7 @@ func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsPara
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -690,7 +694,7 @@ func (q *Queries) ListDevicesForDynamicEvaluation(ctx context.Context) ([]string
 }
 
 const listDevicesInGroup = `-- name: ListDevicesInGroup :many
-SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing, d.inventory_interval_minutes FROM devices_projection d
 JOIN device_group_members_projection m ON d.id = m.device_id
 WHERE m.group_id = $1 AND d.is_deleted = FALSE
 ORDER BY d.hostname ASC
@@ -721,6 +725,7 @@ func (q *Queries) ListDevicesInGroup(ctx context.Context, groupID string) ([]Dev
 			&i.ComplianceCheckedAt,
 			&i.ComplianceTotal,
 			&i.CompliancePassing,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -764,7 +769,7 @@ func (q *Queries) ListDynamicDeviceGroupQueueBatch(ctx context.Context, limit in
 
 const listDynamicDeviceGroups = `-- name: ListDynamicDeviceGroups :many
 
-SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window FROM device_groups_projection
+SELECT id, name, description, member_count, created_at, created_by, is_deleted, projection_version, is_dynamic, dynamic_query, sync_interval_minutes, maintenance_window, inventory_interval_minutes FROM device_groups_projection
 WHERE is_dynamic = TRUE AND is_deleted = FALSE
 ORDER BY created_at DESC
 `
@@ -792,6 +797,7 @@ func (q *Queries) ListDynamicDeviceGroups(ctx context.Context) ([]DeviceGroupsPr
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -833,7 +839,7 @@ func (q *Queries) ListGroupNamesForDevice(ctx context.Context, deviceID string) 
 }
 
 const listGroupsForDevice = `-- name: ListGroupsForDevice :many
-SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window FROM device_groups_projection g
+SELECT g.id, g.name, g.description, g.member_count, g.created_at, g.created_by, g.is_deleted, g.projection_version, g.is_dynamic, g.dynamic_query, g.sync_interval_minutes, g.maintenance_window, g.inventory_interval_minutes FROM device_groups_projection g
 JOIN device_group_members_projection m ON g.id = m.group_id
 WHERE m.device_id = $1 AND g.is_deleted = FALSE
 ORDER BY g.name ASC
@@ -864,6 +870,7 @@ func (q *Queries) ListGroupsForDevice(ctx context.Context, deviceID string) ([]D
 			&i.DynamicQuery,
 			&i.SyncIntervalMinutes,
 			&i.MaintenanceWindow,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -976,6 +983,31 @@ type UpdateDeviceGroupDescriptionProjectionParams struct {
 // the listener decoder substitutes ” when the payload key is missing).
 func (q *Queries) UpdateDeviceGroupDescriptionProjection(ctx context.Context, arg UpdateDeviceGroupDescriptionProjectionParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateDeviceGroupDescriptionProjection, arg.ID, arg.Description, arg.ProjectionVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceGroupInventoryIntervalProjection = `-- name: UpdateDeviceGroupInventoryIntervalProjection :execrows
+UPDATE device_groups_projection
+SET inventory_interval_minutes = $2,
+    projection_version         = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceGroupInventoryIntervalProjectionParams struct {
+	ID                       string `json:"id"`
+	InventoryIntervalMinutes int32  `json:"inventory_interval_minutes"`
+	ProjectionVersion        int64  `json:"projection_version"`
+}
+
+// DeviceGroupInventoryIntervalSet handler (spec 22). Same shape as the
+// sync-interval write: decoder defaults a missing key to 0,
+// stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceGroupInventoryIntervalProjection(ctx context.Context, arg UpdateDeviceGroupInventoryIntervalProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceGroupInventoryIntervalProjection, arg.ID, arg.InventoryIntervalMinutes, arg.ProjectionVersion)
 	if err != nil {
 		return 0, err
 	}

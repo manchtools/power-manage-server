@@ -17,6 +17,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/manchtools/power-manage/server/internal/inventorysched"
 )
 
 // discardLogger silences periodic-worker log output during tests so a
@@ -143,4 +145,65 @@ func TestRunPeriodic_StopsOnContextCancel(t *testing.T) {
 	case <-time.After(1 * time.Second):
 		t.Fatal("runPeriodic did not return within 1s of ctx cancel")
 	}
+}
+
+// =============================================================================
+// inventoryScheduleTick (spec 22)
+// =============================================================================
+
+// panickyRunner panics on the first RunOnce and succeeds afterwards.
+type panickyRunner struct{ calls atomic.Int32 }
+
+func (p *panickyRunner) RunOnce(context.Context) (inventorysched.RunResult, error) {
+	if p.calls.Add(1) == 1 {
+		panic("boom")
+	}
+	return inventorysched.RunResult{Ran: true}, nil
+}
+
+// TestInventoryScheduleTick_PanicRecovered — a panic in one cycle must
+// not kill the worker: the tick body recovers and the next invocation
+// still runs (spec 22 test requirement).
+func TestInventoryScheduleTick_PanicRecovered(t *testing.T) {
+	r := &panickyRunner{}
+	tick := inventoryScheduleTick(context.Background(), r, discardLogger())
+
+	assert.NotPanics(t, func() { tick() }, "first cycle panics internally but must be recovered")
+	assert.NotPanics(t, func() { tick() })
+	assert.Equal(t, int32(2), r.calls.Load(), "the cycle after a panic must still run")
+}
+
+// erroringRunner always fails.
+type erroringRunner struct{ calls atomic.Int32 }
+
+func (e *erroringRunner) RunOnce(context.Context) (inventorysched.RunResult, error) {
+	e.calls.Add(1)
+	return inventorysched.RunResult{}, errors.New("db down")
+}
+
+// TestInventoryScheduleTick_ErrorLoggedNotFatal — RunOnce errors are
+// logged and swallowed; the loop keeps ticking.
+func TestInventoryScheduleTick_ErrorLoggedNotFatal(t *testing.T) {
+	r := &erroringRunner{}
+	tick := inventoryScheduleTick(context.Background(), r, discardLogger())
+	assert.NotPanics(t, func() { tick(); tick() })
+	assert.Equal(t, int32(2), r.calls.Load())
+}
+
+// TestInventorySchedulerEnvGate — CONTROL_INVENTORY_SCHEDULER_ENABLED
+// defaults to true and false disables (spec 22 AC 10). The main() branch
+// on this flag is a one-liner; the gate itself is what regresses.
+func TestInventorySchedulerEnvGate(t *testing.T) {
+	cfg := &Config{InventorySchedulerEnabled: true} // flag default
+	t.Setenv("CONTROL_INVENTORY_SCHEDULER_ENABLED", "")
+	applyEnvOverrides(cfg)
+	assert.True(t, cfg.InventorySchedulerEnabled, "unset env keeps the default (enabled)")
+
+	t.Setenv("CONTROL_INVENTORY_SCHEDULER_ENABLED", "false")
+	applyEnvOverrides(cfg)
+	assert.False(t, cfg.InventorySchedulerEnabled, "false disables the scheduler")
+
+	t.Setenv("CONTROL_INVENTORY_SCHEDULER_ENABLED", "true")
+	applyEnvOverrides(cfg)
+	assert.True(t, cfg.InventorySchedulerEnabled)
 }

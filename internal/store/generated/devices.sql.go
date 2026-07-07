@@ -8,6 +8,8 @@ package generated
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const advanceDeviceProjectionVersion = `-- name: AdvanceDeviceProjectionVersion :execrows
@@ -206,7 +208,7 @@ func (q *Queries) DeleteDeviceAssignedUsersByDevice(ctx context.Context, deviceI
 }
 
 const getDeviceByFingerprint = `-- name: GetDeviceByFingerprint :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, inventory_interval_minutes FROM devices_projection
 WHERE cert_fingerprint = $1 AND is_deleted = FALSE
 `
 
@@ -229,12 +231,13 @@ func (q *Queries) GetDeviceByFingerprint(ctx context.Context, certFingerprint *s
 		&i.ComplianceCheckedAt,
 		&i.ComplianceTotal,
 		&i.CompliancePassing,
+		&i.InventoryIntervalMinutes,
 	)
 	return i, err
 }
 
 const getDeviceByID = `-- name: GetDeviceByID :one
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, inventory_interval_minutes FROM devices_projection
 WHERE id = $1 AND is_deleted = FALSE
   AND ($2::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $2)
@@ -278,6 +281,7 @@ func (q *Queries) GetDeviceByID(ctx context.Context, arg GetDeviceByIDParams) (D
 		&i.ComplianceCheckedAt,
 		&i.ComplianceTotal,
 		&i.CompliancePassing,
+		&i.InventoryIntervalMinutes,
 	)
 	return i, err
 }
@@ -361,7 +365,7 @@ func (q *Queries) GetDeviceSyncInterval(ctx context.Context, dollar_1 string) (i
 }
 
 const getDevicesWithLabel = `-- name: GetDevicesWithLabel :many
-SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing FROM devices_projection d
+SELECT d.id, d.hostname, d.agent_version, d.cert_fingerprint, d.cert_not_after, d.registered_at, d.last_seen_at, d.registration_token_id, d.is_deleted, d.projection_version, d.sync_interval_minutes, d.compliance_status, d.compliance_checked_at, d.compliance_total, d.compliance_passing, d.inventory_interval_minutes FROM devices_projection d
 JOIN device_labels l ON l.device_id = d.id
 WHERE d.is_deleted = FALSE
   AND l.key = $1
@@ -410,6 +414,7 @@ func (q *Queries) GetDevicesWithLabel(ctx context.Context, arg GetDevicesWithLab
 			&i.ComplianceCheckedAt,
 			&i.ComplianceTotal,
 			&i.CompliancePassing,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -720,6 +725,76 @@ func (q *Queries) ListDeviceAssignedUsers(ctx context.Context, deviceID string) 
 	return items, nil
 }
 
+const listDeviceInventoryFreshnessBatch = `-- name: ListDeviceInventoryFreshnessBatch :many
+
+SELECT d.id AS device_id,
+       inv.last_inventory_at::TIMESTAMPTZ AS last_inventory_at,
+       COALESCE(
+           CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,
+           (SELECT MIN(CASE WHEN dg.inventory_interval_minutes > 0 THEN dg.inventory_interval_minutes END)
+            FROM device_groups_projection dg
+            JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
+            WHERE dgm.device_id = d.id
+              AND dg.is_deleted = FALSE),
+           $1::INT
+       )::INTEGER AS resolved_interval_minutes
+FROM devices_projection d
+LEFT JOIN (
+    SELECT device_id, MAX(collected_at) AS last_inventory_at
+    FROM device_inventory
+    WHERE device_id = ANY($2::TEXT[])
+    GROUP BY device_id
+) inv ON inv.device_id = d.id
+WHERE d.id = ANY($2::TEXT[])
+`
+
+type ListDeviceInventoryFreshnessBatchParams struct {
+	DefaultIntervalMinutes int32    `json:"default_interval_minutes"`
+	DeviceIds              []string `json:"device_ids"`
+}
+
+type ListDeviceInventoryFreshnessBatchRow struct {
+	DeviceID                string             `json:"device_id"`
+	LastInventoryAt         pgtype.Timestamptz `json:"last_inventory_at"`
+	ResolvedIntervalMinutes int32              `json:"resolved_interval_minutes"`
+}
+
+// ============================================================================
+// Inventory collection interval + freshness (spec 22).
+// ============================================================================
+//
+// Resolution order (mirrors GetDeviceSyncInterval): device-level
+// override (> 0) wins, else the smallest non-zero interval across the
+// device's groups, else @default_interval_minutes (the server default,
+// 1440 — passed in from Go so the constant has one home). The same
+// expression is embedded in ListDeviceInventoryFreshnessBatch and
+// ListStaleInventoryDevices; the resolution tests run against both to
+// pin identical semantics.
+// Freshness data for a set of devices in one round trip (no per-row
+// N+1): last_inventory_at is MAX(device_inventory.collected_at) per
+// device, resolved_interval_minutes is the effective policy interval.
+// The Device read paths (GetDevice / ListDevices / mutation responses)
+// join this onto their projection rows in the handler.
+func (q *Queries) ListDeviceInventoryFreshnessBatch(ctx context.Context, arg ListDeviceInventoryFreshnessBatchParams) ([]ListDeviceInventoryFreshnessBatchRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceInventoryFreshnessBatch, arg.DefaultIntervalMinutes, arg.DeviceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceInventoryFreshnessBatchRow{}
+	for rows.Next() {
+		var i ListDeviceInventoryFreshnessBatchRow
+		if err := rows.Scan(&i.DeviceID, &i.LastInventoryAt, &i.ResolvedIntervalMinutes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDeviceLabels = `-- name: ListDeviceLabels :many
 SELECT key, value FROM device_labels
 WHERE device_id = $1
@@ -785,7 +860,7 @@ func (q *Queries) ListDeviceLabelsBatch(ctx context.Context, deviceIds []string)
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, inventory_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
   AND ($3::TEXT IS NULL
     OR EXISTS (SELECT 1 FROM device_assigned_users_projection dau WHERE dau.device_id = devices_projection.id AND dau.user_id = $3)
@@ -839,6 +914,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.ComplianceCheckedAt,
 			&i.ComplianceTotal,
 			&i.CompliancePassing,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -851,7 +927,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 }
 
 const listDevicesOffline = `-- name: ListDevicesOffline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, inventory_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at <= NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL
@@ -906,6 +982,7 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 			&i.ComplianceCheckedAt,
 			&i.ComplianceTotal,
 			&i.CompliancePassing,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
@@ -918,7 +995,7 @@ func (q *Queries) ListDevicesOffline(ctx context.Context, arg ListDevicesOffline
 }
 
 const listDevicesOnline = `-- name: ListDevicesOnline :many
-SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing FROM devices_projection
+SELECT id, hostname, agent_version, cert_fingerprint, cert_not_after, registered_at, last_seen_at, registration_token_id, is_deleted, projection_version, sync_interval_minutes, compliance_status, compliance_checked_at, compliance_total, compliance_passing, inventory_interval_minutes FROM devices_projection
 WHERE is_deleted = FALSE
   AND last_seen_at > NOW() - INTERVAL '5 minutes'
   AND ($3::TEXT IS NULL
@@ -973,10 +1050,79 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 			&i.ComplianceCheckedAt,
 			&i.ComplianceTotal,
 			&i.CompliancePassing,
+			&i.InventoryIntervalMinutes,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaleInventoryDevices = `-- name: ListStaleInventoryDevices :many
+WITH candidates AS (
+    SELECT id, inventory_interval_minutes
+    FROM devices_projection
+    WHERE is_deleted = FALSE
+      AND last_seen_at >= $3::TIMESTAMPTZ
+)
+SELECT d.id
+FROM candidates d
+LEFT JOIN (
+    SELECT device_id, MAX(collected_at) AS last_inventory_at
+    FROM device_inventory
+    WHERE device_id IN (SELECT id FROM candidates)
+    GROUP BY device_id
+) inv ON inv.device_id = d.id
+WHERE (
+    inv.last_inventory_at IS NULL
+    OR inv.last_inventory_at + make_interval(mins => COALESCE(
+           CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,
+           (SELECT MIN(CASE WHEN dg.inventory_interval_minutes > 0 THEN dg.inventory_interval_minutes END)
+            FROM device_groups_projection dg
+            JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
+            WHERE dgm.device_id = d.id
+              AND dg.is_deleted = FALSE),
+           $1::INT
+       )) <= $2::TIMESTAMPTZ
+  )
+ORDER BY d.id
+`
+
+type ListStaleInventoryDevicesParams struct {
+	DefaultIntervalMinutes int32              `json:"default_interval_minutes"`
+	Now                    pgtype.Timestamptz `json:"now"`
+	SeenSince              pgtype.Timestamptz `json:"seen_since"`
+}
+
+// Scheduler feed (spec 22 AC 5/6): every non-deleted device whose
+// inventory age exceeds its resolved interval — a device with no
+// inventory rows at all counts as stale — and whose last_seen_at is
+// recent (@seen_since = now - one tick; heartbeats land every 30s, so
+// a connected device always qualifies). @now comes from the worker's
+// clock seam, never SQL now(), so tests can pin time.
+//
+// The candidates CTE pre-filters to eligible devices so the
+// device_inventory MAX() aggregation runs over their rows only, not
+// the whole table (CR catch). Deliberately NO LIMIT: the no-batch-cap
+// decision is pinned in the spec — Asynq queueing absorbs the
+// first-rollout herd and the sub-tick deadline expires the excess.
+func (q *Queries) ListStaleInventoryDevices(ctx context.Context, arg ListStaleInventoryDevicesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listStaleInventoryDevices, arg.DefaultIntervalMinutes, arg.Now, arg.SeenSince)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1106,6 +1252,31 @@ func (q *Queries) UpdateDeviceHeartbeatProjection(ctx context.Context, arg Updat
 		arg.ProjectionVersion,
 		arg.AgentVersion,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateDeviceInventoryIntervalProjection = `-- name: UpdateDeviceInventoryIntervalProjection :execrows
+UPDATE devices_projection
+SET inventory_interval_minutes = $2,
+    projection_version         = $3
+WHERE id = $1
+  AND projection_version < $3
+`
+
+type UpdateDeviceInventoryIntervalProjectionParams struct {
+	ID                       string `json:"id"`
+	InventoryIntervalMinutes int32  `json:"inventory_interval_minutes"`
+	ProjectionVersion        int64  `json:"projection_version"`
+}
+
+// DeviceInventoryIntervalSet handler (spec 22). Same shape as the
+// sync-interval write: decoder defaults a missing key to 0,
+// stale-replay guard via projection_version.
+func (q *Queries) UpdateDeviceInventoryIntervalProjection(ctx context.Context, arg UpdateDeviceInventoryIntervalProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateDeviceInventoryIntervalProjection, arg.ID, arg.InventoryIntervalMinutes, arg.ProjectionVersion)
 	if err != nil {
 		return 0, err
 	}

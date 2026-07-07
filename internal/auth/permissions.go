@@ -93,6 +93,7 @@ func AllPermissions() []PermissionInfo {
 		{"UnassignDevice", "Devices", "Unassign devices from users or groups", TargetUnspecified},
 		{"ListDeviceAssignees", "Devices", "List device assignees", TargetUnspecified},
 		{"SetDeviceSyncInterval", "Devices", "Set device sync interval", TargetDevice},
+		{"SetDeviceInventoryInterval", "Devices", "Set device inventory collection interval", TargetDevice},
 		{"DeleteDevice", "Devices", "Delete devices", TargetDevice},
 		// Tokens
 		{"CreateToken", "Tokens", "Create registration tokens", TargetUnspecified},
@@ -162,6 +163,7 @@ func AllPermissions() []PermissionInfo {
 		{"ValidateDynamicQuery", "Device Groups", "Validate dynamic device group queries", TargetUnspecified},
 		{"EvaluateDynamicGroup", "Device Groups", "Evaluate dynamic groups", TargetUnspecified},
 		{"SetDeviceGroupSyncInterval", "Device Groups", "Set device group sync interval", TargetDevice},
+		{"SetDeviceGroupInventoryInterval", "Device Groups", "Set device group inventory collection interval", TargetDevice},
 		{"SetDeviceGroupMaintenanceWindow", "Device Groups", "Set device group maintenance window", TargetDevice},
 		// Assignments
 		{"CreateAssignment", "Assignments", "Create assignments", TargetUnspecified},

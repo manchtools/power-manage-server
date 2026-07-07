@@ -18,6 +18,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/pii"
@@ -83,6 +84,13 @@ type Config struct {
 	// snapshot+prune worker; validation is fatal at boot (a destructive
 	// feature must never run on a half-read config).
 	Retention retention.EnvConfig
+
+	// Spec 22: server-side inventory collection scheduler. Default
+	// true; CONTROL_INVENTORY_SCHEDULER_ENABLED=false is the escape
+	// hatch for change-frozen environments that must not run osquery
+	// on a cadence (manual RefreshDeviceInventory and the
+	// inventory_overdue computation are unaffected).
+	InventorySchedulerEnabled bool
 }
 
 func main() {
@@ -326,6 +334,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer valkey.Close()
+
+	// Spec 22: server-side inventory collection scheduler. Requests
+	// signed inventory from stale connected devices once per fixed
+	// tick; policy (device override > group min > 24h default) lives
+	// in the projections. AC 10: the escape hatch logs one boot line
+	// and starts nothing — manual RefreshDeviceInventory and the
+	// inventory_overdue computation are unaffected.
+	if !cfg.InventorySchedulerEnabled {
+		logger.Info("inventory collection scheduler disabled (CONTROL_INVENTORY_SCHEDULER_ENABLED=false); inventory refresh is manual-only")
+	} else if valkey == nil {
+		logger.Warn("inventory collection scheduler enabled but no task queue configured (CONTROL_VALKEY_ADDR empty) — scheduler not started")
+	} else {
+		startInventoryScheduleWorker(ctx, st, valkey.aqClient, actionSigner, logger)
+		logger.Info("inventory collection scheduler enabled",
+			"tick", inventorysched.Tick, "default_interval_minutes", inventorysched.DefaultIntervalMinutes)
+	}
 
 	// Per-procedure rate limits (audit F036 / #145 / #142). Shared
 	// limiters keyed by client IP; a determined attacker behind many

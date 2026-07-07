@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/archive"
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/retention"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -78,6 +80,47 @@ func startRetentionWorker(ctx context.Context, st *store.Store, arch archive.Arc
 		// events_deleted, archive_ref); no-op runs stay quiet by design.
 	}, true)
 	return nil
+}
+
+// inventoryScheduleRunner is the slice of inventorysched.Worker one
+// tick needs — an interface so the panic-recovery shape is testable
+// without a store.
+type inventoryScheduleRunner interface {
+	RunOnce(ctx context.Context) (inventorysched.RunResult, error)
+}
+
+// startInventoryScheduleWorker launches the spec-22 inventory
+// collection scheduler: every fixed tick it runs one advisory-lock
+// single-flighted cycle that enqueues a signed RequestInventory to
+// every stale connected device. The first cycle runs immediately —
+// enabled means active, and the cycle no-ops when nothing is stale.
+func startInventoryScheduleWorker(ctx context.Context, st *store.Store, aq inventorysched.Enqueuer, signer ca.ActionSigner, logger *slog.Logger) {
+	w := inventorysched.New(st, aq, signer, logger)
+	go runPeriodic(ctx, inventorysched.Tick, inventoryScheduleTick(ctx, w, logger), true)
+}
+
+// inventoryScheduleTick builds one tick's body: panic-recovered (a
+// panic in one cycle must not crash the control server — WS15
+// posture) and timeout-bounded so a wedged DB/Valkey call cannot pin
+// the goroutine past the next tick.
+func inventoryScheduleTick(ctx context.Context, w inventoryScheduleRunner, logger *slog.Logger) func() {
+	return func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("inventory schedule tick panicked", "panic", r)
+			}
+		}()
+		tickCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		res, err := w.RunOnce(tickCtx)
+		if err != nil {
+			logger.Error("inventory schedule tick failed", "error", err)
+			return
+		}
+		if !res.Ran {
+			logger.Debug("inventory schedule tick skipped — another replica holds the lock")
+		}
+	}
 }
 
 // dynamicQueueBatch is what one drain iteration reports: how many rows

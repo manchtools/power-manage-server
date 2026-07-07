@@ -58,6 +58,10 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.Retention.ArchivePath, "retention-archive-path", "", "Absolute directory for sealed retention archives (required when retention is enabled)")
 	flag.DurationVar(&cfg.Retention.Interval, "retention-interval", time.Hour, "How often the retention worker checks for prunable history")
 
+	// Spec 22 inventory scheduler (enabled by default; the tick is fixed —
+	// the on/off switch is the only operational knob).
+	flag.BoolVar(&cfg.InventorySchedulerEnabled, "inventory-scheduler-enabled", true, "Enable the periodic inventory collection scheduler (spec 22)")
+
 	flag.Parse()
 
 	applyEnvOverrides(cfg)
@@ -107,6 +111,8 @@ func applyEnvOverrides(cfg *Config) {
 	config.EnvString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
 	config.EnvString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
 	config.EnvInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
+
+	config.EnvBool(&cfg.InventorySchedulerEnabled, "CONTROL_INVENTORY_SCHEDULER_ENABLED", []string{"true", "1"}, []string{"false", "0"})
 
 	config.EnvBool(&cfg.Retention.Enabled, "CONTROL_RETENTION_ENABLED", []string{"true", "1"}, []string{"false", "0"})
 	config.EnvDuration(&cfg.Retention.Window, "CONTROL_RETENTION_WINDOW")

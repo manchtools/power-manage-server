@@ -51,21 +51,9 @@ func signLogQueryDispatch(signer ca.ActionSigner, p *taskqueue.LogQueryDispatchP
 	return nil
 }
 
-func signInventoryRequest(signer ca.ActionSigner, p *taskqueue.InventoryRequestPayload) error {
-	if signer == nil {
-		return fmt.Errorf("inventory request: nil signer")
-	}
-	canonical, err := verify.RequestInventoryCanonical(p.ToProto())
-	if err != nil {
-		return fmt.Errorf("inventory request: canonical: %w", err)
-	}
-	sig, err := signer.SignDomain(verify.InventorySignatureDomain, canonical)
-	if err != nil {
-		return fmt.Errorf("inventory request: sign: %w", err)
-	}
-	p.Signature = sig
-	return nil
-}
+// signInventoryRequest moved to taskqueue.SignInventoryRequest (spec 22)
+// so the inventory scheduler and the manual RefreshDeviceInventory RPC
+// share one signing site; the RPC now calls it directly.
 
 func signRevokeLuksDeviceKey(signer ca.ActionSigner, p *taskqueue.RevokeLuksDeviceKeyPayload) error {
 	if signer == nil {

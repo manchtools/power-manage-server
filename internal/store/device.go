@@ -30,10 +30,13 @@ type Device struct {
 	Labels              map[string]string
 	IsDeleted           bool
 	SyncIntervalMinutes int32
-	ComplianceStatus    int32
-	ComplianceCheckedAt *time.Time
-	ComplianceTotal     int32
-	CompliancePassing   int32
+	// InventoryIntervalMinutes is the device-level inventory-collection
+	// override (spec 22); 0 = inherit (group minimum, then server default).
+	InventoryIntervalMinutes int32
+	ComplianceStatus         int32
+	ComplianceCheckedAt      *time.Time
+	ComplianceTotal          int32
+	CompliancePassing        int32
 }
 
 // DeviceHostname is the narrow (id, hostname) shape returned by the

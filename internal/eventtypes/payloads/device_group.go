@@ -54,6 +54,13 @@ type DeviceGroupSyncIntervalSet struct {
 	SyncIntervalMinutes int32 `json:"sync_interval_minutes"`
 }
 
+// DeviceGroupInventoryIntervalSet is the wire shape for the per-group
+// inventory-collection interval (spec 22; zero means "no group
+// contribution" to the device's resolved interval).
+type DeviceGroupInventoryIntervalSet struct {
+	InventoryIntervalMinutes int32 `json:"inventory_interval_minutes"`
+}
+
 // DeviceGroupMaintenanceWindowSet is the wire shape for the
 // MaintenanceWindowSet event. The maintenance_window value mirrors
 // the JSONB shape produced by maintenanceWindowToMap on the handler
