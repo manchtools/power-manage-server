@@ -23,8 +23,10 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
+	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
@@ -148,8 +150,14 @@ func (h *DeviceHandler) ListDevices(ctx context.Context, req *connect.Request[pm
 		}
 	}
 
+	// Freshness fields (spec 22 AC 7) — same batched shape as the
+	// assignment maps above, so the page adds one query, not N.
+	freshMap := h.inventoryFreshnessMap(ctx, deviceIDs)
+
 	for i, d := range devices {
 		protoDevices[i] = h.deviceToProtoWithAssignments(d, userAssignMap[d.ID], groupAssignMap[d.ID])
+		fresh, ok := freshMap[d.ID]
+		h.applyInventoryFreshness(protoDevices[i], d, fresh, ok)
 	}
 
 	return connect.NewResponse(&pm.ListDevicesResponse{
@@ -584,6 +592,113 @@ func (h *DeviceHandler) SetDeviceSyncInterval(ctx context.Context, req *connect.
 	}), nil
 }
 
+// SetDeviceInventoryInterval sets the inventory-collection interval
+// override for a device (spec 22 AC 1). 0 = inherit (group minimum,
+// then the 1440-minute server default).
+func (h *DeviceHandler) SetDeviceInventoryInterval(ctx context.Context, req *connect.Request[pm.SetDeviceInventoryIntervalRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
+	if err := Validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "SetDeviceInventoryInterval", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
+	// Bounds at the handler in addition to the validate tag (spec 22
+	// AC 4: boundary AND handler). Non-zero must land in [120, 10080]
+	// minutes (2 h – 7 d); the floor protects devices from osquery
+	// hammering.
+	if m := req.Msg.InventoryIntervalMinutes; m != 0 && (m < 120 || m > 10080) {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "inventory interval out of range")
+	}
+
+	// Verify device exists
+	_, err = h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
+	if err != nil {
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
+	}
+
+	interval := req.Msg.InventoryIntervalMinutes
+	if err := appendEvent(ctx, h.store, h.logger, store.Event{
+		StreamType: "device",
+		StreamID:   req.Msg.Id,
+		EventType:  string(eventtypes.DeviceInventoryIntervalSet),
+		Data: payloads.DeviceInventoryIntervalSet{
+			InventoryIntervalMinutes: &interval,
+		},
+		ActorType: "user",
+		ActorID:   userCtx.ID,
+	}, "failed to set inventory interval"); err != nil {
+		return nil, err
+	}
+
+	// Read back updated device
+	device, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.Id})
+	if err != nil {
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get updated device")
+	}
+
+	return connect.NewResponse(&pm.UpdateDeviceResponse{
+		Device: h.deviceToProtoCtx(ctx, device),
+	}), nil
+}
+
+// inventoryFreshness is one device's spec-22 freshness pair as loaded
+// by inventoryFreshnessMap.
+type inventoryFreshness struct {
+	lastInventoryAt *time.Time
+	intervalMinutes int32 // resolved: device override > group min > default
+}
+
+// inventoryFreshnessMap loads inventory freshness (MAX collected_at +
+// resolved interval) for the given devices in one round trip — the
+// list path stays free of per-row N+1. A query error degrades to an
+// empty map (freshness fields stay unset on the response) with a
+// warning: a device listing must not fail because freshness was
+// momentarily unavailable.
+func (h *DeviceHandler) inventoryFreshnessMap(ctx context.Context, deviceIDs []string) map[string]inventoryFreshness {
+	m := make(map[string]inventoryFreshness, len(deviceIDs))
+	if len(deviceIDs) == 0 {
+		return m
+	}
+	rows, err := h.store.Queries().ListDeviceInventoryFreshnessBatch(ctx, db.ListDeviceInventoryFreshnessBatchParams{
+		DefaultIntervalMinutes: inventorysched.DefaultIntervalMinutes,
+		DeviceIds:              deviceIDs,
+	})
+	if err != nil {
+		h.logger.Warn("inventory freshness lookup failed; devices reported without freshness fields",
+			"devices", len(deviceIDs), "error", err)
+		return m
+	}
+	for _, r := range rows {
+		f := inventoryFreshness{intervalMinutes: r.ResolvedIntervalMinutes}
+		if r.LastInventoryAt.Valid {
+			t := r.LastInventoryAt.Time
+			f.lastInventoryAt = &t
+		}
+		m[r.DeviceID] = f
+	}
+	return m
+}
+
+// applyInventoryFreshness populates the spec-22 freshness fields on a
+// proto device: last_inventory_at and the policy-derived
+// inventory_overdue (AC 7) — valid even while the device is offline.
+func (h *DeviceHandler) applyInventoryFreshness(pd *pm.Device, d store.Device, f inventoryFreshness, ok bool) {
+	if !ok {
+		return
+	}
+	if f.lastInventoryAt != nil {
+		pd.LastInventoryAt = timestamppb.New(*f.lastInventoryAt)
+	}
+	pd.InventoryOverdue = inventorysched.Overdue(f.lastInventoryAt, d.RegisteredAt, f.intervalMinutes, h.now())
+}
+
 // deviceToProtoCtx converts a database device projection to a protobuf device,
 // populating assigned user/group IDs from junction tables.
 func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d store.Device) *pm.Device {
@@ -595,20 +710,24 @@ func (h *DeviceHandler) deviceToProtoCtx(ctx context.Context, d store.Device) *p
 	if rows, err := q.ListDeviceAssignedGroupIDs(ctx, d.ID); err == nil {
 		groupIDs = rows
 	}
-	return h.deviceToProtoWithAssignments(d, userIDs, groupIDs)
+	pd := h.deviceToProtoWithAssignments(d, userIDs, groupIDs)
+	fresh, ok := h.inventoryFreshnessMap(ctx, []string{d.ID})[d.ID]
+	h.applyInventoryFreshness(pd, d, fresh, ok)
+	return pd
 }
 
 // deviceToProtoWithAssignments converts a database device projection to a protobuf
 // device using pre-fetched assignment data. Used by list endpoints with batch queries.
 func (h *DeviceHandler) deviceToProtoWithAssignments(d store.Device, assignedUserIDs, assignedGroupIDs []string) *pm.Device {
 	device := &pm.Device{
-		Id:                  d.ID,
-		Hostname:            d.Hostname,
-		AgentVersion:        d.AgentVersion,
-		Labels:              make(map[string]string),
-		SyncIntervalMinutes: d.SyncIntervalMinutes,
-		AssignedUserIds:     assignedUserIDs,
-		AssignedGroupIds:    assignedGroupIDs,
+		Id:                       d.ID,
+		Hostname:                 d.Hostname,
+		AgentVersion:             d.AgentVersion,
+		Labels:                   make(map[string]string),
+		SyncIntervalMinutes:      d.SyncIntervalMinutes,
+		InventoryIntervalMinutes: d.InventoryIntervalMinutes,
+		AssignedUserIds:          assignedUserIDs,
+		AssignedGroupIds:         assignedGroupIDs,
 	}
 
 	// Determine status based on last_seen

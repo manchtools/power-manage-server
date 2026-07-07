@@ -82,6 +82,7 @@ Environment variables override command-line flags:
 | `CONTROL_RETENTION_ARCHIVE_BACKEND` | Cold-archive backend for pruned history (default and only v1 value: `filesystem`) |
 | `CONTROL_RETENTION_ARCHIVE_PATH` | **Absolute** directory for sealed retention archives. Required when enabled — the archives are the ONLY copy of pruned history; back them up together with `user_encryption_keys`. |
 | `CONTROL_RETENTION_INTERVAL` | How often the retention worker checks for prunable history (default `1h`, clamped `10m`–`24h`) |
+| `CONTROL_INVENTORY_SCHEDULER_ENABLED` | Enable the periodic inventory collection scheduler (spec 22; default: `true`). Every 15 minutes it sends a CA-signed inventory request to each connected device whose inventory is older than its resolved interval (device override > group minimum > 24 h default). Set to `false` for change-frozen environments that must not run osquery on a cadence — manual refresh and the `inventory_overdue` flag are unaffected. |
 
 ## Setup
 

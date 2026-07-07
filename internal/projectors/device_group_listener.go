@@ -124,6 +124,8 @@ func ApplyDeviceGroup(ctx context.Context, q *store.Queries, e store.PersistedEv
 		return applyDeviceGroupQueryUpdated(ctx, q, e)
 	case string(eventtypes.DeviceGroupSyncIntervalSet):
 		return applyDeviceGroupSyncIntervalSet(ctx, q, e)
+	case string(eventtypes.DeviceGroupInventoryIntervalSet):
+		return applyDeviceGroupInventoryIntervalSet(ctx, q, e)
 	case string(eventtypes.DeviceGroupMaintenanceWindowSet):
 		return applyDeviceGroupMaintenanceWindowSet(ctx, q, e)
 	case string(eventtypes.DeviceGroupMemberAdded), string(eventtypes.DeviceAddedToGroup):
@@ -314,6 +316,24 @@ func applyDeviceGroupSyncIntervalSet(ctx context.Context, q *store.Queries, e st
 		ID:                  payload.ID,
 		SyncIntervalMinutes: payload.SyncIntervalMinutes,
 		ProjectionVersion:   e.SequenceNum,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyDeviceGroupInventoryIntervalSet(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	payload, err := DeviceGroupInventoryIntervalSetFromEvent(e)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	if _, err := q.UpdateDeviceGroupInventoryIntervalProjection(ctx, db.UpdateDeviceGroupInventoryIntervalProjectionParams{
+		ID:                       payload.ID,
+		InventoryIntervalMinutes: payload.InventoryIntervalMinutes,
+		ProjectionVersion:        e.SequenceNum,
 	}); err != nil {
 		return err
 	}

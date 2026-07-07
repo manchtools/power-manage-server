@@ -98,15 +98,16 @@ func (g *DeviceGroup) ListMembers(ctx context.Context, groupID string) ([]store.
 
 func deviceGroupFromRow(r generated.DeviceGroupsProjection) store.DeviceGroup {
 	return store.DeviceGroup{
-		ID:                  r.ID,
-		Name:                r.Name,
-		Description:         r.Description,
-		MemberCount:         r.MemberCount,
-		CreatedAt:           r.CreatedAt,
-		CreatedBy:           r.CreatedBy,
-		IsDynamic:           r.IsDynamic,
-		DynamicQuery:        r.DynamicQuery,
-		SyncIntervalMinutes: r.SyncIntervalMinutes,
-		MaintenanceWindow:   json.RawMessage(r.MaintenanceWindow),
+		ID:                       r.ID,
+		Name:                     r.Name,
+		Description:              r.Description,
+		MemberCount:              r.MemberCount,
+		CreatedAt:                r.CreatedAt,
+		CreatedBy:                r.CreatedBy,
+		IsDynamic:                r.IsDynamic,
+		DynamicQuery:             r.DynamicQuery,
+		SyncIntervalMinutes:      r.SyncIntervalMinutes,
+		InventoryIntervalMinutes: r.InventoryIntervalMinutes,
+		MaintenanceWindow:        json.RawMessage(r.MaintenanceWindow),
 	}
 }

@@ -193,6 +193,16 @@ SET sync_interval_minutes = $2,
 WHERE id = $1
   AND projection_version < $3;
 
+-- name: UpdateDeviceGroupInventoryIntervalProjection :execrows
+-- DeviceGroupInventoryIntervalSet handler (spec 22). Same shape as the
+-- sync-interval write: decoder defaults a missing key to 0,
+-- stale-replay guard via projection_version.
+UPDATE device_groups_projection
+SET inventory_interval_minutes = $2,
+    projection_version         = $3
+WHERE id = $1
+  AND projection_version < $3;
+
 -- name: UpdateDeviceGroupMaintenanceWindowProjection :execrows
 -- DeviceGroupMaintenanceWindowSet handler. Mirrors the PL/pgSQL
 -- `COALESCE(payload, '{}'::JSONB)`: the listener decoder substitutes

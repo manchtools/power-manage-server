@@ -88,3 +88,10 @@ type DeviceGroupAssignment struct {
 type DeviceSyncIntervalSet struct {
 	SyncIntervalMinutes *int32 `json:"sync_interval_minutes,omitempty"`
 }
+
+// DeviceInventoryIntervalSet is the wire shape for the per-device
+// inventory-collection interval override (spec 22). Zero means
+// "inherit" (group minimum, then the 1440-minute server default).
+type DeviceInventoryIntervalSet struct {
+	InventoryIntervalMinutes *int32 `json:"inventory_interval_minutes,omitempty"`
+}

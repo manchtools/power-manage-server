@@ -296,7 +296,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	// and the agent verifies the CA signature before running osquery as root.
 	// Fail closed on a signing error.
 	payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String()}
-	if err := signInventoryRequest(h.signer, &payload); err != nil {
+	if err := taskqueue.SignInventoryRequest(h.signer, &payload); err != nil {
 		h.logger.Error("inventory request signing failed",
 			"device_id", msg.DeviceId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to sign inventory request")

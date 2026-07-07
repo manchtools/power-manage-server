@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"time"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 )
@@ -27,3 +28,8 @@ func SetRenewCertTestHook(fn func()) { renewCertTestHook = fn }
 func (h *AuthHandler) SetDummyVerifyForTest(fn func(password, hash string) bool) {
 	h.dummyVerify = fn
 }
+
+// SetNowForTest overrides the DeviceHandler clock seam so the spec-22
+// freshness boundary tests can pin "now" against a fixed collected_at.
+// Compiled only into test binaries.
+func (h *DeviceHandler) SetNowForTest(now func() time.Time) { h.now = now }

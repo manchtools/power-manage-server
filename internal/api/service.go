@@ -274,6 +274,10 @@ func (s *ControlService) SetDeviceSyncInterval(ctx context.Context, req *connect
 	return s.device.SetDeviceSyncInterval(ctx, req)
 }
 
+func (s *ControlService) SetDeviceInventoryInterval(ctx context.Context, req *connect.Request[pm.SetDeviceInventoryIntervalRequest]) (*connect.Response[pm.UpdateDeviceResponse], error) {
+	return s.device.SetDeviceInventoryInterval(ctx, req)
+}
+
 func (s *ControlService) ListDeviceAssignees(ctx context.Context, req *connect.Request[pm.ListDeviceAssigneesRequest]) (*connect.Response[pm.ListDeviceAssigneesResponse], error) {
 	return s.device.ListDeviceAssignees(ctx, req)
 }
@@ -465,6 +469,10 @@ func (s *ControlService) EvaluateDynamicGroup(ctx context.Context, req *connect.
 
 func (s *ControlService) SetDeviceGroupSyncInterval(ctx context.Context, req *connect.Request[pm.SetDeviceGroupSyncIntervalRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
 	return s.deviceGroup.SetDeviceGroupSyncInterval(ctx, req)
+}
+
+func (s *ControlService) SetDeviceGroupInventoryInterval(ctx context.Context, req *connect.Request[pm.SetDeviceGroupInventoryIntervalRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {
+	return s.deviceGroup.SetDeviceGroupInventoryInterval(ctx, req)
 }
 
 func (s *ControlService) SetDeviceGroupMaintenanceWindow(ctx context.Context, req *connect.Request[pm.SetDeviceGroupMaintenanceWindowRequest]) (*connect.Response[pm.UpdateDeviceGroupResponse], error) {

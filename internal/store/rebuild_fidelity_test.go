@@ -84,6 +84,24 @@ func seedRichFixture(t *testing.T, st *store.Store) {
 		ActorType:  "user",
 		ActorID:    adminID,
 	}))
+	// Spec 22: inventory-interval policy columns must replay
+	// byte-identically on both projections.
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceInventoryIntervalSet",
+		Data:       map[string]any{"inventory_interval_minutes": 240},
+		ActorType:  "user",
+		ActorID:    adminID,
+	}))
+	require.NoError(t, st.AppendEvent(ctx, store.Event{
+		StreamType: "device_group",
+		StreamID:   deviceGroupID,
+		EventType:  "DeviceGroupInventoryIntervalSet",
+		Data:       map[string]any{"inventory_interval_minutes": 720},
+		ActorType:  "user",
+		ActorID:    adminID,
+	}))
 
 	actionID := testutil.CreateTestAction(t, st, adminID, "fidelity-action-"+testutil.NewID()[:8], 1)
 	setID := testutil.CreateTestActionSet(t, st, adminID, "fidelity-set-"+testutil.NewID()[:8])

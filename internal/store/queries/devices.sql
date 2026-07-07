@@ -415,3 +415,81 @@ SET sync_interval_minutes = $2,
     projection_version    = $3
 WHERE id = $1
   AND projection_version < $3;
+
+-- name: UpdateDeviceInventoryIntervalProjection :execrows
+-- DeviceInventoryIntervalSet handler (spec 22). Same shape as the
+-- sync-interval write: decoder defaults a missing key to 0,
+-- stale-replay guard via projection_version.
+UPDATE devices_projection
+SET inventory_interval_minutes = $2,
+    projection_version         = $3
+WHERE id = $1
+  AND projection_version < $3;
+
+-- ============================================================================
+-- Inventory collection interval + freshness (spec 22).
+-- ============================================================================
+--
+-- Resolution order (mirrors GetDeviceSyncInterval): device-level
+-- override (> 0) wins, else the smallest non-zero interval across the
+-- device's groups, else @default_interval_minutes (the server default,
+-- 1440 — passed in from Go so the constant has one home). The same
+-- expression is embedded in ListDeviceInventoryFreshnessBatch and
+-- ListStaleInventoryDevices; the resolution tests run against both to
+-- pin identical semantics.
+
+-- name: ListDeviceInventoryFreshnessBatch :many
+-- Freshness data for a set of devices in one round trip (no per-row
+-- N+1): last_inventory_at is MAX(device_inventory.collected_at) per
+-- device, resolved_interval_minutes is the effective policy interval.
+-- The Device read paths (GetDevice / ListDevices / mutation responses)
+-- join this onto their projection rows in the handler.
+SELECT d.id AS device_id,
+       inv.last_inventory_at::TIMESTAMPTZ AS last_inventory_at,
+       COALESCE(
+           CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,
+           (SELECT MIN(CASE WHEN dg.inventory_interval_minutes > 0 THEN dg.inventory_interval_minutes END)
+            FROM device_groups_projection dg
+            JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
+            WHERE dgm.device_id = d.id
+              AND dg.is_deleted = FALSE),
+           @default_interval_minutes::INT
+       )::INTEGER AS resolved_interval_minutes
+FROM devices_projection d
+LEFT JOIN (
+    SELECT device_id, MAX(collected_at) AS last_inventory_at
+    FROM device_inventory
+    WHERE device_id = ANY(@device_ids::TEXT[])
+    GROUP BY device_id
+) inv ON inv.device_id = d.id
+WHERE d.id = ANY(@device_ids::TEXT[]);
+
+-- name: ListStaleInventoryDevices :many
+-- Scheduler feed (spec 22 AC 5/6): every non-deleted device whose
+-- inventory age exceeds its resolved interval — a device with no
+-- inventory rows at all counts as stale — and whose last_seen_at is
+-- recent (@seen_since = now - one tick; heartbeats land every 30s, so
+-- a connected device always qualifies). @now comes from the worker's
+-- clock seam, never SQL now(), so tests can pin time.
+SELECT d.id
+FROM devices_projection d
+LEFT JOIN (
+    SELECT device_id, MAX(collected_at) AS last_inventory_at
+    FROM device_inventory
+    GROUP BY device_id
+) inv ON inv.device_id = d.id
+WHERE d.is_deleted = FALSE
+  AND d.last_seen_at >= @seen_since::TIMESTAMPTZ
+  AND (
+    inv.last_inventory_at IS NULL
+    OR inv.last_inventory_at + make_interval(mins => COALESCE(
+           CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,
+           (SELECT MIN(CASE WHEN dg.inventory_interval_minutes > 0 THEN dg.inventory_interval_minutes END)
+            FROM device_groups_projection dg
+            JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
+            WHERE dgm.device_id = d.id
+              AND dg.is_deleted = FALSE),
+           @default_interval_minutes::INT
+       )) <= @now::TIMESTAMPTZ
+  )
+ORDER BY d.id;

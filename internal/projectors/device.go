@@ -397,3 +397,30 @@ func DeviceSyncIntervalSetFromEvent(e store.PersistedEvent) (DeviceSyncIntervalS
 	}
 	return out, nil
 }
+
+// DeviceInventoryIntervalSetPayload is the decoded per-device inventory
+// interval override (spec 22). A missing key collapses to 0 ("inherit"),
+// matching the sync-interval decoder's COALESCE semantics.
+type DeviceInventoryIntervalSetPayload struct {
+	ID                       string
+	InventoryIntervalMinutes int32
+}
+
+// DeviceInventoryIntervalSetFromEvent decodes DeviceInventoryIntervalSet.
+func DeviceInventoryIntervalSetFromEvent(e store.PersistedEvent) (DeviceInventoryIntervalSetPayload, error) {
+	if e.StreamType != "device" || e.EventType != string(eventtypes.DeviceInventoryIntervalSet) {
+		return DeviceInventoryIntervalSetPayload{}, ErrIgnoredEvent
+	}
+	out := DeviceInventoryIntervalSetPayload{ID: e.StreamID}
+	if len(e.Data) == 0 {
+		return out, nil
+	}
+	var raw payloads.DeviceInventoryIntervalSet
+	if err := json.Unmarshal(e.Data, &raw); err != nil {
+		return DeviceInventoryIntervalSetPayload{}, fmt.Errorf("projector: invalid DeviceInventoryIntervalSet payload: %w", err)
+	}
+	if raw.InventoryIntervalMinutes != nil {
+		out.InventoryIntervalMinutes = *raw.InventoryIntervalMinutes
+	}
+	return out, nil
+}

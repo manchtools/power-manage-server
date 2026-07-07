@@ -160,18 +160,19 @@ type DeviceGroupMembersProjection struct {
 }
 
 type DeviceGroupsProjection struct {
-	ID                  string     `json:"id"`
-	Name                string     `json:"name"`
-	Description         string     `json:"description"`
-	MemberCount         int32      `json:"member_count"`
-	CreatedAt           *time.Time `json:"created_at"`
-	CreatedBy           string     `json:"created_by"`
-	IsDeleted           bool       `json:"is_deleted"`
-	ProjectionVersion   int64      `json:"projection_version"`
-	IsDynamic           bool       `json:"is_dynamic"`
-	DynamicQuery        *string    `json:"dynamic_query"`
-	SyncIntervalMinutes int32      `json:"sync_interval_minutes"`
-	MaintenanceWindow   []byte     `json:"maintenance_window"`
+	ID                       string     `json:"id"`
+	Name                     string     `json:"name"`
+	Description              string     `json:"description"`
+	MemberCount              int32      `json:"member_count"`
+	CreatedAt                *time.Time `json:"created_at"`
+	CreatedBy                string     `json:"created_by"`
+	IsDeleted                bool       `json:"is_deleted"`
+	ProjectionVersion        int64      `json:"projection_version"`
+	IsDynamic                bool       `json:"is_dynamic"`
+	DynamicQuery             *string    `json:"dynamic_query"`
+	SyncIntervalMinutes      int32      `json:"sync_interval_minutes"`
+	MaintenanceWindow        []byte     `json:"maintenance_window"`
+	InventoryIntervalMinutes int32      `json:"inventory_interval_minutes"`
 }
 
 type DeviceInventory struct {
@@ -188,21 +189,22 @@ type DeviceLabel struct {
 }
 
 type DevicesProjection struct {
-	ID                  string     `json:"id"`
-	Hostname            string     `json:"hostname"`
-	AgentVersion        string     `json:"agent_version"`
-	CertFingerprint     *string    `json:"cert_fingerprint"`
-	CertNotAfter        *time.Time `json:"cert_not_after"`
-	RegisteredAt        *time.Time `json:"registered_at"`
-	LastSeenAt          *time.Time `json:"last_seen_at"`
-	RegistrationTokenID *string    `json:"registration_token_id"`
-	IsDeleted           bool       `json:"is_deleted"`
-	ProjectionVersion   int64      `json:"projection_version"`
-	SyncIntervalMinutes int32      `json:"sync_interval_minutes"`
-	ComplianceStatus    int32      `json:"compliance_status"`
-	ComplianceCheckedAt *time.Time `json:"compliance_checked_at"`
-	ComplianceTotal     int32      `json:"compliance_total"`
-	CompliancePassing   int32      `json:"compliance_passing"`
+	ID                       string     `json:"id"`
+	Hostname                 string     `json:"hostname"`
+	AgentVersion             string     `json:"agent_version"`
+	CertFingerprint          *string    `json:"cert_fingerprint"`
+	CertNotAfter             *time.Time `json:"cert_not_after"`
+	RegisteredAt             *time.Time `json:"registered_at"`
+	LastSeenAt               *time.Time `json:"last_seen_at"`
+	RegistrationTokenID      *string    `json:"registration_token_id"`
+	IsDeleted                bool       `json:"is_deleted"`
+	ProjectionVersion        int64      `json:"projection_version"`
+	SyncIntervalMinutes      int32      `json:"sync_interval_minutes"`
+	ComplianceStatus         int32      `json:"compliance_status"`
+	ComplianceCheckedAt      *time.Time `json:"compliance_checked_at"`
+	ComplianceTotal          int32      `json:"compliance_total"`
+	CompliancePassing        int32      `json:"compliance_passing"`
+	InventoryIntervalMinutes int32      `json:"inventory_interval_minutes"`
 }
 
 type DynamicGroupEvaluationQueue struct {
