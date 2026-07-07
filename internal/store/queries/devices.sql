@@ -471,16 +471,27 @@ WHERE d.id = ANY(@device_ids::TEXT[]);
 -- recent (@seen_since = now - one tick; heartbeats land every 30s, so
 -- a connected device always qualifies). @now comes from the worker's
 -- clock seam, never SQL now(), so tests can pin time.
+--
+-- The candidates CTE pre-filters to eligible devices so the
+-- device_inventory MAX() aggregation runs over their rows only, not
+-- the whole table (CR catch). Deliberately NO LIMIT: the no-batch-cap
+-- decision is pinned in the spec — Asynq queueing absorbs the
+-- first-rollout herd and the sub-tick deadline expires the excess.
+WITH candidates AS (
+    SELECT id, inventory_interval_minutes
+    FROM devices_projection
+    WHERE is_deleted = FALSE
+      AND last_seen_at >= @seen_since::TIMESTAMPTZ
+)
 SELECT d.id
-FROM devices_projection d
+FROM candidates d
 LEFT JOIN (
     SELECT device_id, MAX(collected_at) AS last_inventory_at
     FROM device_inventory
+    WHERE device_id IN (SELECT id FROM candidates)
     GROUP BY device_id
 ) inv ON inv.device_id = d.id
-WHERE d.is_deleted = FALSE
-  AND d.last_seen_at >= @seen_since::TIMESTAMPTZ
-  AND (
+WHERE (
     inv.last_inventory_at IS NULL
     OR inv.last_inventory_at + make_interval(mins => COALESCE(
            CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,

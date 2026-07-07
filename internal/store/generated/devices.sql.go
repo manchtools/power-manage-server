@@ -1063,16 +1063,21 @@ func (q *Queries) ListDevicesOnline(ctx context.Context, arg ListDevicesOnlinePa
 }
 
 const listStaleInventoryDevices = `-- name: ListStaleInventoryDevices :many
+WITH candidates AS (
+    SELECT id, inventory_interval_minutes
+    FROM devices_projection
+    WHERE is_deleted = FALSE
+      AND last_seen_at >= $3::TIMESTAMPTZ
+)
 SELECT d.id
-FROM devices_projection d
+FROM candidates d
 LEFT JOIN (
     SELECT device_id, MAX(collected_at) AS last_inventory_at
     FROM device_inventory
+    WHERE device_id IN (SELECT id FROM candidates)
     GROUP BY device_id
 ) inv ON inv.device_id = d.id
-WHERE d.is_deleted = FALSE
-  AND d.last_seen_at >= $1::TIMESTAMPTZ
-  AND (
+WHERE (
     inv.last_inventory_at IS NULL
     OR inv.last_inventory_at + make_interval(mins => COALESCE(
            CASE WHEN d.inventory_interval_minutes > 0 THEN d.inventory_interval_minutes END,
@@ -1081,16 +1086,16 @@ WHERE d.is_deleted = FALSE
             JOIN device_group_members_projection dgm ON dgm.group_id = dg.id
             WHERE dgm.device_id = d.id
               AND dg.is_deleted = FALSE),
-           $2::INT
-       )) <= $3::TIMESTAMPTZ
+           $1::INT
+       )) <= $2::TIMESTAMPTZ
   )
 ORDER BY d.id
 `
 
 type ListStaleInventoryDevicesParams struct {
-	SeenSince              pgtype.Timestamptz `json:"seen_since"`
 	DefaultIntervalMinutes int32              `json:"default_interval_minutes"`
 	Now                    pgtype.Timestamptz `json:"now"`
+	SeenSince              pgtype.Timestamptz `json:"seen_since"`
 }
 
 // Scheduler feed (spec 22 AC 5/6): every non-deleted device whose
@@ -1099,8 +1104,14 @@ type ListStaleInventoryDevicesParams struct {
 // recent (@seen_since = now - one tick; heartbeats land every 30s, so
 // a connected device always qualifies). @now comes from the worker's
 // clock seam, never SQL now(), so tests can pin time.
+//
+// The candidates CTE pre-filters to eligible devices so the
+// device_inventory MAX() aggregation runs over their rows only, not
+// the whole table (CR catch). Deliberately NO LIMIT: the no-batch-cap
+// decision is pinned in the spec — Asynq queueing absorbs the
+// first-rollout herd and the sub-tick deadline expires the excess.
 func (q *Queries) ListStaleInventoryDevices(ctx context.Context, arg ListStaleInventoryDevicesParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listStaleInventoryDevices, arg.SeenSince, arg.DefaultIntervalMinutes, arg.Now)
+	rows, err := q.db.Query(ctx, listStaleInventoryDevices, arg.DefaultIntervalMinutes, arg.Now, arg.SeenSince)
 	if err != nil {
 		return nil, err
 	}
