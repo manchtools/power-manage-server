@@ -358,6 +358,63 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 	assert.Equal(t, "failed", exec.Status)
 }
 
+// TestHandleExecutionResult_NotApplicable pins spec 23 AC 4: a
+// NOT_APPLICABLE result flows through the existing pipeline (event →
+// projection) with the machine-readable reason landing in the error
+// column — a distinct terminal state, not FAILED and not SUCCESS.
+func TestHandleExecutionResult_NotApplicable(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "exec-na-host")
+	actionID := testutil.CreateTestAction(t, st, adminID, "NA Action", int(pm.ActionType_ACTION_TYPE_UPDATE))
+
+	executionID := testutil.NewID()
+	err := st.AppendEvent(context.Background(), store.Event{
+		StreamType: "execution",
+		StreamID:   executionID,
+		EventType:  "ExecutionCreated",
+		Data: map[string]any{
+			"device_id":       deviceID,
+			"action_id":       actionID,
+			"action_type":     int(pm.ActionType_ACTION_TYPE_UPDATE),
+			"desired_state":   0,
+			"params":          map[string]any{},
+			"timeout_seconds": 300,
+			"executed_at":     time.Now().Format(time.RFC3339Nano),
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	})
+	require.NoError(t, err)
+
+	result := &pm.ActionResult{
+		ActionId:    &pm.ActionId{Value: executionID},
+		Status:      pm.ExecutionStatus_EXECUTION_STATUS_NOT_APPLICABLE,
+		Error:       "security-only upgrades unsupported: pacman has no security-patch scoping",
+		DurationMs:  120,
+		CompletedAt: timestamppb.Now(),
+	}
+	resultProto, err := proto.Marshal(result)
+	require.NoError(t, err)
+
+	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
+	})
+
+	err = mux.ProcessTask(context.Background(), task)
+	require.NoError(t, err)
+
+	exec, err := st.Queries().GetExecutionByID(context.Background(), executionID)
+	require.NoError(t, err)
+	assert.Equal(t, "not_applicable", exec.Status)
+	require.NotNil(t, exec.Error)
+	assert.Equal(t, "security-only upgrades unsupported: pacman has no security-patch scoping", *exec.Error)
+}
+
 func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)

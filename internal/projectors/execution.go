@@ -269,10 +269,11 @@ func ExecutionTimedOutFromEvent(e store.PersistedEvent) (ExecutionTimedOutPayloa
 	return out, nil
 }
 
-// ExecutionReasonPayload covers ExecutionSkipped and ExecutionCancelled.
-// Both events write completed_at = event.occurred_at unconditionally
-// (no payload fallback in the PL/pgSQL source) and stash the reason in
-// the error column. Decoder shapes them identically.
+// ExecutionReasonPayload covers ExecutionSkipped, ExecutionCancelled
+// and ExecutionNotApplicable. These events write completed_at =
+// event.occurred_at unconditionally (no payload fallback in the
+// PL/pgSQL source) and stash the reason in the error column. Decoder
+// shapes them identically.
 type ExecutionReasonPayload struct {
 	ID          string
 	CompletedAt time.Time
@@ -285,6 +286,14 @@ func ExecutionSkippedFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, 
 		return ExecutionReasonPayload{}, ErrIgnoredEvent
 	}
 	return decodeReason(e, "ExecutionSkipped")
+}
+
+// ExecutionNotApplicableFromEvent decodes ExecutionNotApplicable.
+func ExecutionNotApplicableFromEvent(e store.PersistedEvent) (ExecutionReasonPayload, error) {
+	if e.StreamType != "execution" || e.EventType != string(eventtypes.ExecutionNotApplicable) {
+		return ExecutionReasonPayload{}, ErrIgnoredEvent
+	}
+	return decodeReason(e, "ExecutionNotApplicable")
 }
 
 // ExecutionCancelledFromEvent decodes ExecutionCancelled.

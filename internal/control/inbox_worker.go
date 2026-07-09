@@ -402,6 +402,15 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 			data = payloads.ExecutionReason{}
 		}
 
+	case pm.ExecutionStatus_EXECUTION_STATUS_NOT_APPLICABLE:
+		eventType = "ExecutionNotApplicable"
+		if result.Error != "" {
+			reason := result.Error
+			data = payloads.ExecutionReason{Reason: &reason}
+		} else {
+			data = payloads.ExecutionReason{}
+		}
+
 	default:
 		return fmt.Errorf("unknown execution status: %s", result.Status.String())
 	}

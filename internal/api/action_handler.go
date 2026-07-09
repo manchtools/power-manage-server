@@ -194,6 +194,10 @@ func statusToString(s pm.ExecutionStatus) string {
 		return "scheduled"
 	case pm.ExecutionStatus_EXECUTION_STATUS_CANCELLED:
 		return "cancelled"
+	case pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED:
+		return "skipped"
+	case pm.ExecutionStatus_EXECUTION_STATUS_NOT_APPLICABLE:
+		return "not_applicable"
 	default:
 		return ""
 	}
@@ -217,6 +221,10 @@ func stringToStatus(s string) pm.ExecutionStatus {
 		return pm.ExecutionStatus_EXECUTION_STATUS_SCHEDULED
 	case "cancelled":
 		return pm.ExecutionStatus_EXECUTION_STATUS_CANCELLED
+	case "skipped":
+		return pm.ExecutionStatus_EXECUTION_STATUS_SKIPPED
+	case "not_applicable":
+		return pm.ExecutionStatus_EXECUTION_STATUS_NOT_APPLICABLE
 	default:
 		return pm.ExecutionStatus_EXECUTION_STATUS_UNSPECIFIED
 	}

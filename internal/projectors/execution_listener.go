@@ -77,6 +77,8 @@ func ApplyExecution(ctx context.Context, q *store.Queries, e store.PersistedEven
 		return applyExecutionTimedOut(ctx, q, e)
 	case string(eventtypes.ExecutionSkipped):
 		return applyExecutionSkipped(ctx, q, e)
+	case string(eventtypes.ExecutionNotApplicable):
+		return applyExecutionNotApplicable(ctx, q, e)
 	case string(eventtypes.ExecutionCancelled):
 		return applyExecutionCancelled(ctx, q, e)
 	}
@@ -257,6 +259,26 @@ func applyExecutionSkipped(ctx context.Context, q *store.Queries, e store.Persis
 	}
 	completedAt := payload.CompletedAt
 	if _, err := q.UpdateExecutionSkippedProjection(ctx, db.UpdateExecutionSkippedProjectionParams{
+		ID:                payload.ID,
+		CompletedAt:       &completedAt,
+		Error:             payload.Reason,
+		ProjectionVersion: e.SequenceNum,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyExecutionNotApplicable(ctx context.Context, q *store.Queries, e store.PersistedEvent) error {
+	payload, err := ExecutionNotApplicableFromEvent(e)
+	if err != nil {
+		if errors.Is(err, ErrIgnoredEvent) {
+			return nil
+		}
+		return err
+	}
+	completedAt := payload.CompletedAt
+	if _, err := q.UpdateExecutionNotApplicableProjection(ctx, db.UpdateExecutionNotApplicableProjectionParams{
 		ID:                payload.ID,
 		CompletedAt:       &completedAt,
 		Error:             payload.Reason,
