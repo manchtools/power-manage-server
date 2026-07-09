@@ -130,6 +130,11 @@ const (
 	ExecutionTimedOut   EventType = "ExecutionTimedOut"
 	ExecutionSkipped    EventType = "ExecutionSkipped"
 	ExecutionCancelled  EventType = "ExecutionCancelled"
+	// ExecutionNotApplicable is the terminal, non-error outcome for an
+	// action that is structurally inapplicable to the device (spec 23):
+	// security_only on a backend with no security-patch scoping, a DEB
+	// action on an rpm host, etc. The reason travels in the payload.
+	ExecutionNotApplicable EventType = "ExecutionNotApplicable"
 	// OutputChunk is emitted on the execution stream for streaming
 	// terminal/output payloads (LoadOutputChunks reads them back).
 	OutputChunk EventType = "OutputChunk"
@@ -283,7 +288,7 @@ func All() []EventType {
 		DeviceGroupSyncIntervalSet, DeviceGroupInventoryIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
 		DeviceGroupMemberRemoved, DeviceGroupMembersReevaluated, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,
 		ExecutionCreated, ExecutionScheduled, ExecutionDispatched, ExecutionStarted, ExecutionCompleted,
-		ExecutionFailed, ExecutionTimedOut, ExecutionSkipped, ExecutionCancelled, OutputChunk,
+		ExecutionFailed, ExecutionTimedOut, ExecutionSkipped, ExecutionCancelled, ExecutionNotApplicable, OutputChunk,
 		IdentityProviderCreated, IdentityProviderUpdated, IdentityProviderDeleted, IdentityProviderSCIMEnabled,
 		IdentityProviderSCIMDisabled, IdentityProviderSCIMTokenRotated, IdentityLinked,
 		IdentityLinkLoginUpdated, IdentityUnlinked,

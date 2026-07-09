@@ -273,6 +273,25 @@ func TestExecutionSkippedFromEvent_Pure(t *testing.T) {
 	})
 }
 
+func TestExecutionNotApplicableFromEvent_Pure(t *testing.T) {
+	t.Run("reason surfaces", func(t *testing.T) {
+		got, err := projectors.ExecutionNotApplicableFromEvent(store.PersistedEvent{
+			StreamType: "execution", StreamID: "exec-1", EventType: "ExecutionNotApplicable",
+			Data: jsonOrFail(t, map[string]any{"reason": "no supported .deb package manager available on this system"}),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, got.Reason)
+		assert.Equal(t, "no supported .deb package manager available on this system", *got.Reason)
+	})
+
+	t.Run("wrong stream/event_type → ErrIgnoredEvent", func(t *testing.T) {
+		_, err := projectors.ExecutionNotApplicableFromEvent(store.PersistedEvent{
+			StreamType: "user", EventType: "ExecutionNotApplicable",
+		})
+		assert.True(t, errors.Is(err, projectors.ErrIgnoredEvent))
+	})
+}
+
 func TestExecutionCancelledFromEvent_Pure(t *testing.T) {
 	t.Run("reason surfaces", func(t *testing.T) {
 		got, err := projectors.ExecutionCancelledFromEvent(store.PersistedEvent{
@@ -475,6 +494,20 @@ func TestExecutionListener_TerminalStates(t *testing.T) {
 		assert.Equal(t, "skipped", got.Status)
 		require.NotNil(t, got.Error)
 		assert.Equal(t, "outside maintenance window", *got.Error)
+	})
+
+	t.Run("NotApplicable", func(t *testing.T) {
+		id := mkPending(t)
+		require.NoError(t, st.AppendEvent(ctx, store.Event{
+			StreamType: "execution", StreamID: id, EventType: "ExecutionNotApplicable",
+			Data:      map[string]any{"reason": "flatpak not available on this system"},
+			ActorType: "device", ActorID: "dev-1",
+		}))
+		got, err := st.Queries().GetExecutionByID(ctx, id)
+		require.NoError(t, err)
+		assert.Equal(t, "not_applicable", got.Status)
+		require.NotNil(t, got.Error)
+		assert.Equal(t, "flatpak not available on this system", *got.Error)
 	})
 
 	t.Run("Cancelled flips a pending row", func(t *testing.T) {

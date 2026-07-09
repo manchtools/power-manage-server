@@ -130,6 +130,18 @@ SET status             = 'skipped',
 WHERE id = $1
   AND projection_version < $4;
 
+-- name: UpdateExecutionNotApplicableProjection :execrows
+-- ExecutionNotApplicable handler (spec 23). Same shape as Skipped:
+-- completed_at is event.occurred_at; error column carries the
+-- inapplicability reason.
+UPDATE executions_projection
+SET status             = 'not_applicable',
+    completed_at       = $2,
+    error              = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4;
+
 -- name: UpdateExecutionCancelledProjection :execrows
 -- ExecutionCancelled handler. The PL/pgSQL projector layered TWO
 -- guards: the status whitelist (only flip rows still in 'scheduled'

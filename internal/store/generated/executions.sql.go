@@ -284,6 +284,39 @@ func (q *Queries) UpdateExecutionFailedProjection(ctx context.Context, arg Updat
 	return result.RowsAffected(), nil
 }
 
+const updateExecutionNotApplicableProjection = `-- name: UpdateExecutionNotApplicableProjection :execrows
+UPDATE executions_projection
+SET status             = 'not_applicable',
+    completed_at       = $2,
+    error              = $3,
+    projection_version = $4
+WHERE id = $1
+  AND projection_version < $4
+`
+
+type UpdateExecutionNotApplicableProjectionParams struct {
+	ID                string     `json:"id"`
+	CompletedAt       *time.Time `json:"completed_at"`
+	Error             *string    `json:"error"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
+// ExecutionNotApplicable handler (spec 23). Same shape as Skipped:
+// completed_at is event.occurred_at; error column carries the
+// inapplicability reason.
+func (q *Queries) UpdateExecutionNotApplicableProjection(ctx context.Context, arg UpdateExecutionNotApplicableProjectionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateExecutionNotApplicableProjection,
+		arg.ID,
+		arg.CompletedAt,
+		arg.Error,
+		arg.ProjectionVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateExecutionSkippedProjection = `-- name: UpdateExecutionSkippedProjection :execrows
 UPDATE executions_projection
 SET status             = 'skipped',

@@ -1,6 +1,6 @@
 module github.com/manchtools/power-manage/server
 
-go 1.25.11
+go 1.25.12
 
 require (
 	connectrpc.com/connect v1.18.1
@@ -12,7 +12,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/manchtools/power-manage-sdk v0.5.4-0.20260707202812-87ad575e7e37
+	github.com/manchtools/power-manage-sdk v0.5.4-0.20260709091948-db56f7940806
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.26.0
