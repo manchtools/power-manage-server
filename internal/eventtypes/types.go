@@ -91,7 +91,17 @@ const (
 	OSQueryDispatched               EventType = "OSQueryDispatched"
 	DeviceLogsQueried               EventType = "DeviceLogsQueried"
 	DeviceInventoryRefreshRequested EventType = "DeviceInventoryRefreshRequested"
-	LuksTokenCreated                EventType = "LuksTokenCreated"
+	// Secret-read audit events (spec 24 / #494): an operator retrieved —
+	// or was denied at the handler tier (absent device, decrypt failure) —
+	// a device's decrypted LPS passwords / LUKS keys. Payloads carry
+	// identifiers only, never secret material. Audit-only: no projector
+	// materialises these; they exist so ListAuditEvents answers "who read
+	// which device's break-glass credentials, when".
+	LpsPasswordsViewed     EventType = "LpsPasswordsViewed"
+	LuksKeysViewed         EventType = "LuksKeysViewed"
+	LpsPasswordsViewDenied EventType = "LpsPasswordsViewDenied"
+	LuksKeysViewDenied     EventType = "LuksKeysViewDenied"
+	LuksTokenCreated       EventType = "LuksTokenCreated"
 
 	// device_group stream
 	DeviceGroupCreated            EventType = "DeviceGroupCreated"
@@ -284,6 +294,7 @@ func All() []EventType {
 		DeviceLabelSet, DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
 		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet, DeviceInventoryIntervalSet,
 		OSQueryDispatched, DeviceLogsQueried, DeviceInventoryRefreshRequested, LuksTokenCreated,
+		LpsPasswordsViewed, LuksKeysViewed, LpsPasswordsViewDenied, LuksKeysViewDenied,
 		DeviceGroupCreated, DeviceGroupRenamed, DeviceGroupDescriptionUpdated, DeviceGroupQueryUpdated,
 		DeviceGroupSyncIntervalSet, DeviceGroupInventoryIntervalSet, DeviceGroupMaintenanceWindowSet, DeviceGroupMemberAdded,
 		DeviceGroupMemberRemoved, DeviceGroupMembersReevaluated, DeviceGroupDeleted, DeviceAddedToGroup, DeviceRemovedFromGroup,

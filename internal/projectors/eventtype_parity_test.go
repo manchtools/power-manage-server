@@ -39,7 +39,14 @@ var unprojectedAllowlist = map[eventtypes.EventType]string{
 	eventtypes.LuksTokenCreated:                "audit-only (#496): who issued a LUKS token; no projection",
 	eventtypes.UserLoggedOut:                   "audit-only (#496): session end; the denylist row is operational state",
 	eventtypes.UserSessionRefreshed:            "audit-only (#496): session rotation; no projection",
-	eventtypes.EventLogPruned:                  "retention marker (spec 19): records a prune checkpoint + archive pointer; no projection — doctor reads it directly for retention posture",
+	// Spec 24 (#494) secret-read audit events: who retrieved (or was
+	// denied) a device's decrypted LPS/LUKS material. Identifiers only;
+	// nothing to materialise.
+	eventtypes.LpsPasswordsViewed:     "audit-only (spec 24): who viewed a device's LPS passwords; no projection",
+	eventtypes.LuksKeysViewed:         "audit-only (spec 24): who viewed a device's LUKS keys; no projection",
+	eventtypes.LpsPasswordsViewDenied: "audit-only (spec 24): denied LPS password read; no projection",
+	eventtypes.LuksKeysViewDenied:     "audit-only (spec 24): denied LUKS key read; no projection",
+	eventtypes.EventLogPruned:         "retention marker (spec 19): records a prune checkpoint + archive pointer; no projection — doctor reads it directly for retention posture",
 }
 
 // TestEventTypes_AllHandledByProjectorOrAllowlisted is a self-discovering guard
