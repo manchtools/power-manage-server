@@ -72,7 +72,10 @@ func NewHandler(st *store.Store, logger *slog.Logger, systemActions SystemAction
 
 	mux := http.NewServeMux()
 
-	// Discovery endpoints (no auth required)
+	// Discovery endpoints — bearer-auth-gated like every other route.
+	// SCIM discovery MAY be served unauthenticated per RFC 7644, but these
+	// endpoints leak provider slugs and schema detail, so they sit behind
+	// withAuth deliberately.
 	mux.HandleFunc("GET /scim/v2/{slug}/ServiceProviderConfig", h.withAuth(h.serviceProviderConfig))
 	mux.HandleFunc("GET /scim/v2/{slug}/Schemas", h.withAuth(h.schemas))
 	mux.HandleFunc("GET /scim/v2/{slug}/ResourceTypes", h.withAuth(h.resourceTypes))

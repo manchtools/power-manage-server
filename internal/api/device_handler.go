@@ -823,10 +823,47 @@ func (h *DeviceHandler) loadDeviceHostnamesByIDs(ctx context.Context, ids []stri
 	return out
 }
 
+// auditSecretRead appends a secret-read audit event (spec 24 / #494).
+// Best-effort by design: on the success path the decrypted material is
+// already committed to the response, and on the denied path the
+// caller-visible error is already fixed — an append failure must not alter
+// either, so it is logged loudly instead (AUDIT GAP, mirroring the #496
+// dispatch audits).
+func (h *DeviceHandler) auditSecretRead(ctx context.Context, deviceID string, eventType eventtypes.EventType, payload any) {
+	userCtx, aerr := requireAuth(ctx)
+	if aerr != nil {
+		h.logger.Error("AUDIT GAP: could not resolve actor for secret-read audit event",
+			"event_type", string(eventType), "device_id", deviceID, "error", aerr)
+		return
+	}
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  string(eventType),
+		Data:       payload,
+		ActorType:  "user",
+		ActorID:    userCtx.ID,
+	}); err != nil {
+		h.logger.Error("AUDIT GAP: failed to append secret-read audit event",
+			"event_type", string(eventType), "device_id", deviceID, "error", err)
+	}
+}
+
 // GetDeviceLpsPasswords returns current and historical LPS passwords for a device.
 func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.Request[pm.GetDeviceLpsPasswordsRequest]) (*connect.Response[pm.GetDeviceLpsPasswordsResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Spec 24: the audit trail attributes the read to a real device — an
+	// absent device is a NotFound denial (audited below), not the empty
+	// success it used to be.
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId}); err != nil {
+		if store.IsNotFound(err) {
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LpsPasswordsViewDenied,
+				payloads.LpsPasswordsViewDenied{DeviceID: req.Msg.DeviceId, Reason: "device not found"})
+		}
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
 	// Get current passwords
@@ -870,6 +907,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 			// operators can triage without re-running the RPC.
 			h.logger.Error("failed to decrypt LPS password (current)",
 				"device_id", p.DeviceID, "action_id", p.ActionID, "error", err)
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LpsPasswordsViewDenied,
+				payloads.LpsPasswordsViewDenied{DeviceID: req.Msg.DeviceId, Reason: "decrypt failure on stored material"})
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
@@ -890,6 +929,8 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		if err != nil {
 			h.logger.Error("failed to decrypt LPS password (history)",
 				"device_id", p.DeviceID, "action_id", p.ActionID, "error", err)
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LpsPasswordsViewDenied,
+				payloads.LpsPasswordsViewDenied{DeviceID: req.Msg.DeviceId, Reason: "decrypt failure on stored material"})
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LPS password")
 		}
 		entry := &pm.LpsPassword{
@@ -904,6 +945,19 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 		resp.History = append(resp.History, entry)
 	}
 
+	// Spec 24 AC 1/5: exactly one view event per successful call, listing
+	// the returned entries by identifier — appended before the response,
+	// best-effort (the material above is already decrypted for return).
+	viewedEntries := make([]payloads.LpsViewedEntry, 0, len(current)+len(history))
+	for _, p := range current {
+		viewedEntries = append(viewedEntries, payloads.LpsViewedEntry{RotationID: p.ID, Username: p.Username, Current: true})
+	}
+	for _, p := range history {
+		viewedEntries = append(viewedEntries, payloads.LpsViewedEntry{RotationID: p.ID, Username: p.Username})
+	}
+	h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LpsPasswordsViewed,
+		payloads.LpsPasswordsViewed{DeviceID: req.Msg.DeviceId, Entries: viewedEntries})
+
 	return connect.NewResponse(resp), nil
 }
 
@@ -911,6 +965,16 @@ func (h *DeviceHandler) GetDeviceLpsPasswords(ctx context.Context, req *connect.
 func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Request[pm.GetDeviceLuksKeysRequest]) (*connect.Response[pm.GetDeviceLuksKeysResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
+	}
+
+	// Spec 24: absent device → audited NotFound denial (see the LPS
+	// counterpart above).
+	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: req.Msg.DeviceId}); err != nil {
+		if store.IsNotFound(err) {
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LuksKeysViewDenied,
+				payloads.LuksKeysViewDenied{DeviceID: req.Msg.DeviceId, Reason: "device not found"})
+		}
+		return nil, handleGetError(ctx, err, ErrDeviceNotFound, "device not found")
 	}
 
 	current, err := h.store.Repos().Luks.ListCurrent(ctx, req.Msg.DeviceId)
@@ -945,6 +1009,8 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (current)",
 				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LuksKeysViewDenied,
+				payloads.LuksKeysViewDenied{DeviceID: req.Msg.DeviceId, Reason: "decrypt failure on stored material"})
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
@@ -974,6 +1040,8 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		if err != nil {
 			h.logger.Error("failed to decrypt LUKS passphrase (history)",
 				"device_id", k.DeviceID, "action_id", k.ActionID, "device_path", k.DevicePath, "error", err)
+			h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LuksKeysViewDenied,
+				payloads.LuksKeysViewDenied{DeviceID: req.Msg.DeviceId, Reason: "decrypt failure on stored material"})
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to decrypt LUKS passphrase")
 		}
 		entry := &pm.LuksKey{
@@ -987,6 +1055,18 @@ func (h *DeviceHandler) GetDeviceLuksKeys(ctx context.Context, req *connect.Requ
 		entry.RotatedAt = timestamppb.New(k.RotatedAt)
 		resp.History = append(resp.History, entry)
 	}
+
+	// Spec 24 AC 2/5: exactly one view event per successful call, listing
+	// the returned key identifiers — best-effort, before the response.
+	viewedEntries := make([]payloads.LuksViewedEntry, 0, len(current)+len(history))
+	for _, k := range current {
+		viewedEntries = append(viewedEntries, payloads.LuksViewedEntry{RotationID: k.ID, DevicePath: k.DevicePath, Current: true})
+	}
+	for _, k := range history {
+		viewedEntries = append(viewedEntries, payloads.LuksViewedEntry{RotationID: k.ID, DevicePath: k.DevicePath})
+	}
+	h.auditSecretRead(ctx, req.Msg.DeviceId, eventtypes.LuksKeysViewed,
+		payloads.LuksKeysViewed{DeviceID: req.Msg.DeviceId, Entries: viewedEntries})
 
 	return connect.NewResponse(resp), nil
 }
