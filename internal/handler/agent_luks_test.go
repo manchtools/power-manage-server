@@ -20,6 +20,7 @@ package handler
 // Documented as a follow-up.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -150,11 +151,12 @@ func TestHandleStoreLuksKey_PropagatesAllRequestFieldsToProxy(t *testing.T) {
 	h, stub := setupAgentForLuksTest(t)
 	stub.storeLuksKeyResp = &pm.StoreLuksKeyResponse{Success: true}
 
+	sealed := bytes.Repeat([]byte{0xAB}, 61) // shaped like a minimal sealed blob
 	err := h.handleStoreLuksKey(context.Background(), "dev-1", "msg-1", &pm.StoreLuksKeyRequest{
-		ActionId:       "act-2",
-		DevicePath:     "/dev/sda1",
-		Passphrase:     "new-passphrase",
-		RotationReason: pm.RotationReason_ROTATION_REASON_SCHEDULED,
+		ActionId:         "act-2",
+		DevicePath:       "/dev/sda1",
+		SealedPassphrase: sealed,
+		RotationReason:   pm.RotationReason_ROTATION_REASON_SCHEDULED,
 	})
 	require.Error(t, err, "no agent registered → manager.Send returns ErrAgentNotConnected")
 	assert.ErrorIs(t, err, connection.ErrAgentNotConnected)
@@ -163,7 +165,8 @@ func TestHandleStoreLuksKey_PropagatesAllRequestFieldsToProxy(t *testing.T) {
 	assert.Equal(t, "dev-1", stub.lastStoreLuksKey.DeviceId)
 	assert.Equal(t, "act-2", stub.lastStoreLuksKey.ActionId)
 	assert.Equal(t, "/dev/sda1", stub.lastStoreLuksKey.DevicePath)
-	assert.Equal(t, "new-passphrase", stub.lastStoreLuksKey.Passphrase)
+	assert.Equal(t, sealed, stub.lastStoreLuksKey.SealedPassphrase,
+		"the sealed bytes must pass through the gateway untouched — it relays opaquely (spec 25)")
 	assert.Equal(t, pm.RotationReason_ROTATION_REASON_SCHEDULED, stub.lastStoreLuksKey.RotationReason,
 		"RotationReason MUST round-trip — the audit log keys on this for 'why was this LUKS key rotated'")
 }
@@ -173,9 +176,27 @@ func TestHandleStoreLuksKey_ProxyErrorReachesSendPath(t *testing.T) {
 	stub.storeLuksKeyErr = connect.NewError(connect.CodeInternal, errors.New("encrypt failed"))
 
 	err := h.handleStoreLuksKey(context.Background(), "dev-1", "msg-1", &pm.StoreLuksKeyRequest{
-		ActionId: "act-2", DevicePath: "/dev/sda1", Passphrase: "x",
+		ActionId: "act-2", DevicePath: "/dev/sda1", SealedPassphrase: bytes.Repeat([]byte{0xCD}, 61),
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, connection.ErrAgentNotConnected)
 	require.NotNil(t, stub.lastStoreLuksKey, "proxy was still called even though it returned error")
+}
+
+// TestHandleStoreLuksKey_DropsLegacyCleartext pins the spec 25 compatibility
+// row: a pre-sealed-transport agent's cleartext passphrase (anything shorter
+// than a minimal sealed blob) is dropped at the gateway with a loud error —
+// NEVER proxied toward control.
+func TestHandleStoreLuksKey_DropsLegacyCleartext(t *testing.T) {
+	h, stub := setupAgentForLuksTest(t)
+
+	err := h.handleStoreLuksKey(context.Background(), "dev-1", "msg-1", &pm.StoreLuksKeyRequest{
+		ActionId:         "act-2",
+		DevicePath:       "/dev/sda1",
+		SealedPassphrase: []byte("legacy-cleartext-pw"),
+		RotationReason:   pm.RotationReason_ROTATION_REASON_SCHEDULED,
+	})
+	require.Error(t, err, "the error-response send path is exercised (no agent connected)")
+	assert.ErrorIs(t, err, connection.ErrAgentNotConnected)
+	assert.Nil(t, stub.lastStoreLuksKey, "legacy cleartext must never reach the proxy")
 }

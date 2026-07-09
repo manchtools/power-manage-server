@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"crypto/ecdh"
 	"log/slog"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
@@ -30,6 +32,17 @@ func wiredHandler(t *testing.T, st *store.Store, deviceID, gatewayID string) (*a
 	require.NoError(t, reg.AttachDevice(context.Background(), deviceID, gatewayID, registry.DefaultDeviceTTL))
 	h.SetDeviceGatewayResolver(reg)
 	return h, reg
+}
+
+// wireSealKeypair equips the handler with a control keypair (spec 25) and
+// returns the public key so tests can seal seed passphrases the handler can
+// actually unseal.
+func wireSealKeypair(t *testing.T, h *api.InternalHandler) *ecdh.PublicKey {
+	t.Helper()
+	priv, err := sdkcrypto.GenerateX25519()
+	require.NoError(t, err)
+	h.SetLpsKeypair(priv, nil)
+	return priv.PublicKey()
 }
 
 // countEvents returns how many events of the given type exist.
@@ -79,7 +92,7 @@ func TestInternalHandlers_GatewayBindingIsSelfDiscovering(t *testing.T) {
 		}},
 		{"ProxyStoreLuksKey", func() error {
 			_, e := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-				DeviceId: device, ActionId: actionID, DevicePath: "/dev/sda1", Passphrase: "secret", RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: wrongGateway,
+				DeviceId: device, ActionId: actionID, DevicePath: "/dev/sda1", SealedPassphrase: make([]byte, 61), RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: wrongGateway,
 			}))
 			return e
 		}},
@@ -166,12 +179,15 @@ func TestProxyGetLuksKey_GatewayBinding(t *testing.T) {
 	device := testutil.CreateTestDevice(t, st, "luks-host")
 	const liveGateway = "gw-A"
 	h, _ := wiredHandler(t, st, device, liveGateway)
+	pub := wireSealKeypair(t, h)
 	ctx := context.Background()
 	actionID := newULID()
 
-	// Seed a key through the correctly-bound store path.
-	_, err := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-		DeviceId: device, ActionId: actionID, DevicePath: "/dev/sda1", Passphrase: "topsecret",
+	// Seed a key through the correctly-bound store path (sealed, spec 25).
+	sealed, err := sdkcrypto.SealLuksPassphrase(pub, "topsecret", device, actionID)
+	require.NoError(t, err)
+	_, err = h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
+		DeviceId: device, ActionId: actionID, DevicePath: "/dev/sda1", SealedPassphrase: sealed,
 		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: liveGateway,
 	}))
 	require.NoError(t, err)
@@ -224,13 +240,16 @@ func TestProxyGetLuksKey_DeviceScopingAcrossDevices(t *testing.T) {
 	deviceB := testutil.CreateTestDevice(t, st, "luks-scope-b")
 	const gwA, gwB = "gw-A", "gw-B"
 	h, reg := wiredHandler(t, st, deviceA, gwA)
+	pub := wireSealKeypair(t, h)
 	require.NoError(t, reg.AttachDevice(context.Background(), deviceB, gwB, registry.DefaultDeviceTTL))
 	ctx := context.Background()
 	actionID := newULID()
 
-	// Seed a secret for device A via its correctly-bound gateway.
-	_, err := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-		DeviceId: deviceA, ActionId: actionID, DevicePath: "/dev/sda1", Passphrase: "A-secret",
+	// Seed a secret for device A via its correctly-bound gateway (sealed).
+	sealedA, err := sdkcrypto.SealLuksPassphrase(pub, "A-secret", deviceA, actionID)
+	require.NoError(t, err)
+	_, err = h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
+		DeviceId: deviceA, ActionId: actionID, DevicePath: "/dev/sda1", SealedPassphrase: sealedA,
 		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: gwA,
 	}))
 	require.NoError(t, err)
@@ -312,7 +331,7 @@ func TestProxyStoreLuksKey_NoEventOnGatewayMismatch(t *testing.T) {
 
 	before := countEvents(t, st, "LuksKeyRotated")
 	_, err := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-		DeviceId: device, ActionId: newULID(), DevicePath: "/dev/sda1", Passphrase: "secret",
+		DeviceId: device, ActionId: newULID(), DevicePath: "/dev/sda1", SealedPassphrase: make([]byte, 61),
 		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL, GatewayId: "gw-B",
 	}))
 	require.Error(t, err)

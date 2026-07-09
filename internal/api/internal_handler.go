@@ -461,14 +461,34 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 		return nil, err
 	}
 
-	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || req.Msg.Passphrase == "" {
-		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and passphrase are required")
+	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || len(req.Msg.SealedPassphrase) == 0 {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and sealed_passphrase are required")
 	}
 	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
 		return nil, err
 	}
 
-	encPassphrase, err := h.encryptor.EncryptWithContext(req.Msg.Passphrase, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "luks"))
+	// Unsealing requires the control private key (the same keypair LPS
+	// sealing uses). A nil key is a wiring/config failure: fail closed
+	// rather than accept bytes we cannot open — there is no cleartext
+	// fallback path (spec 25).
+	if h.lpsPrivateKey == nil {
+		h.logger.Error("LUKS store: nil private key — keypair not configured", "device_id", req.Msg.DeviceId)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "control keypair not configured")
+	}
+
+	// Unseal under the reconstructed device|action|"luks" AAD (spec 25). A
+	// failure — tampered, wrong key, wrong context, or a blob sealed under
+	// the LPS domain — is permanent, so reject with InvalidArgument: no
+	// event appended, and the caller does not retry a blob that can never
+	// open. Neither the blob nor any plaintext appears in logs.
+	plaintext, err := sdkcrypto.OpenLuksPassphrase(h.lpsPrivateKey, req.Msg.SealedPassphrase, req.Msg.DeviceId, req.Msg.ActionId)
+	if err != nil {
+		h.logger.Error("failed to unseal LUKS passphrase", "error", err, "device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId)
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "failed to unseal passphrase")
+	}
+
+	encPassphrase, err := h.encryptor.EncryptWithContext(plaintext, crypto.SecretAAD(req.Msg.DeviceId, req.Msg.ActionId, "luks"))
 	if err != nil {
 		h.logger.Error("failed to encrypt LUKS passphrase", "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt passphrase")

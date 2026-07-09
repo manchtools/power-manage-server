@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/ca"
@@ -820,7 +821,26 @@ func (h *AgentHandler) handleGetLuksKey(ctx context.Context, deviceID, msgID str
 }
 
 func (h *AgentHandler) handleStoreLuksKey(ctx context.Context, deviceID, msgID string, req *pm.StoreLuksKeyRequest) error {
-	resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.Passphrase, req.RotationReason)
+	// Legacy-cleartext guard (spec 25): a pre-sealed-transport agent puts a
+	// cleartext passphrase where sealed bytes belong (string→bytes is
+	// wire-compatible). Anything shorter than a minimal sealed blob cannot
+	// be one — drop it loudly and never proxy. Control's unseal is the
+	// authority for the remainder; the gateway just refuses the obvious.
+	if len(req.SealedPassphrase) < sdkcrypto.MinSealedLen {
+		h.logger.Error("dropping LUKS key store without a sealed passphrase (agent predates sealed LUKS transport)",
+			"device_id", deviceID, "action_id", req.ActionId)
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msgID,
+			Payload: &pm.ServerMessage_Error{
+				Error: &pm.Error{
+					Code:    connect.CodeInvalidArgument.String(),
+					Message: "sealed passphrase required: update the agent (sealed LUKS transport, spec 25)",
+				},
+			},
+		})
+	}
+
+	resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.SealedPassphrase, req.RotationReason)
 	if err != nil {
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msgID,
