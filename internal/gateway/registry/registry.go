@@ -137,9 +137,18 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, terminalURL s
 	}
 
 	// Initial publish so subsequent control lookups can find us
-	// immediately, before the first heartbeat tick.
+	// immediately, before the first heartbeat tick. A FAILED initial
+	// publish is deliberately fail-open (#524): the refresh loop below
+	// re-Sets the key every tick and is the natural retry, so the key
+	// appears on the first tick after the backend recovers. Returning an
+	// error here instead meant a gateway that (re)started during a
+	// transient Valkey blip lost terminal sessions PERMANENTLY (observed
+	// in production: five days dark), while the internal-URL and Traefik
+	// registrations — which retry — recovered on their own. Validation
+	// errors above still fail hard; only the publish is transient.
 	if err := r.backend.Set(ctx, gatewayKey(gatewayID), terminalURL, ttl); err != nil {
-		return nil, fmt.Errorf("registry: initial gateway publish: %w", err)
+		r.logger.Warn("registry: initial gateway publish failed — refresh loop will retry until the backend recovers",
+			"gateway_id", gatewayID, "error", err)
 	}
 
 	stopCh := make(chan struct{})

@@ -354,12 +354,13 @@ func main() {
 			)
 			cancelRegister()
 			if err != nil {
-				// Fail-open: the terminal feature is optional, so a
-				// transient registry failure at startup must not kill
-				// the gateway's agent-mTLS service. Log loudly and
-				// leave terminal sessions disabled for this replica
-				// until the operator restarts.
-				logger.Warn("failed to register gateway in terminal registry — terminal sessions disabled on this replica",
+				// Only CONFIG errors land here now (#524): empty
+				// id/url or refresh >= ttl. A transient publish
+				// failure is fail-open inside RegisterGateway — its
+				// refresh loop retries until the backend recovers, so
+				// a Valkey blip at startup no longer disables terminal
+				// sessions until an operator restarts.
+				logger.Warn("terminal registry registration misconfigured — terminal sessions disabled on this replica",
 					"error", err)
 			} else {
 				defer stop()
