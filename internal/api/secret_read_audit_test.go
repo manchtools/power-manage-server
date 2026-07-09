@@ -148,22 +148,42 @@ func TestGetDeviceLuksKeys_Success_AppendsOneViewedEvent(t *testing.T) {
 	deviceID := testutil.CreateTestDevice(t, st, "luks-view-host")
 	actionID := testutil.CreateTestAction(t, st, userID, "LUKS Action", int(pm.ActionType_ACTION_TYPE_ENCRYPTION))
 
-	seedLuksRotation(t, st, enc, deviceID, actionID, "/dev/sda2", "luks-Pass-1", time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC))
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	seedLuksRotation(t, st, enc, deviceID, actionID, "/dev/sda2", "luks-Pass-1", base)
+	seedLuksRotation(t, st, enc, deviceID, actionID, "/dev/sda2", "luks-Pass-2", base.Add(24*time.Hour))
 
 	resp, err := h.GetDeviceLuksKeys(testutil.UserContext(userID), connect.NewRequest(
 		&pm.GetDeviceLuksKeysRequest{DeviceId: deviceID}))
 	require.NoError(t, err)
 	require.Len(t, resp.Msg.Current, 1)
+	require.Len(t, resp.Msg.History, 1)
 
 	count, data, actor := auditEventsOfType(t, st, deviceID, "LuksKeysViewed")
 	assert.Equal(t, 1, count, "exactly ONE viewed event per successful call (spec 24 AC 5)")
 	assert.Equal(t, userID, actor)
 	assert.Contains(t, data, "/dev/sda2", "the device path is the key identifier")
 	assert.NotContains(t, data, "luks-Pass-1")
+	assert.NotContains(t, data, "luks-Pass-2")
 	assert.NotContains(t, data, "enc:")
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal([]byte(data), &payload))
 	assert.NotContains(t, payload, "passphrase")
+
+	// AC 4: surfaced by ListAuditEvents (and clean there too).
+	auditH := api.NewAuditHandler(st, slog.Default())
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@admin.com", "pass", "admin")
+	auditResp, err := auditH.ListAuditEvents(testutil.AdminContext(adminID), connect.NewRequest(
+		&pm.ListAuditEventsRequest{StreamType: "device"}))
+	require.NoError(t, err)
+	var saw bool
+	for _, e := range auditResp.Msg.Events {
+		if e.EventType == "LuksKeysViewed" {
+			saw = true
+			assert.NotContains(t, e.Data, "luks-Pass-1")
+			assert.NotContains(t, e.Data, "luks-Pass-2")
+		}
+	}
+	assert.True(t, saw, "LuksKeysViewed must surface via ListAuditEvents")
 }
 
 func TestGetDeviceLpsPasswords_AbsentDevice_NotFoundAndDeniedEvent(t *testing.T) {
@@ -298,4 +318,15 @@ func TestSecretReadHandlers_EmptyDeviceStillViewedEvent(t *testing.T) {
 	assert.Equal(t, 1, viewed, "an empty successful read is still a read — audited as a view")
 	denied, _, _ := auditEventsOfType(t, st, deviceID, "LpsPasswordsViewDenied")
 	assert.Zero(t, denied)
+
+	// LUKS counterpart: same boundary — an empty read is a view, not a denial.
+	luksResp, err := h.GetDeviceLuksKeys(testutil.UserContext(userID), connect.NewRequest(
+		&pm.GetDeviceLuksKeysRequest{DeviceId: deviceID}))
+	require.NoError(t, err, "an existing device with no rotations stays a successful empty read")
+	assert.Empty(t, luksResp.Msg.Current)
+
+	luksViewed, _, _ := auditEventsOfType(t, st, deviceID, "LuksKeysViewed")
+	assert.Equal(t, 1, luksViewed, "an empty successful read is still a read — audited as a view")
+	luksDenied, _, _ := auditEventsOfType(t, st, deviceID, "LuksKeysViewDenied")
+	assert.Zero(t, luksDenied)
 }
