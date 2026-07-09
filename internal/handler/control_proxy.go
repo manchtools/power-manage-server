@@ -106,17 +106,19 @@ func (p *ControlProxy) GetLuksKey(ctx context.Context, deviceID, actionID string
 	return resp.Msg, nil
 }
 
-// StoreLuksKey encrypts and stores a new LUKS key via the control server.
-func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, devicePath, passphrase string, reason pm.RotationReason) (*pm.StoreLuksKeyResponse, error) {
+// StoreLuksKey relays an agent-sealed LUKS passphrase to the control server
+// for unsealing and storage. The gateway never sees the cleartext — the
+// sealed bytes pass through opaquely (spec 25).
+func (p *ControlProxy) StoreLuksKey(ctx context.Context, deviceID, actionID, devicePath string, sealedPassphrase []byte, reason pm.RotationReason) (*pm.StoreLuksKeyResponse, error) {
 	ctx, cancel := withProxyDeadline(ctx)
 	defer cancel()
 	resp, err := p.client.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-		DeviceId:       deviceID,
-		ActionId:       actionID,
-		DevicePath:     devicePath,
-		Passphrase:     passphrase,
-		RotationReason: reason,
-		GatewayId:      p.gatewayID,
+		DeviceId:         deviceID,
+		ActionId:         actionID,
+		DevicePath:       devicePath,
+		SealedPassphrase: sealedPassphrase,
+		RotationReason:   reason,
+		GatewayId:        p.gatewayID,
 	}))
 	if err != nil {
 		return nil, err

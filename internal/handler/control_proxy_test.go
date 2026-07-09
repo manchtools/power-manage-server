@@ -254,7 +254,8 @@ func TestControlProxy_StoreLuksKey_HappyPath(t *testing.T) {
 	p, fake := setupProxy(t)
 	fake.storeLuksKeyResp = &pm.StoreLuksKeyResponse{Success: true}
 
-	resp, err := p.StoreLuksKey(context.Background(), "dev-1", "act-2", "/dev/sda1", "passphrase", pm.RotationReason_ROTATION_REASON_INITIAL)
+	sealed := []byte("opaque-sealed-blob-relayed-untouched-by-the-gateway-spec25xx")
+	resp, err := p.StoreLuksKey(context.Background(), "dev-1", "act-2", "/dev/sda1", sealed, pm.RotationReason_ROTATION_REASON_INITIAL)
 	require.NoError(t, err)
 	assert.True(t, resp.Success)
 
@@ -262,7 +263,7 @@ func TestControlProxy_StoreLuksKey_HappyPath(t *testing.T) {
 	assert.Equal(t, "dev-1", fake.lastStoreLuksKey.DeviceId)
 	assert.Equal(t, "act-2", fake.lastStoreLuksKey.ActionId)
 	assert.Equal(t, "/dev/sda1", fake.lastStoreLuksKey.DevicePath)
-	assert.Equal(t, "passphrase", fake.lastStoreLuksKey.Passphrase)
+	assert.Equal(t, sealed, fake.lastStoreLuksKey.SealedPassphrase)
 	assert.Equal(t, pm.RotationReason_ROTATION_REASON_INITIAL, fake.lastStoreLuksKey.RotationReason)
 }
 

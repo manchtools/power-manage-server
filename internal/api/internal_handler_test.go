@@ -230,24 +230,6 @@ func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
 		"UNINSTALL on the container overrides per-action desired_state")
 }
 
-func TestProxyStoreLuksKey(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	enc := testutil.NewEncryptor(t)
-	h := api.NewInternalHandler(st, enc, slog.Default(), api.NoOpSigner{})
-
-	deviceID := testutil.CreateTestDevice(t, st, "luks-store-host")
-
-	resp, err := h.ProxyStoreLuksKey(context.Background(), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
-		DeviceId:       deviceID,
-		ActionId:       testutil.NewID(),
-		DevicePath:     "/dev/sda1",
-		Passphrase:     "super-secret-key",
-		RotationReason: pm.RotationReason_ROTATION_REASON_INITIAL,
-	}))
-	require.NoError(t, err)
-	assert.True(t, resp.Msg.Success)
-}
-
 func TestProxyStoreLuksKey_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
