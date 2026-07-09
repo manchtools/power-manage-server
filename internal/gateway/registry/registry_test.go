@@ -222,6 +222,84 @@ func TestRegistry_RegisterGateway_RefreshLoop(t *testing.T) {
 	}
 }
 
+// TestRegistry_RegisterGateway_InitialPublishFailureRecovers is the
+// regression lock for #524: a gateway that (re)starts during a transient
+// Valkey outage must NOT lose terminal sessions until an operator restarts
+// it. RegisterGateway's refresh loop IS the retry mechanism — a failed
+// initial publish starts it anyway, and the key appears on the first tick
+// after the backend recovers. Observed in production 2026-07-04→09: a
+// Valkey blip at gateway startup left StartTerminal dead for five days
+// while the internal-URL and Traefik registrations (which retry) recovered
+// on their own.
+func TestRegistry_RegisterGateway_InitialPublishFailureRecovers(t *testing.T) {
+	flaky := &flakyBackend{inner: NewFakeBackend(nil), failFirst: 2}
+	r := New(flaky, nil)
+
+	stop, err := r.RegisterGateway(context.Background(), "gw-A", "wss://x", DefaultGatewayTTL, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("a transient initial-publish failure must not disable registration (fail-open into the refresh loop): %v", err)
+	}
+	defer stop()
+
+	// The key must appear once the backend recovers — within a few ticks.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, gErr := r.LookupGatewayTerminalURL(context.Background(), "gw-A"); gErr == nil && got == "wss://x" {
+			return // recovered
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("terminal URL never appeared after the backend recovered — the refresh loop is not retrying the failed initial publish")
+}
+
+// TestRegistry_RegisterGateway_ValidationErrorsStillFail pins the split:
+// config/validation errors (empty id/url, refresh >= ttl) must STILL return
+// an error — only the transient publish failure is fail-open.
+func TestRegistry_RegisterGateway_ValidationErrorsStillFail(t *testing.T) {
+	r := New(&flakyBackend{inner: NewFakeBackend(nil), failFirst: 1}, nil)
+	if _, err := r.RegisterGateway(context.Background(), "", "wss://x", DefaultGatewayTTL, DefaultGatewayRefreshInterval); err == nil {
+		t.Error("empty gatewayID must error")
+	}
+	if _, err := r.RegisterGateway(context.Background(), "gw-A", "", DefaultGatewayTTL, DefaultGatewayRefreshInterval); err == nil {
+		t.Error("empty terminalURL must error")
+	}
+	if _, err := r.RegisterGateway(context.Background(), "gw-A", "wss://x", time.Second, time.Second); err == nil {
+		t.Error("refreshInterval >= ttl must error")
+	}
+}
+
+// flakyBackend fails the first failFirst Set calls, then delegates —
+// simulating a Valkey outage window at gateway startup.
+type flakyBackend struct {
+	inner     Backend
+	mu        sync.Mutex
+	failFirst int
+	setCalls  int
+}
+
+func (b *flakyBackend) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	b.mu.Lock()
+	b.setCalls++
+	failing := b.setCalls <= b.failFirst
+	b.mu.Unlock()
+	if failing {
+		return errors.New("dial tcp: connect: connection refused")
+	}
+	return b.inner.Set(ctx, key, value, ttl)
+}
+
+func (b *flakyBackend) Get(ctx context.Context, key string) (string, error) {
+	return b.inner.Get(ctx, key)
+}
+
+func (b *flakyBackend) Delete(ctx context.Context, key string) error {
+	return b.inner.Delete(ctx, key)
+}
+
+func (b *flakyBackend) ScanPrefix(ctx context.Context, prefix string) (map[string]string, error) {
+	return b.inner.ScanPrefix(ctx, prefix)
+}
+
 // TestRegistry_AttachDevice_RequiresFields locks the input
 // validation contract.
 func TestRegistry_AttachDevice_RequiresFields(t *testing.T) {
