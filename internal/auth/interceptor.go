@@ -83,6 +83,14 @@ var procedureAlternatives = map[string][]string{
 	"/pm.v1.ControlService/UpdateUserGroupQuery": {
 		"UpdateDynamicUserGroupQuery",
 	},
+	// ExportAuditEvents is gated by the SAME permission as the list
+	// (spec 26): the export is a formatting of what ListAuditEvents
+	// already returns, so a separate permission could only drift wider
+	// or narrower than the data it re-serves. No handler-level
+	// narrowing needed — the alternative IS the exact gate.
+	"/pm.v1.ControlService/ExportAuditEvents": {
+		"ListAuditEvents",
+	},
 }
 
 // ProcedureAlternativesSnapshot returns a deep copy of the
@@ -271,19 +279,20 @@ type RateLimiters struct {
 
 // isExpensiveProcedure reports whether an authenticated control procedure runs
 // a heavy operation — dynamic-group query evaluation, search, a projector
-// rebuild, or a log/osquery fan-out — that warrants a tighter per-user ceiling
-// than ordinary reads. It is self-discovered from the action name so a newly
-// added Evaluate* / Search* / Rebuild* / Query* / *Query RPC is covered
-// automatically rather than from a hand-maintained list that fails open. A test
-// (TestIsExpensiveProcedure_MatchesRealProcedures) walks the ControlService
-// descriptor and asserts the matcher recognises at least one real procedure, so
-// it can never silently match zero.
+// rebuild, a log/osquery fan-out, or a bulk export — that warrants a tighter
+// per-user ceiling than ordinary reads. It is self-discovered from the action
+// name so a newly added Evaluate* / Search* / Rebuild* / Query* / *Query /
+// Export* RPC is covered automatically rather than from a hand-maintained list
+// that fails open. A test (TestIsExpensiveProcedure_MatchesRealProcedures)
+// walks the ControlService descriptor and asserts the matcher recognises at
+// least one real procedure, so it can never silently match zero.
 func isExpensiveProcedure(action string) bool {
 	return strings.HasPrefix(action, "Evaluate") ||
 		strings.HasPrefix(action, "Search") ||
 		strings.HasPrefix(action, "Rebuild") ||
 		strings.HasPrefix(action, "Query") ||
-		strings.HasSuffix(action, "Query")
+		strings.HasSuffix(action, "Query") ||
+		strings.HasPrefix(action, "Export")
 }
 
 // procedureAction extracts the trailing method name from a Connect procedure

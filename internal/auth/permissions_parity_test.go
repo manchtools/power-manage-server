@@ -206,6 +206,12 @@ func TestProcedureAlternatives_Exact(t *testing.T) {
 		"/pm.v1.ControlService/UpdateUserGroupQuery": {
 			"UpdateDynamicUserGroupQuery",
 		},
+		// Spec 26: the audit export is gated by exactly the list
+		// permission — it re-serves what ListAuditEvents returns and
+		// must never widen (or narrow) relative to it.
+		"/pm.v1.ControlService/ExportAuditEvents": {
+			"ListAuditEvents",
+		},
 	}
 	live := auth.ProcedureAlternativesSnapshot()
 	if len(expected) != len(live) {

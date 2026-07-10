@@ -78,6 +78,23 @@ WHERE stream_type = 'execution'
   AND event_type = 'OutputChunk'
 ORDER BY stream_version;
 
+-- name: ExportAuditEvents :many
+-- Keyset export feed for the audit-log export (spec 26). Same filter
+-- semantics as ListAuditEvents (exact actor, ILIKE-escaped event-type
+-- substring) plus a stream-type set and an occurred_at range to match
+-- what the audit view can express. Keyset on sequence_num — not
+-- OFFSET — so events appended mid-export can't shift rows into a
+-- later page and duplicate them in the artifact.
+SELECT * FROM events
+WHERE (@actor_id::TEXT = '' OR actor_id = @actor_id)
+  AND (@stream_types::TEXT[] IS NULL OR cardinality(@stream_types::TEXT[]) = 0 OR stream_type = ANY(@stream_types))
+  AND (@event_type::TEXT = '' OR event_type ILIKE '%' || replace(replace(replace(@event_type, '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!')
+  AND (@occurred_from::TIMESTAMPTZ IS NULL OR occurred_at >= @occurred_from)
+  AND (@occurred_to::TIMESTAMPTZ IS NULL OR occurred_at <= @occurred_to)
+  AND (@before_seq::BIGINT = 0 OR sequence_num < @before_seq)
+ORDER BY sequence_num DESC
+LIMIT @page_size;
+
 -- name: ListAuditEventsForWarm :many
 SELECT * FROM events
 WHERE occurred_at >= NOW() - INTERVAL '90 days'

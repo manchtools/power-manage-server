@@ -21,8 +21,10 @@ var idRuleExemptFields = map[string]bool{
 	"CreateIdentityProviderRequest.ClientId": true,
 	"UpdateIdentityProviderRequest.ClientId": true,
 	// Audit actor filter: an actor may be a user (ULID) OR a non-ULID system /
-	// device actor, so the filter accepts any non-empty string.
-	"ListAuditEventsRequest.ActorId": true,
+	// device actor, so the filter accepts any non-empty string. The export
+	// (spec 26) carries the same filter with the same semantics.
+	"ListAuditEventsRequest.ActorId":   true,
+	"ExportAuditEventsRequest.ActorId": true,
 	// Gateway identifier: an operator/registry-assigned gateway id (bounded
 	// string, not a ULID — see the device→gateway registry / WS2).
 	"VerifyDeviceRequest.GatewayId":              true,
