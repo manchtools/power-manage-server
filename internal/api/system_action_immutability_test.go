@@ -219,6 +219,10 @@ func (r *recordingSearchIndex) GetReverseMembers(_ context.Context, _, _ string)
 	return nil
 }
 
+func (r *recordingSearchIndex) TouchDeviceLastSeen(_ context.Context, _ string, _ int64) error {
+	return nil
+}
+
 // TestSearchListener_SystemActionExcludedFromIndex pins the visibility fix: a
 // system-managed action must be PURGED from (never reindexed into) the search
 // catalog, so it can't surface on the actions list page — while ordinary

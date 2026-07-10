@@ -24,11 +24,13 @@ import (
 //
 // Three methods, in order of how often they fire from this listener:
 //
+//   - TouchDeviceLastSeen — every device heartbeat (#499)
 //   - EnqueueReindex — every reindex op
 //   - EnqueueRemove  — every delete op
 //   - GetReverseMembers — only on remove for scopes with cascading
 //     parent rebuilds (action / action_set / definition)
 type SearchIndex interface {
+	TouchDeviceLastSeen(ctx context.Context, id string, lastSeen int64) error
 	EnqueueReindex(ctx context.Context, scope, id string, data *taskqueue.SearchEntityData) error
 	EnqueueRemove(ctx context.Context, scope, id string, cascadeIDs []string) error
 	GetReverseMembers(ctx context.Context, scope, id string) []string
@@ -57,6 +59,12 @@ const (
 	// so parent entities with denormalised member lists rebuild
 	// after the child disappears.
 	SearchOpRemove
+	// SearchOpTouchDeviceLastSeen — O(1) refresh of ONLY the device's
+	// indexed last_seen_at, carrying the event's occurred_at (#499).
+	// Deliberately not a SearchOpReindex: heartbeats are the highest-
+	// volume device event, and a full row reload per heartbeat would
+	// be fleet-size × heartbeat-rate projection reads for one field.
+	SearchOpTouchDeviceLastSeen
 )
 
 // SearchAffected is the classifier output: which scope is affected,
@@ -104,6 +112,12 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 		// sort (#325) but reindexing on every login is too costly; the value stays
 		// eventually-consistent via other user events + the periodic reconcile,
 		// which is fine for "sort by last login / find dormant accounts".
+		//
+		// Contrast with DeviceHeartbeat below (#499): last_seen_at drives the
+		// online/offline status FILTER — a correctness surface, not just a sort —
+		// so heartbeats DO refresh it, but as an O(1) field touch rather than a
+		// row reload. last_login_at stays excluded because sort order degrading
+		// gracefully under staleness is the deliberate trade.
 
 	case string(eventtypes.UserDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeUser, ID: e.StreamID}}
@@ -122,6 +136,14 @@ func AffectedSearchOps(e store.PersistedEvent) []SearchAffected {
 
 	case string(eventtypes.DeviceDeleted):
 		return []SearchAffected{{Op: SearchOpRemove, Scope: search.ScopeDevice, ID: e.StreamID}}
+
+	// The devices page computes online/offline against the INDEXED
+	// last_seen_at (deviceStatusClause, 5-minute window), so a healthy
+	// heartbeating device would show offline for up to an hour (the
+	// reconcile bound) without this case (#499). The op is an O(1)
+	// touch of the one changed field — see SearchOpTouchDeviceLastSeen.
+	case string(eventtypes.DeviceHeartbeat):
+		return []SearchAffected{{Op: SearchOpTouchDeviceLastSeen, Scope: search.ScopeDevice, ID: e.StreamID}}
 
 	// ---------------------------------------------------------
 	// DeviceGroup scope
@@ -447,6 +469,16 @@ func SearchListener(st *store.Store, idx SearchIndex, logger *slog.Logger) store
 				if err := idx.EnqueueRemove(ctx, op.Scope, op.ID, cascadeIDs); err != nil {
 					logger.Warn("search listener: failed to enqueue remove",
 						"scope", op.Scope, "id", op.ID, "event_type", e.EventType, "error", err)
+				}
+			case SearchOpTouchDeviceLastSeen:
+				// #499: single Valkey write, same cost class as the
+				// enqueue LPUSH this loop already tolerates. The
+				// timestamp is the event's occurred_at — the same
+				// value the Postgres projection writes for this
+				// heartbeat, so the two stores agree.
+				if err := idx.TouchDeviceLastSeen(ctx, op.ID, e.OccurredAt.Unix()); err != nil {
+					logger.Warn("search listener: failed to touch device last_seen_at",
+						"id", op.ID, "event_type", e.EventType, "error", err)
 				}
 			}
 		}

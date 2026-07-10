@@ -25,6 +25,7 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,11 +59,17 @@ type removeCall struct {
 	CascadeIDs []string
 }
 
+type touchCall struct {
+	ID       string
+	LastSeen int64
+}
+
 type fakeSearchIndex struct {
 	mu sync.Mutex
 
 	reindexed []reindexCall
 	removed   []removeCall
+	touched   []touchCall
 
 	// reverse map keyed by scope+":"+id → cascade IDs returned by
 	// GetReverseMembers. Empty key returns nil (the production behaviour
@@ -106,6 +113,21 @@ func (f *fakeSearchIndex) GetReverseMembers(_ context.Context, scope, id string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.reverse[scope+":"+id]
+}
+
+func (f *fakeSearchIndex) TouchDeviceLastSeen(_ context.Context, id string, lastSeen int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.touched = append(f.touched, touchCall{ID: id, LastSeen: lastSeen})
+	return nil
+}
+
+func (f *fakeSearchIndex) lastTouch(t *testing.T) touchCall {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.touched, "expected at least one TouchDeviceLastSeen call")
+	return f.touched[len(f.touched)-1]
 }
 
 func (f *fakeSearchIndex) lastReindex(t *testing.T) reindexCall {
@@ -190,6 +212,36 @@ func TestSearchListener_DeviceRegistered_Reindexes(t *testing.T) {
 	assert.Equal(t, deviceID, last.ID)
 	require.NotNil(t, last.Data)
 	assert.Equal(t, "host-listener-1", last.Data.Hostname)
+}
+
+// TestSearchListener_DeviceHeartbeat_TouchesLastSeen is the #499
+// regression: a DeviceHeartbeat must refresh the INDEXED last_seen_at
+// (as an O(1) touch carrying the event's occurred_at) and must NOT
+// trigger a full row reload — otherwise a healthy, heartbeating device
+// shows offline in search for up to an hour (the reconcile bound).
+func TestSearchListener_DeviceHeartbeat_TouchesLastSeen(t *testing.T) {
+	st, fake := setupListener(t)
+	deviceID := testutil.CreateTestDevice(t, st, "host-heartbeat-1")
+	reindexesBefore := fake.reindexCount()
+
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceHeartbeat",
+		Data:       map[string]any{"id": deviceID, "agent_version": "test"},
+		ActorType:  "device",
+		ActorID:    deviceID,
+	}))
+
+	touch := fake.lastTouch(t)
+	assert.Equal(t, deviceID, touch.ID)
+	// The touch carries the event's occurred_at (the same value the
+	// Postgres projection writes) — a fresh heartbeat must land inside
+	// the 5-minute online window.
+	now := time.Now().Unix()
+	assert.InDelta(t, now, touch.LastSeen, 60, "touch timestamp must be the heartbeat's occurred_at")
+	assert.Equal(t, reindexesBefore, fake.reindexCount(),
+		"a heartbeat must be an O(1) touch, never a full reindex row-reload")
 }
 
 // =============================================================================

@@ -129,6 +129,14 @@ func TestAffectedSearchOps(t *testing.T) {
 			store.PersistedEvent{EventType: "DeviceDeleted", StreamID: "DEV1", StreamType: "device"},
 			[]api.SearchAffected{{Op: api.SearchOpRemove, Scope: search.ScopeDevice, ID: "DEV1"}},
 		},
+		{
+			// #499: the status filter computes online/offline against the
+			// INDEXED last_seen_at, so a heartbeat must refresh it — but as
+			// an O(1) field touch, never a full row reload per heartbeat.
+			"DeviceHeartbeat touches the indexed last_seen_at (O(1), not a reindex)",
+			store.PersistedEvent{EventType: "DeviceHeartbeat", StreamID: "DEV1", StreamType: "device"},
+			[]api.SearchAffected{{Op: api.SearchOpTouchDeviceLastSeen, Scope: search.ScopeDevice, ID: "DEV1"}},
+		},
 
 		// Device events that should NOT touch search.
 		{

@@ -1548,6 +1548,31 @@ func (idx *Index) StartReconciliation(ctx context.Context, interval time.Duratio
 
 // --- Enqueue helpers ---
 
+// touchDeviceLastSeenScript updates the last_seen_at field of an
+// EXISTING device search hash and does nothing otherwise. The
+// existence guard must be atomic with the write: a bare HSET on a
+// missing key (device not yet indexed, or removed concurrently) would
+// create a partial hash holding only last_seen_at, which enters the
+// FT index and surfaces as a hostname-less ghost row in device search.
+var touchDeviceLastSeenScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then
+	return redis.call('HSET', KEYS[1], 'last_seen_at', ARGV[1])
+end
+return -1
+`)
+
+// TouchDeviceLastSeen refreshes the indexed last_seen_at of one device
+// as a single O(1) Valkey write (#499). The device status filter
+// computes online/offline against this indexed value, so heartbeats
+// must keep it fresh — but a full row reload per heartbeat would be
+// fleet-size × heartbeat-rate row reads for one changed field. The FT
+// NUMERIC attribute follows the hash field automatically; a device
+// without a search row is left untouched (the registration reindex or
+// the hourly reconcile will index it with a fresh value anyway).
+func (idx *Index) TouchDeviceLastSeen(ctx context.Context, id string, lastSeen int64) error {
+	return touchDeviceLastSeenScript.Run(ctx, idx.rdb, []string{prefixDevice + id}, lastSeen).Err()
+}
+
 // EnqueueReindex enqueues a search:reindex task with pre-populated entity data.
 func (idx *Index) EnqueueReindex(ctx context.Context, scope, id string, data *taskqueue.SearchEntityData) error {
 	return idx.aqClient.EnqueueToSearch(taskqueue.TypeSearchReindex, taskqueue.SearchReindexPayload{
