@@ -342,6 +342,7 @@ OIDC identity provider management for SSO authentication.
 | Method | Description |
 |--------|-------------|
 | `ListAuditEvents` | Paginated event log. Filters: `actor_id`, `stream_type`, `event_type`. Returns raw event data from the event store. |
+| `ExportAuditEvents` | Chunked CSV/JSON export of the filtered log (spec 26). Unary keyset-paginated (client loops `next_page_token`, concatenates chunks into one valid artifact); same read-side redaction and same `ListAuditEvents` permission as the list. Filters: `actor_id`, `stream_types` set, `event_type` substring, `occurred_at` range. |
 
 ### Search
 
@@ -733,6 +734,7 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 | `internal/api/device_group_handler_test.go` | 10 | CreateDeviceGroup (static), GetDeviceGroup (found, not found), ListDeviceGroups, RenameDeviceGroup, DeleteDeviceGroup, AddDeviceToGroup, RemoveDeviceFromGroup, SetDeviceGroupSyncInterval, ValidateDynamicQuery |
 | `internal/api/assignment_handler_test.go` | 10 | CreateAssignment (action→device, set→group, user target, user_group target, idempotent), DeleteAssignment, ListAssignments, GetDeviceAssignments, GetUserAssignments |
 | `internal/api/audit_handler_test.go` | 4 | ListAuditEvents, filter by stream_type, filter by event_type, pagination |
+| `internal/api/audit_export_test.go` | 9 | ExportAuditEvents: CSV/JSON artifacts, chunk concatenation without duplicates, redaction via the real CreateAction emit, actor/date/event-type filters (incl. ILIKE metachar regression), unsupported format, invalid page token, stream_types slice cap |
 | `internal/api/totp_handler_test.go` | 14 | SetupTOTP, VerifyTOTP (valid/invalid/replay), DisableTOTP, GetTOTPStatus, RegenerateBackupCodes, backup code login |
 | `internal/api/user_group_handler_test.go` | 20 | CreateUserGroup, GetUserGroup, ListUserGroups, UpdateUserGroup, DeleteUserGroup, AddUserToGroup, RemoveUserFromGroup, AssignRoleToUserGroup, RevokeRoleFromUserGroup, ListUserGroupsForUser, additive permissions |
 | `internal/api/idp_handler_test.go` | 15 | CreateIdentityProvider (success, duplicate slug, group mapping), Get/List/Update/Delete IDP, EnableSCIM (success, already enabled), DisableSCIM (success, not enabled), RotateSCIMToken (success, not enabled) |
