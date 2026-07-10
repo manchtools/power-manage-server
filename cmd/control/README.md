@@ -616,8 +616,10 @@ The `ListAuditEvents` RPC's `event_type` filter is a **literal substring match**
 `%` and `_` in the filter value are matched as those exact characters, not as
 SQL wildcards (they are escaped before the `ILIKE`). So filtering `User_Created`
 returns only events whose type literally contains `User_Created`, never
-`UserXCreated`. The `events` table is append-only at the DB layer (migration 011
-trigger; see ADR 0005), so no audit row can be mutated or deleted after commit.
+`UserXCreated`. The `ExportAuditEvents` RPC (spec 26) applies the same
+semantics to its `event_type` filter. The `events` table is append-only at the
+DB layer (migration 011 trigger; see ADR 0005), so no audit row can be mutated
+or deleted after commit.
 
 ### Time Travel
 

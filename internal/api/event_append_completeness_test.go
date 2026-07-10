@@ -43,7 +43,7 @@ import (
 // readOnlyRPCPrefixes are the leading verbs of RPCs that perform no
 // state change (reads MAY still append events — sensitive-read auditing,
 // cf. #494 — so assertion 1 simply does not require anything of them).
-var readOnlyRPCPrefixes = []string{"Get", "List", "Search", "Validate", "Evaluate"}
+var readOnlyRPCPrefixes = []string{"Get", "List", "Search", "Validate", "Evaluate", "Export"}
 
 // mutatingRPCPrefixes are the leading verbs of state-changing RPCs. A new RPC
 // whose name starts with none of the prefixes in either set fails the

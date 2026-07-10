@@ -7,6 +7,8 @@ package generated
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const appendEvent = `-- name: AppendEvent :one
@@ -105,6 +107,74 @@ func (q *Queries) CountEventsByStreamType(ctx context.Context, streamType string
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const exportAuditEvents = `-- name: ExportAuditEvents :many
+SELECT id, sequence_num, stream_type, stream_id, stream_version, event_type, data, metadata, actor_type, actor_id, occurred_at FROM events
+WHERE ($1::TEXT = '' OR actor_id = $1)
+  AND ($2::TEXT[] IS NULL OR cardinality($2::TEXT[]) = 0 OR stream_type = ANY($2))
+  AND ($3::TEXT = '' OR event_type ILIKE '%' || replace(replace(replace($3, '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!')
+  AND ($4::TIMESTAMPTZ IS NULL OR occurred_at >= $4)
+  AND ($5::TIMESTAMPTZ IS NULL OR occurred_at <= $5)
+  AND ($6::BIGINT = 0 OR sequence_num < $6)
+ORDER BY sequence_num DESC
+LIMIT $7
+`
+
+type ExportAuditEventsParams struct {
+	ActorID      string             `json:"actor_id"`
+	StreamTypes  []string           `json:"stream_types"`
+	EventType    string             `json:"event_type"`
+	OccurredFrom pgtype.Timestamptz `json:"occurred_from"`
+	OccurredTo   pgtype.Timestamptz `json:"occurred_to"`
+	BeforeSeq    int64              `json:"before_seq"`
+	PageSize     int32              `json:"page_size"`
+}
+
+// Keyset export feed for the audit-log export (spec 26). Same filter
+// semantics as ListAuditEvents (exact actor, ILIKE-escaped event-type
+// substring) plus a stream-type set and an occurred_at range to match
+// what the audit view can express. Keyset on sequence_num — not
+// OFFSET — so events appended mid-export can't shift rows into a
+// later page and duplicate them in the artifact.
+func (q *Queries) ExportAuditEvents(ctx context.Context, arg ExportAuditEventsParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, exportAuditEvents,
+		arg.ActorID,
+		arg.StreamTypes,
+		arg.EventType,
+		arg.OccurredFrom,
+		arg.OccurredTo,
+		arg.BeforeSeq,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.SequenceNum,
+			&i.StreamType,
+			&i.StreamID,
+			&i.StreamVersion,
+			&i.EventType,
+			&i.Data,
+			&i.Metadata,
+			&i.ActorType,
+			&i.ActorID,
+			&i.OccurredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getLatestSequence = `-- name: GetLatestSequence :one

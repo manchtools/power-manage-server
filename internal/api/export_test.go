@@ -33,3 +33,13 @@ func (h *AuthHandler) SetDummyVerifyForTest(fn func(password, hash string) bool)
 // freshness boundary tests can pin "now" against a fixed collected_at.
 // Compiled only into test binaries.
 func (h *DeviceHandler) SetNowForTest(now func() time.Time) { h.now = now }
+
+// SetExportPageSizeForTest shrinks the ExportAuditEvents page seam so
+// chunking tests can prove multi-chunk exports without seeding a
+// thousand events. Returns a restore func. Compiled only into test
+// binaries.
+func SetExportPageSizeForTest(n int) (restore func()) {
+	prev := exportPageSize
+	exportPageSize = n
+	return func() { exportPageSize = prev }
+}
