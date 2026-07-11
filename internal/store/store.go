@@ -156,6 +156,16 @@ type Store struct {
 	// piiMinter mints per-user DEKs at creation (spec 19 AC 1). Wired
 	// via SetPIIMinter alongside the sealer.
 	piiMinter PIIMinter
+
+	// beforeInsert, when non-nil, is consulted in appendOne before each
+	// event insert — so it fires for BOTH AppendEvent and AppendEvents
+	// (they share appendOne). A non-nil return aborts that insert,
+	// letting a test drive the all-or-nothing rollback (spec 28 AC 2),
+	// the whole-batch retry (return ErrVersionConflict → AC 5), and the
+	// SCIM orphan regression (AC 8) deterministically. TEST-ONLY, set via
+	// TestingSetInsertHook; always nil in production, so the per-insert
+	// nil check is the only cost the write path pays.
+	beforeInsert func(streamType, eventType string) error
 }
 
 // PIISealer seals the PII fields of an event's typed payload under the
@@ -635,55 +645,115 @@ func (s *Store) WithTx(ctx context.Context, fn func(*Queries) error) error {
 	return nil
 }
 
-// AppendEvent appends a new event to the event store.
-// It auto-determines the stream version with optimistic retry on conflicts.
-func (s *Store) AppendEvent(ctx context.Context, event Event) error {
+// preparedEvent is an Event after validation, PII sealing, and JSON
+// marshalling — everything that must happen BEFORE a write. Producing it
+// once lets AppendEvent and AppendEvents share identical per-event
+// preparation so the two paths cannot drift (spec 28). The ULID and
+// stream_version are assigned per insert attempt in appendOne, not here,
+// so a retry mints fresh values.
+type preparedEvent struct {
+	streamType string
+	streamID   string
+	eventType  string
+	data       []byte
+	metadata   []byte
+	actorType  string
+	actorID    string
+}
+
+// prepareEvent validates, seals PII (fail-closed), and marshals one
+// event. Shared by AppendEvent and AppendEvents; for a batch it runs for
+// every event BEFORE any transaction opens, so a validation or seal
+// failure aborts with zero DB work and zero partial state (spec 28 AC
+// 2/6; spec 19 fail-closed — plaintext PII must never reach the
+// immutable log as a fallback).
+func (s *Store) prepareEvent(ctx context.Context, event Event) (preparedEvent, error) {
 	if event.ActorType == "" || event.ActorID == "" {
-		return fmt.Errorf("event actor_type and actor_id are required")
+		return preparedEvent{}, fmt.Errorf("event actor_type and actor_id are required")
 	}
 
-	// Seal PII BEFORE marshalling (spec 19 AC 2/6). Fail-closed: an
-	// error here aborts the append — plaintext PII must never reach
-	// the immutable log as a fallback.
 	event, err := s.sealPII(ctx, event)
 	if err != nil {
-		return fmt.Errorf("seal PII: %w", err)
+		return preparedEvent{}, fmt.Errorf("seal PII: %w", err)
 	}
 
 	data, err := json.Marshal(event.Data)
 	if err != nil {
-		return fmt.Errorf("marshal event data: %w", err)
+		return preparedEvent{}, fmt.Errorf("marshal event data: %w", err)
 	}
 
 	metadata := []byte("{}")
 	if event.Metadata != nil {
 		metadata, err = json.Marshal(event.Metadata)
 		if err != nil {
-			return fmt.Errorf("marshal event metadata: %w", err)
+			return preparedEvent{}, fmt.Errorf("marshal event metadata: %w", err)
 		}
+	}
+
+	return preparedEvent{
+		streamType: event.StreamType,
+		streamID:   event.StreamID,
+		eventType:  event.EventType,
+		data:       data,
+		metadata:   metadata,
+		actorType:  event.ActorType,
+		actorID:    event.ActorID,
+	}, nil
+}
+
+// appendOne reads the current stream version and inserts pe at
+// version+1 using q. q may be pool-bound (AppendEvent: each insert
+// auto-commits, and a retry re-reads the committed version) or tx-bound
+// (AppendEvents: all inserts share one transaction, so an earlier
+// same-stream insert in the same batch is visible to this read —
+// read-your-writes — giving consecutive versions, spec 28 AC 3). A
+// unique-violation on (stream_type, stream_id, stream_version) surfaces
+// as a version conflict (IsVersionConflict) for the caller's retry
+// policy. Returns the inserted row for post-commit listener dispatch.
+func (s *Store) appendOne(ctx context.Context, q *Queries, pe preparedEvent) (PersistedEvent, error) {
+	// Test-only failure seam (spec 28 AC 2/5/8): nil in production.
+	if s.beforeInsert != nil {
+		if err := s.beforeInsert(pe.streamType, pe.eventType); err != nil {
+			return PersistedEvent{}, err
+		}
+	}
+
+	version, err := q.GetStreamVersion(ctx, generated.GetStreamVersionParams{
+		StreamType: pe.streamType,
+		StreamID:   pe.streamID,
+	})
+	if err != nil {
+		return PersistedEvent{}, fmt.Errorf("get stream version: %w", err)
+	}
+
+	row, err := q.AppendEvent(ctx, generated.AppendEventParams{
+		ID:            ulid.Make().String(),
+		StreamType:    pe.streamType,
+		StreamID:      pe.streamID,
+		StreamVersion: version + 1,
+		EventType:     pe.eventType,
+		Data:          pe.data,
+		Metadata:      pe.metadata,
+		ActorType:     pe.actorType,
+		ActorID:       pe.actorID,
+	})
+	if err != nil {
+		return PersistedEvent{}, err
+	}
+	return row, nil
+}
+
+// AppendEvent appends a new event to the event store.
+// It auto-determines the stream version with optimistic retry on conflicts.
+func (s *Store) AppendEvent(ctx context.Context, event Event) error {
+	pe, err := s.prepareEvent(ctx, event)
+	if err != nil {
+		return err
 	}
 
 	const maxRetries = 5
 	for i := 0; i < maxRetries; i++ {
-		version, err := s.queries.GetStreamVersion(ctx, generated.GetStreamVersionParams{
-			StreamType: event.StreamType,
-			StreamID:   event.StreamID,
-		})
-		if err != nil {
-			return fmt.Errorf("get stream version: %w", err)
-		}
-
-		row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
-			ID:            ulid.Make().String(),
-			StreamType:    event.StreamType,
-			StreamID:      event.StreamID,
-			StreamVersion: version + 1,
-			EventType:     event.EventType,
-			Data:          data,
-			Metadata:      metadata,
-			ActorType:     event.ActorType,
-			ActorID:       event.ActorID,
-		})
+		row, err := s.appendOne(ctx, s.queries, pe)
 		if err != nil {
 			if IsVersionConflict(err) {
 				if i < maxRetries-1 {
@@ -740,4 +810,112 @@ func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expecte
 	s.fireListeners(ctx, row)
 
 	return nil
+}
+
+// AppendEvents commits a batch of events across one or more streams
+// atomically — all of them land, or none do — and fires listeners only
+// after the whole batch commits (spec 28). Use it for a logical action
+// spanning several streams (e.g. SCIM group create → UserGroupCreated +
+// SCIMGroupMapped + members), where independent AppendEvent calls can
+// leave partial state if a later one fails.
+//
+// Semantics:
+//   - An empty/nil batch is a no-op returning nil.
+//   - Every event is validated, PII-sealed (fail-closed) and marshalled
+//     BEFORE the transaction opens, so a bad event writes nothing.
+//   - Events insert in array order; same-stream events get consecutive
+//     versions (read-your-writes within the tx).
+//   - A version conflict retries the WHOLE transaction (re-reading
+//     versions) up to a bounded budget; on exhaustion it returns
+//     ErrVersionConflict having written nothing.
+//   - Listeners fire post-commit, once per event, in array order,
+//     through the same panic-safe fireListeners AppendEvent uses — which
+//     is the sole projection path now that PL/pgSQL projection is
+//     retired, so a batched event projects identically to a singly
+//     appended one.
+func (s *Store) AppendEvents(ctx context.Context, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+
+	// Prepare (validate + seal + marshal) every event before opening the
+	// transaction: a failure here means zero DB work and zero partial
+	// state (spec 28 AC 2/6).
+	prepared := make([]preparedEvent, len(events))
+	for i, e := range events {
+		pe, err := s.prepareEvent(ctx, e)
+		if err != nil {
+			return fmt.Errorf("append events: event %d: %w", i, err)
+		}
+		prepared[i] = pe
+	}
+
+	const maxRetries = 5
+	for i := 0; i < maxRetries; i++ {
+		rows, err := s.appendBatchTx(ctx, prepared)
+		if err != nil {
+			if IsVersionConflict(err) {
+				if i < maxRetries-1 {
+					continue // Retry the whole batch on version conflict.
+				}
+				return fmt.Errorf("%w: batch stream modified concurrently after %d retries", ErrVersionConflict, maxRetries)
+			}
+			return fmt.Errorf("append events: %w", err)
+		}
+		// Post-commit: the batch is durable. Fire listeners per event in
+		// array order — the sole projection path (spec 28 AC 4). A
+		// panicking listener cannot fail the already-committed batch
+		// (fireListeners' recover contract).
+		for _, row := range rows {
+			s.fireListeners(ctx, row)
+		}
+		return nil
+	}
+	return fmt.Errorf("append events: exhausted retries")
+}
+
+// appendBatchTx runs one all-or-nothing attempt: it opens a transaction,
+// inserts every prepared event in order via the shared appendOne
+// (tx-bound, so a same-stream read sees earlier inserts in this batch),
+// commits, and returns the inserted rows for post-commit listener
+// dispatch. Any error — version conflict or otherwise — returns before
+// commit, so the deferred Rollback discards the whole batch and nothing
+// is written.
+func (s *Store) appendBatchTx(ctx context.Context, prepared []preparedEvent) ([]PersistedEvent, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	q := s.queries.WithTx(tx)
+	rows := make([]PersistedEvent, len(prepared))
+	for i, pe := range prepared {
+		row, err := s.appendOne(ctx, q, pe)
+		if err != nil {
+			return nil, err
+		}
+		rows[i] = row
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+	return rows, nil
+}
+
+// TestingSetInsertHook installs a test-only failure seam consulted
+// before every event insert in AppendEvent / AppendEvents. Returning a
+// non-nil error from fn aborts that insert; returning a
+// version-conflict-classified error (store.ErrVersionConflict) drives
+// the whole-batch retry. Lets tests exercise the all-or-nothing rollback
+// (spec 28 AC 2), the retry/exhaust budget (AC 5), and the SCIM orphan
+// regression (AC 8) deterministically, from any package, without a
+// production failure flag. Pass nil to clear.
+//
+// Named like TestingPool: production code must not call this. It is
+// exported only because the SCIM AC-8 regression test lives in another
+// package and a concrete *Store gives it no other seam.
+func (s *Store) TestingSetInsertHook(fn func(streamType, eventType string) error) {
+	s.beforeInsert = fn
 }

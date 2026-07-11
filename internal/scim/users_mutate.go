@@ -59,13 +59,21 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update email if changed
+	// Collect every field mutation into one atomic batch (spec 28). All
+	// target the user/<id> stream, so an email change can no longer land
+	// while a profile update in the same PUT fails — the request either
+	// applies every change or none, and a 500 leaves PM unchanged instead
+	// of half-synced from the IdP. Conditions are evaluated against the
+	// user read above; syncIdentityLink stays a separate concern below.
+	var events []store.Event
+
+	// Email
 	newEmail := scimUser.UserName
 	if newEmail == "" && len(scimUser.Emails) > 0 {
 		newEmail = scimUser.Emails[0].Value
 	}
 	if newEmail != "" && newEmail != existingUser.Email {
-		err = h.store.AppendEvent(ctx, store.Event{
+		events = append(events, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEmailChanged),
@@ -73,52 +81,39 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			ActorType:  "scim",
 			ActorID:    provider.ID,
 		})
-		if err != nil {
-			h.logger.Error("failed to update user email", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update user email")
-			return
-		}
 	}
 
-	// Update active status
+	// Active status
 	if !scimUser.IsActive() && !existingUser.Disabled {
-		if err := h.store.AppendEvent(ctx, store.Event{
+		events = append(events, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDisabled),
 			Data:       payloads.UserDisabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		}); err != nil {
-			h.logger.Error("failed to disable user via SCIM", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update user status")
-			return
-		}
+		})
 	} else if scimUser.IsActive() && existingUser.Disabled {
-		if err := h.store.AppendEvent(ctx, store.Event{
+		events = append(events, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEnabled),
 			Data:       payloads.UserEnabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		}); err != nil {
-			h.logger.Error("failed to enable user via SCIM", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update user status")
-			return
-		}
+		})
 	}
 
-	// Update profile if name fields provided
-	newDisplayName := formatExternalName(scimUser.Name)
-	newGivenName := safeNameField(scimUser.Name, "given")
-	newFamilyName := safeNameField(scimUser.Name, "family")
-	// Gate on "name object asserted" rather than "any value non-empty":
-	// SCIM is the source of truth, so an explicitly empty name object
-	// clears the profile ("" overwrite), while an omitted one preserves
-	// it. The old any-non-empty gate made an explicit clear impossible.
+	// Profile — gate on "name object asserted" rather than "any value
+	// non-empty": SCIM is the source of truth, so an explicitly empty
+	// name object clears the profile ("" overwrite), while an omitted one
+	// preserves it. The old any-non-empty gate made an explicit clear
+	// impossible.
 	if scimUser.Name != nil {
-		if err := h.store.AppendEvent(ctx, store.Event{
+		newDisplayName := formatExternalName(scimUser.Name)
+		newGivenName := safeNameField(scimUser.Name, "given")
+		newFamilyName := safeNameField(scimUser.Name, "family")
+		events = append(events, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserProfileUpdated),
@@ -132,14 +127,15 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
-		}); err != nil {
-			// Fail the request like the email/status branches above: a
-			// 200 after a dropped source-of-truth profile update would
-			// silently desync PM from the IdP.
-			h.logger.Error("failed to update user profile via SCIM", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to update user profile")
-			return
-		}
+		})
+	}
+
+	if err := h.store.AppendEvents(ctx, events); err != nil {
+		// A 500 after a dropped source-of-truth update would silently
+		// desync PM from the IdP; atomicity means nothing applied here.
+		h.logger.Error("failed to apply SCIM user replace", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update user")
+		return
 	}
 
 	// Sync identity link (external_email + external_name) from SCIM source of truth
