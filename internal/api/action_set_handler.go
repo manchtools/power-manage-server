@@ -134,7 +134,7 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
 	// in-scope sets, resolved from the search index (fail-closed) and hydrated.
 	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
-		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, "action_sets", offset, pageSize)
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "action_sets", offset, pageSize)
 		if serr != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list action sets")
 		}
@@ -151,7 +151,7 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 		}
 		return connect.NewResponse(&pm.ListActionSetsResponse{
 			Sets:          scopedSets,
-			NextPageToken: buildNextPageToken(int32(len(scopedSets)), offset, pageSize, int64(total)),
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
 			TotalCount:    total,
 		}), nil
 	}

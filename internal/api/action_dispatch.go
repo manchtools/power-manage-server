@@ -610,6 +610,10 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 		if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action_set", source.ActionSetId, ErrActionSetNotFound, "action set not found"); err != nil {
 			return nil, err
 		}
+	case *pm.DispatchToGroupRequest_DefinitionId:
+		if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "definition", source.DefinitionId, ErrDefinitionNotFound, "definition not found"); err != nil {
+			return nil, err
+		}
 	}
 
 	executions := make([]*pm.ActionExecution, 0)

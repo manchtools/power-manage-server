@@ -23,6 +23,9 @@ import (
 // presence check, not behavior. This is the behavioral proof, and the template
 // the Valkey-scoped List* behavioral tests build on.
 func TestValkeySearch_ObjectScope_ConfinesOutOfScope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping valkey-search integration test in short mode")
+	}
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 
@@ -81,6 +84,9 @@ func TestValkeySearch_ObjectScope_ConfinesOutOfScope(t *testing.T) {
 // return an out-of-scope action's script/file contents. Drives the REAL handler
 // against the REAL index; pre-fix ListActions returned the whole catalog.
 func TestValkeyList_ObjectScope_ConfinesOutOfScope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping valkey-search integration test in short mode")
+	}
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
 

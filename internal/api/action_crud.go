@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
@@ -165,12 +166,17 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
 	// actions assigned within their scope groups. The projection has no scope
 	// column, so resolve the in-scope page from the search index (fail-closed)
-	// and hydrate full rows. Global admins fall through to the direct projection
-	// list below. (The scoped path confines by scope; type/unassigned filters are
-	// not applied there — unassigned objects have no scope groups and are already
-	// invisible to a scoped caller per ADR 0024.)
+	// and hydrate full rows. The typeFilter is pushed into the index query so it
+	// still applies (and pagination totals stay accurate); UnassignedOnly is a
+	// no-op here — unassigned objects have no scope groups and are already
+	// invisible to a scoped caller (ADR 0024). Global admins fall through to the
+	// direct projection list below.
 	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
-		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, "actions", offset, pageSize)
+		var typeClause string
+		if typeFilter != 0 {
+			typeClause = fmt.Sprintf("@type:{%d}", typeFilter) // index stores type as the enum int
+		}
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "actions", offset, pageSize, typeClause)
 		if serr != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
 		}
@@ -186,8 +192,10 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 			scopedActions = append(scopedActions, h.actionToProto(a))
 		}
 		return connect.NewResponse(&pm.ListActionsResponse{
-			Actions:       scopedActions,
-			NextPageToken: buildNextPageToken(int32(len(scopedActions)), offset, pageSize, int64(total)),
+			Actions: scopedActions,
+			// Page token off the resolved page length (len(ids)), not the
+			// post-hydrate count — an index-lag skip must not signal "last page".
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
 			TotalCount:    total,
 		}), nil
 	}

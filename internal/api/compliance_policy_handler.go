@@ -108,7 +108,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
 	// in-scope policies, resolved from the search index (fail-closed).
 	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
-		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, "compliance_policies", offset, pageSize)
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "compliance_policies", offset, pageSize)
 		if serr != nil {
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list compliance policies")
 		}
@@ -125,7 +125,7 @@ func (h *CompliancePolicyHandler) ListCompliancePolicies(ctx context.Context, re
 		}
 		return connect.NewResponse(&pm.ListCompliancePoliciesResponse{
 			Policies:      scopedPolicies,
-			NextPageToken: buildNextPageToken(int32(len(scopedPolicies)), offset, pageSize, int64(total)),
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
 			TotalCount:    total,
 		}), nil
 	}
