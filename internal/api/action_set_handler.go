@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -128,6 +129,31 @@ func (h *ActionSetHandler) ListActionSets(ctx context.Context, req *connect.Requ
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err
+	}
+
+	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
+	// in-scope sets, resolved from the search index (fail-closed) and hydrated.
+	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "action_sets", offset, pageSize)
+		if serr != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list action sets")
+		}
+		scopedSets := make([]*pm.ActionSet, 0, len(ids))
+		for _, id := range ids {
+			s, gerr := h.store.Repos().ActionSet.Get(ctx, id)
+			if gerr != nil {
+				if store.IsNotFound(gerr) {
+					continue
+				}
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list action sets")
+			}
+			scopedSets = append(scopedSets, h.actionSetToProto(s))
+		}
+		return connect.NewResponse(&pm.ListActionSetsResponse{
+			Sets:          scopedSets,
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
+			TotalCount:    total,
+		}), nil
 	}
 
 	sets, err := h.store.Repos().ActionSet.List(ctx, store.ListActionSetsFilter{Limit: pageSize, Offset: offset, UnassignedOnly: req.Msg.UnassignedOnly})

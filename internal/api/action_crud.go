@@ -8,12 +8,14 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"connectrpc.com/connect"
 	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -160,6 +162,50 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	}
 
 	typeFilter := int32(req.Msg.TypeFilter)
+
+	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
+	// actions assigned within their scope groups. The projection has no scope
+	// column, so resolve the in-scope page from the search index (fail-closed)
+	// and hydrate full rows. The typeFilter is pushed into the index query so it
+	// still applies (and pagination totals stay accurate); UnassignedOnly is a
+	// no-op here — unassigned objects have no scope groups and are already
+	// invisible to a scoped caller (ADR 0024). Global admins fall through to the
+	// direct projection list below.
+	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
+		var typeClause string
+		if typeFilter != 0 {
+			typeClause = fmt.Sprintf("@type:{%d}", typeFilter) // index stores type as the enum int
+		}
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "actions", offset, pageSize, typeClause)
+		if serr != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
+		}
+		scopedActions := make([]*pm.ManagedAction, 0, len(ids))
+		for _, id := range ids {
+			a, gerr := h.store.Repos().Action.Get(ctx, id)
+			if gerr != nil {
+				if store.IsNotFound(gerr) {
+					continue // index lag vs projection — skip, never leak or fail open
+				}
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
+			}
+			// System-managed actions are never user-readable (GetAction hides them,
+			// Action.List excludes them at SQL). Repos().Action.Get does NOT, so
+			// guard here — a system action's ShellParams must never leak via a
+			// scoped list, self-contained rather than trusting the index to exclude.
+			if a.IsSystem {
+				continue
+			}
+			scopedActions = append(scopedActions, h.actionToProto(a))
+		}
+		return connect.NewResponse(&pm.ListActionsResponse{
+			Actions: scopedActions,
+			// Page token off the resolved page length (len(ids)), not the
+			// post-hydrate count — an index-lag skip must not signal "last page".
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
+			TotalCount:    total,
+		}), nil
+	}
 
 	actions, err := h.store.Repos().Action.List(ctx, store.ListActionsFilter{ActionTypeFilter: typeFilter, Limit: pageSize, Offset: offset, UnassignedOnly: req.Msg.UnassignedOnly})
 	if err != nil {

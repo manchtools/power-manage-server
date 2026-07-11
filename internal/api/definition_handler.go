@@ -10,6 +10,7 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -126,6 +127,31 @@ func (h *DefinitionHandler) ListDefinitions(ctx context.Context, req *connect.Re
 	pageSize, offset, err := parsePagination(int32(req.Msg.PageSize), req.Msg.PageToken)
 	if err != nil {
 		return nil, err
+	}
+
+	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
+	// in-scope definitions, resolved from the search index (fail-closed).
+	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, h.logger, "definitions", offset, pageSize)
+		if serr != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list definitions")
+		}
+		scopedDefs := make([]*pm.Definition, 0, len(ids))
+		for _, id := range ids {
+			d, gerr := h.store.Repos().Definition.Get(ctx, id)
+			if gerr != nil {
+				if store.IsNotFound(gerr) {
+					continue
+				}
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list definitions")
+			}
+			scopedDefs = append(scopedDefs, h.definitionToProto(d))
+		}
+		return connect.NewResponse(&pm.ListDefinitionsResponse{
+			Definitions:   scopedDefs,
+			NextPageToken: buildNextPageToken(int32(len(ids)), offset, pageSize, int64(total)),
+			TotalCount:    total,
+		}), nil
 	}
 
 	defs, err := h.store.Repos().Definition.List(ctx, store.ListDefinitionsFilter{Limit: pageSize, Offset: offset})
