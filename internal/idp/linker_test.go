@@ -260,6 +260,46 @@ func TestLinkOrCreate_AutoLinkByEmail_EmitsLinkForExistingUser(t *testing.T) {
 	}
 }
 
+// TestLinkOrCreate_AutoLinkByEmail_RefusesPasswordAccount pins spec 29 S2: with
+// AutoLinkByEmail on, an IdP-asserted email matching a LOCAL PASSWORD account is
+// NOT auto-linked unless the operator delegated identity via TrustEmailAssertions.
+// A compromised / self-service / over-trusted IdP stamping email_verified must
+// not seize a pre-existing credential account (e.g. a local admin). Mirrors the
+// SCIM createUser guard (scim/users_create.go WS5 #2).
+func TestLinkOrCreate_AutoLinkByEmail_RefusesPasswordAccount(t *testing.T) {
+	existing := db.UsersProjection{ID: "admin-local", Email: "admin@example.com", HasPassword: true}
+	querier := &mockQuerier{userByEmail: &existing}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp", AutoLinkByEmail: true, TrustEmailAssertions: false}
+	claims := &UserClaims{Subject: "ext-attacker", Email: "admin@example.com"}
+
+	_, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.ErrorIs(t, err, ErrNoMatchingAccount,
+		"an IdP email must not auto-link to a local password account without TrustEmailAssertions")
+	assert.Equal(t, 0, countEventsOfType(appender, "IdentityLinked"),
+		"no link may be created to a password account: %v", eventTypes(appender))
+}
+
+// TestLinkOrCreate_AutoLinkByEmail_PasswordAccountLinkedWhenTrusted: once the
+// operator has knowingly delegated identity via TrustEmailAssertions, the link is
+// allowed even for a password account.
+func TestLinkOrCreate_AutoLinkByEmail_PasswordAccountLinkedWhenTrusted(t *testing.T) {
+	existing := db.UsersProjection{ID: "user-trusted", Email: "u@example.com", HasPassword: true}
+	querier := &mockQuerier{userByEmail: &existing}
+	appender := &mockAppender{}
+	linker := NewLinker(querier, appender)
+
+	provider := store.IdentityProvider{ID: "p1", Slug: "idp", AutoLinkByEmail: true, TrustEmailAssertions: true}
+	claims := &UserClaims{Subject: "ext-1", Email: "u@example.com"}
+
+	result, err := linker.LinkOrCreate(context.Background(), provider, claims)
+	require.NoError(t, err)
+	assert.Equal(t, "user-trusted", result.UserID)
+	assert.Equal(t, 1, countEventsOfType(appender, "IdentityLinked"))
+}
+
 // TestLinkOrCreate_AutoLinkDisabled_NoLink pins WS5 #3: with AutoLinkByEmail
 // AND AutoCreateUsers off, an existing-by-email user is NOT linked — the
 // rejection path returns ErrNoMatchingAccount and emits no IdentityLinked.

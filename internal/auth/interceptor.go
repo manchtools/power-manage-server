@@ -265,6 +265,11 @@ type RateLimiters struct {
 	// reflects whether an email exists and its auth config — an enumeration
 	// oracle if left unthrottled (audit). Keyed by client IP.
 	AuthMethods *RateLimiter
+	// SSO throttles the unauthenticated GetSSOLoginURL — the most expensive public
+	// endpoint: each call writes an auth_state row, AES-GCM-decrypts the provider
+	// secret, and performs an outbound OIDC discovery request (spec 29 S3). Left
+	// unthrottled it is a storage + outbound-amplification DoS. Keyed by client IP.
+	SSO *RateLimiter
 	// Authenticated is the general per-user ceiling applied to EVERY
 	// authenticated control RPC after the token validates (WS11 #6). It bounds
 	// a compromised token or a runaway client from hammering the API. Keyed by
@@ -382,6 +387,16 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			ip := clientIP(req)
 			if !i.limiters.AuthMethods.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "auth_methods", "ip", ip, "procedure", procedure)
+				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
+			}
+		}
+
+		// GetSSOLoginURL (public, spec 29 S3) — the most expensive unauthenticated
+		// endpoint (auth_state DB write + secret decrypt + outbound OIDC discovery).
+		if procedure == "/pm.v1.ControlService/GetSSOLoginURL" && i.limiters.SSO != nil {
+			ip := clientIP(req)
+			if !i.limiters.SSO.Allow(ip) {
+				i.logger.Warn("rate limit exceeded", "limiter", "sso", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
 			}
 		}
