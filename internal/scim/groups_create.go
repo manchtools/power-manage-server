@@ -119,48 +119,46 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create the user group
+	// Create the group as one atomic unit (spec 28): the UserGroupCreated,
+	// SCIMGroupMapped and per-member events either all commit or none do.
+	// Independent appends could leave an orphan user_group with no
+	// mapping if the mapping append failed — the IdP's next sync then
+	// misses the mapping-keyed dedup, creates a *second* group, and
+	// leaks the first permanently.
 	h.logger.Debug("SCIM createGroup: creating new group", "scim_group_id", scimGroupID, "display_name", scimGroup.DisplayName)
 	userGroupID := newULID()
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user_group",
-		StreamID:   userGroupID,
-		EventType:  string(eventtypes.UserGroupCreated),
-		Data: payloads.UserGroupCreated{
-			Name:        scimGroup.DisplayName,
-			Description: fmt.Sprintf("SCIM-provisioned group from %s", provider.Name),
-		},
-		ActorType: "scim",
-		ActorID:   provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to create user group via SCIM", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create group")
-		return
-	}
-
-	// Create the SCIM group mapping
 	mappingID := newULID()
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "scim_group_mapping",
-		StreamID:   mappingID,
-		EventType:  string(eventtypes.SCIMGroupMapped),
-		Data: payloads.SCIMGroupMapped{
-			ProviderID:      provider.ID,
-			SCIMGroupID:     scimGroupID,
-			SCIMDisplayName: &scimGroup.DisplayName,
-			UserGroupID:     userGroupID,
+	events := []store.Event{
+		{
+			StreamType: "user_group",
+			StreamID:   userGroupID,
+			EventType:  string(eventtypes.UserGroupCreated),
+			Data: payloads.UserGroupCreated{
+				Name:        scimGroup.DisplayName,
+				Description: fmt.Sprintf("SCIM-provisioned group from %s", provider.Name),
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
 		},
-		ActorType: "scim",
-		ActorID:   provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to create SCIM group mapping", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to map SCIM group")
-		return
+		{
+			StreamType: "scim_group_mapping",
+			StreamID:   mappingID,
+			EventType:  string(eventtypes.SCIMGroupMapped),
+			Data: payloads.SCIMGroupMapped{
+				ProviderID:      provider.ID,
+				SCIMGroupID:     scimGroupID,
+				SCIMDisplayName: &scimGroup.DisplayName,
+				UserGroupID:     userGroupID,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
+		},
 	}
 
-	// Add members if provided
+	// Members join the same atomic batch — a group provisioned without
+	// its requested members is also partial state. Validity checks
+	// (empty-skip, cross-provider) run here, before the batch, so only a
+	// genuine DB failure rolls the whole create back.
 	for _, member := range scimGroup.Members {
 		if member.Value == "" {
 			continue
@@ -168,10 +166,9 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		if !h.mayAddMemberToGroup(ctx, provider.ID, userGroupID, member.Value) {
 			continue
 		}
-		streamID := userGroupID + ":" + member.Value
-		h.appendEvent(ctx, store.Event{
+		events = append(events, store.Event{
 			StreamType: "user_group",
-			StreamID:   streamID,
+			StreamID:   userGroupID + ":" + member.Value,
 			EventType:  string(eventtypes.UserGroupMemberAdded),
 			Data: payloads.UserGroupMemberAdded{
 				GroupID: userGroupID,
@@ -180,6 +177,12 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 			ActorType: "scim",
 			ActorID:   provider.ID,
 		})
+	}
+
+	if err := h.store.AppendEvents(ctx, events); err != nil {
+		h.logger.Error("failed to create SCIM group", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to create group")
+		return
 	}
 
 	// Build response

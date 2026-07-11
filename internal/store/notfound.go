@@ -52,3 +52,21 @@ func IsVersionConflict(err error) bool {
 	}
 	return false
 }
+
+// isDeadlock reports whether err is a Postgres deadlock (SQLSTATE
+// 40P01). A deadlock aborts the whole transaction, so — like a version
+// conflict — the batch-append path (AppendEvents) retries the entire
+// transaction rather than surfacing a transient failure. Two overlapping
+// multi-stream batches that lock the same streams in opposite orders are
+// the classic trigger; retrying resolves them.
+//
+// Deliberately NOT folded into IsVersionConflict: a deadlock is not an
+// optimistic-concurrency loss, and IsVersionConflict's handler callers
+// map it to a 409/Aborted status where a deadlock does not belong.
+func isDeadlock(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}

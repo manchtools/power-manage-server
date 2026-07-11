@@ -57,6 +57,14 @@ type EventStore interface {
 	// error otherwise — no retry.
 	AppendEventWithVersion(ctx context.Context, event Event, expectedVersion int32) error
 
+	// AppendEvents writes a batch of events across one or more streams
+	// atomically (all land or none) and fires listeners once per event,
+	// post-commit, in array order. The whole transaction is the retry
+	// unit on a version conflict or deadlock. Use it for a logical
+	// action that spans several streams; a single-element batch is
+	// equivalent to AppendEvent.
+	AppendEvents(ctx context.Context, events []Event) error
+
 	// LoadStream returns every event for the given stream in
 	// stream_version order. Used by rebuild paths and any consumer
 	// that needs to replay a single aggregate's history.
