@@ -74,3 +74,54 @@ func TestValkeySearch_ObjectScope_ConfinesOutOfScope(t *testing.T) {
 		assert.True(t, got[actionB])
 	})
 }
+
+// TestValkeyList_ObjectScope_ConfinesOutOfScope is the S1 regression: ListActions
+// (the leaking read surface) must confine a scope-restricted caller to in-scope
+// actions — resolved from the search index, hydrated from Postgres — and never
+// return an out-of-scope action's script/file contents. Drives the REAL handler
+// against the REAL index; pre-fix ListActions returned the whole catalog.
+func TestValkeyList_ObjectScope_ConfinesOutOfScope(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	admin := testutil.CreateTestUser(t, st, testutil.NewID()+"@a.com", "pass", "admin")
+	dgA := testutil.CreateTestDeviceGroup(t, st, admin, "Fleet A") // caller scoped here
+	dgB := testutil.CreateTestDeviceGroup(t, st, admin, "Fleet B") // out of scope
+
+	inScope := testutil.CreateTestAction(t, st, admin, "in-scope", int(pm.ActionType_ACTION_TYPE_SHELL))
+	testutil.CreateTestAssignment(t, st, admin, "action", inScope, "device_group", dgA, 0)
+	outScope := testutil.CreateTestAction(t, st, admin, "out-of-scope", int(pm.ActionType_ACTION_TYPE_SHELL))
+	testutil.CreateTestAssignment(t, st, admin, "action", outScope, "device_group", dgB, 0)
+
+	idx := testutil.SetupValkeySearch(t, st)
+	require.NoError(t, idx.Rebuild(ctx))
+
+	h := api.NewActionHandler(st, slog.Default(), api.NoOpSigner{})
+	h.SetSearchIndex(idx)
+
+	list := func(c context.Context) (map[string]bool, int32) {
+		resp, err := h.ListActions(c, connect.NewRequest(&pm.ListActionsRequest{PageSize: 100}))
+		require.NoError(t, err)
+		ids := map[string]bool{}
+		for _, a := range resp.Msg.Actions {
+			ids[a.Id] = true
+		}
+		return ids, resp.Msg.TotalCount
+	}
+
+	t.Run("scope-restricted caller lists only the in-scope action", func(t *testing.T) {
+		got, total := list(testutil.AuthContextScoped(testutil.NewID(), "s@test.com",
+			[]string{"ListActions"},
+			[]auth.ScopedGrant{{Permission: "ListActions", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: dgA}}))
+		assert.True(t, got[inScope], "in-scope action must be listed")
+		assert.False(t, got[outScope], "out-of-scope action (and its script) must NOT be listed — this is the S1 leak")
+		assert.Equal(t, int32(1), total, "TotalCount reflects the scoped set")
+	})
+
+	t.Run("global caller lists both", func(t *testing.T) {
+		got, _ := list(testutil.AuthContextScoped(admin, "g@test.com",
+			[]string{"ListActions"}, []auth.ScopedGrant{{Permission: "ListActions"}}))
+		assert.True(t, got[inScope])
+		assert.True(t, got[outScope])
+	})
+}

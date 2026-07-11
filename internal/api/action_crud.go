@@ -14,6 +14,7 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -160,6 +161,36 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 	}
 
 	typeFilter := int32(req.Msg.TypeFilter)
+
+	// Object scope (ADR 0024 / spec 29 S1): a scope-restricted caller sees only
+	// actions assigned within their scope groups. The projection has no scope
+	// column, so resolve the in-scope page from the search index (fail-closed)
+	// and hydrate full rows. Global admins fall through to the direct projection
+	// list below. (The scoped path confines by scope; type/unassigned filters are
+	// not applied there — unassigned objects have no scope groups and are already
+	// invisible to a scoped caller per ADR 0024.)
+	if _, restricted := auth.ObjectScopeListFilter(ctx); restricted {
+		ids, total, serr := scopedObjectIDs(ctx, h.searchIdx, "actions", offset, pageSize)
+		if serr != nil {
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
+		}
+		scopedActions := make([]*pm.ManagedAction, 0, len(ids))
+		for _, id := range ids {
+			a, gerr := h.store.Repos().Action.Get(ctx, id)
+			if gerr != nil {
+				if store.IsNotFound(gerr) {
+					continue // index lag vs projection — skip, never leak or fail open
+				}
+				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
+			}
+			scopedActions = append(scopedActions, h.actionToProto(a))
+		}
+		return connect.NewResponse(&pm.ListActionsResponse{
+			Actions:       scopedActions,
+			NextPageToken: buildNextPageToken(int32(len(scopedActions)), offset, pageSize, int64(total)),
+			TotalCount:    total,
+		}), nil
+	}
 
 	actions, err := h.store.Repos().Action.List(ctx, store.ListActionsFilter{ActionTypeFilter: typeFilter, Limit: pageSize, Offset: offset, UnassignedOnly: req.Msg.UnassignedOnly})
 	if err != nil {
