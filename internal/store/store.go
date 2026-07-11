@@ -854,11 +854,16 @@ func (s *Store) AppendEvents(ctx context.Context, events []Event) error {
 	for i := 0; i < maxRetries; i++ {
 		rows, err := s.appendBatchTx(ctx, prepared)
 		if err != nil {
-			if IsVersionConflict(err) {
+			// A version conflict OR a deadlock aborts this transaction;
+			// both are transient, so retry the WHOLE batch (fresh tx,
+			// re-read versions). Reversed-order overlapping batches
+			// deadlock (40P01) rather than unique-violate — retrying
+			// resolves them the same way.
+			if IsVersionConflict(err) || isDeadlock(err) {
 				if i < maxRetries-1 {
-					continue // Retry the whole batch on version conflict.
+					continue
 				}
-				return fmt.Errorf("%w: batch stream modified concurrently after %d retries", ErrVersionConflict, maxRetries)
+				return fmt.Errorf("%w: batch could not commit after %d retries (version conflict or deadlock)", ErrVersionConflict, maxRetries)
 			}
 			return fmt.Errorf("append events: %w", err)
 		}

@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -248,6 +249,39 @@ func TestAppendEvents_RetriesWholeBatchAndConverges(t *testing.T) {
 	assert.Len(t, evB, 1)
 	assert.Equal(t, int32(1), evA[0].StreamVersion)
 	assert.Equal(t, int32(1), evB[0].StreamVersion)
+}
+
+// AC 5 (deadlock variant) — a Postgres deadlock (40P01) aborts the whole
+// transaction; like a version conflict it is transient, so the batch
+// retries the whole tx and converges. Two overlapping multi-stream
+// batches locking the same streams in opposite orders are the real
+// trigger; a synthetic 40P01 injected via the seam pins the
+// classification deterministically (a real concurrent deadlock is
+// timing-flaky and would race the CI).
+func TestAppendEvents_RetriesOnDeadlockAndConverges(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t)
+	ctx := context.Background()
+	sA, sB := testutil.NewID(), testutil.NewID()
+
+	var deadlocks int32
+	st.TestingSetInsertHook(func(streamType, eventType string) error {
+		if streamType == "test_b" && atomic.AddInt32(&deadlocks, 1) == 1 {
+			return &pgconn.PgError{Code: "40P01", Message: "deadlock detected"}
+		}
+		return nil
+	})
+
+	require.NoError(t, st.AppendEvents(ctx, []store.Event{
+		sysEvent("test_a", sA, "E1"),
+		sysEvent("test_b", sB, "E2"),
+	}), "a transient deadlock must be retried, not surfaced")
+
+	evA, err := st.LoadStream(ctx, "test_a", sA)
+	require.NoError(t, err)
+	evB, err := st.LoadStream(ctx, "test_b", sB)
+	require.NoError(t, err)
+	assert.Len(t, evA, 1, "the rolled-back first attempt leaves no duplicate")
+	assert.Len(t, evB, 1)
 }
 
 // AC 5 — a conflict that never clears exhausts the retry budget and
