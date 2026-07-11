@@ -102,6 +102,14 @@ func (h *ActionHandler) DispatchAction(ctx context.Context, req *connect.Request
 			}
 			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get action")
 		}
+		// Object read-scope (spec 29 S1): a scope-restricted admin must not be
+		// able to execute a catalog action it cannot Get. Device scope alone
+		// (enforced above) confines WHERE it runs, not WHICH object runs. Mirrors
+		// the AddActionToSet/AddActionToPolicy read-scope gate. Out of scope →
+		// NotFound (no existence leak).
+		if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", source.ActionId, ErrActionNotFound, "action not found"); err != nil {
+			return nil, err
+		}
 		inputs.actionType = pm.ActionType(action.ActionType)
 		inputs.desiredState = pm.DesiredState_DESIRED_STATE_PRESENT // Default for ad-hoc dispatch
 		// The stored params JSONB is carried verbatim into the envelope
@@ -484,6 +492,12 @@ func (h *ActionHandler) DispatchActionSet(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
+	// Object read-scope (spec 29 S1): confine WHICH set can be executed, not just
+	// which device it runs on. Out of scope → NotFound.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action_set", req.Msg.ActionSetId, ErrActionSetNotFound, "action set not found"); err != nil {
+		return nil, err
+	}
+
 	actions, err := h.store.Queries().ListActionsInSet(ctx, req.Msg.ActionSetId)
 	if err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get actions in set")
@@ -516,6 +530,12 @@ func (h *ActionHandler) DispatchDefinition(ctx context.Context, req *connect.Req
 	}
 
 	if err := h.enforceDeviceScopeAll(ctx, "DispatchDefinition", []string{req.Msg.DeviceId}); err != nil {
+		return nil, err
+	}
+
+	// Object read-scope (spec 29 S1): confine WHICH definition can be executed.
+	// Out of scope → NotFound.
+	if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "definition", req.Msg.DefinitionId, ErrDefinitionNotFound, "definition not found"); err != nil {
 		return nil, err
 	}
 
@@ -576,6 +596,20 @@ func (h *ActionHandler) DispatchToGroup(ctx context.Context, req *connect.Reques
 	}
 	if err := h.enforceDeviceScopeAll(ctx, "DispatchToGroup", memberIDs); err != nil {
 		return nil, err
+	}
+
+	// Object read-scope (spec 29 S1): confine WHICH stored object the fan-out
+	// executes, once, before the per-device loop. Inline sources have no stored
+	// object to scope. Out of scope → NotFound.
+	switch source := req.Msg.ActionSource.(type) {
+	case *pm.DispatchToGroupRequest_ActionId:
+		if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action", source.ActionId, ErrActionNotFound, "action not found"); err != nil {
+			return nil, err
+		}
+	case *pm.DispatchToGroupRequest_ActionSetId:
+		if err := enforceObjectReadScope(ctx, objScope(h.store), h.logger, "action_set", source.ActionSetId, ErrActionSetNotFound, "action set not found"); err != nil {
+			return nil, err
+		}
 	}
 
 	executions := make([]*pm.ActionExecution, 0)
