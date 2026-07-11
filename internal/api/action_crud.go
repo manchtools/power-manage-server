@@ -189,6 +189,13 @@ func (h *ActionHandler) ListActions(ctx context.Context, req *connect.Request[pm
 				}
 				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list actions")
 			}
+			// System-managed actions are never user-readable (GetAction hides them,
+			// Action.List excludes them at SQL). Repos().Action.Get does NOT, so
+			// guard here — a system action's ShellParams must never leak via a
+			// scoped list, self-contained rather than trusting the index to exclude.
+			if a.IsSystem {
+				continue
+			}
 			scopedActions = append(scopedActions, h.actionToProto(a))
 		}
 		return connect.NewResponse(&pm.ListActionsResponse{

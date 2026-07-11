@@ -27,10 +27,17 @@ import (
 func TestObjectListHandlers_AllScopeEnforced(t *testing.T) {
 	require.NotEmpty(t, objectTypeToIndexScope, "no scopable object types discovered — guard would pass vacuously")
 
-	// Expected List method name per object type, e.g. "actions" -> "ListActions".
-	found := map[string]bool{}
+	// Expected List method name -> the index scope it MUST pass to scopedObjectIDs,
+	// e.g. "ListActions" -> "actions". Validating the scope ARGUMENT (not just that
+	// the call exists) rejects a copy-paste bug like ListActionSets querying
+	// "actions".
+	expectedScope := map[string]string{}
 	for _, scope := range objectTypeToIndexScope {
-		found["List"+pascalFromSnake(scope)] = false
+		expectedScope["List"+pascalFromSnake(scope)] = scope
+	}
+	found := map[string]bool{}
+	for method := range expectedScope {
+		found[method] = false
 	}
 
 	fset := token.NewFileSet()
@@ -53,26 +60,37 @@ func TestObjectListHandlers_AllScopeEnforced(t *testing.T) {
 			if _, tracked := found[fn.Name.Name]; !tracked {
 				continue
 			}
-			calls := false
+			want := expectedScope[fn.Name.Name]
+			enforced := false
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if c, ok := n.(*ast.CallExpr); ok && calleeName(c.Fun) == "scopedObjectIDs" {
-					calls = true
+				c, ok := n.(*ast.CallExpr)
+				if !ok || calleeName(c.Fun) != "scopedObjectIDs" {
+					return true
 				}
-				return !calls
+				// scopedObjectIDs(ctx, idx, logger, scope, offset, pageSize, ...):
+				// the scope arg (index 3) must be the literal for THIS handler, so a
+				// handler that copies the wrong scope string fails the guard.
+				if len(c.Args) > 3 {
+					if s, ok := stringLit(c.Args[3]); ok && s == want {
+						enforced = true
+					}
+				}
+				return !enforced
 			})
 			// OR-accumulate: the same method name exists on both the real
 			// handler (which calls scopedObjectIDs) and the ControlService
 			// delegator (which just forwards). The invariant is satisfied if
 			// ANY declaration enforces — don't let the delegator overwrite it.
-			found[fn.Name.Name] = found[fn.Name.Name] || calls
+			found[fn.Name.Name] = found[fn.Name.Name] || enforced
 		}
 	}
 	require.True(t, sawFile, "scanned zero source files — discovery is broken")
 
 	for method, ok := range found {
 		require.Truef(t, ok,
-			"%s does not route restricted callers through scopedObjectIDs — an object List RPC "+
-				"that skips scope enforcement leaks the out-of-scope catalog (spec 29 S1).", method)
+			"%s does not route restricted callers through scopedObjectIDs(ctx, idx, logger, %q, ...) — "+
+				"an object List RPC that skips scope enforcement (or passes the wrong scope) leaks the "+
+				"out-of-scope catalog (spec 29 S1).", method, expectedScope[method])
 	}
 }
 

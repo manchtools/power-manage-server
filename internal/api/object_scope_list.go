@@ -48,7 +48,7 @@ func scopedObjectIDs(ctx context.Context, idx *search.Index, logger *slog.Logger
 		// "Unknown index" so an unrelated backend failure surfaces as an error,
 		// not a silent empty page. Fail-closed is logged; the caller sees zero
 		// results, never the unscoped list.
-		if strings.Contains(strings.ToLower(err.Error()), "unknown index") {
+		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
 			if logger != nil {
 				logger.Warn("scopedObjectIDs: search index not built, failing closed to empty page",
 					"scope", scope, "error", err)
