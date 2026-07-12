@@ -217,6 +217,10 @@ func AllPermissions() []PermissionInfo {
 		{"GetDeviceLuksKeys", "LUKS", "View LUKS keys", TargetUnspecified},
 		{"CreateLuksToken", "LUKS", "Create LUKS recovery token", TargetUnspecified},
 		{"RevokeLuksDeviceKey", "LUKS", "Revoke LUKS device key", TargetUnspecified},
+		// Gateways — org-tier (spec 31). Gateway identity is a fleet-wide
+		// control-plane concern, not scoped to a device/user.
+		{"ListGateways", "Gateways", "List enrolled gateways", TargetUnspecified},
+		{"RevokeGatewayCertificate", "Gateways", "Revoke a gateway certificate", TargetUnspecified},
 		// TOTP
 		{"SetupTOTP", "Authentication", "Set up TOTP 2FA", TargetUnspecified},
 		{"VerifyTOTP", "Authentication", "Verify TOTP setup", TargetUnspecified},

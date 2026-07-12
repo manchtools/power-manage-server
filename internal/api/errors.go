@@ -43,6 +43,7 @@ const (
 	ErrExecutionNotFound    = "execution_not_found"
 	ErrAssignmentNotFound   = "assignment_not_found"
 	ErrQueryResultNotFound  = "query_result_not_found"
+	ErrGatewayNotFound      = "gateway_not_found"
 )
 
 // Conflict error codes.

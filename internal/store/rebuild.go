@@ -419,6 +419,14 @@ var AllRebuildTargets = []rebuildTarget{
 		Tables:      []string{"compliance_results_projection"},
 		StreamTypes: []string{"compliance"},
 	},
+	{
+		// Applied by projectors.ApplyGateway via projectors.WireAll (spec 31).
+		// No projection FK; order-independent. Ephemeral-per-boot rows, but
+		// replay still reproduces the fingerprint↦gateway_id mapping.
+		Name:        "gateways",
+		Tables:      []string{"gateways_projection"},
+		StreamTypes: []string{"gateway"},
+	},
 }
 
 // ErrUnknownTarget is returned when RebuildAll is called with a

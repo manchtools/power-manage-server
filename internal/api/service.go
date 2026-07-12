@@ -42,6 +42,7 @@ type ControlService struct {
 	compliance       *ComplianceHandler
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
+	gateway          *GatewayHandler
 	search           *SearchHandler
 	settings         *SettingsHandler
 	systemActions    *SystemActionManager
@@ -84,6 +85,7 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ca.A
 		compliance:       NewComplianceHandler(st, logger.With("component", "compliance_handler")),
 		compliancePolicy: NewCompliancePolicyHandler(st, logger.With("component", "compliance_policy_handler")),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
+		gateway:          NewGatewayHandler(st, logger.With("component", "gateway_handler")),
 		search:           NewSearchHandler(logger.With("component", "search_handler")),
 		settings:         settingsHandler,
 		systemActions:    systemActions,
@@ -111,6 +113,7 @@ func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 func (s *ControlService) SetCRLStore(store *crl.Store) {
 	s.certificate.SetCRLStore(store)
 	s.device.SetCRLStore(store)
+	s.gateway.SetCRLStore(store)
 }
 
 // SetTerminalHandler wires the terminal session RPC handler. Called
@@ -144,6 +147,19 @@ func (s *ControlService) Register(ctx context.Context, req *connect.Request[pm.R
 // Certificate Renewal
 func (s *ControlService) RenewCertificate(ctx context.Context, req *connect.Request[pm.RenewCertificateRequest]) (*connect.Response[pm.RenewCertificateResponse], error) {
 	return s.certificate.RenewCertificate(ctx, req)
+}
+
+// Certificate Revocation List (agent-facing) + gateway revocation (spec 31)
+func (s *ControlService) GetCertificateRevocationList(ctx context.Context, req *connect.Request[pm.GetCertificateRevocationListRequest]) (*connect.Response[pm.GetCertificateRevocationListResponse], error) {
+	return s.gateway.GetCertificateRevocationList(ctx, req)
+}
+
+func (s *ControlService) RevokeGatewayCertificate(ctx context.Context, req *connect.Request[pm.RevokeGatewayCertificateRequest]) (*connect.Response[pm.RevokeGatewayCertificateResponse], error) {
+	return s.gateway.RevokeGatewayCertificate(ctx, req)
+}
+
+func (s *ControlService) ListGateways(ctx context.Context, req *connect.Request[pm.ListGatewaysRequest]) (*connect.Response[pm.ListGatewaysResponse], error) {
+	return s.gateway.ListGateways(ctx, req)
 }
 
 // Authentication

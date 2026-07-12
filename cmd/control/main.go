@@ -63,6 +63,11 @@ type Config struct {
 	InternalTLSCert    string
 	InternalTLSKey     string
 
+	// Gateway self-enrollment (spec 31). The shared bootstrap token a gateway
+	// presents to GatewayAuthService.EnrollGateway. Empty disables enrollment
+	// (every attempt is rejected). CONTROL_GATEWAY_ENROLL_TOKEN.
+	GatewayEnrollToken string
+
 	// CORS
 	CORSAllowAll bool // Allow all origins (development only)
 
@@ -373,6 +378,7 @@ func main() {
 		Register:    auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
+		GetCRL:      auth.NewRateLimiter(30, 1*time.Minute), // agent CRL fetch — a few/hour legitimately
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
 		SSO:         auth.NewRateLimiter(10, 1*time.Minute), // expensive unauth endpoint (DB write + outbound discovery)
 		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
@@ -406,6 +412,24 @@ func main() {
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(path, handler)
+
+	// GatewayAuthService (spec 31): public, token-gated gateway self-enrollment.
+	// Mounted WITHOUT the auth/authz interceptors (like InternalService) — it
+	// has no JWT and self-gates on the bootstrap token + a per-IP rate limiter in
+	// the handler, so a foreign-service procedure never enters ControlService's
+	// PublicProcedures allow-list. Validation + logging + deadline still apply.
+	gatewayAuthInterceptors := connect.WithInterceptors(
+		api.NewLoggingInterceptor(logger),
+		api.NewRequestDeadlineInterceptor(api.RequestDeadline),
+		api.NewValidationInterceptor(),
+	)
+	gatewayEnrollLimiter := auth.NewRateLimiter(5, 1*time.Minute) // 5/min/IP (spec 31 AC4)
+	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
+	gwAuthPath, gwAuthHandler := pmv1connect.NewGatewayAuthServiceHandler(gatewayAuthHandler, gatewayAuthInterceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
+	mux.Handle(gwAuthPath, gwAuthHandler)
+	if cfg.GatewayEnrollToken == "" {
+		logger.Warn("gateway self-enrollment disabled: CONTROL_GATEWAY_ENROLL_TOKEN is empty — every EnrollGateway attempt will be rejected")
+	}
 
 	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
 	// delete path can clean up pm-tty-* / USER actions when the
@@ -472,6 +496,16 @@ func main() {
 		// registry) keeps the documented single-gateway bypass.
 		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
 	}
+	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the
+	// CRL (to revoke the superseded fingerprint). The CA is always available; the
+	// CRL only when Valkey is configured — renewal still works without it, just
+	// skipping the best-effort superseded-cert revocation. The typed nil keeps
+	// main.go free of a crl import.
+	if valkey != nil {
+		internalHandler.SetGatewayRenewal(certAuth, valkey.CRLStore)
+	} else {
+		internalHandler.SetGatewayRenewal(certAuth, nil)
+	}
 	internalPath, internalH := pmv1connect.NewInternalServiceHandler(
 		internalHandler,
 		connect.WithInterceptors(api.NewValidationInterceptor()),
@@ -496,7 +530,10 @@ func main() {
 		internalRevocation = mtls.NoopRevocationChecker{}
 	}
 	internalMux := http.NewServeMux()
-	internalMux.Handle(internalPath, mtls.RequirePeerClassNotRevoked(logger, internalRevocation, mtls.PeerClassGateway)(internalH))
+	// WithPeerCert (inside the class/revocation gate) injects the authenticated
+	// gateway peer cert into the request context so RenewGatewayCertificate can
+	// read the gateway_id from the peer cert CN (spec 31), not a request field.
+	internalMux.Handle(internalPath, mtls.RequirePeerClassNotRevoked(logger, internalRevocation, mtls.PeerClassGateway)(mtls.WithPeerCert(internalH)))
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

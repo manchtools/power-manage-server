@@ -346,6 +346,65 @@ func TestIssueCertificateFromCSR_ForgedSignatureRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid CSR signature")
 }
 
+// TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity pins spec 31
+// AC1/AC7: a gateway cert carries CN = SerialNumber = the server gateway_id, the
+// gateway peer-class SAN (never the agent class), and a fixed 45-day validity
+// distinct from the agent-cert validity. A past clock proves NotAfter derives
+// from clock+45d, not the wall clock.
+func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	fixed := time.Date(2020, 6, 1, 12, 0, 0, 0, time.UTC)
+	// Agent validity is deliberately NOT 45d so the assertion below distinguishes
+	// the gateway validity from the CA default.
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour, ca.WithClock(func() time.Time { return fixed }))
+	require.NoError(t, err)
+
+	const gatewayID = "gw-01JABCDEF" // server id; CSR CN is different on purpose
+	csrPEM := generateCSRWithSAN(t, "csr-chosen-id", func(*x509.CertificateRequest) {})
+
+	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM)
+	require.NoError(t, err)
+
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, gatewayID, parsed.Subject.CommonName, "CN must be the server gateway_id")
+	assert.Equal(t, gatewayID, parsed.Subject.SerialNumber, "SerialNumber must be the server gateway_id")
+
+	require.Len(t, parsed.URIs, 1, "a gateway cert must carry exactly one URI SAN")
+	class, err := mtls.PeerClassFromCert(parsed)
+	require.NoError(t, err)
+	assert.Equal(t, mtls.PeerClassGateway, class, "a gateway cert must be the gateway peer class, never agent")
+
+	const want45d = 45 * 24 * time.Hour
+	assert.True(t, cert.NotAfter.Equal(fixed.Add(want45d)),
+		"gateway NotAfter must be clock+45d; got %s want %s", cert.NotAfter, fixed.Add(want45d))
+}
+
+// TestIssueGatewayCertificateFromCSR_RejectsSAN pins that the gateway path
+// enforces the same caller-SAN rejection as the agent path — an enrolling
+// gateway cannot request a control peer class or a server hostname.
+func TestIssueGatewayCertificateFromCSR_RejectsSAN(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+
+	mustURL := func(s string) *url.URL {
+		u, perr := url.Parse(s)
+		require.NoError(t, perr)
+		return u
+	}
+	csrPEM := generateCSRWithSAN(t, "gw-1", func(r *x509.CertificateRequest) {
+		r.URIs = []*url.URL{mustURL("spiffe://power-manage/control")}
+	})
+	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not request subject alternative names")
+	assert.Nil(t, cert)
+}
+
 func TestVerifyCertificate_Success(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)

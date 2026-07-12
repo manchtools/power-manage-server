@@ -118,9 +118,33 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration, opts ...Option) 
 	return c, nil
 }
 
-// IssueCertificateFromCSR signs a Certificate Signing Request and returns the certificate.
-// The private key stays on the agent - this method only signs the CSR.
+// gatewayCertValidity is the fixed short-lived TTL for gateway certificates
+// (spec 31 AC7): 45 days, distinct from the agent-cert ca.validity. Short-lived
+// so an abandoned or revoked gateway cert self-expires within the window even if
+// the CRL is unavailable.
+const gatewayCertValidity = 45 * 24 * time.Hour
+
+// IssueCertificateFromCSR signs an agent Certificate Signing Request and returns
+// the certificate. The private key stays on the agent - this method only signs
+// the CSR. Agent certs carry the agent peer class and the CA's default validity.
 func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certificate, error) {
+	return ca.issueFromCSR(deviceID, csrPEM, mtls.PeerClassAgent, ca.validity)
+}
+
+// IssueGatewayCertificateFromCSR signs a gateway CSR (spec 31). The issued cert
+// carries CN = SerialNumber = gatewayID, the gateway peer-class SAN, and the
+// fixed 45-day gateway validity. Callers reach this from GatewayAuthService
+// enrollment and InternalService renewal.
+func (ca *CA) IssueGatewayCertificateFromCSR(gatewayID string, csrPEM []byte) (*Certificate, error) {
+	return ca.issueFromCSR(gatewayID, csrPEM, mtls.PeerClassGateway, gatewayCertValidity)
+}
+
+// issueFromCSR is the shared issuance body. deviceID becomes the cert CN and
+// Subject.SerialNumber; class selects the peer-class URI SAN stamped on the
+// cert; validity sets NotAfter. The CA authoritatively stamps the identity and
+// class — caller-supplied SANs in the CSR are rejected below — so an enrolling
+// peer can never mint a different identity or a peer class it was not issued.
+func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass, validity time.Duration) (*Certificate, error) {
 	// Parse the CSR
 	csrBlock, _ := pem.Decode(csrPEM)
 	if csrBlock == nil {
@@ -155,15 +179,15 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 	}
 
 	now := ca.now()
-	notAfter := now.Add(ca.validity)
+	notAfter := now.Add(validity)
 
-	// Stamp the SPIFFE URI SAN that marks this as an "agent" peer
-	// class. The gateway's mTLS middleware requires this class on
-	// its agent-facing listener, and the control server's internal
-	// listener refuses agents — so even if an agent cert leaks, the
-	// attacker cannot use it to reach the internal listener and
-	// read other devices' LUKS keys or LPS passwords.
-	peerURI, err := mtls.PeerClassURI(mtls.PeerClassAgent)
+	// Stamp the SPIFFE URI SAN that marks this cert's peer class. The
+	// gateway's mTLS middleware requires the agent class on its agent-facing
+	// listener, and the control server's internal listener requires the
+	// gateway class — so even if an agent cert leaks, the attacker cannot use
+	// it to reach the internal listener and read other devices' LUKS keys or
+	// LPS passwords. The class is server-chosen here, never CSR-supplied.
+	peerURI, err := mtls.PeerClassURI(class)
 	if err != nil {
 		return nil, fmt.Errorf("build peer-class URI: %w", err)
 	}

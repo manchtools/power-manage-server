@@ -258,6 +258,16 @@ type ExecutionsProjection struct {
 	ScheduledFor      *time.Time `json:"scheduled_for"`
 }
 
+type GatewaysProjection struct {
+	GatewayID         string     `json:"gateway_id"`
+	Fingerprint       string     `json:"fingerprint"`
+	Hostname          string     `json:"hostname"`
+	NotAfter          time.Time  `json:"not_after"`
+	EnrolledAt        time.Time  `json:"enrolled_at"`
+	RevokedAt         *time.Time `json:"revoked_at"`
+	ProjectionVersion int64      `json:"projection_version"`
+}
+
 type IdentityLinksProjection struct {
 	ID                string     `json:"id"`
 	UserID            string     `json:"user_id"`

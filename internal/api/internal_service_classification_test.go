@@ -17,6 +17,7 @@ import (
 // that is neither device-bound nor listed here.
 var nonDeviceScopedInternalRPCs = map[string]string{
 	"ProxyValidateTerminalToken": "keyed by session_id+token and validated against the session, not a device origin",
+	"RenewGatewayCertificate":    "gateway-scoped, not device-scoped: gateway_id is read from the authenticated peer cert CN (spec 31), and proof-of-possession is checked against the presented cert — no device_id involved",
 }
 
 // TestEveryInternalServiceRPCIsClassified pins that EVERY InternalService RPC is
