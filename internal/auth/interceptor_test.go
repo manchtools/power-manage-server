@@ -654,6 +654,40 @@ func TestAuthInterceptor_ListAuthMethodsThrottled(t *testing.T) {
 	assert.Contains(t, err.Error(), "too many", "must trip the AuthMethods limiter, not some other gate")
 }
 
+// TestAuthInterceptor_GetSSOLoginURLThrottled pins spec 29 S3: the unauthenticated
+// GetSSOLoginURL — the most expensive public endpoint (auth_state DB write +
+// secret decrypt + outbound OIDC discovery per call) — is rate-limited by IP, so
+// a flood can't exhaust storage or amplify outbound discovery.
+func TestAuthInterceptor_GetSSOLoginURLThrottled(t *testing.T) {
+	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test-secret"), AccessTokenExpiry: 15 * time.Minute})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{
+		SSO: NewRateLimiter(3, time.Minute),
+	})
+
+	procedure := "/pm.v1.ControlService/GetSSOLoginURL"
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			return connect.NewResponse(&emptypb.Empty{}), nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, srv.URL+procedure)
+
+	for i := 0; i < 3; i++ {
+		_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+		require.NoError(t, err, "request %d within the limit should succeed", i+1)
+	}
+	_, err := client.CallUnary(context.Background(), connect.NewRequest(&emptypb.Empty{}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Contains(t, err.Error(), "too many", "must trip the SSO limiter")
+}
+
 // setupAuthRateLimitTest mounts the EvaluateDynamicGroup (expensive) procedure
 // behind the REAL AuthInterceptor with the supplied limiters, recording whether
 // the handler ran via a per-request header. Returns the server URL + manager.

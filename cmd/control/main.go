@@ -197,6 +197,15 @@ func main() {
 		}
 	}, false)
 
+	// Sweep expired SSO auth_states (spec 29 S3). They are otherwise deleted only
+	// on a successful Consume, so an unauthenticated GetSSOLoginURL flood would
+	// grow the table unboundedly. Same 1h cadence as the revocation sweep.
+	go runPeriodic(ctx, 1*time.Hour, func() {
+		if err := st.Queries().CleanupExpiredAuthStates(ctx); err != nil {
+			logger.Error("failed to cleanup expired SSO auth states", "error", err)
+		}
+	}, false)
+
 	if cfg.DynamicGroupEvalInterval > 0 {
 		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
 		startDynamicGroupWorker(ctx, st, cfg.DynamicGroupEvalInterval, logger)
@@ -365,6 +374,7 @@ func main() {
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
+		SSO:         auth.NewRateLimiter(10, 1*time.Minute), // expensive unauth endpoint (DB write + outbound discovery)
 		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
 		// user ID, not IP). Authenticated is a generous general ceiling
 		// (~10 rps sustained per user) that bounds a stolen token / runaway

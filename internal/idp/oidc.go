@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -36,13 +37,57 @@ type OIDCProvider struct {
 // fires without a multi-second wait.
 var oidcHTTPTimeout = 12 * time.Second
 
+// ssrfSafeDialControl is a net.Dialer.Control hook (spec 29 S4) that refuses to
+// connect to internal addresses. It runs AFTER DNS resolution with the concrete
+// IP being dialed, so it defends against SSRF regardless of the configured
+// issuer/token URL (including DNS that resolves a public name to a private IP).
+// Blocks loopback, RFC1918/ULA private, link-local (incl. 169.254.169.254 cloud
+// metadata), and the unspecified address.
+// oidcDialControl is the dial-control installed on the OIDC HTTP client. A
+// package var (like oidcHTTPTimeout) so the idp test binary can disable it —
+// httptest servers listen on loopback, which the guard correctly blocks in
+// production; the guard's logic is unit-tested via ssrfSafeDialControl directly.
+var oidcDialControl = ssrfSafeDialControl
+
+func ssrfSafeDialControl(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("ssrf guard: cannot parse dial address %q: %w", address, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("ssrf guard: dial address %q is not an IP", host)
+	}
+	// net.IP.IsPrivate covers RFC1918 + ULA but NOT RFC 6598 shared address space
+	// (100.64.0.0/10), reachable as internal services behind CGNAT / in some cloud
+	// VPCs — block it explicitly.
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || cgnatNet.Contains(ip) {
+		return fmt.Errorf("ssrf guard: refusing to dial internal address %s", ip)
+	}
+	return nil
+}
+
+// cgnatNet is RFC 6598 Shared Address Space (100.64.0.0/10).
+var cgnatNet = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("100.64.0.0/10")
+	if err != nil {
+		panic(err)
+	}
+	return n
+}()
+
 // newBoundedOIDCClient returns an *http.Client with connect, TLS-handshake,
-// response-header and overall timeouts so no outbound OIDC call can hang.
+// response-header and overall timeouts so no outbound OIDC call can hang, plus an
+// SSRF dial-control denylist (spec 29 S4) so a misconfigured/attacker-set
+// issuer/token URL cannot make the server probe its internal network.
 func newBoundedOIDCClient() *http.Client {
 	return &http.Client{
 		Timeout: oidcHTTPTimeout,
 		Transport: &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			DialContext: (&net.Dialer{
+				Timeout: 5 * time.Second,
+				Control: oidcDialControl,
+			}).DialContext,
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: 8 * time.Second,
 		},

@@ -159,6 +159,19 @@ func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvid
 		slog.Debug("SSO linker: trying auto-link by email", "email", claims.Email)
 		user, err := l.queries.GetUserByEmail(ctx, claims.Email)
 		if err == nil {
+			// Account-takeover guard (spec 29 S2 — mirrors SCIM createUser WS5 #2).
+			// The IdP asserts this email; binding it to a pre-existing LOCAL
+			// PASSWORD account would let a compromised / self-service / over-trusted
+			// IdP seize that credential account (e.g. a local admin). email_verified
+			// is asserted by the same IdP being defended against, so it is not a
+			// backstop. Refuse unless the operator knowingly delegated identity to
+			// this provider via trust_email_assertions. Passwordless / already-SSO
+			// accounts are fine to link (no local credential to hijack).
+			if user.HasPassword && !provider.TrustEmailAssertions {
+				slog.Warn("SSO linker: refusing auto-link to a local password account by unverified email (spec 29 S2)",
+					"user_id", user.ID, "provider_id", provider.ID, "provider_slug", provider.Slug)
+				return nil, ErrNoMatchingAccount
+			}
 			// Info-level log on the actual link (audit F-28) — this
 			// is a trust-boundary event: the IdP's email-verification
 			// posture is what gates account hijack via this path, and
