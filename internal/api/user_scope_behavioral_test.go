@@ -19,12 +19,15 @@ import (
 // confinement sweep. The user family confines via EnforceUserScopeOrSelf, which
 // returns PermissionDenied for a target that is neither in the caller's user
 // group nor the caller itself (the :self tier).
+//
+// For write RPCs, readState returns the mutable state (via a privileged read) so
+// the sweep can assert a denied call left it unchanged AND an allowed call
+// changed it to afterAllowed. nil readState marks a read RPC.
 type userScopeDriver struct {
-	rpc  string // the RPC name, which is also the permission key
-	call func(ctx context.Context, st *store.Store, targetUserID string) error
-	// verifyDenied (write RPCs only) asserts, via a privileged read, that a denied
-	// out-of-scope call did NOT mutate the target user. nil for read RPCs.
-	verifyDenied func(t *testing.T, st *store.Store, adminID, targetUserID string)
+	rpc          string // the RPC name, which is also the permission key
+	call         func(ctx context.Context, st *store.Store, targetUserID string) error
+	readState    func(t *testing.T, st *store.Store, adminID, targetUserID string) any
+	afterAllowed any
 }
 
 func userScopeDrivers() []userScopeDriver {
@@ -44,11 +47,12 @@ func userScopeDrivers() []userScopeDriver {
 				_, err := uh(st).SetUserDisabled(ctx, connect.NewRequest(&pm.SetUserDisabledRequest{Id: targetUserID, Disabled: true}))
 				return err
 			},
-			verifyDenied: func(t *testing.T, st *store.Store, adminID, targetUserID string) {
+			readState: func(t *testing.T, st *store.Store, adminID, targetUserID string) any {
 				resp, err := uh(st).GetUser(testutil.AdminContext(adminID), connect.NewRequest(&pm.GetUserRequest{Id: targetUserID}))
 				require.NoError(t, err)
-				assert.False(t, resp.Msg.GetUser().GetDisabled(), "denied SetUserDisabled must not disable the user")
+				return resp.Msg.GetUser().GetDisabled()
 			},
+			afterAllowed: true,
 		},
 	}
 }
@@ -56,10 +60,10 @@ func userScopeDrivers() []userScopeDriver {
 // TestUserScopeHandlers_ConfineOutOfScope drives scopable (TargetUser) user RPCs
 // through the real handler with a user-group-scoped caller and an out-of-scope
 // target user (a member of a DIFFERENT user group, and NOT the caller so the
-// :self tier does not apply), asserting PermissionDenied. A per-RPC in-scope
-// positive control proves the gate confines to the caller's group rather than
-// blanket-denying. Per-RPC completeness for the user family is held by the AST
-// permission guard (TestScopablePermissions_AllEnforced).
+// :self tier does not apply), asserting PermissionDenied. For write RPCs it reads
+// the target back with a privileged caller to assert the denied call did NOT
+// mutate and the in-scope positive control DID. Per-RPC completeness for the user
+// family is held by the AST permission guard (TestScopablePermissions_AllEnforced).
 func TestUserScopeHandlers_ConfineOutOfScope(t *testing.T) {
 	drivers := userScopeDrivers()
 	require.NotEmpty(t, drivers, "no user scope drivers — the sweep would pass vacuously")
@@ -73,18 +77,29 @@ func TestUserScopeHandlers_ConfineOutOfScope(t *testing.T) {
 			target := testutil.CreateTestUser(t, st, testutil.NewID()+"@t.com", "pass", "admin")
 			testutil.AddUserToTestGroup(t, st, admin, ugA, target)
 
+			var before any
+			if d.readState != nil {
+				before = d.readState(t, st, admin, target)
+			}
+
 			// Caller scoped to ugB; target is a member of ugA and is not the caller.
 			err := d.call(userScoped(testutil.NewID(), d.rpc, ugB), st, target)
 			require.Errorf(t, err, "%s: out-of-scope user op must error", d.rpc)
 			assert.Equalf(t, connect.CodePermissionDenied, connect.CodeOf(err),
 				"%s: out-of-scope user op must be PermissionDenied; got %v", d.rpc, connect.CodeOf(err))
-			if d.verifyDenied != nil {
-				d.verifyDenied(t, st, admin, target)
+			if d.readState != nil {
+				assert.Equalf(t, before, d.readState(t, st, admin, target),
+					"%s: a denied write must NOT persist", d.rpc)
 			}
 
-			// Positive control: a caller scoped to ugA (the target's group) succeeds.
+			// Positive control: a caller scoped to ugA (the target's group) succeeds
+			// and the write actually persists.
 			require.NoErrorf(t, d.call(userScoped(testutil.NewID(), d.rpc, ugA), st, target),
 				"%s: in-scope user op must succeed", d.rpc)
+			if d.readState != nil {
+				assert.Equalf(t, d.afterAllowed, d.readState(t, st, admin, target),
+					"%s: an allowed write must persist", d.rpc)
+			}
 		})
 	}
 }
