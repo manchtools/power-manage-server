@@ -213,11 +213,20 @@ func startDynamicGroupWorker(ctx context.Context, st *store.Store, interval time
 	}, false)
 }
 
+// advisoryKeyStaleExpiry single-flights the stale-execution-expiry tick across
+// control replicas (spec 31 AC15), so exactly one replica emits ExecutionTimedOut
+// for a given stale execution per tick — matching the retention, inventory, and
+// dynamic-group workers. "stale" in ASCII/hex; distinct from advisoryKeyPrune,
+// advisoryKeyInventorySchedule, advisoryKeyAdminMutation, and the cert/dyngroup
+// namespaces so two unrelated workers never contend on the same key.
+const advisoryKeyStaleExpiry int64 = 0x7374616c65 // "stale"
+
 // startStaleExecutionExpiry launches a 1-minute ticker that lists
 // executions stuck in pending/dispatched past their deadline and emits
 // ExecutionTimedOut events for each. The 1-minute cadence is fixed —
 // there's no operator knob today and the prior inline goroutine in
-// main.go didn't expose one either; this is a straight extraction.
+// main.go didn't expose one either. Each tick runs under a cross-replica
+// advisory lock (AC15) so N replicas do not each emit a duplicate timeout.
 func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slog.Logger, now func() time.Time) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -225,33 +234,49 @@ func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slo
 		for {
 			select {
 			case <-ticker.C:
-				stale, err := st.Repos().Execution.ListStale(ctx)
+				ran, err := expireStaleExecutions(ctx, st, logger, now)
 				if err != nil {
-					logger.Error("failed to list stale executions", "error", err)
-					continue
-				}
-				for _, exec := range stale {
-					errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
-					completedAt := now().UTC().Format(time.RFC3339Nano)
-					if err := st.AppendEvent(ctx, store.Event{
-						StreamType: "execution",
-						StreamID:   exec.ID,
-						EventType:  string(eventtypes.ExecutionTimedOut),
-						Data: payloads.ExecutionTimedOut{
-							Error:       &errMsg,
-							CompletedAt: &completedAt,
-						},
-						ActorType: "system",
-						ActorID:   "expiry",
-					}); err != nil {
-						logger.Error("failed to expire stale execution", "error", err, "execution_id", exec.ID)
-					} else {
-						logger.Info("expired stale execution", "execution_id", exec.ID, "status", exec.Status, "device_id", exec.DeviceID)
-					}
+					logger.Error("failed to expire stale executions", "error", err)
+				} else if !ran {
+					logger.Debug("stale-execution expiry skipped — another replica holds the lock")
 				}
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
+}
+
+// expireStaleExecutions runs one stale-execution sweep under the cross-replica
+// advisory lock. Returns ran=false (no error) when another replica currently
+// holds the lock — the caller treats that as a clean skip. A per-execution
+// AppendEvent failure is logged and does NOT abort the remaining sweep (matching
+// the pre-lock behavior); only a ListStale failure aborts the tick.
+func expireStaleExecutions(ctx context.Context, st *store.Store, logger *slog.Logger, now func() time.Time) (ran bool, err error) {
+	return st.TryWithAdvisoryLock(ctx, advisoryKeyStaleExpiry, func() error {
+		stale, listErr := st.Repos().Execution.ListStale(ctx)
+		if listErr != nil {
+			return fmt.Errorf("list stale executions: %w", listErr)
+		}
+		for _, exec := range stale {
+			errMsg := fmt.Sprintf("execution timed out: device did not respond (status was %s)", exec.Status)
+			completedAt := now().UTC().Format(time.RFC3339Nano)
+			if appendErr := st.AppendEvent(ctx, store.Event{
+				StreamType: "execution",
+				StreamID:   exec.ID,
+				EventType:  string(eventtypes.ExecutionTimedOut),
+				Data: payloads.ExecutionTimedOut{
+					Error:       &errMsg,
+					CompletedAt: &completedAt,
+				},
+				ActorType: "system",
+				ActorID:   "expiry",
+			}); appendErr != nil {
+				logger.Error("failed to expire stale execution", "error", appendErr, "execution_id", exec.ID)
+			} else {
+				logger.Info("expired stale execution", "execution_id", exec.ID, "status", exec.Status, "device_id", exec.DeviceID)
+			}
+		}
+		return nil
+	})
 }
