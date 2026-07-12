@@ -9,7 +9,8 @@ import "testing"
 func TestSSRFSafeDialControl(t *testing.T) {
 	blocked := []string{
 		"127.0.0.1:443", "10.0.0.5:443", "192.168.1.1:80", "172.16.0.1:443",
-		"169.254.169.254:80", // cloud metadata
+		"169.254.169.254:80",                    // cloud metadata
+		"100.64.0.1:443", "100.127.255.254:443", // RFC 6598 CGNAT
 		"[::1]:443", "[fe80::1]:443", "[fc00::1]:443", "0.0.0.0:443",
 	}
 	for _, a := range blocked {

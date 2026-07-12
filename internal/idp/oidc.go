@@ -58,11 +58,23 @@ func ssrfSafeDialControl(_, address string, _ syscall.RawConn) error {
 	if ip == nil {
 		return fmt.Errorf("ssrf guard: dial address %q is not an IP", host)
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+	// net.IP.IsPrivate covers RFC1918 + ULA but NOT RFC 6598 shared address space
+	// (100.64.0.0/10), reachable as internal services behind CGNAT / in some cloud
+	// VPCs — block it explicitly.
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || cgnatNet.Contains(ip) {
 		return fmt.Errorf("ssrf guard: refusing to dial internal address %s", ip)
 	}
 	return nil
 }
+
+// cgnatNet is RFC 6598 Shared Address Space (100.64.0.0/10).
+var cgnatNet = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("100.64.0.0/10")
+	if err != nil {
+		panic(err)
+	}
+	return n
+}()
 
 // newBoundedOIDCClient returns an *http.Client with connect, TLS-handshake,
 // response-header and overall timeouts so no outbound OIDC call can hang, plus an
