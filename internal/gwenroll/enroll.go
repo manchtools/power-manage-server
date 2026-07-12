@@ -14,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -78,28 +79,39 @@ func Enroll(ctx context.Context, httpClient connect.HTTPClient, enrollURL, token
 }
 
 // Renew submits a new CSR (reusing the same key for proof-of-possession) to
-// InternalService.RenewGatewayCertificate over the control-facing mTLS plane,
-// and returns the new cert PEM + a parsed keypair ready to install in the
-// rotator. The presented client cert is the current gateway cert supplied by the
-// mTLS transport on internalClient.
-func Renew(ctx context.Context, internalClient pmv1connect.InternalServiceClient, id *Identity) ([]byte, tls.Certificate, error) {
+// InternalService.RenewGatewayCertificate over the control-facing mTLS plane.
+// On success it UPDATES id in place (CertPEM + TLSCert become the renewed cert,
+// key unchanged) so id stays the live identity, and returns the new cert's
+// not_after so the caller can schedule the next renewal at 80% of lifetime. The
+// presented client cert is the current gateway cert supplied by the mTLS
+// transport on internalClient.
+func Renew(ctx context.Context, internalClient pmv1connect.InternalServiceClient, id *Identity) (notAfter time.Time, err error) {
+	if id == nil || id.key == nil {
+		return time.Time{}, fmt.Errorf("gwenroll: renew requires an enrolled identity holding its key")
+	}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader,
 		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "gateway"}}, id.key)
 	if err != nil {
-		return nil, tls.Certificate{}, fmt.Errorf("create renewal CSR: %w", err)
+		return time.Time{}, fmt.Errorf("create renewal CSR: %w", err)
 	}
 	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
 	resp, err := internalClient.RenewGatewayCertificate(ctx, connect.NewRequest(&pm.RenewGatewayCertificateRequest{
 		Csr: csrPEM,
 	}))
 	if err != nil {
-		return nil, tls.Certificate{}, fmt.Errorf("renew gateway certificate: %w", err)
+		return time.Time{}, fmt.Errorf("renew gateway certificate: %w", err)
 	}
 	tlsCert, err := tls.X509KeyPair(resp.Msg.Certificate, id.KeyPEM)
 	if err != nil {
-		return nil, tls.Certificate{}, fmt.Errorf("load renewed keypair: %w", err)
+		return time.Time{}, fmt.Errorf("load renewed keypair: %w", err)
 	}
-	return resp.Msg.Certificate, tlsCert, nil
+	if resp.Msg.NotAfter == nil {
+		return time.Time{}, fmt.Errorf("renewal response missing not_after")
+	}
+	// Update the identity in place so id never goes stale relative to the wire.
+	id.CertPEM = resp.Msg.Certificate
+	id.TLSCert = tlsCert
+	return resp.Msg.NotAfter.AsTime(), nil
 }
 
 // buildIdentity assembles an Identity from the issued cert, validating that the
