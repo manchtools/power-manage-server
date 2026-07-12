@@ -206,6 +206,34 @@ func TestRevokeGatewayCertificate_Success(t *testing.T) {
 	require.NotNil(t, row.RevokedAt, "GatewayRevoked must set revoked_at")
 }
 
+func TestRevokeGatewayCertificate_Idempotent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	gatewayID, _ := enrollTestGateway(t, st, certAuth)
+
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetCRLStore(testCRLStore(t))
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	req := connect.NewRequest(&pm.RevokeGatewayCertificateRequest{GatewayId: gatewayID})
+
+	_, err := h.RevokeGatewayCertificate(ctx, req)
+	require.NoError(t, err)
+	// A second revoke is a no-op success — it must NOT emit a duplicate audit event.
+	_, err = h.RevokeGatewayCertificate(ctx, req)
+	require.NoError(t, err)
+
+	events, err := st.LoadStream(t.Context(), "gateway", gatewayID)
+	require.NoError(t, err)
+	revoked := 0
+	for _, e := range events {
+		if e.EventType == "GatewayRevoked" {
+			revoked++
+		}
+	}
+	assert.Equal(t, 1, revoked, "re-revoking must not emit a duplicate GatewayRevoked event")
+}
+
 func TestRevokeGatewayCertificate_UnknownGateway(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewGatewayHandler(st, slog.Default())

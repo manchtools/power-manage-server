@@ -32,6 +32,12 @@ CREATE TABLE gateways_projection (
     projection_version bigint NOT NULL DEFAULT 0
 );
 
+-- ListGateways filters `WHERE not_after > now()` and orders by enrolled_at.
+-- The table is small (filter-on-read bounds it to live gateways), but the
+-- index keeps the operator view O(live) rather than O(all-ever-enrolled) as
+-- ephemeral-per-boot rows accumulate under churn.
+CREATE INDEX gateways_projection_not_after_idx ON gateways_projection (not_after DESC);
+
 -- +goose Down
 
 DROP TABLE gateways_projection;

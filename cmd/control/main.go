@@ -378,7 +378,7 @@ func main() {
 		Register:    auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
-		GetCRL:      auth.NewRateLimiter(30, 1*time.Minute), // agent CRL fetch — a few/hour legitimately
+		GetCRL:      auth.NewRateLimiter(30, 1*time.Minute), // agent CRL fetch — generous headroom over the legitimate few-per-hour cadence (retries, many agents behind one NAT)
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
 		SSO:         auth.NewRateLimiter(10, 1*time.Minute), // expensive unauth endpoint (DB write + outbound discovery)
 		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by

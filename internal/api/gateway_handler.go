@@ -97,6 +97,13 @@ func (h *GatewayHandler) RevokeGatewayCertificate(ctx context.Context, req *conn
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up gateway")
 	}
 
+	// Idempotent: an already-revoked gateway is a no-op success. Re-revoking must
+	// not emit a duplicate GatewayRevoked audit event; the CRL entry from the
+	// original revocation persists until the cert's own expiry.
+	if row.RevokedAt != nil {
+		return connect.NewResponse(&pm.RevokeGatewayCertificateResponse{}), nil
+	}
+
 	if h.crl == nil {
 		// No CRL configured — revocation cannot take effect. Fail loudly rather
 		// than record a revocation the fleet will never honor.
