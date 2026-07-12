@@ -244,7 +244,11 @@ var maxOutputChunkRows int32 = 4096
 var maxLiveOutputBytes = 4 << 20 // 4 MiB
 
 func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) *pm.CommandOutput {
-	chunks, err := h.store.Repos().Execution.LoadOutputChunks(ctx, executionID, maxOutputChunkRows)
+	// Fetch one more than the cap so we can tell "exactly at the cap" (nothing
+	// dropped) from "over the cap" (output beyond the limit exists) — a plain
+	// LIMIT can't distinguish the two, which would mark a full-but-at-limit
+	// stream as truncated.
+	chunks, err := h.store.Repos().Execution.LoadOutputChunks(ctx, executionID, maxOutputChunkRows+1)
 	if err != nil {
 		// A real DB failure must not look like "no output yet" — surface it.
 		h.logger.ErrorContext(ctx, "failed to load execution output chunks", "execution_id", executionID, "error", err)
@@ -254,9 +258,15 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 		return nil
 	}
 
+	truncated := false
+	if int32(len(chunks)) > maxOutputChunkRows {
+		// More chunks exist than we display; keep only the first cap-many.
+		truncated = true
+		chunks = chunks[:maxOutputChunkRows]
+	}
+
 	var stdout, stderr strings.Builder
 	total := 0
-	truncated := false
 	for _, chunk := range chunks {
 		// Parse the chunk data
 		var data struct {
@@ -281,12 +291,6 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 		} else if data.Stream == "stderr" {
 			stderr.WriteString(data.Data)
 		}
-	}
-
-	// The SQL LIMIT is a hard row bound; hitting it also means output beyond it
-	// was dropped.
-	if int32(len(chunks)) >= maxOutputChunkRows {
-		truncated = true
 	}
 
 	// Only return if we have some output
