@@ -3,6 +3,8 @@ package api_test
 import (
 	"context"
 	"crypto/ecdh"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"log/slog"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
+	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/testutil"
@@ -22,6 +25,14 @@ import (
 
 // newID returns a fresh ULID string for test action ids.
 func newULID() string { return ulid.Make().String() }
+
+// gwCtx returns a context carrying an authenticated gateway peer cert with the
+// given CN, as the InternalService mTLS listener's WithPeerCert middleware would
+// inject it (spec 31 Part C). The binding now reads gateway_id from this CN, not
+// the request field. An empty cn stands in for "no per-gateway cert presented".
+func gwCtx(cn string) context.Context {
+	return mtls.ContextWithPeerCert(context.Background(), &x509.Certificate{Subject: pkix.Name{CommonName: cn}})
+}
 
 // wiredHandler builds a real InternalHandler with a fake device→gateway
 // registry attached as the resolver, and binds deviceID to gatewayID in it.
@@ -69,7 +80,9 @@ func TestInternalHandlers_GatewayBindingIsSelfDiscovering(t *testing.T) {
 	const liveGateway = "gw-A"
 	const wrongGateway = "gw-B"
 	h, _ := wiredHandler(t, st, device, liveGateway)
-	ctx := context.Background()
+	// The authenticated gateway peer cert CN is gw-B (the wrong gateway); the
+	// binding reads it from ctx (Part C), so every case below is cross-gateway.
+	ctx := gwCtx(wrongGateway)
 	actionID := newULID()
 
 	// Each entry drives the REAL handler with a gateway_id that does NOT match
@@ -180,7 +193,10 @@ func TestProxyGetLuksKey_GatewayBinding(t *testing.T) {
 	const liveGateway = "gw-A"
 	h, _ := wiredHandler(t, st, device, liveGateway)
 	pub := wireSealKeypair(t, h)
-	ctx := context.Background()
+	// Default ctx presents the LIVE gateway CN (Part C): used by the seed, the
+	// correct-gateway read, and the not-live-device case. The wrong/absent cases
+	// override ctx below.
+	ctx := gwCtx(liveGateway)
 	actionID := newULID()
 
 	// Seed a key through the correctly-bound store path (sealed, spec 25).
@@ -201,17 +217,18 @@ func TestProxyGetLuksKey_GatewayBinding(t *testing.T) {
 	})
 
 	t.Run("wrong gateway is rejected and leaks no passphrase", func(t *testing.T) {
-		resp, err := h.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
-			DeviceId: device, ActionId: actionID, GatewayId: "gw-B",
+		resp, err := h.ProxyGetLuksKey(gwCtx("gw-B"), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
+			DeviceId: device, ActionId: actionID,
 		}))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 		assert.Nil(t, resp, "no response (and no passphrase) on a binding mismatch")
 	})
 
-	t.Run("absent gateway_id is rejected (InvalidArgument)", func(t *testing.T) {
-		_, err := h.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
-			DeviceId: device, ActionId: actionID, GatewayId: "",
+	t.Run("absent gateway cert is rejected (InvalidArgument)", func(t *testing.T) {
+		// No peer cert in context = no authenticated gateway_id.
+		_, err := h.ProxyGetLuksKey(context.Background(), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
+			DeviceId: device, ActionId: actionID,
 		}))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -242,7 +259,7 @@ func TestProxyGetLuksKey_DeviceScopingAcrossDevices(t *testing.T) {
 	h, reg := wiredHandler(t, st, deviceA, gwA)
 	pub := wireSealKeypair(t, h)
 	require.NoError(t, reg.AttachDevice(context.Background(), deviceB, gwB, registry.DefaultDeviceTTL))
-	ctx := context.Background()
+	ctx := gwCtx(gwA) // seed runs as device A's live gateway
 	actionID := newULID()
 
 	// Seed a secret for device A via its correctly-bound gateway (sealed).
@@ -257,8 +274,8 @@ func TestProxyGetLuksKey_DeviceScopingAcrossDevices(t *testing.T) {
 	// Device B — correctly bound to ITS OWN gateway — asks for the SAME action
 	// id. It must not receive device A's passphrase: either a not-found error, or
 	// (defensively) a response that is anything but A's secret.
-	resp, err := h.ProxyGetLuksKey(ctx, connect.NewRequest(&pm.InternalGetLuksKeyRequest{
-		DeviceId: deviceB, ActionId: actionID, GatewayId: gwB,
+	resp, err := h.ProxyGetLuksKey(gwCtx(gwB), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
+		DeviceId: deviceB, ActionId: actionID,
 	}))
 	if err != nil {
 		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
@@ -284,7 +301,7 @@ func TestProxyValidateLuksToken_ConsumesByHash(t *testing.T) {
 	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
 	const gw = "gw-A"
 	ih, _ := wiredHandler(t, st, deviceID, gw)
-	ctx := context.Background()
+	ctx := gwCtx(gw) // the validate calls run as the device's live gateway
 
 	mint := func() string {
 		resp, err := dh.CreateLuksToken(testutil.UserContext(userID), connect.NewRequest(&pm.CreateLuksTokenRequest{
@@ -327,7 +344,7 @@ func TestProxyStoreLuksKey_NoEventOnGatewayMismatch(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	device := testutil.CreateTestDevice(t, st, "luks-forge-host")
 	h, _ := wiredHandler(t, st, device, "gw-A")
-	ctx := context.Background()
+	ctx := gwCtx("gw-B") // the store runs as the WRONG gateway
 
 	before := countEvents(t, st, "LuksKeyRotated")
 	_, err := h.ProxyStoreLuksKey(ctx, connect.NewRequest(&pm.InternalStoreLuksKeyRequest{

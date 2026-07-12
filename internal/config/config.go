@@ -29,8 +29,22 @@ type Config struct {
 	ValkeyPassword string
 	ValkeyDB       int
 
-	// Control server URL for internal RPC proxying
+	// Control server URL for internal RPC proxying (the mTLS InternalService
+	// listener — the gateway reaches it with its enrolled cert).
 	ControlURL string
+
+	// Gateway self-enrollment (spec 31). The gateway generates a keypair on
+	// boot and enrolls to obtain a per-gateway cert; there is no static cert.
+	//
+	// ControlEnrollURL is control's PUBLIC listener (GatewayAuthService.
+	// EnrollGateway is public/no-mTLS — a gateway has no cert yet), distinct
+	// from ControlURL (the internal mTLS listener). EnrollToken is the shared
+	// bootstrap secret. Hostname is the gateway's PUBLIC name agents connect to
+	// (must equal control's GATEWAY_URL host) — stamped as the cert DNS SAN so
+	// the agent's standard TLS verification matches.
+	ControlEnrollURL string
+	EnrollToken      string
+	Hostname         string
 
 	// Multi-gateway routing settings (used by the registry).
 	//
@@ -191,6 +205,9 @@ func FromEnv() *Config {
 		ValkeyPassword:            getEnv("GATEWAY_VALKEY_PASSWORD", ""),
 		ValkeyDB:                  getEnvInt("GATEWAY_VALKEY_DB", 0),
 		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "https://control:8082"),
+		ControlEnrollURL:          getEnv("GATEWAY_CONTROL_ENROLL_URL", ""),
+		EnrollToken:               getEnv("GATEWAY_ENROLL_TOKEN", ""),
+		Hostname:                  getEnv("GATEWAY_HOSTNAME", ""),
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
 		PublicAgentURLTemplate:    getEnv("GATEWAY_PUBLIC_AGENT_URL_TEMPLATE", ""),

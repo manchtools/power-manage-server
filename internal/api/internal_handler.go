@@ -165,7 +165,7 @@ func (h *InternalHandler) ProxySyncActions(ctx context.Context, req *connect.Req
 	if deviceID == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
@@ -406,7 +406,7 @@ func (h *InternalHandler) ProxyValidateLuksToken(ctx context.Context, req *conne
 	if req.Msg.DeviceId == "" || req.Msg.Token == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and token are required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
@@ -443,7 +443,7 @@ func (h *InternalHandler) ProxyGetLuksKey(ctx context.Context, req *connect.Requ
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
@@ -471,7 +471,7 @@ func (h *InternalHandler) ProxyStoreLuksKey(ctx context.Context, req *connect.Re
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" || len(req.Msg.SealedPassphrase) == 0 {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id, action_id, and sealed_passphrase are required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
@@ -535,7 +535,7 @@ func (h *InternalHandler) ProxyStoreLpsPasswords(ctx context.Context, req *conne
 	if req.Msg.DeviceId == "" || req.Msg.ActionId == "" {
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id and action_id are required")
 	}
-	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId, req.Msg.GatewayId); err != nil {
+	if err := h.verifyDeviceGatewayBinding(ctx, req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
 
