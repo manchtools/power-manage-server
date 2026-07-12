@@ -147,13 +147,12 @@ func main() {
 		logger.Error("GATEWAY_VALKEY_ADDR is required")
 		os.Exit(1)
 	}
-	if cfg.ControlURL == "" {
-		logger.Error("GATEWAY_CONTROL_URL is required")
-		os.Exit(1)
-	}
-	controlURL, err := url.Parse(cfg.ControlURL)
-	if err != nil || controlURL.Scheme != "https" {
-		logger.Error("GATEWAY_CONTROL_URL must use https for the internal mTLS control connection", "control_url", cfg.ControlURL, "error", err)
+	// Validate the control URL and derive a non-secret origin for logs (spec 29
+	// AC8-9): reject non-HTTPS, hostless, or credential/query/fragment-bearing
+	// values without ever echoing the raw (possibly credential-laden) string.
+	controlOrigin, err := config.ValidateControlURL(cfg.ControlURL)
+	if err != nil {
+		logger.Error("invalid GATEWAY_CONTROL_URL", "error", err)
 		os.Exit(1)
 	}
 
@@ -219,7 +218,7 @@ func main() {
 	}
 
 	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL, gatewayID)
-	logger.Info("control proxy initialized", "control_url", cfg.ControlURL)
+	logger.Info("control proxy initialized", "control_url", controlOrigin)
 
 	// Create connection manager
 	manager := connection.NewManager()
