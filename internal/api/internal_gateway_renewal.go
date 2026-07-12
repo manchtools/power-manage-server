@@ -72,7 +72,19 @@ func (h *InternalHandler) RenewGatewayCertificate(ctx context.Context, req *conn
 		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "certificate renewal denied")
 	}
 
-	newCert, err := h.gatewayCA.IssueGatewayCertificateFromCSR(gatewayID, req.Msg.Csr)
+	// Preserve the gateway's DNS SAN (hostname) across renewal — it is what the
+	// agent's standard TLS verification matches. The current cert carries it
+	// (stamped at enrollment); re-stamp the same name. A current cert with NO
+	// DNS SAN predates the DNS-SAN fix; the renewed cert would be unverifiable by
+	// agents, so warn — the operator should re-enroll (which is a restart away,
+	// gateway identity being ephemeral-per-boot) rather than renew.
+	var hostname string
+	if len(peerCert.DNSNames) > 0 {
+		hostname = peerCert.DNSNames[0]
+	} else {
+		h.logger.Warn("gateway renewal: current cert has no DNS SAN; the renewed cert will be unverifiable by agents — re-enroll instead", "gateway_id", gatewayID)
+	}
+	newCert, err := h.gatewayCA.IssueGatewayCertificateFromCSR(gatewayID, req.Msg.Csr, hostname)
 	if err != nil {
 		h.logger.Warn("gateway renewal: CSR rejected", "gateway_id", gatewayID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid certificate signing request")

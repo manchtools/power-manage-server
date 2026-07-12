@@ -360,9 +360,10 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	require.NoError(t, err)
 
 	const gatewayID = "gw-01JABCDEF" // server id; CSR CN is different on purpose
+	const gatewayHost = "gw.example.com"
 	csrPEM := generateCSRWithSAN(t, "csr-chosen-id", func(*x509.CertificateRequest) {})
 
-	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM)
+	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM, gatewayHost)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(cert.CertPEM)
@@ -381,6 +382,38 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	const want45d = 45 * 24 * time.Hour
 	assert.True(t, cert.NotAfter.Equal(fixed.Add(want45d)),
 		"gateway NotAfter must be clock+45d; got %s want %s", cert.NotAfter, fixed.Add(want45d))
+
+	// A gateway cert is BOTH a client (to control's internal listener) AND the
+	// TLS server cert on its agent-facing listener, so it must carry ServerAuth
+	// in addition to ClientAuth — an agent verifies the gateway's server cert
+	// with the ServerAuth EKU, which a client-only cert would fail (spec 31).
+	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
+	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageServerAuth,
+		"a gateway cert must be usable as a TLS server cert")
+
+	// The hostname must be stamped as a DNS SAN (server-chosen), so the agent's
+	// standard TLS verification can match the gateway's public name.
+	assert.Equal(t, []string{gatewayHost}, parsed.DNSNames,
+		"the gateway hostname must be stamped as a DNS SAN")
+}
+
+// TestIssueCertificateFromCSR_AgentIsClientAuthOnly pins that agent certs do NOT
+// gain ServerAuth — the ServerAuth EKU is gateway-only. An agent is a mTLS
+// client to the gateway and never a server, so granting it ServerAuth would be
+// unnecessary authority.
+func TestIssueCertificateFromCSR_AgentIsClientAuthOnly(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+	csrPEM, _ := generateCSR(t, "device-001")
+	cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+	require.NoError(t, err)
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, parsed.ExtKeyUsage,
+		"an agent cert must be client-auth only")
 }
 
 // TestIssueGatewayCertificateFromCSR_RejectsSAN pins that the gateway path
@@ -399,7 +432,7 @@ func TestIssueGatewayCertificateFromCSR_RejectsSAN(t *testing.T) {
 	csrPEM := generateCSRWithSAN(t, "gw-1", func(r *x509.CertificateRequest) {
 		r.URIs = []*url.URL{mustURL("spiffe://power-manage/control")}
 	})
-	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM)
+	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM, "gw-1.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not request subject alternative names")
 	assert.Nil(t, cert)
