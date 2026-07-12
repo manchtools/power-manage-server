@@ -383,7 +383,7 @@ func TestSealPII_NonPIIEventAppendsWithoutSealer(t *testing.T) {
 }
 
 // Spec 29 S8 — AppendEventWithVersion (the OCC append path) must reject an event
-// with no actor, like AppendEvent/AppendEvents. The DB columns default to ” so
+// with no actor, like AppendEvent/AppendEvents. The DB columns default to the empty string, so
 // without this check an unattributable event would silently persist.
 func TestAppendEventWithVersion_RejectsMissingActor(t *testing.T) {
 	st := testutil.SetupPostgresWithoutProjectors(t)
