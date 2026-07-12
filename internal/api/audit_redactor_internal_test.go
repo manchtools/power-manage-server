@@ -220,15 +220,91 @@ func TestRedactEventData_SCIMTokenHash(t *testing.T) {
 	}
 }
 
-// TestRedactEventData_UnknownShapesPassThrough locks the design contract that
-// the redactor is conservative for NON action/execution streams: an unknown
-// (stream,event) combination passes through unchanged.
-func TestRedactEventData_UnknownShapesPassThrough(t *testing.T) {
-	in := map[string]any{"name": "do-thing", "password": "not-redacted-unknown-schema"}
-	raw, err := json.Marshal(in)
-	require.NoError(t, err)
-	out := redactEventData("unknown_stream", "UnknownEvent", raw)
-	assert.Equal(t, string(raw), out)
+// TestRedactEventData_UnknownSchemaSecretBackstop pins the spec 29 AC10-12
+// key-name backstop: for a decoded object whose (stream,event) has NO redaction
+// schema, secret-looking keys are recursively redacted; everything else is byte-
+// identical passthrough. The deny set is derived from the codebase's real
+// secret-field names, so the ciphertext-suffix fields (`client_secret_encrypted`,
+// `secret_encrypted`, `private_key_enc`) — which a `*_secret`/`*_hash`-only set
+// would silently miss because they end in `_encrypted`/`_enc` — must be caught.
+func TestRedactEventData_UnknownSchemaSecretBackstop(t *testing.T) {
+	const secret = "SUPER-SECRET-VALUE"
+
+	t.Run("redacts secret-looking keys, recursively, in unknown-schema objects", func(t *testing.T) {
+		in := map[string]any{
+			"name":       "do-thing", // non-secret, must survive
+			"count":      7,
+			"password":   secret,
+			"passphrase": secret,
+			"psk":        secret,
+			"nested": map[string]any{
+				"private_key_pem":         secret, // private_key* prefix
+				"client_secret_encrypted": secret, // *_encrypted (NOT *_secret)
+				"secret_encrypted":        secret, // *_encrypted
+				"private_key_enc":         secret, // *_enc
+				"scim_token_hash":         secret, // *_hash
+			},
+			"items": []any{
+				map[string]any{"api_secret": secret}, // *_secret inside an array element
+				map[string]any{"label": "keep-me"},
+			},
+		}
+		raw, err := json.Marshal(in)
+		require.NoError(t, err)
+
+		out := redactEventData("unknown_stream", "UnknownEvent", raw)
+
+		// Every secret value is gone; the marker appears; non-secret data survives.
+		assert.NotContains(t, out, secret, "a secret value leaked through the backstop")
+		assert.Contains(t, out, "[REDACTED]")
+		assert.Contains(t, out, "do-thing")
+		assert.Contains(t, out, "keep-me")
+
+		// Structural check: exactly the secret keys were replaced.
+		var got map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out), &got))
+		nested := got["nested"].(map[string]any)
+		for _, k := range []string{"private_key_pem", "client_secret_encrypted", "secret_encrypted", "private_key_enc", "scim_token_hash"} {
+			assert.Equal(t, "[REDACTED]", nested[k], "nested.%s not redacted", k)
+		}
+		assert.Equal(t, "[REDACTED]", got["password"])
+		assert.Equal(t, "[REDACTED]", got["passphrase"])
+		assert.Equal(t, "[REDACTED]", got["psk"])
+		items := got["items"].([]any)
+		assert.Equal(t, "[REDACTED]", items[0].(map[string]any)["api_secret"])
+		assert.Equal(t, "keep-me", items[1].(map[string]any)["label"])
+		assert.Equal(t, "do-thing", got["name"])
+	})
+
+	t.Run("ciphertext-suffix fields are NOT reachable by a _secret/_hash-only set", func(t *testing.T) {
+		// Documents why the deny set includes *_encrypted / *_enc: these field
+		// names end in neither _secret nor _hash, so a narrower set would miss
+		// them. Asserting the naming keeps the rationale honest against edits.
+		for _, k := range []string{"client_secret_encrypted", "secret_encrypted", "private_key_enc"} {
+			assert.False(t, strings.HasSuffix(k, "_secret") || strings.HasSuffix(k, "_hash"),
+				"%s unexpectedly ends in _secret/_hash — the *_encrypted/*_enc rules would be redundant", k)
+		}
+	})
+
+	t.Run("unknown-schema object with no secret key is byte-identical passthrough", func(t *testing.T) {
+		in := map[string]any{"name": "do-thing", "region": "eu", "replicas": 3}
+		raw, err := json.Marshal(in)
+		require.NoError(t, err)
+		out := redactEventData("unknown_stream", "UnknownEvent", raw)
+		assert.Equal(t, string(raw), out, "no secret key present — original bytes must be returned unchanged")
+	})
+
+	t.Run("non-object and malformed payloads are unchanged", func(t *testing.T) {
+		// A JSON array is a valid JSON value but not an object: unchanged.
+		arr := []byte(`[{"password":"x"}]`)
+		assert.Equal(t, string(arr), redactEventData("unknown_stream", "UnknownEvent", arr))
+		// A scalar is unchanged.
+		scalar := []byte(`"password"`)
+		assert.Equal(t, string(scalar), redactEventData("unknown_stream", "UnknownEvent", scalar))
+		// Malformed JSON is unchanged.
+		bad := []byte(`{"password": `)
+		assert.Equal(t, string(bad), redactEventData("unknown_stream", "UnknownEvent", bad))
+	})
 }
 
 // TestRedactEventData_ActionWithoutSecretsPassesThrough locks that a
