@@ -251,7 +251,16 @@ func clientIP(req connect.AnyRequest) string {
 	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
 		peerIP = host
 	}
-	return resolveClientIP(peerIP, req.Header().Get("X-Forwarded-For"), req.Header().Get("X-Real-IP"))
+	// Validate the resolved value exactly as ClientIPFromHTTP does, so the two
+	// paths cannot drift: a peer that isn't a parsable IP (non-TCP transport,
+	// unix socket) yields "" rather than a raw non-IP string. "" is also the
+	// safer limiter key — unidentifiable peers share one restrictive bucket
+	// instead of each getting a fresh one from an attacker-varied string.
+	resolved := resolveClientIP(peerIP, req.Header().Get("X-Forwarded-For"), req.Header().Get("X-Real-IP"))
+	if net.ParseIP(resolved) != nil {
+		return resolved
+	}
+	return ""
 }
 
 // RateLimiters bundles the per-procedure-family rate limiters the
