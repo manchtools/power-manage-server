@@ -160,6 +160,9 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 			// on a device outside their scope.
 			return nil, deviceScopeMissError(ctx, "GetDeviceLogResult", ErrQueryResultNotFound, "log query result not found")
 		}
+		// A non-NotFound error is a transient/internal fault — surface it, don't
+		// swallow it behind a NotFound like the prior blanket mapping did.
+		h.logger.Error("failed to fetch log query result", "query_id", req.Msg.QueryId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get log query result")
 	}
 
