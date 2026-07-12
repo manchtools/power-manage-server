@@ -37,15 +37,16 @@ import (
 // A small allow-list covers the non-RPC internal machinery that legitimately
 // mutates an object stream without a user scope to confine (spec 30 "non-RPC
 // internal helpers with no externally reachable entry point"). Each entry is
-// keyed by receiver.method — NOT a bare name — so exempting the system-action
-// store's DeleteAction can never accidentally suppress a future gap in the
-// user-facing ActionHandler.DeleteAction. The no-orphan block below (staleExempt)
-// guards the list against rot: an entry that stops naming a live unenforced
-// mutation fails the build.
+// keyed by "receiver.method|objectType" — receiver-qualified so exempting the
+// system-action store's DeleteAction can never suppress a future gap in the
+// user-facing ActionHandler.DeleteAction, AND object-type-qualified so an
+// exempted function that later gains a SECOND, unrelated mutation of a DIFFERENT
+// object type is NOT silently covered by the original entry. The no-orphan block
+// below (staleExempt) guards the list against rot.
 var objectWriteScopeExempt = map[string]string{
-	"systemActionStore.UpdateAction":       "system-managed action machinery: ActorType=system, driven by SystemActionManager role-sync with system-chosen action IDs; a scope-restricted user caller can never reach it (user handlers refuse is_system actions).",
-	"systemActionStore.DeleteAction":       "system-managed action machinery: same as UpdateAction — system-driven lifecycle, no user scope to confine.",
-	"ActionHandler.rollbackUnsignedCreate": "compensating rollback for CreateAction's signing-failure path; deletes the action the SAME request just created (caller owns it, no prior assignment to confine). The user-facing DeleteAction handler is separately write-scope enforced.",
+	"systemActionStore.UpdateAction|action":       "system-managed action machinery: ActorType=system, driven by SystemActionManager role-sync with system-chosen action IDs; a scope-restricted user caller can never reach it (user handlers refuse is_system actions).",
+	"systemActionStore.DeleteAction|action":       "system-managed action machinery: same as UpdateAction — system-driven lifecycle, no user scope to confine.",
+	"ActionHandler.rollbackUnsignedCreate|action": "compensating rollback for CreateAction's signing-failure path; deletes the action the SAME request just created (caller owns it, no prior assignment to confine). The user-facing DeleteAction handler is separately write-scope enforced.",
 }
 
 func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
@@ -87,22 +88,37 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 			// splits them across functions is itself a finding this guard surfaces.
 			mutated := map[string]string{} // objType -> first mutation verb (for the message)
 			writeScoped := map[string]bool{}
+			recordEvent := func(lit *ast.CompositeLit) {
+				streamType, verb, okS := eventStreamAndVerb(lit)
+				if !okS || !objectStreamTypes[streamType] {
+					return
+				}
+				if strings.HasSuffix(verb, "Created") {
+					return // create establishes ownership — nothing to confine
+				}
+				mutationsSeen++
+				if _, exists := mutated[streamType]; !exists {
+					mutated[streamType] = verb
+				}
+			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				switch node := n.(type) {
 				case *ast.CompositeLit:
-					if !isStoreEventLit(node) {
-						return true
-					}
-					streamType, verb, okS := eventStreamAndVerb(node)
-					if !okS || !objectStreamTypes[streamType] {
-						return true
-					}
-					if strings.HasSuffix(verb, "Created") {
-						return true // create establishes ownership — nothing to confine
-					}
-					mutationsSeen++
-					if _, exists := mutated[streamType]; !exists {
-						mutated[streamType] = verb
+					switch {
+					case isStoreEventLit(node):
+						recordEvent(node)
+					case isStoreEventSliceLit(node):
+						// []store.Event{{...}, {...}} — Go elides the element type on
+						// inner literals, so those inner CompositeLits have Type==nil
+						// and are NOT matched as store.Event on their own. Record the
+						// elided ones here; explicitly-typed inner literals are matched
+						// when ast.Inspect visits them, so skip those to avoid
+						// double-processing.
+						for _, elt := range node.Elts {
+							if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
+								recordEvent(inner)
+							}
+						}
 					}
 				case *ast.CallExpr:
 					if calleeName(node.Fun) == "enforceObjectWriteScope" {
@@ -121,8 +137,9 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 				if writeScoped[objType] {
 					continue
 				}
-				if _, exempt := objectWriteScopeExempt[key]; exempt {
-					seenExempt[key] = true
+				exemptKey := key + "|" + objType
+				if _, exempt := objectWriteScopeExempt[exemptKey]; exempt {
+					seenExempt[exemptKey] = true
 					continue
 				}
 				misses = append(misses, miss{key, objType, verb, fset.Position(fn.Pos()).String()})
@@ -166,7 +183,20 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 
 // isStoreEventLit reports whether the composite literal constructs a store.Event.
 func isStoreEventLit(c *ast.CompositeLit) bool {
-	sel, ok := c.Type.(*ast.SelectorExpr)
+	return isStoreEventSelector(c.Type)
+}
+
+// isStoreEventSliceLit reports whether c is a []store.Event / [N]store.Event
+// composite literal — whose inner element literals may elide the store.Event
+// element type (so they need explicit handling; see recordEvent's caller).
+func isStoreEventSliceLit(c *ast.CompositeLit) bool {
+	arr, ok := c.Type.(*ast.ArrayType)
+	return ok && isStoreEventSelector(arr.Elt)
+}
+
+// isStoreEventSelector reports whether e is the `store.Event` type expression.
+func isStoreEventSelector(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}

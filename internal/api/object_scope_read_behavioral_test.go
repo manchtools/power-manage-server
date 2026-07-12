@@ -87,9 +87,29 @@ func objReadDrivers() []objReadDriver {
 // Completeness: the AST guard TestObjectGetHandlers_AllReadScopeEnforced
 // self-discovers the object-type set from objectTypeToIndexScope and fails if a
 // new type's Get is unenforced, which forces a driver to be added here too.
+// requireCoversAllObjectTypes asserts the behavioral driver set covers every
+// canonical scopable object type (api.ScopableObjectTypes, the SAME source the
+// internal AST guards discover from) — so a new type cannot satisfy the AST
+// enforcement guards yet slip through with no behavioral out-of-scope coverage.
+func requireCoversAllObjectTypes(t *testing.T, covered map[string]bool) {
+	t.Helper()
+	all := api.ScopableObjectTypes()
+	require.NotEmpty(t, all, "no scopable object types exposed — the completeness check is vacuous")
+	for _, ot := range all {
+		require.Truef(t, covered[ot],
+			"scopable object type %q has no behavioral confinement driver — add one (a new object type must get out-of-scope coverage, not just AST enforcement)", ot)
+	}
+}
+
 func TestObjectReadHandlers_ConfineOutOfScope(t *testing.T) {
 	drivers := objReadDrivers()
 	require.NotEmpty(t, drivers, "no object read drivers — the sweep would pass vacuously")
+
+	covered := map[string]bool{}
+	for _, d := range drivers {
+		covered[d.objType] = true
+	}
+	requireCoversAllObjectTypes(t, covered)
 
 	for _, d := range drivers {
 		t.Run(d.objType, func(t *testing.T) {

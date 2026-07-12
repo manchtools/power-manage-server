@@ -88,6 +88,12 @@ func TestObjectWriteHandlers_ConfineOutOfScope(t *testing.T) {
 	drivers := objWriteDrivers()
 	require.NotEmpty(t, drivers, "no object write drivers — the sweep would pass vacuously")
 
+	covered := map[string]bool{}
+	for _, d := range drivers {
+		covered[d.objType] = true
+	}
+	requireCoversAllObjectTypes(t, covered)
+
 	for _, d := range drivers {
 		t.Run(d.objType, func(t *testing.T) {
 			st := testutil.SetupPostgres(t)
