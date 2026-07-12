@@ -354,6 +354,51 @@ func TestAppendEvents_SingleElementMatchesAppendEvent(t *testing.T) {
 	assert.Equal(t, int32(2), ev[1].StreamVersion)
 }
 
+// Spec 29 S9 — sealPII fails CLOSED: an event carrying PII-tagged fields appended
+// to a store with NO sealer wired is refused, never written as plaintext to the
+// immutable log. A store without projectors has no sealer, so this exercises the
+// fail-closed path directly.
+func TestSealPII_FailsClosedWithoutSealer(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t) // no PII sealer wired
+	ctx := context.Background()
+	name := "Secret Display Name"
+	err := st.AppendEvent(ctx, store.Event{
+		StreamType: "user",
+		StreamID:   testutil.NewID(),
+		EventType:  string(eventtypes.UserProfileUpdated),
+		Data:       payloads.UserProfileUpdated{DisplayName: &name}, // DisplayName is pii:"true"
+		ActorType:  "system",
+		ActorID:    "test",
+	})
+	require.Error(t, err, "a PII event with no sealer wired must fail closed")
+	require.Contains(t, err.Error(), "sealer")
+}
+
+// Spec 29 S9 — a NON-PII event still appends fine without a sealer (bootstrap /
+// low-level store paths that predate the wiring are unaffected).
+func TestSealPII_NonPIIEventAppendsWithoutSealer(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t)
+	ctx := context.Background()
+	require.NoError(t, st.AppendEvent(ctx, sysEvent("test", testutil.NewID(), "NoPII")))
+}
+
+// Spec 29 S8 — AppendEventWithVersion (the OCC append path) must reject an event
+// with no actor, like AppendEvent/AppendEvents. The DB columns default to ” so
+// without this check an unattributable event would silently persist.
+func TestAppendEventWithVersion_RejectsMissingActor(t *testing.T) {
+	st := testutil.SetupPostgresWithoutProjectors(t)
+	ctx := context.Background()
+	err := st.AppendEventWithVersion(ctx, store.Event{
+		StreamType: "test",
+		StreamID:   testutil.NewID(),
+		EventType:  "NoActor",
+		Data:       map[string]any{},
+		// no ActorType / ActorID
+	}, 1)
+	require.Error(t, err, "AppendEventWithVersion must reject an event with no actor")
+	require.Contains(t, err.Error(), "actor")
+}
+
 // AC 7 — an empty/nil batch is a no-op returning nil.
 func TestAppendEvents_EmptyIsNoOp(t *testing.T) {
 	st := testutil.SetupPostgresWithoutProjectors(t)

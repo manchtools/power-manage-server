@@ -32,14 +32,14 @@ const (
 
 // lpsKeypairAAD binds the at-rest private key to its row. The keypair is a
 // single global row, so a fixed context suffices — it still domain-separates
-// the LPS private key from every other enc:v2 secret (LUKS/LPS passwords keyed
+// the LPS private key from every other enc:v1 secret (LUKS/LPS passwords keyed
 // by device|action|type).
 func lpsKeypairAAD() []byte {
 	return crypto.SecretAAD("global", "lps-keypair", "lps-keypair-priv")
 }
 
 // EnsureLpsKeypair loads the control server's LPS sealing keypair, generating
-// it on first boot. The private key is stored ONLY in enc:v2 form (AAD-bound);
+// it on first boot. The private key is stored ONLY in enc:v1 form (AAD-bound);
 // a nil encryptor is refused because the key cannot be protected at rest.
 //
 // Event-sourced (#495): the ONLY write is an LpsKeypairGenerated append at
@@ -180,7 +180,7 @@ func adoptLpsKeypairFromStream(ctx context.Context, st *store.Store, enc *crypto
 }
 
 // decodeLpsKeypair reconstructs the private key from a stored row: decrypt the
-// enc:v2 private key, parse both halves.
+// enc:v1 private key, parse both halves.
 func decodeLpsKeypair(enc *crypto.Encryptor, pubRaw []byte, privEnc string) (*ecdh.PrivateKey, []byte, error) {
 	privBytes, err := enc.DecryptWithContext(privEnc, lpsKeypairAAD())
 	if err != nil {

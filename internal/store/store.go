@@ -17,6 +17,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"github.com/pressly/goose/v3"
 
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/store/migrations"
 )
@@ -220,6 +221,15 @@ func (s *Store) sealPII(ctx context.Context, e Event) (Event, error) {
 	sealer := s.piiSealer
 	s.listenersMu.RUnlock()
 	if sealer == nil {
+		// Fail CLOSED (spec 29 S9): a nil sealer must never let PII-tagged fields
+		// reach the append-only log as plaintext — the log is immutable, so a
+		// single plaintext PII write is unerasable forever. A non-PII event passes
+		// (bootstrap paths that predate the wiring, low-level store tests); an
+		// event carrying PII-tagged fields with no sealer is refused. Symmetric
+		// with MintUserDEK, closing the sealer/minter asymmetry.
+		if e.Data != nil && len(crypto.PIIFieldNames(e.Data)) > 0 {
+			return Event{}, fmt.Errorf("store: refusing to append PII event %q with no PII sealer wired (call SetPIISealer at boot)", e.EventType)
+		}
 		return e, nil
 	}
 	return sealer.SealEvent(ctx, e)
@@ -771,35 +781,32 @@ func (s *Store) AppendEvent(ctx context.Context, event Event) error {
 
 // AppendEventWithVersion appends an event with an expected version for optimistic locking.
 func (s *Store) AppendEventWithVersion(ctx context.Context, event Event, expectedVersion int32) error {
-	// Same fail-closed PII seal as AppendEvent (spec 19 AC 2/6).
-	event, err := s.sealPII(ctx, event)
+	// Route through prepareEvent so this OCC path shares the SAME validation +
+	// fail-closed PII seal + marshal as AppendEvent/AppendEvents — including the
+	// actor_type/actor_id required check (spec 29 S8): all three append paths now
+	// reject an unattributable event rather than only AppendEvent doing so.
+	pe, err := s.prepareEvent(ctx, event)
 	if err != nil {
-		return fmt.Errorf("seal PII: %w", err)
+		return err
 	}
 
-	data, err := json.Marshal(event.Data)
-	if err != nil {
-		return fmt.Errorf("marshal event data: %w", err)
-	}
-
-	metadata := []byte("{}")
-	if event.Metadata != nil {
-		metadata, err = json.Marshal(event.Metadata)
-		if err != nil {
-			return fmt.Errorf("marshal event metadata: %w", err)
+	// Test-only failure seam, consistent with appendOne.
+	if s.beforeInsert != nil {
+		if berr := s.beforeInsert(pe.streamType, pe.eventType); berr != nil {
+			return berr
 		}
 	}
 
 	row, err := s.queries.AppendEvent(ctx, generated.AppendEventParams{
 		ID:            ulid.Make().String(),
-		StreamType:    event.StreamType,
-		StreamID:      event.StreamID,
+		StreamType:    pe.streamType,
+		StreamID:      pe.streamID,
 		StreamVersion: expectedVersion,
-		EventType:     event.EventType,
-		Data:          data,
-		Metadata:      metadata,
-		ActorType:     event.ActorType,
-		ActorID:       event.ActorID,
+		EventType:     pe.eventType,
+		Data:          pe.data,
+		Metadata:      pe.metadata,
+		ActorType:     pe.actorType,
+		ActorID:       pe.actorID,
 	})
 	if err != nil {
 		if IsVersionConflict(err) {
