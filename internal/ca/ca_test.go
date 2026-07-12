@@ -381,6 +381,33 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	const want45d = 45 * 24 * time.Hour
 	assert.True(t, cert.NotAfter.Equal(fixed.Add(want45d)),
 		"gateway NotAfter must be clock+45d; got %s want %s", cert.NotAfter, fixed.Add(want45d))
+
+	// A gateway cert is BOTH a client (to control's internal listener) AND the
+	// TLS server cert on its agent-facing listener, so it must carry ServerAuth
+	// in addition to ClientAuth — an agent verifies the gateway's server cert
+	// with the ServerAuth EKU, which a client-only cert would fail (spec 31).
+	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
+	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageServerAuth,
+		"a gateway cert must be usable as a TLS server cert")
+}
+
+// TestIssueCertificateFromCSR_AgentIsClientAuthOnly pins that agent certs do NOT
+// gain ServerAuth — the ServerAuth EKU is gateway-only. An agent is a mTLS
+// client to the gateway and never a server, so granting it ServerAuth would be
+// unnecessary authority.
+func TestIssueCertificateFromCSR_AgentIsClientAuthOnly(t *testing.T) {
+	certPEM, keyPEM := generateTestCA(t)
+	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	require.NoError(t, err)
+	csrPEM, _ := generateCSR(t, "device-001")
+	cert, err := c.IssueCertificateFromCSR("device-001", csrPEM)
+	require.NoError(t, err)
+	block, _ := pem.Decode(cert.CertPEM)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, parsed.ExtKeyUsage,
+		"an agent cert must be client-auth only")
 }
 
 // TestIssueGatewayCertificateFromCSR_RejectsSAN pins that the gateway path

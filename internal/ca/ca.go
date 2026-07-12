@@ -192,6 +192,16 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 		return nil, fmt.Errorf("build peer-class URI: %w", err)
 	}
 
+	// Agent certs are TLS clients only. A gateway cert is BOTH a client (to
+	// control's internal listener) AND the TLS server cert on its agent-facing
+	// mTLS listener, so it also needs ServerAuth — an agent verifies the
+	// gateway's server cert with the ServerAuth EKU, which a client-only cert
+	// would fail (spec 31).
+	extKeyUsage := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	if class == mtls.PeerClassGateway {
+		extKeyUsage = append(extKeyUsage, x509.ExtKeyUsageServerAuth)
+	}
+
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
@@ -201,7 +211,7 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 		NotBefore:             now.Add(-1 * time.Minute), // Allow for clock skew
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
 		URIs:                  []*url.URL{peerURI},
 	}
