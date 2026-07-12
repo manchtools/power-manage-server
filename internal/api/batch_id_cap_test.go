@@ -20,10 +20,9 @@ import (
 // proves that), so rejection here is rejection at the real boundary.
 //
 // Each case builds an OTHERWISE-VALID request and varies only the capped field:
-// 256 passes, 257 is rejected — isolating the count cap as the cause. The three
-// cover the required-batch and omitempty variants across different messages; all
-// eight capped fields share the identical max=256,dive,ulid tag and the same
-// Validate path.
+// 256 passes, 257 is rejected — isolating the count cap as the cause. All eight
+// capped request fields are covered, so a cap accidentally dropped from any one
+// in a future SDK regen is caught here.
 func TestBatchIDFields_CappedAt256(t *testing.T) {
 	ulids := func(n int) []string {
 		out := make([]string, n)
@@ -34,20 +33,37 @@ func TestBatchIDFields_CappedAt256(t *testing.T) {
 	}
 	valid := testutil.NewID()
 
+	// All eight capped request fields, each built otherwise-valid (required
+	// anchors set to a valid ULID) so only the batch length varies.
 	cases := []struct {
 		name  string
 		build func(ids []string) any
 	}{
-		{"DispatchToMultipleRequest.device_ids (required,min=1,max=256)", func(ids []string) any {
+		{"DispatchToMultipleRequest.device_ids", func(ids []string) any {
 			return &pm.DispatchToMultipleRequest{
 				DeviceIds:    ids,
 				ActionSource: &pm.DispatchToMultipleRequest_ActionId{ActionId: valid},
 			}
 		}},
-		{"CreateUserRequest.role_ids (omitempty,max=256)", func(ids []string) any {
+		{"CreateUserRequest.role_ids", func(ids []string) any {
 			return &pm.CreateUserRequest{Email: "user@test.com", Password: "password123", RoleIds: ids}
 		}},
-		{"AssignRoleToUserGroupRequest.role_ids (omitempty,max=256)", func(ids []string) any {
+		{"AssignDeviceRequest.user_ids", func(ids []string) any {
+			return &pm.AssignDeviceRequest{DeviceId: valid, UserIds: ids}
+		}},
+		{"AssignDeviceRequest.group_ids", func(ids []string) any {
+			return &pm.AssignDeviceRequest{DeviceId: valid, GroupIds: ids}
+		}},
+		{"AddDeviceToGroupRequest.device_ids", func(ids []string) any {
+			return &pm.AddDeviceToGroupRequest{GroupId: valid, DeviceIds: ids}
+		}},
+		{"AssignRoleToUserRequest.role_ids", func(ids []string) any {
+			return &pm.AssignRoleToUserRequest{UserId: valid, RoleIds: ids}
+		}},
+		{"AddUserToGroupRequest.user_ids", func(ids []string) any {
+			return &pm.AddUserToGroupRequest{GroupId: valid, UserIds: ids}
+		}},
+		{"AssignRoleToUserGroupRequest.role_ids", func(ids []string) any {
 			return &pm.AssignRoleToUserGroupRequest{GroupId: valid, RoleIds: ids}
 		}},
 	}
