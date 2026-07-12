@@ -212,11 +212,12 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	_, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId)
-	if err != nil {
-		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
-	}
-
+	// Authenticate and scope-check the group id BEFORE the existence lookup
+	// (spec 29 S10). The scope gate reads the caller's grants from the auth
+	// context, not the DB, so an id outside the caller's scope — whether it
+	// exists or not — is denied here uniformly with PermissionDenied. Looking up
+	// first would leak NotFound for a nonexistent id, letting a scoped caller
+	// distinguish it from an existing-but-out-of-scope group.
 	userCtx, err := requireAuth(ctx)
 	if err != nil {
 		return nil, err
@@ -224,6 +225,10 @@ func (h *UserGroupHandler) UpdateUserGroup(ctx context.Context, req *connect.Req
 
 	if err := auth.EnforceUserGroupScope(ctx, "UpdateUserGroup", req.Msg.GroupId); err != nil {
 		return nil, err
+	}
+
+	if _, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId); err != nil {
+		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
 	if err := appendEvent(ctx, h.store, h.logger, store.Event{
@@ -312,8 +317,22 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 		return nil, err
 	}
 
-	_, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id)
+	// Authenticate and scope-check BEFORE any DB observation (spec 29 S10). The
+	// scope gate reads the caller's grants from the auth context, so an
+	// out-of-scope id is denied here uniformly — before the existence lookup
+	// (which would leak NotFound for a nonexistent id) and before the
+	// SCIM-managed probe (which would leak the group's SCIM-managed status to a
+	// caller with no scope over it).
+	userCtx, err := requireAuth(ctx)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceUserGroupScope(ctx, "DeleteUserGroup", req.Msg.Id); err != nil {
+		return nil, err
+	}
+
+	if _, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.Id); err != nil {
 		return nil, handleGetError(ctx, err, ErrUserGroupNotFound, "user group not found")
 	}
 
@@ -326,15 +345,6 @@ func (h *UserGroupHandler) DeleteUserGroup(ctx context.Context, req *connect.Req
 	}
 	if isScimManaged {
 		return nil, apiErrorCtx(ctx, ErrSCIMManagedResource, connect.CodeFailedPrecondition, "cannot delete a SCIM-managed group — remove it from the identity provider instead")
-	}
-
-	userCtx, err := requireAuth(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := auth.EnforceUserGroupScope(ctx, "DeleteUserGroup", req.Msg.Id); err != nil {
-		return nil, err
 	}
 
 	appendDelete := func() error {
@@ -483,6 +493,21 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	// Authenticate and scope-check BEFORE any DB observation (spec 29 S10). The
+	// scope gate reads the caller's grants from the auth context, so an
+	// out-of-scope id is denied here uniformly — before the existence lookup
+	// (which would leak NotFound for a nonexistent id), the dynamic-group probe
+	// (which would leak the group's dynamic status), and the membership probe.
+	// Removal only needs the group id-match — it cannot expand the caller's scope.
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := auth.EnforceUserGroupScope(ctx, "RemoveUserFromGroup", req.Msg.GroupId); err != nil {
+		return nil, err
+	}
+
 	// Verify group exists and is not dynamic
 	group, err := h.store.Repos().UserGroup.Get(ctx, req.Msg.GroupId)
 	if err != nil {
@@ -491,19 +516,6 @@ func (h *UserGroupHandler) RemoveUserFromGroup(ctx context.Context, req *connect
 
 	if group.IsDynamic {
 		return nil, apiErrorCtx(ctx, ErrDynamicGroupManualModify, connect.CodeFailedPrecondition, "cannot manually modify members of a dynamic group")
-	}
-
-	// Authenticate and scope-check BEFORE the membership probe so an out-of-scope
-	// group is denied with PermissionDenied rather than leaking membership state
-	// (a non-member would otherwise surface as NotFound first). Removal only needs
-	// the group id-match — it cannot expand the caller's scope.
-	userCtx, err := requireAuth(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := auth.EnforceUserGroupScope(ctx, "RemoveUserFromGroup", req.Msg.GroupId); err != nil {
-		return nil, err
 	}
 
 	// Verify membership
