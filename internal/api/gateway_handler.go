@@ -64,6 +64,11 @@ func (h *GatewayHandler) GetCertificateRevocationList(ctx context.Context, req *
 		for fp := range active {
 			fingerprints = append(fingerprints, fp)
 		}
+	} else {
+		// Dev/no-Valkey path: serving an empty CRL means every agent believes
+		// nothing is revoked. Log so a forgotten CRL wiring in production is
+		// observable rather than silently fail-open on the read path.
+		h.logger.Warn("serving empty CRL: no CRL store configured on this control instance")
 	}
 	return connect.NewResponse(&pm.GetCertificateRevocationListResponse{
 		RevokedFingerprints: fingerprints,
@@ -108,7 +113,7 @@ func (h *GatewayHandler) RevokeGatewayCertificate(ctx context.Context, req *conn
 		// No CRL configured — revocation cannot take effect. Fail loudly rather
 		// than record a revocation the fleet will never honor.
 		h.logger.Error("cannot revoke gateway: no CRL configured", "gateway_id", gatewayID)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "certificate revocation is not configured on this control instance")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "certificate revocation is not configured on this control instance")
 	}
 
 	// not_after is NOT NULL — revoke the fingerprint until the cert's own expiry
