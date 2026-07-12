@@ -63,6 +63,12 @@ func TestObjectListHandlers_AllScopeEnforced(t *testing.T) {
 			want := expectedScope[fn.Name.Name]
 			enforced := false
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				// Skip nested function literals: a dead/uninvoked closure calling
+				// scopedObjectIDs must not satisfy the check for a List handler whose
+				// direct body never scopes the query.
+				if _, ok := n.(*ast.FuncLit); ok {
+					return false
+				}
 				c, ok := n.(*ast.CallExpr)
 				if !ok || calleeName(c.Fun) != "scopedObjectIDs" {
 					return true

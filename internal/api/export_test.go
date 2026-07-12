@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
@@ -42,4 +43,19 @@ func SetExportPageSizeForTest(n int) (restore func()) {
 	prev := exportPageSize
 	exportPageSize = n
 	return func() { exportPageSize = prev }
+}
+
+// ScopableObjectTypes returns the canonical assignment-confined object-type set
+// (the keys of objectTypeToIndexScope). The external api_test behavioral
+// confinement sweeps assert their driver tables cover every entry, so a NEW
+// scopable object type cannot satisfy the AST enforcement guards while silently
+// having no behavioral out-of-scope coverage (the "presence ≠ behavior" gap, one
+// layer up). Compiled only into test binaries.
+func ScopableObjectTypes() []string {
+	out := make([]string, 0, len(objectTypeToIndexScope))
+	for k := range objectTypeToIndexScope {
+		out = append(out, k)
+	}
+	sort.Strings(out) // stable order for deterministic callers
+	return out
 }
