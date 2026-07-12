@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -803,11 +804,43 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			want:       "198.51.100.5",
 		},
 		{
-			name:       "trusted /8 peer + XFF returns the first XFF hop",
+			// Right-to-left walk: the trailing trusted-proxy hop (10.9.9.9) is
+			// skipped and the first untrusted address (the spoofed left entry) is
+			// returned — here there is only one untrusted candidate.
+			name:       "trusted /8 peer + XFF: trailing trusted hop skipped, untrusted returned",
 			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.1.2.3:1234",
 			xff:        spoofed + ", 10.9.9.9",
 			want:       spoofed,
+		},
+		{
+			// The distinguishing right-to-left case (AC6): attacker prepends a
+			// spoofed left entry, then the real client, then a trusted proxy hop.
+			// Leftmost-selection would return the spoof; right-to-left skips the
+			// trusted tail hop and returns the real client.
+			name:       "trusted peer + [spoof, client, trusted-proxy]: returns the client, not the spoof",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", 198.51.100.20, 10.9.9.9",
+			want:       "198.51.100.20",
+		},
+		{
+			// Multiple trusted proxies at the tail are all skipped.
+			name:       "trusted peer + [client, proxy, proxy]: skips both trusted tail hops",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "198.51.100.20, 10.9.9.9, 10.8.8.8",
+			want:       "198.51.100.20",
+		},
+		{
+			// Every XFF hop is a trusted proxy: the real client is farther
+			// upstream than any recorded address, so fall back to the direct peer
+			// rather than invent one.
+			name:       "trusted peer + all-trusted XFF chain falls back to the peer",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "10.9.9.9, 10.8.8.8",
+			want:       "10.1.2.3",
 		},
 		{
 			name:       "trusted peer + X-Real-IP (no XFF) returns X-Real-IP",
@@ -817,12 +850,27 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			want:       "192.0.2.7",
 		},
 		{
-			name:       "trusted peer + malformed XFF falls through to X-Real-IP",
+			// XFF is present but malformed: X-Real-IP is consulted ONLY when XFF is
+			// absent, and a malformed hop stops the right-to-left walk — so this
+			// falls back to the direct peer, never to X-Real-IP or a farther-left
+			// (attacker-controllable) value.
+			name:       "trusted peer + malformed XFF falls back to the peer, not X-Real-IP",
 			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.1.2.3:1234",
 			xff:        "not-an-ip",
 			xri:        "192.0.2.7",
-			want:       "192.0.2.7",
+			want:       "10.1.2.3",
+		},
+		{
+			// A malformed hop encountered before a trustworthy client is
+			// established (AC7): the trailing trusted hop is skipped, then the
+			// malformed middle hop aborts the walk to the direct peer instead of
+			// trusting the farther-left spoof.
+			name:       "trusted peer + malformed middle hop aborts to the peer (AC7)",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", garbage, 10.9.9.9",
+			want:       "10.1.2.3",
 		},
 		{
 			name:       "trusted peer + malformed XFF + no X-Real-IP falls through to the peer",
@@ -884,4 +932,57 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			assert.Equal(t, tc.want, ClientIPFromHTTP(r))
 		})
 	}
+}
+
+// TestClientIP_ConnectPathResolution drives the Connect interceptor's clientIP
+// (the rate-limit resolver) end-to-end through an httptest server, so the
+// Connect path is covered independently of the shared resolveClientIP unit
+// table (exercised via the HTTP path). The handler echoes clientIP(req) back in
+// a header, so the assertion is on the resolved value directly — it would catch
+// a drift where clientIP read the wrong header or the peer address instead of
+// delegating to resolveClientIP. The loopback test peer is trusted so forwarded
+// headers are honoured.
+func TestClientIP_ConnectPathResolution(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+	// Trust the loopback test peer and any loopback tail hops in XFF.
+	SetTrustedProxies([]string{"127.0.0.0/8", "::1/128"})
+
+	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test-secret"), AccessTokenExpiry: 15 * time.Minute})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
+
+	procedure := "/pm.v1.ControlService/Login" // public: no auth needed
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			resp := connect.NewResponse(&emptypb.Empty{})
+			resp.Header().Set("X-Resolved-IP", clientIP(req))
+			return resp, nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, srv.URL+procedure)
+
+	resolve := func(xff string) string {
+		req := connect.NewRequest(&emptypb.Empty{})
+		if xff != "" {
+			req.Header().Set("X-Forwarded-For", xff)
+		}
+		resp, err := client.CallUnary(context.Background(), req)
+		require.NoError(t, err)
+		return resp.Header().Get("X-Resolved-IP")
+	}
+
+	// Right-to-left: skip the trusted loopback tail hop and return the real
+	// client, NOT the spoofed leftmost entry (which first-hop selection would
+	// return).
+	assert.Equal(t, "203.0.113.10", resolve("9.9.9.9, 203.0.113.10, 127.0.0.1"))
+	// A single untrusted hop is returned as-is.
+	assert.Equal(t, "203.0.113.10", resolve("203.0.113.10"))
+	// No XFF + trusted peer → the loopback peer itself (a valid IP, not "").
+	peer := resolve("")
+	assert.NotEmpty(t, peer)
+	assert.NotNil(t, net.ParseIP(peer), "resolved peer must be a parsable IP, got %q", peer)
 }

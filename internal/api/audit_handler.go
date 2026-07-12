@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -222,6 +223,17 @@ func redactEventData(streamType, eventType string, data []byte) string {
 
 	schema, ok := schemaFor(streamType, eventType, payload)
 	if !ok {
+		// No schema for this (stream,event): fall back to a narrow recursive
+		// key-name backstop (spec 29 AC10-12) so a future or legacy raw-map
+		// append using an unclassified event can't leak a secret-looking value.
+		// This runs ONLY when schema lookup found nothing — known schemas keep
+		// their exact-path redaction. Re-marshal only if something was replaced,
+		// so a payload with no secret key is returned byte-for-byte unchanged.
+		if redactUnknownSecrets(payload) {
+			if out, err := json.Marshal(payload); err == nil {
+				return string(out)
+			}
+		}
 		return string(data)
 	}
 
@@ -244,6 +256,60 @@ func redactEventData(streamType, eventType string, data []byte) string {
 		return string(data)
 	}
 	return string(out)
+}
+
+// matchesSecretKey reports whether a JSON key name looks like it holds a
+// secret, using the narrow deny rules of spec 29 AC10 — derived from the
+// codebase's ACTUAL secret-field names, not a generic guess. Exact:
+// `password`, `passphrase`, `psk`. Prefix: `private_key*`. Suffix: `*_secret`,
+// `*_hash`, `*_encrypted`, `*_enc`. The `*_encrypted`/`*_enc` suffixes exist
+// specifically to catch the ciphertext fields (`client_secret_encrypted`,
+// `secret_encrypted`, `private_key_enc`) that a `*_secret`/`*_hash`-only set
+// misses. Matching is case-insensitive.
+func matchesSecretKey(key string) bool {
+	k := strings.ToLower(key)
+	switch k {
+	case "password", "passphrase", "psk":
+		return true
+	}
+	if strings.HasPrefix(k, "private_key") {
+		return true
+	}
+	return strings.HasSuffix(k, "_secret") ||
+		strings.HasSuffix(k, "_hash") ||
+		strings.HasSuffix(k, "_encrypted") ||
+		strings.HasSuffix(k, "_enc")
+}
+
+// redactUnknownSecrets recursively walks a decoded JSON value and replaces the
+// value of every secret-looking key (matchesSecretKey) with "[REDACTED]",
+// descending into nested maps and arrays. It returns true if anything was
+// replaced. A matched key's value is replaced wholesale — the walk does not
+// descend into it — so a secret held as an object or array is fully scrubbed.
+// This is the unknown-schema backstop only (spec 29 AC10-12); schema-aware
+// redaction is unchanged.
+func redactUnknownSecrets(v any) bool {
+	changed := false
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if matchesSecretKey(k) {
+				t[k] = "[REDACTED]"
+				changed = true
+				continue
+			}
+			if redactUnknownSecrets(val) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, item := range t {
+			if redactUnknownSecrets(item) {
+				changed = true
+			}
+		}
+	}
+	return changed
 }
 
 // schemaFor selects the redactionSchema for an event. Action AND
