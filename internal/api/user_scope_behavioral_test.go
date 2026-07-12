@@ -22,6 +22,9 @@ import (
 type userScopeDriver struct {
 	rpc  string // the RPC name, which is also the permission key
 	call func(ctx context.Context, st *store.Store, targetUserID string) error
+	// verifyDenied (write RPCs only) asserts, via a privileged read, that a denied
+	// out-of-scope call did NOT mutate the target user. nil for read RPCs.
+	verifyDenied func(t *testing.T, st *store.Store, adminID, targetUserID string)
 }
 
 func userScopeDrivers() []userScopeDriver {
@@ -40,6 +43,11 @@ func userScopeDrivers() []userScopeDriver {
 			call: func(ctx context.Context, st *store.Store, targetUserID string) error {
 				_, err := uh(st).SetUserDisabled(ctx, connect.NewRequest(&pm.SetUserDisabledRequest{Id: targetUserID, Disabled: true}))
 				return err
+			},
+			verifyDenied: func(t *testing.T, st *store.Store, adminID, targetUserID string) {
+				resp, err := uh(st).GetUser(testutil.AdminContext(adminID), connect.NewRequest(&pm.GetUserRequest{Id: targetUserID}))
+				require.NoError(t, err)
+				assert.False(t, resp.Msg.GetUser().GetDisabled(), "denied SetUserDisabled must not disable the user")
 			},
 		},
 	}
@@ -70,6 +78,9 @@ func TestUserScopeHandlers_ConfineOutOfScope(t *testing.T) {
 			require.Errorf(t, err, "%s: out-of-scope user op must error", d.rpc)
 			assert.Equalf(t, connect.CodePermissionDenied, connect.CodeOf(err),
 				"%s: out-of-scope user op must be PermissionDenied; got %v", d.rpc, connect.CodeOf(err))
+			if d.verifyDenied != nil {
+				d.verifyDenied(t, st, admin, target)
+			}
 
 			// Positive control: a caller scoped to ugA (the target's group) succeeds.
 			require.NoErrorf(t, d.call(userScoped(testutil.NewID(), d.rpc, ugA), st, target),

@@ -23,12 +23,23 @@ import (
 type deviceScopeDriver struct {
 	rpc  string // the RPC name, which is also the permission key
 	call func(ctx context.Context, st *store.Store, deviceID string) error
+	// verifyDenied (write RPCs only) asserts, via a privileged read, that a denied
+	// out-of-scope call did NOT mutate the device — so a handler that mutates
+	// before returning PermissionDenied still fails. nil for read RPCs.
+	verifyDenied func(t *testing.T, st *store.Store, adminID, deviceID string)
 }
 
 func deviceScopeDrivers() []deviceScopeDriver {
 	logger := slog.Default()
 	dev := func(st *store.Store) *api.DeviceHandler {
 		return api.NewDeviceHandler(st, nil, logger, api.NoOpSigner{})
+	}
+	getDevice := func(st *store.Store, adminID, id string) (*pm.Device, error) {
+		resp, err := dev(st).GetDevice(testutil.AdminContext(adminID), connect.NewRequest(&pm.GetDeviceRequest{Id: id}))
+		if err != nil {
+			return nil, err
+		}
+		return resp.Msg.GetDevice(), nil
 	}
 	return []deviceScopeDriver{
 		{
@@ -44,12 +55,21 @@ func deviceScopeDrivers() []deviceScopeDriver {
 				_, err := dev(st).SetDeviceSyncInterval(ctx, connect.NewRequest(&pm.SetDeviceSyncIntervalRequest{Id: deviceID, SyncIntervalMinutes: 60}))
 				return err
 			},
+			verifyDenied: func(t *testing.T, st *store.Store, adminID, deviceID string) {
+				d, err := getDevice(st, adminID, deviceID)
+				require.NoError(t, err)
+				assert.NotEqual(t, int32(60), d.GetSyncIntervalMinutes(), "denied SetDeviceSyncInterval must not persist")
+			},
 		},
 		{
 			rpc: "DeleteDevice",
 			call: func(ctx context.Context, st *store.Store, deviceID string) error {
 				_, err := dev(st).DeleteDevice(ctx, connect.NewRequest(&pm.DeleteDeviceRequest{Id: deviceID}))
 				return err
+			},
+			verifyDenied: func(t *testing.T, st *store.Store, adminID, deviceID string) {
+				_, err := getDevice(st, adminID, deviceID)
+				require.NoError(t, err, "denied DeleteDevice must not delete the device")
 			},
 		},
 	}
@@ -86,6 +106,9 @@ func TestDeviceScopeHandlers_ConfineOutOfScope(t *testing.T) {
 			require.Errorf(t, err, "%s: out-of-scope device op must error", d.rpc)
 			assert.Equalf(t, connect.CodePermissionDenied, connect.CodeOf(err),
 				"%s: out-of-scope device op must be PermissionDenied; got %v", d.rpc, connect.CodeOf(err))
+			if d.verifyDenied != nil {
+				d.verifyDenied(t, st, admin, device)
+			}
 
 			// Positive control: a caller scoped to dgA (the device's group) succeeds.
 			require.NoErrorf(t, d.call(deviceScoped(testutil.NewID(), d.rpc, dgA), st, device),
