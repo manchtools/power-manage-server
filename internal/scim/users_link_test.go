@@ -217,3 +217,53 @@ func TestReplaceUser_ExplicitEmptyNameClearsProfile(t *testing.T) {
 	assert.Empty(t, cleared.FamilyName, "explicit empty name object must clear family_name")
 	assert.Empty(t, cleared.DisplayName, "explicit empty name object must clear display_name")
 }
+
+// TestCreateUser_CrossProviderLink_RequiresTrust pins spec 29 S14: a passwordless
+// user already OWNED by one identity provider must not be silently claimed by a
+// SECOND provider via email — a lower-trust IdP's SCIM token could otherwise
+// seize a higher-trust IdP's passwordless SSO user. The HasPassword guard does
+// not cover this (the user is passwordless); the cross-provider guard does.
+func TestCreateUser_CrossProviderLink_RequiresTrust(t *testing.T) {
+	setup := func(t *testing.T) (env *scimTestEnv, email, userID, slugB, tokenB, providerB string) {
+		env = setupSCIM(t)
+		setProviderFlags(t, env, env.providerID, map[string]any{"auto_link_by_email": true})
+		email = "sso-" + testutil.NewID()[:6] + "@corp.com"
+		userID = createPasswordlessUser(t, env, email)
+		// Provider A legitimately claims the passwordless user (first link).
+		require.Equal(t, http.StatusCreated, postSCIMUser(t, env, email).Code)
+		require.True(t, providerOwnsUser(t, env, env.providerID, userID))
+		// A second provider appears.
+		slugB, tokenB, providerB = secondSCIMProvider(t, env)
+		return
+	}
+
+	postAsB := func(t *testing.T, env *scimTestEnv, slugB, tokenB, email string) *httptest.ResponseRecorder {
+		return scimReq(t, env, slugB, tokenB, http.MethodPost, "/Users", map[string]any{
+			"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+			"userName":   email,
+			"externalId": "extB-" + testutil.NewID(),
+			"active":     true,
+		})
+	}
+
+	t.Run("second_provider_refused_without_trust", func(t *testing.T) {
+		env, email, userID, slugB, tokenB, providerB := setup(t)
+		setProviderFlags(t, env, providerB, map[string]any{"auto_link_by_email": true})
+
+		w := postAsB(t, env, slugB, tokenB, email)
+		assert.Equal(t, http.StatusConflict, w.Code,
+			"a user owned by another provider must not be cross-linked without trust opt-in: %s", w.Body.String())
+		assert.False(t, providerOwnsUser(t, env, providerB, userID),
+			"provider B must NOT gain a link to a user owned by provider A")
+	})
+
+	t.Run("second_provider_allowed_with_trust", func(t *testing.T) {
+		env, email, userID, slugB, tokenB, providerB := setup(t)
+		setProviderFlags(t, env, providerB, map[string]any{"auto_link_by_email": true, "trust_email_assertions": true})
+
+		w := postAsB(t, env, slugB, tokenB, email)
+		assert.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+		assert.True(t, providerOwnsUser(t, env, providerB, userID),
+			"with trust_email_assertions provider B may cross-link")
+	})
+}
