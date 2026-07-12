@@ -66,7 +66,8 @@ func TestEnroll_EndToEnd(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	id, err := gwenroll.Enroll(context.Background(), srv.Client(), srv.URL, token, "gw1.example.com")
+	const hostname = "gw1.example.com"
+	id, err := gwenroll.Enroll(context.Background(), srv.Client(), srv.URL, token, hostname)
 	require.NoError(t, err)
 
 	_, err = ulid.Parse(id.GatewayID)
@@ -84,11 +85,16 @@ func TestEnroll_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	roots := x509.NewCertPool()
 	require.True(t, roots.AppendCertsFromPEM(id.CACertPEM))
+	// Verify exactly as the agent does: standard TLS verification against the CA
+	// with the gateway's hostname as ServerName — this exercises BOTH the
+	// ServerAuth EKU and the server-stamped DNS SAN, the two properties a
+	// client-auth-only / no-DNS-SAN cert would fail.
 	_, err = leaf.Verify(x509.VerifyOptions{
 		Roots:     roots,
+		DNSName:   hostname,
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
-	require.NoError(t, err, "enrolled gateway cert must verify as a TLS server cert against the returned CA")
+	require.NoError(t, err, "enrolled gateway cert must verify as a TLS server cert for its hostname against the returned CA")
 }
 
 func TestEnroll_WrongTokenErrors(t *testing.T) {

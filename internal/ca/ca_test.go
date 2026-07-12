@@ -360,9 +360,10 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	require.NoError(t, err)
 
 	const gatewayID = "gw-01JABCDEF" // server id; CSR CN is different on purpose
+	const gatewayHost = "gw.example.com"
 	csrPEM := generateCSRWithSAN(t, "csr-chosen-id", func(*x509.CertificateRequest) {})
 
-	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM)
+	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM, gatewayHost)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(cert.CertPEM)
@@ -389,6 +390,11 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageClientAuth)
 	assert.Contains(t, parsed.ExtKeyUsage, x509.ExtKeyUsageServerAuth,
 		"a gateway cert must be usable as a TLS server cert")
+
+	// The hostname must be stamped as a DNS SAN (server-chosen), so the agent's
+	// standard TLS verification can match the gateway's public name.
+	assert.Equal(t, []string{gatewayHost}, parsed.DNSNames,
+		"the gateway hostname must be stamped as a DNS SAN")
 }
 
 // TestIssueCertificateFromCSR_AgentIsClientAuthOnly pins that agent certs do NOT
@@ -426,7 +432,7 @@ func TestIssueGatewayCertificateFromCSR_RejectsSAN(t *testing.T) {
 	csrPEM := generateCSRWithSAN(t, "gw-1", func(r *x509.CertificateRequest) {
 		r.URIs = []*url.URL{mustURL("spiffe://power-manage/control")}
 	})
-	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM)
+	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM, "gw-1.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not request subject alternative names")
 	assert.Nil(t, cert)

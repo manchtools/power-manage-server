@@ -98,7 +98,7 @@ func (h *GatewayAuthHandler) EnrollGateway(ctx context.Context, req *connect.Req
 	// Sign the CSR into a gateway-class cert. The CA stamps CN = gateway_id and
 	// the gateway peer class, and rejects any caller-supplied SAN (AC2). Every
 	// CSR failure — malformed, forged signature, SAN present — is InvalidArgument.
-	cert, err := h.ca.IssueGatewayCertificateFromCSR(gatewayID, req.Msg.Csr)
+	cert, err := h.ca.IssueGatewayCertificateFromCSR(gatewayID, req.Msg.Csr, req.Msg.Hostname)
 	if err != nil {
 		h.logger.Warn("gateway enrollment: CSR rejected", "ip", ip, "error", err)
 		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "invalid certificate signing request")

@@ -128,23 +128,35 @@ const gatewayCertValidity = 45 * 24 * time.Hour
 // the certificate. The private key stays on the agent - this method only signs
 // the CSR. Agent certs carry the agent peer class and the CA's default validity.
 func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certificate, error) {
-	return ca.issueFromCSR(deviceID, csrPEM, mtls.PeerClassAgent, ca.validity)
+	return ca.issueFromCSR(deviceID, csrPEM, mtls.PeerClassAgent, ca.validity, nil)
 }
 
 // IssueGatewayCertificateFromCSR signs a gateway CSR (spec 31). The issued cert
-// carries CN = SerialNumber = gatewayID, the gateway peer-class SAN, and the
-// fixed 45-day gateway validity. Callers reach this from GatewayAuthService
+// carries CN = SerialNumber = gatewayID, the gateway peer-class SAN, the fixed
+// 45-day gateway validity, and — when hostname is non-empty — a server-chosen
+// DNS SAN for that hostname. The DNS SAN is load-bearing: an agent connects to
+// the gateway by hostname and verifies its server cert with STANDARD TLS
+// (ServerName match against DNS SANs), so a gateway cert without a DNS SAN
+// matching its public hostname cannot be verified. hostname is the operator-
+// validated value from EnrollGateway (or the current cert's DNS SAN on renewal),
+// never a CSR-supplied SAN. Callers reach this from GatewayAuthService
 // enrollment and InternalService renewal.
-func (ca *CA) IssueGatewayCertificateFromCSR(gatewayID string, csrPEM []byte) (*Certificate, error) {
-	return ca.issueFromCSR(gatewayID, csrPEM, mtls.PeerClassGateway, gatewayCertValidity)
+func (ca *CA) IssueGatewayCertificateFromCSR(gatewayID string, csrPEM []byte, hostname string) (*Certificate, error) {
+	var dnsNames []string
+	if hostname != "" {
+		dnsNames = []string{hostname}
+	}
+	return ca.issueFromCSR(gatewayID, csrPEM, mtls.PeerClassGateway, gatewayCertValidity, dnsNames)
 }
 
 // issueFromCSR is the shared issuance body. deviceID becomes the cert CN and
 // Subject.SerialNumber; class selects the peer-class URI SAN stamped on the
-// cert; validity sets NotAfter. The CA authoritatively stamps the identity and
-// class — caller-supplied SANs in the CSR are rejected below — so an enrolling
-// peer can never mint a different identity or a peer class it was not issued.
-func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass, validity time.Duration) (*Certificate, error) {
+// cert; validity sets NotAfter; dnsNames are server-chosen DNS SANs (gateway
+// hostname). The CA authoritatively stamps the identity, class, and any DNS
+// SANs — caller-supplied SANs in the CSR are rejected below — so an enrolling
+// peer can never mint a different identity, peer class, or hostname than the
+// server assigns.
+func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass, validity time.Duration, dnsNames []string) (*Certificate, error) {
 	// Parse the CSR
 	csrBlock, _ := pem.Decode(csrPEM)
 	if csrBlock == nil {
@@ -214,6 +226,8 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
 		URIs:                  []*url.URL{peerURI},
+		// Server-chosen DNS SANs (gateway hostname). Empty for agent certs.
+		DNSNames: dnsNames,
 	}
 
 	// Add device ID to the Subject's SerialNumber field
