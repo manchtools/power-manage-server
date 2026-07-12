@@ -71,12 +71,14 @@ WHERE ($1::TEXT = '' OR actor_id = $1)
   AND ($3::TEXT = '' OR event_type ILIKE '%' || replace(replace(replace($3, '!', '!!'), '%', '!%'), '_', '!_') || '%' ESCAPE '!');
 
 -- name: LoadOutputChunks :many
--- Load all output chunks for an execution, ordered by sequence
+-- Load output chunks for an execution, ordered by sequence, bounded by $2 rows
+-- so a chunk flood can't load an unbounded slice into control memory (spec 29 S6).
 SELECT * FROM events
 WHERE stream_type = 'execution'
   AND stream_id = $1
   AND event_type = 'OutputChunk'
-ORDER BY stream_version;
+ORDER BY stream_version
+LIMIT $2;
 
 -- name: ExportAuditEvents :many
 -- Keyset export feed for the audit-log export (spec 26). Same filter

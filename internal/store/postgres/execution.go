@@ -120,8 +120,8 @@ func (e *Execution) CountForWarm(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-func (e *Execution) LoadOutputChunks(ctx context.Context, executionID string) ([]store.PersistedEvent, error) {
-	rows, err := e.q.LoadOutputChunks(ctx, executionID)
+func (e *Execution) LoadOutputChunks(ctx context.Context, executionID string, limit int32) ([]store.PersistedEvent, error) {
+	rows, err := e.q.LoadOutputChunks(ctx, generated.LoadOutputChunksParams{StreamID: executionID, Limit: limit})
 	if err != nil {
 		return nil, fmt.Errorf("execution: load output chunks: %w", err)
 	}

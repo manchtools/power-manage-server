@@ -115,10 +115,11 @@ type ExecutionRepo interface {
 	// warm-up pagination.
 	CountForWarm(ctx context.Context) (int64, error)
 
-	// LoadOutputChunks loads every ExecutionOutputChunk event for
-	// the given execution stream ID, ordered by sequence. The
-	// chunks are stored on the event stream rather than as
-	// projection rows, hence the cross-shape (returns
-	// PersistedEvent rather than execution data).
-	LoadOutputChunks(ctx context.Context, executionID string) ([]PersistedEvent, error)
+	// LoadOutputChunks loads up to limit ExecutionOutputChunk events for
+	// the given execution stream ID, ordered by sequence. The limit bounds
+	// the rows read into memory so a chunk flood can't exhaust control
+	// memory (spec 29 S6). The chunks are stored on the event stream rather
+	// than as projection rows, hence the cross-shape (returns PersistedEvent
+	// rather than execution data).
+	LoadOutputChunks(ctx context.Context, executionID string, limit int32) ([]PersistedEvent, error)
 }
