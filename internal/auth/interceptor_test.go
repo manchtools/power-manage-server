@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -931,4 +932,57 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			assert.Equal(t, tc.want, ClientIPFromHTTP(r))
 		})
 	}
+}
+
+// TestClientIP_ConnectPathResolution drives the Connect interceptor's clientIP
+// (the rate-limit resolver) end-to-end through an httptest server, so the
+// Connect path is covered independently of the shared resolveClientIP unit
+// table (exercised via the HTTP path). The handler echoes clientIP(req) back in
+// a header, so the assertion is on the resolved value directly — it would catch
+// a drift where clientIP read the wrong header or the peer address instead of
+// delegating to resolveClientIP. The loopback test peer is trusted so forwarded
+// headers are honoured.
+func TestClientIP_ConnectPathResolution(t *testing.T) {
+	t.Cleanup(func() { SetTrustedProxies(nil) })
+	// Trust the loopback test peer and any loopback tail hops in XFF.
+	SetTrustedProxies([]string{"127.0.0.0/8", "::1/128"})
+
+	jwtMgr := NewJWTManager(JWTConfig{Secret: []byte("test-secret"), AccessTokenExpiry: 15 * time.Minute})
+	interceptor := NewAuthInterceptor(testLogger, jwtMgr, RateLimiters{})
+
+	procedure := "/pm.v1.ControlService/Login" // public: no auth needed
+	mux := http.NewServeMux()
+	mux.Handle(procedure, connect.NewUnaryHandler(
+		procedure,
+		func(ctx context.Context, req *connect.Request[emptypb.Empty]) (*connect.Response[emptypb.Empty], error) {
+			resp := connect.NewResponse(&emptypb.Empty{})
+			resp.Header().Set("X-Resolved-IP", clientIP(req))
+			return resp, nil
+		},
+		connect.WithInterceptors(interceptor),
+	))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	client := connect.NewClient[emptypb.Empty, emptypb.Empty](http.DefaultClient, srv.URL+procedure)
+
+	resolve := func(xff string) string {
+		req := connect.NewRequest(&emptypb.Empty{})
+		if xff != "" {
+			req.Header().Set("X-Forwarded-For", xff)
+		}
+		resp, err := client.CallUnary(context.Background(), req)
+		require.NoError(t, err)
+		return resp.Header().Get("X-Resolved-IP")
+	}
+
+	// Right-to-left: skip the trusted loopback tail hop and return the real
+	// client, NOT the spoofed leftmost entry (which first-hop selection would
+	// return).
+	assert.Equal(t, "203.0.113.10", resolve("9.9.9.9, 203.0.113.10, 127.0.0.1"))
+	// A single untrusted hop is returned as-is.
+	assert.Equal(t, "203.0.113.10", resolve("203.0.113.10"))
+	// No XFF + trusted peer → the loopback peer itself (a valid IP, not "").
+	peer := resolve("")
+	assert.NotEmpty(t, peer)
+	assert.NotNil(t, net.ParseIP(peer), "resolved peer must be a parsable IP, got %q", peer)
 }
