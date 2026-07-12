@@ -44,6 +44,33 @@ func TestClient_EnqueueToDeviceSignsPayloadAndUsesDeviceQueue(t *testing.T) {
 	assert.Equal(t, payload.Limit, got.Limit)
 }
 
+// A caller-supplied asynq.Queue option must NOT override the signed device
+// queue — the task must land on exactly the queue its HMAC is bound to, or the
+// consumer would (correctly) reject it as a queue mismatch.
+func TestClient_EnqueueToDeviceIgnoresConflictingQueueOption(t *testing.T) {
+	mr := miniredis.RunT(t)
+	signer, err := NewSigner(testKeyHex)
+	require.NoError(t, err)
+	client := NewClientWithSigner(mr.Addr(), "", 0, signer)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	require.NoError(t, client.EnqueueToDevice("device-1", TypeOSQueryDispatch,
+		OSQueryDispatchPayload{QueryID: "q"}, asynq.Queue("attacker-chosen")))
+
+	inspector := asynq.NewInspector(asynq.RedisClientOpt{Addr: mr.Addr()})
+	t.Cleanup(func() { require.NoError(t, inspector.Close()) })
+
+	onSigned, err := inspector.ListPendingTasks(DeviceQueue("device-1"))
+	require.NoError(t, err)
+	require.Len(t, onSigned, 1, "the task must be enqueued to the signed device queue")
+
+	onOverride, err := inspector.ListPendingTasks("attacker-chosen")
+	if !errors.Is(err, asynq.ErrQueueNotFound) {
+		require.NoError(t, err)
+	}
+	assert.Empty(t, onOverride, "a caller-supplied queue option must not override the signed queue")
+}
+
 func TestClient_EnqueueToControlRoutesTerminalAuditToSerialQueue(t *testing.T) {
 	mr := miniredis.RunT(t)
 	signer, err := NewSigner(testKeyHex)

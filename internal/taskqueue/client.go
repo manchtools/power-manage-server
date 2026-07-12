@@ -87,7 +87,10 @@ func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any, opts ..
 	}
 
 	task := asynq.NewTask(taskType, data)
-	enqueueOpts := append([]asynq.Option{asynq.Queue(queue)}, opts...)
+	// Apply the signed queue LAST so a caller-supplied asynq.Queue option can't
+	// override it — the task must land on exactly the queue it was signed for,
+	// or the consumer's queue-bound HMAC check would (correctly) reject it.
+	enqueueOpts := append(append([]asynq.Option{}, opts...), asynq.Queue(queue))
 	_, err = c.client.Enqueue(task, enqueueOpts...)
 	if err != nil {
 		return fmt.Errorf("enqueue to device %s: %w", deviceID, err)
