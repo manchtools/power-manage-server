@@ -384,16 +384,19 @@ func TestGatewayMux_RejectsUnsignedTask(t *testing.T) {
 		return mux
 	}
 
-	// queue context so VerifyMiddleware's queueOf has a name.
+	// queue context so VerifyMiddleware's queueOf resolves the device queue the
+	// task is bound to (the real Asynq server would supply this).
+	deviceQueue := taskqueue.DeviceQueue("device-hmac")
 	ctxWithQueue := func() context.Context {
-		return context.Background()
+		return taskqueue.WithQueue(context.Background(), deviceQueue)
 	}
 
 	t.Run("correctly wrapped task reaches the handler", func(t *testing.T) {
 		sender := &recordingMessageSender{}
 		mux := newMux(sender)
-		wrapped := taskSigner.Wrap(innerPayload)
-		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, wrapped))
+		wrapped, err := taskSigner.Wrap(deviceQueue, taskqueue.TypeActionDispatch, innerPayload)
+		require.NoError(t, err)
+		err = mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, wrapped))
 		require.NoError(t, err)
 		require.Len(t, sender.messages, 1, "a correctly HMAC-wrapped task must reach handleActionDispatch")
 	})
@@ -410,7 +413,8 @@ func TestGatewayMux_RejectsUnsignedTask(t *testing.T) {
 	t.Run("wrong-key task is rejected before the handler", func(t *testing.T) {
 		sender := &recordingMessageSender{}
 		mux := newMux(sender)
-		wrapped := wrongSigner.Wrap(innerPayload) // HMAC under the wrong key
+		wrapped, wErr := wrongSigner.Wrap(deviceQueue, taskqueue.TypeActionDispatch, innerPayload)
+		require.NoError(t, wErr) // HMAC under the wrong key
 		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, wrapped))
 		require.Error(t, err)
 		assert.Empty(t, sender.messages, "wrong-key task must NOT reach the handler")
@@ -419,11 +423,12 @@ func TestGatewayMux_RejectsUnsignedTask(t *testing.T) {
 	t.Run("byte-tampered task is rejected before the handler", func(t *testing.T) {
 		sender := &recordingMessageSender{}
 		mux := newMux(sender)
-		wrapped := taskSigner.Wrap(innerPayload)
+		wrapped, err := taskSigner.Wrap(deviceQueue, taskqueue.TypeActionDispatch, innerPayload)
+		require.NoError(t, err)
 		// Flip a byte in the payload region (after the 32-byte HMAC prefix).
 		tampered := append([]byte(nil), wrapped...)
 		tampered[len(tampered)-1] ^= 0xff
-		err := mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, tampered))
+		err = mux.ProcessTask(ctxWithQueue(), asynq.NewTask(taskqueue.TypeActionDispatch, tampered))
 		require.Error(t, err)
 		assert.Empty(t, sender.messages, "byte-tampered task must NOT reach the handler")
 	})

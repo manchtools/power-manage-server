@@ -78,12 +78,19 @@ func (c *Client) EnqueueToDevice(deviceID, taskType string, payload any, opts ..
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	// Wrap with HMAC prefix (audit F-02). c.signer is nil-safe — a
-	// disabled signer returns data unchanged.
-	data = c.signer.Wrap(data)
+	// Sign the envelope, binding it to this exact queue + task type (audit F-02;
+	// spec 29). c.signer is nil-safe — a disabled signer returns data unchanged.
+	queue := DeviceQueue(deviceID)
+	data, err = c.signer.Wrap(queue, taskType, data)
+	if err != nil {
+		return fmt.Errorf("sign task for %s: %w", queue, err)
+	}
 
 	task := asynq.NewTask(taskType, data)
-	enqueueOpts := append([]asynq.Option{asynq.Queue(DeviceQueue(deviceID))}, opts...)
+	// Apply the signed queue LAST so a caller-supplied asynq.Queue option can't
+	// override it — the task must land on exactly the queue it was signed for,
+	// or the consumer's queue-bound HMAC check would (correctly) reject it.
+	enqueueOpts := append(append([]asynq.Option{}, opts...), asynq.Queue(queue))
 	_, err = c.client.Enqueue(task, enqueueOpts...)
 	if err != nil {
 		return fmt.Errorf("enqueue to device %s: %w", deviceID, err)
@@ -105,11 +112,14 @@ func (c *Client) EnqueueToControl(taskType string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	data = c.signer.Wrap(data)
-
 	queue := ControlInboxQueue
 	if taskType == TypeTerminalAuditChunk {
 		queue = ControlTerminalAuditQueue
+	}
+
+	data, err = c.signer.Wrap(queue, taskType, data)
+	if err != nil {
+		return fmt.Errorf("sign task for %s: %w", queue, err)
 	}
 
 	task := asynq.NewTask(taskType, data)
@@ -126,7 +136,10 @@ func (c *Client) EnqueueToSearch(taskType string, payload any) error {
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
-	data = c.signer.Wrap(data)
+	data, err = c.signer.Wrap(SearchQueue, taskType, data)
+	if err != nil {
+		return fmt.Errorf("sign task for %s: %w", SearchQueue, err)
+	}
 
 	task := asynq.NewTask(taskType, data)
 	_, err = c.client.Enqueue(task, asynq.Queue(SearchQueue))
