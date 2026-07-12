@@ -1,0 +1,283 @@
+package api_test
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"log/slog"
+	"net/url"
+	"testing"
+	"time"
+
+	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage/server/internal/api"
+	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/mtls"
+	"github.com/manchtools/power-manage/server/internal/store"
+	"github.com/manchtools/power-manage/server/internal/testutil"
+)
+
+const testEnrollToken = "test-gateway-enroll-token-value"
+
+// genGatewayCSR builds a plain PKCS#10 CSR (no SAN) and returns the PEM plus the
+// key, so a renewal CSR can reuse the key for proof-of-possession.
+func genGatewayCSR(t *testing.T) ([]byte, *ecdsa.PrivateKey) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "unused"}}, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}), key
+}
+
+func csrForGatewayKey(t *testing.T, key *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "unused"}}, key)
+	require.NoError(t, err)
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+}
+
+// enrollTestGateway enrolls a gateway and returns its gateway_id (the cert CN)
+// and the issued cert fingerprint (from the projection).
+func enrollTestGateway(t *testing.T, st *store.Store, certAuth *ca.CA) (gatewayID, fingerprint string) {
+	t.Helper()
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+	csr, _ := genGatewayCSR(t)
+	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token: testEnrollToken,
+		Csr:   csr,
+	}))
+	require.NoError(t, err)
+	id, err := ca.DeviceIDFromPEM(resp.Msg.Certificate)
+	require.NoError(t, err)
+	row, err := st.Queries().GetGatewayFingerprint(t.Context(), id)
+	require.NoError(t, err)
+	return id, row.Fingerprint
+}
+
+// --- EnrollGateway ---------------------------------------------------------
+
+func TestEnrollGateway_Success(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+
+	csr, _ := genGatewayCSR(t)
+	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token:    testEnrollToken,
+		Hostname: "gw1.example.com",
+		Csr:      csr,
+	}))
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.Msg.CaCert)
+	require.NotEmpty(t, resp.Msg.Certificate)
+
+	// The gateway_id is the cert CN — the single source of truth (AC1). Parse it
+	// and assert it is a ULID and the cert is the gateway peer class.
+	block, _ := pem.Decode(resp.Msg.Certificate)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	_, err = ulid.Parse(parsed.Subject.CommonName)
+	require.NoError(t, err, "cert CN must be a ULID gateway_id")
+	class, err := mtls.PeerClassFromCert(parsed)
+	require.NoError(t, err)
+	assert.Equal(t, mtls.PeerClassGateway, class)
+
+	// GatewayEnrolled projected: the fingerprint↦gateway_id mapping exists.
+	row, err := st.Queries().GetGatewayFingerprint(t.Context(), parsed.Subject.CommonName)
+	require.NoError(t, err)
+	assert.NotEmpty(t, row.Fingerprint)
+	assert.Nil(t, row.RevokedAt, "a freshly enrolled gateway is not revoked")
+}
+
+func TestEnrollGateway_WrongTokenRejectedWithProbeLog(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, logger)
+
+	csr, _ := genGatewayCSR(t)
+	_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token:    "wrong-token-guess",
+		Hostname: "attacker-host",
+		Csr:      csr,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	// AC3 observability backstop: a WARN carrying the hostname + a token HASH
+	// prefix (never the raw token) so probing is alertable.
+	logged := buf.String()
+	assert.Contains(t, logged, "token_hash_prefix")
+	assert.Contains(t, logged, "attacker-host")
+	assert.NotContains(t, logged, "wrong-token-guess", "the raw token must never be logged")
+
+	// No gateway was enrolled.
+	list, err := st.Queries().ListGateways(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, list)
+}
+
+func TestEnrollGateway_CSRWithSANRejected(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+
+	// A CSR requesting the control peer class — must be refused so an enrolling
+	// gateway cannot mint a non-gateway identity (AC2).
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	u, _ := url.Parse("spiffe://power-manage/control")
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: "x"}, URIs: []*url.URL{u}}, key)
+	require.NoError(t, err)
+	csr := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
+
+	_, err = h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token: testEnrollToken,
+		Csr:   csr,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+func TestEnrollGateway_RateLimited(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	limiter := auth.NewRateLimiter(5, time.Minute)
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, limiter, slog.Default())
+
+	csr, _ := genGatewayCSR(t)
+	// The first 5 attempts (same empty client-IP bucket) pass the limiter.
+	for i := 0; i < 5; i++ {
+		_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+			Token: testEnrollToken,
+			Csr:   csr,
+		}))
+		require.NoError(t, err, "attempt %d should pass", i+1)
+	}
+	// The 6th is rejected ResourceExhausted (AC4).
+	_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token: testEnrollToken,
+		Csr:   csr,
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+}
+
+// --- RevokeGatewayCertificate / GetCRL / ListGateways ----------------------
+
+func TestRevokeGatewayCertificate_Success(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	gatewayID, fingerprint := enrollTestGateway(t, st, certAuth)
+
+	crlStore := testCRLStore(t)
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetCRLStore(crlStore)
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	_, err := h.RevokeGatewayCertificate(testutil.AdminContext(adminID), connect.NewRequest(&pm.RevokeGatewayCertificateRequest{
+		GatewayId: gatewayID,
+	}))
+	require.NoError(t, err)
+
+	// The fingerprint is on the CRL and the projection is marked revoked.
+	active, err := crlStore.LoadActive(t.Context())
+	require.NoError(t, err)
+	assert.Contains(t, active, fingerprint)
+
+	row, err := st.Queries().GetGatewayFingerprint(t.Context(), gatewayID)
+	require.NoError(t, err)
+	require.NotNil(t, row.RevokedAt, "GatewayRevoked must set revoked_at")
+}
+
+func TestRevokeGatewayCertificate_Idempotent(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	gatewayID, _ := enrollTestGateway(t, st, certAuth)
+
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetCRLStore(testCRLStore(t))
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	ctx := testutil.AdminContext(adminID)
+	req := connect.NewRequest(&pm.RevokeGatewayCertificateRequest{GatewayId: gatewayID})
+
+	_, err := h.RevokeGatewayCertificate(ctx, req)
+	require.NoError(t, err)
+	// A second revoke is a no-op success — it must NOT emit a duplicate audit event.
+	_, err = h.RevokeGatewayCertificate(ctx, req)
+	require.NoError(t, err)
+
+	events, err := st.LoadStream(t.Context(), "gateway", gatewayID)
+	require.NoError(t, err)
+	revoked := 0
+	for _, e := range events {
+		if e.EventType == "GatewayRevoked" {
+			revoked++
+		}
+	}
+	assert.Equal(t, 1, revoked, "re-revoking must not emit a duplicate GatewayRevoked event")
+}
+
+func TestRevokeGatewayCertificate_UnknownGateway(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetCRLStore(testCRLStore(t))
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	_, err := h.RevokeGatewayCertificate(testutil.AdminContext(adminID), connect.NewRequest(&pm.RevokeGatewayCertificateRequest{
+		GatewayId: ulid.Make().String(),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestGetCertificateRevocationList_ReturnsActiveAndFreshness(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	crlStore := testCRLStore(t)
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetCRLStore(crlStore)
+
+	// Revoke a fingerprint directly and confirm the RPC surfaces it.
+	require.NoError(t, crlStore.Revoke(t.Context(), "deadbeef", time.Now().Add(time.Hour)))
+
+	resp, err := h.GetCertificateRevocationList(t.Context(), connect.NewRequest(&pm.GetCertificateRevocationListRequest{}))
+	require.NoError(t, err)
+	assert.Contains(t, resp.Msg.RevokedFingerprints, "deadbeef")
+	require.NotNil(t, resp.Msg.NotAfter)
+	require.NotNil(t, resp.Msg.RefreshedAt)
+	assert.True(t, resp.Msg.NotAfter.AsTime().After(resp.Msg.RefreshedAt.AsTime()),
+		"not_after must be a future freshness bound past refreshed_at")
+}
+
+func TestListGateways_ReturnsEnrolled(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	id1, _ := enrollTestGateway(t, st, certAuth)
+	id2, _ := enrollTestGateway(t, st, certAuth)
+
+	h := api.NewGatewayHandler(st, slog.Default())
+	resp, err := h.ListGateways(t.Context(), connect.NewRequest(&pm.ListGatewaysRequest{}))
+	require.NoError(t, err)
+
+	got := map[string]bool{}
+	for _, g := range resp.Msg.Gateways {
+		got[g.GatewayId] = true
+	}
+	assert.True(t, got[id1] && got[id2], "both enrolled gateways must be listed")
+}

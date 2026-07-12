@@ -116,6 +116,10 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "user_projector"),
 	))
+	st.RegisterEventListener(GatewayListener(
+		st,
+		loggerFor(logger, "gateway_projector"),
+	))
 	// All 11 ports of tracker #107 are now wired here, plus every
 	// Phase 2 port under tracker #136 (action_set, assignment,
 	// user_group, device_group, compliance_policy, compliance,
@@ -179,6 +183,9 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	st.RegisterRebuildApply("server_settings", ApplyServerSettingsRebuild)
 	st.RegisterRebuildApply("compliance_policies", ApplyCompliancePolicy)
 	st.RegisterRebuildApply("compliance_results", ApplyCompliance)
+	// gateways (spec 31): the gateway identity lifecycle. Ephemeral-per-boot
+	// rows, but replay still reproduces the fingerprint↦gateway_id mapping.
+	st.RegisterRebuildApply("gateways", ApplyGateway)
 }
 
 // loggerFor returns a sub-logger tagged with the projector

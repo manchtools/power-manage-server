@@ -83,6 +83,7 @@ Environment variables override command-line flags:
 | `CONTROL_RETENTION_ARCHIVE_PATH` | **Absolute** directory for sealed retention archives. Required when enabled — the archives are the ONLY copy of pruned history; back them up together with `user_encryption_keys`. |
 | `CONTROL_RETENTION_INTERVAL` | How often the retention worker checks for prunable history (default `1h`, clamped `10m`–`24h`) |
 | `CONTROL_INVENTORY_SCHEDULER_ENABLED` | Enable the periodic inventory collection scheduler (spec 22; default: `true`). Every 15 minutes it sends a CA-signed inventory request to each connected device whose inventory is older than its resolved interval (device override > group minimum > 24 h default). Set to `false` for change-frozen environments that must not run osquery on a cadence — manual refresh and the `inventory_overdue` flag are unaffected. |
+| `CONTROL_GATEWAY_ENROLL_TOKEN` | Shared bootstrap token for gateway self-enrollment (spec 31). A gateway presents it to `GatewayAuthService.EnrollGateway` and receives a per-gateway mTLS certificate whose CN is a fresh ULID `gateway_id`. Generate with `openssl rand -base64 32`. Empty **disables** enrollment (every attempt is rejected). Rotate + restart to stop *future* enrollments with a leaked token — an already-enrolled gateway's certificate must be revoked separately via `RevokeGatewayCertificate` (token rotation alone does not cut off a gateway that already holds a valid cert). |
 
 ## Setup
 

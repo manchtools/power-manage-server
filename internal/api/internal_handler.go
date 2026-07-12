@@ -16,6 +16,7 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
@@ -70,6 +71,12 @@ type InternalHandler struct {
 	// key (agents then refuse to rotate — fail closed on both ends).
 	lpsPrivateKey *ecdh.PrivateKey
 	lpsPublicKey  *pm.LpsPublicKey
+
+	// gatewayCA re-signs gateway certs on RenewGatewayCertificate; gatewayCRL
+	// revokes the superseded fingerprint. Both wired via SetGatewayRenewal in
+	// main.go (spec 31); nil until then, in which case renewal fails closed.
+	gatewayCA  *ca.CA
+	gatewayCRL *crl.Store
 }
 
 // SetLpsKeypair wires the control server's LPS sealing keypair: the private

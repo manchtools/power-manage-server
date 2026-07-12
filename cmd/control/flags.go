@@ -87,6 +87,7 @@ func applyEnvOverrides(cfg *Config) {
 	config.EnvString(&cfg.InternalListenAddr, "CONTROL_INTERNAL_LISTEN_ADDR")
 	config.EnvString(&cfg.InternalTLSCert, "CONTROL_INTERNAL_TLS_CERT")
 	config.EnvString(&cfg.InternalTLSKey, "CONTROL_INTERNAL_TLS_KEY")
+	config.EnvString(&cfg.GatewayEnrollToken, "CONTROL_GATEWAY_ENROLL_TOKEN")
 	config.EnvString(&cfg.AdminEmail, "CONTROL_ADMIN_EMAIL")
 	config.EnvString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
 	config.EnvString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
