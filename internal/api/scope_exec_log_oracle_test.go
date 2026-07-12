@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 
@@ -79,8 +80,17 @@ func TestExecLogHandlers_ScopeExistenceOracleClosed(t *testing.T) {
 	})
 
 	t.Run("GetDeviceLogResult", func(t *testing.T) {
-		// Seeding a real log-query result is heavy; the unknown-id case is the
-		// one that carries the oracle, so it is sufficient here.
+		// An existing result on the out-of-scope device must also be
+		// PermissionDenied — this confirms EnforceDeviceScopeOnBaseTier actually
+		// fires for this handler and agrees with the miss path (without it, the
+		// unknown-id assertion alone would still pass even if the scope check were
+		// removed).
+		logQueryID := testutil.NewID()
+		require.NoError(t, st.Repos().Logs.CreateQueryResult(context.Background(), logQueryID, devOut))
+		_, outErr := lh.GetDeviceLogResult(scoped, connect.NewRequest(&pm.GetDeviceLogResultRequest{QueryId: logQueryID}))
+		require.Error(t, outErr)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(outErr), "out-of-scope existing result")
+
 		_, missErr := lh.GetDeviceLogResult(scoped, connect.NewRequest(&pm.GetDeviceLogResultRequest{QueryId: nonexistent}))
 		require.Error(t, missErr)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(missErr),

@@ -371,6 +371,17 @@ func DeviceScopeListFilter(ctx context.Context, permission string) (groupIDs []s
 	return scopeListFilter(ctx, permission, DeviceScopeFilterFor)
 }
 
+// IsDeviceScopeRestricted reports whether the caller is confined to specific
+// device groups for permission — i.e. the `restricted` half of the scope
+// decision, without the list framing. Single-object access paths (spec 29 S10
+// existence-oracle handling) use it to decide whether a "not visible" object
+// should read as PermissionDenied (restricted caller) or NotFound (global
+// caller), independent of any row-filtering concern.
+func IsDeviceScopeRestricted(ctx context.Context, permission string) bool {
+	_, restricted := scopeListFilter(ctx, permission, DeviceScopeFilterFor)
+	return restricted
+}
+
 // UserScopeListFilter is the user-group symmetric of DeviceScopeListFilter.
 func UserScopeListFilter(ctx context.Context, permission string) (groupIDs []string, restricted bool) {
 	return scopeListFilter(ctx, permission, UserScopeFilterFor)

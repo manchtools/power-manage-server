@@ -53,7 +53,7 @@ func handleGetError(ctx context.Context, err error, notFoundCode, notFoundMsg st
 // (or is confined by an owner filter elsewhere) — gets the honest NotFound, since
 // for them absence carries no scope signal.
 func deviceScopeMissError(ctx context.Context, permission, notFoundCode, notFoundMsg string) error {
-	if _, restricted := auth.DeviceScopeListFilter(ctx, permission); restricted {
+	if auth.IsDeviceScopeRestricted(ctx, permission) {
 		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
 	}
 	return apiErrorCtx(ctx, notFoundCode, connect.CodeNotFound, notFoundMsg)
