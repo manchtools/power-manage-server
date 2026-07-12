@@ -71,6 +71,16 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 		return nil, err
 	}
 
+	// Attribute the fleet-wide toggle to the acting admin (spec 29 S12): this is a
+	// powerful setting change (ssh_access_for_all / user_provisioning_enabled), so
+	// its audit record must be non-repudiable. The downstream system-action
+	// cascade in runSettingsPropagation stays "system"-actored (those grants are
+	// server-owned), but the top-level ServerSettingUpdated names who flipped it.
+	userCtx, err := requireAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := h.store.AppendEvent(ctx, store.Event{
 		StreamType: "server_settings",
 		StreamID:   "global",
@@ -79,8 +89,8 @@ func (h *SettingsHandler) UpdateServerSettings(ctx context.Context, req *connect
 			UserProvisioningEnabled: &req.Msg.UserProvisioningEnabled,
 			SshAccessForAll:         &req.Msg.SshAccessForAll,
 		},
-		ActorType: "system",
-		ActorID:   "system",
+		ActorType: "user",
+		ActorID:   userCtx.ID,
 	}); err != nil {
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to update server settings")
 	}

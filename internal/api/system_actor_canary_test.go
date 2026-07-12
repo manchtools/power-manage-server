@@ -54,9 +54,10 @@ var knownSystemActorSites = map[string]string{
 	"lps_keypair.go:EnsureLpsKeypair":         "server generates the singleton LPS sealing keypair at boot; no user actor",
 	"lps_keypair.go:backfillLpsKeypairStream": "server backfills the LpsKeypairGenerated event for pre-#495 deployments; no user actor",
 
-	// Settings changes that cascade into server-owned system actions at boot or
-	// on a bulk toggle — no per-user actor.
-	"settings_handler.go:UpdateServerSettings":          "settings change cascades server-owned system actions",
+	// Settings cascades into server-owned system actions on a bulk toggle — no
+	// per-user actor. (The top-level ServerSettingUpdated event is now attributed
+	// to the acting admin — spec 29 S12 — so UpdateServerSettings is no longer a
+	// system-actor site.)
 	"settings_handler.go:enableSshAccessForAllUsers":    "bulk SSH-access enablement creates server-owned actions",
 	"settings_handler.go:enableProvisioningForAllUsers": "bulk provisioning enablement creates server-owned actions",
 }

@@ -132,7 +132,7 @@ var eventRedactionSchemas = map[string]map[string]redactionSchema{
 	},
 	"lps_keypair": {
 		// #495: the singleton LpsKeypairGenerated event carries the
-		// enc:v2-encrypted control private key at top-level
+		// enc:v1-encrypted control private key at top-level
 		// "private_key_enc". Even the ciphertext must not surface through
 		// ListAuditEvents — same posture as the LPS/LUKS/TOTP secrets above.
 		string(eventtypes.LpsKeypairGenerated): {paths: []string{"private_key_enc"}},

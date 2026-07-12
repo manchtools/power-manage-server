@@ -11,7 +11,7 @@ import (
 // so an event-store replay reproduces the row 1:1 (the pre-#495 design wrote
 // the row directly and broke the replay guarantee).
 //
-// PrivateKeyEnc is enc:v2 AES-GCM ciphertext (AAD-bound via
+// PrivateKeyEnc is enc:v1 AES-GCM ciphertext (AAD-bound via
 // crypto.SecretAAD("global","lps-keypair","lps-keypair-priv")) — the emitter
 // never puts plaintext key material in the event, consistent with the at-rest
 // model for LPS rotations, TOTP secrets, and IdP client secrets. LogValue
@@ -23,7 +23,7 @@ import (
 // clock.
 type LpsKeypairGenerated struct {
 	PublicKey     []byte     `json:"public_key"`           // raw 32-byte X25519 public key
-	PrivateKeyEnc string     `json:"private_key_enc"`      // enc:v2 ciphertext, never plaintext
+	PrivateKeyEnc string     `json:"private_key_enc"`      // enc:v1 ciphertext, never plaintext
 	CreatedAt     *time.Time `json:"created_at,omitempty"` // backfill only; nil ⇒ projector uses occurred_at
 }
 
