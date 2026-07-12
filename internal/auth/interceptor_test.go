@@ -803,11 +803,43 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			want:       "198.51.100.5",
 		},
 		{
-			name:       "trusted /8 peer + XFF returns the first XFF hop",
+			// Right-to-left walk: the trailing trusted-proxy hop (10.9.9.9) is
+			// skipped and the first untrusted address (the spoofed left entry) is
+			// returned — here there is only one untrusted candidate.
+			name:       "trusted /8 peer + XFF: trailing trusted hop skipped, untrusted returned",
 			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.1.2.3:1234",
 			xff:        spoofed + ", 10.9.9.9",
 			want:       spoofed,
+		},
+		{
+			// The distinguishing right-to-left case (AC6): attacker prepends a
+			// spoofed left entry, then the real client, then a trusted proxy hop.
+			// Leftmost-selection would return the spoof; right-to-left skips the
+			// trusted tail hop and returns the real client.
+			name:       "trusted peer + [spoof, client, trusted-proxy]: returns the client, not the spoof",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", 198.51.100.20, 10.9.9.9",
+			want:       "198.51.100.20",
+		},
+		{
+			// Multiple trusted proxies at the tail are all skipped.
+			name:       "trusted peer + [client, proxy, proxy]: skips both trusted tail hops",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "198.51.100.20, 10.9.9.9, 10.8.8.8",
+			want:       "198.51.100.20",
+		},
+		{
+			// Every XFF hop is a trusted proxy: the real client is farther
+			// upstream than any recorded address, so fall back to the direct peer
+			// rather than invent one.
+			name:       "trusted peer + all-trusted XFF chain falls back to the peer",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        "10.9.9.9, 10.8.8.8",
+			want:       "10.1.2.3",
 		},
 		{
 			name:       "trusted peer + X-Real-IP (no XFF) returns X-Real-IP",
@@ -817,12 +849,27 @@ func TestClientIPFromHTTP_TrustAttribution(t *testing.T) {
 			want:       "192.0.2.7",
 		},
 		{
-			name:       "trusted peer + malformed XFF falls through to X-Real-IP",
+			// XFF is present but malformed: X-Real-IP is consulted ONLY when XFF is
+			// absent, and a malformed hop stops the right-to-left walk — so this
+			// falls back to the direct peer, never to X-Real-IP or a farther-left
+			// (attacker-controllable) value.
+			name:       "trusted peer + malformed XFF falls back to the peer, not X-Real-IP",
 			trusted:    []string{"10.0.0.0/8"},
 			remoteAddr: "10.1.2.3:1234",
 			xff:        "not-an-ip",
 			xri:        "192.0.2.7",
-			want:       "192.0.2.7",
+			want:       "10.1.2.3",
+		},
+		{
+			// A malformed hop encountered before a trustworthy client is
+			// established (AC7): the trailing trusted hop is skipped, then the
+			// malformed middle hop aborts the walk to the direct peer instead of
+			// trusting the farther-left spoof.
+			name:       "trusted peer + malformed middle hop aborts to the peer (AC7)",
+			trusted:    []string{"10.0.0.0/8"},
+			remoteAddr: "10.1.2.3:1234",
+			xff:        spoofed + ", garbage, 10.9.9.9",
+			want:       "10.1.2.3",
 		},
 		{
 			name:       "trusted peer + malformed XFF + no X-Real-IP falls through to the peer",

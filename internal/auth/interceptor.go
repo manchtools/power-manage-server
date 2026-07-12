@@ -177,6 +177,50 @@ func isTrustedProxy(addr string) bool {
 	return false
 }
 
+// resolveClientIP applies trusted-proxy semantics to a direct peer address and
+// its forwarded headers, returning the attributable client IP. It is the single
+// resolver shared by clientIP (Connect interceptor) and ClientIPFromHTTP, so the
+// two paths cannot drift.
+//
+// Proxy headers are honoured only when peerIP is itself a trusted proxy —
+// an untrusted direct peer's headers are ignored entirely. X-Forwarded-For is
+// walked RIGHT TO LEFT (spec 29): trusted-proxy hops are skipped and the first
+// untrusted address is the client. This defeats a spoofed leftmost entry, which
+// the previous first-hop selection trusted. A malformed hop encountered before a
+// trustworthy client is established, or an all-trusted chain, falls back to the
+// direct peer rather than to a farther-left, attacker-controllable value.
+// X-Real-IP is consulted only when X-Forwarded-For is absent. Returns peerIP
+// (unvalidated) when no forwarded value applies; callers decide how to treat an
+// unparsable peer.
+func resolveClientIP(peerIP, xff, xri string) string {
+	if !isTrustedProxy(peerIP) {
+		return peerIP
+	}
+	if xff != "" {
+		hops := strings.Split(xff, ",")
+		for i := len(hops) - 1; i >= 0; i-- {
+			hop := strings.TrimSpace(hops[i])
+			if net.ParseIP(hop) == nil {
+				// Malformed hop: the chain is untrustworthy from here leftward.
+				return peerIP
+			}
+			if isTrustedProxy(hop) {
+				continue // a proxy we placed, not the client
+			}
+			return hop // first untrusted address, walking right to left
+		}
+		// Every hop was a trusted proxy — the real client is farther upstream
+		// than any recorded address; fall back to the direct peer.
+		return peerIP
+	}
+	if xri != "" {
+		if ip := strings.TrimSpace(xri); net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
+	return peerIP
+}
+
 // ClientIPFromHTTP is the http.Request analogue of clientIP — used by
 // non-Connect handlers (SCIM, /health, OIDC callback) that need the
 // same trusted-proxy semantics. Falls back to RemoteAddr when proxy
@@ -187,27 +231,13 @@ func isTrustedProxy(addr string) bool {
 // identify" and skip per-IP rate-limit bookkeeping rather than coalesce
 // every anonymous request onto a single bucket.
 func ClientIPFromHTTP(r *http.Request) string {
-	peerAddr := r.RemoteAddr
-	peerIP := peerAddr
-	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
+	peerIP := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		peerIP = host
 	}
-	if isTrustedProxy(peerIP) {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-			if parsed := net.ParseIP(ip); parsed != nil {
-				return ip
-			}
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			ip := strings.TrimSpace(xri)
-			if parsed := net.ParseIP(ip); parsed != nil {
-				return ip
-			}
-		}
-	}
-	if parsed := net.ParseIP(peerIP); parsed != nil {
-		return peerIP
+	resolved := resolveClientIP(peerIP, r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Real-IP"))
+	if net.ParseIP(resolved) != nil {
+		return resolved
 	}
 	return ""
 }
@@ -216,30 +246,12 @@ func ClientIPFromHTTP(r *http.Request) string {
 // X-Real-IP) are only trusted when the direct peer is in TrustedProxies.
 // Falls back to the direct peer address.
 func clientIP(req connect.AnyRequest) string {
-	// Get the direct peer address first
 	peerAddr := req.Peer().Addr
 	peerIP := peerAddr
 	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
 		peerIP = host
 	}
-
-	// Only trust proxy headers if the direct peer is a trusted proxy
-	if isTrustedProxy(peerIP) {
-		if xff := req.Header().Get("X-Forwarded-For"); xff != "" {
-			ip := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-			if parsed := net.ParseIP(ip); parsed != nil {
-				return ip
-			}
-		}
-		if xri := req.Header().Get("X-Real-IP"); xri != "" {
-			ip := strings.TrimSpace(xri)
-			if parsed := net.ParseIP(ip); parsed != nil {
-				return ip
-			}
-		}
-	}
-
-	return peerIP
+	return resolveClientIP(peerIP, req.Header().Get("X-Forwarded-For"), req.Header().Get("X-Real-IP"))
 }
 
 // RateLimiters bundles the per-procedure-family rate limiters the
