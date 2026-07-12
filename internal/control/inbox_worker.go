@@ -23,6 +23,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
+	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -267,6 +268,36 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 		// retries of the same result don't create duplicates, but separate
 		// scheduled runs of the same action get unique IDs.
 		actionID = resultID
+
+		// spec 29 S5: an agent-scheduled result names its own action_id. Before
+		// minting an ExecutionCreated / compliance event from it, verify the
+		// action currently resolves (is assigned) to the reporting device —
+		// otherwise a compromised agent could forge execution and compliance
+		// records (including self-reported `compliant`) for actions it was never
+		// assigned. Device-origin binding already confines writes to this device's
+		// own streams; this closes the remaining gap (the action lookup below is
+		// existence-only). A since-unassigned action is safe to drop: unassignment
+		// drives the action to ABSENT and the agent rolls it back.
+		//
+		// The immediate (no grace/retry) drop is race-safe: projections are
+		// synchronous post-commit (store.RegisterEventListener fires before
+		// AppendEvent returns), so this read is read-your-writes consistent, and
+		// the agent only ever runs actions it was synced via the SAME resolution
+		// (ProxySyncActions → ResolveActionsForDevice). A legitimately-run action
+		// therefore always resolves here; the only thing that removes it is an
+		// explicit unassignment — exactly the case we mean to drop.
+		resolves, resErr := w.actionResolvesToDevice(ctx, actionID, deviceID)
+		if resErr != nil {
+			// Transient DB/resolution error — let Asynq retry rather than drop a
+			// possibly-legitimate result.
+			return fmt.Errorf("resolve action %s for device %s: %w", actionID, deviceID, resErr)
+		}
+		if !resolves {
+			logger.Warn("dropping agent-scheduled result: action does not resolve to the reporting device",
+				"action_id", actionID, "device_id", deviceID)
+			return nil
+		}
+
 		// Use CompletedAt (seconds+nanos) for per-run uniqueness; fall back to
 		// DurationMs+Status — stable across retries of the same result — when
 		// CompletedAt is absent. stableExecutionID frames + domain-separates the
@@ -466,6 +497,24 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 
 	logger.Info("execution result recorded", "event_type", eventType)
 	return nil
+}
+
+// actionResolvesToDevice reports whether actionID is currently assigned
+// (resolves) to deviceID, via the same resolution engine the sync path uses
+// (resolution.ResolveActionsForDevice) — so "assigned" here means exactly what
+// the agent is legitimately told to run. Used to gate agent-scheduled result
+// ingestion (spec 29 S5).
+func (w *InboxWorker) actionResolvesToDevice(ctx context.Context, actionID, deviceID string) (bool, error) {
+	resolved, err := resolution.ResolveActionsForDevice(ctx, w.store.Queries(), deviceID)
+	if err != nil {
+		return false, err
+	}
+	for _, a := range resolved {
+		if a.ID == actionID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.Task) error {

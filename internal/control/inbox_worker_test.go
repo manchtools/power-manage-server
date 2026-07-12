@@ -1148,3 +1148,68 @@ func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 	assert.Equal(t, []byte("ls -la\n"), row.Input, "the owning user's chunk must be appended")
 	assert.Equal(t, int32(1), row.ChunkCount)
 }
+
+// TestHandleExecutionResult_AgentScheduled_RequiresAssignment pins spec 29 S5.
+// An agent-scheduled result names its OWN action_id (not a server-dispatched
+// execution id), so the inbox worker must verify the action currently resolves
+// (is assigned) to the reporting device before minting an ExecutionCreated /
+// compliance event — otherwise a compromised agent could forge execution and
+// compliance records for actions it was never assigned. A since-unassigned
+// action is safe to drop: unassignment drives the action to ABSENT and the
+// agent rolls it back.
+func TestHandleExecutionResult_AgentScheduled_RequiresAssignment(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+
+	device := testutil.CreateTestDevice(t, st, "agent-sched-host")
+	assignedAction := testutil.CreateTestAction(t, st, adminID, "Assigned", int(pm.ActionType_ACTION_TYPE_SHELL))
+	unassignedAction := testutil.CreateTestAction(t, st, adminID, "Unassigned", int(pm.ActionType_ACTION_TYPE_SHELL))
+	// Only the assigned action resolves to the device. REQUIRED is the mode the
+	// offline scheduler acts on — the realistic agent-scheduled case.
+	testutil.CreateTestAssignment(t, st, adminID, "action", assignedAction, "device", device, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
+
+	feed := func(actionID string) error {
+		// ActionId carries an ACTION id (not an execution id) → agent-scheduled path.
+		result := &pm.ActionResult{
+			ActionId:    &pm.ActionId{Value: actionID},
+			Status:      pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
+			DurationMs:  100,
+			CompletedAt: timestamppb.Now(),
+			Output:      &pm.CommandOutput{Stdout: "ran", ExitCode: 0},
+		}
+		resultProto, err := proto.Marshal(result)
+		require.NoError(t, err)
+		task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+			DeviceID:          device,
+			ActionResultProto: resultProto,
+		})
+		return mux.ProcessTask(context.Background(), task)
+	}
+
+	execActionIDs := func() []string {
+		rows, err := st.Queries().ListRecentExecutionsForDevice(context.Background(),
+			db.ListRecentExecutionsForDeviceParams{DeviceID: device, Limit: 100})
+		require.NoError(t, err)
+		var out []string
+		for _, r := range rows {
+			if r.ActionID != nil {
+				out = append(out, *r.ActionID)
+			}
+		}
+		return out
+	}
+
+	t.Run("unassigned action is dropped with no execution created", func(t *testing.T) {
+		require.NoError(t, feed(unassignedAction), "a dropped forgery is a benign no-op, not a retryable error")
+		assert.NotContains(t, execActionIDs(), unassignedAction,
+			"an unassigned agent-scheduled action must not mint an execution")
+	})
+
+	t.Run("assigned action still records its execution", func(t *testing.T) {
+		require.NoError(t, feed(assignedAction))
+		assert.Contains(t, execActionIDs(), assignedAction,
+			"a legitimately assigned action's result must still be recorded")
+	})
+}
