@@ -86,9 +86,14 @@ const (
 // SearchQueue is the Asynq queue name for search index update tasks.
 const SearchQueue = "search"
 
+// deviceQueuePrefix prefixes every per-device queue name. Single source shared
+// by DeviceQueue (producer) and the signer's directionForQueue (queue-class
+// direction binding).
+const deviceQueuePrefix = "device:"
+
 // DeviceQueue returns the Asynq queue name for a specific device.
 // Tasks enqueued to this queue are processed by the per-device Asynq server
 // running on the gateway that has the agent connected.
 func DeviceQueue(deviceID string) string {
-	return "device:" + deviceID
+	return deviceQueuePrefix + deviceID
 }

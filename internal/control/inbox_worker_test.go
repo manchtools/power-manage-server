@@ -847,10 +847,17 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 			GatewayID:         claimedGateway,
 		})
 		require.NoError(t, err)
-		// Wrap exactly as the producer does so the mux's VerifyMiddleware
-		// admits the payload — the binding is the ONLY thing under test.
-		return asynq.NewTask(taskqueue.TypeExecutionResult, signer.Wrap(raw))
+		// Wrap exactly as the producer does (control:inbox queue, ExecutionResult
+		// type) so the mux's VerifyMiddleware admits the payload — the device→
+		// gateway binding is the ONLY thing under test here.
+		wrapped, err := signer.Wrap(taskqueue.ControlInboxQueue, taskqueue.TypeExecutionResult, raw)
+		require.NoError(t, err)
+		return asynq.NewTask(taskqueue.TypeExecutionResult, wrapped)
 	}
+
+	// inboxCtx carries the queue the VerifyMiddleware binds against (the real
+	// Asynq server would supply it).
+	inboxCtx := taskqueue.WithQueue(context.Background(), taskqueue.ControlInboxQueue)
 
 	seedVictimExecution := func(t *testing.T, st *store.Store, deviceID string) string {
 		t.Helper()
@@ -883,7 +890,7 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 		worker := control.NewInboxWorker(st, nil, nil, signer, slog.Default(), bindingRegistry(t, victim, liveGateway))
 		mux := worker.NewMux()
 
-		require.NoError(t, mux.ProcessTask(context.Background(),
+		require.NoError(t, mux.ProcessTask(inboxCtx,
 			signedExecResultTask(t, victim, execID, liveGateway)))
 
 		exec, err := st.Queries().GetExecutionByID(context.Background(), execID)
@@ -898,7 +905,7 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 		worker := control.NewInboxWorker(st, nil, nil, signer, slog.Default(), bindingRegistry(t, victim, liveGateway))
 		mux := worker.NewMux()
 
-		require.Error(t, mux.ProcessTask(context.Background(),
+		require.Error(t, mux.ProcessTask(inboxCtx,
 			signedExecResultTask(t, victim, execID, "")),
 			"an empty gateway_id must be rejected while the registry is enabled")
 
@@ -916,7 +923,7 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 		worker := control.NewInboxWorker(st, nil, nil, signer, slog.Default(), bindingRegistry(t, victim, liveGateway))
 		mux := worker.NewMux()
 
-		require.Error(t, mux.ProcessTask(context.Background(),
+		require.Error(t, mux.ProcessTask(inboxCtx,
 			signedExecResultTask(t, victim, execID, wrongGateway)),
 			"a gateway the device is not live on must not complete its execution")
 

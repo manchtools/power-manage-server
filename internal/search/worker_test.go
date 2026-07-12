@@ -38,14 +38,19 @@ func newWorkerFixture(t *testing.T) *workerFixture {
 	mux := asynq.NewServeMux()
 	worker.RegisterHandlers(mux)
 
-	return &workerFixture{ctx: context.Background(), rdb: rdb, signer: signer, mux: mux}
+	// The queue seam supplies the queue name the mux's VerifyMiddleware binds
+	// against, which the real Asynq server would otherwise provide.
+	ctx := taskqueue.WithQueue(context.Background(), taskqueue.SearchQueue)
+	return &workerFixture{ctx: ctx, rdb: rdb, signer: signer, mux: mux}
 }
 
 func (f *workerFixture) signedTask(t *testing.T, taskType string, payload any) *asynq.Task {
 	t.Helper()
 	data, err := json.Marshal(payload)
 	require.NoError(t, err)
-	return asynq.NewTask(taskType, f.signer.Wrap(data), asynq.Queue(taskqueue.SearchQueue))
+	wrapped, err := f.signer.Wrap(taskqueue.SearchQueue, taskType, data)
+	require.NoError(t, err)
+	return asynq.NewTask(taskType, wrapped, asynq.Queue(taskqueue.SearchQueue))
 }
 
 func TestWorker_ReindexRequiresSignedTaskAndWritesHash(t *testing.T) {
@@ -113,9 +118,12 @@ func TestWorker_UnsignedTaskIsRejected(t *testing.T) {
 	data, err := json.Marshal(payload)
 	require.NoError(t, err)
 
+	// A raw (unsigned) payload has no version+HMAC prefix, so it is rejected —
+	// its leading byte is not the envelope version — and dead-lettered.
 	err = f.mux.ProcessTask(f.ctx, asynq.NewTask(taskqueue.TypeSearchReindex, data))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "task signature")
+	assert.True(t, errors.Is(err, asynq.SkipRetry),
+		"an unsigned/raw task must be rejected and dead-lettered, not retry-loop; got %v", err)
 }
 
 // A task signed with a DIFFERENT key (forged, not merely absent) must be
@@ -149,8 +157,11 @@ func TestWorker_ForgedKeyTaskRejectedAndNoHSET(t *testing.T) {
 			f := newWorkerFixture(t)
 			data, err := json.Marshal(tc.payload)
 			require.NoError(t, err)
-			// Signed with the WRONG key.
-			task := asynq.NewTask(tc.taskType, forged.Wrap(data), asynq.Queue(taskqueue.SearchQueue))
+			// Signed with the WRONG key (correct queue/type, so it reaches
+			// verification and fails on the signature).
+			wrapped, err := forged.Wrap(taskqueue.SearchQueue, tc.taskType, data)
+			require.NoError(t, err)
+			task := asynq.NewTask(tc.taskType, wrapped, asynq.Queue(taskqueue.SearchQueue))
 
 			err = f.mux.ProcessTask(f.ctx, task)
 			require.Error(t, err)
