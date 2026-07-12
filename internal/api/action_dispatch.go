@@ -691,6 +691,12 @@ func (h *ActionHandler) GetExecution(ctx context.Context, req *connect.Request[p
 
 	exec, err := h.store.Repos().Execution.Get(ctx, req.Msg.Id)
 	if err != nil {
+		if store.IsNotFound(err) {
+			// Uniform with the out-of-scope path below (spec 29 S10): a
+			// scope-restricted caller must not tell a missing execution apart from
+			// one on a device outside their scope.
+			return nil, deviceScopeMissError(ctx, "GetExecution", ErrExecutionNotFound, "execution not found")
+		}
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
 
@@ -999,6 +1005,10 @@ func (h *ActionHandler) CancelExecution(ctx context.Context, req *connect.Reques
 
 	exec, err := h.store.Repos().Execution.Get(ctx, req.Msg.ExecutionId)
 	if err != nil {
+		if store.IsNotFound(err) {
+			// Uniform with the out-of-scope path below (spec 29 S10).
+			return nil, deviceScopeMissError(ctx, "CancelExecution", ErrExecutionNotFound, "execution not found")
+		}
 		return nil, handleGetError(ctx, err, ErrExecutionNotFound, "execution not found")
 	}
 
