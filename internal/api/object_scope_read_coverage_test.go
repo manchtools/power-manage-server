@@ -61,6 +61,12 @@ func TestObjectGetHandlers_AllReadScopeEnforced(t *testing.T) {
 			}
 			enforced := false
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				// Do not descend into nested function literals: a dead/uninvoked
+				// closure containing enforceObjectReadScope must not satisfy the check
+				// for a handler whose direct body never gates the request.
+				if _, ok := n.(*ast.FuncLit); ok {
+					return false
+				}
 				c, ok := n.(*ast.CallExpr)
 				if !ok || calleeName(c.Fun) != "enforceObjectReadScope" {
 					return true

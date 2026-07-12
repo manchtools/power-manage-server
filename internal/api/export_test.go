@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
@@ -55,5 +56,6 @@ func ScopableObjectTypes() []string {
 	for k := range objectTypeToIndexScope {
 		out = append(out, k)
 	}
+	sort.Strings(out) // stable order for deterministic callers
 	return out
 }

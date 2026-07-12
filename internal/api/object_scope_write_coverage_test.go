@@ -62,21 +62,30 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	require.NoError(t, err)
 
-	type miss struct{ fn, objType, event, pos string }
-	var misses []miss
-	mutationsSeen := 0
-	seenExempt := map[string]bool{}
-
-	sawFile := false
+	// Parse every non-test file once, and collect package-level string consts so a
+	// StreamType given as a named const (e.g. lpsKeypairStreamType = "lps_keypair")
+	// resolves to its literal value rather than being dismissed as unclassifiable.
+	var files []*ast.File
+	constStrings := map[string]string{}
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		sawFile = true
 		f, perr := parser.ParseFile(fset, name, nil, 0)
 		require.NoErrorf(t, perr, "parse %s", name)
+		files = append(files, f)
+		collectStringConsts(f, constStrings)
+	}
+	require.NotEmpty(t, files, "scanned zero source files — discovery is broken")
 
+	type miss struct{ fn, objType, event, pos string }
+	var misses []miss
+	mutationsSeen := 0
+	seenExempt := map[string]bool{}
+	var unclassifiable []string // store.Event with an unresolvable non-literal StreamType
+
+	for _, f := range files {
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -89,8 +98,17 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 			mutated := map[string]string{} // objType -> first mutation verb (for the message)
 			writeScoped := map[string]bool{}
 			recordEvent := func(lit *ast.CompositeLit) {
-				streamType, verb, okS := eventStreamAndVerb(lit)
-				if !okS || !objectStreamTypes[streamType] {
+				streamType, verb, failClosed := eventStreamAndVerb(lit, constStrings)
+				if failClosed {
+					// A StreamType given as a bare identifier that is not a resolvable
+					// string const (a variable or parameter) cannot be classified, and
+					// could carry an object stream type. Fail closed; reported below.
+					// (A computed field access such as event.StreamType, used only by
+					// generic event forwarders, is ignored, not failed.)
+					unclassifiable = append(unclassifiable, fset.Position(lit.Pos()).String())
+					return
+				}
+				if streamType == "" || !objectStreamTypes[streamType] {
 					return
 				}
 				if strings.HasSuffix(verb, "Created") {
@@ -101,34 +119,45 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 					mutated[streamType] = verb
 				}
 			}
+			// Pass 1 — appends: descend everywhere (including invoked closures), so a
+			// mutation anywhere in the function is detected (fail closed).
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				switch node := n.(type) {
-				case *ast.CompositeLit:
-					switch {
-					case isStoreEventLit(node):
-						recordEvent(node)
-					case isStoreEventSliceLit(node):
-						// []store.Event{{...}, {...}} — Go elides the element type on
-						// inner literals, so those inner CompositeLits have Type==nil
-						// and are NOT matched as store.Event on their own. Record the
-						// elided ones here; explicitly-typed inner literals are matched
-						// when ast.Inspect visits them, so skip those to avoid
-						// double-processing.
-						for _, elt := range node.Elts {
-							if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
-								recordEvent(inner)
-							}
+				cl, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				switch {
+				case isStoreEventLit(cl):
+					recordEvent(cl)
+				case isStoreEventSliceLit(cl):
+					// []store.Event{{...}, {...}} — Go elides the element type on inner
+					// literals, so those inner CompositeLits have Type==nil and are NOT
+					// matched as store.Event on their own. Record the elided ones here;
+					// explicitly-typed inner literals are matched when ast.Inspect visits
+					// them, so skip those to avoid double-processing.
+					for _, elt := range cl.Elts {
+						if inner, ok := elt.(*ast.CompositeLit); ok && inner.Type == nil {
+							recordEvent(inner)
 						}
 					}
-				case *ast.CallExpr:
-					if calleeName(node.Fun) == "enforceObjectWriteScope" {
-						for _, arg := range node.Args {
-							if s, ok := stringLit(arg); ok {
-								writeScoped[s] = true
-								break
-							}
-						}
-					}
+				}
+				return true
+			})
+			// Pass 2 — enforcement: does NOT descend into function literals, so a
+			// dead/nested closure containing enforceObjectWriteScope cannot satisfy the
+			// check for a mutation the handler's direct body actually leaves unguarded.
+			// The object type is arg index 3 (matched specifically, like the read
+			// guard) so an inline id literal can't be mistaken for the type.
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if _, ok := n.(*ast.FuncLit); ok {
+					return false
+				}
+				call, ok := n.(*ast.CallExpr)
+				if !ok || calleeName(call.Fun) != "enforceObjectWriteScope" || len(call.Args) <= 3 {
+					return true
+				}
+				if s, ok := stringLit(call.Args[3]); ok {
+					writeScoped[s] = true
 				}
 				return true
 			})
@@ -146,9 +175,17 @@ func TestObjectMutationHandlers_AllWriteScopeEnforced(t *testing.T) {
 			}
 		}
 	}
-	require.True(t, sawFile, "scanned zero source files — discovery is broken")
 	require.Positivef(t, mutationsSeen,
 		"no object-mutation appends discovered — the guard would pass vacuously (objectTypeToIndexScope or store.Event AST shape drifted)")
+
+	// Fail closed on any store.Event whose StreamType is not a string literal:
+	// the scanner classifies by that literal, so a const/var StreamType (e.g.
+	// StreamType: actionStream) could hide an object mutation. Keep StreamType a
+	// literal, or extend the guard to resolve the constant.
+	sort.Strings(unclassifiable)
+	require.Emptyf(t, unclassifiable,
+		"store.Event literals with a non-literal StreamType — the write-scope coverage guard cannot classify them (use a string literal, or extend the guard):\n  %s",
+		strings.Join(unclassifiable, "\n  "))
 
 	// No-orphan: every exemption must still name a live function that appends an
 	// object mutation WITHOUT co-located write-scope. A rename, a removal, or a
@@ -204,10 +241,16 @@ func isStoreEventSelector(e ast.Expr) bool {
 	return ok && x.Name == "store" && sel.Sel.Name == "Event"
 }
 
-// eventStreamAndVerb extracts the StreamType string literal and the EventType
-// verb (the eventtypes.<Verb> selector name) from a store.Event composite
-// literal. ok is false when there is no StreamType literal to classify.
-func eventStreamAndVerb(c *ast.CompositeLit) (streamType, verb string, ok bool) {
+// eventStreamAndVerb extracts the StreamType (a string literal or a named string
+// const resolved via constStrings) and the EventType verb (the eventtypes.<Verb>
+// selector name) from a store.Event composite literal. failClosed is true when
+// StreamType is a bare identifier that is NOT a resolvable string const (a
+// variable/parameter that could carry an object stream type): the caller fails
+// closed rather than skipping a possible object mutation. A computed StreamType
+// (e.g. a field access `event.StreamType`, used only by generic event
+// forwarders, never a per-object mutation handler) resolves to neither and is
+// ignored.
+func eventStreamAndVerb(c *ast.CompositeLit, constStrings map[string]string) (streamType, verb string, failClosed bool) {
 	for _, elt := range c.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -219,14 +262,49 @@ func eventStreamAndVerb(c *ast.CompositeLit) (streamType, verb string, ok bool) 
 		}
 		switch key.Name {
 		case "StreamType":
-			if s, isLit := stringLit(kv.Value); isLit {
-				streamType = s
+			switch v := kv.Value.(type) {
+			case *ast.BasicLit:
+				if s, isLit := stringLit(v); isLit {
+					streamType = s
+				}
+			case *ast.Ident:
+				if s, ok := constStrings[v.Name]; ok {
+					streamType = s
+				} else {
+					failClosed = true
+				}
 			}
 		case "EventType":
 			verb = eventTypesSelectorName(kv.Value)
 		}
 	}
-	return streamType, verb, streamType != ""
+	return streamType, verb, failClosed
+}
+
+// collectStringConsts records package-level `const name = "value"` string
+// constants (including those inside grouped const blocks) so a StreamType given
+// by name can be resolved to its literal value.
+func collectStringConsts(f *ast.File, out map[string]string) {
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, nm := range vs.Names {
+				if i >= len(vs.Values) {
+					continue
+				}
+				if s, ok := stringLit(vs.Values[i]); ok {
+					out[nm.Name] = s
+				}
+			}
+		}
+	}
 }
 
 // funcKey identifies a function for exemption keying: "Receiver.Method" for a
