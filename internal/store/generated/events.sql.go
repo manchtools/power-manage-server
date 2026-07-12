@@ -496,11 +496,18 @@ WHERE stream_type = 'execution'
   AND stream_id = $1
   AND event_type = 'OutputChunk'
 ORDER BY stream_version
+LIMIT $2
 `
 
-// Load all output chunks for an execution, ordered by sequence
-func (q *Queries) LoadOutputChunks(ctx context.Context, streamID string) ([]Event, error) {
-	rows, err := q.db.Query(ctx, loadOutputChunks, streamID)
+type LoadOutputChunksParams struct {
+	StreamID string `json:"stream_id"`
+	Limit    int32  `json:"limit"`
+}
+
+// Load output chunks for an execution, ordered by sequence, bounded by $2 rows
+// so a chunk flood can't load an unbounded slice into control memory (spec 29 S6).
+func (q *Queries) LoadOutputChunks(ctx context.Context, arg LoadOutputChunksParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, loadOutputChunks, arg.StreamID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

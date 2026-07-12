@@ -232,13 +232,31 @@ func stringToStatus(s string) pm.ExecutionStatus {
 
 // loadLiveOutput loads streaming output chunks from the event store and
 // aggregates them into a CommandOutput.
+// maxOutputChunkRows bounds how many OutputChunk rows loadLiveOutput fetches for
+// one execution (the SQL LIMIT), so a flood of chunks can't load an unbounded
+// slice into control memory (spec 29 S6). Package var for the test seam.
+var maxOutputChunkRows int32 = 4096
+
+// maxLiveOutputBytes caps the total stdout+stderr bytes loadLiveOutput
+// concatenates. Actions don't produce megabytes of output; past this the stream
+// is truncated with a marker rather than blowing up control memory. Package var
+// for the test seam.
+var maxLiveOutputBytes = 4 << 20 // 4 MiB
+
 func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) *pm.CommandOutput {
-	chunks, err := h.store.Repos().Execution.LoadOutputChunks(ctx, executionID)
-	if err != nil || len(chunks) == 0 {
+	chunks, err := h.store.Repos().Execution.LoadOutputChunks(ctx, executionID, maxOutputChunkRows)
+	if err != nil {
+		// A real DB failure must not look like "no output yet" — surface it.
+		h.logger.ErrorContext(ctx, "failed to load execution output chunks", "execution_id", executionID, "error", err)
+		return nil
+	}
+	if len(chunks) == 0 {
 		return nil
 	}
 
 	var stdout, stderr strings.Builder
+	total := 0
+	truncated := false
 	for _, chunk := range chunks {
 		// Parse the chunk data
 		var data struct {
@@ -249,6 +267,15 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 			continue
 		}
 
+		// Stop concatenating once the cumulative output would exceed the budget,
+		// so a chunk flood can't grow the response without bound even within the
+		// row limit.
+		if total+len(data.Data) > maxLiveOutputBytes {
+			truncated = true
+			break
+		}
+		total += len(data.Data)
+
 		if data.Stream == "stdout" {
 			stdout.WriteString(data.Data)
 		} else if data.Stream == "stderr" {
@@ -256,9 +283,19 @@ func (h *ActionHandler) loadLiveOutput(ctx context.Context, executionID string) 
 		}
 	}
 
+	// The SQL LIMIT is a hard row bound; hitting it also means output beyond it
+	// was dropped.
+	if int32(len(chunks)) >= maxOutputChunkRows {
+		truncated = true
+	}
+
 	// Only return if we have some output
 	if stdout.Len() == 0 && stderr.Len() == 0 {
 		return nil
+	}
+
+	if truncated {
+		stderr.WriteString("\n[pm: output truncated — exceeded the per-execution display limit]")
 	}
 
 	return &pm.CommandOutput{
