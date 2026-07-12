@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"connectrpc.com/connect"
@@ -36,6 +37,26 @@ func handleGetError(ctx context.Context, err error, notFoundCode, notFoundMsg st
 		return apiErrorCtx(ctx, notFoundCode, connect.CodeNotFound, notFoundMsg)
 	}
 	return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get resource")
+}
+
+// deviceScopeMissError returns the error a caller should see when a device-scoped
+// object (an execution, a log-query result) is NOT visible to them — covering
+// BOTH "genuinely absent" and "exists on a device outside their scope" with the
+// SAME code, so existence does not leak (spec 29 S10). These handlers must load
+// the row to learn its device before they can scope-check, so the check cannot
+// run first (unlike the user-group handlers); instead the miss is resolved to
+// match the out-of-scope path.
+//
+// A device_group-scoped (restricted) caller gets a PermissionDenied byte-identical
+// to the one auth.EnforceDeviceScope returns for the out-of-scope path, so the two
+// are indistinguishable. A global/unrestricted caller — who can see every device
+// (or is confined by an owner filter elsewhere) — gets the honest NotFound, since
+// for them absence carries no scope signal.
+func deviceScopeMissError(ctx context.Context, permission, notFoundCode, notFoundMsg string) error {
+	if auth.IsDeviceScopeRestricted(ctx, permission) {
+		return connect.NewError(connect.CodePermissionDenied, errors.New("permission denied"))
+	}
+	return apiErrorCtx(ctx, notFoundCode, connect.CodeNotFound, notFoundMsg)
 }
 
 // appendEvent appends an event and logs it. Returns a Connect error on failure.

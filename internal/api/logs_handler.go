@@ -154,7 +154,16 @@ func (h *LogsHandler) GetDeviceLogResult(ctx context.Context, req *connect.Reque
 
 	result, err := h.store.Repos().Logs.GetQueryResult(ctx, req.Msg.QueryId)
 	if err != nil {
-		return nil, apiErrorCtx(ctx, ErrQueryResultNotFound, connect.CodeNotFound, "log query result not found")
+		if store.IsNotFound(err) {
+			// Uniform with the out-of-scope path below (spec 29 S10): a
+			// scope-restricted caller must not tell a missing result apart from one
+			// on a device outside their scope.
+			return nil, deviceScopeMissError(ctx, "GetDeviceLogResult", ErrQueryResultNotFound, "log query result not found")
+		}
+		// A non-NotFound error is a transient/internal fault — surface it, don't
+		// swallow it behind a NotFound like the prior blanket mapping did.
+		h.logger.Error("failed to fetch log query result", "query_id", req.Msg.QueryId, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to get log query result")
 	}
 
 	if err := auth.EnforceDeviceScopeOnBaseTier(ctx, newScopeResolver(h.store), "GetDeviceLogResult", result.DeviceID); err != nil {
