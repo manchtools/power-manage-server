@@ -121,6 +121,13 @@ check_env() {
         missing=1
     fi
 
+    # spec 31: the shared bootstrap token gateways present to self-enroll. Used
+    # by both control and the gateway; must be a real value.
+    if [[ -z "$GATEWAY_ENROLL_TOKEN" ]] || [[ "$GATEWAY_ENROLL_TOKEN" == CHANGE_ME* ]]; then
+        log_error "GATEWAY_ENROLL_TOKEN must be set in .env (generate with: openssl rand -base64 32)"
+        missing=1
+    fi
+
     if [[ -z "$ACME_EMAIL" ]] || [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
         log_error "ACME_EMAIL must be set to a valid email for Let's Encrypt in .env"
         missing=1
@@ -729,7 +736,8 @@ main() {
 
     check_env
     generate_ca
-    generate_gateway_cert
+    # spec 31: the gateway no longer has a static cert — it self-enrolls on boot
+    # (GATEWAY_ENROLL_TOKEN). generate_gateway_cert is intentionally not called.
     generate_control_cert
     generate_control_public_cert
 

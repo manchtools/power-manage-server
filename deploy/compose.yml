@@ -141,6 +141,9 @@ services:
       - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - CONTROL_GATEWAY_URL=https://${GATEWAY_DOMAIN}
+      # spec 31: shared bootstrap token gateways present to EnrollGateway (must
+      # equal the gateway's GATEWAY_ENROLL_TOKEN).
+      - CONTROL_GATEWAY_ENROLL_TOKEN=${GATEWAY_ENROLL_TOKEN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -219,24 +222,22 @@ services:
         condition: service_healthy
       control:
         condition: service_healthy
-    volumes:
-      # Mount ONLY the files the gateway actually uses (its own mTLS keypair +
-      # the CA cert for verifying peers). The gateway is the public,
-      # agent-facing mTLS endpoint — the most exposed component — and must NOT
-      # have the CA SIGNING key (ca.key) on disk. Mounting the whole ./certs
-      # dir put ca.key in the gateway, so a gateway compromise yielded the CA
-      # private key, which mints arbitrary device certs AND forges action
-      # signatures (the same key signs both). ca.key now lives only in the
-      # control service, which is the CA. (#363)
-      - ./certs/gateway.crt:/certs/gateway.crt:ro,z
-      - ./certs/gateway.key:/certs/gateway.key:ro,z
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
+    # No cert volumes (spec 31): the gateway self-enrolls on boot and holds its
+    # per-gateway cert in memory. It never has a static cert or the CA key on
+    # disk — the enrolled CA arrives over the enrollment response.
     environment:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
       - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       - GATEWAY_CONTROL_URL=https://control:8082
+      # spec 31 self-enrollment: the shared bootstrap token (must equal control's
+      # CONTROL_GATEWAY_ENROLL_TOKEN), control's PUBLIC URL where EnrollGateway is
+      # served, and the gateway's public hostname (agents connect here; stamped as
+      # the cert DNS SAN so agent TLS verification matches).
+      - GATEWAY_ENROLL_TOKEN=${GATEWAY_ENROLL_TOKEN}
+      - GATEWAY_CONTROL_ENROLL_URL=https://${CONTROL_DOMAIN}
+      - GATEWAY_HOSTNAME=${GATEWAY_DOMAIN}
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}
       # rc3: configurable agent heartbeat cadence (Go duration, 5s..5m).
@@ -262,10 +263,8 @@ services:
       # from the reference stack.
       - GATEWAY_DOMAIN=${GATEWAY_DOMAIN}
       - GATEWAY_TTY_DOMAIN=${GATEWAY_TTY_DOMAIN:-}
-    command:
-      - "-tls-cert=/certs/gateway.crt"
-      - "-tls-key=/certs/gateway.key"
-      - "-tls-ca=/certs/ca.crt"
+    # No command flags (spec 31): the static -tls-cert/-tls-key/-tls-ca flags
+    # were removed; the gateway self-enrolls on boot.
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
       interval: 10s

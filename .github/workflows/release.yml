@@ -89,7 +89,10 @@ jobs:
       - name: Detect prerelease
         id: prerelease
         run: |
-          if [[ "$GITHUB_REF_NAME" == *-rc* ]]; then
+          # Any tag with a pre-release suffix (a hyphen after vYYYY.MM[.PP]) is a
+          # prerelease → :latest-rc, never :latest. Covers -rc1, -alpha1, -alpha2,
+          # -beta1, etc. Only a bare vYYYY.MM / vYYYY.MM.PP publishes :latest.
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
