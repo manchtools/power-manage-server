@@ -12,14 +12,23 @@
 --
 -- This forward migration converts every remaining uuid-typed column in the
 -- public schema to text. It is idempotent: on a fresh v2026.08 database the
--- columns are already text, the loop selects nothing, and the FK drop/re-add
--- nets to a no-op.
+-- columns are already text, the loop selects nothing, and the constraint drop
+-- is a no-op.
 --
 -- At v2026.07 the uuid columns were exactly: events.id (PK),
 -- lps_passwords_projection.id, luks_keys_projection.id, luks_tokens.id, and
--- security_alerts_projection.event_id (the sole FK, -> events.id). The block is
--- introspective rather than hardcoded so it also repairs any older schema that
--- carried additional uuid columns.
+-- security_alerts_projection.event_id. The loop is introspective rather than
+-- hardcoded so it also repairs any older schema that carried additional uuid
+-- columns.
+--
+-- The only FK spanning two of those columns —
+-- security_alerts_projection.event_id -> events.id — was DROPPED for good by
+-- 012 (spec 19: a derived projection must not pin the prunable event log), so
+-- by the time this migration runs there is no FK to work around. We
+-- defensively DROP IF EXISTS to converge to 012's intended no-FK state — this
+-- also repairs a DB where the FK was manually re-added out of band — and we
+-- NEVER re-add it (re-adding would reintroduce the prune-blocking constraint
+-- 012 removed).
 
 -- +goose Up
 -- +goose StatementBegin
@@ -27,16 +36,10 @@ DO $$
 DECLARE
     r RECORD;
 BEGIN
-    -- Drop the one FK spanning two uuid columns so both endpoints can be
-    -- retyped. IF EXISTS keeps this a no-op if it was already removed.
-    IF EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE constraint_schema = 'public'
-          AND constraint_name = 'security_alerts_projection_event_id_fkey'
-    ) THEN
-        ALTER TABLE public.security_alerts_projection
-            DROP CONSTRAINT security_alerts_projection_event_id_fkey;
-    END IF;
+    -- Converge to 012's no-FK state so the column retype below is unobstructed.
+    -- Normally already gone (012 dropped it); IF EXISTS keeps this a no-op.
+    ALTER TABLE public.security_alerts_projection
+        DROP CONSTRAINT IF EXISTS security_alerts_projection_event_id_fkey;
 
     -- Convert every uuid-typed column to text. Drop the gen_random_uuid()
     -- default first (a uuid default is invalid on a text column). No-op on a
@@ -51,22 +54,6 @@ BEGIN
         EXECUTE format('ALTER TABLE %I.%I ALTER COLUMN %I TYPE text USING %I::text',
                        r.table_schema, r.table_name, r.column_name, r.column_name);
     END LOOP;
-
-    -- Recreate the FK now that both endpoints are text. Only if it is currently
-    -- absent (we may have just dropped it, or a fresh DB still has the text
-    -- version from 007_foreign_keys.sql — in which case leave it be).
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.table_constraints
-        WHERE constraint_schema = 'public'
-          AND constraint_name = 'security_alerts_projection_event_id_fkey'
-    ) AND EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = 'security_alerts_projection'
-    ) THEN
-        ALTER TABLE public.security_alerts_projection
-            ADD CONSTRAINT security_alerts_projection_event_id_fkey
-            FOREIGN KEY (event_id) REFERENCES public.events(id);
-    END IF;
 END $$;
 -- +goose StatementEnd
 
