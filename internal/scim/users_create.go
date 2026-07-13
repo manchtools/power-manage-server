@@ -116,6 +116,37 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusConflict, "email already belongs to a local account; cannot auto-link")
 				return
 			}
+
+			// S14 (spec 29): a passwordless user already OWNED by another identity
+			// provider must not be silently claimed by this one via email — a
+			// lower-trust IdP's SCIM token could otherwise seize a higher-trust
+			// IdP's passwordless SSO user (the HasPassword guard above only covers
+			// LOCAL accounts). Refuse unless the operator delegated identity to this
+			// provider (trust_email_assertions). Fail CLOSED if links can't be read.
+			//
+			// This read-then-append is not atomic, but the residual is narrow: it
+			// only affects two providers racing to create the FIRST link for the
+			// same brand-new email (→ a double-link), NOT the S14 threat of claiming
+			// an ALREADY-owned user — provider A's link is committed (projections
+			// are synchronous post-commit) before a later provider B reads here, so
+			// the sequential takeover is blocked.
+			if !provider.TrustEmailAssertions {
+				links, lerr := h.store.Queries().ListIdentityLinksForUser(ctx, existingUser.ID)
+				if lerr != nil {
+					h.logger.Error("SCIM: cannot read existing identity links; refusing auto-link",
+						"user_id", existingUser.ID, "provider_id", provider.ID, "error", lerr)
+					writeError(w, http.StatusInternalServerError, "failed to verify existing identity links")
+					return
+				}
+				for _, l := range links {
+					if l.ProviderID != provider.ID {
+						h.logger.Warn("SCIM: refusing to cross-link a user already owned by another identity provider",
+							"user_id", existingUser.ID, "provider_id", provider.ID, "existing_provider_id", l.ProviderID)
+						writeError(w, http.StatusConflict, "email already belongs to a user linked to another identity provider; cannot auto-link")
+						return
+					}
+				}
+			}
 			// User exists — create identity link
 			h.logger.Debug("SCIM createUser: linking existing user by email", "user_id", existingUser.ID, "email", email)
 			linkID := newULID()
