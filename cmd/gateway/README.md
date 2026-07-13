@@ -56,9 +56,9 @@ a per-gateway certificate held in memory.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GATEWAY_ENROLL_TOKEN` | (required) | Shared bootstrap token for self-enrollment (must equal control's `CONTROL_GATEWAY_ENROLL_TOKEN`). The gateway cannot start without it. |
+| `PM_GATEWAY_ENROLL_TOKEN` | (required) | Shared bootstrap token for self-enrollment — the **same** `PM_*` cross-service secret control reads. The gateway cannot start without it. |
 | `GATEWAY_CONTROL_ENROLL_URL` | (required) | Control's **PUBLIC** URL where `GatewayAuthService.EnrollGateway` is served (distinct from `GATEWAY_CONTROL_URL`, the internal mTLS listener). |
-| `GATEWAY_HOSTNAME` | (required) | The gateway's **public** hostname that agents connect to (must equal control's `GATEWAY_URL` host). Stamped as the cert DNS SAN so the agent's standard TLS verification matches. |
+| `GATEWAY_DOMAIN` | (required) | The gateway's **public** host — the name agents dial AND the value stamped as the enrolled cert's DNS SAN (must equal the host in control's `CONTROL_GATEWAY_URL`). This single value is reused for both Traefik SNI routing and the cert; there is no separate `GATEWAY_HOSTNAME`. |
 | `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address for the agent mTLS listener |
 | `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (cleartext HTTP — public TLS is terminated at Traefik; empty disables the terminal feature) |
 | `GATEWAY_VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |

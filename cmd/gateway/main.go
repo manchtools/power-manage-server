@@ -177,27 +177,31 @@ func main() {
 	// (production control is fronted by a real cert); an air-gapped deployment
 	// must run its own control reachable by its gateways.
 	if cfg.EnrollToken == "" {
-		logger.Error("GATEWAY_ENROLL_TOKEN is required (gateway self-enrollment, spec 31)")
+		logger.Error("PM_GATEWAY_ENROLL_TOKEN is required (gateway self-enrollment, spec 31 — must match control's PM_GATEWAY_ENROLL_TOKEN)")
 		os.Exit(1)
 	}
 	if cfg.ControlEnrollURL == "" {
 		logger.Error("GATEWAY_CONTROL_ENROLL_URL is required (control's PUBLIC URL for EnrollGateway; distinct from GATEWAY_CONTROL_URL, the internal mTLS listener)")
 		os.Exit(1)
 	}
-	if cfg.Hostname == "" {
-		logger.Error("GATEWAY_HOSTNAME is required (the public name agents connect to; stamped as the cert DNS SAN so agent TLS verification matches)")
+	// The enrolled cert's DNS SAN is the gateway's public host — the same name
+	// agents dial and Traefik SNI-matches (GATEWAY_DOMAIN). Reuse it rather than a
+	// separate GATEWAY_HOSTNAME so there is one source of truth for the name.
+	publicHost := cfg.TraefikMTLSHost
+	if publicHost == "" {
+		logger.Error("GATEWAY_DOMAIN is required (the public name agents connect to; stamped as the enrolled cert's DNS SAN so agent TLS verification matches)")
 		os.Exit(1)
 	}
 	enrollClient := &http.Client{Timeout: 60 * time.Second}
 	enrollCtx, enrollCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	identity, err := gwenroll.Enroll(enrollCtx, enrollClient, cfg.ControlEnrollURL, cfg.EnrollToken, cfg.Hostname)
+	identity, err := gwenroll.Enroll(enrollCtx, enrollClient, cfg.ControlEnrollURL, cfg.EnrollToken, publicHost)
 	enrollCancel()
 	if err != nil {
 		logger.Error("gateway enrollment failed; cannot start without an identity", "error", err)
 		os.Exit(1)
 	}
 	gatewayID := identity.GatewayID
-	logger.Info("gateway enrolled", "gateway_id", gatewayID, "hostname", cfg.Hostname)
+	logger.Info("gateway enrolled", "gateway_id", gatewayID, "hostname", publicHost)
 
 	// Hold the enrolled cert behind a rotator so the renewal goroutine can swap
 	// it in without dropping live agent connections (spec 31 Part B).

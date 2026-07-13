@@ -39,12 +39,12 @@ type Config struct {
 	// ControlEnrollURL is control's PUBLIC listener (GatewayAuthService.
 	// EnrollGateway is public/no-mTLS — a gateway has no cert yet), distinct
 	// from ControlURL (the internal mTLS listener). EnrollToken is the shared
-	// bootstrap secret. Hostname is the gateway's PUBLIC name agents connect to
-	// (must equal control's GATEWAY_URL host) — stamped as the cert DNS SAN so
-	// the agent's standard TLS verification matches.
+	// bootstrap secret. The enrolled cert's DNS SAN is the gateway's public
+	// host (the name agents dial) — that is TraefikMTLSHost (GATEWAY_DOMAIN),
+	// NOT a separate GATEWAY_HOSTNAME var: there is one public-host name per
+	// gateway and it is reused for both routing and the cert.
 	ControlEnrollURL string
 	EnrollToken      string
-	Hostname         string
 
 	// Multi-gateway routing settings (used by the registry).
 	//
@@ -206,8 +206,7 @@ func FromEnv() *Config {
 		ValkeyDB:                  getEnvInt("GATEWAY_VALKEY_DB", 0),
 		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "https://control:8082"),
 		ControlEnrollURL:          getEnv("GATEWAY_CONTROL_ENROLL_URL", ""),
-		EnrollToken:               getEnv("GATEWAY_ENROLL_TOKEN", ""),
-		Hostname:                  getEnv("GATEWAY_HOSTNAME", ""),
+		EnrollToken:               getEnv("PM_GATEWAY_ENROLL_TOKEN", ""),
 		GatewayID:                 getEnv("GATEWAY_ID", ""),
 		PublicTerminalURLTemplate: getEnv("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE", ""),
 		PublicAgentURLTemplate:    getEnv("GATEWAY_PUBLIC_AGENT_URL_TEMPLATE", ""),

@@ -141,9 +141,9 @@ services:
       - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - CONTROL_GATEWAY_URL=https://${GATEWAY_DOMAIN}
-      # spec 31: shared bootstrap token gateways present to EnrollGateway (must
-      # equal the gateway's GATEWAY_ENROLL_TOKEN).
-      - CONTROL_GATEWAY_ENROLL_TOKEN=${GATEWAY_ENROLL_TOKEN}
+      # spec 31: shared bootstrap token gateways present to EnrollGateway. Same
+      # PM_* cross-service secret the gateway reads (like PM_TASK_SIGNING_KEY).
+      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -231,21 +231,19 @@ services:
       - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
       - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       - GATEWAY_CONTROL_URL=https://control:8082
-      # spec 31 self-enrollment: the shared bootstrap token (must equal control's
-      # CONTROL_GATEWAY_ENROLL_TOKEN), control's PUBLIC URL where EnrollGateway is
-      # served, and the gateway's public hostname (agents connect here; stamped as
-      # the cert DNS SAN so agent TLS verification matches).
-      - GATEWAY_ENROLL_TOKEN=${GATEWAY_ENROLL_TOKEN}
+      # spec 31 self-enrollment: the shared bootstrap token (the same PM_* secret
+      # control reads) and control's PUBLIC URL where EnrollGateway is served. The
+      # enrolled cert's DNS SAN is taken from GATEWAY_DOMAIN below (the gateway's
+      # public host) — there is no separate GATEWAY_HOSTNAME.
+      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
       - GATEWAY_CONTROL_ENROLL_URL=https://${CONTROL_DOMAIN}
-      - GATEWAY_HOSTNAME=${GATEWAY_DOMAIN}
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}
       # rc3: configurable agent heartbeat cadence (Go duration, 5s..5m).
       - GATEWAY_HEARTBEAT_INTERVAL=${GATEWAY_HEARTBEAT_INTERVAL:-30s}
       # Remote terminal (multi-gateway routing). Leave empty to disable.
-      # GATEWAY_ID is auto-generated as a ULID if empty; when scaling
-      # replicas, leave it empty so each container gets its own ID.
-      - GATEWAY_ID=${GATEWAY_ID:-}
+      # (spec 31: GATEWAY_ID is superseded — the gateway_id is the enrolled cert
+      # CN, a fresh ULID per boot — so it is no longer passed here.)
       - GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=${GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE:-}
       - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
       - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}

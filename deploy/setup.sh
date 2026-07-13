@@ -121,10 +121,10 @@ check_env() {
         missing=1
     fi
 
-    # spec 31: the shared bootstrap token gateways present to self-enroll. Used
-    # by both control and the gateway; must be a real value.
-    if [[ -z "$GATEWAY_ENROLL_TOKEN" ]] || [[ "$GATEWAY_ENROLL_TOKEN" == CHANGE_ME* ]]; then
-        log_error "GATEWAY_ENROLL_TOKEN must be set in .env (generate with: openssl rand -base64 32)"
+    # spec 31: the shared bootstrap token gateways present to self-enroll. One
+    # PM_* secret read by both control and the gateway; must be a real value.
+    if [[ -z "$PM_GATEWAY_ENROLL_TOKEN" ]] || [[ "$PM_GATEWAY_ENROLL_TOKEN" == CHANGE_ME* ]]; then
+        log_error "PM_GATEWAY_ENROLL_TOKEN must be set in .env (generate with: openssl rand -base64 32)"
         missing=1
     fi
 
@@ -737,7 +737,7 @@ main() {
     check_env
     generate_ca
     # spec 31: the gateway no longer has a static cert — it self-enrolls on boot
-    # (GATEWAY_ENROLL_TOKEN). generate_gateway_cert is intentionally not called.
+    # (PM_GATEWAY_ENROLL_TOKEN). generate_gateway_cert is intentionally not called.
     generate_control_cert
     generate_control_public_cert
 
