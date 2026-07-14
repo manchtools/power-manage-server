@@ -204,7 +204,7 @@ services:
       - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
       - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/health"]
       interval: 10s
       timeout: 5s
       retries: 3
