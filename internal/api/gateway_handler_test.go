@@ -2,12 +2,14 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"log/slog"
 	"net/url"
 	"testing"
@@ -280,4 +282,60 @@ func TestListGateways_ReturnsEnrolled(t *testing.T) {
 		got[g.GatewayId] = true
 	}
 	assert.True(t, got[id1] && got[id2], "both enrolled gateways must be listed")
+}
+
+// fakeGatewayLiveness satisfies the handler's (unexported) gatewayLiveness
+// interface structurally, so external tests can drive the ListGateways filter.
+type fakeGatewayLiveness struct {
+	live map[string]struct{}
+	err  error
+}
+
+func (f fakeGatewayLiveness) ListLiveGatewayIDs(context.Context) (map[string]struct{}, error) {
+	return f.live, f.err
+}
+
+// TestListGateways_FiltersToLive pins the spec-31 fix: only gateways currently
+// live in the registry are returned, so a restarted gateway's departed
+// ephemeral id (enrolled + cert-valid, but no live heartbeat) drops off instead
+// of lingering as "Active".
+func TestListGateways_FiltersToLive(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	id1, _ := enrollTestGateway(t, st, certAuth)
+	id2, _ := enrollTestGateway(t, st, certAuth)
+
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetGatewayLiveness(fakeGatewayLiveness{live: map[string]struct{}{id1: {}}}) // only id1 is live
+
+	resp, err := h.ListGateways(t.Context(), connect.NewRequest(&pm.ListGatewaysRequest{}))
+	require.NoError(t, err)
+
+	got := map[string]bool{}
+	for _, g := range resp.Msg.Gateways {
+		got[g.GatewayId] = true
+	}
+	assert.True(t, got[id1], "the live gateway must be listed")
+	assert.False(t, got[id2], "the enrolled-but-not-live gateway must be filtered out")
+}
+
+// TestListGateways_LivenessError_FailsOpen pins that a registry error does NOT
+// blank the operator's list — it falls back to the not_after view.
+func TestListGateways_LivenessError_FailsOpen(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	id1, _ := enrollTestGateway(t, st, certAuth)
+	id2, _ := enrollTestGateway(t, st, certAuth)
+
+	h := api.NewGatewayHandler(st, slog.Default())
+	h.SetGatewayLiveness(fakeGatewayLiveness{err: errors.New("valkey unreachable")})
+
+	resp, err := h.ListGateways(t.Context(), connect.NewRequest(&pm.ListGatewaysRequest{}))
+	require.NoError(t, err)
+
+	got := map[string]bool{}
+	for _, g := range resp.Msg.Gateways {
+		got[g.GatewayId] = true
+	}
+	assert.True(t, got[id1] && got[id2], "a liveness error must fall back to listing all not-yet-expired gateways")
 }

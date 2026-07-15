@@ -141,6 +141,9 @@ services:
       - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - CONTROL_GATEWAY_URL=https://${GATEWAY_DOMAIN}
+      # spec 31: shared bootstrap token gateways present to EnrollGateway. Same
+      # PM_* cross-service secret the gateway reads (like PM_TASK_SIGNING_KEY).
+      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -201,7 +204,7 @@ services:
       - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
       - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8082/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/health"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -219,32 +222,28 @@ services:
         condition: service_healthy
       control:
         condition: service_healthy
-    volumes:
-      # Mount ONLY the files the gateway actually uses (its own mTLS keypair +
-      # the CA cert for verifying peers). The gateway is the public,
-      # agent-facing mTLS endpoint — the most exposed component — and must NOT
-      # have the CA SIGNING key (ca.key) on disk. Mounting the whole ./certs
-      # dir put ca.key in the gateway, so a gateway compromise yielded the CA
-      # private key, which mints arbitrary device certs AND forges action
-      # signatures (the same key signs both). ca.key now lives only in the
-      # control service, which is the CA. (#363)
-      - ./certs/gateway.crt:/certs/gateway.crt:ro,z
-      - ./certs/gateway.key:/certs/gateway.key:ro,z
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
+    # No cert volumes (spec 31): the gateway self-enrolls on boot and holds its
+    # per-gateway cert in memory. It never has a static cert or the CA key on
+    # disk — the enrolled CA arrives over the enrollment response.
     environment:
       - GATEWAY_VALKEY_ADDR=valkey:6379
       - GATEWAY_VALKEY_PASSWORD=${VALKEY_PASSWORD}
       - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
       - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
       - GATEWAY_CONTROL_URL=https://control:8082
+      # spec 31 self-enrollment: the shared bootstrap token (the same PM_* secret
+      # control reads) and control's PUBLIC URL where EnrollGateway is served. The
+      # enrolled cert's DNS SAN is taken from GATEWAY_DOMAIN below (the gateway's
+      # public host) — there is no separate GATEWAY_HOSTNAME.
+      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
+      - GATEWAY_CONTROL_ENROLL_URL=https://${CONTROL_DOMAIN}
       - GATEWAY_LISTEN_ADDR=:8080
       - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}
       # rc3: configurable agent heartbeat cadence (Go duration, 5s..5m).
       - GATEWAY_HEARTBEAT_INTERVAL=${GATEWAY_HEARTBEAT_INTERVAL:-30s}
       # Remote terminal (multi-gateway routing). Leave empty to disable.
-      # GATEWAY_ID is auto-generated as a ULID if empty; when scaling
-      # replicas, leave it empty so each container gets its own ID.
-      - GATEWAY_ID=${GATEWAY_ID:-}
+      # (spec 31: GATEWAY_ID is superseded — the gateway_id is the enrolled cert
+      # CN, a fresh ULID per boot — so it is no longer passed here.)
       - GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=${GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE:-}
       - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
       - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}
@@ -262,10 +261,8 @@ services:
       # from the reference stack.
       - GATEWAY_DOMAIN=${GATEWAY_DOMAIN}
       - GATEWAY_TTY_DOMAIN=${GATEWAY_TTY_DOMAIN:-}
-    command:
-      - "-tls-cert=/certs/gateway.crt"
-      - "-tls-key=/certs/gateway.key"
-      - "-tls-ca=/certs/ca.crt"
+    # No command flags (spec 31): the static -tls-cert/-tls-key/-tls-ca flags
+    # were removed; the gateway self-enrolls on boot.
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
       interval: 10s

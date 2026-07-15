@@ -3,8 +3,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -18,7 +16,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/oklog/ulid/v2"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 
@@ -29,6 +26,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
+	"github.com/manchtools/power-manage/server/internal/gwenroll"
 	"github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -110,16 +108,11 @@ func loadInitialCRL(ctx context.Context, cache crlRefresher, attempts int, backo
 }
 
 func main() {
-	// Parse flags — TLS is always required for mTLS agent connections
-	tlsCert := flag.String("tls-cert", "", "path to server certificate (required)")
-	tlsKey := flag.String("tls-key", "", "path to server private key (required)")
-	tlsCA := flag.String("tls-ca", "", "path to CA certificate for client validation (required)")
+	// spec 31 clean break: the static -tls-cert/-tls-key/-tls-ca flags are
+	// REMOVED. A gateway has no operator-minted cert; it self-enrolls on boot
+	// (see below) and holds its per-gateway cert in memory. flag.Parse keeps the
+	// standard -help/flag machinery working with no flags defined.
 	flag.Parse()
-
-	if *tlsCert == "" || *tlsKey == "" || *tlsCA == "" {
-		fmt.Fprintln(os.Stderr, "FATAL: -tls-cert, -tls-key, and -tls-ca flags are required")
-		os.Exit(1)
-	}
 
 	// Load config from environment
 	cfg := config.FromEnv()
@@ -176,46 +169,54 @@ func main() {
 	defer aqClient.Close()
 	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
 
-	// Create control proxy (Connect-RPC client to control server's InternalService)
-	// Uses mTLS to authenticate with the control server's internal listener.
-	controlCert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+	// Self-enroll on boot (spec 31): generate a keypair, submit a CSR to
+	// control's PUBLIC GatewayAuthService, and obtain a per-gateway cert whose CN
+	// is our gateway_id. There is NO static cert — a gateway that cannot reach
+	// control or presents an invalid token cannot start (fail closed). The
+	// enrollment channel trusts control's public TLS via the system trust store
+	// (production control is fronted by a real cert); an air-gapped deployment
+	// must run its own control reachable by its gateways.
+	if cfg.EnrollToken == "" {
+		logger.Error("PM_GATEWAY_ENROLL_TOKEN is required (gateway self-enrollment, spec 31 — must match control's PM_GATEWAY_ENROLL_TOKEN)")
+		os.Exit(1)
+	}
+	if cfg.ControlEnrollURL == "" {
+		logger.Error("GATEWAY_CONTROL_ENROLL_URL is required (control's PUBLIC URL for EnrollGateway; distinct from GATEWAY_CONTROL_URL, the internal mTLS listener)")
+		os.Exit(1)
+	}
+	// The enrolled cert's DNS SAN is the gateway's public host — the same name
+	// agents dial and Traefik SNI-matches (GATEWAY_DOMAIN). Reuse it rather than a
+	// separate GATEWAY_HOSTNAME so there is one source of truth for the name.
+	publicHost := cfg.TraefikMTLSHost
+	if publicHost == "" {
+		logger.Error("GATEWAY_DOMAIN is required (the public name agents connect to; stamped as the enrolled cert's DNS SAN so agent TLS verification matches)")
+		os.Exit(1)
+	}
+	enrollClient := &http.Client{Timeout: 60 * time.Second}
+	enrollCtx, enrollCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	identity, err := gwenroll.Enroll(enrollCtx, enrollClient, cfg.ControlEnrollURL, cfg.EnrollToken, publicHost)
+	enrollCancel()
 	if err != nil {
-		logger.Error("failed to load gateway certificate for control proxy", "error", err)
+		logger.Error("gateway enrollment failed; cannot start without an identity", "error", err)
 		os.Exit(1)
 	}
-	caCert, err := os.ReadFile(*tlsCA)
+	gatewayID := identity.GatewayID
+	logger.Info("gateway enrolled", "gateway_id", gatewayID, "hostname", publicHost)
+
+	// Hold the enrolled cert behind a rotator so the renewal goroutine can swap
+	// it in without dropping live agent connections (spec 31 Part B).
+	certRotator := mtls.NewCertRotator(identity.TLSCert)
+
+	// Control proxy: mTLS client to control's INTERNAL listener, presenting the
+	// enrolled gateway cert (served from the rotator) and trusting the issued CA.
+	controlClientTLS, err := certRotator.ClientTLSConfig(identity.CACertPEM)
 	if err != nil {
-		logger.Error("failed to read CA certificate for control proxy", "error", err)
+		logger.Error("failed to build control client TLS from enrolled identity", "error", err)
 		os.Exit(1)
 	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caCert) {
-		logger.Error("failed to parse CA certificate for control proxy")
-		os.Exit(1)
-	}
-	controlTransport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{controlCert},
-			RootCAs:      caPool,
-			MinVersion:   tls.VersionTLS13,
-		},
-	}
+	controlTransport := &http.Transport{TLSClientConfig: controlClientTLS}
 	http2.ConfigureTransport(controlTransport)
 	controlHTTPClient := &http.Client{Transport: controlTransport}
-
-	// Resolve this gateway's stable ID before constructing the control proxy,
-	// which stamps it onto every device-origin request for the device→gateway
-	// binding check on control. If GATEWAY_ID is set, use it (static-config
-	// Traefik setups where the operator pre-declares per-gateway routes);
-	// otherwise generate a ULID at startup (dynamic-config setups where Traefik
-	// picks up new routes from a watcher / file provider / k8s ingress).
-	gatewayID := cfg.GatewayID
-	if gatewayID == "" {
-		gatewayID = ulid.Make().String()
-		logger.Info("generated dynamic gateway ID", "gateway_id", gatewayID)
-	} else {
-		logger.Info("using configured gateway ID", "gateway_id", gatewayID)
-	}
 
 	controlProxy := handler.NewControlProxy(controlHTTPClient, cfg.ControlURL, gatewayID)
 	logger.Info("control proxy initialized", "control_url", controlOrigin)
@@ -241,6 +242,13 @@ func main() {
 	// exit cleanly on SIGTERM/SIGINT rather than ticking past shutdown.
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Renew the gateway cert at 80% of its 45-day lifetime over the control
+	// InternalService mTLS plane, swapping it into the rotator without dropping
+	// agent connections (spec 31 Part B).
+	go runGatewayCertRenewal(shutdownCtx,
+		pmv1connect.NewInternalServiceClient(controlHTTPClient, cfg.ControlURL),
+		identity, certRotator, logger)
 
 	// Wire the multi-gateway registry lazily. The registry is shared by
 	// three independent features:
@@ -276,6 +284,24 @@ func main() {
 			}
 		}
 	}()
+
+	// Gateway liveness (spec 31): publish an UNCONDITIONAL per-gateway alive
+	// marker so control's ListGateways reflects which gateway_ids are actually
+	// live right now — not merely which certs haven't expired. Runs whenever the
+	// gateway has a registry (i.e. always — the gateway needs Valkey for asynq),
+	// independent of the terminal/internal/traefik registrations below (each
+	// conditional on deploy mode). A restarted gateway re-enrols under a fresh
+	// ephemeral id, and this marker TTL-expires for the old one, so the departed
+	// id stops showing "Active".
+	if aliveStop, err := ensureGatewayRegistry().RegisterGatewayAlive(
+		shutdownCtx, gatewayID, registry.DefaultGatewayTTL, registry.DefaultGatewayRefreshInterval,
+	); err != nil {
+		// Only a validation error is possible here (never for a post-enrollment
+		// id); log fail-open rather than kill the gateway over a liveness marker.
+		logger.Warn("failed to register gateway liveness marker", "error", err)
+	} else {
+		defer aliveStop()
+	}
 
 	// Compute the agent redirect hostname independently of the terminal
 	// URL. This supports multi-gateway agent routing without requiring
@@ -664,14 +690,12 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// Create mTLS server
-	tlsConfig, err := mtls.NewTLSConfig(mtls.Config{
-		CertFile: *tlsCert,
-		KeyFile:  *tlsKey,
-		CAFile:   *tlsCA,
-	})
+	// Create the agent-facing mTLS server. The leaf is served from the rotator
+	// (so renewal swaps it without dropping connections); agent client certs are
+	// verified against the enrolled CA.
+	tlsConfig, err := certRotator.ServerTLSConfig(identity.CACertPEM)
 	if err != nil {
-		logger.Error("failed to configure TLS", "error", err)
+		logger.Error("failed to configure agent-facing TLS from enrolled identity", "error", err)
 		os.Exit(1)
 	}
 

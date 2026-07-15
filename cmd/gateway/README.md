@@ -48,23 +48,24 @@ The Gateway Server:
 
 ### Command-Line Flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-tls-cert` | (required) | Server certificate path |
-| `-tls-key` | (required) | Server private key path |
-| `-tls-ca` | (required) | CA certificate for client validation |
+None. The static `-tls-cert`/`-tls-key`/`-tls-ca` flags were **removed** (spec
+31): the gateway has no operator-minted cert — it self-enrolls on boot to obtain
+a per-gateway certificate held in memory.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `PM_GATEWAY_ENROLL_TOKEN` | (required) | Shared bootstrap token for self-enrollment — the **same** `PM_*` cross-service secret control reads. The gateway cannot start without it. |
+| `GATEWAY_CONTROL_ENROLL_URL` | (required) | Control's **PUBLIC** URL where `GatewayAuthService.EnrollGateway` is served (distinct from `GATEWAY_CONTROL_URL`, the internal mTLS listener). |
+| `GATEWAY_DOMAIN` | (required) | The gateway's **public** host — the name agents dial AND the value stamped as the enrolled cert's DNS SAN (must equal the host in control's `CONTROL_GATEWAY_URL`). This single value is reused for both Traefik SNI routing and the cert; there is no separate `GATEWAY_HOSTNAME`. |
 | `GATEWAY_LISTEN_ADDR` | `:8080` | Listen address for the agent mTLS listener |
 | `GATEWAY_WEB_LISTEN_ADDR` | (empty) | Listen address for the TTY WebSocket listener (cleartext HTTP — public TLS is terminated at Traefik; empty disables the terminal feature) |
 | `GATEWAY_VALKEY_ADDR` | `localhost:6379` | Valkey/Redis address for Asynq task queue |
 | `GATEWAY_VALKEY_PASSWORD` | (empty) | Valkey/Redis password |
 | `GATEWAY_VALKEY_DB` | `0` | Valkey/Redis database number |
 | `GATEWAY_CONTROL_URL` | `https://control:8082` | Control Server InternalService URL for the mTLS Connect-RPC proxy |
-| `GATEWAY_ID` | (auto-ULID) | Stable gateway identifier; auto-generated per process when empty (required for replica scaling) |
+| `GATEWAY_ID` | (ignored) | **Superseded** by self-enrollment (spec 31): the gateway_id is now the enrolled cert's CN (a fresh ULID per boot), not this env var. |
 | `GATEWAY_INTERNAL_URL` | (empty) | mTLS URL the control server uses for admin fan-out RPCs |
 | `GATEWAY_HEARTBEAT_INTERVAL` | `30s` | Heartbeat cadence sent to every agent (Go duration, 5s..5m) |
 | `GATEWAY_LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |

@@ -65,7 +65,8 @@ type Config struct {
 
 	// Gateway self-enrollment (spec 31). The shared bootstrap token a gateway
 	// presents to GatewayAuthService.EnrollGateway. Empty disables enrollment
-	// (every attempt is rejected). CONTROL_GATEWAY_ENROLL_TOKEN.
+	// (every attempt is rejected). PM_GATEWAY_ENROLL_TOKEN — a cross-service
+	// secret shared with the gateway (same PM_* convention as PM_TASK_SIGNING_KEY).
 	GatewayEnrollToken string
 
 	// CORS
@@ -428,7 +429,7 @@ func main() {
 	gwAuthPath, gwAuthHandler := pmv1connect.NewGatewayAuthServiceHandler(gatewayAuthHandler, gatewayAuthInterceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(gwAuthPath, gwAuthHandler)
 	if cfg.GatewayEnrollToken == "" {
-		logger.Warn("gateway self-enrollment disabled: CONTROL_GATEWAY_ENROLL_TOKEN is empty — every EnrollGateway attempt will be rejected")
+		logger.Warn("gateway self-enrollment disabled: PM_GATEWAY_ENROLL_TOKEN is empty — every EnrollGateway attempt will be rejected")
 	}
 
 	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM

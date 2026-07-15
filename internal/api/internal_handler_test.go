@@ -95,9 +95,10 @@ func TestProxySyncActions_BindingStillEnforcedWhenNotLive(t *testing.T) {
 
 	deviceID := testutil.CreateTestDevice(t, st, "secret-op-host")
 
-	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
-		DeviceId:  deviceID,
-		GatewayId: "gw-1",
+	// Part C: gateway_id comes from the authenticated peer cert CN, so present a
+	// valid CN — the rejection must be device-not-live, not missing-gateway.
+	_, err := h.ProxySyncActions(gwCtx("gw-1"), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId: deviceID,
 	}))
 	require.Error(t, err, "a credential-bearing method must still enforce the device→gateway binding")
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "device-not-live binding rejection stays on ProxySyncActions")

@@ -67,11 +67,18 @@ var (
 const (
 	gatewayKeyPrefix         = "pm:gateway:terminal:"
 	gatewayInternalKeyPrefix = "pm:gateway:internal:"
-	deviceKeyPrefix          = "pm:device:gateway:"
+	// gatewayAliveKeyPrefix keys the UNCONDITIONAL per-gateway liveness marker
+	// (spec 31): every gateway writes it, unlike the terminal/internal
+	// registrations which only exist in certain deploy modes. It is the
+	// canonical "this gateway_id is live right now" signal control's
+	// ListGateways filters on.
+	gatewayAliveKeyPrefix = "pm:gateway:alive:"
+	deviceKeyPrefix       = "pm:device:gateway:"
 )
 
 func gatewayKey(gatewayID string) string         { return gatewayKeyPrefix + gatewayID }
 func gatewayInternalKey(gatewayID string) string { return gatewayInternalKeyPrefix + gatewayID }
+func gatewayAliveKey(gatewayID string) string    { return gatewayAliveKeyPrefix + gatewayID }
 func deviceKey(deviceID string) string           { return deviceKeyPrefix + deviceID }
 
 // Backend is the storage interface the Registry depends on. Two
@@ -136,18 +143,20 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, terminalURL s
 		return nil, fmt.Errorf("registry: refreshInterval (%v) must be less than ttl (%v)", refreshInterval, ttl)
 	}
 
-	// Initial publish so subsequent control lookups can find us
-	// immediately, before the first heartbeat tick. A FAILED initial
-	// publish is deliberately fail-open (#524): the refresh loop below
-	// re-Sets the key every tick and is the natural retry, so the key
-	// appears on the first tick after the backend recovers. Returning an
-	// error here instead meant a gateway that (re)started during a
-	// transient Valkey blip lost terminal sessions PERMANENTLY (observed
-	// in production: five days dark), while the internal-URL and Traefik
-	// registrations — which retry — recovered on their own. Validation
-	// errors above still fail hard; only the publish is transient.
-	if err := r.backend.Set(ctx, gatewayKey(gatewayID), terminalURL, ttl); err != nil {
-		r.logger.Warn("registry: initial gateway publish failed — refresh loop will retry until the backend recovers",
+	return r.heartbeat(ctx, gatewayKey(gatewayID), terminalURL, ttl, refreshInterval, "gateway", gatewayID), nil
+}
+
+// heartbeat publishes key=value with the given TTL, then refreshes it every
+// refreshInterval on a background goroutine, returning a stop func the caller
+// MUST defer: stop() halts the refresh and best-effort deletes the key. A
+// failed initial or refresh publish is fail-open (#524) — the refresh loop is
+// the natural retry, so the key reappears one tick after the backend recovers
+// rather than the gateway losing the registration permanently. label names the
+// registration in log lines; gatewayID is the log field. Shared by
+// RegisterGateway and RegisterGatewayAlive.
+func (r *Registry) heartbeat(ctx context.Context, key, value string, ttl, refreshInterval time.Duration, label, gatewayID string) func() {
+	if err := r.backend.Set(ctx, key, value, ttl); err != nil {
+		r.logger.Warn("registry: initial "+label+" publish failed — refresh loop will retry until the backend recovers",
 			"gateway_id", gatewayID, "error", err)
 	}
 
@@ -164,13 +173,12 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, terminalURL s
 			case <-stopCh:
 				return
 			case <-t.C:
-				// Use a bounded context so a hung backend can't
-				// stall the gateway forever. Background context is
-				// fine here because the goroutine has its own stop
-				// signal.
+				// Bounded context so a hung backend can't stall the
+				// gateway forever; Background is fine because the
+				// goroutine has its own stop signal.
 				refreshCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := r.backend.Set(refreshCtx, gatewayKey(gatewayID), terminalURL, ttl); err != nil {
-					r.logger.Warn("registry: gateway heartbeat refresh failed",
+				if err := r.backend.Set(refreshCtx, key, value, ttl); err != nil {
+					r.logger.Warn("registry: "+label+" heartbeat refresh failed",
 						"gateway_id", gatewayID, "error", err)
 				}
 				cancel()
@@ -178,21 +186,65 @@ func (r *Registry) RegisterGateway(ctx context.Context, gatewayID, terminalURL s
 		}
 	}()
 
-	stop = func() {
+	return func() {
 		stopOnce.Do(func() {
 			close(stopCh)
 			<-doneCh
-			// Best-effort cleanup. A bounded context so shutdown
-			// isn't blocked by a flaky backend.
+			// Best-effort cleanup, bounded so shutdown isn't blocked by
+			// a flaky backend.
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := r.backend.Delete(cleanupCtx, gatewayKey(gatewayID)); err != nil {
-				r.logger.Warn("registry: gateway deregister failed",
+			if err := r.backend.Delete(cleanupCtx, key); err != nil {
+				r.logger.Warn("registry: "+label+" deregister failed",
 					"gateway_id", gatewayID, "error", err)
 			}
 		})
 	}
-	return stop, nil
+}
+
+// RegisterGatewayAlive publishes an UNCONDITIONAL per-gateway liveness marker
+// (pm:gateway:alive:<gatewayID>) with a TTL, refreshed by a heartbeat goroutine
+// and deleted on clean shutdown. Every gateway writes it — unlike the
+// terminal/internal/traefik registrations, each of which only exists in certain
+// deploy modes — so it is the canonical "this gateway_id is live right now"
+// signal. Control's ListGateways filters on it (via ListLiveGatewayIDs) so a
+// restarted gateway's old ephemeral id stops showing "Active" once its marker
+// TTL-expires. Returns a stop func the caller MUST defer.
+func (r *Registry) RegisterGatewayAlive(ctx context.Context, gatewayID string, ttl, refreshInterval time.Duration) (stop func(), err error) {
+	if gatewayID == "" {
+		return nil, errors.New("registry: gatewayID is required")
+	}
+	if ttl <= 0 {
+		ttl = DefaultGatewayTTL
+	}
+	if refreshInterval <= 0 {
+		refreshInterval = DefaultGatewayRefreshInterval
+	}
+	if refreshInterval >= ttl {
+		return nil, fmt.Errorf("registry: refreshInterval (%v) must be less than ttl (%v)", refreshInterval, ttl)
+	}
+	// The value is an opaque marker — presence-with-unexpired-TTL is the signal.
+	// "1" (not "") so a backend treating empty as absent still stores it.
+	return r.heartbeat(ctx, gatewayAliveKey(gatewayID), "1", ttl, refreshInterval, "gateway alive", gatewayID), nil
+}
+
+// ListLiveGatewayIDs returns the set of gateway_ids with a live alive-marker
+// (pm:gateway:alive:*) — true, TTL-bounded liveness, distinct from the
+// gateways_projection's not_after (cert-not-expired) view. Control uses it so
+// ListGateways reflects which gateways are actually connected right now.
+func (r *Registry) ListLiveGatewayIDs(ctx context.Context) (map[string]struct{}, error) {
+	raw, err := r.backend.ScanPrefix(ctx, gatewayAliveKeyPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("registry: list live gateways: %w", err)
+	}
+	out := make(map[string]struct{}, len(raw))
+	for key := range raw {
+		id := key[len(gatewayAliveKeyPrefix):]
+		if id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out, nil
 }
 
 // AttachDevice records pm:device:gateway:<deviceID> = <gatewayID>
