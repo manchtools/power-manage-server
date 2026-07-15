@@ -176,6 +176,9 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	go v.CRLCache.Run(ctx, controlCRLRefreshInterval)
 	gatewayReg := registry.New(registry.NewValkeyBackend(v.rdb), logger.With("component", "gateway_registry"))
 	v.GatewayRegistry = gatewayReg
+	// ListGateways filters on real liveness (this registry) so a restarted
+	// gateway's departed ephemeral id stops showing "Active" (spec 31).
+	svc.SetGatewayLiveness(gatewayReg)
 	termHandler := api.NewTerminalHandler(
 		st,
 		v.TerminalTokenStore,

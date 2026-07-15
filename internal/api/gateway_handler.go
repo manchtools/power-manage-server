@@ -32,7 +32,19 @@ type GatewayHandler struct {
 	// internal listener's NoopRevocationChecker dev posture) and revocation
 	// returns Unavailable (it cannot take effect without a CRL).
 	crl *crl.Store
-	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
+	// liveness reports which gateway_ids are actually live right now (Valkey
+	// registry heartbeat), so ListGateways reflects real liveness rather than
+	// the projection's cert-not-expired view. nil in dev / no-Valkey → the list
+	// falls back to the not_after view.
+	liveness gatewayLiveness
+	now      func() time.Time // clock seam; defaults to time.Now, overridden in tests
+}
+
+// gatewayLiveness reports the set of currently-live gateway_ids. Satisfied by
+// *registry.Registry (ListLiveGatewayIDs); an interface here keeps internal/api
+// free of a dependency on internal/gateway/registry.
+type gatewayLiveness interface {
+	ListLiveGatewayIDs(ctx context.Context) (map[string]struct{}, error)
 }
 
 // NewGatewayHandler creates a gateway handler. The CRL store is wired later via
@@ -44,6 +56,11 @@ func NewGatewayHandler(st *store.Store, logger *slog.Logger) *GatewayHandler {
 // SetCRLStore wires the Valkey-backed CRL (post-construction, after Valkey
 // comes up).
 func (h *GatewayHandler) SetCRLStore(s *crl.Store) { h.crl = s }
+
+// SetGatewayLiveness wires the registry-backed liveness source (post-construction,
+// after Valkey is up). When set, ListGateways returns only actually-live
+// gateways; when nil it falls back to the not_after view.
+func (h *GatewayHandler) SetGatewayLiveness(l gatewayLiveness) { h.liveness = l }
 
 // GetCertificateRevocationList returns the active revoked fingerprints plus a
 // freshness window (spec 31 AC13). Agent-facing, rate-limited, served over the
@@ -154,8 +171,29 @@ func (h *GatewayHandler) ListGateways(ctx context.Context, req *connect.Request[
 		h.logger.Error("failed to list gateways", "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to list gateways")
 	}
+
+	// Reflect true liveness (Valkey registry), not just cert-not-expired. A
+	// gateway restart re-enrols under a fresh ephemeral id; the old id's cert
+	// stays within not_after for ~45 days but its liveness marker TTL-expires in
+	// seconds, so filtering on the registry stops departed gateways showing
+	// "Active". Fail-open: if liveness is unavailable (dev / Valkey blip) fall
+	// back to the not_after view rather than blank the operator's list.
+	var live map[string]struct{}
+	if h.liveness != nil {
+		if l, lerr := h.liveness.ListLiveGatewayIDs(ctx); lerr != nil {
+			h.logger.Warn("gateway liveness unavailable; listing all not-yet-expired gateways", "error", lerr)
+		} else {
+			live = l
+		}
+	}
+
 	out := make([]*pm.GatewayInfo, 0, len(rows))
 	for _, r := range rows {
+		if live != nil {
+			if _, ok := live[r.GatewayID]; !ok {
+				continue // enrolled + cert-valid, but not currently live
+			}
+		}
 		info := &pm.GatewayInfo{
 			GatewayId:  r.GatewayID,
 			Hostname:   r.Hostname,

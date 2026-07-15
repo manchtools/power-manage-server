@@ -116,6 +116,14 @@ func (s *ControlService) SetCRLStore(store *crl.Store) {
 	s.gateway.SetCRLStore(store)
 }
 
+// SetGatewayLiveness wires the registry-backed liveness source so ListGateways
+// reflects actually-live gateways (Valkey heartbeat) rather than the
+// projection's cert-not-expired view. Called from main.go after the Valkey
+// subsystem comes up; nil-safe (ListGateways falls back to the not_after view).
+func (s *ControlService) SetGatewayLiveness(l gatewayLiveness) {
+	s.gateway.SetGatewayLiveness(l)
+}
+
 // SetTerminalHandler wires the terminal session RPC handler. Called
 // from main.go after the Valkey-backed token store is constructed.
 // Until this is called, the terminal RPCs return Unavailable rather

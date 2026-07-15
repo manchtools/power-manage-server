@@ -352,3 +352,54 @@ func (b *countingBackend) SetCalls() int {
 	defer b.mu.Unlock()
 	return b.sets
 }
+
+// TestRegisterGatewayAlive_ListLive_AndDeregister pins the spec-31 liveness fix:
+// a live gateway shows up in ListLiveGatewayIDs, and stop() (clean shutdown or
+// TTL expiry) removes it — so a restarted gateway's departed ephemeral id stops
+// counting as live (the "stale Active" bug).
+func TestRegisterGatewayAlive_ListLive_AndDeregister(t *testing.T) {
+	r := New(NewFakeBackend(nil), nil)
+	ctx := context.Background()
+
+	live, err := r.ListLiveGatewayIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListLiveGatewayIDs: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("expected no live gateways initially, got %d", len(live))
+	}
+
+	stop1, err := r.RegisterGatewayAlive(ctx, "gw-1", time.Minute, time.Second)
+	if err != nil {
+		t.Fatalf("RegisterGatewayAlive gw-1: %v", err)
+	}
+	stop2, err := r.RegisterGatewayAlive(ctx, "gw-2", time.Minute, time.Second)
+	if err != nil {
+		t.Fatalf("RegisterGatewayAlive gw-2: %v", err)
+	}
+	defer stop2()
+
+	live, _ = r.ListLiveGatewayIDs(ctx)
+	if _, ok := live["gw-1"]; !ok {
+		t.Error("gw-1 must be live after RegisterGatewayAlive")
+	}
+	if _, ok := live["gw-2"]; !ok {
+		t.Error("gw-2 must be live after RegisterGatewayAlive")
+	}
+
+	stop1() // clean shutdown deletes the marker
+	live, _ = r.ListLiveGatewayIDs(ctx)
+	if _, ok := live["gw-1"]; ok {
+		t.Error("gw-1 must NOT be live after stop() — a departed gateway is not Active")
+	}
+	if _, ok := live["gw-2"]; !ok {
+		t.Error("gw-2 must still be live")
+	}
+}
+
+func TestRegisterGatewayAlive_RejectsEmptyID(t *testing.T) {
+	r := New(NewFakeBackend(nil), nil)
+	if _, err := r.RegisterGatewayAlive(context.Background(), "", time.Minute, time.Second); err == nil {
+		t.Error("empty gatewayID must be rejected")
+	}
+}

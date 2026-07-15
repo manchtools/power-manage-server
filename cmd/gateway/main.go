@@ -285,6 +285,24 @@ func main() {
 		}
 	}()
 
+	// Gateway liveness (spec 31): publish an UNCONDITIONAL per-gateway alive
+	// marker so control's ListGateways reflects which gateway_ids are actually
+	// live right now — not merely which certs haven't expired. Runs whenever the
+	// gateway has a registry (i.e. always — the gateway needs Valkey for asynq),
+	// independent of the terminal/internal/traefik registrations below (each
+	// conditional on deploy mode). A restarted gateway re-enrols under a fresh
+	// ephemeral id, and this marker TTL-expires for the old one, so the departed
+	// id stops showing "Active".
+	if aliveStop, err := ensureGatewayRegistry().RegisterGatewayAlive(
+		shutdownCtx, gatewayID, registry.DefaultGatewayTTL, registry.DefaultGatewayRefreshInterval,
+	); err != nil {
+		// Only a validation error is possible here (never for a post-enrollment
+		// id); log fail-open rather than kill the gateway over a liveness marker.
+		logger.Warn("failed to register gateway liveness marker", "error", err)
+	} else {
+		defer aliveStop()
+	}
+
 	// Compute the agent redirect hostname independently of the terminal
 	// URL. This supports multi-gateway agent routing without requiring
 	// the terminal feature to be enabled.
