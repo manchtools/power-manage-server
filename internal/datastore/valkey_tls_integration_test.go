@@ -25,7 +25,8 @@ func TestValkeyMutualTLS_AndACL_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test (real Valkey container)")
 	}
-	caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM := pgTLSPKI(t, "valkey-client")
+	certAuth := buildTestCA(t)
+	caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM := caIssuedPKI(t, certAuth, "valkey-client")
 
 	// port 0 disables plaintext; tls-port + tls-auth-clients yes require a
 	// CA-signed client cert. Two ACL users: pmfull (connectivity) and pmscoped
@@ -64,15 +65,12 @@ func TestValkeyMutualTLS_AndACL_Integration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
-	host, err := container.Host(ctx)
-	if err != nil {
-		t.Fatalf("host: %v", err)
-	}
 	port, err := container.MappedPort(ctx, "6379")
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
-	addr := fmt.Sprintf("%s:%s", host, port.Port())
+	// Connect via "localhost" so the CA-stamped DNS:localhost SAN matches.
+	addr := fmt.Sprintf("localhost:%s", port.Port())
 
 	clientTLS, err := datastore.ValkeyClientTLS(cliCertPEM, cliKeyPEM, caPEM)
 	if err != nil {

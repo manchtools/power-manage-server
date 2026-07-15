@@ -11,89 +11,96 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/oklog/ulid/v2"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/datastore"
 )
 
-// mkCert issues a cert from the given template signed by parent/parentKey (or
-// self-signed when parent is nil), returning the cert PEM and a PEM-encoded
-// EC private key.
-func mkCert(t *testing.T, tmpl, parent *x509.Certificate, parentKey *ecdsa.PrivateKey) (certPEM, keyPEM []byte, key *ecdsa.PrivateKey) {
+// buildTestCA constructs the REAL internal/ca.CA the system uses (the spec-31
+// trust root spec 32 reuses for datastore mTLS), so these integration tests
+// exercise operationally-issued certs rather than a throwaway PKI.
+func buildTestCA(t *testing.T) *ca.CA {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("ca key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Power Manage Internal CA", Organization: []string{"power-manage-test"}},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("ca cert: %v", err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	kder, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("ca key marshal: %v", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder})
+	certAuth, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("ca.NewFromPEM: %v", err)
+	}
+	return certAuth
+}
+
+// genKeyCSR generates an EC keypair and a plain CSR (no SANs — the CA
+// authoritatively stamps SANs) with the given CN.
+func genKeyCSR(t *testing.T, cn string) (keyPEM, csrPEM []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatalf("genkey: %v", err)
 	}
-	signer, signerKey := parent, parentKey
-	if signer == nil {
-		signer, signerKey = tmpl, key // self-signed
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, signer, &key.PublicKey, signerKey)
+	der, err := x509.CreateCertificateRequest(rand.Reader,
+		&x509.CertificateRequest{Subject: pkix.Name{CommonName: cn}}, key)
 	if err != nil {
-		t.Fatalf("createcert: %v", err)
+		t.Fatalf("csr: %v", err)
 	}
 	kder, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
 		t.Fatalf("marshalkey: %v", err)
 	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}), key
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kder}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
-// pgTLSPKI builds a CA plus a server cert (SAN 127.0.0.1/::1/localhost) and a
-// client cert whose CN maps to the DB role.
-func pgTLSPKI(t *testing.T, clientCN string) (caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM []byte) {
+// caIssuedPKI issues, from the real CA, a datastore SERVER cert (ServerAuth +
+// DNS:localhost, via the gateway issuance path — the one that stamps ServerAuth
+// EKU + a server-chosen DNS SAN) and a component CLIENT cert (ClientAuth,
+// CN=clientRole, via the agent issuance path). This is the same CA machinery
+// setup.sh uses to mint the operational datastore/component certs.
+func caIssuedPKI(t *testing.T, certAuth *ca.CA, clientRole string) (caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM []byte) {
 	t.Helper()
-	notBefore := time.Unix(0, 0)
-	notAfter := time.Now().Add(time.Hour)
-
-	caTmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "pm-test-ca"},
-		NotBefore:             notBefore,
-		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-		IsCA:                  true,
-		BasicConstraintsValid: true,
+	srvKeyPEM, srvCSR := genKeyCSR(t, "datastore-server")
+	srvCert, err := certAuth.IssueGatewayCertificateFromCSR(ulid.Make().String(), srvCSR, "localhost")
+	if err != nil {
+		t.Fatalf("issue datastore server cert: %v", err)
 	}
-	caPEM, _, caKey := mkCert(t, caTmpl, nil, nil)
-	caCert, _ := x509.ParseCertificate(pemDER(caPEM))
-
-	srvTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "pg-server"},
-		NotBefore:    notBefore,
-		NotAfter:     notAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		IPAddresses:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback},
-		DNSNames:     []string{"localhost"},
+	cliKeyPEM, cliCSR := genKeyCSR(t, clientRole)
+	cliCert, err := certAuth.IssueCertificateFromCSR(clientRole, cliCSR)
+	if err != nil {
+		t.Fatalf("issue component client cert: %v", err)
 	}
-	srvCertPEM, srvKeyPEM, _ = mkCert(t, srvTmpl, caCert, caKey)
-
-	cliTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(3),
-		Subject:      pkix.Name{CommonName: clientCN},
-		NotBefore:    notBefore,
-		NotAfter:     notAfter,
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	cliCertPEM, cliKeyPEM, _ = mkCert(t, cliTmpl, caCert, caKey)
-	return caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM
+	return certAuth.CACertPEM(), srvCert.CertPEM, srvKeyPEM, cliCert.CertPEM, cliKeyPEM
 }
-
-func pemDER(p []byte) []byte { b, _ := pem.Decode(p); return b.Bytes }
 
 func writeFile(t *testing.T, dir, name string, data []byte) string {
 	t.Helper()
@@ -105,14 +112,16 @@ func writeFile(t *testing.T, dir, name string, data []byte) string {
 }
 
 // TestPostgresMutualTLS_Integration proves the spec-32 Postgres posture on a
-// real container: hostssl + cert auth accepts a valid client cert (sslmode=
-// verify-full), and a plaintext (sslmode=disable) connection is refused.
+// real container using CERTS ISSUED BY THE REAL CA: hostssl + cert auth accepts
+// a valid client cert (sslmode=verify-full), and a plaintext (sslmode=disable)
+// connection is refused.
 func TestPostgresMutualTLS_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test (real Postgres container)")
 	}
 	const role = "pmtls"
-	caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM := pgTLSPKI(t, role)
+	certAuth := buildTestCA(t)
+	caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM := caIssuedPKI(t, certAuth, role)
 
 	dir := t.TempDir()
 	postgresqlConf := "listen_addresses = '*'\n" +
@@ -121,16 +130,13 @@ func TestPostgresMutualTLS_Integration(t *testing.T) {
 		"ssl_key_file = '/certs/server.key'\n" +
 		"ssl_ca_file = '/certs/ca.crt'\n" +
 		"hba_file = '/certs/pg_hba.conf'\n"
-	// local (unix socket) trust so the entrypoint can initdb/create the role;
-	// TCP requires SSL + a CA-signed client cert whose CN maps to the DB user.
 	pgHBA := "local all all trust\n" +
 		"hostssl all all 0.0.0.0/0 cert clientcert=verify-full\n" +
 		"hostssl all all ::/0 cert clientcert=verify-full\n"
 
 	// The server key is mounted root-owned; postgres (uid 70) can't read a
 	// root-owned 0600 file, and 0644 makes PG refuse to start. Chown it to
-	// postgres before starting the server (the classic PG-in-a-container TLS
-	// hurdle) via an entrypoint wrapper, then exec the normal entrypoint.
+	// postgres before starting the server via an entrypoint wrapper.
 	tlsEntrypoint := testcontainers.CustomizeRequestOption(func(req *testcontainers.GenericContainerRequest) error {
 		req.Entrypoint = []string{"sh", "-c",
 			"chown postgres /certs/server.key && chmod 0600 /certs/server.key && " +
@@ -162,14 +168,12 @@ func TestPostgresMutualTLS_Integration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = container.Terminate(ctx) })
 
-	host, err := container.Host(ctx)
-	if err != nil {
-		t.Fatalf("host: %v", err)
-	}
 	port, err := container.MappedPort(ctx, "5432/tcp")
 	if err != nil {
 		t.Fatalf("port: %v", err)
 	}
+	// Connect via "localhost" so verify-full matches the CA-stamped DNS:localhost SAN.
+	const host = "localhost"
 
 	caFile := writeFile(t, dir, "client-ca.crt", caPEM)
 	cliCertFile := writeFile(t, dir, "client.crt", cliCertPEM)
@@ -179,17 +183,15 @@ func TestPostgresMutualTLS_Integration(t *testing.T) {
 		"postgres://%s@%s:%s/%s?sslmode=verify-full&sslrootcert=%s&sslcert=%s&sslkey=%s",
 		role, host, port.Port(), role, caFile, cliCertFile, cliKeyFile)
 
-	// The DSN validator accepts it.
 	if err := datastore.RequirePostgresTLS(verifyFullDSN); err != nil {
 		t.Errorf("RequirePostgresTLS rejected a valid verify-full DSN: %v", err)
 	}
 
-	// Mutual TLS connects.
 	connCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(connCtx, verifyFullDSN)
 	if err != nil {
-		t.Fatalf("mutual-TLS connect failed: %v", err)
+		t.Fatalf("mutual-TLS connect (CA-issued certs) failed: %v", err)
 	}
 	var one int
 	if err := conn.QueryRow(connCtx, "SELECT 1").Scan(&one); err != nil || one != 1 {
@@ -197,7 +199,6 @@ func TestPostgresMutualTLS_Integration(t *testing.T) {
 	}
 	_ = conn.Close(connCtx)
 
-	// A plaintext (sslmode=disable) connection is refused by the hostssl-only hba.
 	disableDSN := fmt.Sprintf("postgres://%s:x@%s:%s/%s?sslmode=disable", role, host, port.Port(), role)
 	if c, err := pgx.Connect(connCtx, disableDSN); err == nil {
 		_ = c.Close(connCtx)
