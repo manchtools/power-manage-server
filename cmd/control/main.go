@@ -75,6 +75,13 @@ type Config struct {
 	ValkeyAddr     string
 	ValkeyPassword string
 	ValkeyDB       int
+	// Datastore mutual-TLS + per-service ACL (spec 32): ACL user + client-cert
+	// material for connecting to Valkey over mTLS. Control boot requires them
+	// (fail closed) once spec 32 lands; empty on pre-spec-32 deployments.
+	ValkeyUsername string
+	ValkeyTLSCert  string
+	ValkeyTLSKey   string
+	ValkeyTLSCA    string
 
 	// rc11 #77: derived-projection reconciler for system actions.
 	// Interval is the period between full SyncAllUsersSystemActions

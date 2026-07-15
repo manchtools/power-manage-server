@@ -35,6 +35,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/crl"
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -139,18 +140,34 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 		return nil, errors.New("PM_TASK_SIGNING_KEY is required when CONTROL_VALKEY_ADDR is set (audit F-02 — task signing is mandatory)")
 	}
 
+	// spec 32: the client-cert TLS config every control→Valkey connection
+	// presents. nil when no cert paths are configured (dev/plaintext); boot
+	// enforces its presence separately when datastore mTLS is required.
+	valkeyTLS, err := valkeyClientTLS(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("configure valkey mTLS: %w", err)
+	}
+
 	v := &valkeySubsystem{taskSigner: taskSigner}
-	v.aqClient = taskqueue.NewClientWithSigner(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB, taskSigner)
+	v.aqClient = taskqueue.NewSecureClient(asynq.RedisClientOpt{
+		Addr:      cfg.ValkeyAddr,
+		Username:  cfg.ValkeyUsername,
+		Password:  cfg.ValkeyPassword,
+		DB:        cfg.ValkeyDB,
+		TLSConfig: valkeyTLS,
+	}, taskSigner)
 	svc.SetTaskQueueClient(v.aqClient)
 
 	// Force RESP2 protocol: go-redis v9 auto-negotiates RESP3 with Redis 7+,
 	// but RediSearch returns FT.SEARCH results in a different format under
 	// RESP3 (map vs array), which breaks our result parser.
 	v.rdb = redis.NewClient(&redis.Options{
-		Addr:     cfg.ValkeyAddr,
-		Password: cfg.ValkeyPassword,
-		DB:       cfg.ValkeyDB,
-		Protocol: 2,
+		Addr:      cfg.ValkeyAddr,
+		Username:  cfg.ValkeyUsername,
+		Password:  cfg.ValkeyPassword,
+		DB:        cfg.ValkeyDB,
+		Protocol:  2,
+		TLSConfig: valkeyTLS,
 		// 30s (vs the 3s default) so the admin-triggered RebuildSearchIndex —
 		// which bulk-warms every scope — tolerates valkey-search indexing
 		// latency on a modest host instead of failing with "i/o timeout".
@@ -218,12 +235,12 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	// Asynq mux + servers.
 	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"), gatewayReg)
 	aqLogger := logger.With("component", "asynq_server")
-	v.inboxServer = newInboxAsynqServer(cfg, aqLogger)
+	v.inboxServer = newInboxAsynqServer(cfg, valkeyTLS, aqLogger)
 	if err := v.inboxServer.Start(inboxWorker.NewMux()); err != nil {
 		return v, fmt.Errorf("start inbox asynq server: %w", err)
 	}
 
-	v.terminalAuditServer = newTerminalAuditAsynqServer(cfg, aqLogger)
+	v.terminalAuditServer = newTerminalAuditAsynqServer(cfg, valkeyTLS, aqLogger)
 	if err := v.terminalAuditServer.Start(inboxWorker.NewTerminalAuditMux()); err != nil {
 		return v, fmt.Errorf("start terminal audit asynq server: %w", err)
 	}
@@ -314,12 +331,41 @@ func auditIndexListener(idx *search.Index, logger *slog.Logger) store.EventListe
 	}
 }
 
-func newInboxAsynqServer(cfg *Config, logger *slog.Logger) *asynq.Server {
+// valkeyClientTLS builds the client-cert TLS config every control→Valkey
+// connection presents (spec 32). Returns nil when no cert paths are set
+// (dev/plaintext), a config when all three are set, or an error when the set is
+// partial (fail closed). Control boot separately requires a non-nil result when
+// datastore mTLS is mandatory.
+func valkeyClientTLS(cfg *Config) (*tls.Config, error) {
+	if cfg.ValkeyTLSCert == "" && cfg.ValkeyTLSKey == "" && cfg.ValkeyTLSCA == "" {
+		return nil, nil
+	}
+	if cfg.ValkeyTLSCert == "" || cfg.ValkeyTLSKey == "" || cfg.ValkeyTLSCA == "" {
+		return nil, errors.New("CONTROL_VALKEY_TLS_CERT, _KEY, and _CA must all be set for datastore mTLS (spec 32)")
+	}
+	certPEM, err := os.ReadFile(cfg.ValkeyTLSCert)
+	if err != nil {
+		return nil, fmt.Errorf("read valkey client cert: %w", err)
+	}
+	keyPEM, err := os.ReadFile(cfg.ValkeyTLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("read valkey client key: %w", err)
+	}
+	caPEM, err := os.ReadFile(cfg.ValkeyTLSCA)
+	if err != nil {
+		return nil, fmt.Errorf("read valkey CA: %w", err)
+	}
+	return datastore.ValkeyClientTLS(certPEM, keyPEM, caPEM)
+}
+
+func newInboxAsynqServer(cfg *Config, tlsCfg *tls.Config, logger *slog.Logger) *asynq.Server {
 	return asynq.NewServer(
 		asynq.RedisClientOpt{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
+			Addr:      cfg.ValkeyAddr,
+			Username:  cfg.ValkeyUsername,
+			Password:  cfg.ValkeyPassword,
+			DB:        cfg.ValkeyDB,
+			TLSConfig: tlsCfg,
 		},
 		asynq.Config{
 			Concurrency: 10,
@@ -338,13 +384,15 @@ func newInboxAsynqServer(cfg *Config, logger *slog.Logger) *asynq.Server {
 // last_sequence guard prevents duplicate redeliveries but not two
 // workers racing on different sequences (which would drop the loser's
 // bytes). See taskqueue.ControlTerminalAuditQueue for full rationale.
-func newTerminalAuditAsynqServer(cfg *Config, logger *slog.Logger) *asynq.Server {
+func newTerminalAuditAsynqServer(cfg *Config, tlsCfg *tls.Config, logger *slog.Logger) *asynq.Server {
 	auditLog := logger.With("queue", "terminal_audit")
 	return asynq.NewServer(
 		asynq.RedisClientOpt{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
+			Addr:      cfg.ValkeyAddr,
+			Username:  cfg.ValkeyUsername,
+			Password:  cfg.ValkeyPassword,
+			DB:        cfg.ValkeyDB,
+			TLSConfig: tlsCfg,
 		},
 		asynq.Config{
 			Concurrency: 1,

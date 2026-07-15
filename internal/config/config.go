@@ -28,6 +28,14 @@ type Config struct {
 	ValkeyAddr     string
 	ValkeyPassword string
 	ValkeyDB       int
+	// Datastore mutual-TLS + per-service ACL (spec 32). ValkeyUsername is the
+	// ACL user; the three TLS paths are the client cert material for connecting
+	// to Valkey over mTLS. Empty on pre-spec-32 / plaintext-dev deployments;
+	// control boot requires them (fail closed) once spec 32 lands.
+	ValkeyUsername string
+	ValkeyTLSCert  string
+	ValkeyTLSKey   string
+	ValkeyTLSCA    string
 
 	// Control server URL for internal RPC proxying
 	ControlURL string
