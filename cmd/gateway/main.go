@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/config"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/crl"
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/gwenroll"
@@ -164,8 +166,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// spec 32: datastore mutual TLS. valkeyOpt carries the per-service ACL
+	// Username + the client-cert TLSConfig every gateway→Valkey connection
+	// presents (task queue, device workers, registry, CRL). Fail closed — Valkey
+	// is required above and spec 32 permits no plaintext fallback.
+	valkeyTLS, err := datastore.ValkeyClientTLSFromFiles(cfg.ValkeyTLSCert, cfg.ValkeyTLSKey, cfg.ValkeyTLSCA)
+	if err != nil {
+		logger.Error("failed to configure valkey mTLS", "error", err)
+		os.Exit(1)
+	}
+	if valkeyTLS == nil {
+		logger.Error("datastore mTLS is required (spec 32): set GATEWAY_VALKEY_TLS_CERT, _TLS_KEY, and _TLS_CA")
+		os.Exit(1)
+	}
+	valkeyOpt := asynq.RedisClientOpt{
+		Addr:      cfg.ValkeyAddr,
+		Username:  cfg.ValkeyUsername,
+		Password:  cfg.ValkeyPassword,
+		DB:        cfg.ValkeyDB,
+		TLSConfig: valkeyTLS,
+	}
+
 	// Create Asynq task queue client
-	aqClient := taskqueue.NewClientWithSigner(cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB, taskSigner)
+	aqClient := taskqueue.NewSecureClient(valkeyOpt, taskSigner)
 	defer aqClient.Close()
 	logger.Info("task queue client initialized", "valkey_addr", cfg.ValkeyAddr)
 
@@ -231,7 +254,7 @@ func main() {
 
 	// Create device worker manager
 	workerMgr := gateway.NewDeviceWorkerManager(
-		cfg.ValkeyAddr, cfg.ValkeyPassword, cfg.ValkeyDB,
+		valkeyOpt,
 		taskFactory.NewMux,
 		logger.With("component", "device_worker"),
 	)
@@ -269,10 +292,12 @@ func main() {
 			return gatewayReg
 		}
 		registryRDB = redis.NewClient(&redis.Options{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
-			Protocol: 2,
+			Addr:      cfg.ValkeyAddr,
+			Username:  cfg.ValkeyUsername,
+			Password:  cfg.ValkeyPassword,
+			DB:        cfg.ValkeyDB,
+			Protocol:  2,
+			TLSConfig: valkeyTLS,
 		})
 		gatewayReg = registry.New(registry.NewValkeyBackend(registryRDB), logger.With("component", "registry"))
 		return gatewayReg
@@ -638,10 +663,12 @@ func main() {
 	// map lookup that survives a Valkey blip. The gateway always has Valkey
 	// (required above), so this is always on.
 	crlRDB := redis.NewClient(&redis.Options{
-		Addr:     cfg.ValkeyAddr,
-		Password: cfg.ValkeyPassword,
-		DB:       cfg.ValkeyDB,
-		Protocol: 2,
+		Addr:      cfg.ValkeyAddr,
+		Username:  cfg.ValkeyUsername,
+		Password:  cfg.ValkeyPassword,
+		DB:        cfg.ValkeyDB,
+		Protocol:  2,
+		TLSConfig: valkeyTLS,
 	})
 	defer crlRDB.Close()
 	crlCache := crl.NewCache(crl.NewStore(crlRDB), logger.With("component", "crl"))

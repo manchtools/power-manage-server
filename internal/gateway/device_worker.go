@@ -16,9 +16,10 @@ import (
 // Each connected device gets its own Asynq server processing queue device:<deviceID>
 // with concurrency 1 to ensure ordered execution.
 type DeviceWorkerManager struct {
-	valkeyAddr     string
-	valkeyPassword string
-	valkeyDB       int
+	// redisOpt is the fully-built Valkey connection option (addr, DB, and —
+	// spec 32 — the per-service ACL Username + client-cert TLSConfig). Each
+	// per-device Asynq server reuses it, varying only the Queues in asynq.Config.
+	redisOpt       asynq.RedisClientOpt
 	handlerFactory func(deviceID string) *asynq.ServeMux
 	logger         *slog.Logger
 
@@ -26,17 +27,16 @@ type DeviceWorkerManager struct {
 	workers map[string]*asynq.Server
 }
 
-// NewDeviceWorkerManager creates a new device worker manager.
+// NewDeviceWorkerManager creates a new device worker manager. redisOpt carries
+// the connection details for every per-device Asynq server it spins up,
+// including the spec-32 datastore mTLS Username + TLSConfig when configured.
 func NewDeviceWorkerManager(
-	valkeyAddr, valkeyPassword string,
-	valkeyDB int,
+	redisOpt asynq.RedisClientOpt,
 	handlerFactory func(deviceID string) *asynq.ServeMux,
 	logger *slog.Logger,
 ) *DeviceWorkerManager {
 	return &DeviceWorkerManager{
-		valkeyAddr:     valkeyAddr,
-		valkeyPassword: valkeyPassword,
-		valkeyDB:       valkeyDB,
+		redisOpt:       redisOpt,
 		handlerFactory: handlerFactory,
 		logger:         logger,
 		workers:        make(map[string]*asynq.Server),
@@ -56,11 +56,7 @@ func (m *DeviceWorkerManager) StartWorker(deviceID string) error {
 	queue := taskqueue.DeviceQueue(deviceID)
 	devLogger := m.logger.With("device_id", deviceID)
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{
-			Addr:     m.valkeyAddr,
-			Password: m.valkeyPassword,
-			DB:       m.valkeyDB,
-		},
+		m.redisOpt,
 		asynq.Config{
 			Concurrency: 1,
 			Queues:      map[string]int{queue: 1},

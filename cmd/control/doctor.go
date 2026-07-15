@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/doctor"
 )
 
@@ -66,7 +67,23 @@ func runDoctor(args []string) int {
 		}
 		valkeyDB = n
 	}
-	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], vars["CONTROL_VALKEY_PASSWORD"], valkeyDB); err == nil {
+	// spec 32: probe Valkey the same way the live server connects — as the ACL
+	// user over mutual TLS. A partial/absent cert set yields a nil tlsCfg (plain-
+	// text probe); we log the reason so an incomplete config isn't a silent
+	// false "unreachable". Inside the control container the cert env is set, so
+	// the probe authenticates and reports accurately.
+	valkeyTLS, err := datastore.ValkeyClientTLSFromFiles(vars["CONTROL_VALKEY_TLS_CERT"], vars["CONTROL_VALKEY_TLS_KEY"], vars["CONTROL_VALKEY_TLS_CA"])
+	valkeyUser, valkeyPass := vars["CONTROL_VALKEY_USERNAME"], vars["CONTROL_VALKEY_PASSWORD"]
+	if err != nil {
+		// A nil tlsCfg means the probe would connect WITHOUT TLS — sending the
+		// ACL password in the clear. Drop the credentials so a doctor run with an
+		// incomplete cert set (e.g. outside the control container, against a
+		// remote datastore) can't leak them onto an unencrypted socket. The probe
+		// then fails at the datastores check, which is the accurate verdict.
+		fmt.Fprintf(os.Stderr, "doctor: valkey mTLS config incomplete, probing without TLS and without ACL credentials: %v\n", err)
+		valkeyUser, valkeyPass = "", ""
+	}
+	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], valkeyUser, valkeyPass, valkeyDB, valkeyTLS); err == nil {
 		env.Cache = cache
 		defer cache.Close()
 	}

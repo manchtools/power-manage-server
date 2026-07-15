@@ -58,14 +58,18 @@ func NewClient(addr, password string, db int) *Client {
 // payload before it lands in Valkey, so a Valkey compromise can't
 // forge task content the workers will dispatch.
 func NewClientWithSigner(addr, password string, db int, signer *Signer) *Client {
-	opts := asynq.RedisClientOpt{
-		Addr:     addr,
-		Password: password,
-		DB:       db,
-	}
+	return NewSecureClient(asynq.RedisClientOpt{Addr: addr, Password: password, DB: db}, signer)
+}
+
+// NewSecureClient is the spec-32 mTLS/ACL production constructor: the caller
+// supplies a fully-built RedisClientOpt carrying the per-service ACL Username
+// and the client-cert TLSConfig for datastore mutual TLS. Signer is mandatory
+// as in NewClientWithSigner. Control boot uses this; plaintext callers (tests,
+// pre-spec-32 gateway) use NewClientWithSigner.
+func NewSecureClient(opt asynq.RedisClientOpt, signer *Signer) *Client {
 	return &Client{
-		client:    asynq.NewClient(opts),
-		inspector: asynq.NewInspector(opts),
+		client:    asynq.NewClient(opt),
+		inspector: asynq.NewInspector(opt),
 		signer:    signer,
 	}
 }

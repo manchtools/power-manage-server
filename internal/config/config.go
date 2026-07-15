@@ -28,6 +28,14 @@ type Config struct {
 	ValkeyAddr     string
 	ValkeyPassword string
 	ValkeyDB       int
+	// Datastore mutual-TLS + per-service ACL (spec 32). ValkeyUsername is the
+	// ACL user; the three TLS paths are the client cert material for connecting
+	// to Valkey over mTLS. Empty on pre-spec-32 / plaintext-dev deployments;
+	// control boot requires them (fail closed) once spec 32 lands.
+	ValkeyUsername string
+	ValkeyTLSCert  string
+	ValkeyTLSKey   string
+	ValkeyTLSCA    string
 
 	// Control server URL for internal RPC proxying (the mTLS InternalService
 	// listener — the gateway reaches it with its enrolled cert).
@@ -204,6 +212,10 @@ func FromEnv() *Config {
 		ValkeyAddr:                getEnv("GATEWAY_VALKEY_ADDR", "localhost:6379"),
 		ValkeyPassword:            getEnv("GATEWAY_VALKEY_PASSWORD", ""),
 		ValkeyDB:                  getEnvInt("GATEWAY_VALKEY_DB", 0),
+		ValkeyUsername:            getEnv("GATEWAY_VALKEY_USERNAME", ""),
+		ValkeyTLSCert:             getEnv("GATEWAY_VALKEY_TLS_CERT", ""),
+		ValkeyTLSKey:              getEnv("GATEWAY_VALKEY_TLS_KEY", ""),
+		ValkeyTLSCA:               getEnv("GATEWAY_VALKEY_TLS_CA", ""),
 		ControlURL:                getEnv("GATEWAY_CONTROL_URL", "https://control:8082"),
 		ControlEnrollURL:          getEnv("GATEWAY_CONTROL_ENROLL_URL", ""),
 		EnrollToken:               getEnv("PM_GATEWAY_ENROLL_TOKEN", ""),
