@@ -97,7 +97,7 @@ docker compose exec control control doctor --json   # machine-readable
 ```
 <!-- docref: end -->
 
-<!-- docref: begin src=cmd/control/doctor.go#runDoctor:7091dc81 -->
+<!-- docref: begin src=cmd/control/doctor.go#runDoctor:9b9d0319 -->
 Flags:
 
 - `--json` — emit a JSON report (`{summary, findings, exec_errors, exit_code}`) for CI/monitoring.

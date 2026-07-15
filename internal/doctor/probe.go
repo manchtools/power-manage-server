@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"strings"
 	"time"
@@ -77,14 +78,16 @@ type ValkeyProbe struct {
 }
 
 // NewValkeyProbe builds a Valkey probe. RESP2 is forced to match the indexer
-// (RediSearch is RESP3-incompatible).
-func NewValkeyProbe(addr, password string, db int) (*ValkeyProbe, error) {
+// (RediSearch is RESP3-incompatible). username + tlsCfg carry the spec-32
+// datastore ACL user and client-cert config so the probe authenticates the same
+// way the live control server does; a nil tlsCfg probes plaintext (pre-spec-32).
+func NewValkeyProbe(addr, username, password string, db int, tlsCfg *tls.Config) (*ValkeyProbe, error) {
 	if strings.TrimSpace(addr) == "" {
 		return nil, errors.New("CONTROL_VALKEY_ADDR is empty")
 	}
-	opt := asynq.RedisClientOpt{Addr: addr, Password: password, DB: db}
+	opt := asynq.RedisClientOpt{Addr: addr, Username: username, Password: password, DB: db, TLSConfig: tlsCfg}
 	return &ValkeyProbe{
-		rdb:       redis.NewClient(&redis.Options{Addr: addr, Password: password, DB: db, Protocol: 2}),
+		rdb:       redis.NewClient(&redis.Options{Addr: addr, Username: username, Password: password, DB: db, Protocol: 2, TLSConfig: tlsCfg}),
 		inspector: asynq.NewInspector(opt),
 		queues:    []string{taskqueue.ControlInboxQueue, taskqueue.ControlTerminalAuditQueue, taskqueue.SearchQueue},
 	}, nil

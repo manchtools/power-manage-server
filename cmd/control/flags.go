@@ -112,6 +112,11 @@ func applyEnvOverrides(cfg *Config) {
 	config.EnvString(&cfg.ValkeyAddr, "CONTROL_VALKEY_ADDR")
 	config.EnvString(&cfg.ValkeyPassword, "CONTROL_VALKEY_PASSWORD")
 	config.EnvInt(&cfg.ValkeyDB, "CONTROL_VALKEY_DB")
+	// Datastore mTLS + ACL (spec 32).
+	config.EnvString(&cfg.ValkeyUsername, "CONTROL_VALKEY_USERNAME")
+	config.EnvString(&cfg.ValkeyTLSCert, "CONTROL_VALKEY_TLS_CERT")
+	config.EnvString(&cfg.ValkeyTLSKey, "CONTROL_VALKEY_TLS_KEY")
+	config.EnvString(&cfg.ValkeyTLSCA, "CONTROL_VALKEY_TLS_CA")
 
 	config.EnvBool(&cfg.InventorySchedulerEnabled, "CONTROL_INVENTORY_SCHEDULER_ENABLED", []string{"true", "1"}, []string{"false", "0"})
 
