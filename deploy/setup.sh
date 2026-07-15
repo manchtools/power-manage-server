@@ -60,10 +60,9 @@ check_env() {
         missing=1
     fi
 
-    if [[ -z "$VALKEY_PASSWORD" ]] || [[ "$VALKEY_PASSWORD" == "CHANGE_ME"* ]]; then
-        log_error "VALKEY_PASSWORD must be set in .env"
-        missing=1
-    fi
+    # spec 32: the single shared VALKEY_PASSWORD (requirepass) is gone —
+    # replaced by four per-service ACL passwords that ensure_acl_passwords
+    # mints automatically, so there is nothing for the operator to set here.
 
     if [[ -z "$JWT_SECRET" ]] || [[ "$JWT_SECRET" == "CHANGE_ME"* ]]; then
         log_error "JWT_SECRET must be set in .env"
@@ -274,6 +273,67 @@ generate_control_public_cert() {
     chmod 644 "$CERTS_DIR/control-public.crt"
 
     log_info "Control public certificate generated (valid 825 days)"
+}
+
+# generate_datastore_cert issues certs/<name>.{crt,key} signed by the internal
+# CA for spec-32 datastore mutual TLS. $san may be empty (client certs); $eku is
+# serverAuth (Postgres/Valkey server certs), clientAuth (component client certs),
+# or both. Idempotent: keeps an existing pair so a re-run doesn't rotate a cert
+# that services are already validating against.
+generate_datastore_cert() {
+    local name="$1" cn="$2" san="$3" eku="$4"
+    if [[ -f "$CERTS_DIR/${name}.crt" ]] && [[ -f "$CERTS_DIR/${name}.key" ]]; then
+        log_info "Datastore certificate ${name} already exists — keeping"
+        return
+    fi
+    log_info "Generating datastore certificate ${name} (CN=${cn})..."
+    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/${name}.key"
+    openssl req -new -key "$CERTS_DIR/${name}.key" \
+        -subj "/CN=${cn}/O=Power Manage" \
+        -out "$CERTS_DIR/${name}.csr"
+    # ${san:+…} emits the subjectAltName line only when $san is non-empty (client
+    # certs have none). authorityKeyIdentifier gives Go/libpq a reliable chain.
+    openssl x509 -req -in "$CERTS_DIR/${name}.csr" \
+        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
+        -days 825 \
+        -extfile <(printf 'authorityKeyIdentifier=keyid:always\nextendedKeyUsage=%s\n%s\n' "$eku" "${san:+subjectAltName=$san}") \
+        -out "$CERTS_DIR/${name}.crt"
+    rm -f "$CERTS_DIR/${name}.csr"
+    chmod 600 "$CERTS_DIR/${name}.key"
+    chmod 644 "$CERTS_DIR/${name}.crt"
+    log_info "Datastore certificate ${name} generated (valid 825 days)"
+}
+
+# generate_datastore_certs issues the spec-32 datastore PKI: TLS server certs for
+# Postgres + Valkey (SAN MUST match the compose service hostname each client
+# dials, or verify-full rejects the connection), and per-component client certs.
+# Postgres 'cert' auth maps a client cert's CN to a DB role, so control→powermanage
+# and indexer→pm_indexer CNs MUST equal the roles; gateway/traefik never touch
+# Postgres so their CN is only cosmetic (Valkey verifies chain-to-CA, not CN).
+generate_datastore_certs() {
+    generate_datastore_cert postgres postgres "DNS:postgres,DNS:localhost" "serverAuth"
+    # Valkey server cert doubles as the healthcheck's client cert, so both EKUs.
+    generate_datastore_cert valkey   valkey   "DNS:valkey,DNS:localhost"     "serverAuth,clientAuth"
+    generate_datastore_cert control-datastore powermanage "" "clientAuth"
+    generate_datastore_cert indexer-datastore pm_indexer  "" "clientAuth"
+    generate_datastore_cert gateway-datastore pm-gateway  "" "clientAuth"
+    generate_datastore_cert traefik-datastore pm-traefik  "" "clientAuth"
+}
+
+# ensure_acl_passwords mints any missing per-service Valkey ACL password (spec 32)
+# into .env AND the current shell. These are internal service credentials, not
+# operator-facing, so we generate them automatically like the other secrets
+# rather than prompt. Idempotent: an already-set value is left untouched.
+ensure_acl_passwords() {
+    local var generated
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+        if [[ -z "${!var:-}" ]]; then
+            generated="$(openssl rand -hex 24)"
+            write_env_var "$var" "$generated"
+            printf -v "$var" '%s' "$generated"
+            log_info "Generated ${var}"
+        fi
+    done
 }
 
 show_instructions() {
@@ -732,6 +792,8 @@ main() {
     generate_gateway_cert
     generate_control_cert
     generate_control_public_cert
+    # spec 32: datastore mutual-TLS PKI (Postgres + Valkey server + client certs).
+    generate_datastore_certs
 
     # Data directories need permissions that let the container
     # users (postgres uid 70, valkey uid 999, traefik uid 0)
@@ -743,6 +805,9 @@ main() {
     chmod 755 "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
     log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
 
+    # spec 32: mint the per-service Valkey ACL passwords before rendering the
+    # config that embeds them.
+    ensure_acl_passwords
     render_valkey_config
 
     show_instructions
@@ -775,18 +840,27 @@ render_valkey_config() {
     # other approach we tried interprets `&` as the matched text
     # (awk's gsub, bash's ${var//pat/rep}, sed's s/// — all of
     # them). Splitting the template at the placeholder and using
-    # ${pw} as the joiner keeps the password truly literal, so a
+    # the value as the joiner keeps the password truly literal, so a
     # password containing &, \, /, |, $, or newlines lands in the
     # rendered config exactly as the operator generated it.
-    local template_contents
-    template_contents="$(<"$template")"
-    local rendered_contents=""
-    local remaining="$template_contents"
-    while [[ "$remaining" == *__VALKEY_PASSWORD__* ]]; do
-        rendered_contents+="${remaining%%__VALKEY_PASSWORD__*}${VALKEY_PASSWORD}"
-        remaining="${remaining#*__VALKEY_PASSWORD__}"
+    #
+    # spec 32: substitute the four per-service ACL passwords (control,
+    # gateway, indexer, traefik) in turn. Each is minted by
+    # ensure_acl_passwords into .env + the environment before this runs.
+    local content placeholder value remaining ph
+    content="$(<"$template")"
+    for ph in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+        placeholder="__${ph}__"
+        value="${!ph}"
+        remaining="$content"
+        content=""
+        while [[ "$remaining" == *"$placeholder"* ]]; do
+            content+="${remaining%%"$placeholder"*}${value}"
+            remaining="${remaining#*"$placeholder"}"
+        done
+        content+="$remaining"
     done
-    rendered_contents+="$remaining"
+    local rendered_contents="$content"
     # Write atomically: render to a temp, fsync via mv. Use printf
     # rather than echo so a password starting with `-` is not
     # interpreted as a flag.

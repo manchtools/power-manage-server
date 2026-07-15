@@ -18,6 +18,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -158,6 +159,15 @@ func main() {
 		logger.Info("received signal, shutting down", "signal", sig)
 		cancel()
 	}()
+
+	// spec 32: datastore access is mutual-TLS only — no plaintext fallback.
+	// Fail closed here (require a verify-full DSN carrying client-cert material)
+	// so a misconfigured deployment aborts rather than reaching Postgres in the
+	// clear. setup.sh provisions the certs and the verify-full DSN.
+	if err := datastore.RequirePostgresTLS(cfg.DatabaseURL); err != nil {
+		logger.Error("datastore mTLS required (spec 32)", "error", err)
+		os.Exit(1)
+	}
 
 	// Initialize store with PostgreSQL
 	st, err := store.New(ctx, cfg.DatabaseURL)

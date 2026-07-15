@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -39,6 +40,35 @@ func ValkeyClientTLS(certPEM, keyPEM, caPEM []byte) (*tls.Config, error) {
 		RootCAs:      caPool,
 		MinVersion:   tls.VersionTLS13,
 	}, nil
+}
+
+// ValkeyClientTLSFromFiles builds the datastore client mTLS config from cert
+// file paths (the shape every binary's config carries). Returns (nil, nil) when
+// all three paths are empty — mTLS not configured, so the caller decides whether
+// that is allowed (dev) or a fail-closed boot error (production). A partial set
+// (some paths but not all) is always an error: it signals a half-finished mTLS
+// config that must not silently degrade to plaintext. Otherwise it reads the
+// files and delegates to ValkeyClientTLS.
+func ValkeyClientTLSFromFiles(certPath, keyPath, caPath string) (*tls.Config, error) {
+	if certPath == "" && keyPath == "" && caPath == "" {
+		return nil, nil
+	}
+	if certPath == "" || keyPath == "" || caPath == "" {
+		return nil, errors.New("datastore: Valkey TLS cert, key, and CA must all be set for mTLS (spec 32)")
+	}
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("datastore: read valkey client cert: %w", err)
+	}
+	keyPEM, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("datastore: read valkey client key: %w", err)
+	}
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, fmt.Errorf("datastore: read valkey CA: %w", err)
+	}
+	return ValkeyClientTLS(certPEM, keyPEM, caPEM)
 }
 
 // RequirePostgresTLS returns an error unless connString is configured for mutual

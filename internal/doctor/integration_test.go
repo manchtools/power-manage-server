@@ -56,7 +56,7 @@ func TestValkeyProbe_Integration(t *testing.T) {
 	require.NoError(t, err)
 	addr := fmt.Sprintf("%s:%s", host, port.Port())
 
-	probe, err := NewValkeyProbe(addr, "", 0)
+	probe, err := NewValkeyProbe(addr, "", "", 0, nil)
 	require.NoError(t, err)
 	t.Cleanup(probe.Close)
 

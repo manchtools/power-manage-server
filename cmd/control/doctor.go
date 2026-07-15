@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/doctor"
 )
 
@@ -66,7 +67,16 @@ func runDoctor(args []string) int {
 		}
 		valkeyDB = n
 	}
-	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], vars["CONTROL_VALKEY_PASSWORD"], valkeyDB); err == nil {
+	// spec 32: probe Valkey the same way the live server connects — as the ACL
+	// user over mutual TLS. A partial/absent cert set yields a nil tlsCfg (plain-
+	// text probe); we log the reason so an incomplete config isn't a silent
+	// false "unreachable". Inside the control container the cert env is set, so
+	// the probe authenticates and reports accurately.
+	valkeyTLS, err := datastore.ValkeyClientTLSFromFiles(vars["CONTROL_VALKEY_TLS_CERT"], vars["CONTROL_VALKEY_TLS_KEY"], vars["CONTROL_VALKEY_TLS_CA"])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "doctor: valkey mTLS config incomplete, probing without a client cert: %v\n", err)
+	}
+	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], vars["CONTROL_VALKEY_USERNAME"], vars["CONTROL_VALKEY_PASSWORD"], valkeyDB, valkeyTLS); err == nil {
 		env.Cache = cache
 		defer cache.Close()
 	}

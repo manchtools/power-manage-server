@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/manchtools/power-manage/server/internal/config"
+	"github.com/manchtools/power-manage/server/internal/datastore"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/postgres"
@@ -28,10 +29,17 @@ import (
 var version = "dev"
 
 type Config struct {
-	DatabaseURL       string
-	ValkeyAddr        string
-	ValkeyPassword    string
-	ValkeyDB          int
+	DatabaseURL    string
+	ValkeyAddr     string
+	ValkeyPassword string
+	ValkeyDB       int
+	// Datastore mutual-TLS + per-service ACL (spec 32): the ACL user + client
+	// cert material the indexer presents to Valkey. Boot requires them (fail
+	// closed) — no plaintext fallback.
+	ValkeyUsername    string
+	ValkeyTLSCert     string
+	ValkeyTLSKey      string
+	ValkeyTLSCA       string
 	LogLevel          string
 	LogFormat         string
 	ReconcileInterval time.Duration
@@ -58,6 +66,26 @@ func main() {
 		cancel()
 	}()
 
+	// spec 32: datastore access is mutual-TLS only. Fail closed unless the DSN
+	// is verify-full with client-cert material — no plaintext fallback.
+	if err := datastore.RequirePostgresTLS(cfg.DatabaseURL); err != nil {
+		logger.Error("datastore mTLS required (spec 32)", "error", err)
+		os.Exit(1)
+	}
+
+	// spec 32: the client-cert TLS config every indexer→Valkey connection
+	// presents (RediSearch client + Asynq server). Fail closed — Valkey is
+	// required and there is no plaintext fallback.
+	valkeyTLS, err := datastore.ValkeyClientTLSFromFiles(cfg.ValkeyTLSCert, cfg.ValkeyTLSKey, cfg.ValkeyTLSCA)
+	if err != nil {
+		logger.Error("failed to configure valkey mTLS", "error", err)
+		os.Exit(1)
+	}
+	if valkeyTLS == nil {
+		logger.Error("datastore mTLS is required (spec 32): set INDEXER_VALKEY_TLS_CERT, _TLS_KEY, and _TLS_CA")
+		os.Exit(1)
+	}
+
 	// Initialize store with PostgreSQL (needed for warm/rebuild).
 	// Use NewWithoutMigrations — only the control server manages the schema.
 	st, err := store.NewWithoutMigrations(ctx, cfg.DatabaseURL)
@@ -75,10 +103,12 @@ func main() {
 	// but RediSearch returns FT.SEARCH results in a different format under
 	// RESP3 (map vs array), which breaks result parsers.
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     cfg.ValkeyAddr,
-		Password: cfg.ValkeyPassword,
-		DB:       cfg.ValkeyDB,
-		Protocol: 2,
+		Addr:      cfg.ValkeyAddr,
+		Username:  cfg.ValkeyUsername,
+		Password:  cfg.ValkeyPassword,
+		DB:        cfg.ValkeyDB,
+		Protocol:  2,
+		TLSConfig: valkeyTLS,
 		// The default 3s read timeout is too tight for the bulk index rebuild:
 		// warming a scope pipelines hundreds of HSETs whose valkey-search
 		// indexing (SORTABLE/TEXT fields) can exceed 3s on a modest host, which
@@ -145,9 +175,11 @@ func main() {
 	aqLogger := logger.With("component", "asynq_server")
 	aqServer := asynq.NewServer(
 		asynq.RedisClientOpt{
-			Addr:     cfg.ValkeyAddr,
-			Password: cfg.ValkeyPassword,
-			DB:       cfg.ValkeyDB,
+			Addr:      cfg.ValkeyAddr,
+			Username:  cfg.ValkeyUsername,
+			Password:  cfg.ValkeyPassword,
+			DB:        cfg.ValkeyDB,
+			TLSConfig: valkeyTLS,
 		},
 		asynq.Config{
 			Concurrency: cfg.Concurrency,
@@ -212,6 +244,10 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.ValkeyAddr, "valkey-addr", "", "Redis/Valkey address")
 	flag.StringVar(&cfg.ValkeyPassword, "valkey-password", "", "Redis/Valkey password")
 	flag.IntVar(&cfg.ValkeyDB, "valkey-db", 0, "Redis/Valkey database number")
+	flag.StringVar(&cfg.ValkeyUsername, "valkey-username", "", "Valkey ACL username (spec 32)")
+	flag.StringVar(&cfg.ValkeyTLSCert, "valkey-tls-cert", "", "Valkey client cert path for datastore mTLS (spec 32)")
+	flag.StringVar(&cfg.ValkeyTLSKey, "valkey-tls-key", "", "Valkey client key path for datastore mTLS (spec 32)")
+	flag.StringVar(&cfg.ValkeyTLSCA, "valkey-tls-ca", "", "Valkey CA cert path for datastore mTLS (spec 32)")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.DurationVar(&cfg.ReconcileInterval, "reconcile-interval", time.Hour, "Interval for periodic full rebuild (0 to disable)")
@@ -230,6 +266,10 @@ func parseFlags() *Config {
 	config.EnvString(&cfg.ValkeyAddr, "INDEXER_VALKEY_ADDR")
 	config.EnvString(&cfg.ValkeyPassword, "INDEXER_VALKEY_PASSWORD")
 	config.EnvInt(&cfg.ValkeyDB, "INDEXER_VALKEY_DB")
+	config.EnvString(&cfg.ValkeyUsername, "INDEXER_VALKEY_USERNAME")
+	config.EnvString(&cfg.ValkeyTLSCert, "INDEXER_VALKEY_TLS_CERT")
+	config.EnvString(&cfg.ValkeyTLSKey, "INDEXER_VALKEY_TLS_KEY")
+	config.EnvString(&cfg.ValkeyTLSCA, "INDEXER_VALKEY_TLS_CA")
 	config.EnvString(&cfg.LogLevel, "INDEXER_LOG_LEVEL")
 	config.EnvString(&cfg.LogFormat, "INDEXER_LOG_FORMAT")
 	config.EnvDuration(&cfg.ReconcileInterval, "INDEXER_RECONCILE_INTERVAL")

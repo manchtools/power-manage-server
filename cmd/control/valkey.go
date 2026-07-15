@@ -147,6 +147,11 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	if err != nil {
 		return nil, fmt.Errorf("configure valkey mTLS: %w", err)
 	}
+	if valkeyTLS == nil {
+		// spec 32: no plaintext fallback. If Valkey is configured it must be over
+		// mutual TLS — the ACL user's password is worthless without the client cert.
+		return nil, errors.New("datastore mTLS is required when CONTROL_VALKEY_ADDR is set (spec 32): set CONTROL_VALKEY_TLS_CERT/KEY/CA")
+	}
 
 	v := &valkeySubsystem{taskSigner: taskSigner}
 	v.aqClient = taskqueue.NewSecureClient(asynq.RedisClientOpt{
@@ -337,25 +342,7 @@ func auditIndexListener(idx *search.Index, logger *slog.Logger) store.EventListe
 // partial (fail closed). Control boot separately requires a non-nil result when
 // datastore mTLS is mandatory.
 func valkeyClientTLS(cfg *Config) (*tls.Config, error) {
-	if cfg.ValkeyTLSCert == "" && cfg.ValkeyTLSKey == "" && cfg.ValkeyTLSCA == "" {
-		return nil, nil
-	}
-	if cfg.ValkeyTLSCert == "" || cfg.ValkeyTLSKey == "" || cfg.ValkeyTLSCA == "" {
-		return nil, errors.New("CONTROL_VALKEY_TLS_CERT, _KEY, and _CA must all be set for datastore mTLS (spec 32)")
-	}
-	certPEM, err := os.ReadFile(cfg.ValkeyTLSCert)
-	if err != nil {
-		return nil, fmt.Errorf("read valkey client cert: %w", err)
-	}
-	keyPEM, err := os.ReadFile(cfg.ValkeyTLSKey)
-	if err != nil {
-		return nil, fmt.Errorf("read valkey client key: %w", err)
-	}
-	caPEM, err := os.ReadFile(cfg.ValkeyTLSCA)
-	if err != nil {
-		return nil, fmt.Errorf("read valkey CA: %w", err)
-	}
-	return datastore.ValkeyClientTLS(certPEM, keyPEM, caPEM)
+	return datastore.ValkeyClientTLSFromFiles(cfg.ValkeyTLSCert, cfg.ValkeyTLSKey, cfg.ValkeyTLSCA)
 }
 
 func newInboxAsynqServer(cfg *Config, tlsCfg *tls.Config, logger *slog.Logger) *asynq.Server {
