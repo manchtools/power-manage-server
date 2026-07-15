@@ -83,6 +83,12 @@ func TestRequirePostgresTLS(t *testing.T) {
 		{"absent sslmode rejected", "postgres://u:p@h:5432/db", false},
 		{"verify-full but no client cert", "postgres://u:p@h:5432/db?sslmode=verify-full&sslrootcert=/c/ca.crt", false},
 		{"require (not verify-full) rejected", "postgres://u:p@h:5432/db?sslmode=require" + certs, false},
+		// Fail-closed regression: the real sslmode is disable; a quoted value
+		// embedding "sslmode=verify-full" must NOT be split into a spurious token
+		// that overwrites it (a bare strings.Fields split would wrongly accept).
+		{"keyword quoted value cannot forge sslmode",
+			"host=h dbname=db sslmode=disable sslrootcert=/c/ca.crt sslcert=/c/pg.crt sslkey=/c/pg.key application_name='x sslmode=verify-full'",
+			false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

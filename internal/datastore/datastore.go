@@ -111,10 +111,55 @@ func dsnParams(connString string) (map[string]string, error) {
 		}
 		return out, nil
 	}
-	for _, kv := range strings.Fields(connString) {
+	// Keyword/value form. Tokenize with libpq's single-quote + backslash-escape
+	// rules rather than a bare whitespace split: a quoted value containing spaces
+	// (e.g. application_name='my app') must stay one token. Otherwise a crafted
+	// value like application_name='x sslmode=verify-full' would split into a
+	// spurious `sslmode=verify-full` token that overwrites the real sslmode and
+	// tricks RequirePostgresTLS into accepting a plaintext DSN — defeating the
+	// fail-closed guarantee this file exists to provide.
+	for _, kv := range splitKeywordDSN(connString) {
 		if i := strings.IndexByte(kv, '='); i > 0 {
-			out[kv[:i]] = strings.Trim(kv[i+1:], "'\"")
+			out[strings.TrimSpace(kv[:i])] = kv[i+1:]
 		}
 	}
 	return out, nil
+}
+
+// splitKeywordDSN tokenizes a libpq keyword/value connection string, honoring
+// single-quote quoting and backslash escapes (per libpq's documented rules) so
+// whitespace inside a quoted value does not split it. Quote characters are
+// consumed (not emitted); a backslash escapes the next character literally.
+func splitKeywordDSN(s string) []string {
+	var toks []string
+	var cur strings.Builder
+	inQuote, esc, started := false, false, false
+	flush := func() {
+		if started {
+			toks = append(toks, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+	for _, r := range s {
+		switch {
+		case esc:
+			cur.WriteRune(r)
+			esc = false
+			started = true
+		case r == '\\':
+			esc = true
+			started = true
+		case r == '\'':
+			inQuote = !inQuote
+			started = true
+		case !inQuote && (r == ' ' || r == '\t' || r == '\n' || r == '\r'):
+			flush()
+		default:
+			cur.WriteRune(r)
+			started = true
+		}
+	}
+	flush()
+	return toks
 }
