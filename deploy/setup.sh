@@ -651,8 +651,16 @@ guided_setup() {
     fi
     write_env_var INDEXER_POSTGRES_PASSWORD "$REPLY_VALUE"
 
-    prompt_secret "Valkey password (VALKEY_PASSWORD)" "openssl rand -base64 32" "${VALKEY_PASSWORD:-}"
-    write_env_var VALKEY_PASSWORD "$REPLY_VALUE"
+    # spec 32: there is no single shared VALKEY_PASSWORD anymore — the four
+    # per-service Valkey ACL passwords are minted automatically by
+    # ensure_acl_passwords after this loop, so nothing to prompt for here.
+
+    # Gateway self-enrollment shared secret (spec 31). control serves
+    # EnrollGateway and BOTH control + the gateway read this one PM_* token; a
+    # gateway presents it on boot to obtain its per-gateway mTLS cert. check_env
+    # requires it, so it MUST be set here (a fresh deploy has no other source).
+    prompt_secret "Gateway enrollment token (PM_GATEWAY_ENROLL_TOKEN)" "openssl rand -base64 32" "${PM_GATEWAY_ENROLL_TOKEN:-}"
+    write_env_var PM_GATEWAY_ENROLL_TOKEN "$REPLY_VALUE"
 
     prompt_secret "JWT secret (JWT_SECRET, min 32 chars)" "openssl rand -base64 48" "${JWT_SECRET:-}"
     if [[ ${#REPLY_VALUE} -lt 32 ]]; then
@@ -822,9 +830,9 @@ main() {
 }
 
 # render_valkey_config writes the deployment's valkey.conf from the
-# template (deploy/valkey.conf.template) with VALKEY_PASSWORD
-# substituted in. The rendered file is read-only-mounted into the
-# pm-valkey container so the password no longer appears in
+# template (deploy/valkey.conf.template) with the four per-service ACL
+# passwords substituted in. The rendered file is read-only-mounted into the
+# pm-valkey container so the passwords no longer appear in
 # /proc/<pid>/cmdline (audit F-03).
 render_valkey_config() {
     local template="$SCRIPT_DIR/valkey.conf.template"
