@@ -124,11 +124,30 @@ if ! compose up -d --wait --wait-timeout 120 "${GATED_SERVICES[@]}" >up.log 2>&1
 fi
 green "all gated services healthy"
 
-# 5. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
+# 5. Exercise pm-control's REAL search ACL, not merely startup health. Valkey
+# Search checks the selected index's configured document PREFIX (`search:*`),
+# separately from command permission. This assertion caught alpha3's Search RPC
+# 500: +@all allowed FT.SEARCH but pm-control's key grants omitted search:*.
+VALKEY_TLS_ARGS="--tls --cert /certs/valkey.crt --key /tmp/valkey.key --cacert /certs/ca.crt --no-auth-warning"
+SEARCH_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" FT.SEARCH idx:actions '*' LIMIT 0 1" 2>&1 || true)"
+if [[ "$SEARCH_OUT" == *NOPERM* || "$SEARCH_OUT" == *"Unknown Index name"* || "$SEARCH_OUT" == *"unknown command"* ]]; then
+  red "FAIL: pm-control cannot run the production FT.SEARCH path:"
+  printf '%s\n' "$SEARCH_OUT"
+  exit 1
+fi
+
+# Widening search access must not accidentally make pm-control unrestricted.
+FORBIDDEN_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" GET forbidden:acl-probe" 2>&1 || true)"
+[[ "$FORBIDDEN_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can read an unrelated key"; exit 1; }
+DANGEROUS_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" FLUSHALL" 2>&1 || true)"
+[[ "$DANGEROUS_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can run FLUSHALL"; exit 1; }
+green "pm-control FT.SEARCH works; unrelated keys + dangerous commands remain denied"
+
+# 6. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
 compose up -d traefik >>up.log 2>&1 || true
 sleep 8   # let control/indexer subscribe to asynq:cancel + traefik connect
 
-# 6. The assertion that "healthy" can't make: no ACL, permission, connection,
+# 7. The assertion that "healthy" can't make: no ACL, permission, connection,
 #    or TLS-identity failure in ANY service log. This catches NOPERM as well as
 #    a dial-address/certificate-name mismatch (TLS handshake / bad certificate).
 info "scanning logs for ACL / permission / connection / TLS failures"
