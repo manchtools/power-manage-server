@@ -1,0 +1,37 @@
+name: Deploy smoke test
+
+# Boots the real deployment stack (setup.sh + compose.yml + valkey.conf.template
+# + pg_hba.conf) from published images on a GitHub runner and asserts the
+# datastore layer comes up over mutual TLS with working ACLs. The release
+# workflow runs the same script as a gate on freshly-built images; this one runs
+# on PRs touching deploy/ and on demand so deploy-config regressions surface
+# without cutting a release.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Published image tag to smoke-test
+        default: 2026.08-alpha3
+  pull_request:
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy-smoke.yml'
+
+jobs:
+  smoke:
+    name: Boot the deployment stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: docker + compose versions (for triage)
+        run: docker version && docker compose version
+      - name: Run deploy smoke test
+        env:
+          IMAGE_TAG: ${{ github.event.inputs.image_tag || '2026.08-alpha3' }}
+        run: bash deploy/smoke-test.sh
