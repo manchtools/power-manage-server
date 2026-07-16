@@ -135,17 +135,27 @@ services:
     # check authenticates via REDISCLI_AUTH so the cmdline of the
     # one-shot valkey-cli probe stays clean too.
     #
-    # Command must invoke `valkey-server` (not its `redis-server`
-    # symlink) so the bundle's entrypoint takes the module-autoload
-    # branch — see bundle-docker-entrypoint.sh.
-    command: ["valkey-server", "/etc/valkey/valkey.conf"]
+    # spec 32: the valkey-bundle entrypoint gosu-drops to the `valkey` user
+    # (uid 999), which cannot read the root-owned 0600 tls key on the read-only
+    # mount — so copy it to a valkey-owned path first (same problem + fix as the
+    # Postgres uid-70 key), then hand off to the bundle entrypoint (which
+    # auto-loads the search/json/bloom/ldap modules — see
+    # bundle-docker-entrypoint.sh). --tls-key-file overrides the conf's path to
+    # the readable copy. `valkey-server` (not the redis-server symlink) is what
+    # makes the bundle entrypoint take the module-autoload branch.
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "cp /certs/valkey.key /tmp/valkey.key && chown valkey /tmp/valkey.key && chmod 600 /tmp/valkey.key && exec bundle-docker-entrypoint.sh valkey-server /etc/valkey/valkey.conf --tls-key-file /tmp/valkey.key"
+    command: []
     # spec 32: the plaintext port is disabled (port 0 + tls-port 6379), so the
     # healthcheck must speak TLS with a client cert and authenticate as an ACL
     # user (default user is off). It presents the server keypair as its client
-    # cert (valkey.crt carries clientAuth EKU) and pings as pm-control over
-    # localhost (in the cert SAN). If you tune the pm-control ACL, keep +ping.
+    # cert (valkey.crt carries clientAuth EKU; --key is the valkey-readable /tmp
+    # copy) and pings as pm-control over localhost (in the cert SAN). If you tune
+    # the pm-control ACL, keep +ping.
     healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -h localhost --tls --cert /certs/valkey.crt --key /certs/valkey.key --cacert /certs/ca.crt --user pm-control -a \"$$VALKEY_CONTROL_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      test: ["CMD-SHELL", "valkey-cli -h localhost --tls --cert /certs/valkey.crt --key /tmp/valkey.key --cacert /certs/ca.crt --user pm-control -a \"$$VALKEY_CONTROL_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 3
