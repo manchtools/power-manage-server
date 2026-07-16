@@ -331,8 +331,25 @@ func main() {
 	// before WireAll persists the event but skips the projection write.
 	wireSystemActions(ctx, st, svc, cfg, logger)
 
+	// Valkey-backed subsystem: taskqueue.Client + RediSearch index +
+	// terminal token store + two Asynq servers. This MUST be initialized before
+	// any bootstrap helper below emits events: newValkeySubsystem registers
+	// api.SearchListener, and an event emitted before that listener exists is
+	// projected into Postgres but permanently misses its incremental search task
+	// (fresh-deploy bootstrap users/groups then remain absent until a rebuild).
+	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, logger)
+	if err != nil {
+		// valkey may be partially-initialised on error — Close is nil-safe and
+		// only cleans up components that constructed successfully.
+		valkey.Close()
+		logger.Error("failed to initialize Valkey subsystem", "error", err)
+		os.Exit(1)
+	}
+	defer valkey.Close()
+
 	// Bootstrap admin user (event-sourced via UserCreatedWithRoles).
-	// Runs after WireAll so UserListener materialises users_projection.
+	// Runs after WireAll so UserListener materialises users_projection and after
+	// newValkeySubsystem so SearchListener enqueues the initial user document.
 	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
 		if err := ensureAdminUser(ctx, st, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
 			logger.Error("failed to create admin user", "error", err)
@@ -351,21 +368,6 @@ func main() {
 	bootstrapAllDevicesGroup(ctx, st, logger)
 
 	configureTrustedProxies(cfg, logger)
-
-	// Valkey-backed subsystem: taskqueue.Client + RediSearch index +
-	// terminal token store + two Asynq servers. nil when the operator
-	// hasn't configured CONTROL_VALKEY_ADDR. See valkey.go for the
-	// component map.
-	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, logger)
-	if err != nil {
-		// valkey may be partially-initialised on error — Close is
-		// nil-safe and only cleans up the components that did
-		// construct, so it's still safe to invoke before exiting.
-		valkey.Close()
-		logger.Error("failed to initialize Valkey subsystem", "error", err)
-		os.Exit(1)
-	}
-	defer valkey.Close()
 
 	// Spec 22: server-side inventory collection scheduler. Requests
 	// signed inventory from stale connected devices once per fixed
