@@ -16,6 +16,12 @@ on:
     paths:
       - 'deploy/**'
       - '.github/workflows/deploy-smoke.yml'
+  push:
+    branches:
+      - 'integration/**'
+    paths:
+      - 'deploy/**'
+      - '.github/workflows/deploy-smoke.yml'
 
 jobs:
   smoke:
