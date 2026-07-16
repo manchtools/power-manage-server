@@ -52,9 +52,12 @@ notify-keyspace-events KEA
 user default off
 
 # control — the orchestrator: enqueues to every queue, reads+writes the CRL,
-# runs search queries. All non-destructive commands over its namespaces, plus
-# the Asynq cancellation pub/sub channel.
-user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~traefik/* &asynq:* +@all -@dangerous
+# runs FT.SEARCH, and owns the admin RebuildSearchIndex path. Search uses idx:*
+# index names + search:* HASH documents; rebuild additionally reads/writes
+# reverse:* and members:* relationship sets. Keep these explicit rather than ~*
+# so unrelated Valkey data stays inaccessible. &asynq:* is the task-cancellation
+# pub/sub channel.
+user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~traefik/* ~idx:* ~search:* ~reverse:* ~members:* &asynq:* +@all -@dangerous
 
 # gateway — Asynq consumer/producer, publishes its own routes + registry, reads
 # the CRL. Confined to the gateway/device/crl namespaces + traefik route KV +
