@@ -9,10 +9,12 @@
 # flow. The Go integration tests use synthetic minimal configs via
 # testcontainers; they prove the mechanism but never exercise these artifacts.
 #
-# Scope: postgres + valkey + control + indexer (gated on healthchecks) + traefik
-# (log-scanned only — it needs real DNS/LE to become healthy). The gateway is
-# out of scope here: it self-enrolls against control's PUBLIC URL, which needs
-# real DNS — that path belongs in an end-to-end test, not a local smoke test.
+# Scope: postgres + valkey + control + indexer + gateway, all gated on their
+# healthchecks, plus Traefik (log-scanned). A smoke-only Compose override enables
+# control's real public TLS listener with setup.sh's CA-signed control-public
+# cert, adds Docker DNS aliases matching that cert, and installs the same CA into
+# the gateway image's system trust. This exercises real gateway self-enrollment
+# without external DNS or Let's Encrypt.
 #
 # Usage:  ./smoke-test.sh            # uses IMAGE_TAG below (published alpha3)
 #         IMAGE_TAG=mytag ./smoke-test.sh
@@ -22,15 +24,19 @@ IMAGE_TAG="${IMAGE_TAG:-2026.08-alpha3}"
 PROJECT="pm-smoke"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
-GATED_SERVICES=(postgres valkey control indexer)
+GATED_SERVICES=(postgres valkey control indexer gateway)
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
 info()  { printf '\033[0;36m[smoke]\033[0m %s\n' "$*"; }
 
+compose() {
+  docker compose -p "$PROJECT" -f "$WORK_DIR/compose.yml" -f "$WORK_DIR/smoke.override.yml" "$@"
+}
+
 cleanup() {
   info "tearing down…"
-  ( cd "$WORK_DIR" && docker compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1 || true )
+  compose down -v --remove-orphans >/dev/null 2>&1 || true
   # postgres/valkey write ./data as their container uids (70/999), which a
   # non-root host user can't rm — delete via a throwaway root container first.
   docker run --rm -v "$WORK_DIR:/w" alpine:3.21 rm -rf /w/data /w/certs >/dev/null 2>&1 || true
@@ -60,6 +66,46 @@ ADMIN_EMAIL=admin@smoke.test
 ADMIN_PASSWORD=$(openssl rand -hex 24)
 EOF
 
+# Smoke-only orchestration:
+# - control serves the real public GatewayAuthService over TLS directly (no
+#   external Traefik/LE dependency), using setup.sh's control-public cert.
+# - control.smoke.test / gateway.smoke.test are Docker DNS aliases matching the
+#   certificate SANs setup.sh stamps from CONTROL_DOMAIN/GATEWAY_DOMAIN.
+# - the published gateway image normally trusts public roots for enrollment; the
+#   smoke override installs setup.sh's internal CA into its system trust first.
+cat > "$WORK_DIR/smoke.override.yml" <<'EOF'
+services:
+  # No host port exposure in CI/local smoke: Traefik still runs and exercises
+  # its real Redis-provider mTLS/ACL path entirely inside the Compose network.
+  traefik:
+    ports: !reset []
+
+  control:
+    environment:
+      - CONTROL_TLS_ENABLED=true
+      - CONTROL_TLS_CERT=/certs/control-public.crt
+      - CONTROL_TLS_KEY=/certs/control-public.key
+    healthcheck:
+      test: ["CMD", "wget", "--no-check-certificate", "-q", "--spider", "https://localhost:8081/health"]
+    networks:
+      internal:
+        aliases:
+          - control.smoke.test
+
+  gateway:
+    entrypoint:
+      - "sh"
+      - "-c"
+      - "cp /certs/ca.crt /usr/local/share/ca-certificates/power-manage-smoke.crt && update-ca-certificates >/dev/null && exec /usr/local/bin/gateway"
+    environment:
+      - GATEWAY_CONTROL_ENROLL_URL=https://control.smoke.test:8081
+      - GATEWAY_INTERNAL_URL=https://gateway.smoke.test:8080
+    networks:
+      internal:
+        aliases:
+          - gateway.smoke.test
+EOF
+
 cd "$WORK_DIR"
 
 # 3. Real setup: CA + datastore certs + ACL passwords + rendered valkey.conf.
@@ -70,27 +116,28 @@ info "running setup.sh --no-prompt"
 #    non-zero if any gated service never reaches healthy — this alone catches
 #    the valkey key crash + Postgres mTLS boot failures.
 info "docker compose up --wait ${GATED_SERVICES[*]} (IMAGE_TAG=$IMAGE_TAG)"
-if ! docker compose -p "$PROJECT" up -d --wait --wait-timeout 120 "${GATED_SERVICES[@]}" >up.log 2>&1; then
+if ! compose up -d --wait --wait-timeout 120 "${GATED_SERVICES[@]}" >up.log 2>&1; then
   red "FAIL: a gated service did not become healthy"
-  docker compose -p "$PROJECT" ps
-  for s in "${GATED_SERVICES[@]}"; do echo "── $s ──"; docker compose -p "$PROJECT" logs --tail 15 "$s"; done
+  compose ps
+  for s in "${GATED_SERVICES[@]}"; do echo "── $s ──"; compose logs --tail 15 "$s"; done
   exit 1
 fi
 green "all gated services healthy"
 
 # 5. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
-docker compose -p "$PROJECT" up -d traefik >>up.log 2>&1 || true
+compose up -d traefik >>up.log 2>&1 || true
 sleep 8   # let control/indexer subscribe to asynq:cancel + traefik connect
 
-# 6. The assertion that "healthy" can't make: no ACL/permission/connection
-#    failure in ANY service log. This is what surfaces the NOPERM class of bug.
-info "scanning logs for NOPERM / permission / connection failures"
-LOGS="$(docker compose -p "$PROJECT" logs --no-color 2>&1 || true)"
-BAD="$(printf '%s\n' "$LOGS" | grep -iE 'NOPERM|no permissions|permission denied|WRONGPASS|connection refused|i/o timeout|failed to configure tls' || true)"
+# 6. The assertion that "healthy" can't make: no ACL, permission, connection,
+#    or TLS-identity failure in ANY service log. This catches NOPERM as well as
+#    a dial-address/certificate-name mismatch (TLS handshake / bad certificate).
+info "scanning logs for ACL / permission / connection / TLS failures"
+LOGS="$(compose logs --no-color 2>&1 || true)"
+BAD="$(printf '%s\n' "$LOGS" | grep -iE 'NOPERM|no permissions|permission denied|WRONGPASS|connection refused|i/o timeout|failed to configure tls|TLS handshake error|bad certificate' || true)"
 if [[ -n "$BAD" ]]; then
-  red "FAIL: datastore auth/permission errors in logs:"
+  red "FAIL: auth/permission/connection/TLS errors in logs:"
   printf '%s\n' "$BAD" | head -20
   exit 1
 fi
 
-green "PASS — full datastore stack up over mTLS, ACLs clean, no permission errors"
+green "PASS — full stack including gateway enrollment is healthy; mTLS/ACL/TLS logs clean"
