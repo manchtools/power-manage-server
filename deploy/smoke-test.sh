@@ -124,24 +124,48 @@ if ! compose up -d --wait --wait-timeout 120 "${GATED_SERVICES[@]}" >up.log 2>&1
 fi
 green "all gated services healthy"
 
-# 5. Exercise pm-control's REAL search ACL, not merely startup health. Valkey
-# Search checks the selected index's configured document PREFIX (`search:*`),
-# separately from command permission. This assertion caught alpha3's Search RPC
-# 500: +@all allowed FT.SEARCH but pm-control's key grants omitted search:*.
-VALKEY_TLS_ARGS="--tls --cert /certs/valkey.crt --key /tmp/valkey.key --cacert /certs/ca.crt --no-auth-warning"
-SEARCH_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" FT.SEARCH idx:actions '*' LIMIT 0 1" 2>&1 || true)"
-if [[ "$SEARCH_OUT" == *NOPERM* || "$SEARCH_OUT" == *"Unknown Index name"* || "$SEARCH_OUT" == *"unknown command"* ]]; then
-  red "FAIL: pm-control cannot run the production FT.SEARCH path:"
+# 5. Exercise pm-control's REAL search ACL with REAL indexed state, not merely
+# startup health or an empty index. Valkey Search checks the selected index's
+# configured document PREFIX (`search:*`) when matching documents; querying an
+# empty index can return 0 without surfacing a missing prefix grant. Seed one
+# production-shaped action hash as pm-indexer, then require pm-control to find it.
+set -a
+source ./.env
+set +a
+VALKEY_TLS_ARGS=(--tls --cert /certs/valkey.crt --key /tmp/valkey.key --cacert /certs/ca.crt --no-auth-warning)
+compose exec -T -e REDISCLI_AUTH="$VALKEY_INDEXER_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-indexer HSET search:action:acl-probe \
+  name aclprobe description "deployment ACL probe" type FILE is_compliance false \
+  assigned false created_at 1 updated_at 1 >/dev/null
+
+# Indexing is asynchronous; retry briefly until the indexer-visible query sees
+# the document, then issue the same query as pm-control. A no-result response is
+# a test setup failure, not success.
+INDEXER_SEARCH=""
+for _ in $(seq 1 20); do
+  INDEXER_SEARCH="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_INDEXER_PASSWORD" valkey \
+    valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-indexer FT.SEARCH idx:actions '@name:aclprobe' LIMIT 0 1 2>&1 || true)"
+  [[ "$INDEXER_SEARCH" == *search:action:acl-probe* ]] && break
+  sleep 0.25
+done
+[[ "$INDEXER_SEARCH" == *search:action:acl-probe* ]] || { red "FAIL: search probe document was not indexed"; printf '%s\n' "$INDEXER_SEARCH"; exit 1; }
+
+SEARCH_OUT="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_CONTROL_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-control FT.SEARCH idx:actions '@name:aclprobe' LIMIT 0 1 2>&1 || true)"
+if [[ "$SEARCH_OUT" == *NOPERM* || "$SEARCH_OUT" != *search:action:acl-probe* ]]; then
+  red "FAIL: pm-control cannot execute the production FT.SEARCH path:"
   printf '%s\n' "$SEARCH_OUT"
   exit 1
 fi
 
 # Widening search access must not accidentally make pm-control unrestricted.
-FORBIDDEN_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" GET forbidden:acl-probe" 2>&1 || true)"
+FORBIDDEN_OUT="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_CONTROL_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-control GET forbidden:acl-probe 2>&1 || true)"
 [[ "$FORBIDDEN_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can read an unrelated key"; exit 1; }
-DANGEROUS_OUT="$(compose exec -T valkey sh -c "valkey-cli $VALKEY_TLS_ARGS --user pm-control -a \"\$VALKEY_CONTROL_PASSWORD\" FLUSHALL" 2>&1 || true)"
+DANGEROUS_OUT="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_CONTROL_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-control FLUSHALL 2>&1 || true)"
 [[ "$DANGEROUS_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can run FLUSHALL"; exit 1; }
-green "pm-control FT.SEARCH works; unrelated keys + dangerous commands remain denied"
+green "pm-control found an indexed search document; unrelated keys + dangerous commands remain denied"
 
 # 6. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
 compose up -d traefik >>up.log 2>&1 || true
