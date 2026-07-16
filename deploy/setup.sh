@@ -139,6 +139,27 @@ check_env() {
     log_info "Environment configuration validated"
 }
 
+# clean_stray_cert_dirs undoes the Docker bind-mount footgun: if `docker compose
+# up` ran before the certs existed, Docker created each ./certs/<file> bind-mount
+# SOURCE as an empty DIRECTORY. openssl then fails cryptically ("Is a directory")
+# trying to write the cert over it. Remove any such empty dirs; if one can't be
+# removed (non-empty, or a running container still holds the mount), stop with
+# clear guidance instead of letting openssl fail three functions later.
+clean_stray_cert_dirs() {
+    [[ -d "$CERTS_DIR" ]] || return 0
+    local d
+    for d in "$CERTS_DIR"/*.crt "$CERTS_DIR"/*.key; do
+        [[ -d "$d" ]] || continue
+        if rmdir "$d" 2>/dev/null; then
+            log_warn "Removed stray directory $(basename "$d") — Docker created it as a bind-mount source because compose ran before setup.sh."
+        else
+            log_error "$(basename "$d") is a directory, not a file (Docker bind-mount footgun) and can't be removed — a container is likely still holding the mount."
+            log_error "Fix:  docker compose down --remove-orphans  &&  rm -rf certs  &&  ./setup.sh"
+            exit 1
+        fi
+    done
+}
+
 generate_ca() {
     if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
         log_warn "CA already exists in $CERTS_DIR"
@@ -803,6 +824,7 @@ main() {
     fi
 
     check_env
+    clean_stray_cert_dirs
     generate_ca
     # spec 31: the gateway no longer has a static cert — it self-enrolls on boot
     # (PM_GATEWAY_ENROLL_TOKEN). generate_gateway_cert is intentionally not called.
