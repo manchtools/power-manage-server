@@ -41,23 +41,38 @@ notify-keyspace-events KEA
 # FLUSHALL, FLUSHDB, CONFIG, DEBUG, SHUTDOWN, SWAPDB, RESET, KEYS, …) are denied
 # to everyone. The command scopes below are a FIRST CUT — validate on staging
 # and widen a user's categories if a legitimate operation returns NOPERM.
+#
+# NOTE on `&` channel grants: Valkey ACLs gate pub/sub CHANNELS separately from
+# keys — a new user defaults to `resetchannels` (no channel access), so granting
+# the `subscribe` COMMAND is not enough. Asynq's task-cancellation broadcast uses
+# the `asynq:cancel` PubSub channel, so every Asynq client (control, gateway,
+# indexer) needs `&asynq:*` or its Server spams "cannot subscribe to cancelation
+# channel: NOPERM". Traefik's redis KV watch needs the keyspace-notification
+# channels.
 user default off
 
 # control — the orchestrator: enqueues to every queue, reads+writes the CRL,
-# runs search queries. All non-destructive commands over its namespaces.
-user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~traefik/* +@all -@dangerous
+# runs search queries. All non-destructive commands over its namespaces, plus
+# the Asynq cancellation pub/sub channel.
+user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~traefik/* &asynq:* +@all -@dangerous
 
 # gateway — Asynq consumer/producer, publishes its own routes + registry, reads
-# the CRL. Confined to the gateway/device/crl namespaces + traefik route KV.
-user pm-gateway on >__VALKEY_GATEWAY_PASSWORD__ ~asynq:* ~pm:gateway:* ~pm:device:* ~pm:crl:* ~traefik/* +@all -@dangerous
+# the CRL. Confined to the gateway/device/crl namespaces + traefik route KV +
+# the Asynq cancellation channel.
+user pm-gateway on >__VALKEY_GATEWAY_PASSWORD__ ~asynq:* ~pm:gateway:* ~pm:device:* ~pm:crl:* ~traefik/* &asynq:* +@all -@dangerous
 
 # indexer — search-index consumer + FT index owner. valkey-search FT.* commands
 # span the keyspace, so keys are broad, but destructive commands are denied and
-# it holds no pm:secret material.
-user pm-indexer on >__VALKEY_INDEXER_PASSWORD__ ~* +@all -@dangerous
+# it holds no pm:secret material. Asynq Server → the cancellation channel.
+user pm-indexer on >__VALKEY_INDEXER_PASSWORD__ ~* &asynq:* +@all -@dangerous
 
-# traefik — internet-facing + Docker-socket-exposed, so the smallest surface:
-# READ-ONLY route discovery on traefik/* only (plus the pub/sub the WATCH needs).
-# A compromised Traefik cannot rewrite the gateway passthrough, poison the CRL,
-# or touch the queues — the single highest-value reduction here.
-user pm-traefik on >__VALKEY_TRAEFIK_PASSWORD__ ~traefik/* +@read +@connection +subscribe +psubscribe -@dangerous
+# traefik — internet-facing + Docker-socket-exposed, so the smallest KEY surface:
+# READ-ONLY discovery on traefik/* only (writes + the queues + CRL are denied —
+# the highest-value reduction). Channels are `allchannels`: Valkey checks a
+# PSUBSCRIBE pattern against `&` grants by EXACT literal equality (not glob), and
+# Traefik's redis KV provider psubscribes to a keyspace-notification pattern we
+# don't pin here, so a scoped `&__keyspace@…` grant would still NOPERM. The
+# residual exposure is small — a compromised read-only Traefik could observe
+# keyspace *event* traffic but cannot read key values or write anything. Pin to
+# Traefik's exact psubscribe pattern here if you want to tighten it.
+user pm-traefik on >__VALKEY_TRAEFIK_PASSWORD__ ~traefik/* &* +@read +@connection +subscribe +psubscribe -@dangerous
