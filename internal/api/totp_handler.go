@@ -45,9 +45,24 @@ type TOTPHandler struct {
 	// for a given challenge is admitted and every later one (even with a valid
 	// code) is rejected. Without it the challenge JWT is replayable for its full
 	// 5-min life — unlimited TOTP guesses per single password step.
+	//
+	// Replica scope (M3, audit 2026-07-17): both this consumer and
+	// totpAccountLimiter below are PROCESS-LOCAL in-memory windows, so single-use
+	// and the per-account failure ceiling are enforced PER REPLICA. On the default
+	// single-instance compose deployment the challenge is worth exactly one guess.
+	// Under multi-replica control HA (ADR 0031) the same challenge JWT replayed
+	// once to each of N replicas passes each replica's fresh consumer — up to N
+	// TOTP guesses per challenge instead of one. Deliberately left per-replica
+	// (not DB-backed like refresh-token JTIs) because compensating controls make
+	// this impractical to exploit: the 6-digit space, ~30s code rotation, the
+	// attacker already holding the password, and small real replica counts. If you
+	// run many replicas and want a strict global single-use, persist/consume the
+	// challenge JTI in the shared store. Keep the two windows in mind together —
+	// a per-replica consumer with a per-replica failure ceiling multiply.
 	challengeConsumer *auth.RateLimiter
 	// totpAccountLimiter throttles FAILED TOTP login attempts per account
-	// (keyed by user ID), independent of source IP.
+	// (keyed by user ID), independent of source IP. Process-local / per-replica —
+	// see the replica-scope note on challengeConsumer above.
 	totpAccountLimiter *auth.RateLimiter
 }
 

@@ -238,6 +238,12 @@ func main() {
 
 	startStaleExecutionExpiry(ctx, st, logger, time.Now)
 
+	// M1: scheduled projection-drift detection. A post-commit projector
+	// apply that fails after the event commits drifts silently; this tick
+	// surfaces it at ERROR so an operator can rebuild before retention prunes
+	// the source events (remediation stays operator-driven — see the worker).
+	startProjectionDriftCheck(ctx, st, logger)
+
 	// Spec 19 audit-log retention: rolling snapshot + prune of the event
 	// log. Config was validated at parse time (fatal on violation); the
 	// archive store and worker construction are fatal too — a destructive
@@ -392,6 +398,11 @@ func main() {
 	// patterns within seconds. Login + VerifyLoginTOTP + SSOCallback
 	// share one limiter — they're all auth-attempt vectors that a
 	// defender treats as one logical "attempt" per IP.
+	//
+	// These ceilings are process-local / PER REPLICA — under multi-replica
+	// control HA the effective limit is roughly limit×replicas. Size them for
+	// that budget; see the replica-scope note on auth.RateLimiters (L12, audit
+	// 2026-07-17).
 	rateLimiters := auth.RateLimiters{
 		Login:       auth.NewRateLimiter(10, 1*time.Minute), // credential-spray defense
 		Refresh:     auth.NewRateLimiter(60, 1*time.Minute), // legitimate refreshes are frequent

@@ -23,6 +23,20 @@ import (
 // The interceptor's IP limiter is bypassable by rotating IPs, so a targeted
 // admin needs an account-keyed ceiling too. Only FAILURES are counted, so a
 // legitimate user's normal/successful logins never accrue toward it.
+//
+// Replica scope (M2, audit 2026-07-17): this ceiling is a PROCESS-LOCAL
+// in-memory counter (auth.RateLimiter), so it is enforced PER REPLICA. On the
+// default single-instance compose deployment (compose.yml notes control does not
+// scale horizontally) that is exactly loginAccountFailLimit per account. Under
+// the multi-replica control-plane HA that ADR 0031 enables, an attacker whose
+// requests load-balance across N replicas gets up to loginAccountFailLimit×N
+// failed attempts per window per account. This is a deliberate design choice —
+// the SSO auth-state and refresh-token single-use were made DB-backed and
+// replica-safe, but the brute-force *ceilings* were intentionally left
+// per-replica rather than adding a shared-store round-trip to every login. If
+// you run N replicas, size loginAccountFailLimit for the per-replica budget you
+// want (effective ceiling ≈ loginAccountFailLimit×N), or front control with a
+// sticky/global rate limit at the load balancer.
 const (
 	loginAccountFailLimit  = 10
 	loginAccountFailWindow = 15 * time.Minute

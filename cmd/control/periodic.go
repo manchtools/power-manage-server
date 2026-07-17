@@ -247,6 +247,170 @@ func startStaleExecutionExpiry(ctx context.Context, st *store.Store, logger *slo
 	}()
 }
 
+// advisoryKeyProjectionDrift serializes the projection-drift scan across control
+// replicas: TryWithAdvisoryLock ensures no two replicas run the (read-only) scan
+// concurrently — bounding peak DB load and matching the retention, inventory,
+// dynamic-group, and stale-expiry workers' lock discipline. It does NOT make the
+// scan cluster-wide once-per-window: each replica owns its ticker, so with offset
+// ticks each may still run its own scan within a window. Unlike stale-expiry
+// (whose emitted state transition makes a later replica's re-run a no-op), this
+// scan is read-only, so like the per-replica rate limiters (audit M2/M3/L12) it
+// is deliberately per-replica — under ADR-0031 HA its cheap indexed reads and,
+// under real drift, its identical ERROR logs scale with replica count. Accepted
+// for a read-only alert: the signal is correct however many replicas emit it, and
+// a shared-store next-run lease (the exactly-once upgrade) is deliberately NOT
+// taken here, consistent with the M2/M3/L12 per-replica decision.
+// "drft" in ASCII/hex; distinct from every other advisory key so two unrelated
+// workers never contend on the same lock.
+const advisoryKeyProjectionDrift int64 = 0x64726674 // "drft"
+
+// projectionDriftCheckInterval is the fixed cadence of the drift-reconcile
+// tick. No operator knob today (like the stale-expiry cadence): 15 min is
+// frequent enough to surface a silently-dropped projection write well before
+// the far slower retention prune could delete the source events, without adding
+// meaningful load (the scan is a handful of indexed aggregate queries).
+const projectionDriftCheckInterval = 15 * time.Minute
+
+// driftRecheckGrace is how long a suspected-drift target must stay behind
+// before the tick alerts. A committed event is visible in the events table the
+// instant its transaction commits, but its post-commit projector apply runs
+// just after and takes a few milliseconds; a single scan reading the events and
+// projection tables independently can catch that in-flight window and read a
+// healthy projection as "behind" (false positive). Genuine drift — a projector
+// that stopped applying — is permanent, so a second scan after this grace still
+// sees it while transient apply-lag has cleared. Kept well above worst-case
+// apply latency yet trivial against the 15-min cadence.
+const driftRecheckGrace = 5 * time.Second
+
+// startProjectionDriftCheck launches the M1 drift-reconcile tick: every
+// projectionDriftCheckInterval it runs one advisory-lock single-flighted
+// ComputeProjectionDrift scan and logs an ERROR for every projection that has
+// fallen behind the event log. This is the scheduled counterpart to the
+// operator-manual `control doctor` drift check — a post-commit projector apply
+// that fails after the event commits (DB blip, ctx cancel mid-dispatch) drifts
+// silently and permanently, and without this tick stays invisible until someone
+// runs doctor.
+//
+// Detection only: remediation stays operator-driven (`control doctor` + the
+// cascade-safe rebuild tool). The drift heuristic has an accepted sampled-type
+// blind spot (see store.ComputeProjectionDrift), so an unattended TRUNCATE+replay
+// on a false-positive verdict is a worse failure mode than the drift it would
+// "fix"; the ERROR log is the actionable signal an operator acts on.
+//
+// The first scan runs immediately on boot to catch drift left by a crash during
+// the previous run.
+func startProjectionDriftCheck(ctx context.Context, st *store.Store, logger *slog.Logger) {
+	go runPeriodic(ctx, projectionDriftCheckInterval, func() {
+		// A panic in one scan must not crash the control server — recover,
+		// log, and let the next tick retry (WS15 posture: background jobs are
+		// isolated, not load-bearing).
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("projection-drift check panicked", "panic", r)
+			}
+		}()
+		tickCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		ran, drifted, err := runProjectionDriftCheck(tickCtx, st, logger, driftRecheckGrace)
+		if err != nil {
+			logger.Error("projection-drift check failed", "error", err)
+			return
+		}
+		if !ran {
+			logger.Debug("projection-drift check skipped — another replica holds the lock")
+			return
+		}
+		if len(drifted) == 0 {
+			logger.Debug("projection-drift check clean — every projection is current")
+		}
+	}, true)
+}
+
+// runProjectionDriftCheck runs one drift scan under the cross-replica advisory
+// lock, alerting only on drift that PERSISTS across a grace-separated recheck
+// (see driftRecheckGrace / rescreenDrift), so a projection caught mid-apply is
+// not mistaken for a stopped one. Returns ran=false (no error) when another
+// replica holds the lock — the caller treats that as a clean skip. When it ran,
+// drifted lists every persistently-Behind target (empty when clean); each is
+// also logged at ERROR here so the alert fires even for callers that ignore the
+// slice. Only a ComputeProjectionDrift failure returns an error.
+func runProjectionDriftCheck(ctx context.Context, st *store.Store, logger *slog.Logger, grace time.Duration) (ran bool, drifted []store.TargetDrift, err error) {
+	ran, err = st.TryWithAdvisoryLock(ctx, advisoryKeyProjectionDrift, func() error {
+		confirmed, screenErr := rescreenDrift(ctx, st.ComputeProjectionDrift, grace)
+		if screenErr != nil {
+			return screenErr
+		}
+		drifted = confirmed
+		for _, d := range confirmed {
+			// Remediation is deliberately investigate-first, not "rebuild": a
+			// rebuild TRUNCATEs then replays, refuses once history has been
+			// pruned (store.ErrHistoryPruned), and cascade-widens to FK-child
+			// targets — a heavy, operator-judgment recovery, never a reflexive
+			// fix for an alert. A stopped projector is usually a control-process
+			// fault to diagnose first.
+			logger.Error("projection drift detected — a projection has stopped applying events it should",
+				"target", d.Target,
+				"lagging_table", d.LaggingTable,
+				"lagging_max", d.LaggingMax,
+				"stream_max", d.StreamMax,
+				"remediation", "diagnose this target's projector apply failure in the control logs; recovery is a targeted rebuild from un-pruned history via `control doctor` — a heavy operation, not a routine fix, and impossible once retention has pruned the source events")
+		}
+		return nil
+	})
+	return ran, drifted, err
+}
+
+// rescreenDrift returns only the targets that are Behind in TWO scans separated
+// by grace. compute is the drift probe (store.ComputeProjectionDrift in
+// production; a deterministic fake in tests). The first scan is the cheap common
+// path: with nothing behind it returns immediately, no wait and no re-scan. When
+// something is behind it waits grace — long enough for any in-flight post-commit
+// apply to finish — and re-scans; a target still Behind in both is a genuinely
+// stopped projector, while transient apply-lag has cleared by the second read.
+// Intersection is by target name. ctx cancellation during the grace aborts with
+// the ctx error.
+//
+// Only the two-scan intersection gates the alert, deliberately NOT a "high-water
+// did not advance" refinement: a target's high-water can advance on a co-owned
+// sibling table (e.g. users owns users_projection + user_roles_projection) while
+// the stalled table stays frozen, so gating on forward progress would MISS a
+// partial stall. A false negative on an integrity alert is worse than the
+// negligible residual false positive of a projector so overloaded it is mid-apply
+// in both scans — itself a real signal worth surfacing.
+func rescreenDrift(ctx context.Context, compute func(context.Context) ([]store.TargetDrift, error), grace time.Duration) ([]store.TargetDrift, error) {
+	first, err := compute(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("compute projection drift: %w", err)
+	}
+	firstBehind := map[string]bool{}
+	for _, d := range first {
+		if d.Drifted() {
+			firstBehind[d.Target] = true
+		}
+	}
+	if len(firstBehind) == 0 {
+		return nil, nil // clean on the first scan — no recheck needed
+	}
+
+	select {
+	case <-time.After(grace):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	second, err := compute(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("recompute projection drift: %w", err)
+	}
+	var confirmed []store.TargetDrift
+	for _, d := range second {
+		if d.Drifted() && firstBehind[d.Target] {
+			confirmed = append(confirmed, d)
+		}
+	}
+	return confirmed, nil
+}
+
 // expireStaleExecutions runs one stale-execution sweep under the cross-replica
 // advisory lock. Returns ran=false (no error) when another replica currently
 // holds the lock — the caller treats that as a clean skip. A per-execution
