@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"math/big"
+	"sync"
 	"testing"
 	"time"
 
@@ -235,6 +236,90 @@ func TestRegister_OneTimeTokenDisabledAfterUse(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestRegister_OneTimeTokenConcurrentConsumeYieldsOneDevice is the H2
+// regression test. It fires N Register calls at a single one-time token
+// concurrently, holding every goroutine at a barrier installed just before the
+// token consume so they all pass the stale-projection pre-check (CurrentUses==0)
+// before any consume lands — the exact interleaving a serial test cannot force.
+//
+// On the buggy version (consume via auto-versioning AppendEvent, which RETRIES
+// on version conflict) each goroutine re-reads the stream head and lands a fresh
+// TokenDisabled event, so several concurrent registrations all succeed and the
+// one-time token mints multiple devices. On the fixed version (consume via
+// AppendEventWithVersion pinned to ProjectionVersion+1) the event store's
+// UNIQUE(stream_type, stream_id, stream_version) constraint lets exactly one
+// consume land; the losers re-read the now-disabled token and fail closed. So
+// exactly one device is registered no matter how many requests race.
+func TestRegister_OneTimeTokenConcurrentConsumeYieldsOneDevice(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	testCA := newTestCA(t)
+	h := api.NewRegistrationHandler(st, testCA, "https://gateway.test:8080", slog.Default())
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	_, tokenValue := createTestTokenWithValue(t, st, adminID, true) // one-time
+
+	const n = 5
+
+	// Barrier: every goroutine signals arrival at the consume point, then blocks
+	// until the main goroutine releases them together, so all N read the same
+	// stale (CurrentUses==0) projection before any consume executes.
+	release := make(chan struct{})
+	arrived := make(chan struct{}, n)
+	api.SetRegistrationBeforeConsumeHookForTest(func() {
+		arrived <- struct{}{}
+		<-release
+	})
+	defer api.SetRegistrationBeforeConsumeHookForTest(nil)
+
+	var mu sync.Mutex
+	var deviceIDs []string
+	successes := 0
+	permissionDenied := 0
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			csr := generateCSR(t)
+			resp, err := h.Register(context.Background(), connect.NewRequest(&pm.RegisterRequest{
+				Token:        tokenValue,
+				Hostname:     "race-device",
+				AgentVersion: "1.0.0",
+				Csr:          csr,
+			}))
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				successes++
+				deviceIDs = append(deviceIDs, resp.Msg.DeviceId.Value)
+				return
+			}
+			if connect.CodeOf(err) == connect.CodePermissionDenied {
+				permissionDenied++
+			}
+		}()
+	}
+
+	// Wait for every goroutine to reach the consume barrier (or fail the test
+	// rather than deadlock), then release them all at once.
+	timeout := time.After(15 * time.Second)
+	for i := 0; i < n; i++ {
+		select {
+		case <-arrived:
+		case <-timeout:
+			close(release)
+			t.Fatalf("only %d/%d goroutines reached the consume barrier", i, n)
+		}
+	}
+	close(release)
+	wg.Wait()
+
+	assert.Equal(t, 1, successes, "a one-time token must yield exactly one successful registration under concurrency")
+	assert.Len(t, deviceIDs, 1, "exactly one device may be minted from a one-time token")
+	assert.Equal(t, n-1, permissionDenied, "every loser must fail closed with PermissionDenied")
 }
 
 func TestRegister_DisabledTokenFails(t *testing.T) {

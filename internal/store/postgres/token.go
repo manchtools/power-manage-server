@@ -70,16 +70,17 @@ func (t *Token) Count(ctx context.Context, filter store.CountTokensFilter) (int6
 // one place.
 func tokenFromRow(row generated.TokensProjection) store.Token {
 	return store.Token{
-		ID:          row.ID,
-		ValueHash:   row.ValueHash,
-		Name:        row.Name,
-		OneTime:     row.OneTime,
-		MaxUses:     row.MaxUses,
-		CurrentUses: row.CurrentUses,
-		ExpiresAt:   row.ExpiresAt,
-		CreatedAt:   row.CreatedAt,
-		CreatedBy:   row.CreatedBy,
-		Disabled:    row.Disabled,
-		OwnerID:     row.OwnerID,
+		ID:                row.ID,
+		ValueHash:         row.ValueHash,
+		Name:              row.Name,
+		OneTime:           row.OneTime,
+		MaxUses:           row.MaxUses,
+		CurrentUses:       row.CurrentUses,
+		ExpiresAt:         row.ExpiresAt,
+		CreatedAt:         row.CreatedAt,
+		CreatedBy:         row.CreatedBy,
+		Disabled:          row.Disabled,
+		OwnerID:           row.OwnerID,
+		ProjectionVersion: row.ProjectionVersion,
 	}
 }
