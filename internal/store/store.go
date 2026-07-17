@@ -70,10 +70,11 @@ type EventListener func(ctx context.Context, ev PersistedEvent)
 // successful no-ops (event type the projector doesn't care about)
 // must return nil.
 //
-// Wired in projectors.WireAll for every Go-ported projector that
-// owns an entry in AllRebuildTargets. RebuildAll falls back to the
-// PL/pgSQL Function dispatch when no applier is registered for the
-// target — preserves operator behaviour for not-yet-ported targets.
+// Wired in projectors.WireAll for every Go-ported projector that owns
+// an entry in AllRebuildTargets. Every rebuild target MUST have a
+// registered applier: RebuildAll hard-errors on a target with none (the
+// PL/pgSQL projector dispatch was dropped in migration 041), so a
+// drifted WireAll wiring fails loudly instead of silently no-op'ing.
 //
 // Refs manchtools/power-manage-server#125.
 type RebuildApply func(ctx context.Context, q *Queries, ev PersistedEvent) error
@@ -93,13 +94,12 @@ type Store struct {
 	// key; switch to a per-key map if a second hot key is added.
 	advisoryMu sync.Mutex
 
-	// listenersMu guards listeners + OnEventAppended +
-	// rebuildAppliers. Documented usage is "register at boot, then
-	// start serving", but Go's race detector won't catch a future
-	// caller that registers after AppendEvent is in flight
-	// (concurrent slice append + range read is a data race). RWMutex
-	// is cheap on the hot read path (fireListeners holds RLock) and
-	// lets boot code register without extra ceremony.
+	// listenersMu guards listeners + rebuildAppliers. Documented usage
+	// is "register at boot, then start serving", but Go's race detector
+	// won't catch a future caller that registers after AppendEvent is in
+	// flight (concurrent slice append + range read is a data race).
+	// RWMutex is cheap on the hot read path (fireListeners holds RLock)
+	// and lets boot code register without extra ceremony.
 	listenersMu sync.RWMutex
 
 	// listeners are invoked after every successful AppendEvent /
@@ -117,14 +117,6 @@ type Store struct {
 	// guarded by listenersMu (same boot-once-then-read posture as
 	// listeners). See manchtools/power-manage-server#125.
 	rebuildAppliers map[string]RebuildApply
-
-	// OnEventAppended is preserved for backwards compatibility with
-	// the search-indexing wiring at cmd/control/main.go. Setting it
-	// is equivalent to RegisterEventListener; do not read from it
-	// outside this file. Guarded by listenersMu — callers that
-	// reassign at runtime should go through RegisterEventListener
-	// instead. (rc11 review round 4: search-indexer wiring migrated.)
-	OnEventAppended func(ctx context.Context, ev PersistedEvent)
 
 	// logger is used by fireListeners to log panic recoveries through
 	// the standard logging pipeline instead of os.Stderr. Optional;
@@ -300,9 +292,8 @@ func (s *Store) HasRebuildApply(name string) bool {
 	return ok
 }
 
-// fireListeners invokes both the legacy OnEventAppended callback (if
-// set) and every RegisterEventListener entry. Centralised so the two
-// AppendEvent variants stay in sync.
+// fireListeners invokes every RegisterEventListener entry. Centralised
+// so the two AppendEvent variants stay in sync.
 //
 // Each listener is wrapped in defer/recover so a panic in one cannot
 // fail AppendEvent — the event is already committed, and listeners
@@ -332,7 +323,6 @@ func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
 	// SetLogger doesn't race with the panic-recovery read inside
 	// the closure below.
 	s.listenersMu.RLock()
-	onEvent := s.OnEventAppended
 	listeners := s.listeners
 	logger := s.logger
 	s.listenersMu.RUnlock()
@@ -354,9 +344,6 @@ func (s *Store) fireListeners(ctx context.Context, row PersistedEvent) {
 		fn()
 	}
 
-	if onEvent != nil {
-		safe("OnEventAppended", func() { onEvent(ctx, row) })
-	}
 	for _, l := range listeners {
 		safe("RegisterEventListener", func() { l(ctx, row) })
 	}

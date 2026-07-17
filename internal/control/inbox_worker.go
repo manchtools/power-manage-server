@@ -474,12 +474,12 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 				isCompliance, _ = params["isCompliance"].(bool)
 			}
 			if isCompliance {
-				complianceData := map[string]any{
-					"device_id":        deviceID,
-					"action_id":        actionID,
-					"action_name":      cachedAction.Name,
-					"compliant":        result.Compliant,
-					"detection_output": commandOutputToMap(result.DetectionOutput),
+				complianceData := payloads.ComplianceResultUpdated{
+					DeviceID:        deviceID,
+					ActionID:        actionID,
+					ActionName:      cachedAction.Name,
+					Compliant:       result.Compliant,
+					DetectionOutput: payloads.RawCommandOutput(commandOutputPayload(result.DetectionOutput)),
 				}
 				if err := w.store.AppendEvent(ctx, store.Event{
 					StreamType: "compliance",
@@ -662,6 +662,35 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 		return err
 	}
 
+	// Skip processing for deleted or unknown devices. A just-deleted
+	// device's inventory must not repopulate projections or influence
+	// dynamic device-group membership (which drives action assignment),
+	// leaving orphan rows behind the deletion.
+	//
+	// ponytail: a best-effort filter, deliberately NOT atomic with the write
+	// below — same posture as the sibling handleDeviceHello/handleDeviceHeartbeat
+	// guards. A DeviceDeleted committing in the tiny window after this check
+	// only lets a stale inventory row through, which is benign: DeviceDeleted
+	// does not cascade-delete inventory (applyDeviceDeleted soft-deletes the
+	// device + wipes assignments/memberships but leaves inventory), and dynamic
+	// device-group evaluation excludes soft-deleted devices, so no action is
+	// assigned to a dead device. Row-locking every inbox handler to close a
+	// sub-millisecond race with no security effect isn't worth the complexity
+	// or the divergence from the siblings.
+	deleted, err := w.store.Repos().Device.IsDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			w.logger.Debug("ignoring inventory update from unknown device", "device_id", payload.DeviceID)
+			return nil
+		}
+		w.logger.Error("failed to check device deletion status", "device_id", payload.DeviceID, "error", err)
+		return err
+	}
+	if deleted {
+		w.logger.Debug("ignoring inventory update from deleted device", "device_id", payload.DeviceID)
+		return nil
+	}
+
 	w.logger.Info("received device inventory",
 		"device_id", payload.DeviceID,
 		"tables", len(payload.Tables),
@@ -721,6 +750,25 @@ func (w *InboxWorker) handleSecurityAlert(ctx context.Context, t *asynq.Task) er
 
 	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
 		return err
+	}
+
+	// Skip processing for deleted or unknown devices — do not append a
+	// new alert event onto a deleted device's stream. Best-effort like the
+	// inventory guard above (see its note); the residual TOCTOU is benign —
+	// worst case one extra durable event on an already-dead stream, with no
+	// projection resurrection.
+	deleted, err := w.store.Repos().Device.IsDeleted(ctx, payload.DeviceID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			w.logger.Debug("ignoring security alert from unknown device", "device_id", payload.DeviceID)
+			return nil
+		}
+		w.logger.Error("failed to check device deletion status", "device_id", payload.DeviceID, "error", err)
+		return err
+	}
+	if deleted {
+		w.logger.Debug("ignoring security alert from deleted device", "device_id", payload.DeviceID)
+		return nil
 	}
 
 	w.logger.Warn("received security alert from device",
@@ -1003,21 +1051,6 @@ func (w *InboxWorker) dispatchPendingActions(ctx context.Context, deviceID strin
 		return fmt.Errorf("%d dispatch(es) failed, first: %w", len(enqueueErrs), enqueueErrs[0])
 	}
 	return nil
-}
-
-// commandOutputToMap converts a CommandOutput proto to a map for event
-// data. Returns nil if the output is nil. Used by emit sites that
-// still construct payloads as map[string]any (the compliance event
-// shape, for now).
-func commandOutputToMap(o *pm.CommandOutput) map[string]any {
-	if o == nil {
-		return nil
-	}
-	return map[string]any{
-		"stdout":    o.Stdout,
-		"stderr":    o.Stderr,
-		"exit_code": o.ExitCode,
-	}
 }
 
 // maxCommandOutputBytes is the per-stream ceiling enforced on

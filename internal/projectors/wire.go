@@ -124,21 +124,21 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// Phase 2 port under tracker #136 (action_set, assignment,
 	// user_group, device_group, compliance_policy, compliance,
 	// action+definition, execution, device, user). With UserListener
-	// landed, every domain projector lives in Go — the cleanup
-	// migration can drop project_event() and the dispatcher trigger.
+	// landed, every domain projector lives in Go; migration 041 dropped
+	// project_event() and the PL/pgSQL dispatcher trigger.
 	// One ActionListener handles both the action and definition stream
 	// types because DefinitionCreated dispatches across two
 	// projections — synthesise an actions_projection row (when
 	// payload carries `action_type`) OR insert a definitions_projection
 	// row (otherwise) — and splitting would race the two branches.
 
-	// Rebuild appliers (manchtools/power-manage-server#125). Only
-	// the ported projectors that own a rebuildTarget in
-	// store.AllRebuildTargets need this wiring — RebuildAll
-	// dispatches everything else through the legacy PL/pgSQL
-	// Function. Of the 11 #107 ports, three own rebuild targets:
-	// roles, tokens, user_selections. The Phase 2 ports add four
-	// more (action_sets, assignments, user_groups, device_groups).
+	// Rebuild appliers (manchtools/power-manage-server#125). Every
+	// rebuildTarget in store.AllRebuildTargets MUST be wired here:
+	// RebuildAll hard-errors on a listed target with no registered
+	// applier (there is no PL/pgSQL fallback — migration 041 dropped
+	// it). Of the 11 #107 ports, three own rebuild targets: roles,
+	// tokens, user_selections. The Phase 2 ports add four more
+	// (action_sets, assignments, user_groups, device_groups).
 	st.RegisterRebuildApply("roles", ApplyRole)
 	st.RegisterRebuildApply("tokens", ApplyToken)
 	st.RegisterRebuildApply("user_selections", ApplyUserSelection)
