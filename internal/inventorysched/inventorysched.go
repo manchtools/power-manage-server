@@ -162,7 +162,7 @@ func (w *Worker) runLocked(ctx context.Context) (RunResult, error) {
 
 	deadline := now.Add(Tick - enqueueDeadlineSlack)
 	for _, deviceID := range ids {
-		payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String()}
+		payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String(), TargetDeviceID: deviceID}
 		if err := taskqueue.SignInventoryRequest(w.signer, &payload); err != nil {
 			// Signing failure is systemic (nil signer / broken key):
 			// abort the cycle fail-closed instead of log-spamming one

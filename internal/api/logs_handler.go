@@ -76,14 +76,15 @@ func (h *LogsHandler) QueryDeviceLogs(ctx context.Context, req *connect.Request[
 	// Fail closed on a signing error — expire the pending row rather than
 	// shipping an unsigned task the agent drops.
 	payload := taskqueue.LogQueryDispatchPayload{
-		QueryID:  queryID,
-		Lines:    msg.Lines,
-		Unit:     msg.Unit,
-		Since:    msg.Since,
-		Until:    msg.Until,
-		Priority: msg.Priority,
-		Grep:     msg.Grep,
-		Kernel:   msg.Kernel,
+		QueryID:        queryID,
+		Lines:          msg.Lines,
+		Unit:           msg.Unit,
+		Since:          msg.Since,
+		Until:          msg.Until,
+		Priority:       msg.Priority,
+		Grep:           msg.Grep,
+		Kernel:         msg.Kernel,
+		TargetDeviceID: msg.DeviceId,
 	}
 	if err := signLogQueryDispatch(h.signer, &payload); err != nil {
 		h.logger.Error("log query dispatch signing failed; marking result expired",

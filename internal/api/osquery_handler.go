@@ -91,11 +91,12 @@ func (h *OSQueryHandler) DispatchOSQuery(ctx context.Context, req *connect.Reque
 	// and returns an error rather than shipping an unsigned task the agent
 	// would drop.
 	payload := taskqueue.OSQueryDispatchPayload{
-		QueryID: queryID,
-		Table:   msg.Table,
-		Columns: msg.Columns,
-		Limit:   msg.Limit,
-		RawSQL:  msg.RawSql,
+		QueryID:        queryID,
+		Table:          msg.Table,
+		Columns:        msg.Columns,
+		Limit:          msg.Limit,
+		RawSQL:         msg.RawSql,
+		TargetDeviceID: msg.DeviceId,
 	}
 	if err := signOSQueryDispatch(h.signer, &payload); err != nil {
 		h.logger.Error("osquery dispatch signing failed; marking result expired",
@@ -295,7 +296,7 @@ func (h *OSQueryHandler) RefreshDeviceInventory(ctx context.Context, req *connec
 	// Build + sign the inventory request (WS4): a query_id makes it bindable,
 	// and the agent verifies the CA signature before running osquery as root.
 	// Fail closed on a signing error.
-	payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String()}
+	payload := taskqueue.InventoryRequestPayload{QueryID: ulid.Make().String(), TargetDeviceID: msg.DeviceId}
 	if err := taskqueue.SignInventoryRequest(h.signer, &payload); err != nil {
 		h.logger.Error("inventory request signing failed",
 			"device_id", msg.DeviceId, "error", err)

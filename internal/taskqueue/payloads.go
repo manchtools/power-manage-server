@@ -36,12 +36,18 @@ type ActionDispatchPayload struct {
 // verify.OSQuerySignatureDomain (WS4). The control server computes it; the
 // gateway copies it onto the wire OSQuery verbatim and NEVER originates it.
 type OSQueryDispatchPayload struct {
-	QueryID   string   `json:"query_id"`
-	Table     string   `json:"table"`
-	Columns   []string `json:"columns,omitempty"`
-	Limit     int32    `json:"limit,omitempty"`
-	RawSQL    string   `json:"raw_sql,omitempty"`
-	Signature []byte   `json:"signature,omitempty"`
+	QueryID string   `json:"query_id"`
+	Table   string   `json:"table"`
+	Columns []string `json:"columns,omitempty"`
+	Limit   int32    `json:"limit,omitempty"`
+	RawSQL  string   `json:"raw_sql,omitempty"`
+	// TargetDeviceID is the device this query is authorized to run on. It is
+	// bound INSIDE the signed canonical bytes (PMSEC-001) so a compromised
+	// gateway cannot replay one device's signed query onto another; the agent
+	// verifies target == self. The control server sets it to the dispatch
+	// target before signing.
+	TargetDeviceID string `json:"target_device_id"`
+	Signature      []byte `json:"signature,omitempty"`
 }
 
 // ToProto builds the wire OSQuery from the payload (signature excluded). It is
@@ -51,11 +57,12 @@ type OSQueryDispatchPayload struct {
 // byte-for-byte the bytes the server signed, with no field-mapping drift.
 func (p OSQueryDispatchPayload) ToProto() *pm.OSQuery {
 	return &pm.OSQuery{
-		QueryId: p.QueryID,
-		Table:   p.Table,
-		Columns: p.Columns,
-		Limit:   p.Limit,
-		RawSql:  p.RawSQL,
+		QueryId:        p.QueryID,
+		Table:          p.Table,
+		Columns:        p.Columns,
+		Limit:          p.Limit,
+		RawSql:         p.RawSQL,
+		TargetDeviceId: p.TargetDeviceID,
 	}
 }
 
@@ -65,15 +72,18 @@ func (p OSQueryDispatchPayload) ToProto() *pm.OSQuery {
 // the CA signature over ToProto()'s canonical bytes under
 // verify.InventorySignatureDomain (WS4).
 type InventoryRequestPayload struct {
-	QueryID   string `json:"query_id"`
-	Signature []byte `json:"signature,omitempty"`
+	QueryID string `json:"query_id"`
+	// TargetDeviceID binds the collection request to one device inside the
+	// signed canonical bytes (PMSEC-001); the agent verifies target == self.
+	TargetDeviceID string `json:"target_device_id"`
+	Signature      []byte `json:"signature,omitempty"`
 }
 
 // ToProto builds the wire RequestInventory (signature excluded). Shared
 // construction site for sign (control) and send (gateway) — see
 // OSQueryDispatchPayload.ToProto.
 func (p InventoryRequestPayload) ToProto() *pm.RequestInventory {
-	return &pm.RequestInventory{QueryId: p.QueryID}
+	return &pm.RequestInventory{QueryId: p.QueryID, TargetDeviceId: p.TargetDeviceID}
 }
 
 // RevokeLuksDeviceKeyPayload is the payload for TypeRevokeLuksDeviceKey tasks.
@@ -82,14 +92,19 @@ func (p InventoryRequestPayload) ToProto() *pm.RequestInventory {
 // verify.LuksRevokeSignatureDomain (WS4) — binding action_id so a compromised
 // gateway cannot forge or replay the destructive slot-7 wipe.
 type RevokeLuksDeviceKeyPayload struct {
-	ActionID  string `json:"action_id"`
-	Signature []byte `json:"signature,omitempty"`
+	ActionID string `json:"action_id"`
+	// TargetDeviceID binds the destructive slot-7 wipe to one device inside the
+	// signed canonical bytes (PMSEC-001); the agent verifies target == self so a
+	// compromised gateway cannot replay a validly-signed revocation onto another
+	// served device.
+	TargetDeviceID string `json:"target_device_id"`
+	Signature      []byte `json:"signature,omitempty"`
 }
 
 // ToProto builds the wire RevokeLuksDeviceKey (signature excluded). Shared
 // construction site for sign (control) and send (gateway).
 func (p RevokeLuksDeviceKeyPayload) ToProto() *pm.RevokeLuksDeviceKey {
-	return &pm.RevokeLuksDeviceKey{ActionId: p.ActionID}
+	return &pm.RevokeLuksDeviceKey{ActionId: p.ActionID, TargetDeviceId: p.TargetDeviceID}
 }
 
 // LogQueryDispatchPayload is the payload for TypeLogQueryDispatch tasks.
@@ -97,15 +112,18 @@ func (p RevokeLuksDeviceKeyPayload) ToProto() *pm.RevokeLuksDeviceKey {
 // Signature is the CA signature over ToProto()'s canonical bytes under
 // verify.LogQuerySignatureDomain (WS4).
 type LogQueryDispatchPayload struct {
-	QueryID   string `json:"query_id"`
-	Lines     int32  `json:"lines,omitempty"`
-	Unit      string `json:"unit,omitempty"`
-	Since     string `json:"since,omitempty"`
-	Until     string `json:"until,omitempty"`
-	Priority  string `json:"priority,omitempty"`
-	Grep      string `json:"grep,omitempty"`
-	Kernel    bool   `json:"kernel,omitempty"`
-	Signature []byte `json:"signature,omitempty"`
+	QueryID  string `json:"query_id"`
+	Lines    int32  `json:"lines,omitempty"`
+	Unit     string `json:"unit,omitempty"`
+	Since    string `json:"since,omitempty"`
+	Until    string `json:"until,omitempty"`
+	Priority string `json:"priority,omitempty"`
+	Grep     string `json:"grep,omitempty"`
+	Kernel   bool   `json:"kernel,omitempty"`
+	// TargetDeviceID binds the log read to one device inside the signed
+	// canonical bytes (PMSEC-001); the agent verifies target == self.
+	TargetDeviceID string `json:"target_device_id"`
+	Signature      []byte `json:"signature,omitempty"`
 }
 
 // ToProto builds the wire LogQuery (signature excluded). Shared construction
@@ -114,14 +132,15 @@ type LogQueryDispatchPayload struct {
 // gateway, so the canonical bytes match on both sides.
 func (p LogQueryDispatchPayload) ToProto() *pm.LogQuery {
 	return &pm.LogQuery{
-		QueryId:  p.QueryID,
-		Lines:    p.Lines,
-		Unit:     p.Unit,
-		Since:    p.Since,
-		Until:    p.Until,
-		Priority: p.Priority,
-		Grep:     p.Grep,
-		Kernel:   p.Kernel,
+		QueryId:        p.QueryID,
+		Lines:          p.Lines,
+		Unit:           p.Unit,
+		Since:          p.Since,
+		Until:          p.Until,
+		Priority:       p.Priority,
+		Grep:           p.Grep,
+		Kernel:         p.Kernel,
+		TargetDeviceId: p.TargetDeviceID,
 	}
 }
 

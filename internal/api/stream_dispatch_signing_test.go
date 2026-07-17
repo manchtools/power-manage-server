@@ -67,11 +67,23 @@ func TestDispatchOSQuery_SignsCanonicalUnderDomain(t *testing.T) {
 	call := lastDeviceCall(t, queue, taskqueue.TypeOSQueryDispatch)
 	payload := payloadAs[taskqueue.OSQueryDispatchPayload](t, call)
 	require.NotEmpty(t, payload.Signature, "osquery dispatch must be signed")
+	require.Equal(t, deviceID, payload.TargetDeviceID,
+		"dispatch must bind the target device inside the signed bytes (PMSEC-001) — an empty target signs a message the agent will reject")
 
 	canonical, err := verify.OSQueryCanonical(payload.ToProto())
 	require.NoError(t, err)
 	require.NoError(t, verifier.VerifyDomain(verify.OSQuerySignatureDomain, canonical, payload.Signature),
 		"enqueued osquery must verify under the osquery domain")
+
+	// Cross-device replay (PMSEC-001): retargeting the signed message to another
+	// device must break verification — a compromised gateway cannot replay this
+	// device's signed query onto a different served device.
+	retargeted := payload.ToProto()
+	retargeted.TargetDeviceId = testutil.CreateTestDevice(t, st, "osq-other-host")
+	retargetedCanon, err := verify.OSQueryCanonical(retargeted)
+	require.NoError(t, err)
+	require.Error(t, verifier.VerifyDomain(verify.OSQuerySignatureDomain, retargetedCanon, payload.Signature),
+		"retargeting target_device_id must break verification")
 
 	// Domain disjointness: the same bytes/signature must NOT verify under a
 	// sibling domain (no cross-surface replay).
@@ -161,6 +173,8 @@ func TestQueryDeviceLogs_SignsCanonicalUnderDomain(t *testing.T) {
 	call := lastDeviceCall(t, queue, taskqueue.TypeLogQueryDispatch)
 	payload := payloadAs[taskqueue.LogQueryDispatchPayload](t, call)
 	require.NotEmpty(t, payload.Signature, "log query dispatch must be signed")
+	require.Equal(t, deviceID, payload.TargetDeviceID,
+		"log query dispatch must bind the target device inside the signed bytes (PMSEC-001)")
 
 	canonical, err := verify.LogQueryCanonical(payload.ToProto())
 	require.NoError(t, err)
@@ -197,6 +211,8 @@ func TestRefreshDeviceInventory_SignsCanonicalUnderDomain(t *testing.T) {
 	payload := payloadAs[taskqueue.InventoryRequestPayload](t, call)
 	require.NotEmpty(t, payload.QueryID, "inventory request must carry a query_id to be bindable")
 	require.NotEmpty(t, payload.Signature, "inventory request must be signed")
+	require.Equal(t, deviceID, payload.TargetDeviceID,
+		"inventory request must bind the target device inside the signed bytes (PMSEC-001)")
 
 	canonical, err := verify.RequestInventoryCanonical(payload.ToProto())
 	require.NoError(t, err)
@@ -234,6 +250,8 @@ func TestRevokeLuksDeviceKey_SignsCanonicalUnderDomain(t *testing.T) {
 	payload := payloadAs[taskqueue.RevokeLuksDeviceKeyPayload](t, call)
 	require.Equal(t, actionID, payload.ActionID)
 	require.NotEmpty(t, payload.Signature, "LUKS revoke dispatch must be signed")
+	require.Equal(t, deviceID, payload.TargetDeviceID,
+		"LUKS revoke must bind the target device inside the signed bytes (PMSEC-001) — the most destructive cross-device replay to close")
 
 	canonical, err := verify.RevokeLuksDeviceKeyCanonical(payload.ToProto())
 	require.NoError(t, err)
