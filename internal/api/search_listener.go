@@ -658,6 +658,11 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 			IsDynamic:   isDynamic,
 			MemberCount: g.MemberCount,
 			CreatedAt:   createdAt,
+			// A device group is in-scope for a caller scoped to it: stamp its OWN
+			// id so ObjectScopeListFilter (union device-/user-group scope) confines
+			// Search to the groups the caller can list (H4).
+			ScopeGroupIDs:    id,
+			HasScopeGroupIDs: true,
 		}, nil
 
 	case search.ScopeActionSet:
@@ -841,6 +846,9 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 			IsDynamic:   isDynamic,
 			MemberCount: g.MemberCount,
 			CreatedAt:   createdAt,
+			// Own id — same rationale as ScopeDeviceGroup (H4).
+			ScopeGroupIDs:    id,
+			HasScopeGroupIDs: true,
 		}, nil
 
 	case search.ScopeExecution:
@@ -871,17 +879,27 @@ func loadSearchEntityData(ctx context.Context, st *store.Store, logger *slog.Log
 		if exec.DurationMs != nil {
 			execDurationMs = *exec.DurationMs
 		}
+		// An execution inherits the scope of its TARGET DEVICE: stamp the device's
+		// device-group ids so a scope-restricted caller sees only executions on
+		// devices in their scope, mirroring the dedicated ListExecutions confinement
+		// (H4 — was leaking every execution fleet-wide).
+		scopeGroups, err := loadDeviceScopeGroupIDs(ctx, q, exec.DeviceID)
+		if err != nil {
+			return nil, err
+		}
 		return &taskqueue.SearchEntityData{
-			ActionName:     actionName,
-			DeviceHostname: deviceHostname,
-			Status:         exec.Status,
-			Type:           exec.ActionType,
-			DeviceID:       exec.DeviceID,
-			CreatedAt:      execCreatedAt,
-			DurationMs:     execDurationMs,
-			Changed:        exec.Changed,
-			DesiredState:   exec.DesiredState,
-			ActionID:       execActionID,
+			ActionName:       actionName,
+			DeviceHostname:   deviceHostname,
+			Status:           exec.Status,
+			Type:             exec.ActionType,
+			DeviceID:         exec.DeviceID,
+			CreatedAt:        execCreatedAt,
+			DurationMs:       execDurationMs,
+			Changed:          exec.Changed,
+			DesiredState:     exec.DesiredState,
+			ActionID:         execActionID,
+			ScopeGroupIDs:    scopeGroups,
+			HasScopeGroupIDs: true,
 		}, nil
 	}
 

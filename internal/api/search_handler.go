@@ -37,6 +37,36 @@ var scopesWithScopeGroupField = func() map[string]bool {
 // empty — fail closed, never fail open to the whole catalog.
 const noScopeSentinel = "__pm_no_scope__"
 
+// searchScopeToIndex is the full set of searchable facets and their valkey-search
+// index names. The default (unscoped) query plan is a subset; executions and
+// audit_events are reachable only via an explicit scope. Hoisted to package scope
+// so the confinement-parity guard (TestSearchFacetsConfinedOrGated) reads exactly
+// the set the handler queries.
+var searchScopeToIndex = map[string]string{
+	"actions":             "idx:actions",
+	"action_sets":         "idx:action_sets",
+	"definitions":         "idx:definitions",
+	"compliance_policies": "idx:compliance_policies",
+	"devices":             "idx:devices",
+	"users":               "idx:users",
+	"device_groups":       "idx:device_groups",
+	"user_groups":         "idx:user_groups",
+	"executions":          "idx:executions",
+	"audit_events":        "idx:audit_events",
+}
+
+// facetListPermission gates searchable facets that carry NO scope_group_ids field,
+// so scopeGroupClause cannot confine them by group scope. Such a facet is org-tier
+// (TargetUnspecified): a Search caller must hold its dedicated List permission to
+// see any of it, exactly as the dedicated List RPC requires — otherwise a
+// Search-only holder would read it fleet-wide. audit_events is the only such facet
+// (its ListAuditEvents permission is org-tier). The parity guard proves every
+// searchable facet is EITHER scope-confined OR listed here — never both unconfined
+// and ungated (H4).
+var facetListPermission = map[string]string{
+	"audit_events": "ListAuditEvents",
+}
+
 // scopeGroupClause returns the RediSearch clause confining a scope-restricted
 // caller to objects assigned within their scope groups (#7 spec 14), or "" when
 // the scope carries no scope_group_ids field or the caller is unrestricted
@@ -302,19 +332,6 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 		return nil, err
 	}
 
-	scopeToIndex := map[string]string{
-		"actions":             "idx:actions",
-		"action_sets":         "idx:action_sets",
-		"definitions":         "idx:definitions",
-		"compliance_policies": "idx:compliance_policies",
-		"devices":             "idx:devices",
-		"users":               "idx:users",
-		"device_groups":       "idx:device_groups",
-		"user_groups":         "idx:user_groups",
-		"executions":          "idx:executions",
-		"audit_events":        "idx:audit_events",
-	}
-
 	// Build the FT.SEARCH query from text query + filters.
 	ftQuery := buildFTQuery(query, req.Msg.DateFilters, tagFilters)
 	if deviceStatusClause != "" {
@@ -329,8 +346,17 @@ func (h *SearchHandler) Search(ctx context.Context, req *connect.Request[pm.Sear
 	var totalCount int32
 
 	for _, scope := range scopes {
-		idxName, ok := scopeToIndex[scope]
+		idxName, ok := searchScopeToIndex[scope]
 		if !ok {
+			continue
+		}
+
+		// H4: a facet with no scope_group_ids field can't be group-confined, so it
+		// is gated by its dedicated org-tier List permission. Skip it for a caller
+		// who lacks that permission (never leak it fleet-wide via Search). Facets
+		// that ARE scope-confined (the common case) carry no entry here and fall
+		// through to scopeGroupClause below.
+		if perm, gated := facetListPermission[scope]; gated && !auth.HasPermission(ctx, perm) {
 			continue
 		}
 

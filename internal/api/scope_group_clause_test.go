@@ -47,8 +47,17 @@ func TestScopeGroupClause(t *testing.T) {
 		assert.Equal(t, "", scopeGroupClause(unrestricted, "devices"))
 		assert.Equal(t, "", scopeGroupClause(unrestricted, "actions"))
 	})
-	t.Run("non-scope-filtered scope gets no clause", func(t *testing.T) {
-		assert.Equal(t, "", scopeGroupClause(deviceScoped, "executions"))
-		assert.Equal(t, "", scopeGroupClause(deviceScoped, "device_groups"))
+	t.Run("device_groups, user_groups and executions now confine (H4)", func(t *testing.T) {
+		// Pre-H4 these three carried no scope_group_ids field, so scopeGroupClause
+		// returned "" — a scope-restricted caller's Search leaked every group/
+		// execution fleet-wide. They now confine via the union ObjectScopeListFilter,
+		// exactly like the object scopes. (The user_groups clause here matches no
+		// row for a device-scoped caller — fail closed, correct.)
+		assert.Equal(t, "@scope_group_ids:{dg1}", scopeGroupClause(deviceScoped, "executions"))
+		assert.Equal(t, "@scope_group_ids:{dg1}", scopeGroupClause(deviceScoped, "device_groups"))
+		assert.Equal(t, "@scope_group_ids:{dg1}", scopeGroupClause(deviceScoped, "user_groups"))
+	})
+	t.Run("audit_events carries no scope field, so no clause (gated by ListAuditEvents instead)", func(t *testing.T) {
+		assert.Equal(t, "", scopeGroupClause(deviceScoped, "audit_events"))
 	})
 }
