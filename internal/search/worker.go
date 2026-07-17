@@ -451,6 +451,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"is_dynamic":   data.IsDynamic,
 			"member_count": strconv.Itoa(int(data.MemberCount)),
 		}
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}
@@ -466,6 +467,7 @@ func entityFields(scope string, data *taskqueue.SearchEntityData) map[string]any
 			"desired_state":   strconv.Itoa(int(data.DesiredState)),
 			"changed":         strconv.FormatBool(data.Changed),
 		}
+		setScopeGroupIDs(fields, data)
 		if data.CreatedAt != 0 {
 			fields["created_at"] = strconv.FormatInt(data.CreatedAt, 10)
 		}

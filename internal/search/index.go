@@ -360,6 +360,10 @@ var IndexSchemas = []IndexSchema{
 			"is_dynamic", "TAG",
 			"member_count", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
+			// scope_group_ids holds the group's OWN id so a scope-restricted
+			// caller's Search is confined to the device groups they're scoped
+			// to (H4 — was leaking every group org-wide).
+			"scope_group_ids", "TAG",
 		},
 	},
 	{
@@ -371,6 +375,7 @@ var IndexSchemas = []IndexSchema{
 			"is_dynamic", "TAG",
 			"member_count", "NUMERIC", "SORTABLE",
 			"created_at", "NUMERIC", "SORTABLE",
+			"scope_group_ids", "TAG",
 		},
 	},
 	{
@@ -383,6 +388,10 @@ var IndexSchemas = []IndexSchema{
 			"action_type", "TAG", "SORTABLE",
 			"device_id", "TAG",
 			"created_at", "NUMERIC", "SORTABLE",
+			// scope_group_ids holds the TARGET DEVICE's device-group ids so a
+			// scope-restricted caller sees only executions on devices in their
+			// scope (H4 — was leaking every execution fleet-wide).
+			"scope_group_ids", "TAG",
 		},
 	},
 	{
@@ -1201,10 +1210,12 @@ func (idx *Index) warmDeviceGroups(ctx context.Context) (int, error) {
 				isDynamic = "true"
 			}
 			data := &taskqueue.SearchEntityData{
-				Name:        g.Name,
-				Description: g.Description,
-				IsDynamic:   isDynamic,
-				MemberCount: g.MemberCount,
+				Name:             g.Name,
+				Description:      g.Description,
+				IsDynamic:        isDynamic,
+				MemberCount:      g.MemberCount,
+				ScopeGroupIDs:    g.ID, // own id (H4)
+				HasScopeGroupIDs: true,
 			}
 			if g.CreatedAt != nil {
 				data.CreatedAt = g.CreatedAt.Unix()
@@ -1245,10 +1256,12 @@ func (idx *Index) warmUserGroups(ctx context.Context) (int, error) {
 				isDynamic = "true"
 			}
 			data := &taskqueue.SearchEntityData{
-				Name:        g.Name,
-				Description: g.Description,
-				IsDynamic:   isDynamic,
-				MemberCount: g.MemberCount,
+				Name:             g.Name,
+				Description:      g.Description,
+				IsDynamic:        isDynamic,
+				MemberCount:      g.MemberCount,
+				ScopeGroupIDs:    g.ID, // own id (H4)
+				HasScopeGroupIDs: true,
 			}
 			if !g.CreatedAt.IsZero() {
 				data.CreatedAt = g.CreatedAt.Unix()
@@ -1286,6 +1299,14 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 	const pageSize int32 = 1000
 	var offset int32
 	var total int
+
+	// An execution's scope_group_ids is its target device's device-group ids
+	// (H4): one bulk query, then O(1) lookup per exec. A device absent from the
+	// map has no groups → "" → invisible to scoped admins (fail closed).
+	deviceGroups, err := idx.deviceGroupSet(ctx)
+	if err != nil {
+		return total, err
+	}
 
 	// Build lookup caches for device hostnames and action names.
 	deviceNames := make(map[string]string)
@@ -1340,6 +1361,7 @@ func (idx *Index) warmExecutions(ctx context.Context) (int, error) {
 				"action_id":       actionID,
 				"desired_state":   strconv.Itoa(int(e.DesiredState)),
 				"changed":         strconv.FormatBool(e.Changed),
+				"scope_group_ids": deviceGroups[e.DeviceID], // H4: target device's groups
 			}
 			if e.CreatedAt != nil {
 				execFields["created_at"] = strconv.FormatInt(e.CreatedAt.Unix(), 10)

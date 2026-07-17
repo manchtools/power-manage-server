@@ -123,13 +123,26 @@ func TestObjectScope_EnforcementMatchesIndexFiltering(t *testing.T) {
 }
 
 // searchScopedNonObjectScopes are the non-object search scopes that also carry the
-// scope_group_ids TAG (#7 spec 14). They are NOT confined by enforceObjectReadScope
-// / enforceObjectWriteScope; their Search is filtered in scopeGroupClause via the
-// dedicated device-/user-group list filters (DeviceScopeListFilter("ListDevices") /
-// UserScopeListFilter("ListUsers")), and their per-object Get is already confined by
-// the existing device/user handler scope (covered by scope_enforcement_*_test.go and
-// TestScopablePermissions_AllEnforced). So the object-parity reverse check skips them.
+// scope_group_ids TAG (#7 spec 14) but are NOT confined by enforceObjectReadScope /
+// enforceObjectWriteScope. Their Search is confined in scopeGroupClause (devices/
+// users via the dedicated device-/user-group list filters; device_groups/user_groups/
+// executions via the union ObjectScopeListFilter — H4), and their per-object Get is
+// confined by the device/user handler scope, NOT the object-scope path:
+//
+//   - devices/users: the existing device/user handler scope.
+//   - device_groups/user_groups: GetDeviceGroup/GetUserGroup are TargetDevice/
+//     TargetUser scopable permissions (permissions.go), enforced and proven by
+//     TestScopablePermissions_AllEnforced.
+//   - executions: GetExecution enforces auth.EnforceDeviceScopeOnBaseTier on the
+//     target device (uniform NotFound out-of-scope) — the same device-group axis
+//     the search stamp uses.
+//
+// So the object-parity reverse check skips them; their Get-leak risk is covered by
+// scope_enforcement_*_test.go and TestScopablePermissions_AllEnforced instead.
 var searchScopedNonObjectScopes = map[string]bool{
-	"devices": true,
-	"users":   true,
+	"devices":       true,
+	"users":         true,
+	"device_groups": true,
+	"user_groups":   true,
+	"executions":    true,
 }
