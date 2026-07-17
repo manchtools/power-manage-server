@@ -460,11 +460,11 @@ var ErrSkipEvent = errors.New("projector: event skipped (unprojectable)")
 // rebuilds during incident response — operators must be able to run
 // it and either succeed completely or no-op completely.
 //
-// The replay invokes the existing project_<stream>_event() PL/pgSQL
-// projector for each event matching the target's stream types. As
-// projectors are ported to Go (#96–#106), the per-target Function
-// field gets swapped to a Go dispatcher and this same RebuildAll
-// keeps working without operator-facing changes.
+// The replay dispatches each event matching the target's stream types
+// through the target's registered Go applier (see runOneTarget). Every
+// projector is Go-ported and the PL/pgSQL projector dispatcher was
+// dropped (migration 041), so a target with no registered applier is a
+// hard error rather than a silent no-op.
 func (s *Store) RebuildAll(ctx context.Context, targetNames ...string) (RebuildResult, error) {
 	targets, err := selectTargets(targetNames)
 	if err != nil {

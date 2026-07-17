@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"log/slog"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,103 @@ func TestHandleSecurityAlert(t *testing.T) {
 	assert.True(t, found, "SecurityAlert event should be stored")
 }
 
+// TestHandleSecurityAlert_DeletedDevice pins the deleted-device guard: an
+// alert arriving after the device is deleted must be dropped, not appended
+// onto the dead stream. Without the guard the handler resurrects the stream
+// with an orphan SecurityAlert event.
+func TestHandleSecurityAlert_DeletedDevice(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+
+	deviceID := testutil.CreateTestDevice(t, st, "deleted-alert-host")
+	err := st.AppendEvent(context.Background(), store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceDeleted",
+		Data:       map[string]any{},
+		ActorType:  "system",
+		ActorID:    "test",
+	})
+	require.NoError(t, err)
+
+	task := newTask(t, taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
+		DeviceID:  deviceID,
+		AlertType: "tamper_detected",
+		Message:   "Agent binary modified",
+	})
+
+	// Should succeed silently (skip deleted device).
+	require.NoError(t, mux.ProcessTask(context.Background(), task))
+
+	events, err := st.Queries().LoadStream(context.Background(), db.LoadStreamParams{
+		StreamType: "device",
+		StreamID:   deviceID,
+	})
+	require.NoError(t, err)
+	for _, e := range events {
+		assert.NotEqual(t, "SecurityAlert", e.EventType,
+			"no SecurityAlert event may be appended to a deleted device's stream")
+	}
+}
+
+func TestHandleInventoryUpdate(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+
+	deviceID := testutil.CreateTestDevice(t, st, "inventory-host")
+
+	task := newTask(t, taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
+		DeviceID: deviceID,
+		Tables: []taskqueue.InventoryTable{
+			{TableName: "packages", RowsJSON: []byte(`[{"name":"vim","version":"9.0"}]`)},
+		},
+	})
+
+	require.NoError(t, mux.ProcessTask(context.Background(), task))
+
+	rows, err := st.Queries().GetDeviceInventory(context.Background(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "a live device's inventory table must be upserted")
+	assert.Equal(t, "packages", rows[0].TableName)
+}
+
+// TestHandleInventoryUpdate_DeletedDevice pins the deleted-device guard: an
+// inventory push arriving after deletion must not repopulate inventory rows
+// (which feed dynamic device-group membership → action assignment). Without
+// the guard the Upsert leaves orphan inventory behind the deletion.
+func TestHandleInventoryUpdate_DeletedDevice(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+
+	deviceID := testutil.CreateTestDevice(t, st, "deleted-inventory-host")
+	err := st.AppendEvent(context.Background(), store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceDeleted",
+		Data:       map[string]any{},
+		ActorType:  "system",
+		ActorID:    "test",
+	})
+	require.NoError(t, err)
+
+	task := newTask(t, taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
+		DeviceID: deviceID,
+		Tables: []taskqueue.InventoryTable{
+			{TableName: "packages", RowsJSON: []byte(`[{"name":"vim","version":"9.0"}]`)},
+		},
+	})
+
+	// Should succeed silently (skip deleted device).
+	require.NoError(t, mux.ProcessTask(context.Background(), task))
+
+	rows, err := st.Queries().GetDeviceInventory(context.Background(), deviceID)
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a deleted device's inventory must not be repopulated")
+}
+
 func TestHandleExecutionResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
@@ -212,6 +310,117 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 	exec, err := st.Queries().GetExecutionByID(context.Background(), executionID)
 	require.NoError(t, err)
 	assert.Equal(t, "success", exec.Status)
+}
+
+// TestHandleExecutionResult_ComplianceDetectionOutputIsTruncated pins the L5
+// fix: the compliance emit path must cap the detection output at
+// maxCommandOutputBytes (audit F-33) like every other output path. Before the
+// fix the compliance branch built its event via commandOutputToMap, which
+// wrote stdout/stderr verbatim — a compromised or buggy agent could push an
+// unbounded blob into events.data on this one path. The test also proves the
+// typed ComplianceResultUpdated emit is decoded correctly by the projector
+// (parity: the projection row carries the action_name and compliant flag).
+func TestHandleExecutionResult_ComplianceDetectionOutputIsTruncated(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	mux := worker.NewMux()
+
+	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
+	deviceID := testutil.CreateTestDevice(t, st, "compliance-host")
+
+	// Compliance action: params carry isCompliance=true so the execution-result
+	// handler emits a ComplianceResultUpdated carrying the detection output.
+	actionID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "action",
+		StreamID:   actionID,
+		EventType:  "ActionCreated",
+		Data: map[string]any{
+			"name":            "compliance-check",
+			"action_type":     int(pm.ActionType_ACTION_TYPE_SHELL),
+			"desired_state":   0,
+			"params":          map[string]any{"isCompliance": true},
+			"timeout_seconds": 300,
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	}))
+
+	executionID := testutil.NewID()
+	require.NoError(t, st.AppendEvent(context.Background(), store.Event{
+		StreamType: "execution",
+		StreamID:   executionID,
+		EventType:  "ExecutionCreated",
+		Data: map[string]any{
+			"device_id":       deviceID,
+			"action_id":       actionID,
+			"action_type":     int(pm.ActionType_ACTION_TYPE_SHELL),
+			"desired_state":   0,
+			"params":          map[string]any{},
+			"timeout_seconds": 300,
+			"executed_at":     time.Now().Format(time.RFC3339Nano),
+		},
+		ActorType: "user",
+		ActorID:   adminID,
+	}))
+
+	// Detection output well over the 1 MiB per-stream cap.
+	const cap1MiB = 1024 * 1024
+	oversized := strings.Repeat("x", cap1MiB+50_000)
+	result := &pm.ActionResult{
+		ActionId:    &pm.ActionId{Value: executionID},
+		Status:      pm.ExecutionStatus_EXECUTION_STATUS_SUCCESS,
+		CompletedAt: timestamppb.Now(),
+		Compliant:   false,
+		DetectionOutput: &pm.CommandOutput{
+			Stdout:   oversized,
+			ExitCode: 1,
+		},
+	}
+	resultProto, err := proto.Marshal(result)
+	require.NoError(t, err)
+	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
+		DeviceID:          deviceID,
+		ActionResultProto: resultProto,
+	})
+	require.NoError(t, mux.ProcessTask(context.Background(), task))
+
+	// The emitted ComplianceResultUpdated event's detection_output must be
+	// truncated to the cap — the whole point of the fix.
+	events, err := st.Queries().LoadStream(context.Background(), db.LoadStreamParams{
+		StreamType: "compliance",
+		StreamID:   deviceID + "_" + actionID,
+	})
+	require.NoError(t, err)
+	var found bool
+	for _, e := range events {
+		if e.EventType != "ComplianceResultUpdated" {
+			continue
+		}
+		found = true
+		var data struct {
+			DetectionOutput struct {
+				Stdout string `json:"stdout"`
+			} `json:"detection_output"`
+		}
+		require.NoError(t, json.Unmarshal(e.Data, &data))
+		assert.LessOrEqual(t, len(data.DetectionOutput.Stdout), cap1MiB,
+			"compliance detection_output stdout must be capped at 1 MiB")
+		assert.Less(t, len(data.DetectionOutput.Stdout), len(oversized),
+			"oversized detection output must actually be shortened")
+		assert.Contains(t, data.DetectionOutput.Stdout, "truncated by control server",
+			"the truncation marker must be present so the UI can tell head-only from full")
+	}
+	require.True(t, found, "a ComplianceResultUpdated event must be emitted for a compliance action")
+
+	// Parity: the typed emit is decoded by the real projector into a row with
+	// the correct action_name + compliant flag (proves the wire keys match the
+	// projector's decoder, not just that the event serialized).
+	results, err := st.Queries().GetDeviceComplianceResults(context.Background(), deviceID)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "compliance-check", results[0].ActionName)
+	assert.False(t, results[0].Compliant)
 }
 
 // TestHandleExecutionResult_RejectsCrossDeviceSpoof pins the fix for
