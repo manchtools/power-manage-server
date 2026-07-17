@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -41,7 +42,8 @@ type auditFlush func(data []byte, seq int64)
 // defer once reading is done. The batcher runs one background flush
 // goroutine that respects both the size cap and the debounce timer.
 type terminalAuditBatcher struct {
-	flush auditFlush
+	flush  auditFlush
+	logger *slog.Logger
 
 	mu     sync.Mutex
 	buf    []byte
@@ -58,11 +60,15 @@ type terminalAuditBatcher struct {
 	done  chan struct{}
 }
 
-func newTerminalAuditBatcher(flush auditFlush) *terminalAuditBatcher {
+func newTerminalAuditBatcher(logger *slog.Logger, flush auditFlush) *terminalAuditBatcher {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	b := &terminalAuditBatcher{
-		flush: flush,
-		woken: make(chan struct{}, 1),
-		done:  make(chan struct{}),
+		flush:  flush,
+		logger: logger,
+		woken:  make(chan struct{}, 1),
+		done:   make(chan struct{}),
 	}
 	go b.run()
 	return b
@@ -151,7 +157,19 @@ func (b *terminalAuditBatcher) flushCapped(data []byte) {
 // flushCapped for size-cap splitting). Exits when Close has been
 // called AND the buffer is empty.
 func (b *terminalAuditBatcher) run() {
+	// close(b.done) is deferred FIRST so it runs LAST on unwind — the recover
+	// below (deferred second, runs first) stops a panic in the flush callback
+	// (nil map, marshalling edge, closed client) from unwinding this detached
+	// goroutine and crashing the whole gateway process, while close(b.done)
+	// still fires so Close() cannot deadlock on <-b.done (audit L13; mirrors the
+	// recover on every other long-lived goroutine in the codebase).
 	defer close(b.done)
+	defer func() {
+		if r := recover(); r != nil {
+			b.logger.Error("terminal audit batcher goroutine panicked; session audit flushing stopped",
+				"panic", r)
+		}
+	}()
 	for {
 		<-b.woken
 		b.mu.Lock()

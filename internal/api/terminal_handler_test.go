@@ -239,16 +239,19 @@ func TestStopTerminal_OtherUserCannotStop(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	_, err = h.StopTerminal(authedCtx(otherID), connect.NewRequest(&pm.StopTerminalRequest{
+	// Audit L4: a non-owner gets the SAME idempotent empty OK an unknown session
+	// returns (see TestStopTerminal_UnknownSessionIsIdempotent), never
+	// PermissionDenied — so the owner-vs-not distinction can't be used as an
+	// existence oracle for the opaque session id.
+	// Red check: this asserted CodePermissionDenied before the fix.
+	resp, err := h.StopTerminal(authedCtx(otherID), connect.NewRequest(&pm.StopTerminalRequest{
 		SessionId: startResp.Msg.SessionId,
 	}))
-	require.Error(t, err)
-	var connectErr *connect.Error
-	require.True(t, errors.As(err, &connectErr))
-	assert.Equal(t, connect.CodePermissionDenied, connectErr.Code())
+	require.NoError(t, err, "a non-owner must get the same idempotent OK as a missing session, not PermissionDenied (existence oracle)")
+	require.NotNil(t, resp)
 
-	// Session must still be live — the rejected stop must not have
-	// revoked the token.
+	// Session must still be live — a non-owner's request must NOT revoke the
+	// token; only the owner's stop mutates the session.
 	_, lookupErr := tokenStore.Lookup(context.Background(), startResp.Msg.SessionId)
 	require.NoError(t, lookupErr)
 

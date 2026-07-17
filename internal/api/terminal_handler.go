@@ -430,11 +430,16 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up session")
 	}
 
-	// Ownership check: only the user that opened the session may stop
-	// it. Admins use TerminateTerminalSession (separate permission).
+	// Ownership check: only the user that opened the session may stop it. A
+	// non-owner gets the SAME idempotent empty OK as an unknown/already-stopped
+	// session (above), never PermissionDenied, so the owner-vs-not distinction
+	// can't be used as an existence oracle for another user's opaque session id
+	// (audit L4). The session is not stopped — only the owner's request mutates
+	// it. Admins kill others' sessions via TerminateTerminalSession.
 	if session.UserID != userCtx.ID {
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied,
-			"only the session owner may stop a terminal session; admins must use TerminateTerminalSession")
+		h.logger.Debug("StopTerminal on non-owned session; returning idempotent OK",
+			"session_id", req.Msg.SessionId)
+		return connect.NewResponse(&pm.StopTerminalResponse{}), nil
 	}
 
 	// Scope (#3): a device-group-scoped StopTerminal holder may stop only sessions

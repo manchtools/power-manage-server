@@ -68,9 +68,14 @@ func (h *IdentityLinkHandler) UnlinkIdentity(ctx context.Context, req *connect.R
 		return nil, handleGetError(ctx, err, ErrIdentityLinkNotFound, "identity link not found")
 	}
 
-	// Non-admin callers can only unlink their own identities.
+	// Non-admin callers can only unlink their own identities. Return the SAME
+	// NotFound a missing link returns (not PermissionDenied) so a non-owner
+	// cannot use the code distinction as a cross-actor existence oracle for
+	// another user's link id (audit L3; mirrors scope_existence_oracle_test.go).
+	// (ErrCannotUnlinkOtherUser is retained in the error catalog for TS/paraglide
+	// parity even though this handler no longer emits it.)
 	if link.UserID != userCtx.ID && !auth.HasPermission(ctx, "DeleteUser") {
-		return nil, apiErrorCtx(ctx, ErrCannotUnlinkOtherUser, connect.CodePermissionDenied, "cannot unlink another user's identity")
+		return nil, apiErrorCtx(ctx, ErrIdentityLinkNotFound, connect.CodeNotFound, "identity link not found")
 	}
 
 	targetUserID := link.UserID

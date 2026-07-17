@@ -66,6 +66,26 @@ func genDeviceCSR(t *testing.T, deviceID string) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 }
 
+// seedDeviceWithID registers a device projection under a caller-chosen id (vs
+// CreateTestDevice, which mints a random one). Used by the L2 peer-class test to
+// simulate the guarded-against misconfiguration where a gateway id ends up in
+// the device table.
+func seedDeviceWithID(t *testing.T, st *store.Store, deviceID, hostname string) {
+	t.Helper()
+	err := st.AppendEvent(t.Context(), store.Event{
+		StreamType: "device",
+		StreamID:   deviceID,
+		EventType:  "DeviceRegistered",
+		Data: map[string]any{
+			"hostname":      hostname,
+			"agent_version": "1.0.0",
+		},
+		ActorType: "system",
+		ActorID:   "test",
+	})
+	require.NoError(t, err)
+}
+
 // setDeviceCertFingerprint stores a cert fingerprint on a device via event.
 func setDeviceCertFingerprint(t *testing.T, st *store.Store, deviceID, fingerprint string) {
 	t.Helper()
@@ -124,6 +144,51 @@ func TestRenewCertificate_RejectsKeyMismatch(t *testing.T) {
 		Csr:                foreignCSR,
 	}))
 	require.Error(t, err, "renewal must reject a CSR whose key differs from the current certificate")
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+}
+
+// TestRenewCertificate_RejectsNonAgentPeerClass is the audit L2 regression
+// (defense-in-depth). RenewCertificate only ever mints agent-class certs, so a
+// presented cert of another class — e.g. a leaked gateway cert (same CA, carries
+// ClientAuth EKU, so it passes VerifyCertificate) — must be refused at the
+// peer-class boundary, not merely caught downstream by the device lookup. The
+// test simulates the future change the assert guards against: a gateway id
+// seeded into the device table with the gateway cert's fingerprint, so ONLY the
+// peer-class check can reject it (lookup, fingerprint, and proof-of-possession
+// all pass). Without the assert the handler re-issues an agent cert.
+//
+// Red check: drop the PeerClassFromPEM assert in renewLocked and this returns a
+// successful renewal instead of PermissionDenied.
+func TestRenewCertificate_RejectsNonAgentPeerClass(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewCertificateHandler(st, certAuth, slog.Default())
+
+	// Mint a GATEWAY-class cert and reuse its key so the renewal CSR is
+	// proof-of-possession valid (only the peer-class check should stop it).
+	gatewayID := testutil.NewID()
+	gwKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	csrTemplate := &x509.CertificateRequest{Subject: pkix.Name{CommonName: gatewayID}}
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, gwKey)
+	require.NoError(t, err)
+	gwCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+	gwCert, err := certAuth.IssueGatewayCertificateFromCSR(gatewayID, gwCSR, "gw.example.com")
+	require.NoError(t, err)
+	renewDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, gwKey)
+	require.NoError(t, err)
+	renewCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: renewDER})
+
+	// Guarded-against misconfiguration: a device row whose id is the gateway id,
+	// carrying the gateway cert's fingerprint.
+	seedDeviceWithID(t, st, gatewayID, "seeded-gateway-host")
+	setDeviceCertFingerprint(t, st, gatewayID, gwCert.Fingerprint)
+
+	_, err = h.RenewCertificate(t.Context(), connect.NewRequest(&pm.RenewCertificateRequest{
+		CurrentCertificate: gwCert.CertPEM,
+		Csr:                renewCSR,
+	}))
+	require.Error(t, err, "a non-agent (gateway) peer class must be refused before issuance")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 }
 

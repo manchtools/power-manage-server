@@ -137,9 +137,13 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 // DNS SAN for that hostname. The DNS SAN is load-bearing: an agent connects to
 // the gateway by hostname and verifies its server cert with STANDARD TLS
 // (ServerName match against DNS SANs), so a gateway cert without a DNS SAN
-// matching its public hostname cannot be verified. hostname is the operator-
-// validated value from EnrollGateway (or the current cert's DNS SAN on renewal),
-// never a CSR-supplied SAN. Callers reach this from GatewayAuthService
+// matching its public hostname cannot be verified. hostname is NOT a CSR-supplied
+// SAN: on enrollment it is the enroller's self-reported EnrollGateway request
+// hostname (proto format-validated only — there is no operator hostname
+// allow-list today, so a CONTROL_GATEWAY_ENROLL_TOKEN holder can request any DNS
+// SAN; the gateway identity/CN is still a server-minted ULID, so this is not
+// identity forgery — audit L1); on renewal it is the current cert's
+// previously-server-stamped DNS SAN. Callers reach this from GatewayAuthService
 // enrollment and InternalService renewal.
 func (ca *CA) IssueGatewayCertificateFromCSR(gatewayID string, csrPEM []byte, hostname string) (*Certificate, error) {
 	var dnsNames []string
@@ -390,6 +394,23 @@ func DeviceIDFromPEM(certPEM []byte) (string, error) {
 	}
 
 	return cert.Subject.CommonName, nil
+}
+
+// PeerClassFromPEM extracts the SPIFFE peer class from a PEM-encoded
+// certificate's URI SAN. Mirrors DeviceIDFromPEM/NotAfterFromPEM so the API
+// handlers can assert a presented cert's class without re-implementing the
+// decode. Delegates the URI-SAN parsing to mtls.PeerClassFromCert (single
+// source of truth for the class layout).
+func PeerClassFromPEM(certPEM []byte) (mtls.PeerClass, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return "", fmt.Errorf("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse certificate: %w", err)
+	}
+	return mtls.PeerClassFromCert(cert)
 }
 
 // AssertCSRMatchesCertKey verifies that the CSR's public key equals the
