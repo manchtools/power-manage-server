@@ -245,6 +245,16 @@ func ComputeProjectionDrift(ctx context.Context, pool *pgxpool.Pool) ([]TargetDr
 	return out, nil
 }
 
+// ComputeProjectionDrift is the production accessor for the periodic
+// drift-reconcile worker (M1), which holds a *Store and not a raw pool.
+// The free function above takes a pool so the doctor probe (its own pool)
+// and store tests (TestingPool) can call it without a full Store; this
+// method wraps it over the store's own unexported pool so production code
+// never has to reach for TestingPool (which is deliberately test-only).
+func (s *Store) ComputeProjectionDrift(ctx context.Context) ([]TargetDrift, error) {
+	return ComputeProjectionDrift(ctx, s.pool)
+}
+
 // tablesWithProjectionVersion returns the set of public base tables that
 // have a projection_version column.
 func tablesWithProjectionVersion(ctx context.Context, pool *pgxpool.Pool) (map[string]bool, error) {

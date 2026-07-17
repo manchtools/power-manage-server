@@ -286,6 +286,20 @@ func ClientIP(req connect.AnyRequest) string { return clientIP(req) }
 //   - RenewCertificate                      → RenewCert
 //   - GetCertificateRevocationList          → GetCRL
 //   - ListAuthMethods                       → AuthMethods
+//
+// Replica scope (L12, audit 2026-07-17): every limiter here is a PROCESS-LOCAL
+// in-memory window, so each ceiling is enforced PER REPLICA. On the default
+// single-instance compose deployment that is the exact configured limit. Under
+// multi-replica control HA (ADR 0031) an attacker whose requests load-balance
+// across N replicas gets up to N× the configured throughput against a single
+// IP / user / enumeration oracle. This is a deliberate design choice — these
+// ceilings bound DoS and enumeration (not a credential check, unlike the
+// DB-backed SSO state and refresh single-use), so the per-replica multiplier is
+// accepted rather than paying a shared-store round-trip on every request. If you
+// run N replicas, size the limits for the per-replica budget (effective ceiling
+// ≈ limit×N) or enforce a global ceiling at the load balancer / API gateway. A
+// shared-store token bucket is the upgrade path if strict global ceilings are
+// ever required.
 type RateLimiters struct {
 	Login     *RateLimiter
 	Refresh   *RateLimiter
