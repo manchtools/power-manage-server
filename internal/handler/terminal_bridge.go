@@ -419,7 +419,7 @@ func (h *TerminalBridgeHandler) bridgeWSToAgent(
 	validated *pm.InternalValidateTerminalTokenResponse,
 	logger *slog.Logger,
 ) error {
-	audit := newTerminalAuditBatcher(func(data []byte, seq int64) {
+	audit := newTerminalAuditBatcher(logger, func(data []byte, seq int64) {
 		h.enqueueAuditChunk(sess, validated, data, seq)
 	})
 	defer audit.Close()

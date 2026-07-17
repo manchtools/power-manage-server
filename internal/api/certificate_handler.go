@@ -16,6 +16,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -150,6 +151,21 @@ func (h *CertificateHandler) renewLocked(ctx context.Context, deviceID string, m
 	// renewals. No-op in production.
 	if renewCertTestHook != nil {
 		renewCertTestHook()
+	}
+
+	// Defense-in-depth (audit L2): assert the presented cert is agent-class
+	// before re-issuing an agent-class cert. RenewCertificate only ever mints
+	// agent certs, so a non-agent peer (e.g. a leaked gateway cert, same CA +
+	// ClientAuth EKU) must not be renewable here. Today it is caught downstream
+	// (a gateway ULID isn't in the device table → NotFound), but that safety
+	// rests entirely on the device lookup; pin the class at the boundary so a
+	// future change that seeds gateway IDs into the device table can't turn this
+	// into a class-confusion re-issue.
+	presentedClass, err := ca.PeerClassFromPEM(msg.CurrentCertificate)
+	if err != nil || presentedClass != mtls.PeerClassAgent {
+		h.logger.Warn("certificate renewal rejected: presented cert is not agent-class",
+			"device_id", deviceID, "peer_class", presentedClass, "error", err)
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "certificate not recognized")
 	}
 
 	// Proof-of-possession: the CSR must carry the SAME public key as the

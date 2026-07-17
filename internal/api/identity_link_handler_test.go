@@ -90,6 +90,14 @@ func TestUnlinkIdentity_Success(t *testing.T) {
 	assert.Empty(t, linksResp.Msg.Links)
 }
 
+// TestUnlinkIdentity_NotOwned pins the audit L3 oracle fix: a non-owner
+// (non-admin) unlinking another user's link gets the SAME CodeNotFound a missing
+// link returns (see TestUnlinkIdentity_NotFound), never PermissionDenied — so
+// the code distinction can't be used as a cross-actor existence oracle for the
+// opaque link id.
+//
+// Red check: this asserted CodePermissionDenied before the fix; it now asserts
+// CodeNotFound, so it fails against the pre-fix handler.
 func TestUnlinkIdentity_NotOwned(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
@@ -115,7 +123,8 @@ func TestUnlinkIdentity_NotOwned(t *testing.T) {
 		LinkId: linkID,
 	}))
 	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"a non-owner must get the same NotFound as a missing link, not PermissionDenied (existence oracle)")
 }
 
 func TestUnlinkIdentity_NotFound(t *testing.T) {

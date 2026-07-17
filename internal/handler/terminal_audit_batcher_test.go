@@ -2,10 +2,31 @@ package handler
 
 import (
 	"bytes"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// syncBuffer is a concurrency-safe io.Writer for capturing slog output the
+// batcher's flush goroutine emits from a different goroutine than the test.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // recordingFlush collects every chunk the batcher emits so tests can
 // assert ordering, sequence, and content.
@@ -53,7 +74,7 @@ func waitForChunks(r *recordingFlush, n int, timeout time.Duration) bool {
 
 func TestBatcher_SizeCapFlushesImmediately(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	defer b.Close()
 
 	payload := bytes.Repeat([]byte("x"), terminalAuditFlushBytes)
@@ -77,7 +98,7 @@ func TestBatcher_SizeCapFlushesImmediately(t *testing.T) {
 
 func TestBatcher_OversizedWriteSplitsAtCap(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	defer b.Close()
 
 	// Single Write larger than the cap — representative of a paste
@@ -124,7 +145,7 @@ func TestBatcher_OversizedWriteSplitsAtCap(t *testing.T) {
 
 func TestBatcher_CoalescesKeystrokesIntoOneChunk(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	defer b.Close()
 
 	// Simulate xterm.js sending one WS frame per keystroke.
@@ -152,7 +173,7 @@ func TestBatcher_CoalescesKeystrokesIntoOneChunk(t *testing.T) {
 
 func TestBatcher_SequenceIsMonotonicAcrossFlushes(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	defer b.Close()
 
 	// Three separated writes, each far enough apart that debounce
@@ -177,7 +198,7 @@ func TestBatcher_SequenceIsMonotonicAcrossFlushes(t *testing.T) {
 
 func TestBatcher_CloseFlushesPending(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 
 	// Write far below the size cap and immediately close — the
 	// debounce timer should NOT have had time to fire, but Close
@@ -196,7 +217,7 @@ func TestBatcher_CloseFlushesPending(t *testing.T) {
 
 func TestBatcher_CloseIsIdempotent(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	b.Write([]byte("x"))
 	b.Close()
 	b.Close() // must not panic or flush twice
@@ -208,7 +229,7 @@ func TestBatcher_CloseIsIdempotent(t *testing.T) {
 
 func TestBatcher_WriteAfterCloseIsNoop(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	b.Close()
 	b.Write([]byte("late"))
 	// Give any background goroutine a chance to (incorrectly) flush.
@@ -221,7 +242,7 @@ func TestBatcher_WriteAfterCloseIsNoop(t *testing.T) {
 
 func TestBatcher_EmptyWriteIsNoop(t *testing.T) {
 	r := &recordingFlush{}
-	b := newTerminalAuditBatcher(r.flush)
+	b := newTerminalAuditBatcher(nil, r.flush)
 	defer b.Close()
 	b.Write(nil)
 	b.Write([]byte{})
@@ -229,5 +250,56 @@ func TestBatcher_EmptyWriteIsNoop(t *testing.T) {
 	chunks, _ := r.snapshot()
 	if len(chunks) != 0 {
 		t.Errorf("empty writes produced %d chunks, want 0", len(chunks))
+	}
+}
+
+// TestBatcher_FlushPanicIsRecoveredAndLogged is the audit L13 regression. A
+// panic in the flush callback (nil map, marshalling edge, closed client) must
+// be recovered INSIDE the batcher's detached goroutine — otherwise it unwinds
+// that goroutine and crashes the whole gateway process, dropping every live
+// terminal session and device stream. The recover must also log (never a silent
+// swallow) and must still let close(b.done) fire so Close() cannot deadlock.
+//
+// Red check: delete the `defer func(){ recover() }()` in run() and this test
+// crashes the package test binary with the unrecovered panic instead of failing
+// cleanly — which is exactly the production crash it guards against.
+func TestBatcher_FlushPanicIsRecoveredAndLogged(t *testing.T) {
+	var logs syncBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	entered := make(chan struct{}, 1)
+	b := newTerminalAuditBatcher(logger, func(data []byte, seq int64) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		panic("simulated flush failure")
+	})
+
+	// Cross the size cap so the flush goroutine wakes and invokes the callback.
+	b.Write(bytes.Repeat([]byte("x"), terminalAuditFlushBytes))
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flush callback was never invoked")
+	}
+
+	// Close must return promptly: the recover keeps the deferred close(b.done)
+	// reachable, so <-b.done does not hang even though the goroutine panicked.
+	done := make(chan struct{})
+	go func() {
+		b.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() deadlocked after a flush panic (b.done never closed)")
+	}
+
+	// The recover must not be silent — the panic is logged at error level.
+	if got := logs.String(); !strings.Contains(got, "panicked") {
+		t.Errorf("expected the recovered panic to be logged; got %q", got)
 	}
 }
