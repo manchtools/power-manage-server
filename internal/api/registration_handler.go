@@ -161,31 +161,15 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to validate token")
 	}
 
-	// Check if token is disabled
-	if token.Disabled {
-		logger.Warn("token is disabled")
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token is disabled")
-	}
-
-	// Check if token is expired
-	if token.ExpiresAt != nil && h.now().After(*token.ExpiresAt) {
-		logger.Warn("token is expired")
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has expired")
-	}
-
-	// Check max uses for reusable tokens
-	if !token.OneTime && token.MaxUses > 0 && token.CurrentUses >= token.MaxUses {
-		logger.Warn("token max uses reached")
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has reached max uses")
-	}
-	// Defence-in-depth for one-time tokens. The `token.Disabled` check above
-	// already rejects consumed one-time tokens once their TokenDisabled event
-	// has projected, and the event-store optimistic lock at AppendEvent
-	// rejects concurrent consumptions. Rejecting on CurrentUses>0 here fails
-	// fast in the projection-lag window, before the (expensive) CSR signing.
-	if token.OneTime && token.CurrentUses > 0 {
-		logger.Warn("one-time token already used")
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has already been used")
+	// Fail-fast pre-check against the (possibly stale) projection read, so an
+	// obviously-unusable token is rejected before the expensive CSR signing.
+	// This is defence-in-depth, NOT the single-use guarantee: because it reads a
+	// projection that only updates post-commit, concurrent Register calls all
+	// see CurrentUses==0 and all pass here. The AUTHORITATIVE single-use / max-
+	// uses enforcement is the version-pinned consume below (H2).
+	if reason, ok := tokenConsumable(token, h.now()); !ok {
+		logger.Warn("registration token not consumable", "reason", reason)
+		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, reason)
 	}
 
 	// Generate device ID
@@ -230,27 +214,15 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		logger.Info("auto-assigning device to token owner", "owner_id", ownerID)
 	}
 
-	// Consume the token FIRST to prevent race conditions with one-time tokens.
-	// The token stream has optimistic locking (version conflict on concurrent
-	// writes), so only one concurrent registration can succeed for a one-time
-	// token. If we registered the device first, a second concurrent request
-	// could create an orphaned device before failing on the token event.
-	eventType := "TokenUsed"
-	if token.OneTime {
-		eventType = "TokenDisabled"
-	}
-	if err := h.store.AppendEvent(ctx, store.Event{
-		StreamType: "token",
-		StreamID:   token.ID,
-		EventType:  eventType,
-		Data: payloads.RegistrationTokenConsumed{
-			DeviceID: deviceID,
-		},
-		ActorType: "system",
-		ActorID:   "registration",
-	}); err != nil {
-		logger.Error("failed to consume token (possible concurrent use)", "error", err)
-		return nil, apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, "registration token has already been used")
+	// Consume the token race-free BEFORE emitting DeviceRegistered. Using the
+	// auto-versioning h.store.AppendEvent here would RETRY on version conflict,
+	// so two concurrent Register calls that both passed the stale-projection
+	// pre-check would BOTH consume a single-use token and both register a device
+	// (H2). consumeRegistrationToken pins the expected stream version so the
+	// event store's UNIQUE(stream_type, stream_id, stream_version) constraint
+	// serialises concurrent consumptions: exactly one lands per version.
+	if err := h.consumeRegistrationToken(ctx, logger, token, deviceID); err != nil {
+		return nil, err
 	}
 
 	// Emit DeviceRegistered event (token is already consumed, safe to proceed)
@@ -274,4 +246,92 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		Certificate: cert.CertPEM,
 		GatewayUrl:  h.gatewayURL,
 	}), nil
+}
+
+// registrationBeforeConsumeHook is a test-only barrier invoked at the top of
+// consumeRegistrationToken — after the (stale) projection read but before the
+// first versioned append. The H2 concurrency regression test uses it to release
+// all racing goroutines together so they provably read CurrentUses==0 before any
+// consume lands. nil in production.
+var registrationBeforeConsumeHook func()
+
+// tokenConsumable reports whether a registration token may be consumed right
+// now and, if not, the fixed user-facing reason. Shared by the fail-fast
+// pre-check and the post-conflict re-validation in consumeRegistrationToken so
+// both agree on the disabled / expired / max-uses / one-time-used invariant.
+func tokenConsumable(token store.Token, now time.Time) (reason string, ok bool) {
+	switch {
+	case token.Disabled:
+		return "registration token is disabled", false
+	case token.ExpiresAt != nil && now.After(*token.ExpiresAt):
+		return "registration token has expired", false
+	case !token.OneTime && token.MaxUses > 0 && token.CurrentUses >= token.MaxUses:
+		return "registration token has reached max uses", false
+	case token.OneTime && token.CurrentUses > 0:
+		return "registration token has already been used", false
+	}
+	return "", true
+}
+
+// consumeRegistrationToken consumes one use of a registration token race-free,
+// using the event store's UNIQUE(stream_type, stream_id, stream_version)
+// constraint as the serialisation point. Concurrent Register calls that all
+// passed the stale-projection pre-check converge on the same expected version
+// (ProjectionVersion+1); the DB lets exactly one land per version. A loser
+// re-reads the now-advanced projection, re-validates the consume invariant
+// against fresh state, and retries with the new version — so a one-time token
+// yields exactly one device and a reusable token never exceeds MaxUses no matter
+// how many requests race (H2). fireListeners is synchronous, so the winner's
+// projection update is visible to a loser's re-read within a few attempts.
+func (h *RegistrationHandler) consumeRegistrationToken(ctx context.Context, logger *slog.Logger, token store.Token, deviceID string) error {
+	if registrationBeforeConsumeHook != nil {
+		registrationBeforeConsumeHook()
+	}
+
+	const maxAttempts = 8
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Re-validate against the current (fresh after a retry) projection so a
+		// now-used one-time token or an at-cap reusable token fails closed
+		// instead of consuming again.
+		if reason, ok := tokenConsumable(token, h.now()); !ok {
+			logger.Warn("registration token not consumable", "reason", reason, "attempt", attempt)
+			return apiErrorCtx(ctx, ErrPermissionDenied, connect.CodePermissionDenied, reason)
+		}
+
+		eventType := "TokenUsed"
+		if token.OneTime {
+			eventType = "TokenDisabled"
+		}
+		expectedVersion := int32(token.ProjectionVersion) + 1
+		err := h.store.AppendEventWithVersion(ctx, store.Event{
+			StreamType: "token",
+			StreamID:   token.ID,
+			EventType:  eventType,
+			Data:       payloads.RegistrationTokenConsumed{DeviceID: deviceID},
+			ActorType:  "system",
+			ActorID:    "registration",
+		}, expectedVersion)
+		if err == nil {
+			return nil
+		}
+		if !store.IsVersionConflict(err) {
+			logger.Error("failed to consume registration token", "error", err)
+			return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume registration token")
+		}
+
+		// Lost the OCC race — another consume advanced the token stream. Reload
+		// the fresh projection and retry; the loop head re-validates the
+		// invariant so a fully-consumed token fails closed.
+		fresh, gErr := h.store.Repos().Token.GetByHash(ctx, token.ValueHash)
+		if gErr != nil {
+			logger.Error("failed to reload registration token after version conflict", "error", gErr)
+			return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to consume registration token")
+		}
+		token = fresh
+	}
+
+	// Exhausted retries purely due to contention (not an invariant violation).
+	// Fail closed with a retryable code rather than risk an unbounded loop.
+	logger.Warn("registration token consume exhausted retries under contention", "token_id", token.ID)
+	return apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable, "registration token is contended; retry")
 }

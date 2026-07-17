@@ -20,6 +20,17 @@ type Token struct {
 	CreatedBy   string
 	Disabled    bool
 	OwnerID     *string
+	// ProjectionVersion is the store version the token projector recorded for
+	// the last token event applied to this row (projection_version, set from the
+	// event's global SequenceNum — see projectors.ApplyToken). It is the OCC
+	// anchor for a race-free single-use consume: every concurrent consumer pins
+	// AppendEventWithVersion to ProjectionVersion+1, so they all target the same
+	// stream_version and the event store's UNIQUE(stream_type, stream_id,
+	// stream_version) constraint lets exactly one land (H2). SequenceNum grows
+	// monotonically and is always >= the stream head's stream_version, so
+	// ProjectionVersion+1 never collides with an existing version. Mirrors
+	// totp.ProjectionVersion.
+	ProjectionVersion int64
 }
 
 // ListTokensFilter is the pagination + scoping shape for ListTokens.

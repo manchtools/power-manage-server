@@ -35,6 +35,13 @@ func (h *AuthHandler) SetDummyVerifyForTest(fn func(password, hash string) bool)
 // Compiled only into test binaries.
 func (h *DeviceHandler) SetNowForTest(now func() time.Time) { h.now = now }
 
+// SetRegistrationBeforeConsumeHookForTest installs the test-only barrier invoked
+// at the top of consumeRegistrationToken — after the stale projection read but
+// before the first versioned append. The H2 concurrency regression test uses it
+// to release racing goroutines together so they provably read CurrentUses==0
+// before any consume lands. Compiled only into test binaries. Pass nil to clear.
+func SetRegistrationBeforeConsumeHookForTest(fn func()) { registrationBeforeConsumeHook = fn }
+
 // SetExportPageSizeForTest shrinks the ExportAuditEvents page seam so
 // chunking tests can prove multi-chunk exports without seeding a
 // thousand events. Returns a restore func. Compiled only into test
