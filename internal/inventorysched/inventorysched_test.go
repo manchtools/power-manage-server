@@ -126,6 +126,8 @@ func TestRunOnce_StaleConnectedDeviceGetsOneSignedRequest(t *testing.T) {
 	assert.Equal(t, taskqueue.TypeInventoryRequest, call.taskType)
 	assert.NotEmpty(t, call.payload.QueryID, "request must carry a bindable query_id")
 	assert.NotEmpty(t, call.payload.Signature, "request must be CA-signed (WS4)")
+	assert.Equal(t, stale, call.payload.TargetDeviceID,
+		"scheduled request must bind the target device inside the signed bytes (PMSEC-001)")
 	assert.Equal(t, 2, call.opts, "MaxRetry + sub-tick Deadline")
 }
 

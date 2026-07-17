@@ -1254,7 +1254,7 @@ func (h *DeviceHandler) RevokeLuksDeviceKey(ctx context.Context, req *connect.Re
 	// action_id before performing the destructive, irreversible slot-7 wipe
 	// (WS4), so a compromised gateway cannot forge or replay a revocation. A
 	// signing failure transitions the projection requested → failed.
-	revokePayload := taskqueue.RevokeLuksDeviceKeyPayload{ActionID: req.Msg.ActionId}
+	revokePayload := taskqueue.RevokeLuksDeviceKeyPayload{ActionID: req.Msg.ActionId, TargetDeviceID: req.Msg.DeviceId}
 	if signErr := signRevokeLuksDeviceKey(h.signer, &revokePayload); signErr != nil {
 		h.logger.Error("luks revocation signing failed; emitting LuksDeviceKeyRevocationFailed",
 			"device_id", req.Msg.DeviceId, "action_id", req.Msg.ActionId, "error", signErr)
