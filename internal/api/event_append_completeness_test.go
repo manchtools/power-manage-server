@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -169,10 +170,12 @@ func TestEventAppendGuardListsAreReal(t *testing.T) {
 	}
 }
 
-// allowedDirectWrites are the ONLY sanctioned direct-store-write call sites in
-// this package, keyed "file.go:CalleeName". Every entry is a verified
-// by-design non-event-sourced write with its why. A stale entry (no longer
-// observed) fails the guard so the list can only shrink honestly.
+// apiAllowedDirectWrites are the ONLY sanctioned direct-store-write call sites
+// in the api package, keyed "file.go:Func:CalleeName" (function-granular, so two
+// sites calling the same write method in one file each need their own entry —
+// see assertNoDirectStoreWrites). Every entry is a verified by-design
+// non-event-sourced write with its why. A stale entry (no longer observed) fails
+// the guard so the list can only shrink honestly.
 //
 // The dividing line: these all write OPERATIONAL tables (flow state, staging
 // rows, live-session inventory, infra rows) — none writes domain state that
@@ -180,7 +183,7 @@ func TestEventAppendGuardListsAreReal(t *testing.T) {
 // (UpdateSignature) backfills columns the projector deliberately does not
 // set, immediately after the event append, with a compensating-event
 // rollback (see persistActionSignature / rollbackUnsignedCreate).
-var allowedDirectWrites = map[string]string{
+var apiAllowedDirectWrites = map[string]string{
 	// NOTE(#495): the lps_keypair row — historically the one Postgres write
 	// bypassing the event store (#483 / ADR 0028) — is now a real projection
 	// of LpsKeypairGenerated; EnsureLpsKeypair appends, the projector writes.
@@ -190,44 +193,102 @@ var allowedDirectWrites = map[string]string{
 	// backfilled onto the projection row AFTER appendEvent(ActionCreated /
 	// ActionParamsUpdated) — the projector doesn't set them. Failure emits a
 	// compensating ActionDeleted (rollbackUnsignedCreate).
-	"action_crud.go:UpdateSignature":         "post-append signature backfill; projector-owned row, columns the projector doesn't set",
-	"system_action_store.go:UpdateSignature": "same sign-after-append backfill for system-managed actions",
+	"action_crud.go:persistActionSignature:UpdateSignature": "post-append signature backfill; projector-owned row, columns the projector doesn't set",
+	"system_action_store.go:SignActionByID:UpdateSignature": "same sign-after-append backfill for system-managed actions",
 
 	// JWT refresh-token revocation list — TTL'd session infra rows, not
-	// domain state. Logout/RefreshToken now audit-log the session lifecycle
-	// (#496); only this denylist row stays by-design non-event-sourced.
-	"auth_handler.go:Revoke": "revoked_tokens session-infra row (WS11); the RPC audit event is appended (#496), the denylist row itself is not event-sourced",
+	// domain state. Logout and RefreshToken each revoke the presented token;
+	// both audit-log the session lifecycle (#496), only the denylist row stays
+	// by-design non-event-sourced. Two distinct call sites, one per flow.
+	"auth_handler.go:Logout:Revoke":       "revoked_tokens session-infra row (WS11) on logout; the RPC audit event is appended (#496), the denylist row itself is not event-sourced",
+	"auth_handler.go:RefreshToken:Revoke": "revoked_tokens session-infra row (WS11) rotating the old refresh token; the RPC audit event is appended (#496), the denylist row itself is not event-sourced",
 
 	// Short-lived OIDC flow rows: staged at GetSSOLoginURL, destructively
 	// consumed on first read at SSOCallback (replay defense). Flow infra;
 	// the login OUTCOME is audited via UserLoggedIn in SSOCallback.
-	"sso_handler.go:Create":  "auth_states OIDC flow row, consumed at callback; login outcome is event-audited",
-	"sso_handler.go:Consume": "destructive first-read consumption of the auth_states flow row (replay defense)",
+	"sso_handler.go:GetSSOLoginURL:Create": "auth_states OIDC flow row, consumed at callback; login outcome is event-audited",
+	"sso_handler.go:SSOCallback:Consume":   "destructive first-read consumption of the auth_states flow row (replay defense)",
 
 	// One-time LUKS key-storage tokens (hashed at rest, WS10): staged by
 	// CreateLuksToken, redeemed exactly once by the agent via the internal
 	// proxy. The resulting key STORAGE is event-sourced (ProxyStoreLuksKey
 	// appends). CreateLuksToken now appends its own audit event (#496).
-	"device_handler.go:CreateToken":    "luks_tokens one-time token row (WS10); the RPC audit event is appended (#496), the token row itself is not event-sourced",
-	"internal_handler.go:ConsumeToken": "destructive one-time redemption of the luks_tokens row; key storage itself is event-sourced",
+	"device_handler.go:CreateLuksToken:CreateToken":           "luks_tokens one-time token row (WS10); the RPC audit event is appended (#496), the token row itself is not event-sourced",
+	"internal_handler.go:ProxyValidateLuksToken:ConsumeToken": "destructive one-time redemption of the luks_tokens row; key storage itself is event-sourced",
 
 	// Async result staging for device-pull operations: a pending row is
-	// created at dispatch, expired on signing/enqueue failure or read-side
-	// timeout; the agent's reply fills it via the inbox path. Transient
-	// operational state. DispatchOSQuery/QueryDeviceLogs now audit the
-	// dispatch (#496); only these staging rows stay non-event-sourced.
-	"osquery_handler.go:CreateResult":          "osquery_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
-	"osquery_handler.go:ExpirePendingResult":   "timeout/failure bookkeeping on the osquery_results staging row",
-	"logs_handler.go:CreateQueryResult":        "log_query_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
-	"logs_handler.go:ExpirePendingQueryResult": "timeout/failure bookkeeping on the log_query_results staging row",
+	// created at dispatch, expired on signing/enqueue failure (dispatch site)
+	// or read-side timeout (get site); the agent's reply fills it via the inbox
+	// path. Transient operational state. DispatchOSQuery/QueryDeviceLogs now
+	// audit the dispatch (#496); only these staging rows stay non-event-sourced.
+	"osquery_handler.go:DispatchOSQuery:CreateResult":             "osquery_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
+	"osquery_handler.go:DispatchOSQuery:ExpirePendingResult":      "dispatch-time signing/enqueue-failure bookkeeping on the osquery_results staging row",
+	"osquery_handler.go:GetOSQueryResult:ExpirePendingResult":     "read-side timeout bookkeeping on the osquery_results staging row",
+	"logs_handler.go:QueryDeviceLogs:CreateQueryResult":           "log_query_results staging row; the dispatch audit event is appended (#496), the staging row itself is not event-sourced",
+	"logs_handler.go:QueryDeviceLogs:ExpirePendingQueryResult":    "dispatch-time signing/enqueue-failure bookkeeping on the log_query_results staging row",
+	"logs_handler.go:GetDeviceLogResult:ExpirePendingQueryResult": "read-side timeout bookkeeping on the log_query_results staging row",
 
 	// Live terminal-session operational inventory, written ALONGSIDE the
 	// TerminalSessionStarted/Stopped/Terminated events the same handlers
 	// append (terminal_handler.go) — the audit trail is the event; the row
 	// is the liveness inventory the reconciler/listeners work from.
-	"terminal_handler.go:UpsertStart":    "terminal_sessions liveness row; TerminalSessionStarted event appended in the same handler",
-	"terminal_handler.go:MarkStopped":    "terminal_sessions liveness row; TerminalSessionStopped event appended in the same handler",
-	"terminal_handler.go:MarkTerminated": "terminal_sessions liveness row; TerminalSessionTerminated event appended in the same handler",
+	"terminal_handler.go:StartTerminal:UpsertStart":               "terminal_sessions liveness row; TerminalSessionStarted event appended in the same handler",
+	"terminal_handler.go:StopTerminal:MarkStopped":                "terminal_sessions liveness row; TerminalSessionStopped event appended in the same handler",
+	"terminal_handler.go:TerminateTerminalSession:MarkTerminated": "terminal_sessions liveness row; TerminalSessionTerminated event appended in the same handler",
+}
+
+// scimAllowedDirectWrites — the SCIM v2 provisioning package (internal/scim)
+// reads state through h.store.Repos()/.Queries() but performs EVERY mutation
+// through AppendEvent/AppendEvents: it is fully event-sourced and has no
+// by-design direct write. The set is empty and the scan runs as a tripwire
+// (expectWrites=false) — a future direct write through a Queries()/Repos()
+// chain (the same accessor its reads use) would fail the guard.
+var scimAllowedDirectWrites = map[string]string{}
+
+// controlAllowedDirectWrites — by-design direct writes in the control:inbox
+// worker package (internal/control), the gateway→control task handlers.
+var controlAllowedDirectWrites = map[string]string{
+	// The inbox worker IS a projection writer for device-pushed inventory:
+	// the agent streams osquery tables and the worker upserts them into
+	// inventory_projection directly. There is no domain event for "device
+	// reported its current package/service inventory" — the inventory is
+	// derived observational state, not an audited command, so it is written
+	// straight to the projection (spec 22). Freshness/interval is the only
+	// audited part and rides its own events elsewhere.
+	"inbox_worker.go:handleInventoryUpdate:Upsert": "inventory_projection is written directly from device-pushed osquery tables; observational state, not an event-sourced command (spec 22)",
+}
+
+// idpAllowedDirectWrites — the OIDC SSO linker (internal/idp) mutates state
+// ONLY through an injected appender.AppendEvent interface and holds no store
+// handle, so it has no direct writes today. The entry set is empty and the
+// scan runs as a tripwire (expectWrites=false): a future direct store write
+// through a Queries()/Repos() chain would fail the guard.
+var idpAllowedDirectWrites = map[string]string{}
+
+// writeGuardTarget is one handler/worker package the no-direct-write guard
+// scans. Dir is relative to this package's directory (internal/api), which is
+// the working directory `go test` uses.
+type writeGuardTarget struct {
+	dir          string
+	label        string
+	expectWrites bool // require ≥1 observed direct-write site (proves the scan fires here)
+	allow        map[string]string
+}
+
+// writeGuardTargets are every trust-boundary handler/worker package that
+// appends events / mutates state. The no-direct-write invariant (audit F-07 /
+// #495: mutations go through AppendEvent + projectors, never a raw projection
+// write) must hold across all of them, not just api. api = ControlService RPC
+// handlers (has by-design projection-staging writes); control = control:inbox
+// task handlers (one by-design inventory-projection upsert); scim = SCIM v2
+// provisioning and idp = OIDC SSO linker are both fully event-sourced today, so
+// they run as tripwires (expectWrites=false) that fail if a direct write is
+// ever introduced.
+var writeGuardTargets = []writeGuardTarget{
+	{dir: ".", label: "api", expectWrites: true, allow: apiAllowedDirectWrites},
+	{dir: "../scim", label: "scim", expectWrites: false, allow: scimAllowedDirectWrites},
+	{dir: "../control", label: "control", expectWrites: true, allow: controlAllowedDirectWrites},
+	{dir: "../idp", label: "idp", expectWrites: false, allow: idpAllowedDirectWrites},
 }
 
 // TestNoDirectStoreWritesFromHandlers is assertion 2 of the #495 guard: no
@@ -253,10 +314,36 @@ func TestNoDirectStoreWritesFromHandlers(t *testing.T) {
 	}
 	require.NotEmpty(t, writeNames, "discovered zero write-method names — the scan is broken")
 
-	fset := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	require.NoError(t, err)
+	for _, tgt := range writeGuardTargets {
+		assertNoDirectStoreWrites(t, tgt, writeNames)
+	}
+}
 
+// assertNoDirectStoreWrites scans one target package's non-test .go files for
+// direct store-write call sites — a write-method name (from writeNames) whose
+// receiver chain demonstrably originates from Store.Queries()/Store.Repos()
+// (inline chain or a local binding of one) — and fails on any not present in
+// the target's allow-list. Same mechanics as the original api-only guard,
+// parameterized over (dir, allow-list) so scim / control / idp are covered too
+// (audit F-07). Relative dirs resolve against the api package directory, which
+// is the working directory `go test` runs in.
+func assertNoDirectStoreWrites(t *testing.T, tgt writeGuardTarget, writeNames map[string]bool) {
+	t.Helper()
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(tgt.dir)
+	require.NoErrorf(t, err, "[%s] read dir %s", tgt.label, tgt.dir)
+
+	// observed is the set of direct-write sites seen, keyed file:function:callee
+	// — function-granular, NOT just file:callee (CR). That distinction matters:
+	// a new write of a DIFFERENT method in an already-allow-listed function keys
+	// differently (different callee) and is flagged; the same method in a
+	// DIFFERENT function keys differently and is flagged; so the only residual is
+	// a second call to the SAME method in the SAME allow-listed function. That is
+	// left un-distinguished on purpose — a handler legitimately calls one cleanup
+	// method from several error branches (e.g. QueryDeviceLogs / DispatchOSQuery
+	// each Expire the staging row on both the signing-failure and enqueue-failure
+	// paths), so a per-call-count invariant would false-fail by-design code, and
+	// the only finer key is the line number, which rots on every edit.
 	observed := map[string]bool{}
 	var violations []string
 	sawFile := false
@@ -266,8 +353,8 @@ func TestNoDirectStoreWritesFromHandlers(t *testing.T) {
 			continue
 		}
 		sawFile = true
-		f, err := parser.ParseFile(fset, fname, nil, 0)
-		require.NoErrorf(t, err, "parse %s", fname)
+		f, err := parser.ParseFile(fset, filepath.Join(tgt.dir, fname), nil, 0)
+		require.NoErrorf(t, err, "[%s] parse %s", tgt.label, fname)
 
 		for _, decl := range f.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
@@ -287,33 +374,35 @@ func TestNoDirectStoreWritesFromHandlers(t *testing.T) {
 				if !isStoreAccess(sel.X, bound) {
 					return true
 				}
-				key := fname + ":" + sel.Sel.Name
+				key := fname + ":" + fn.Name.Name + ":" + sel.Sel.Name
 				observed[key] = true
-				if allowedDirectWrites[key] == "" {
+				if tgt.allow[key] == "" {
 					violations = append(violations,
-						fmt.Sprintf("%s: %s calls %s — a direct store write outside the event→projector path", fname, fn.Name.Name, sel.Sel.Name))
+						fmt.Sprintf("%s/%s: %s calls %s — a direct store write outside the event→projector path (key %q)", tgt.label, fname, fn.Name.Name, sel.Sel.Name, key))
 				}
 				return true
 			})
 		}
 	}
-	require.True(t, sawFile, "scanned zero source files — discovery is broken")
-	require.NotEmpty(t, observed,
-		"discovered zero direct-write call sites — the scan is broken (the allowlisted by-design sites must at least match)")
+	require.Truef(t, sawFile, "[%s] scanned zero source files in %s — discovery is broken", tgt.label, tgt.dir)
+	if tgt.expectWrites {
+		require.NotEmptyf(t, observed,
+			"[%s] discovered zero direct-write call sites — the scan heuristic is not firing for this package (the allow-listed by-design sites must at least match)", tgt.label)
+	}
 
 	var stale []string
-	for key := range allowedDirectWrites {
+	for key := range tgt.allow {
 		if !observed[key] {
 			stale = append(stale, key)
 		}
 	}
 	sort.Strings(stale)
 	sort.Strings(violations)
-	require.Emptyf(t, stale, "allowedDirectWrites entries no longer observed — remove them:\n  %s", strings.Join(stale, "\n  "))
+	require.Emptyf(t, stale, "[%s] allow-list entries no longer observed — remove them:\n  %s", tgt.label, strings.Join(stale, "\n  "))
 	require.Emptyf(t, violations,
-		"direct store writes from handler files (#495 — mutations go through AppendEvent + projectors):\n  %s\n"+
-			"Event-source the write, or add a verified by-design entry to allowedDirectWrites with its why.",
-		strings.Join(violations, "\n  "))
+		"[%s] direct store writes from handler files (#495 / audit F-07 — mutations go through AppendEvent + projectors):\n  %s\n"+
+			"Event-source the write, or add a verified by-design entry to the package allow-list with its why.",
+		tgt.label, strings.Join(violations, "\n  "))
 }
 
 // --- discovery helpers -----------------------------------------------------
