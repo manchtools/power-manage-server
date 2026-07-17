@@ -54,7 +54,7 @@ func TestNoContextBackgroundInRequestPaths(t *testing.T) {
 	allow := newAllowlist(map[string]string{
 		"internal/api/settings_handler.go :: runSettingsPropagation":                 "detached post-update settings fan-out; must outlive the RPC, bounded 5m, panic-recovered (WS16 #9)",
 		"internal/api/terminal_revocation_listener.go :: TerminalRevocationListener": "post-commit event-bus listener goroutine; not a request path, bounded by terminalRevocationCloseTimeout, panic-recovered",
-		"internal/gateway/registry/registry.go :: RegisterGateway":                   "background heartbeat-refresh + shutdown-cleanup goroutine with its own stop signal; each bounded 5s",
+		"internal/gateway/registry/registry.go :: heartbeat":                         "detached TTL-refresh goroutine + shutdown-cleanup closure, each with its own stop signal and a 5s WithTimeout bound; not a request path (shared by RegisterGateway/RegisterGatewayAlive/RegisterGatewayInternal)",
 	})
 
 	// Liveness probe: every context.Background()/context.TODO() seen
