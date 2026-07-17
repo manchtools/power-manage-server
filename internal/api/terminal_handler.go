@@ -44,6 +44,15 @@ type TerminalHandler struct {
 	// return Unavailable.
 	internalHTTPClient *http.Client
 
+	// gatewaySessions enumerates every live terminal session across all
+	// gateways with NO caller-scope filtering. Defaults to fanOutSessions;
+	// overridden in tests. The scoped RPC (ListActiveTerminalSessions) layers
+	// scopedSessions on top of this; the internal revocation path
+	// (TerminateUserSessions) uses it raw so a system-initiated revocation sees
+	// every session (H1 / #391 — routing revocation through the scoped RPC under
+	// a user-less context silently filtered to zero and terminated nothing).
+	gatewaySessions func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)
+
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
@@ -64,7 +73,7 @@ func (h *TerminalHandler) SetInternalHTTPClient(c *http.Client) {
 // In production at least one of reg or fallbackURL must be supplied,
 // or every StartTerminal call returns Unavailable.
 func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *registry.Registry, fallbackURL string, logger *slog.Logger) *TerminalHandler {
-	return &TerminalHandler{
+	h := &TerminalHandler{
 		store:       st,
 		tokenStore:  tokenStore,
 		registry:    reg,
@@ -72,6 +81,8 @@ func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *r
 		logger:      logger,
 		now:         time.Now,
 	}
+	h.gatewaySessions = h.fanOutSessions
+	return h
 }
 
 // StartTerminal verifies the caller is authenticated, resolves the
@@ -501,6 +512,35 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 		return nil, err
 	}
 
+	all, err := h.gatewaySessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Scope (#3): confine the merged list to sessions on devices in the caller's
+	// ListActiveTerminalSessions device-group scope. A global holder sees all.
+	// The internal revocation path (TerminateUserSessions) deliberately does NOT
+	// apply this — it enumerates via h.gatewaySessions directly (H1 / #391).
+	scoped, err := h.scopedSessions(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO: enrich with user email / device hostname from DB for
+	// the admin view. For now the IDs are returned directly.
+
+	return connect.NewResponse(&pm.ListActiveTerminalSessionsResponse{
+		Sessions:   scoped,
+		TotalCount: int32(len(scoped)),
+	}), nil
+}
+
+// fanOutSessions is the real gateway fan-out backing h.gatewaySessions: it calls
+// GatewayService on every live gateway and merges their local session snapshots
+// with NO caller-scope filtering. The registry/internalHTTPClient wiring guard
+// lives here so both callers (the scoped RPC and the internal revocation path)
+// get the same Unavailable behaviour when the fan-out plumbing is unset.
+func (h *TerminalHandler) fanOutSessions(ctx context.Context) ([]*pm.TerminalSessionInfo, error) {
 	if h.registry == nil || h.internalHTTPClient == nil {
 		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
 			"terminal admin RPCs require a configured registry and internal HTTP client")
@@ -549,20 +589,7 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 	}
 	wg.Wait()
 
-	// Scope (#3): confine the merged list to sessions on devices in the caller's
-	// ListActiveTerminalSessions device-group scope. A global holder sees all.
-	scoped, err := h.scopedSessions(ctx, all)
-	if err != nil {
-		return nil, err
-	}
-
-	// TODO: enrich with user email / device hostname from DB for
-	// the admin view. For now the IDs are returned directly.
-
-	return connect.NewResponse(&pm.ListActiveTerminalSessionsResponse{
-		Sessions:   scoped,
-		TotalCount: int32(len(scoped)),
-	}), nil
+	return all, nil
 }
 
 // scopedSessions filters a merged terminal-session list to those on devices
@@ -757,17 +784,19 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 // TerminalRevocationListener) so it never blocks the disable/delete that
 // triggered it.
 func (h *TerminalHandler) TerminateUserSessions(ctx context.Context, userID string) {
-	listResp, err := h.ListActiveTerminalSessions(ctx, connect.NewRequest(&pm.ListActiveTerminalSessionsRequest{}))
+	sysCtx := auth.WithUser(ctx, &auth.UserContext{ID: "system", Email: "system@power-manage"})
+
+	// Enumerate UNSCOPED: this is a system-initiated revocation, not a scoped
+	// admin's list. Going through ListActiveTerminalSessions would apply
+	// scopedSessions, which under this user-less context fails closed to zero
+	// sessions — terminating nothing (H1 / #391).
+	targets, err := h.sessionsForUser(sysCtx, userID)
 	if err != nil {
 		h.logger.Error("revocation: failed to list terminal sessions", "user_id", userID, "error", err)
 		return
 	}
 
-	sysCtx := auth.WithUser(ctx, &auth.UserContext{ID: "system", Email: "system@power-manage"})
-	for _, s := range listResp.Msg.Sessions {
-		if s.UserId != userID {
-			continue
-		}
+	for _, s := range targets {
 		if _, err := h.TerminateTerminalSession(sysCtx, connect.NewRequest(&pm.TerminateTerminalSessionRequest{
 			SessionId: s.SessionId,
 			Reason:    "user access revoked",
@@ -779,6 +808,26 @@ func (h *TerminalHandler) TerminateUserSessions(ctx context.Context, userID stri
 				"user_id", userID, "session_id", s.SessionId)
 		}
 	}
+}
+
+// sessionsForUser returns the live terminal sessions belonging to userID across
+// all gateways, WITHOUT caller-scope filtering. The internal revocation path is
+// a system operation and must see every session regardless of any device-group
+// scope; routing it through the scoped ListActiveTerminalSessions RPC under a
+// user-less context silently filtered to zero and terminated nothing (H1 /
+// #391).
+func (h *TerminalHandler) sessionsForUser(ctx context.Context, userID string) ([]*pm.TerminalSessionInfo, error) {
+	all, err := h.gatewaySessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*pm.TerminalSessionInfo, 0, len(all))
+	for _, s := range all {
+		if s.UserId == userID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
 }
 
 // GatewayBaseURL normalises the configured gateway URL into the

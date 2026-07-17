@@ -15,6 +15,21 @@ func (h *TerminalHandler) ScopedSessionsForTest(ctx context.Context, sessions []
 	return h.scopedSessions(ctx, sessions)
 }
 
+// SetGatewaySessionsForTest overrides the unscoped gateway session enumeration
+// seam so the H1 revocation regression test can inject a known session set
+// without standing up the gateway fan-out. Compiled only into test binaries.
+func (h *TerminalHandler) SetGatewaySessionsForTest(fn func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)) {
+	h.gatewaySessions = fn
+}
+
+// SessionsForUserTest exposes the unexported unscoped per-user session
+// enumeration the internal revocation path uses (TerminateUserSessions), so the
+// H1 regression test can assert it selects a user's sessions even under a
+// user-less context — the exact case the scoped RPC filtered to zero (#391).
+func (h *TerminalHandler) SessionsForUserTest(ctx context.Context, userID string) ([]*pm.TerminalSessionInfo, error) {
+	return h.sessionsForUser(ctx, userID)
+}
+
 // SetRenewCertTestHook installs the test-only seam invoked between the
 // fingerprint check and certificate issuance in RenewCertificate, letting the
 // concurrency regression test widen the read→append window. Compiled only into
