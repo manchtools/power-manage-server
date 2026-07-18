@@ -1,4 +1,4 @@
--- Per-user DEK envelope (spec 19 / ADR 0030). The wrapped_dek is the
+-- Per-user DEK envelope (spec 19 / ADR 0033). The wrapped_dek is the
 -- KEK-wrapped data-encryption key every PII field of the user's events
 -- is sealed under; deleting the row IS the erasure ("crypto-shred").
 

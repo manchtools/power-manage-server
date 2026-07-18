@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -77,9 +78,11 @@ func TestAppendUserDeletionWithShred_FiresProjector(t *testing.T) {
 	assert.True(t, store.IsNotFound(err), "deleted user must not resolve by email")
 }
 
-// TestAppendUserDeletionWithShred_Idempotent pins AC 13: re-running for
-// an already-deleted user is a no-op success — DEK stays absent, no
-// duplicate/orphaned writes.
+// TestAppendUserDeletionWithShred_Idempotent pins the store-level
+// idempotency (defense in depth): re-running for an already-deleted user is a
+// no-op success — DEK stays absent, no duplicate/orphaned writes. The API
+// handler never re-enters this flow for an erased user (it returns uniform
+// NotFound, AC 13); this idempotency backs the SCIM path and direct callers.
 func TestAppendUserDeletionWithShred_Idempotent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := context.Background()
@@ -89,5 +92,37 @@ func TestAppendUserDeletionWithShred_Idempotent(t *testing.T) {
 	require.NoError(t, st.AppendUserDeletionWithShred(ctx, userDeletedEvent(userID)),
 		"a second shred of an already-erased user is a no-op success")
 
+	assert.False(t, hasDEK(t, st, userID))
+}
+
+// TestAppendUserDeletionWithShred_DEKShredFailureRollsBack pins AC 14: if the
+// DEK delete fails, the whole transaction rolls back — the already-appended
+// UserDeleted event does NOT survive and the projection stays unredacted
+// (no half-erased state). The failure is injected AT the shred step (after
+// the append) so the rollback of a committed-in-tx append is what's proven.
+func TestAppendUserDeletionWithShred_DEKShredFailureRollsBack(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+
+	email := "rollback-" + testutil.NewID()[:8] + "@test.com"
+	userID := testutil.CreateTestUser(t, st, email, "pass", "user")
+	require.True(t, hasDEK(t, st, userID), "precondition: user has a DEK")
+
+	st.TestingSetDEKShredHook(func(string) error { return errors.New("injected DEK-delete failure") })
+
+	err := st.AppendUserDeletionWithShred(ctx, userDeletedEvent(userID))
+	require.Error(t, err, "a DEK-shred failure must surface as an error")
+
+	assert.Equal(t, 0, countUserEvents(t, st, userID, "UserDeleted"),
+		"AC 14: no UserDeleted event may survive a rolled-back shred")
+	assert.True(t, hasDEK(t, st, userID),
+		"AC 14: the DEK must still be present — nothing was destroyed")
+	_, gerr := st.Repos().User.GetByEmail(ctx, email)
+	require.NoError(t, gerr, "AC 14: the projection stays unredacted — the user still resolves")
+
+	// Clear the seam: a normal shred now succeeds, proving the hook was the
+	// only thing blocking (the flow itself is healthy).
+	st.TestingSetDEKShredHook(nil)
+	require.NoError(t, st.AppendUserDeletionWithShred(ctx, userDeletedEvent(userID)))
 	assert.False(t, hasDEK(t, st, userID))
 }

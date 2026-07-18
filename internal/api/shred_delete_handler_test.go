@@ -43,10 +43,12 @@ func TestDeleteUser_ShredsDEK(t *testing.T) {
 	assert.False(t, hasDEKRepo(t, st, victim), "DeleteUser must crypto-shred the DEK (AC 7/8)")
 }
 
-// TestDeleteUser_IdempotentAndNoOracle pins AC 13: deleting an
-// already-deleted (still visible to the caller) user is idempotent OK;
-// deleting an absent id returns NotFound (no existence oracle).
-func TestDeleteUser_IdempotentAndNoOracle(t *testing.T) {
+// TestDeleteUser_UniformNotFound pins AC 13: the delete response is uniform
+// NotFound across absent, out-of-scope, and already-erased targets — none of
+// them confirms a ULID ever existed. An already-deleted target resolves the
+// same way as an absent one because GetUserByID filters is_deleted = false, so
+// the delete flow is never re-entered (no idempotent-OK path).
+func TestDeleteUser_UniformNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 
 	adminID := testutil.CreateTestUser(t, st, "adm2-"+testutil.NewID()[:8]+"@test.com", "pass", "admin")
@@ -57,6 +59,18 @@ func TestDeleteUser_IdempotentAndNoOracle(t *testing.T) {
 		connect.NewRequest(&pm.DeleteUserRequest{Id: testutil.NewID()}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "absent target must be NotFound (no oracle)")
+
+	// Already-deleted target that the admin could see → NotFound too (uniform).
+	victimID := testutil.CreateTestUser(t, st, "victim-"+testutil.NewID()[:8]+"@test.com", "pass", "viewer")
+	_, err = h.DeleteUser(testutil.AdminContext(adminID),
+		connect.NewRequest(&pm.DeleteUserRequest{Id: victimID}))
+	require.NoError(t, err, "first delete of a visible user succeeds")
+
+	_, err = h.DeleteUser(testutil.AdminContext(adminID),
+		connect.NewRequest(&pm.DeleteUserRequest{Id: victimID}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
+		"repeat delete of an already-erased user must be NotFound — indistinguishable from absent (no oracle)")
 }
 
 // TestReAddSameEmailAfterErase_MintsFreshDEK pins AC 15: after erasing

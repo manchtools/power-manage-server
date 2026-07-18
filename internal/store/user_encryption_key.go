@@ -6,7 +6,8 @@ import (
 )
 
 // UserEncryptionKey is one user's KEK-wrapped data-encryption key
-// (spec 19 / ADR 0030). The wrapped form is the ONLY persisted form;
+// (spec 19 / ADR 0033; wrapped under the ADR 0030 enc:v1 format). The
+// wrapped form is the ONLY persisted form;
 // the plaintext DEK exists in memory only, inside internal/crypto.
 type UserEncryptionKey struct {
 	UserID     string

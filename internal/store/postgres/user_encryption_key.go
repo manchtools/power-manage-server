@@ -10,7 +10,7 @@ import (
 
 // UserEncryptionKey implements store.UserEncryptionKeyRepo against
 // user_encryption_keys — the crypto-shred key material (spec 19 /
-// ADR 0030).
+// ADR 0033).
 type UserEncryptionKey struct {
 	q *generated.Queries
 }

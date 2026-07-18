@@ -25,10 +25,13 @@ import (
 // AppendEvent does, so the UserDeleted projector (soft-delete +
 // PII-column redaction) runs on the durable event.
 //
-// Idempotent (AC 13): re-running for an already-deleted user still
-// appends a UserDeleted event (harmless — the projector's
-// projection_version guard no-ops the stale replay) and the DEK delete
-// reports zero rows without error, so the DEK stays absent.
+// Idempotent at the store level (defense in depth): re-running for an
+// already-deleted user still appends a UserDeleted event (harmless — the
+// projector's projection_version guard no-ops the stale replay) and the DEK
+// delete reports zero rows without error, so the DEK stays absent. The API
+// handler never re-enters this flow for an erased user — GetUserByID filters
+// is_deleted, so a repeat delete is uniform NotFound (AC 13); this
+// idempotency backs the SCIM path and any direct store caller.
 func (s *Store) AppendUserDeletionWithShred(ctx context.Context, event Event) error {
 	if event.StreamType != "user" {
 		return fmt.Errorf("shred flow: event must be on the user stream, got %q", event.StreamType)
@@ -88,6 +91,11 @@ func (s *Store) AppendUserDeletionWithShred(ctx context.Context, event Event) er
 			}
 			// THE crypto-shred, in the SAME transaction (AC 7/14). A
 			// failure here rolls the UserDeleted append back too.
+			if s.beforeDEKShred != nil {
+				if herr := s.beforeDEKShred(event.StreamID); herr != nil {
+					return fmt.Errorf("shred DEK (test hook): %w", herr)
+				}
+			}
 			if _, derr := q.DeleteUserEncryptionKey(ctx, event.StreamID); derr != nil {
 				return fmt.Errorf("shred DEK: %w", derr)
 			}
