@@ -52,33 +52,42 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update display name if changed
+	// Update display name if changed. The mapping-rename and user_group-rename
+	// commit atomically (audit L7): the change guard reads the *mapping's* name,
+	// so a partial apply (mapping renamed, user_group not) would let the retry
+	// see equal names, skip the rename, and leave the user_group name stale
+	// forever. AppendEvents makes both land or neither.
 	if scimGroup.DisplayName != "" && scimGroup.DisplayName != mapping.SCIMDisplayName {
-		h.appendEvent(ctx, store.Event{
-			StreamType: "scim_group_mapping",
-			StreamID:   mapping.ID,
-			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-			Data: payloads.SCIMGroupMappingUpdated{
-				ProviderID:      provider.ID,
-				SCIMGroupID:     mapping.SCIMGroupID,
-				SCIMDisplayName: &scimGroup.DisplayName,
+		if err := h.store.AppendEvents(ctx, []store.Event{
+			{
+				StreamType: "scim_group_mapping",
+				StreamID:   mapping.ID,
+				EventType:  string(eventtypes.SCIMGroupMappingUpdated),
+				Data: payloads.SCIMGroupMappingUpdated{
+					ProviderID:      provider.ID,
+					SCIMGroupID:     mapping.SCIMGroupID,
+					SCIMDisplayName: &scimGroup.DisplayName,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
 			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
-		})
-
-		h.appendEvent(ctx, store.Event{
-			StreamType: "user_group",
-			StreamID:   groupID,
-			EventType:  string(eventtypes.UserGroupUpdated),
-			// nil Description = preserve the existing one (SCIM
-			// only renames; the description is server-owned).
-			Data: payloads.UserGroupUpdated{
-				Name: scimGroup.DisplayName,
+			{
+				StreamType: "user_group",
+				StreamID:   groupID,
+				EventType:  string(eventtypes.UserGroupUpdated),
+				// nil Description = preserve the existing one (SCIM
+				// only renames; the description is server-owned).
+				Data: payloads.UserGroupUpdated{
+					Name: scimGroup.DisplayName,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
 			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
-		})
+		}); err != nil {
+			h.logger.Error("failed to rename SCIM group", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to update group")
+			return
+		}
 	}
 
 	// Reconcile members if the field was present in the JSON body.
@@ -86,7 +95,10 @@ func (h *Handler) replaceGroup(w http.ResponseWriter, r *http.Request) {
 	// Empty slice means explicitly empty (remove all members).
 	// SCIM is treated as the source of truth for group membership.
 	if scimGroup.Members != nil {
-		h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members)
+		if err := h.reconcileGroupMembers(ctx, provider, groupID, scimGroup.Members); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update group members")
+			return
+		}
 	}
 
 	// Read back and return
@@ -151,16 +163,22 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported patch op: %s", op.Op))
 			return
 		}
+		var opErr error
 		switch op.Op.Normalize() {
 		case SCIMPatchOpAdd:
-			h.handleGroupPatchAdd(ctx, provider, groupID, op)
+			opErr = h.handleGroupPatchAdd(ctx, provider, groupID, op)
 		case SCIMPatchOpRemove:
-			h.handleGroupPatchRemove(ctx, provider, groupID, op)
+			opErr = h.handleGroupPatchRemove(ctx, provider, groupID, op)
 		case SCIMPatchOpReplace:
-			h.handleGroupPatchReplace(ctx, provider, groupID, mapping, op)
+			opErr = h.handleGroupPatchReplace(ctx, provider, groupID, mapping, op)
 		default:
 			// Unreachable: IsValid above guards this switch.
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported patch op: %s", op.Op))
+			return
+		}
+		if opErr != nil {
+			h.logger.Error("failed to apply SCIM group patch op", "op", op.Op, "path", op.Path, "error", opErr)
+			writeError(w, http.StatusInternalServerError, "failed to apply patch operation")
 			return
 		}
 	}
@@ -181,11 +199,13 @@ func (h *Handler) patchGroup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, group)
 }
 
-// handleGroupPatchAdd processes an "add" patch operation on a group.
-func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) {
+// handleGroupPatchAdd processes an "add" patch operation on a group. Fails
+// closed (audit L7); per-member appends are ON CONFLICT-idempotent so a retry
+// after a partial apply converges.
+func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) error {
 	path := strings.ToLower(op.Path)
 	if path != "members" && path != "" {
-		return
+		return nil
 	}
 
 	members := extractMembers(op.Value)
@@ -194,7 +214,7 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.Identi
 			continue
 		}
 		streamID := groupID + ":" + userID
-		h.appendEvent(ctx, store.Event{
+		if err := h.appendEvent(ctx, store.Event{
 			StreamType: "user_group",
 			StreamID:   streamID,
 			EventType:  string(eventtypes.UserGroupMemberAdded),
@@ -204,12 +224,16 @@ func (h *Handler) handleGroupPatchAdd(ctx context.Context, provider store.Identi
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
-		})
+		}); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-// handleGroupPatchRemove processes a "remove" patch operation on a group.
-func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) {
+// handleGroupPatchRemove processes a "remove" patch operation on a group. Fails
+// closed (audit L7); per-member removals are idempotent so a retry converges.
+func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.IdentityProvider, groupID string, op SCIMPatchOp) error {
 	path := strings.ToLower(op.Path)
 
 	// Handle path like: members[value eq "userId"]
@@ -218,7 +242,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 		userID := extractUserIDFromMemberFilter(op.Path)
 		if userID != "" {
 			streamID := groupID + ":" + userID
-			h.appendEvent(ctx, store.Event{
+			return h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
@@ -230,7 +254,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 				ActorID:   provider.ID,
 			})
 		}
-		return
+		return nil
 	}
 
 	// Handle path "members" with value containing member list
@@ -238,7 +262,7 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 		members := extractMembers(op.Value)
 		for _, userID := range members {
 			streamID := groupID + ":" + userID
-			h.appendEvent(ctx, store.Event{
+			if err := h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
@@ -248,45 +272,52 @@ func (h *Handler) handleGroupPatchRemove(ctx context.Context, provider store.Ide
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // handleGroupPatchReplace processes a "replace" patch operation on a group.
-func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.IdentityProvider, groupID string, mapping store.SCIMGroupMapping, op SCIMPatchOp) {
+// Fails closed (audit L7). The displayname rename commits its mapping+user_group
+// events atomically via AppendEvents (same reason as replaceGroup); the member
+// add/remove appends are ON CONFLICT-idempotent so a retry converges.
+func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.IdentityProvider, groupID string, mapping store.SCIMGroupMapping, op SCIMPatchOp) error {
 	path := strings.ToLower(op.Path)
 
 	switch path {
 	case "displayname":
 		name, ok := op.Value.(string)
 		if !ok || name == "" {
-			return
+			return nil
 		}
 
-		h.appendEvent(ctx, store.Event{
-			StreamType: "scim_group_mapping",
-			StreamID:   mapping.ID,
-			EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-			Data: payloads.SCIMGroupMappingUpdated{
-				ProviderID:      provider.ID,
-				SCIMGroupID:     mapping.SCIMGroupID,
-				SCIMDisplayName: &name,
+		return h.store.AppendEvents(ctx, []store.Event{
+			{
+				StreamType: "scim_group_mapping",
+				StreamID:   mapping.ID,
+				EventType:  string(eventtypes.SCIMGroupMappingUpdated),
+				Data: payloads.SCIMGroupMappingUpdated{
+					ProviderID:      provider.ID,
+					SCIMGroupID:     mapping.SCIMGroupID,
+					SCIMDisplayName: &name,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
 			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
-		})
-
-		h.appendEvent(ctx, store.Event{
-			StreamType: "user_group",
-			StreamID:   groupID,
-			EventType:  string(eventtypes.UserGroupUpdated),
-			// nil Description = preserve (SCIM only renames).
-			Data: payloads.UserGroupUpdated{
-				Name: name,
+			{
+				StreamType: "user_group",
+				StreamID:   groupID,
+				EventType:  string(eventtypes.UserGroupUpdated),
+				// nil Description = preserve (SCIM only renames).
+				Data: payloads.UserGroupUpdated{
+					Name: name,
+				},
+				ActorType: "scim",
+				ActorID:   provider.ID,
 			},
-			ActorType: "scim",
-			ActorID:   provider.ID,
 		})
 
 	case "members":
@@ -300,7 +331,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 		currentMemberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 		if err != nil {
 			h.logger.Error("failed to list group members for patch replace", "group_id", groupID, "error", err)
-			return
+			return err
 		}
 
 		currentSet := make(map[string]bool, len(currentMemberIDs))
@@ -316,7 +347,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 				}
 				h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
-				h.appendEvent(ctx, store.Event{
+				if err := h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  string(eventtypes.UserGroupMemberAdded),
@@ -326,7 +357,9 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 					},
 					ActorType: "scim",
 					ActorID:   provider.ID,
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -335,7 +368,7 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 			if !requestedSet[userID] {
 				h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
 				streamID := groupID + ":" + userID
-				h.appendEvent(ctx, store.Event{
+				if err := h.appendEvent(ctx, store.Event{
 					StreamType: "user_group",
 					StreamID:   streamID,
 					EventType:  string(eventtypes.UserGroupMemberRemoved),
@@ -345,8 +378,11 @@ func (h *Handler) handleGroupPatchReplace(ctx context.Context, provider store.Id
 					},
 					ActorType: "scim",
 					ActorID:   provider.ID,
-				})
+				}); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	return nil
 }

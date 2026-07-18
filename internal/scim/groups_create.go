@@ -55,48 +55,64 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 		// Already exists — update display name if changed and return existing resource.
 		h.logger.Debug("SCIM createGroup: group already exists, syncing", "scim_group_id", scimGroupID, "user_group_id", existing.UserGroupID)
 		// This makes POST idempotent, which handles SCIM clients that re-POST on every sync.
+		// The mapping-rename and user_group-rename commit atomically (audit L7):
+		// the change guard reads the *mapping's* name, so a partial apply would
+		// let the retry see equal names, skip, and leave the user_group name stale
+		// forever. AppendEvents makes both land or neither.
 		if existing.SCIMDisplayName != scimGroup.DisplayName {
-			h.appendEvent(ctx, store.Event{
-				StreamType: "scim_group_mapping",
-				StreamID:   existing.ID,
-				EventType:  string(eventtypes.SCIMGroupMappingUpdated),
-				Data: payloads.SCIMGroupMappingUpdated{
-					ProviderID:      provider.ID,
-					SCIMGroupID:     scimGroupID,
-					SCIMDisplayName: &scimGroup.DisplayName,
+			if err := h.store.AppendEvents(ctx, []store.Event{
+				{
+					StreamType: "scim_group_mapping",
+					StreamID:   existing.ID,
+					EventType:  string(eventtypes.SCIMGroupMappingUpdated),
+					Data: payloads.SCIMGroupMappingUpdated{
+						ProviderID:      provider.ID,
+						SCIMGroupID:     scimGroupID,
+						SCIMDisplayName: &scimGroup.DisplayName,
+					},
+					ActorType: "scim",
+					ActorID:   provider.ID,
 				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
-			})
-			h.appendEvent(ctx, store.Event{
-				StreamType: "user_group",
-				StreamID:   existing.UserGroupID,
-				EventType:  string(eventtypes.UserGroupUpdated),
-				// nil Description = preserve the existing one (SCIM
-				// only renames; the description is server-owned).
-				Data: payloads.UserGroupUpdated{
-					Name: scimGroup.DisplayName,
+				{
+					StreamType: "user_group",
+					StreamID:   existing.UserGroupID,
+					EventType:  string(eventtypes.UserGroupUpdated),
+					// nil Description = preserve the existing one (SCIM
+					// only renames; the description is server-owned).
+					Data: payloads.UserGroupUpdated{
+						Name: scimGroup.DisplayName,
+					},
+					ActorType: "scim",
+					ActorID:   provider.ID,
 				},
-				ActorType: "scim",
-				ActorID:   provider.ID,
-			})
+			}); err != nil {
+				h.logger.Error("failed to rename SCIM group", "error", err)
+				writeError(w, http.StatusInternalServerError, "failed to update group")
+				return
+			}
 		}
 
 		// Reconcile members if the field was present in the JSON body.
 		// nil means the field was omitted (don't touch members).
 		// Empty slice means explicitly empty (remove all members).
 		if scimGroup.Members != nil {
-			h.reconcileGroupMembers(ctx, provider, existing.UserGroupID, scimGroup.Members)
+			if err := h.reconcileGroupMembers(ctx, provider, existing.UserGroupID, scimGroup.Members); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to update group members")
+				return
+			}
 		}
 
 		group, err := h.buildGroupResource(ctx, provider.ID, existing, baseURL)
 		if err != nil {
 			// User group referenced by mapping no longer exists.
 			// Remove the orphaned mapping and fall through to create
-			// a fresh group+mapping pair below.
+			// a fresh group+mapping pair below. Fail closed on the unmap
+			// (audit L7): swallowing it and falling through would create a
+			// SECOND mapping for the same scim_group_id alongside the stale
+			// one — two mappings for one SCIM group.
 			h.logger.Warn("orphaned SCIM group mapping, removing and recreating",
 				"mapping_id", existing.ID, "user_group_id", existing.UserGroupID, "error", err)
-			h.appendEvent(ctx, store.Event{
+			if err := h.appendEvent(ctx, store.Event{
 				StreamType: "scim_group_mapping",
 				StreamID:   existing.ID,
 				EventType:  string(eventtypes.SCIMGroupUnmapped),
@@ -106,7 +122,10 @@ func (h *Handler) createGroup(w http.ResponseWriter, r *http.Request) {
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
-			})
+			}); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to remove orphaned group mapping")
+				return
+			}
 			// Fall through to create a new group below
 		} else {
 			writeJSON(w, http.StatusOK, group)

@@ -36,13 +36,16 @@ func (h *Handler) mayAddMemberToGroup(ctx context.Context, providerID, groupID, 
 // reconcileGroupMembers diff's the requested member set against the
 // current member set and emits per-user UserGroupMemberAdded /
 // UserGroupMemberRemoved events. Idempotent — calling with the same
-// member set twice produces no second-round events.
-func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.IdentityProvider, groupID string, requestedMembers []SCIMMember) {
+// member set twice produces no second-round events. Fails closed (audit
+// L7): a list or append failure is returned so the caller answers 500 and
+// the IdP retries; the per-member appends are ON CONFLICT-idempotent, so a
+// retry after a partial apply converges without duplicating membership.
+func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.IdentityProvider, groupID string, requestedMembers []SCIMMember) error {
 	h.logger.Debug("SCIM reconcileGroupMembers", "group_id", groupID, "requested_count", len(requestedMembers))
 	currentMemberIDs, err := h.store.Repos().UserGroup.ListMemberIDs(ctx, groupID)
 	if err != nil {
 		h.logger.Error("failed to list current group members for reconciliation", "error", err)
-		return
+		return err
 	}
 
 	currentSet := make(map[string]bool, len(currentMemberIDs))
@@ -66,7 +69,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 			}
 			h.logger.Debug("SCIM adding member to group", "group_id", groupID, "user_id", userID)
 			streamID := groupID + ":" + userID
-			h.appendEvent(ctx, store.Event{
+			if err := h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberAdded),
@@ -76,7 +79,9 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -85,7 +90,7 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 		if !requestedSet[userID] {
 			h.logger.Debug("SCIM removing member from group", "group_id", groupID, "user_id", userID)
 			streamID := groupID + ":" + userID
-			h.appendEvent(ctx, store.Event{
+			if err := h.appendEvent(ctx, store.Event{
 				StreamType: "user_group",
 				StreamID:   streamID,
 				EventType:  string(eventtypes.UserGroupMemberRemoved),
@@ -95,9 +100,12 @@ func (h *Handler) reconcileGroupMembers(ctx context.Context, provider store.Iden
 				},
 				ActorType: "scim",
 				ActorID:   provider.ID,
-			})
+			}); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // buildGroupResource constructs a SCIMGroup from a mapping and its associated user group.
