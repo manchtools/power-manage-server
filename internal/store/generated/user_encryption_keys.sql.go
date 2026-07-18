@@ -58,7 +58,7 @@ type InsertUserEncryptionKeyParams struct {
 	WrappedDek string `json:"wrapped_dek"`
 }
 
-// Per-user DEK envelope (spec 19 / ADR 0030). The wrapped_dek is the
+// Per-user DEK envelope (spec 19 / ADR 0033). The wrapped_dek is the
 // KEK-wrapped data-encryption key every PII field of the user's events
 // is sealed under; deleting the row IS the erasure ("crypto-shred").
 // ON CONFLICT DO NOTHING: minting is first-write-wins so a re-provision

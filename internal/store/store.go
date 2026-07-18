@@ -139,7 +139,7 @@ type Store struct {
 
 	// piiSealer, when set, transforms every event BEFORE its payload is
 	// marshalled: PII-tagged fields are sealed under the subject user's
-	// DEK (spec 19 / ADR 0030). FAIL-CLOSED contract (AC 6): a sealing
+	// DEK (spec 19 / ADR 0033). FAIL-CLOSED contract (AC 6): a sealing
 	// error aborts the append — the log is immutable, so plaintext PII
 	// written once is unerasable forever; an error is always cheaper.
 	// Wired via SetPIISealer from boot code / the test fixture,
