@@ -71,3 +71,15 @@ in `handler` was removed. `mtls` cannot import `handler` or `ca` (both import
   not addressed here. It has since been **fixed** by serializing
   `RenewCertificate` per device under an advisory lock — see ADR 0023 and
   `manchtools/power-manage-server#441`.
+
+## Update (2026-07-18, audit L11)
+
+The `NoopRevocationChecker` dev opt-out described above (Decision → "Fail-closed
+until loaded" and "One RevocationChecker") has been **removed**. It was the one
+path by which a no-CRL deployment ran fail-*open*. This strengthens — does not
+reverse — the fail-closed decision: the no-CRL path now uses a **bare nil**
+checker, which `RequirePeerClassNotRevoked` / `MTLSMiddleware` already treat as
+fail-closed (403). A control server with no Valkey/CRL therefore rejects every
+gateway call to its internal listener until a real list loads, and there is no
+longer any typed opt-out to disable revocation. See `internal/mtls/peer_class.go`
+(`RevocationChecker`) and `cmd/control/main.go` (internal-listener wiring).

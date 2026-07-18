@@ -28,9 +28,9 @@ type GatewayHandler struct {
 	store  *store.Store
 	logger *slog.Logger
 	// crl is the Valkey-backed revocation list. nil when no Valkey is
-	// configured (dev): GetCRL then returns an empty list (matching the
-	// internal listener's NoopRevocationChecker dev posture) and revocation
-	// returns Unavailable (it cannot take effect without a CRL).
+	// configured (dev): GetCRL then returns an empty list and revocation
+	// returns Unavailable (it cannot take effect without a CRL — and the
+	// internal listener fails closed on every gateway call in that state).
 	crl *crl.Store
 	// liveness reports which gateway_ids are actually live right now (Valkey
 	// registry heartbeat), so ListGateways reflects real liveness rather than

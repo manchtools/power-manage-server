@@ -146,8 +146,8 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 // MTLSMiddleware gates the gateway's AgentService listener. The revocation
 // checker is mtls.RevocationChecker (the gateway's *crl.Cache satisfies it); a
 // nil or not-yet-loaded checker fails CLOSED — see mtls.RevocationChecker and
-// the fail-closed block below. The only no-CRL path is an explicit
-// mtls.NoopRevocationChecker, logged at WARN by the caller.
+// the fail-closed block below. There is no permissive opt-out: without a loaded
+// CRL every call is rejected (the gateway refuses to boot without one).
 func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
@@ -205,9 +205,8 @@ func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger
 		// same leaf the peer-class check used, so it's non-nil here.
 		//
 		// A nil checker or one whose list has not loaded means we CANNOT prove
-		// this cert is unrevoked → reject, never admit. Running without real
-		// revocation data requires an explicit NoopRevocationChecker (Loaded()
-		// true), which the caller logs at WARN — a bare nil is never tolerated.
+		// this cert is unrevoked → reject, never admit. There is no opt-out from
+		// this gate — a deployment without a loaded CRL rejects every call here.
 		if revocation == nil || !revocation.Loaded() {
 			logger.Warn("mTLS rejected: certificate revocation unavailable (fail-closed)",
 				"device_id", deviceID,

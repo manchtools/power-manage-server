@@ -172,26 +172,14 @@ func RequirePeerClass(logger *slog.Logger, allowed ...PeerClass) func(http.Handl
 // import cycle.
 //
 // A nil checker, or one whose Loaded() is false, is treated as FAIL-CLOSED:
-// without a loaded list we cannot prove the cert is unrevoked, so we reject. The
-// only no-CRL path is an explicit NoopRevocationChecker, which the caller logs
-// at WARN — never a bare nil.
+// without a loaded list we cannot prove the cert is unrevoked, so we reject.
+// There is deliberately NO opt-out: a deployment with no CRL (e.g. a no-Valkey
+// control server) passes a nil checker and every gateway call fails closed at
+// the listener until a real CRL is loaded.
 type RevocationChecker interface {
 	IsRevoked(fingerprint string) bool
 	Loaded() bool
 }
-
-// NoopRevocationChecker is the explicit, typed dev-only opt-out from the
-// revocation gate: nothing revoked, always loaded. Use it ONLY where there is
-// genuinely no CRL (a no-Valkey dev control server) and log at WARN where wired.
-// It is deliberately distinct from a bare nil (which fails closed) so disabling
-// revocation is a visible, intentional choice in the code.
-type NoopRevocationChecker struct{}
-
-// IsRevoked always returns false.
-func (NoopRevocationChecker) IsRevoked(string) bool { return false }
-
-// Loaded always returns true.
-func (NoopRevocationChecker) Loaded() bool { return true }
 
 // fingerprintFromCert returns hex(sha256(cert.Raw)), matching
 // ca.FingerprintFromCert. Reimplemented here (rather than imported) because ca
@@ -214,8 +202,8 @@ func fingerprintFromCert(cert *x509.Certificate) string {
 // RequirePeerClass.
 //
 // Revocation is ADDITIVE: a wrong-class cert is still rejected first by the
-// peer-class check. A nil/unloaded checker fails closed (403) — pass an explicit
-// NoopRevocationChecker (logged at WARN) to run without a CRL.
+// peer-class check. A nil/unloaded checker fails closed (403): a deployment
+// without a CRL rejects every gateway call here until a real list is loaded.
 func RequirePeerClassNotRevoked(logger *slog.Logger, revocation RevocationChecker, allowed ...PeerClass) func(http.Handler) http.Handler {
 	peerClass := RequirePeerClass(logger, allowed...)
 	return func(next http.Handler) http.Handler {
