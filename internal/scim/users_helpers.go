@@ -36,46 +36,55 @@ func newULID() string {
 func ptr[T any](v T) *T { return &v }
 
 // syncUserFromSCIM syncs email, active status, profile, and identity link data from SCIM.
-// SCIM is treated as the source of truth — any differences are overwritten.
-func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityProvider, userID, email string, active *bool, name *SCIMName) {
+// SCIM is treated as the source of truth — any differences are overwritten. Fails
+// closed (audit L7): a read or append failure is returned so the caller answers
+// 500 and the IdP retries. The per-difference appends are idempotent (each is
+// gated on "changed"), so a retry converges without duplicating state.
+func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityProvider, userID, email string, active *bool, name *SCIMName) error {
 	user, err := h.store.Repos().User.Get(ctx, userID)
 	if err != nil {
 		h.logger.Error("failed to get user for SCIM sync", "user_id", userID, "error", err)
-		return
+		return err
 	}
 
 	// Sync email
 	if email != "" && email != user.Email {
-		h.appendEvent(ctx, store.Event{
+		if err := h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEmailChanged),
 			Data:       payloads.UserEmailChanged{Email: &email},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Sync active status (nil = not provided, default to true per SCIM RFC 7643)
 	isActive := active == nil || *active
 	if !isActive && !user.Disabled {
-		h.appendEvent(ctx, store.Event{
+		if err := h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserDisabled),
 			Data:       payloads.UserDisabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			return err
+		}
 	} else if isActive && user.Disabled {
-		h.appendEvent(ctx, store.Event{
+		if err := h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserEnabled),
 			Data:       payloads.UserEnabled{},
 			ActorType:  "scim",
 			ActorID:    provider.ID,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Sync profile fields (display_name, given_name, family_name)
@@ -87,7 +96,7 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 	// clears the profile ("" overwrite), while an omitted one preserves
 	// it. The old any-non-empty gate made an explicit clear impossible.
 	if name != nil {
-		h.appendEvent(ctx, store.Event{
+		if err := h.appendEvent(ctx, store.Event{
 			StreamType: "user",
 			StreamID:   userID,
 			EventType:  string(eventtypes.UserProfileUpdated),
@@ -101,26 +110,29 @@ func (h *Handler) syncUserFromSCIM(ctx context.Context, provider store.IdentityP
 			},
 			ActorType: "scim",
 			ActorID:   provider.ID,
-		})
+		}); err != nil {
+			return err
+		}
 	}
 
 	// Sync identity link (external_email + external_name)
-	h.syncIdentityLink(ctx, provider, userID, email, name)
+	return h.syncIdentityLink(ctx, provider, userID, email, name)
 }
 
 // syncIdentityLink updates the identity link's external_email and external_name
-// to reflect the latest data from the SCIM provider (source of truth).
-func (h *Handler) syncIdentityLink(ctx context.Context, provider store.IdentityProvider, userID, email string, name *SCIMName) {
+// to reflect the latest data from the SCIM provider (source of truth). Fails
+// closed (audit L7).
+func (h *Handler) syncIdentityLink(ctx context.Context, provider store.IdentityProvider, userID, email string, name *SCIMName) error {
 	link, err := h.store.Queries().GetIdentityLinkByProviderAndUser(ctx, db.GetIdentityLinkByProviderAndUserParams{
 		ProviderID: provider.ID,
 		UserID:     userID,
 	})
 	if err != nil {
 		h.logger.Error("failed to get identity link for SCIM sync", "user_id", userID, "provider_id", provider.ID, "error", err)
-		return
+		return err
 	}
 
-	h.appendEvent(ctx, store.Event{
+	return h.appendEvent(ctx, store.Event{
 		StreamType: "identity_provider",
 		StreamID:   link.ID,
 		EventType:  string(eventtypes.IdentityLinkLoginUpdated),

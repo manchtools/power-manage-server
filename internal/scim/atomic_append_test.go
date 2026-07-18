@@ -120,3 +120,94 @@ func TestReplaceUser_PartialFailureRollsBackEmail(t *testing.T) {
 	assert.Equal(t, before.Email, after.Email,
 		"email change must roll back when the profile update in the same PUT fails")
 }
+
+// Audit L7 — createUser is now atomic across its UserCreatedWithRoles +
+// IdentityLinked appends. Forcing the identity-link append to fail must leave
+// NO orphan user row: otherwise the IdP's next POST misses the externalID dedup
+// (no link projection) and, with auto-link off, mints a DUPLICATE user under a
+// fresh ULID. Pre-fix (sequential appends) the user row committed before the
+// link append failed.
+func TestCreateUser_IdentityLinkFailureLeavesNoOrphan(t *testing.T) {
+	env := setupSCIM(t)
+	ctx := context.Background()
+
+	countDEKs := func() int {
+		var n int
+		require.NoError(t, env.st.TestingPool().QueryRow(ctx, "SELECT count(*) FROM user_encryption_keys").Scan(&n))
+		return n
+	}
+
+	email := strings.ToLower("orphan-"+testutil.NewID()[:8]) + "@example.com"
+	body := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   email,
+		"externalId": "ext-" + testutil.NewID()[:8],
+		"active":     true,
+	}
+
+	deksBefore := countDEKs()
+
+	// Fail the identity-link append (2nd event in the create batch).
+	env.st.TestingSetInsertHook(func(streamType, eventType string) error {
+		if eventType == string(eventtypes.IdentityLinked) {
+			return errors.New("synthetic identity-link append failure")
+		}
+		return nil
+	})
+
+	w := env.request("POST", "/Users", body)
+	require.Equal(t, http.StatusInternalServerError, w.Code, "identity-link failure must surface as 500: %s", w.Body.String())
+
+	_, err := env.st.Repos().User.GetByEmail(ctx, email)
+	assert.True(t, store.IsNotFound(err),
+		"no orphan user may exist after a failed create — user and identity link are all-or-nothing")
+
+	// The DEK minted before the batch must not leak: it is shredded on rollback,
+	// so a persistent create failure can't accumulate a wrapped key per retry.
+	assert.Equal(t, deksBefore, countDEKs(),
+		"orphaned user DEK must be shredded when the create batch rolls back")
+
+	// A subsequent clean sync creates the user exactly once.
+	env.st.TestingSetInsertHook(nil)
+
+	w = env.request("POST", "/Users", body)
+	require.Equal(t, http.StatusCreated, w.Code, "clean sync must create the user: %s", w.Body.String())
+
+	created, err := env.st.Repos().User.GetByEmail(ctx, email)
+	require.NoError(t, err, "clean sync must create the user")
+	assert.Equal(t, email, created.Email)
+}
+
+// Audit L7 — a SCIM re-POST of an already-linked user syncs via syncUserFromSCIM,
+// whose appends previously went through the SWALLOWING appendEvent helper: an
+// append failure was logged and dropped, and the handler still returned 200 while
+// the projection silently diverged from what the IdP believed it provisioned. The
+// identity-link sync append must now fail the request closed so the IdP retries.
+func TestCreateUser_RepostSyncFailureFailsClosed(t *testing.T) {
+	env := setupSCIM(t)
+
+	email := strings.ToLower("resync-"+testutil.NewID()[:8]) + "@example.com"
+	body := map[string]any{
+		"schemas":    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
+		"userName":   email,
+		"externalId": "ext-" + testutil.NewID()[:8],
+		"active":     true,
+	}
+
+	// Clean create establishes the linked user.
+	w := env.request("POST", "/Users", body)
+	require.Equal(t, http.StatusCreated, w.Code, "%s", w.Body.String())
+
+	// Re-POST hits the idempotent externalID branch → syncUserFromSCIM →
+	// syncIdentityLink emits IdentityLinkLoginUpdated on every sync. Force it.
+	env.st.TestingSetInsertHook(func(streamType, eventType string) error {
+		if eventType == string(eventtypes.IdentityLinkLoginUpdated) {
+			return errors.New("synthetic identity-link-sync append failure")
+		}
+		return nil
+	})
+
+	w = env.request("POST", "/Users", body)
+	require.Equal(t, http.StatusInternalServerError, w.Code,
+		"a swallowed sync append must now fail the request closed, not return 200: %s", w.Body.String())
+}

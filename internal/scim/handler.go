@@ -10,12 +10,18 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// appendEvent appends an event and logs any error.
-// Use this for best-effort event appends where failure should be logged but not fatal.
-func (h *Handler) appendEvent(ctx context.Context, event store.Event) {
+// appendEvent appends an event, logs the event context on failure, and
+// returns the error so callers fail closed. SCIM must never report success
+// (200/201) on a swallowed append — the projection would silently diverge
+// from what the IdP believes it provisioned, and the IdP, having seen a 2xx,
+// never retries (audit L7). Callers propagate the error to an HTTP 500 so the
+// IdP retries and the projection converges.
+func (h *Handler) appendEvent(ctx context.Context, event store.Event) error {
 	if err := h.store.AppendEvent(ctx, event); err != nil {
 		h.logger.Error("failed to append event", "event_type", event.EventType, "stream_type", event.StreamType, "error", err)
+		return err
 	}
+	return nil
 }
 
 // contextKey is a private type for context keys in this package.

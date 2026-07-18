@@ -143,7 +143,10 @@ func (h *Handler) replaceUser(w http.ResponseWriter, r *http.Request) {
 	if effectiveEmail == "" {
 		effectiveEmail = existingUser.Email
 	}
-	h.syncIdentityLink(ctx, provider, userID, effectiveEmail, scimUser.Name)
+	if err := h.syncIdentityLink(ctx, provider, userID, effectiveEmail, scimUser.Name); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sync identity link")
+		return
+	}
 
 	// Read back updated user
 	user, err := h.store.Repos().User.Get(ctx, userID)
@@ -242,7 +245,10 @@ func (h *Handler) patchUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read user")
 		return
 	}
-	h.syncIdentityLink(ctx, provider, userID, patchedUser.Email, extractNameFromPatchOps(patch.Operations))
+	if err := h.syncIdentityLink(ctx, provider, userID, patchedUser.Email, extractNameFromPatchOps(patch.Operations)); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to sync identity link")
+		return
+	}
 
 	// Look up external ID
 	externalID := ""

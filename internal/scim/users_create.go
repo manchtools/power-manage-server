@@ -66,7 +66,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 			// (source of truth) and return existing resource. Using 200 instead
 			// of 409 makes POST idempotent for SCIM clients that re-POST on
 			// every sync cycle.
-			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
+			if err := h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to sync user")
+				return
+			}
 			user, err := h.store.Repos().User.Get(ctx, existing.ID)
 			if err != nil {
 				writeJSON(w, http.StatusOK, findExternalIDUserRowToSCIM(existing, baseURL))
@@ -90,7 +93,10 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		})
 		if err == nil {
 			// Already linked — sync data from SCIM (source of truth) and return
-			h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name)
+			if err := h.syncUserFromSCIM(ctx, provider, existing.ID, email, scimUser.Active, scimUser.Name); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to sync user")
+				return
+			}
 			user, readErr := h.store.Repos().User.Get(ctx, existing.ID)
 			if readErr != nil {
 				writeJSON(w, http.StatusOK, findUserRowToSCIM(existing, baseURL))
@@ -183,68 +189,65 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "user",
-		StreamID:   userID,
-		EventType:  string(eventtypes.UserCreatedWithRoles),
-		// Pointers always set (possibly to ""): SCIM asserts every
-		// field, mirroring the legacy always-present map keys.
-		Data: payloads.UserCreatedWithRoles{
-			Email:         &email,
-			DisplayName:   ptr(formatExternalName(scimUser.Name)),
-			GivenName:     ptr(safeNameField(scimUser.Name, "given")),
-			FamilyName:    ptr(safeNameField(scimUser.Name, "family")),
-			LinuxUsername: &linuxUsername,
-			LinuxUID:      &linuxUID,
-			RoleIDs:       roleIDs,
+	// Create the user as one atomic unit (audit L7): the UserCreatedWithRoles,
+	// IdentityLinked, and any auto-enable events either all commit or none do.
+	// A mid-sequence failure on independent appends left an orphan user with no
+	// identity link; the IdP's next POST then missed the externalID-keyed dedup
+	// and — with auto-link off — minted a *duplicate* user under a fresh ULID.
+	// Batching makes a failed create roll back fully, so the IdP's retry is
+	// clean. Array order = apply order (user first, then its link/settings).
+	events := []store.Event{
+		{
+			StreamType: "user",
+			StreamID:   userID,
+			EventType:  string(eventtypes.UserCreatedWithRoles),
+			// Pointers always set (possibly to ""): SCIM asserts every
+			// field, mirroring the legacy always-present map keys.
+			Data: payloads.UserCreatedWithRoles{
+				Email:         &email,
+				DisplayName:   ptr(formatExternalName(scimUser.Name)),
+				GivenName:     ptr(safeNameField(scimUser.Name, "given")),
+				FamilyName:    ptr(safeNameField(scimUser.Name, "family")),
+				LinuxUsername: &linuxUsername,
+				LinuxUID:      &linuxUID,
+				RoleIDs:       roleIDs,
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
 		},
-		ActorType: "scim",
-		ActorID:   provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to create user via SCIM", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to create user")
-		return
+		{
+			StreamType: "identity_provider",
+			StreamID:   newULID(),
+			EventType:  string(eventtypes.IdentityLinked),
+			Data: payloads.IdentityLinked{
+				UserID:        userID,
+				ProviderID:    provider.ID,
+				ExternalID:    externalID,
+				ExternalEmail: email,
+				ExternalName:  formatExternalName(scimUser.Name),
+			},
+			ActorType: "scim",
+			ActorID:   provider.ID,
+		},
 	}
 
-	// Create identity link
-	linkID := newULID()
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "identity_provider",
-		StreamID:   linkID,
-		EventType:  string(eventtypes.IdentityLinked),
-		Data: payloads.IdentityLinked{
-			UserID:        userID,
-			ProviderID:    provider.ID,
-			ExternalID:    externalID,
-			ExternalEmail: email,
-			ExternalName:  formatExternalName(scimUser.Name),
-		},
-		ActorType: "scim",
-		ActorID:   provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to create identity link via SCIM", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to link user")
-		return
-	}
-
-	// Auto-enable provisioning/SSH if global server settings are on
+	// Auto-enable provisioning/SSH if global server settings are on. These join
+	// the same atomic batch — a settings read failure only skips the auto-enable
+	// (not fatal: the user is still created), but a failed append rolls the whole
+	// create back so the IdP retries rather than leaving a half-provisioned user.
 	if settings, err := h.store.Queries().GetServerSettings(ctx); err == nil {
 		if settings.UserProvisioningEnabled {
-			if err := h.store.AppendEvent(ctx, store.Event{
+			events = append(events, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
 				Data:       payloads.UserProvisioningSettingsUpdated{UserProvisioningEnabled: ptr(true)},
 				ActorType:  "system",
 				ActorID:    "scim",
-			}); err != nil {
-				h.logger.Warn("failed to auto-enable provisioning for SCIM user", "user_id", userID, "error", err)
-			}
+			})
 		}
 		if settings.SshAccessForAll {
-			if err := h.store.AppendEvent(ctx, store.Event{
+			events = append(events, store.Event{
 				StreamType: "user",
 				StreamID:   userID,
 				EventType:  string(eventtypes.UserSshSettingsUpdated),
@@ -255,12 +258,25 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 				},
 				ActorType: "system",
 				ActorID:   "scim",
-			}); err != nil {
-				h.logger.Warn("failed to auto-enable SSH for SCIM user", "user_id", userID, "error", err)
-			}
+			})
 		}
 	} else {
 		h.logger.Warn("failed to check server settings for SCIM user defaults", "error", err)
+	}
+
+	if err := h.store.AppendEvents(ctx, events); err != nil {
+		h.logger.Error("failed to create user via SCIM", "error", err)
+		// The DEK minted above is now orphaned — its user rolled back with the
+		// batch. Best-effort shred it so a persistent create failure can't leak a
+		// wrapped key on every IdP retry (each retry mints a fresh userID). The
+		// key sealed nothing (the batch never committed), so this destroys an
+		// inert row. ponytail: bounded cleanup; the full fix is minting the DEK
+		// inside the event transaction, which needs the minter to join AppendEvents.
+		if _, serr := h.store.Repos().UserEncryptionKey.Shred(ctx, userID); serr != nil {
+			h.logger.Warn("failed to shred orphaned user DEK after SCIM create rollback", "user_id", userID, "error", serr)
+		}
+		writeError(w, http.StatusInternalServerError, "failed to create user")
+		return
 	}
 
 	// Read back created user
