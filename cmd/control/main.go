@@ -532,9 +532,11 @@ func main() {
 	}
 	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the
 	// CRL (to revoke the superseded fingerprint). The CA is always available; the
-	// CRL only when Valkey is configured — renewal still works without it, just
-	// skipping the best-effort superseded-cert revocation. The typed nil keeps
-	// main.go free of a crl import.
+	// CRL only when Valkey is configured. On a no-Valkey control the nil CRL is
+	// never consulted: RequirePeerClassNotRevoked below fails closed without a
+	// loaded CRL, so no gateway call — renewal included — reaches this handler
+	// (audit L11). The nil wiring only keeps the handler total; the typed nil
+	// keeps main.go free of a crl import.
 	if valkey != nil {
 		internalHandler.SetGatewayRenewal(certAuth, valkey.CRLStore)
 	} else {
