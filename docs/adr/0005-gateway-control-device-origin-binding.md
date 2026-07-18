@@ -56,11 +56,14 @@ lacks.
    InternalService handlers map the sentinels to connect codes (after `Validate`,
    validate-then-auth); the inbox worker maps them to `asynq.SkipRetry` drops
    that append no event.
-3. **Single-gateway bypass.** When no resolver is wired (a `nil` lookup), the
-   binding is **not** enforced — the documented exception for single-gateway /
-   non-HA deployments, where there is exactly one gateway and the binding is
-   moot. Control wires the resolver whenever the Valkey-backed routing registry
-   is available (i.e. wherever more than one gateway can connect).
+3. **No resolver = fail closed** *(rewritten 2026-07-18; the original point
+   documented an allow-on-nil "single-gateway bypass", superseded by spec 31
+   D6 — see Status)*. When no resolver is wired (a `nil` lookup), the binding
+   check **refuses** the device-origin operation. Control wires the resolver
+   whenever the Valkey-backed routing registry is available — which is every
+   deployment with a functioning gateway, since Valkey is mandatory for
+   gateways — so a nil lookup only occurs on a wiring bug and must never
+   silently disable the binding.
 4. **Cross-device ownership** (defense the binding does not cover — confining
    *which* resource a device may write, not *which* gateway speaks for it):
    output chunks must belong to the reporting device's execution; a LUKS

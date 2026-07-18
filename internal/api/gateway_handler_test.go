@@ -170,15 +170,24 @@ func TestEnrollGateway_HostnameMustMatchAuthoritative(t *testing.T) {
 }
 
 // TestNewGatewayAuthHandler_RejectsIPGatewayURL pins the config-side half of D1:
-// a CONTROL_GATEWAY_URL whose host is an IP literal cannot back a DNS-SAN mTLS
-// identity, so the handler refuses to construct (fail fast at boot rather than
-// issue certs agents cannot verify).
+// a CONTROL_GATEWAY_URL whose host is an IP literal or a non-canonical DNS name
+// (wildcard, underscore, trailing dot) cannot back a DNS-SAN mTLS identity, so
+// the handler refuses to construct (fail fast at boot rather than issue certs
+// agents cannot verify — or a wildcard SAN that would broaden the identity).
 func TestNewGatewayAuthHandler_RejectsIPGatewayURL(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
-	assert.Panics(t, func() {
-		api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, "https://10.0.0.1:8443", nil, slog.Default())
-	}, "an IP-literal gateway URL host must panic (no valid DNS SAN)")
+	for name, url := range map[string]string{
+		"IP literal":       "https://10.0.0.1:8443",
+		"wildcard host":    "https://*.example.com",
+		"underscore label": "https://gw_1.example.com",
+		"trailing dot":     "https://gw.example.com.",
+		"leading hyphen":   "https://-gw.example.com",
+	} {
+		assert.Panics(t, func() {
+			api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, url, nil, slog.Default())
+		}, "%s in the gateway URL host must panic (no valid DNS SAN)", name)
+	}
 }
 
 func TestEnrollGateway_WrongTokenRejectedWithProbeLog(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"regexp"
 	"time"
 
 	"connectrpc.com/connect"
@@ -48,11 +49,19 @@ type GatewayAuthHandler struct {
 	now      func() time.Time
 }
 
+// rfc1123Host matches a canonical DNS name: dot-separated alphanumeric labels
+// with interior hyphens, no wildcard, no underscore, no trailing dot. The same
+// shape the proto tag (hostname_rfc1123) enforces on the enrollee's claim — a
+// derived host outside it could never be matched by a valid claim anyway, but
+// catching it at boot beats every enrollment failing at runtime.
+var rfc1123Host = regexp.MustCompile(`^([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9])(\.([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]))*$`)
+
 // gatewayHostFromURL extracts the DNS host from CONTROL_GATEWAY_URL. It rejects
-// an empty host and an IP literal: the gateway cert carries a DNS SAN (agents
-// verify a DNS name at the mTLS handshake), and a DNS SAN holding an IP string
-// is never matched as an IP address — an IP gateway URL cannot back the mTLS
-// identity and must be caught at boot, not at first enrollment.
+// an empty host, an IP literal, and any non-canonical DNS name (wildcards,
+// underscores, trailing dots): the gateway cert carries a DNS SAN (agents
+// verify a DNS name at the mTLS handshake), and a SAN outside the canonical
+// shape either cannot back the mTLS identity (IP-in-DNS-SAN is never matched
+// as an IP) or would broaden it (a wildcard SAN signed by the fleet CA).
 func gatewayHostFromURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -65,6 +74,9 @@ func gatewayHostFromURL(raw string) (string, error) {
 	if net.ParseIP(host) != nil {
 		return "", fmt.Errorf("gateway URL host %q is an IP literal; a DNS name is required (the gateway cert's DNS SAN cannot be an IP)", host)
 	}
+	if len(host) > 253 || !rfc1123Host.MatchString(host) {
+		return "", fmt.Errorf("gateway URL host %q is not a canonical DNS name (no wildcards, underscores, or trailing dots)", host)
+	}
 	return host, nil
 }
 
@@ -73,7 +85,8 @@ func gatewayHostFromURL(raw string) (string, error) {
 // enrollment is effectively disabled (every attempt is rejected). gatewayURL is
 // CONTROL_GATEWAY_URL — the authoritative public gateway address; its host
 // becomes the DNS SAN of every issued gateway cert. Panics when gatewayURL has
-// no DNS host (an IP literal or empty), matching NewRegistrationHandler's
+// no canonical DNS host (empty, an IP literal, a wildcard, an underscore, or a
+// trailing dot), matching NewRegistrationHandler's
 // fail-fast: main.go validates CONTROL_GATEWAY_URL at boot, so reaching the
 // constructor with an unusable value is a configuration error that must surface
 // at startup, not silently issue certs agents cannot verify.

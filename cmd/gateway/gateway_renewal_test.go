@@ -73,8 +73,8 @@ func TestRunGatewayCertRenewal_HaltsOnSelfRevocation(t *testing.T) {
 
 	select {
 	case <-done:
-		require.GreaterOrEqual(t, int(calls.Load()), selfRevocationHaltThreshold,
-			"the loop must observe a PermissionDenied streak before halting")
+		require.Equal(t, int64(selfRevocationHaltThreshold), calls.Load(),
+			"the loop must halt at exactly the configured PermissionDenied threshold")
 	case <-time.After(5 * time.Second):
 		t.Fatal("renewal loop did not halt on repeated self-revocation (retried forever)")
 	}

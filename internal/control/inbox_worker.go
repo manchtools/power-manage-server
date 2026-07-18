@@ -82,6 +82,9 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.Actio
 // (registry backend unreachable, context cancellation) is NOT one of those
 // sentinels; wrapping it in SkipRetry would silently drop a legitimate
 // device-origin event on a Valkey blip. Return it unwrapped so Asynq retries.
+// The nil-resolver error (spec 31 D6) stays retryable DELIBERATELY: it is a
+// wiring bug, and retrying keeps the device-origin events queued until a
+// restart with fixed wiring — SkipRetry would discard legitimate events.
 func (w *InboxWorker) verifyDeviceGatewayBinding(ctx context.Context, deviceID, gatewayID string) error {
 	err := registry.CheckDeviceGatewayBinding(ctx, w.resolver, deviceID, gatewayID)
 	if err == nil {

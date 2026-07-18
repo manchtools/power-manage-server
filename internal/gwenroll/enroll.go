@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
@@ -133,9 +134,12 @@ func buildIdentity(key *ecdsa.PrivateKey, keyPEM, certPEM, caCertPEM []byte) (*I
 	if err := verifyGatewayCertProfile(cert); err != nil {
 		return nil, fmt.Errorf("issued gateway cert has the wrong profile: %w", err)
 	}
+	// The CN is the gateway's instance identity (ADR 0032) and control always
+	// assigns it a ULID; parse it so a mis-issued CN fails the boot loudly
+	// instead of entering the registry/binding flows as a malformed id.
 	gatewayID := cert.Subject.CommonName
-	if gatewayID == "" {
-		return nil, fmt.Errorf("issued gateway cert has an empty CN")
+	if _, err := ulid.Parse(gatewayID); err != nil {
+		return nil, fmt.Errorf("issued gateway cert CN %q is not a ULID gateway id: %w", gatewayID, err)
 	}
 	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {

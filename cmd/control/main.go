@@ -524,8 +524,10 @@ func main() {
 		// Confine every device-origin InternalService request to the gateway the
 		// device is actually live on (server#403). Wired whenever the
 		// Valkey-backed routing registry is available; without it the binding
-		// check fails closed (spec 31 D6) — consistent with the internal
-		// listener already rejecting every gateway for want of a CRL.
+		// check fails closed on its own (spec 31 D6). Independently, a
+		// no-Valkey control also has no loaded CRL, so RequirePeerClassNotRevoked
+		// below already rejects every gateway on this listener (audit L11) —
+		// two separate fail-closed layers, not one implying the other.
 		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
 	}
 	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the
