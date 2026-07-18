@@ -50,16 +50,16 @@ type InboxWorker struct {
 	logger     *slog.Logger
 	// resolver looks up which gateway a device is currently live on, so
 	// every device-origin handler can confine the task to that gateway
-	// (registry.CheckDeviceGatewayBinding). nil = single-gateway / non-HA
-	// deployment: the binding is documented-disabled there, exactly as on
-	// the InternalService side (api/gateway_binding.go).
+	// (registry.CheckDeviceGatewayBinding). Required: production always wires
+	// the Valkey-backed registry (the worker only runs with Valkey), and the
+	// binding check fails closed on nil (spec 31 D6).
 	resolver registry.DeviceGatewayLookup
 }
 
 // NewInboxWorker creates a new inbox worker. resolver is the
 // device→gateway routing lookup used to bind device-origin tasks to the
-// gateway the device is live on; pass nil in single-gateway deployments
-// where the binding is not enforced.
+// gateway the device is live on; it is required — a nil resolver makes every
+// device-origin task fail closed (spec 31 D6).
 func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger, resolver registry.DeviceGatewayLookup) *InboxWorker {
 	return &InboxWorker{
 		now:        time.Now,
@@ -72,15 +72,30 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.Actio
 	}
 }
 
-// verifyDeviceGatewayBinding maps the shared binding policy to an inbox drop:
-// a forged/mismatched binding is NOT retryable, so wrap with asynq.SkipRetry
-// and append NO event. Returns nil when the binding is OK (or no resolver).
+// verifyDeviceGatewayBinding maps the shared binding policy to an inbox drop.
+// Returns nil when the binding is OK.
+//
+// D5: only a PERMANENT binding verdict — one of the three sentinels (missing
+// gateway_id, device not live on any gateway, or a gateway mismatch) — is a
+// forged/unsatisfiable claim that a retry can never fix, so those are wrapped
+// with asynq.SkipRetry and the event is dropped. A transient lookup failure
+// (registry backend unreachable, context cancellation) is NOT one of those
+// sentinels; wrapping it in SkipRetry would silently drop a legitimate
+// device-origin event on a Valkey blip. Return it unwrapped so Asynq retries.
 func (w *InboxWorker) verifyDeviceGatewayBinding(ctx context.Context, deviceID, gatewayID string) error {
-	if err := registry.CheckDeviceGatewayBinding(ctx, w.resolver, deviceID, gatewayID); err != nil {
-		w.logger.Warn("inbox: rejecting device-origin task: gateway binding", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
+	err := registry.CheckDeviceGatewayBinding(ctx, w.resolver, deviceID, gatewayID)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, registry.ErrBindingGatewayMissing) ||
+		errors.Is(err, registry.ErrBindingDeviceNotLive) ||
+		errors.Is(err, registry.ErrBindingMismatch) {
+		w.logger.Warn("inbox: dropping device-origin task: gateway binding", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
 		return fmt.Errorf("%w: device→gateway binding: %v", asynq.SkipRetry, err)
 	}
-	return nil
+	// Transient — keep it retryable (no SkipRetry).
+	w.logger.Warn("inbox: retrying device-origin task: transient gateway-binding lookup failure", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
+	return fmt.Errorf("device→gateway binding lookup: %w", err)
 }
 
 // NewMux returns an Asynq ServeMux with handlers for the main

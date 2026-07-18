@@ -20,7 +20,7 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
-	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/mtls"
 )
 
 // Identity is a gateway's enrolled identity: the issued cert, the private key it
@@ -114,13 +114,26 @@ func Renew(ctx context.Context, internalClient pmv1connect.InternalServiceClient
 	return resp.Msg.NotAfter.AsTime(), nil
 }
 
-// buildIdentity assembles an Identity from the issued cert, validating that the
-// keypair loads and reading the gateway_id from the cert CN.
+// buildIdentity assembles an Identity from the issued cert, verifying the cert
+// profile, reading the gateway_id from the CN, and loading the keypair.
 func buildIdentity(key *ecdsa.PrivateKey, keyPEM, certPEM, caCertPEM []byte) (*Identity, error) {
-	gatewayID, err := ca.DeviceIDFromPEM(certPEM)
-	if err != nil {
-		return nil, fmt.Errorf("read gateway_id from issued cert: %w", err)
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, fmt.Errorf("issued gateway cert is not valid PEM")
 	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse issued gateway cert: %w", err)
+	}
+	// D7 (AC 6): reject a returned cert whose profile is not exactly what a
+	// gateway needs. Checking only a non-empty CN would let a mis-issued cert
+	// (wrong class, no DNS SAN, or missing an EKU) through here and fail agents'
+	// TLS later at connection time; verify the whole profile so a wrong cert is a
+	// loud boot failure instead.
+	if err := verifyGatewayCertProfile(cert); err != nil {
+		return nil, fmt.Errorf("issued gateway cert has the wrong profile: %w", err)
+	}
+	gatewayID := cert.Subject.CommonName
 	if gatewayID == "" {
 		return nil, fmt.Errorf("issued gateway cert has an empty CN")
 	}
@@ -136,4 +149,35 @@ func buildIdentity(key *ecdsa.PrivateKey, keyPEM, certPEM, caCertPEM []byte) (*I
 		key:       key,
 		TLSCert:   tlsCert,
 	}, nil
+}
+
+// verifyGatewayCertProfile asserts the CA returned exactly the cert a gateway
+// needs before the gateway commits to it: the gateway peer class (SPIFFE URI
+// SAN), at least one DNS SAN (the name agents verify at the mTLS handshake), and
+// BOTH the ServerAuth EKU (it serves agents) and the ClientAuth EKU (it dials
+// control's internal plane). Any deviation is a boot failure.
+func verifyGatewayCertProfile(cert *x509.Certificate) error {
+	class, err := mtls.PeerClassFromCert(cert)
+	if err != nil {
+		return fmt.Errorf("read peer class: %w", err)
+	}
+	if class != mtls.PeerClassGateway {
+		return fmt.Errorf("peer class is %q, want %q", class, mtls.PeerClassGateway)
+	}
+	if len(cert.DNSNames) == 0 {
+		return fmt.Errorf("no DNS SAN (agents could not verify the gateway server name)")
+	}
+	var hasServer, hasClient bool
+	for _, eku := range cert.ExtKeyUsage {
+		switch eku {
+		case x509.ExtKeyUsageServerAuth:
+			hasServer = true
+		case x509.ExtKeyUsageClientAuth:
+			hasClient = true
+		}
+	}
+	if !hasServer || !hasClient {
+		return fmt.Errorf("EKUs %v are missing ServerAuth and/or ClientAuth", cert.ExtKeyUsage)
+	}
+	return nil
 }

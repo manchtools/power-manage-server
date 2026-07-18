@@ -1,6 +1,12 @@
 # 0005 — Gateway↔control device-origin binding
 
-- Status: accepted
+- Status: accepted; point 3 (single-gateway `nil`-lookup bypass) superseded
+  2026-07-18 by spec 31 D6 — `CheckDeviceGatewayBinding` now fails CLOSED on a
+  nil resolver. The bypass had become vestigial: Valkey (and with it the
+  routing registry) is mandatory for any gateway to function, so no deployment
+  without a resolver has a legitimate device-origin caller, and a nil lookup
+  can only mean a wiring bug. See ADR 0032 for the instance-identity model
+  that replaced the request-body `gateway_id` authority.
 - Date: 2026-06-13
 - Related: server#403; the 2026-06-12 audit (SA-C2); WS2 of the
   SECURITY_HARDENING_WORKPLAN; sdk#94 (the `gateway_id` wire field);

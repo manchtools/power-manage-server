@@ -89,6 +89,7 @@ func newLpsHandler(t *testing.T) (h *api.InternalHandler, st *store.Store, enc *
 	enc = testutil.NewEncryptor(t)
 	signer, v := newDispatchTestCA(t)
 	h = api.NewInternalHandler(st, enc, slog.Default(), signer)
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	priv, pubRaw, err := api.EnsureLpsKeypair(context.Background(), st, enc)
 	require.NoError(t, err)
@@ -108,7 +109,7 @@ func TestProxySyncActions_AttachesSignedLpsPublicKey(t *testing.T) {
 	h, st, _, pub, verifier := newLpsHandler(t)
 	deviceID := testutil.CreateTestDevice(t, st, "lps-sync-host")
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -136,7 +137,7 @@ func TestProxySyncActions_AttachesSignedLpsPublicKey(t *testing.T) {
 // at-rest store.
 func TestLpsSealedTransport_EndToEnd(t *testing.T) {
 	h, st, enc, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 
 	deviceID := testutil.CreateTestDevice(t, st, "lps-e2e-host")
 	actionID := testutil.NewID()
@@ -172,7 +173,7 @@ func TestLpsSealedTransport_EndToEnd(t *testing.T) {
 // InvalidArgument and appends no lps_password event.
 func TestProxyStoreLpsPasswords_RejectsUnsealable(t *testing.T) {
 	h, st, _, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 	deviceID := testutil.CreateTestDevice(t, st, "lps-reject-host")
 	actionID := testutil.NewID()
 
@@ -216,7 +217,7 @@ func TestProxyStoreLpsPasswords_RejectsUnsealable(t *testing.T) {
 // unseals the whole batch before any append).
 func TestProxyStoreLpsPasswords_BatchIsAtomic(t *testing.T) {
 	h, st, _, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 	deviceID := testutil.CreateTestDevice(t, st, "lps-atomic-host")
 	actionID := testutil.NewID()
 
@@ -247,9 +248,10 @@ func TestProxyStoreLpsPasswords_BatchIsAtomic(t *testing.T) {
 func TestProxyStoreLpsPasswords_NilKeypairFailsClosed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 	deviceID := testutil.CreateTestDevice(t, st, "lps-nokey-host")
 
-	_, err := h.ProxyStoreLpsPasswords(context.Background(), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
+	_, err := h.ProxyStoreLpsPasswords(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId: deviceID,
 		ActionId: testutil.NewID(),
 		Rotations: []*pm.LpsPasswordRotation{{

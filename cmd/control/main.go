@@ -455,7 +455,7 @@ func main() {
 		api.NewValidationInterceptor(),
 	)
 	gatewayEnrollLimiter := auth.NewRateLimiter(5, 1*time.Minute) // 5/min/IP (spec 31 AC4)
-	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
+	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, cfg.GatewayURL, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
 	gwAuthPath, gwAuthHandler := pmv1connect.NewGatewayAuthServiceHandler(gatewayAuthHandler, gatewayAuthInterceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(gwAuthPath, gwAuthHandler)
 	if cfg.GatewayEnrollToken == "" {
@@ -523,8 +523,9 @@ func main() {
 	if valkey != nil && valkey.GatewayRegistry != nil {
 		// Confine every device-origin InternalService request to the gateway the
 		// device is actually live on (server#403). Wired whenever the
-		// Valkey-backed routing registry is available; a nil resolver (no
-		// registry) keeps the documented single-gateway bypass.
+		// Valkey-backed routing registry is available; without it the binding
+		// check fails closed (spec 31 D6) — consistent with the internal
+		// listener already rejecting every gateway for want of a CRL.
 		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
 	}
 	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the

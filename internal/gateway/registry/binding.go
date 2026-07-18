@@ -42,14 +42,17 @@ var (
 // InternalService handlers and the control:inbox worker.
 //
 // Fail-closed:
-//   - lookup nil → nil (allow). The single-gateway / non-HA exception: the
-//     routing registry is only wired where more than one gateway can connect.
+//   - lookup nil → error. There is no deployment without the registry (Valkey —
+//     and with it the registry — is mandatory for any gateway to function), so a
+//     nil resolver is a wiring bug, and a security check must fail closed on a
+//     wiring bug, never open (spec 31 D6 — the former allow-on-nil was the
+//     bypass an accidental unwiring would silently grant).
 //   - claimedGatewayID empty → ErrBindingGatewayMissing.
 //   - ErrNoGateway → ErrBindingDeviceNotLive (never allow when we can't tell).
 //   - actual ≠ claimed → ErrBindingMismatch.
 func CheckDeviceGatewayBinding(ctx context.Context, lookup DeviceGatewayLookup, deviceID, claimedGatewayID string) error {
 	if lookup == nil {
-		return nil // single-gateway / non-HA: binding not enforced (documented)
+		return errors.New("registry: no device→gateway resolver wired — refusing the device-origin operation (fail closed)")
 	}
 	if claimedGatewayID == "" {
 		return ErrBindingGatewayMissing

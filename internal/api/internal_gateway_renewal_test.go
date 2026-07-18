@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,11 +25,12 @@ import (
 // and the private key.
 func enrollGatewayWithKey(t *testing.T, st *store.Store, certAuth *ca.CA) (gatewayID string, certPEM []byte, key *ecdsa.PrivateKey) {
 	t.Helper()
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, slog.Default())
 	csr, key := genGatewayCSR(t)
 	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
-		Token: testEnrollToken,
-		Csr:   csr,
+		Token:    testEnrollToken,
+		Hostname: testGatewayHost,
+		Csr:      csr,
 	}))
 	require.NoError(t, err)
 	id, err := ca.DeviceIDFromPEM(resp.Msg.Certificate)
@@ -73,6 +75,12 @@ func TestRenewGatewayCertificate_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, oldFP, newFP)
 
+	// The renewed cert preserves the authoritative DNS SAN — the name agent TLS
+	// verification matches (D4: renewal must carry it forward, not drop it).
+	renewed := mustParseCert(t, resp.Msg.Certificate)
+	assert.Equal(t, []string{testGatewayHost}, renewed.DNSNames,
+		"renewal must preserve the enrolled DNS SAN")
+
 	// Old fingerprint revoked; projection advanced to the new one.
 	active, err := crlStore.LoadActive(t.Context())
 	require.NoError(t, err)
@@ -81,6 +89,37 @@ func TestRenewGatewayCertificate_Success(t *testing.T) {
 	row, err := st.Queries().GetGatewayFingerprint(t.Context(), gatewayID)
 	require.NoError(t, err)
 	assert.Equal(t, newFP, row.Fingerprint, "projection fingerprint must advance to the renewed cert")
+}
+
+// TestRenewGatewayCertificate_RejectsNonCanonicalDNSSAN pins spec 31 D4: a
+// current cert whose SAN set is not canonical — here, no DNS SAN at all (a
+// pre-D1 identity) — must be REJECTED, not warn-and-renewed into a cert agents
+// cannot verify. The gateway is expected to re-enroll (ephemeral-per-boot).
+func TestRenewGatewayCertificate_RejectsNonCanonicalDNSSAN(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+
+	// Issue a gateway cert with NO DNS SAN (empty hostname), reproducing a
+	// pre-DNS-SAN-fix identity that the enrollment path would no longer mint.
+	csr, key := genGatewayCSR(t)
+	gatewayID := ulid.Make().String()
+	issued, err := certAuth.IssueGatewayCertificateFromCSR(gatewayID, csr, "")
+	require.NoError(t, err)
+	peerCert := mustParseCert(t, issued.CertPEM)
+	require.Empty(t, peerCert.DNSNames, "precondition: the current cert has no DNS SAN")
+
+	ih := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	ih.SetGatewayRenewal(certAuth, testCRLStore(t))
+	ctx := mtls.ContextWithPeerCert(t.Context(), peerCert)
+
+	// Proof-of-possession would pass (same key), so a rejection here proves the
+	// D4 canonical-SAN gate fired, not an unrelated denial.
+	_, err = ih.RenewGatewayCertificate(ctx, connect.NewRequest(&pm.RenewGatewayCertificateRequest{
+		Csr: csrForGatewayKey(t, key),
+	}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
+		"a non-canonical DNS SAN must be rejected FailedPrecondition, not renewed")
 }
 
 func TestRenewGatewayCertificate_ProofOfPossessionFails(t *testing.T) {

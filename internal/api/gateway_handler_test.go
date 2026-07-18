@@ -31,6 +31,14 @@ import (
 
 const testEnrollToken = "test-gateway-enroll-token-value"
 
+// testGatewayURL is the CONTROL_GATEWAY_URL a test handler is built with;
+// testGatewayHost is its authoritative host — the DNS SAN the handler stamps
+// and the hostname an enroll request must declare (spec 31 D1).
+const (
+	testGatewayURL  = "https://gw1.example.com"
+	testGatewayHost = "gw1.example.com"
+)
+
 // genGatewayCSR builds a plain PKCS#10 CSR (no SAN) and returns the PEM plus the
 // key, so a renewal CSR can reuse the key for proof-of-possession.
 func genGatewayCSR(t *testing.T) ([]byte, *ecdsa.PrivateKey) {
@@ -55,11 +63,12 @@ func csrForGatewayKey(t *testing.T, key *ecdsa.PrivateKey) []byte {
 // and the issued cert fingerprint (from the projection).
 func enrollTestGateway(t *testing.T, st *store.Store, certAuth *ca.CA) (gatewayID, fingerprint string) {
 	t.Helper()
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, slog.Default())
 	csr, _ := genGatewayCSR(t)
 	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
-		Token: testEnrollToken,
-		Csr:   csr,
+		Token:    testEnrollToken,
+		Hostname: testGatewayHost,
+		Csr:      csr,
 	}))
 	require.NoError(t, err)
 	id, err := ca.DeviceIDFromPEM(resp.Msg.Certificate)
@@ -74,7 +83,7 @@ func enrollTestGateway(t *testing.T, st *store.Store, certAuth *ca.CA) (gatewayI
 func TestEnrollGateway_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, slog.Default())
 
 	csr, _ := genGatewayCSR(t)
 	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
@@ -105,12 +114,79 @@ func TestEnrollGateway_Success(t *testing.T) {
 	assert.Nil(t, row.RevokedAt, "a freshly enrolled gateway is not revoked")
 }
 
+// TestEnrollGateway_HostnameMustMatchAuthoritative pins spec 31 D1: the DNS SAN
+// on a gateway cert is control-authoritative, never the enrollee's claim. A
+// valid-token enroll whose declared hostname is anything but this deployment's
+// authoritative gateway host (host of CONTROL_GATEWAY_URL) is rejected — an
+// unlisted name, an IP literal, mixed case, or a trailing dot — and no gateway
+// is enrolled. The matching case is issued with exactly the authoritative host
+// as its sole DNS SAN, proving the server stamps its own name rather than
+// copying the request.
+func TestEnrollGateway_HostnameMustMatchAuthoritative(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, slog.Default())
+
+	// Every one of these is NOT the authoritative host "gw1.example.com".
+	for _, bad := range []string{
+		"evil.example.com", // unlisted name — the core attack
+		"10.0.0.1",         // IP literal
+		"GW1.example.com",  // mixed case (DNS is case-insensitive; we are not)
+		"gw1.example.com.", // trailing dot
+	} {
+		t.Run("rejected/"+bad, func(t *testing.T) {
+			csr, _ := genGatewayCSR(t)
+			_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+				Token:    testEnrollToken,
+				Hostname: bad,
+				Csr:      csr,
+			}))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+				"a hostname that is not the authoritative gateway host must be InvalidArgument")
+		})
+	}
+
+	// No gateway was enrolled by any rejected attempt.
+	list, err := st.Queries().ListGateways(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, list, "no gateway may be enrolled from a mismatched-hostname request")
+
+	// The matching hostname is issued — with the authoritative host as its ONLY
+	// DNS SAN.
+	csr, _ := genGatewayCSR(t)
+	resp, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
+		Token:    testEnrollToken,
+		Hostname: testGatewayHost,
+		Csr:      csr,
+	}))
+	require.NoError(t, err)
+	block, _ := pem.Decode(resp.Msg.Certificate)
+	require.NotNil(t, block)
+	parsed, err := x509.ParseCertificate(block.Bytes)
+	require.NoError(t, err)
+	assert.Equal(t, []string{testGatewayHost}, parsed.DNSNames,
+		"the issued cert's DNS SAN must be the control-authoritative host, verbatim")
+}
+
+// TestNewGatewayAuthHandler_RejectsIPGatewayURL pins the config-side half of D1:
+// a CONTROL_GATEWAY_URL whose host is an IP literal cannot back a DNS-SAN mTLS
+// identity, so the handler refuses to construct (fail fast at boot rather than
+// issue certs agents cannot verify).
+func TestNewGatewayAuthHandler_RejectsIPGatewayURL(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	certAuth := newTestCA(t)
+	assert.Panics(t, func() {
+		api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, "https://10.0.0.1:8443", nil, slog.Default())
+	}, "an IP-literal gateway URL host must panic (no valid DNS SAN)")
+}
+
 func TestEnrollGateway_WrongTokenRejectedWithProbeLog(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, logger)
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, logger)
 
 	csr, _ := genGatewayCSR(t)
 	_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
@@ -121,10 +197,11 @@ func TestEnrollGateway_WrongTokenRejectedWithProbeLog(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
-	// AC3 observability backstop: a WARN carrying the hostname + a token HASH
-	// prefix (never the raw token) so probing is alertable.
+	// AC3 observability backstop: a WARN carrying the hostname so probing is
+	// alertable — but NO token material, not even a hash prefix (D3): neither the
+	// raw token nor any digest of it may be logged.
 	logged := buf.String()
-	assert.Contains(t, logged, "token_hash_prefix")
+	assert.NotContains(t, logged, "token_hash_prefix", "no token digest may be logged (D3)")
 	assert.Contains(t, logged, "attacker-host")
 	assert.NotContains(t, logged, "wrong-token-guess", "the raw token must never be logged")
 
@@ -137,7 +214,7 @@ func TestEnrollGateway_WrongTokenRejectedWithProbeLog(t *testing.T) {
 func TestEnrollGateway_CSRWithSANRejected(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, nil, slog.Default())
 
 	// A CSR requesting the control peer class — must be refused so an enrolling
 	// gateway cannot mint a non-gateway identity (AC2).
@@ -150,8 +227,9 @@ func TestEnrollGateway_CSRWithSANRejected(t *testing.T) {
 	csr := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der})
 
 	_, err = h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
-		Token: testEnrollToken,
-		Csr:   csr,
+		Token:    testEnrollToken,
+		Hostname: testGatewayHost,
+		Csr:      csr,
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -161,21 +239,23 @@ func TestEnrollGateway_RateLimited(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := newTestCA(t)
 	limiter := auth.NewRateLimiter(5, time.Minute)
-	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, limiter, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, testEnrollToken, testGatewayURL, limiter, slog.Default())
 
 	csr, _ := genGatewayCSR(t)
 	// The first 5 attempts (same empty client-IP bucket) pass the limiter.
 	for i := 0; i < 5; i++ {
 		_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
-			Token: testEnrollToken,
-			Csr:   csr,
+			Token:    testEnrollToken,
+			Hostname: testGatewayHost,
+			Csr:      csr,
 		}))
 		require.NoError(t, err, "attempt %d should pass", i+1)
 	}
 	// The 6th is rejected ResourceExhausted (AC4).
 	_, err := h.EnrollGateway(t.Context(), connect.NewRequest(&pm.EnrollGatewayRequest{
-		Token: testEnrollToken,
-		Csr:   csr,
+		Token:    testEnrollToken,
+		Hostname: testGatewayHost,
+		Csr:      csr,
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
