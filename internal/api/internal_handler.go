@@ -55,9 +55,11 @@ type InternalHandler struct {
 
 	// deviceGatewayResolver resolves which gateway a device is currently live
 	// on, written under the agent's mTLS identity (the device→gateway routing
-	// registry). Set via SetDeviceGatewayResolver in HA/multi-gateway
-	// deployments. When nil (single-gateway, non-HA), the device-origin binding
-	// check is bypassed — the documented single-gateway exception (see ADR).
+	// registry). Set via SetDeviceGatewayResolver whenever Valkey is configured
+	// — i.e. in every deployment with a functioning gateway. When nil the
+	// device-origin binding check fails CLOSED (spec 31 D6): a control without
+	// Valkey has no legitimate InternalService caller to admit anyway (its
+	// internal listener already rejects every gateway for want of a CRL).
 	deviceGatewayResolver registry.DeviceGatewayLookup
 
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
@@ -93,7 +95,7 @@ func (h *InternalHandler) SetLpsKeypair(priv *ecdh.PrivateKey, signedPublicKey *
 // confined to the gateway the device is actually live on
 // (verifyDeviceGatewayBinding). VerifyDevice is exempt — it is the pre-attach
 // bootstrap and would otherwise deadlock the device's own connection. Called from
-// main.go in HA/multi-gateway deployments; left nil for single-gateway.
+// main.go whenever Valkey is configured; unset, the binding check fails closed.
 func (h *InternalHandler) SetDeviceGatewayResolver(r registry.DeviceGatewayLookup) {
 	h.deviceGatewayResolver = r
 }

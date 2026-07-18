@@ -58,7 +58,7 @@ func TestEnroll_EndToEnd(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := buildTestCA(t)
 	const token = "e2e-enroll-token"
-	h := api.NewGatewayAuthHandler(st, certAuth, token, nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, token, "https://gw1.example.com", nil, slog.Default())
 
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewGatewayAuthServiceHandler(h)
@@ -100,7 +100,7 @@ func TestEnroll_EndToEnd(t *testing.T) {
 func TestEnroll_WrongTokenErrors(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	certAuth := buildTestCA(t)
-	h := api.NewGatewayAuthHandler(st, certAuth, "correct-token", nil, slog.Default())
+	h := api.NewGatewayAuthHandler(st, certAuth, "correct-token", "https://gw1.example.com", nil, slog.Default())
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewGatewayAuthServiceHandler(h)
 	mux.Handle(path, handler)

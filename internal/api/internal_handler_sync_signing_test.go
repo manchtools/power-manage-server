@@ -1,7 +1,6 @@
 package api_test
 
 import (
-	"context"
 	"log/slog"
 	"testing"
 
@@ -48,6 +47,7 @@ func TestSyncActions_SignsDeviceBoundEnvelope(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	signer, verifier := newDispatchTestCA(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), signer)
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-sign-host")
@@ -56,7 +56,7 @@ func TestSyncActions_SignsDeviceBoundEnvelope(t *testing.T) {
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID,
 		int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -99,6 +99,7 @@ func TestSyncActions_BindsTargetDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	signer, verifier := newDispatchTestCA(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), signer)
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceA := testutil.CreateTestDevice(t, st, "sync-bind-A")
@@ -107,7 +108,7 @@ func TestSyncActions_BindsTargetDevice(t *testing.T) {
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceA,
 		int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceA,
 	}))
 	require.NoError(t, err)
@@ -139,6 +140,7 @@ func TestSyncActions_UninstallFoldsIntoSignedEnvelope(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	signer, verifier := newDispatchTestCA(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), signer)
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-uninstall-sign-host")
@@ -149,7 +151,7 @@ func TestSyncActions_UninstallFoldsIntoSignedEnvelope(t *testing.T) {
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID,
 		int(pm.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -174,6 +176,7 @@ func TestSyncActions_SignsGroupedMembers(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	signer, verifier := newDispatchTestCA(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), signer)
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-group-sign-host")
@@ -185,7 +188,7 @@ func TestSyncActions_SignsGroupedMembers(t *testing.T) {
 	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID,
 		int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)

@@ -66,6 +66,19 @@ func newTestCASignerVerifier(t *testing.T) (ca.ActionSigner, *verify.ActionVerif
 	return ca.NewActionSigner(c), verifier
 }
 
+// testLiveGateway is the gateway every device-origin payload in the
+// projection-focused tests claims; anyDeviceLive reports every device live on
+// it. Needed since spec 31 D6 removed the nil-resolver bypass — these tests
+// exercise projection logic, not the binding policy (which
+// TestInbox_RejectsCrossGatewayDeviceOrigin drives through the real registry).
+const testLiveGateway = "gw-test"
+
+type anyDeviceLive struct{}
+
+func (anyDeviceLive) LookupDeviceGateway(context.Context, string) (string, error) {
+	return testLiveGateway, nil
+}
+
 func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
 	t.Helper()
 	data, err := json.Marshal(payload)
@@ -75,13 +88,14 @@ func newTask(t *testing.T, typeName string, payload any) *asynq.Task {
 
 func TestHandleDeviceHeartbeat(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "heartbeat-host")
 
 	task := newTask(t, taskqueue.TypeDeviceHeartbeat, taskqueue.DeviceHeartbeatPayload{
 		DeviceID:     deviceID,
+		GatewayID:    testLiveGateway,
 		AgentVersion: "2.0.0",
 	})
 
@@ -96,7 +110,7 @@ func TestHandleDeviceHeartbeat(t *testing.T) {
 
 func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "deleted-heartbeat-host")
@@ -114,6 +128,7 @@ func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeDeviceHeartbeat, taskqueue.DeviceHeartbeatPayload{
 		DeviceID:     deviceID,
+		GatewayID:    testLiveGateway,
 		AgentVersion: "2.0.0",
 	})
 
@@ -124,13 +139,14 @@ func TestHandleDeviceHeartbeat_DeletedDevice(t *testing.T) {
 
 func TestHandleSecurityAlert(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "alert-host")
 
 	task := newTask(t, taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
 		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
 		AlertType: "tamper_detected",
 		Message:   "Agent binary modified",
 		Details:   map[string]string{"path": "/usr/bin/pm-agent"},
@@ -162,7 +178,7 @@ func TestHandleSecurityAlert(t *testing.T) {
 // with an orphan SecurityAlert event.
 func TestHandleSecurityAlert_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "deleted-alert-host")
@@ -178,6 +194,7 @@ func TestHandleSecurityAlert_DeletedDevice(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeSecurityAlert, taskqueue.SecurityAlertPayload{
 		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
 		AlertType: "tamper_detected",
 		Message:   "Agent binary modified",
 	})
@@ -198,13 +215,14 @@ func TestHandleSecurityAlert_DeletedDevice(t *testing.T) {
 
 func TestHandleInventoryUpdate(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "inventory-host")
 
 	task := newTask(t, taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
-		DeviceID: deviceID,
+		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
 		Tables: []taskqueue.InventoryTable{
 			{TableName: "packages", RowsJSON: []byte(`[{"name":"vim","version":"9.0"}]`)},
 		},
@@ -224,7 +242,7 @@ func TestHandleInventoryUpdate(t *testing.T) {
 // the guard the Upsert leaves orphan inventory behind the deletion.
 func TestHandleInventoryUpdate_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "deleted-inventory-host")
@@ -239,7 +257,8 @@ func TestHandleInventoryUpdate_DeletedDevice(t *testing.T) {
 	require.NoError(t, err)
 
 	task := newTask(t, taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
-		DeviceID: deviceID,
+		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
 		Tables: []taskqueue.InventoryTable{
 			{TableName: "packages", RowsJSON: []byte(`[{"name":"vim","version":"9.0"}]`)},
 		},
@@ -255,7 +274,7 @@ func TestHandleInventoryUpdate_DeletedDevice(t *testing.T) {
 
 func TestHandleExecutionResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -300,6 +319,7 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 
@@ -322,7 +342,7 @@ func TestHandleExecutionResult_Success(t *testing.T) {
 // (parity: the projection row carries the action_name and compliant flag).
 func TestHandleExecutionResult_ComplianceDetectionOutputIsTruncated(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -381,6 +401,7 @@ func TestHandleExecutionResult_ComplianceDetectionOutputIsTruncated(t *testing.T
 	require.NoError(t, err)
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 	require.NoError(t, mux.ProcessTask(context.Background(), task))
@@ -429,7 +450,7 @@ func TestHandleExecutionResult_ComplianceDetectionOutputIsTruncated(t *testing.T
 // execution by supplying its ID. The reporting device must own the execution.
 func TestHandleExecutionResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -467,6 +488,7 @@ func TestHandleExecutionResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	require.NoError(t, err)
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          attackerDevice,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 
@@ -484,7 +506,7 @@ func TestHandleExecutionResult_RejectsCrossDeviceSpoof(t *testing.T) {
 // osquery result by supplying its (non-secret) query_id.
 func TestHandleOSQueryResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	victimDevice := testutil.CreateTestDevice(t, st, "victim-osq")
@@ -498,10 +520,11 @@ func TestHandleOSQueryResult_RejectsCrossDeviceSpoof(t *testing.T) {
 
 	// The attacker device reports a forged result for the victim's query.
 	task := newTask(t, taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
-		DeviceID: attackerDevice,
-		QueryID:  queryID,
-		Success:  true,
-		RowsJSON: []byte(`[{"forged":"1"}]`),
+		DeviceID:  attackerDevice,
+		GatewayID: testLiveGateway,
+		QueryID:   queryID,
+		Success:   true,
+		RowsJSON:  []byte(`[{"forged":"1"}]`),
 	})
 	// Dropped (0 rows), not a retryable error.
 	require.NoError(t, mux.ProcessTask(context.Background(), task))
@@ -514,7 +537,7 @@ func TestHandleOSQueryResult_RejectsCrossDeviceSpoof(t *testing.T) {
 
 func TestHandleExecutionResult_Failed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -556,6 +579,7 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 
@@ -573,7 +597,7 @@ func TestHandleExecutionResult_Failed(t *testing.T) {
 // column — a distinct terminal state, not FAILED and not SUCCESS.
 func TestHandleExecutionResult_NotApplicable(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -611,6 +635,7 @@ func TestHandleExecutionResult_NotApplicable(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 
@@ -626,7 +651,7 @@ func TestHandleExecutionResult_NotApplicable(t *testing.T) {
 
 func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -646,6 +671,7 @@ func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
+		GatewayID:         testLiveGateway,
 		ActionResultProto: resultProto,
 	})
 
@@ -655,7 +681,7 @@ func TestHandleExecutionResult_CreatesExecutionIfNotExists(t *testing.T) {
 
 func TestHandleExecutionOutputChunk(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "chunk-host")
@@ -683,6 +709,7 @@ func TestHandleExecutionOutputChunk(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
 		DeviceID:    deviceID,
+		GatewayID:   testLiveGateway,
 		ExecutionID: executionID,
 		Stream:      "stdout",
 		Data:        "line 1 of output\n",
@@ -695,16 +722,17 @@ func TestHandleExecutionOutputChunk(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-host")
 	actionID := testutil.NewID()
 
 	task := newTask(t, taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID: deviceID,
-		ActionID: actionID,
-		Success:  true,
+		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
+		ActionID:  actionID,
+		Success:   true,
 	})
 
 	err := mux.ProcessTask(context.Background(), task)
@@ -713,17 +741,18 @@ func TestHandleRevokeLuksDeviceKeyResult_Success(t *testing.T) {
 
 func TestHandleRevokeLuksDeviceKeyResult_Failure(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "luks-fail-host")
 	actionID := testutil.NewID()
 
 	task := newTask(t, taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID: deviceID,
-		ActionID: actionID,
-		Success:  false,
-		Error:    "device busy",
+		DeviceID:  deviceID,
+		GatewayID: testLiveGateway,
+		ActionID:  actionID,
+		Success:   false,
+		Error:     "device busy",
 	})
 
 	err := mux.ProcessTask(context.Background(), task)
@@ -734,13 +763,14 @@ func TestHandleDeviceHello(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	// handleDeviceHello calls dispatchPendingActions which needs aqClient.
 	// Passing nil is safe here because there are no pending executions to dispatch.
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-host")
 
 	task := newTask(t, taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
 		DeviceID:     deviceID,
+		GatewayID:    testLiveGateway,
 		Hostname:     "hello-host-updated",
 		AgentVersion: "3.0.0",
 	})
@@ -756,7 +786,7 @@ func TestHandleDeviceHello(t *testing.T) {
 
 func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	deviceID := testutil.CreateTestDevice(t, st, "hello-deleted-host")
@@ -774,6 +804,7 @@ func TestHandleDeviceHello_DeletedDevice(t *testing.T) {
 
 	task := newTask(t, taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
 		DeviceID:     deviceID,
+		GatewayID:    testLiveGateway,
 		Hostname:     "hello-deleted-host",
 		AgentVersion: "1.0.0",
 	})
@@ -802,7 +833,7 @@ func TestDispatchPendingActions_ResignsFullEnvelope(t *testing.T) {
 	defer aqClient.Close()
 
 	signer, verifier := newTestCASignerVerifier(t)
-	worker := control.NewInboxWorker(st, aqClient, signer, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, aqClient, signer, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	ctx := context.Background()
@@ -848,6 +879,7 @@ func TestDispatchPendingActions_ResignsFullEnvelope(t *testing.T) {
 	// Trigger device hello — calls dispatchPendingActions internally.
 	task := newTask(t, taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
 		DeviceID:     deviceID,
+		GatewayID:    testLiveGateway,
 		Hostname:     "resign-host",
 		AgentVersion: "1.0.0",
 	})
@@ -1150,7 +1182,7 @@ func TestInbox_RejectsCrossGatewayDeviceOrigin(t *testing.T) {
 // from the gateway binding.)
 func TestHandleExecutionOutputChunk_RejectsCrossDeviceSpoof(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -1179,6 +1211,7 @@ func TestHandleExecutionOutputChunk_RejectsCrossDeviceSpoof(t *testing.T) {
 	// Attacker device sends a chunk for the victim's execution.
 	forged := newTask(t, taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
 		DeviceID:    attackerDevice,
+		GatewayID:   testLiveGateway,
 		ExecutionID: executionID,
 		Stream:      "stdout",
 		Data:        "FORGED",
@@ -1193,6 +1226,7 @@ func TestHandleExecutionOutputChunk_RejectsCrossDeviceSpoof(t *testing.T) {
 	// The owning (victim) device's chunk IS appended.
 	legit := newTask(t, taskqueue.TypeExecutionOutputChunk, taskqueue.ExecutionOutputChunkPayload{
 		DeviceID:    victimDevice,
+		GatewayID:   testLiveGateway,
 		ExecutionID: executionID,
 		Stream:      "stdout",
 		Data:        "real output\n",
@@ -1211,7 +1245,7 @@ func TestHandleExecutionOutputChunk_RejectsCrossDeviceSpoof(t *testing.T) {
 // device that actually has an outstanding request gets its terminal event.
 func TestHandleRevokeLuksDeviceKeyResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
@@ -1238,9 +1272,10 @@ func TestHandleRevokeLuksDeviceKeyResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	// Attacker reports a result for the victim's action from its own device —
 	// no outstanding request for (attackerDevice, victimAction).
 	forged := newTask(t, taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID: attackerDevice,
-		ActionID: victimAction,
-		Success:  true,
+		DeviceID:  attackerDevice,
+		GatewayID: testLiveGateway,
+		ActionID:  victimAction,
+		Success:   true,
 	})
 	require.NoError(t, mux.ProcessTask(context.Background(), forged))
 
@@ -1267,9 +1302,10 @@ func TestHandleRevokeLuksDeviceKeyResult_RejectsCrossDeviceSpoof(t *testing.T) {
 	// The victim reporting its OWN outstanding revocation lands the terminal
 	// event on the SAME stream the request minted.
 	legit := newTask(t, taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID: victimDevice,
-		ActionID: victimAction,
-		Success:  true,
+		DeviceID:  victimDevice,
+		GatewayID: testLiveGateway,
+		ActionID:  victimAction,
+		Success:   true,
 	})
 	require.NoError(t, mux.ProcessTask(context.Background(), legit))
 
@@ -1298,7 +1334,7 @@ func TestHandleRevokeLuksDeviceKeyResult_RejectsCrossDeviceSpoof(t *testing.T) {
 //   - a correctly-owned chunk is appended.
 func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewTerminalAuditMux()
 	ctx := context.Background()
 
@@ -1324,6 +1360,7 @@ func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 	forged := newTask(t, taskqueue.TypeTerminalAuditChunk, taskqueue.TerminalAuditChunkPayload{
 		SessionID: sessionV,
 		DeviceID:  attackerDevice,
+		GatewayID: testLiveGateway,
 		UserID:    attackerUser,
 		Data:      []byte("FORGED KEYSTROKES"),
 		Sequence:  1,
@@ -1342,6 +1379,7 @@ func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 	orphan := newTask(t, taskqueue.TypeTerminalAuditChunk, taskqueue.TerminalAuditChunkPayload{
 		SessionID: unknownSession,
 		DeviceID:  attackerDevice,
+		GatewayID: testLiveGateway,
 		UserID:    attackerUser,
 		Data:      []byte("ORPHAN"),
 		Sequence:  1,
@@ -1354,6 +1392,7 @@ func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 	legit := newTask(t, taskqueue.TypeTerminalAuditChunk, taskqueue.TerminalAuditChunkPayload{
 		SessionID: sessionV,
 		DeviceID:  victimDevice,
+		GatewayID: testLiveGateway,
 		UserID:    victimUser,
 		Data:      []byte("ls -la\n"),
 		Sequence:  1,
@@ -1375,7 +1414,7 @@ func TestHandleTerminalAuditChunk_RejectsUnownedSession(t *testing.T) {
 // agent rolls it back.
 func TestHandleExecutionResult_AgentScheduled_RequiresAssignment(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), nil)
+	worker := control.NewInboxWorker(st, nil, nil, nil, slog.Default(), anyDeviceLive{})
 	mux := worker.NewMux()
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 
@@ -1399,6 +1438,7 @@ func TestHandleExecutionResult_AgentScheduled_RequiresAssignment(t *testing.T) {
 		require.NoError(t, err)
 		task := newTask(t, taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 			DeviceID:          device,
+			GatewayID:         testLiveGateway,
 			ActionResultProto: resultProto,
 		})
 		return mux.ProcessTask(context.Background(), task)

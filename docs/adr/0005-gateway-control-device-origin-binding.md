@@ -1,6 +1,12 @@
 # 0005 — Gateway↔control device-origin binding
 
-- Status: accepted
+- Status: accepted; point 3 (single-gateway `nil`-lookup bypass) superseded
+  2026-07-18 by spec 31 D6 — `CheckDeviceGatewayBinding` now fails CLOSED on a
+  nil resolver. The bypass had become vestigial: Valkey (and with it the
+  routing registry) is mandatory for any gateway to function, so no deployment
+  without a resolver has a legitimate device-origin caller, and a nil lookup
+  can only mean a wiring bug. See ADR 0032 for the instance-identity model
+  that replaced the request-body `gateway_id` authority.
 - Date: 2026-06-13
 - Related: server#403; the 2026-06-12 audit (SA-C2); WS2 of the
   SECURITY_HARDENING_WORKPLAN; sdk#94 (the `gateway_id` wire field);
@@ -50,11 +56,14 @@ lacks.
    InternalService handlers map the sentinels to connect codes (after `Validate`,
    validate-then-auth); the inbox worker maps them to `asynq.SkipRetry` drops
    that append no event.
-3. **Single-gateway bypass.** When no resolver is wired (a `nil` lookup), the
-   binding is **not** enforced — the documented exception for single-gateway /
-   non-HA deployments, where there is exactly one gateway and the binding is
-   moot. Control wires the resolver whenever the Valkey-backed routing registry
-   is available (i.e. wherever more than one gateway can connect).
+3. **No resolver = fail closed** *(rewritten 2026-07-18; the original point
+   documented an allow-on-nil "single-gateway bypass", superseded by spec 31
+   D6 — see Status)*. When no resolver is wired (a `nil` lookup), the binding
+   check **refuses** the device-origin operation. Control wires the resolver
+   whenever the Valkey-backed routing registry is available — which is every
+   deployment with a functioning gateway, since Valkey is mandatory for
+   gateways — so a nil lookup only occurs on a wiring bug and must never
+   silently disable the binding.
 4. **Cross-device ownership** (defense the binding does not cover — confining
    *which* resource a device may write, not *which* gateway speaks for it):
    output chunks must belong to the reporting device's execution; a LUKS

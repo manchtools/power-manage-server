@@ -34,6 +34,19 @@ func gwCtx(cn string) context.Context {
 	return mtls.ContextWithPeerCert(context.Background(), &x509.Certificate{Subject: pkix.Name{CommonName: cn}})
 }
 
+// gwTestCN is the gateway CN tests use when the test's subject is NOT the
+// binding policy itself; allLiveResolver pairs with it, reporting every device
+// live on that gateway. Needed since spec 31 D6 removed the nil-resolver
+// bypass: proxy/projection tests must now wire a resolver like production
+// always does (the binding-policy tests below drive the real registry instead).
+const gwTestCN = "gw-test"
+
+type allLiveResolver struct{}
+
+func (allLiveResolver) LookupDeviceGateway(context.Context, string) (string, error) {
+	return gwTestCN, nil
+}
+
 // wiredHandler builds a real InternalHandler with a fake device→gateway
 // registry attached as the resolver, and binds deviceID to gatewayID in it.
 func wiredHandler(t *testing.T, st *store.Store, deviceID, gatewayID string) (*api.InternalHandler, *registry.Registry) {
@@ -357,18 +370,21 @@ func TestProxyStoreLuksKey_NoEventOnGatewayMismatch(t *testing.T) {
 		"a forged-gateway store must NOT append a device-attributed LuksKeyRotated event")
 }
 
-// TestInternalHandler_NilResolverBypass pins the documented single-gateway
-// exception: with no resolver wired, the binding is not enforced (gateway_id is
-// ignored) so non-HA deployments keep working.
-func TestInternalHandler_NilResolverBypass(t *testing.T) {
+// TestInternalHandler_NilResolver_FailsClosed pins spec 31 D6: with no
+// resolver wired — a wiring bug, since production always wires the registry
+// (Valkey is mandatory for any gateway) — every device-origin credential op
+// must fail CLOSED, not silently skip the binding. The former allow-on-nil
+// "single-gateway bypass" is exactly what an accidental unwiring would have
+// granted an attacker.
+func TestInternalHandler_NilResolver_FailsClosed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
-	device := testutil.CreateTestDevice(t, st, "single-gw-host")
+	device := testutil.CreateTestDevice(t, st, "nil-resolver-host")
 	// No SetDeviceGatewayResolver — resolver stays nil.
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
-	resp, err := h.VerifyDevice(context.Background(), connect.NewRequest(&pm.VerifyDeviceRequest{
-		DeviceId: device, GatewayId: "anything-or-empty",
+	_, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
+		DeviceId: device,
 	}))
-	require.NoError(t, err, "with no resolver wired, the binding check is bypassed (single-gateway)")
-	assert.NotNil(t, resp)
+	require.Error(t, err, "a nil resolver must fail the device-origin op closed, never bypass the binding")
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }

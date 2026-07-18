@@ -30,7 +30,7 @@ import (
 // decrypts back to the original under the at-rest AAD.
 func TestProxyStoreLuksKey_SealedRoundTrip(t *testing.T) {
 	h, st, enc, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 	deviceID := testutil.CreateTestDevice(t, st, "luks-seal-host")
 	actionID := testutil.NewID()
 	const passphrase = "disk-Passphrase-0riginal-42"
@@ -62,7 +62,7 @@ func TestProxyStoreLuksKey_SealedRoundTrip(t *testing.T) {
 // luks_key event is appended.
 func TestProxyStoreLuksKey_RejectsUnsealable(t *testing.T) {
 	h, st, _, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 	deviceID := testutil.CreateTestDevice(t, st, "luks-reject-host")
 	otherDevice := testutil.CreateTestDevice(t, st, "luks-other-host")
 	actionID := testutil.NewID()
@@ -116,7 +116,7 @@ func TestProxyStoreLuksKey_RejectsUnsealable(t *testing.T) {
 // "luks") — must not open in the LUKS store path.
 func TestProxyStoreLuksKey_RejectsCrossDomainBlob(t *testing.T) {
 	h, st, _, pub, _ := newLpsHandler(t)
-	ctx := context.Background()
+	ctx := gwCtx(gwTestCN)
 	deviceID := testutil.CreateTestDevice(t, st, "luks-xdomain-host")
 	actionID := testutil.NewID()
 
@@ -144,9 +144,10 @@ func TestProxyStoreLuksKey_RejectsCrossDomainBlob(t *testing.T) {
 func TestProxyStoreLuksKey_NilKeypairFailsClosed(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 	deviceID := testutil.CreateTestDevice(t, st, "luks-nokey-host")
 
-	_, err := h.ProxyStoreLuksKey(context.Background(), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
+	_, err := h.ProxyStoreLuksKey(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
 		DeviceId:         deviceID,
 		ActionId:         testutil.NewID(),
 		DevicePath:       "/dev/sda2",

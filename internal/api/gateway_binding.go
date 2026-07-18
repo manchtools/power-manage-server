@@ -25,7 +25,7 @@ func (h *InternalHandler) verifyDeviceGatewayBinding(ctx context.Context, device
 	// so a per-gateway cert's CN is available here; a request-body gateway_id that
 	// disagrees with the cert is therefore ignored and cannot escalate. Empty when
 	// no per-gateway cert is present — CheckDeviceGatewayBinding fails closed
-	// (ErrBindingGatewayMissing) whenever a resolver is wired.
+	// (ErrBindingGatewayMissing).
 	claimedGatewayID := ""
 	if peerCert, ok := mtls.PeerCertFromContext(ctx); ok {
 		claimedGatewayID = peerCert.Subject.CommonName

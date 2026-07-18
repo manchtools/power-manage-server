@@ -74,16 +74,20 @@ func (h *InternalHandler) RenewGatewayCertificate(ctx context.Context, req *conn
 
 	// Preserve the gateway's DNS SAN (hostname) across renewal — it is what the
 	// agent's standard TLS verification matches. The current cert carries it
-	// (stamped at enrollment); re-stamp the same name. A current cert with NO
-	// DNS SAN predates the DNS-SAN fix; the renewed cert would be unverifiable by
-	// agents, so warn — the operator should re-enroll (which is a restart away,
-	// gateway identity being ephemeral-per-boot) rather than renew.
-	var hostname string
-	if len(peerCert.DNSNames) > 0 {
-		hostname = peerCert.DNSNames[0]
-	} else {
-		h.logger.Warn("gateway renewal: current cert has no DNS SAN; the renewed cert will be unverifiable by agents — re-enroll instead", "gateway_id", gatewayID)
+	// (stamped authoritatively at enrollment, D1); re-stamp the same name.
+	//
+	// D4: reject instead of warn-and-issue when the current cert's SAN set is not
+	// canonical — no DNS SAN (predates the DNS-SAN fix), more than one DNS SAN, or
+	// any IP SAN. Any of these renews into a cert agents cannot verify (or one
+	// carrying a name the enrollment path would never have stamped), so fail closed
+	// and let the operator re-enroll — a restart away, gateway identity being
+	// ephemeral-per-boot — rather than perpetuate an unverifiable identity.
+	if len(peerCert.DNSNames) != 1 || len(peerCert.IPAddresses) > 0 {
+		h.logger.Warn("gateway renewal denied: current cert has no canonical DNS SAN — re-enroll instead",
+			"gateway_id", gatewayID, "dns_sans", peerCert.DNSNames, "ip_sans", len(peerCert.IPAddresses))
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeFailedPrecondition, "gateway certificate has no canonical DNS SAN; re-enroll")
 	}
+	hostname := peerCert.DNSNames[0]
 	newCert, err := h.gatewayCA.IssueGatewayCertificateFromCSR(gatewayID, req.Msg.Csr, hostname)
 	if err != nil {
 		h.logger.Warn("gateway renewal: CSR rejected", "gateway_id", gatewayID, "error", err)

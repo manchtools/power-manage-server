@@ -108,7 +108,7 @@ func TestProxySyncActions_EmptyDeviceID(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
-	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	_, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: "",
 	}))
 	require.Error(t, err)
@@ -118,8 +118,9 @@ func TestProxySyncActions_EmptyDeviceID(t *testing.T) {
 func TestProxySyncActions_DeviceNotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
-	_, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	_, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: testutil.NewID(),
 	}))
 	require.Error(t, err)
@@ -129,10 +130,11 @@ func TestProxySyncActions_DeviceNotFound(t *testing.T) {
 func TestProxySyncActions_NoAssignments(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	deviceID := testutil.CreateTestDevice(t, st, "sync-host")
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -142,6 +144,7 @@ func TestProxySyncActions_NoAssignments(t *testing.T) {
 func TestProxySyncActions_WithAssignment(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-assigned-host")
@@ -150,7 +153,7 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 	// Assign action directly to device
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -161,6 +164,7 @@ func TestProxySyncActions_WithAssignment(t *testing.T) {
 func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-uninstall-host")
@@ -168,7 +172,7 @@ func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, uninstallAssignmentMode)
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -182,6 +186,7 @@ func TestProxySyncActions_UninstallAssignmentForcesAbsent(t *testing.T) {
 func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-set-host")
@@ -193,7 +198,7 @@ func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
 	testutil.AddActionToTestSet(t, st, adminID, setID, a2, 1)
 	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID, int(pm.AssignmentMode_ASSIGNMENT_MODE_REQUIRED))
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -212,6 +217,7 @@ func TestProxySyncActions_ActionSetAssignmentEmitsGroup(t *testing.T) {
 func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
 	adminID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
 	deviceID := testutil.CreateTestDevice(t, st, "sync-set-uninstall-host")
@@ -220,7 +226,7 @@ func TestProxySyncActions_UninstallActionSetForcesAbsent(t *testing.T) {
 	testutil.AddActionToTestSet(t, st, adminID, setID, a1, 0)
 	testutil.CreateTestAssignment(t, st, adminID, "action_set", setID, "device", deviceID, uninstallAssignmentMode)
 
-	resp, err := h.ProxySyncActions(context.Background(), connect.NewRequest(&pm.InternalSyncActionsRequest{
+	resp, err := h.ProxySyncActions(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalSyncActionsRequest{
 		DeviceId: deviceID,
 	}))
 	require.NoError(t, err)
@@ -235,7 +241,7 @@ func TestProxyStoreLuksKey_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
-	_, err := h.ProxyStoreLuksKey(context.Background(), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
+	_, err := h.ProxyStoreLuksKey(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalStoreLuksKeyRequest{
 		DeviceId: "",
 		ActionId: "",
 	}))
@@ -247,7 +253,7 @@ func TestProxyValidateLuksToken_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
-	_, err := h.ProxyValidateLuksToken(context.Background(), connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
+	_, err := h.ProxyValidateLuksToken(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalValidateLuksTokenRequest{
 		DeviceId: "",
 		Token:    "",
 	}))
@@ -258,8 +264,9 @@ func TestProxyValidateLuksToken_MissingFields(t *testing.T) {
 func TestProxyGetLuksKey_NotFound(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
+	h.SetDeviceGatewayResolver(allLiveResolver{})
 
-	_, err := h.ProxyGetLuksKey(context.Background(), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
+	_, err := h.ProxyGetLuksKey(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalGetLuksKeyRequest{
 		DeviceId: testutil.NewID(),
 		ActionId: testutil.NewID(),
 	}))
@@ -278,7 +285,7 @@ func TestProxyStoreLpsPasswords(t *testing.T) {
 	sealed, err := sdkcrypto.SealLpsPassword(pub, "new-pass-123", deviceID, actionID, "admin")
 	require.NoError(t, err)
 
-	resp, err := h.ProxyStoreLpsPasswords(context.Background(), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
+	resp, err := h.ProxyStoreLpsPasswords(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId: deviceID,
 		ActionId: actionID,
 		Rotations: []*pm.LpsPasswordRotation{
@@ -298,7 +305,7 @@ func TestProxyStoreLpsPasswords_MissingFields(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	h := api.NewInternalHandler(st, testutil.NewEncryptor(t), slog.Default(), api.NoOpSigner{})
 
-	_, err := h.ProxyStoreLpsPasswords(context.Background(), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
+	_, err := h.ProxyStoreLpsPasswords(gwCtx(gwTestCN), connect.NewRequest(&pm.InternalStoreLpsPasswordsRequest{
 		DeviceId: "",
 		ActionId: "",
 	}))

@@ -12,7 +12,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/hibiken/asynq v0.26.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/manchtools/power-manage-sdk v0.5.4-0.20260717205410-7a6ce34c9fcc
+	github.com/manchtools/power-manage-sdk v0.5.4-0.20260718144224-419f05557365
 	github.com/oklog/ulid/v2 v2.1.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.26.0

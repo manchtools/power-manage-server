@@ -455,7 +455,7 @@ func main() {
 		api.NewValidationInterceptor(),
 	)
 	gatewayEnrollLimiter := auth.NewRateLimiter(5, 1*time.Minute) // 5/min/IP (spec 31 AC4)
-	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
+	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, cfg.GatewayURL, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
 	gwAuthPath, gwAuthHandler := pmv1connect.NewGatewayAuthServiceHandler(gatewayAuthHandler, gatewayAuthInterceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(gwAuthPath, gwAuthHandler)
 	if cfg.GatewayEnrollToken == "" {
@@ -523,15 +523,20 @@ func main() {
 	if valkey != nil && valkey.GatewayRegistry != nil {
 		// Confine every device-origin InternalService request to the gateway the
 		// device is actually live on (server#403). Wired whenever the
-		// Valkey-backed routing registry is available; a nil resolver (no
-		// registry) keeps the documented single-gateway bypass.
+		// Valkey-backed routing registry is available; without it the binding
+		// check fails closed on its own (spec 31 D6). Independently, a
+		// no-Valkey control also has no loaded CRL, so RequirePeerClassNotRevoked
+		// below already rejects every gateway on this listener (audit L11) —
+		// two separate fail-closed layers, not one implying the other.
 		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
 	}
 	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the
 	// CRL (to revoke the superseded fingerprint). The CA is always available; the
-	// CRL only when Valkey is configured — renewal still works without it, just
-	// skipping the best-effort superseded-cert revocation. The typed nil keeps
-	// main.go free of a crl import.
+	// CRL only when Valkey is configured. On a no-Valkey control the nil CRL is
+	// never consulted: RequirePeerClassNotRevoked below fails closed without a
+	// loaded CRL, so no gateway call — renewal included — reaches this handler
+	// (audit L11). The nil wiring only keeps the handler total; the typed nil
+	// keeps main.go free of a crl import.
 	if valkey != nil {
 		internalHandler.SetGatewayRenewal(certAuth, valkey.CRLStore)
 	} else {
