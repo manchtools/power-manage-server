@@ -98,6 +98,50 @@ func (m *SystemActionManager) SyncAllUsersSystemActions(ctx context.Context) err
 		m.logger.Error("failed to reconcile scoped TerminalAdmin actions during sync sweep", "error", err)
 	}
 
+	// Spec 19 AC 36: tear down any erased user whose account teardown was
+	// dropped (queue down at delete time), so the OS account is removed from
+	// devices instead of persisting. Embedded here, like the TerminalAdmin
+	// reconciles, so it rides the same periodic cadence + best-effort shape.
+	if err := m.ReconcileErasedUserTeardown(ctx); err != nil {
+		m.logger.Error("failed to reconcile erased-user teardown during sync sweep", "error", err)
+	}
+
+	return nil
+}
+
+// ReconcileErasedUserTeardown re-runs account teardown for erased (is_deleted)
+// users whose system USER action is still live and PRESENT — the incomplete
+// teardown spec 19 AC 36's doctor check reports. DeleteUser's teardown is
+// best-effort (logged, never fails the delete so erasure always completes); if
+// it was dropped, this sweep converges the dropped case to the succeeded case:
+// the same CleanupDeletedUserActions the delete handler runs, reconstructed from
+// the (redacted) projection — only the user id and the system-action ids are
+// needed, none of which is PII, so this works after the DEK shred.
+//
+// Best-effort per user (one failure does not abort the sweep) and idempotent: a
+// torn-down action drops out of the next scan. Runs on every replica like the
+// TerminalAdmin reconciles; a duplicate ActionDeleted/UserSystemActionLinked is
+// a harmless no-op / version-conflict, not a correctness problem.
+func (m *SystemActionManager) ReconcileErasedUserTeardown(ctx context.Context) error {
+	orphans, err := m.store.ErasedUsersStillProvisioned(ctx)
+	if err != nil {
+		return fmt.Errorf("list erased users still provisioned: %w", err)
+	}
+	for _, o := range orphans {
+		// CleanupDeletedUserActions reads only these fields — no PII.
+		user := store.User{
+			ID:                 o.UserID,
+			SystemUserActionID: o.SystemUserActionID,
+			SystemSshActionID:  o.SystemSshActionID,
+			SystemTtyActionID:  o.SystemTtyActionID,
+		}
+		if err := m.CleanupDeletedUserActions(ctx, user); err != nil {
+			m.logger.Error("failed to reconcile teardown for erased user", "user_id", o.UserID, "error", err)
+			continue
+		}
+		m.logger.Warn("reconciled dropped teardown for erased user — OS account removal re-dispatched",
+			"user_id", o.UserID, "system_user_action_id", o.SystemUserActionID)
+	}
 	return nil
 }
 

@@ -30,6 +30,8 @@ type fakeDB struct {
 	driftErr    error
 	posture     store.RetentionPosture
 	postureErr  error
+	orphans     []store.ErasedProvisioning
+	orphanErr   error
 }
 
 func (f fakeDB) Ping(context.Context) error { return f.pingErr }
@@ -47,6 +49,9 @@ func (f fakeDB) ProjectionDrift(context.Context) ([]store.TargetDrift, error) {
 }
 func (f fakeDB) RetentionPosture(context.Context) (store.RetentionPosture, error) {
 	return f.posture, f.postureErr
+}
+func (f fakeDB) ErasedUsersStillProvisioned(context.Context) ([]store.ErasedProvisioning, error) {
+	return f.orphans, f.orphanErr
 }
 
 type fakeCache struct {

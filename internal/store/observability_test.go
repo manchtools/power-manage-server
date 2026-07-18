@@ -72,6 +72,75 @@ func TestDeletedUsersWithDEK(t *testing.T) {
 	assert.NotContains(t, ids, live, "a live user is not a deletion anomaly")
 }
 
+// TestErasedUsersStillProvisioned pins the AC 36 safety-net data source: an
+// erased user whose OS account teardown was dropped — their system USER action
+// is still live and PRESENT — is reported (with its linked action ids for the
+// sweep), while a cleanly-torn-down erased user, a deleted action, and a live
+// user are not. A lingering provisioning flag alone is NOT a signal (AC 32).
+func TestErasedUsersStillProvisioned(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := context.Background()
+	pool := st.TestingPool()
+
+	erase := func(id string) {
+		_, err := pool.Exec(ctx, `UPDATE users_projection SET is_deleted = true WHERE id = $1`, id)
+		require.NoError(t, err)
+	}
+	// seedUserAction inserts a system action with a chosen desired_state /
+	// deleted flag and links it as the user's system USER action.
+	seedUserAction := func(userID string, desiredState int, deleted bool) string {
+		actID := testutil.NewID()
+		_, err := pool.Exec(ctx,
+			`INSERT INTO actions_projection (id, name, action_type, is_system, is_deleted, desired_state)
+			 VALUES ($1, $2, 0, true, $3, $4)`,
+			actID, "sys-user-"+actID[:6], deleted, desiredState)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx,
+			`UPDATE users_projection SET system_user_action_id = $2 WHERE id = $1`, userID, actID)
+		require.NoError(t, err)
+		return actID
+	}
+
+	// Clean teardown: erased, system action set ABSENT.
+	clean := testutil.CreateTestUser(t, st, "clean-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	seedUserAction(clean, 1 /*ABSENT*/, false)
+	erase(clean)
+
+	// Provisioning flag left set but no live action — cosmetic, must NOT flag.
+	provOn := testutil.CreateTestUser(t, st, "provon-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	_, err := pool.Exec(ctx, `UPDATE users_projection SET user_provisioning_enabled = true WHERE id = $1`, provOn)
+	require.NoError(t, err)
+	erase(provOn)
+
+	// Live PRESENT system USER action still targeting an erased user — the gap.
+	livePresent := testutil.CreateTestUser(t, st, "livep-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	liveActID := seedUserAction(livePresent, 0 /*PRESENT*/, false)
+	erase(livePresent)
+
+	// A deleted action is not "live" even if PRESENT → must NOT flag.
+	deletedAction := testutil.CreateTestUser(t, st, "delact-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	seedUserAction(deletedAction, 0 /*PRESENT*/, true /*deleted*/)
+	erase(deletedAction)
+
+	// A LIVE (non-erased) user with a PRESENT action is not an erasure anomaly.
+	liveUser := testutil.CreateTestUser(t, st, "liveu-"+testutil.NewID()[:8]+"@test.com", "pass", "user")
+	seedUserAction(liveUser, 0 /*PRESENT*/, false)
+
+	orphans, err := store.ErasedUsersStillProvisioned(ctx, pool)
+	require.NoError(t, err)
+
+	byID := map[string]store.ErasedProvisioning{}
+	for _, o := range orphans {
+		byID[o.UserID] = o
+	}
+	assert.Contains(t, byID, livePresent, "erased user with a live PRESENT system USER action is flagged")
+	assert.Equal(t, liveActID, byID[livePresent].SystemUserActionID, "carries the action id for the sweep")
+	assert.NotContains(t, byID, clean, "a cleanly torn-down erased user is not flagged")
+	assert.NotContains(t, byID, provOn, "a lingering provisioning flag alone is not a signal (AC 32 closes it)")
+	assert.NotContains(t, byID, deletedAction, "a deleted (not live) system action does not flag")
+	assert.NotContains(t, byID, liveUser, "a live user is not an erasure anomaly")
+}
+
 // TestComputeProjectionDrift pins AC 31a: a projection whose tail is
 // behind the newest event in its streams is reported as drifted, while a
 // healthy projection is not.

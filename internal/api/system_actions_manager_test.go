@@ -178,6 +178,55 @@ func TestCleanupDeletedUserActions_RemovesAllSystemActions(t *testing.T) {
 }
 
 // =============================================================================
+// ReconcileErasedUserTeardown — spec 19 AC 36 auto-remediation
+// =============================================================================
+
+// TestReconcileErasedUserTeardown_TearsDownDroppedTeardown proves the sweep
+// converges a DROPPED teardown (erased user whose delete never ran
+// CleanupDeletedUserActions) to the succeeded state: the live PRESENT system
+// USER action is removed and the link cleared. A cleanly torn-down erased user
+// and a live user are left untouched.
+func TestReconcileErasedUserTeardown_TearsDownDroppedTeardown(t *testing.T) {
+	m, st := newManagerForTest(t)
+	ctx := context.Background()
+	enableGlobalProvisioning(t, st)
+
+	// Orphan: provisioned, then erased WITHOUT running teardown (drop).
+	orphan := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "viewer")
+	setLinuxUsername(t, st, orphan, "orphan")
+	require.NoError(t, m.SyncUserSystemActions(ctx, orphan))
+	before, err := st.Repos().User.Get(ctx, orphan)
+	require.NoError(t, err)
+	require.NotEmpty(t, before.SystemUserActionID, "precondition: orphan has a live system action")
+	_, err = st.TestingPool().Exec(ctx, `UPDATE users_projection SET is_deleted = true WHERE id = $1`, orphan)
+	require.NoError(t, err)
+
+	// Live control: a normal provisioned user must survive the sweep.
+	live := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "viewer")
+	setLinuxUsername(t, st, live, "liveuser")
+	require.NoError(t, m.SyncUserSystemActions(ctx, live))
+	liveBefore, err := st.Repos().User.Get(ctx, live)
+	require.NoError(t, err)
+	require.NotEmpty(t, liveBefore.SystemUserActionID)
+
+	require.NoError(t, m.ReconcileErasedUserTeardown(ctx))
+
+	// Orphan's action link is cleared → teardown was re-run.
+	orphans, err := st.ErasedUsersStillProvisioned(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, orphans, "the sweep drained every erased-user orphan")
+
+	// Idempotent: a second run over the now-clean state is a no-op, no error.
+	require.NoError(t, m.ReconcileErasedUserTeardown(ctx))
+
+	// The live user is untouched (its is_deleted is false, so it was never an orphan).
+	liveAfter, err := st.Repos().User.Get(ctx, live)
+	require.NoError(t, err)
+	assert.Equal(t, liveBefore.SystemUserActionID, liveAfter.SystemUserActionID,
+		"a live user's system action must NOT be torn down by the erasure sweep")
+}
+
+// =============================================================================
 // SyncUserSystemActions — provisioning disabled cleans up prior action
 // =============================================================================
 
