@@ -14,7 +14,9 @@ import (
 
 	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/doctor"
+	"github.com/manchtools/power-manage/server/internal/pii"
 	"github.com/manchtools/power-manage/server/internal/projectors"
 	"github.com/manchtools/power-manage/server/internal/retention"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -85,6 +87,31 @@ func runRebuildProjections(args []string) int {
 	st.SetLogger(logger)
 	st.SetRepos(postgres.NewRepos(st.Queries()))
 	projectors.WireAll(st, logger)
+
+	// Spec 19 / ADR 0033: the users projection (and any PII-bearing stream)
+	// replays sealed `pii:v1:` fields, so the rebuild MUST wire the same PII
+	// opener that boot wires — WireAll does NOT. Without it, openSealedPII
+	// refuses to project ciphertext and the entire rebuild rolls back, so the
+	// emergency-recovery command fails on any real deployment (all of which
+	// have users with PII). The KEK is mandatory (same posture as control
+	// boot); a rebuild cannot decrypt PII without it. Resolved from the same
+	// merged env as the DSN, so a key kept only in `.env` is honoured.
+	encKey := vars["CONTROL_ENCRYPTION_KEY"]
+	if encKey == "" {
+		fmt.Fprintln(os.Stderr, "rebuild-projections: CONTROL_ENCRYPTION_KEY is not set (env or --env-file) — required to decrypt sealed PII during replay")
+		return 2
+	}
+	encryptor, err := crypto.NewEncryptor(encKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rebuild-projections: initialize encryptor: %v\n", err)
+		return 2
+	}
+	piiOpener, err := pii.NewOpener(encryptor, st.Repos().UserEncryptionKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rebuild-projections: initialize PII opener: %v\n", err)
+		return 2
+	}
+	projectors.SetPIIOpener(piiOpener)
 
 	var res store.RebuildResult
 	if *archiveDir != "" {

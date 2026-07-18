@@ -17,11 +17,16 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
+// TestKEKHex is the fixed 32-byte (64 hex char) KEK every test fixture seals
+// under. Exported so tests that drive a CLI/boot path opening its own
+// encryptor from CONTROL_ENCRYPTION_KEY can hand it the SAME key the seed data
+// was sealed with (otherwise the DEK unwrap fails and PII reads as sentinel).
+const TestKEKHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 // NewEncryptor creates an Encryptor with a test key.
 func NewEncryptor(t *testing.T) *crypto.Encryptor {
 	t.Helper()
-	// 32-byte hex key (64 hex chars)
-	enc, err := crypto.NewEncryptor("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	enc, err := crypto.NewEncryptor(TestKEKHex)
 	if err != nil {
 		t.Fatalf("create test encryptor: %v", err)
 	}

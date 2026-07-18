@@ -165,7 +165,7 @@ docker compose exec control control rebuild-projections users devices
 ```
 <!-- docref: end -->
 
-<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:3f101b6f -->
+<!-- docref: begin src=cmd/control/rebuild.go#runRebuildProjections:583ca0ac -->
 The command prints the resolved target list before touching anything. A
 partial selection is widened automatically when a selected table's
 `TRUNCATE ... CASCADE` would wipe tables owned by other targets — a
@@ -175,6 +175,11 @@ payloads) separately. Everything runs in a single transaction (one
 consistent snapshot): a failure rolls back to the pre-rebuild state.
 After a successful rebuild the system-role permissions are re-reconciled
 from the code registry, so no Control restart is needed.
+
+Because replay decrypts each user's sealed PII, the rebuild needs
+`CONTROL_ENCRYPTION_KEY` (the same key Control boots with, read from the
+environment or `--env-file`); without it the command exits `2` rather than
+risk projecting redacted PII over good data.
 
 Once audit-log retention has pruned history, a plain rebuild **refuses to
 run** — the surviving live log no longer contains events up to the prune

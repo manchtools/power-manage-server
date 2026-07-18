@@ -148,7 +148,7 @@ func databaseURL(base *url.URL, dbName string) string {
 // Store; callers decide whether to wire projectors. maxConns caps the pgx pool
 // size (0 = pgx default); a small cap is used to exercise pool-pressure paths
 // such as the advisory-lock deadlock guard.
-func setupTestStore(t *testing.T, maxConns int) *store.Store {
+func setupTestStore(t *testing.T, maxConns int) (*store.Store, string) {
 	t.Helper()
 	sharedOnce.Do(initShared)
 	if sharedErr != nil {
@@ -201,7 +201,7 @@ func setupTestStore(t *testing.T, maxConns int) *store.Store {
 	}
 	t.Cleanup(func() { st.Close() })
 	st.SetRepos(pgrepo.NewRepos(st.Queries()))
-	return st
+	return st, connStr
 }
 
 // SetupPostgres returns a connected Store backed by a fresh per-test database
@@ -209,7 +209,7 @@ func setupTestStore(t *testing.T, maxConns int) *store.Store {
 // completes.
 func SetupPostgres(t *testing.T) *store.Store {
 	t.Helper()
-	st := setupTestStore(t, 0)
+	st, _ := setupTestStore(t, 0)
 
 	// Wire the same Go-side projector listeners that production boot wires in
 	// cmd/control/main.go. Without this, handlers emit events but the
@@ -275,7 +275,22 @@ func MintTestUserDEK(t *testing.T, st *store.Store, userID string) {
 // tests that read projection state.
 func SetupPostgresWithoutProjectors(t *testing.T) *store.Store {
 	t.Helper()
-	return setupTestStore(t, 0)
+	st, _ := setupTestStore(t, 0)
+	return st
+}
+
+// SetupPostgresWithDSN is SetupPostgres plus the raw connection string for the
+// per-test database. Use it for the handful of tests that drive a CLI/boot
+// path which opens its OWN store from CONTROL_DATABASE_URL (e.g.
+// runRebuildProjections) rather than receiving an already-connected *Store.
+// The returned DSN points at the same template-cloned database, so seed via
+// the returned store and the CLI sees the same rows.
+func SetupPostgresWithDSN(t *testing.T) (*store.Store, string) {
+	t.Helper()
+	st, dsn := setupTestStore(t, 0)
+	projectors.WireAll(st, nil)
+	WirePIIEnvelope(t, st)
+	return st, dsn
 }
 
 // SetupPostgresPool returns a connected Store (with projectors wired) whose pgx
@@ -284,7 +299,7 @@ func SetupPostgresWithoutProjectors(t *testing.T) *store.Store {
 // pool size.
 func SetupPostgresPool(t *testing.T, maxConns int) *store.Store {
 	t.Helper()
-	st := setupTestStore(t, maxConns)
+	st, _ := setupTestStore(t, maxConns)
 	projectors.WireAll(st, nil)
 	return st
 }
