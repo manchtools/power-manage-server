@@ -150,6 +150,9 @@ type DBProbe interface {
 	// DeletedUsersWithDEK returns erased users that still hold a DEK row — the
 	// resurrected-shredded-key anomaly (spec 19 AC 31).
 	DeletedUsersWithDEK(ctx context.Context) ([]string, error)
+	// ErasedUsersStillProvisioned returns erased users whose OS provisioning
+	// outlived their erasure — incomplete teardown (spec 19 AC 36).
+	ErasedUsersStillProvisioned(ctx context.Context) ([]store.ErasedProvisioning, error)
 	// ProjectionDrift compares each rebuild target's projection high-water
 	// against the events it should have applied (spec 19 AC 31a).
 	ProjectionDrift(ctx context.Context) ([]store.TargetDrift, error)

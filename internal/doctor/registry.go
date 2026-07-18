@@ -20,5 +20,6 @@ func DefaultChecks() []Check {
 		DEKInvariantCheck{},
 		ProjectionDriftCheck{},
 		RetentionPostureCheck{},
+		ErasureProvisioningCheck{},
 	}
 }

@@ -55,6 +55,10 @@ func (p *PGProbe) DeletedUsersWithDEK(ctx context.Context) ([]string, error) {
 	return store.DeletedUsersWithDEK(ctx, p.pool)
 }
 
+func (p *PGProbe) ErasedUsersStillProvisioned(ctx context.Context) ([]store.ErasedProvisioning, error) {
+	return store.ErasedUsersStillProvisioned(ctx, p.pool)
+}
+
 func (p *PGProbe) ProjectionDrift(ctx context.Context) ([]store.TargetDrift, error) {
 	return store.ComputeProjectionDrift(ctx, p.pool)
 }

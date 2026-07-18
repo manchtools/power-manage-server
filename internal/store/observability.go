@@ -85,6 +85,61 @@ func DeletedUsersWithDEK(ctx context.Context, pool *pgxpool.Pool) ([]string, err
 	return out, rows.Err()
 }
 
+// ErasedProvisioning names an erased (is_deleted) user whose account teardown
+// was incomplete — their system USER action is still live and PRESENT, so the
+// OS account persists on already-provisioned devices (spec 19 AC 36). The three
+// linked system-action ids are carried so the reconcile sweep can re-run the
+// same teardown DeleteUser would have.
+//
+// A lingering user_provisioning_enabled flag is deliberately NOT a signal here:
+// SyncUserSystemActions fail-closes on is_deleted (AC 32), so an erased user can
+// never re-acquire a provisioning action regardless of that flag. It is cosmetic
+// (nothing clears it on delete), and flagging it would fire on every erased user
+// a provisioning-for-all deployment ever had — alarm fatigue, not a real gap.
+type ErasedProvisioning struct {
+	UserID             string
+	SystemUserActionID string
+	SystemSshActionID  string
+	SystemTtyActionID  string
+}
+
+// ErasedUsersStillProvisioned returns erased users whose OS account teardown was
+// dropped: their system USER action is still live (not deleted) and PRESENT, so
+// the account persists on managed devices (spec 19 AC 36 doctor safety net /
+// reconcile source). is_deleted (the durable projection flag) is used rather
+// than the UserDeleted event so the check still holds after that event has
+// itself been pruned. Read-only.
+func ErasedUsersStillProvisioned(ctx context.Context, pool *pgxpool.Pool) ([]ErasedProvisioning, error) {
+	// DESIRED_STATE_PRESENT is 0 (sdk pm.v1). A PRESENT, non-deleted action
+	// referenced by system_user_action_id means the account was never torn
+	// down. The empty-string default of system_user_action_id matches no
+	// action id, so the EXISTS is naturally false for a cleanly-torn-down user.
+	rows, err := pool.Query(ctx, `
+		SELECT u.id, u.system_user_action_id, u.system_ssh_action_id, u.system_tty_action_id
+		FROM users_projection u
+		WHERE u.is_deleted
+		  AND EXISTS (
+		      SELECT 1 FROM actions_projection a
+		      WHERE a.id = u.system_user_action_id
+		        AND NOT a.is_deleted
+		        AND a.desired_state = 0
+		  )
+		ORDER BY u.id`)
+	if err != nil {
+		return nil, fmt.Errorf("observability: list erased users still provisioned: %w", err)
+	}
+	defer rows.Close()
+	var out []ErasedProvisioning
+	for rows.Next() {
+		var e ErasedProvisioning
+		if err := rows.Scan(&e.UserID, &e.SystemUserActionID, &e.SystemSshActionID, &e.SystemTtyActionID); err != nil {
+			return nil, fmt.Errorf("observability: scan erased user provisioning: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // RetentionPosture is the read-only snapshot `control doctor` reports for
 // AC 29: how big/old the live event log is and when retention last acted.
 type RetentionPosture struct {
@@ -253,6 +308,14 @@ func ComputeProjectionDrift(ctx context.Context, pool *pgxpool.Pool) ([]TargetDr
 // never has to reach for TestingPool (which is deliberately test-only).
 func (s *Store) ComputeProjectionDrift(ctx context.Context) ([]TargetDrift, error) {
 	return ComputeProjectionDrift(ctx, s.pool)
+}
+
+// ErasedUsersStillProvisioned is the production accessor for the erasure
+// reconcile sweep (spec 19 AC 36), which holds a *Store and not a raw pool. The
+// free function above takes a pool so the doctor probe and store tests can call
+// it without a full Store; this method wraps it over the store's own pool.
+func (s *Store) ErasedUsersStillProvisioned(ctx context.Context) ([]ErasedProvisioning, error) {
+	return ErasedUsersStillProvisioned(ctx, s.pool)
 }
 
 // tablesWithProjectionVersion returns the set of public base tables that
