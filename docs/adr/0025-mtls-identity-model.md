@@ -68,4 +68,7 @@ an internal peer), and (c) isolates blast radius if any one signing key leaks.
   trusted certificate could then impersonate a peer.
 - **CN / DNS-name identity** — rejected: SPIFFE URI SANs give an unambiguous,
   class-structured workload identity that the verifier can match exactly, without
-  overloading hostname semantics.
+  overloading hostname semantics. **This rejection is scoped to *class* identity
+  ("what kind of peer").** The *instance* identity ("which specific gateway/agent")
+  is carried by the certificate CommonName (the enrolled ULID) and read only after
+  the SPIFFE class gate has passed — see ADR 0032, which ratifies that contract.
