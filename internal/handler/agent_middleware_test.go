@@ -285,10 +285,10 @@ func TestMTLSMiddleware_AgentClassReachesInnerWithDeviceIDInContext(t *testing.T
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		gotDeviceID, gotOK = DeviceIDFromContext(r.Context())
 	})
-	// Explicit NoopRevocationChecker (the typed dev opt-out) — a bare nil now
-	// fails closed (see TestMTLSMiddleware_NilRevocationChecker), so the happy
-	// path must pass an explicit loaded checker.
-	mw := MTLSMiddleware(inner, mtls.NoopRevocationChecker{}, newTestLogger())
+	// A loaded checker with nothing revoked — the happy path must pass an
+	// explicit loaded checker because a bare nil now fails closed (see
+	// TestMTLSMiddleware_NilRevocationChecker).
+	mw := MTLSMiddleware(inner, fakeRevocation{revoked: false}, newTestLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
 	agent := mtls.PeerClassAgent
@@ -457,9 +457,11 @@ func TestMTLSMiddleware_NotLoadedCacheFailsClosed(t *testing.T) {
 	assert.True(t, called)
 }
 
-// TestMTLSMiddleware_NilRevocationChecker pins WS12 #4: a bare nil checker fails
-// closed; only the explicit, typed NoopRevocationChecker admits without a real
-// CRL. RED today (a nil checker is silently skipped → admits).
+// TestMTLSMiddleware_NilRevocationChecker pins WS12 #4 / audit L11: a nil checker
+// fails closed (403), never silently admits. With NoopRevocationChecker removed
+// there is no opt-out — a deployment without a CRL rejects every call here, and a
+// loaded-but-empty CRL (which admits non-revoked) is covered by
+// TestMTLSMiddleware_RevokedCertRejected.
 func TestMTLSMiddleware_NilRevocationChecker(t *testing.T) {
 	agent := mtls.PeerClassAgent
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
@@ -470,16 +472,5 @@ func TestMTLSMiddleware_NilRevocationChecker(t *testing.T) {
 	reqNil.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
 	recNil := httptest.NewRecorder()
 	mwNil.ServeHTTP(recNil, reqNil)
-	assert.Equal(t, http.StatusForbidden, recNil.Code, "a bare nil checker must fail closed, never silently admit")
-
-	// explicit NoopRevocationChecker → admits non-revoked (typed dev opt-out).
-	called := false
-	innerOK := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
-	mwNoop := MTLSMiddleware(innerOK, mtls.NoopRevocationChecker{}, newTestLogger())
-	reqNoop := httptest.NewRequest(http.MethodGet, "/api", nil)
-	reqNoop.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
-	recNoop := httptest.NewRecorder()
-	mwNoop.ServeHTTP(recNoop, reqNoop)
-	assert.Equal(t, http.StatusOK, recNoop.Code, "the explicit NoopRevocationChecker is the dev opt-out and admits non-revoked")
-	assert.True(t, called)
+	assert.Equal(t, http.StatusForbidden, recNil.Code, "a nil checker must fail closed, never silently admit")
 }

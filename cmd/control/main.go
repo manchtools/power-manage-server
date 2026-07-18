@@ -550,15 +550,17 @@ func main() {
 	// peer-class URI, are admitted.
 	// Revocation gate on the internal listener (WS12 #2): a revoked gateway
 	// cert must not be able to call the credential-bearing proxy RPCs. With
-	// Valkey the loaded CRL cache backs it; a no-Valkey dev control server has
-	// no CRL, so it gets the explicit, WARN-logged NoopRevocationChecker rather
-	// than a silent nil (which would fail closed and break the dev path).
+	// Valkey the loaded CRL cache backs it. Without a CRL (a no-Valkey control
+	// server) internalRevocation stays nil, which RequirePeerClassNotRevoked
+	// treats as FAIL-CLOSED — every gateway call to this listener is rejected
+	// (403) until a real CRL is loaded. There is no permissive opt-out: a
+	// gateway needs Valkey to function at all, so a no-Valkey control has no
+	// legitimate InternalService caller to admit (audit L11).
 	var internalRevocation mtls.RevocationChecker
 	if valkey != nil && valkey.CRLCache != nil {
 		internalRevocation = valkey.CRLCache
 	} else {
-		logger.Warn("InternalService mTLS listener running WITHOUT certificate revocation (no Valkey CRL configured) — dev only")
-		internalRevocation = mtls.NoopRevocationChecker{}
+		logger.Warn("InternalService mTLS listener has no certificate revocation list (no Valkey CRL configured) — every gateway call to it will be rejected (fail-closed)")
 	}
 	internalMux := http.NewServeMux()
 	// WithPeerCert (inside the class/revocation gate) injects the authenticated
