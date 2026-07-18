@@ -159,6 +159,13 @@ type Store struct {
 	// TestingSetInsertHook; always nil in production, so the per-insert
 	// nil check is the only cost the write path pays.
 	beforeInsert func(streamType, eventType string) error
+
+	// beforeDEKShred, when non-nil, is consulted in
+	// AppendUserDeletionWithShred AFTER the UserDeleted append but BEFORE
+	// the DEK delete, so a test can fail the shred step specifically and
+	// assert the already-appended UserDeleted rolls back (spec 19 AC 14).
+	// TEST-ONLY, set via TestingSetDEKShredHook; always nil in production.
+	beforeDEKShred func(userID string) error
 }
 
 // PIISealer seals the PII fields of an event's typed payload under the
@@ -917,4 +924,14 @@ func (s *Store) appendBatchTx(ctx context.Context, prepared []preparedEvent) ([]
 // package and a concrete *Store gives it no other seam.
 func (s *Store) TestingSetInsertHook(fn func(streamType, eventType string) error) {
 	s.beforeInsert = fn
+}
+
+// TestingSetDEKShredHook installs a test-only failure seam consulted in
+// AppendUserDeletionWithShred between the UserDeleted append and the DEK
+// delete. Returning a non-nil error from fn fails the shred step, letting a
+// test assert the all-or-nothing rollback (spec 19 AC 14): no UserDeleted
+// event survives and the projection stays unredacted. Pass nil to clear.
+// Same posture as TestingSetInsertHook — production code must not call this.
+func (s *Store) TestingSetDEKShredHook(fn func(userID string) error) {
+	s.beforeDEKShred = fn
 }
