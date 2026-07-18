@@ -167,6 +167,23 @@ DANGEROUS_OUT="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_CONTROL_PASSWORD" val
 [[ "$DANGEROUS_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can run FLUSHALL"; exit 1; }
 green "pm-control found an indexed search document; unrelated keys + dangerous commands remain denied"
 
+# 5b. Least-privilege confinement of the OTHER writers (spec 32 A1/A2). The
+# gateway reads the CRL but must never write it (else a compromised gateway
+# un-revokes a device fleet-wide); the indexer owns the search namespaces but
+# must not reach the CRL, gateway/device routes, or traefik KV.
+CRL_READ="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_GATEWAY_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-gateway ZRANGE pm:crl:revoked 0 -1 2>&1 || true)"
+[[ "$CRL_READ" != *NOPERM* ]] || { red "FAIL: pm-gateway cannot READ pm:crl:revoked"; printf '%s\n' "$CRL_READ"; exit 1; }
+CRL_WRITE="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_GATEWAY_PASSWORD" valkey \
+  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-gateway ZADD pm:crl:revoked 1 smoke-probe 2>&1 || true)"
+[[ "$CRL_WRITE" == *NOPERM* ]] || { red "FAIL: pm-gateway can WRITE pm:crl:revoked (spec 32 A1)"; printf '%s\n' "$CRL_WRITE"; exit 1; }
+for k in pm:crl:revoked pm:gateway:smoke-probe pm:device:smoke-probe traefik/smoke-probe; do
+  IX_WRITE="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_INDEXER_PASSWORD" valkey \
+    valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-indexer SET "$k" v 2>&1 || true)"
+  [[ "$IX_WRITE" == *NOPERM* ]] || { red "FAIL: pm-indexer can write $k outside its namespace (spec 32 A2)"; printf '%s\n' "$IX_WRITE"; exit 1; }
+done
+green "pm-gateway CRL is read-only; pm-indexer is confined to its search namespaces"
+
 # 6. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
 compose up -d traefik >>up.log 2>&1 || true
 sleep 8   # let control/indexer subscribe to asynq:cancel + traefik connect
