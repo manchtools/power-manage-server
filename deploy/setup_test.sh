@@ -196,6 +196,41 @@ EOF
         && grep -qE '^ADMIN_EMAIL=admin@example\.com$' "$SCRIPT_DIR/.env"
 }
 
+# ----- ensure_acl_passwords (spec 32 AC 8) -----
+
+case_acl_passwords_regenerates_placeholder() {
+    # A CHANGE_ME* placeholder is NOT a credential — it must be treated as
+    # missing and regenerated, in .env AND the shell (spec 32 audit finding).
+    cat > "$SCRIPT_DIR/.env" <<EOF
+VALKEY_CONTROL_PASSWORD=CHANGE_ME_PLEASE
+EOF
+    VALKEY_CONTROL_PASSWORD="CHANGE_ME_PLEASE"
+    VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    ensure_acl_passwords
+    [[ "$VALKEY_CONTROL_PASSWORD" != CHANGE_ME* && -n "$VALKEY_CONTROL_PASSWORD" ]] \
+        && ! grep -q 'CHANGE_ME' "$SCRIPT_DIR/.env" \
+        && grep -qE '^VALKEY_CONTROL_PASSWORD=[0-9a-f]{48}$' "$SCRIPT_DIR/.env"
+}
+
+case_acl_passwords_keeps_real_value() {
+    : > "$SCRIPT_DIR/.env"
+    VALKEY_CONTROL_PASSWORD="realsecretvalue"
+    VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    ensure_acl_passwords
+    [[ "$VALKEY_CONTROL_PASSWORD" == "realsecretvalue" ]]
+}
+
+case_acl_passwords_mints_all_missing() {
+    : > "$SCRIPT_DIR/.env"
+    VALKEY_CONTROL_PASSWORD="" VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    ensure_acl_passwords
+    local var
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+        [[ -n "${!var}" ]] || return 1
+        grep -qE "^${var}=[0-9a-f]{48}\$" "$SCRIPT_DIR/.env" || return 1
+    done
+}
+
 # ----- run -----
 
 run_case "write_env_var: adds missing key"          case_write_env_var_adds_missing_key
@@ -210,6 +245,9 @@ run_case "parent_domain: dotted hostname"           case_parent_domain_with_dot
 run_case "parent_domain: single label returns empty" case_parent_domain_single_label
 run_case "parent_domain: deep subdomain"            case_parent_domain_deep_subdomain
 run_case "disable terminals clears all three vars"  case_disable_terminals_clears_all_three_vars
+run_case "acl passwords: CHANGE_ME* regenerated"    case_acl_passwords_regenerates_placeholder
+run_case "acl passwords: real value untouched"      case_acl_passwords_keeps_real_value
+run_case "acl passwords: mints all four missing"    case_acl_passwords_mints_all_missing
 
 # Meta: make sure the FAIL counting + final non-zero exit path actually
 # work. The previous cut had set-e + ( ... ) + $? which silently killed

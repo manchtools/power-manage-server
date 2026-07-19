@@ -70,6 +70,20 @@ func TestValkeyClientTLS_RejectsBadMaterial(t *testing.T) {
 	}
 }
 
+// PostgresTLSPosture feeds doctor's posture report: safe display fields only,
+// and an unparseable DSN must yield unknowns, never an error string that could
+// carry the DSN (and its password).
+func TestPostgresTLSPosture(t *testing.T) {
+	sslmode, sslcert := PostgresTLSPosture("postgres://u:p@h:5432/db?sslmode=verify-full&sslcert=/c/pg.crt")
+	if sslmode != "verify-full" || sslcert != "/c/pg.crt" {
+		t.Errorf("got (%q, %q), want (verify-full, /c/pg.crt)", sslmode, sslcert)
+	}
+	sslmode, sslcert = PostgresTLSPosture("postgres://u:p@h:5432 bad\x00dsn://")
+	if sslmode != "" || sslcert != "" {
+		t.Errorf("unparseable DSN must yield unknowns, got (%q, %q)", sslmode, sslcert)
+	}
+}
+
 func TestRequirePostgresTLS(t *testing.T) {
 	const certs = "&sslrootcert=/c/ca.crt&sslcert=/c/pg.crt&sslkey=/c/pg.key"
 	cases := []struct {

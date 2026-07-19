@@ -35,6 +35,22 @@ func (c DatastoresCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
 	} else {
 		findings = append(findings, ok(c.ID(), "Valkey reachable"))
 	}
+	// spec 32: report the auth/transport posture. mTLS is the only supported
+	// posture, so a plaintext configuration is a Warning, never a silent pass.
+	if p := env.Posture; p != nil {
+		if p.ValkeyMTLS {
+			findings = append(findings, ok(c.ID(), fmt.Sprintf("Valkey auth posture: ACL user %q, mTLS on (client cert CN %q)", p.ValkeyUser, p.ValkeyCertCN)))
+		} else {
+			findings = append(findings, warn(c.ID(), "Valkey mTLS is not configured — probe dialed plaintext with ACL credentials withheld",
+				"set CONTROL_VALKEY_TLS_CERT/_KEY/_CA; spec 32 supports no plaintext posture"))
+		}
+		if p.PostgresMTLS {
+			findings = append(findings, ok(c.ID(), fmt.Sprintf("Postgres auth posture: mTLS on (verify-full, client cert CN %q)", p.PostgresCertCN)))
+		} else {
+			findings = append(findings, warn(c.ID(), fmt.Sprintf("Postgres mutual TLS is not configured (%s)", p.PostgresDetail),
+				"set sslmode=verify-full with sslrootcert/sslcert/sslkey in CONTROL_DATABASE_URL; spec 32 supports no plaintext posture"))
+		}
+	}
 	return findings, nil
 }
 

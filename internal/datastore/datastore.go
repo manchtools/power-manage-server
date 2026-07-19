@@ -71,6 +71,18 @@ func ValkeyClientTLSFromFiles(certPath, keyPath, caPath string) (*tls.Config, er
 	return ValkeyClientTLS(certPEM, keyPEM, caPEM)
 }
 
+// PostgresTLSPosture reports the DSN's TLS posture for doctor display: the
+// effective sslmode and the client-cert path. Safe fields only — never a
+// credential, never the raw DSN (whose parse errors can embed the password).
+// An unparseable DSN yields ("", ""): posture unknown, reported as such.
+func PostgresTLSPosture(connString string) (sslmode, sslcert string) {
+	params, err := dsnParams(connString)
+	if err != nil {
+		return "", ""
+	}
+	return params["sslmode"], params["sslcert"]
+}
+
 // RequirePostgresTLS returns an error unless connString is configured for mutual
 // TLS: sslmode=verify-full with the client-cert material (sslrootcert/sslcert/
 // sslkey) present. A sslmode=disable or absent DSN, or verify-full without the
