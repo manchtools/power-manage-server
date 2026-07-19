@@ -63,5 +63,9 @@ certificates, so there is no reason to phase a weaker tier first.
   in Asynq. Cross-queue tampering within that shared keyspace is compensated
   by the spec-29 task-HMAC (forgery-proof payloads), and the deployment E2E
   smoke test asserts the `NOPERM` boundaries that *are* enforceable.
-- **Rotation is operator-driven**: re-run `setup.sh` (mint/replace secrets,
-  reissue certs) + rolling restart. No auto-rotation.
+- **Rotation is operator-driven, and a plain `setup.sh` re-run does NOT
+  rotate**: set values are deliberately preserved (idempotent upgrades). To
+  rotate an ACL secret, clear its `VALKEY_*_PASSWORD` line in `.env` (or set
+  it to `CHANGE_ME`), re-run `setup.sh` (mints a fresh secret, re-renders
+  `valkey.conf`), and restart Valkey plus the affected service. Certificate
+  rotation follows the same pattern via the CA. No auto-rotation.

@@ -82,6 +82,19 @@ func TestPostgresTLSPosture(t *testing.T) {
 	if sslmode != "" || sslcert != "" {
 		t.Errorf("unparseable DSN must yield unknowns, got (%q, %q)", sslmode, sslcert)
 	}
+	// libpq treats only postgres://- or postgresql://-prefixed strings as URIs;
+	// a keyword DSN whose quoted value merely CONTAINS "://" must stay keyword-
+	// parsed, not be mis-routed through URL parsing (cr 2026-07-19).
+	sslmode, sslcert = PostgresTLSPosture("host=h sslmode=verify-full sslcert=/c/pg.crt password='https://x'")
+	if sslmode != "verify-full" || sslcert != "/c/pg.crt" {
+		t.Errorf("keyword DSN with :// inside a quoted value mis-parsed: got (%q, %q)", sslmode, sslcert)
+	}
+	// An unterminated quote is unparseable — posture must be unknown, not a
+	// half-tokenized guess.
+	sslmode, sslcert = PostgresTLSPosture("host=h sslmode=verify-full password='oops")
+	if sslmode != "" || sslcert != "" {
+		t.Errorf("unterminated quote must yield unknowns, got (%q, %q)", sslmode, sslcert)
+	}
 }
 
 func TestRequirePostgresTLS(t *testing.T) {
@@ -102,6 +115,15 @@ func TestRequirePostgresTLS(t *testing.T) {
 		// that overwrites it (a bare strings.Fields split would wrongly accept).
 		{"keyword quoted value cannot forge sslmode",
 			"host=h dbname=db sslmode=disable sslrootcert=/c/ca.crt sslcert=/c/pg.crt sslkey=/c/pg.key application_name='x sslmode=verify-full'",
+			false},
+		// A valid keyword DSN must not be mis-routed through URL parsing just
+		// because a quoted value contains "://" (cr 2026-07-19).
+		{"keyword value containing :// stays keyword-parsed",
+			"host=h dbname=db sslmode=verify-full sslrootcert=/c/ca.crt sslcert=/c/pg.crt sslkey=/c/pg.key password='https://not-a-uri'",
+			true},
+		// libpq errors on an unterminated quoted value; so do we (fail closed).
+		{"unterminated quote rejected",
+			"host=h dbname=db sslmode=verify-full sslrootcert=/c/ca.crt sslcert=/c/pg.crt sslkey=/c/pg.key application_name='oops",
 			false},
 	}
 	for _, tc := range cases {
