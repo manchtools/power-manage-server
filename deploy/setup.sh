@@ -355,7 +355,10 @@ generate_datastore_certs() {
 ensure_acl_passwords() {
     local var generated
     for var in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
-        if [[ -z "${!var:-}" ]]; then
+        # A CHANGE_ME* placeholder is not a credential — treat it as missing and
+        # regenerate, or it would be rendered into valkey.conf as the real ACL
+        # password (spec 32 AC 8 rejects placeholders).
+        if [[ -z "${!var:-}" || "${!var}" == CHANGE_ME* ]]; then
             generated="$(openssl rand -hex 24)"
             write_env_var "$var" "$generated"
             printf -v "$var" '%s' "$generated"

@@ -71,6 +71,18 @@ func ValkeyClientTLSFromFiles(certPath, keyPath, caPath string) (*tls.Config, er
 	return ValkeyClientTLS(certPEM, keyPEM, caPEM)
 }
 
+// PostgresTLSPosture reports the DSN's TLS posture for doctor display: the
+// effective sslmode and the client-cert path. Safe fields only — never a
+// credential, never the raw DSN (whose parse errors can embed the password).
+// An unparseable DSN yields ("", ""): posture unknown, reported as such.
+func PostgresTLSPosture(connString string) (sslmode, sslcert string) {
+	params, err := dsnParams(connString)
+	if err != nil {
+		return "", ""
+	}
+	return params["sslmode"], params["sslcert"]
+}
+
 // RequirePostgresTLS returns an error unless connString is configured for mutual
 // TLS: sslmode=verify-full with the client-cert material (sslrootcert/sslcert/
 // sslkey) present. A sslmode=disable or absent DSN, or verify-full without the
@@ -99,7 +111,11 @@ func RequirePostgresTLS(connString string) error {
 // userinfo are ignored (and never returned).
 func dsnParams(connString string) (map[string]string, error) {
 	out := map[string]string{}
-	if strings.Contains(connString, "://") {
+	// libpq recognizes a URI by exactly these two scheme prefixes; anything else
+	// is keyword/value form. A substring "://" check would mis-route a keyword
+	// DSN whose quoted value contains a URL (e.g. password='https://…') through
+	// URL parsing and destroy its real parameters.
+	if strings.HasPrefix(connString, "postgres://") || strings.HasPrefix(connString, "postgresql://") {
 		u, err := url.Parse(connString)
 		if err != nil {
 			return nil, fmt.Errorf("datastore: parse DSN: %w", err)
@@ -118,7 +134,11 @@ func dsnParams(connString string) (map[string]string, error) {
 	// spurious `sslmode=verify-full` token that overwrites the real sslmode and
 	// tricks RequirePostgresTLS into accepting a plaintext DSN — defeating the
 	// fail-closed guarantee this file exists to provide.
-	for _, kv := range splitKeywordDSN(connString) {
+	toks, err := splitKeywordDSN(connString)
+	if err != nil {
+		return nil, err
+	}
+	for _, kv := range toks {
 		if i := strings.IndexByte(kv, '='); i > 0 {
 			out[strings.TrimSpace(kv[:i])] = kv[i+1:]
 		}
@@ -130,7 +150,9 @@ func dsnParams(connString string) (map[string]string, error) {
 // single-quote quoting and backslash escapes (per libpq's documented rules) so
 // whitespace inside a quoted value does not split it. Quote characters are
 // consumed (not emitted); a backslash escapes the next character literally.
-func splitKeywordDSN(s string) []string {
+// An unterminated quote or trailing escape is an error, as in libpq — a
+// half-tokenized DSN must fail closed, never yield guessed parameters.
+func splitKeywordDSN(s string) ([]string, error) {
 	var toks []string
 	var cur strings.Builder
 	inQuote, esc, started := false, false, false
@@ -160,6 +182,12 @@ func splitKeywordDSN(s string) []string {
 			started = true
 		}
 	}
+	if inQuote {
+		return nil, errors.New("datastore: keyword DSN has an unterminated quoted value")
+	}
+	if esc {
+		return nil, errors.New("datastore: keyword DSN ends in a dangling backslash escape")
+	}
 	flush()
-	return toks
+	return toks, nil
 }

@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -68,25 +71,21 @@ func runDoctor(args []string) int {
 		valkeyDB = n
 	}
 	// spec 32: probe Valkey the same way the live server connects — as the ACL
-	// user over mutual TLS. A partial/absent cert set yields a nil tlsCfg (plain-
-	// text probe); we log the reason so an incomplete config isn't a silent
-	// false "unreachable". Inside the control container the cert env is set, so
-	// the probe authenticates and reports accurately.
+	// user over mutual TLS. A partial cert set errors (logged below); an entirely
+	// absent one yields nil WITHOUT an error. Both mean a plaintext probe, so
+	// valkeyProbeCreds withholds the ACL credentials on any nil tlsCfg — they
+	// must never cross an unencrypted socket. The posture finding in the report
+	// surfaces the plaintext configuration as a Warning.
 	valkeyTLS, err := datastore.ValkeyClientTLSFromFiles(vars["CONTROL_VALKEY_TLS_CERT"], vars["CONTROL_VALKEY_TLS_KEY"], vars["CONTROL_VALKEY_TLS_CA"])
-	valkeyUser, valkeyPass := vars["CONTROL_VALKEY_USERNAME"], vars["CONTROL_VALKEY_PASSWORD"]
 	if err != nil {
-		// A nil tlsCfg means the probe would connect WITHOUT TLS — sending the
-		// ACL password in the clear. Drop the credentials so a doctor run with an
-		// incomplete cert set (e.g. outside the control container, against a
-		// remote datastore) can't leak them onto an unencrypted socket. The probe
-		// then fails at the datastores check, which is the accurate verdict.
 		fmt.Fprintf(os.Stderr, "doctor: valkey mTLS config incomplete, probing without TLS and without ACL credentials: %v\n", err)
-		valkeyUser, valkeyPass = "", ""
 	}
+	valkeyUser, valkeyPass := valkeyProbeCreds(valkeyTLS, vars["CONTROL_VALKEY_USERNAME"], vars["CONTROL_VALKEY_PASSWORD"])
 	if cache, err := doctor.NewValkeyProbe(vars["CONTROL_VALKEY_ADDR"], valkeyUser, valkeyPass, valkeyDB, valkeyTLS); err == nil {
 		env.Cache = cache
 		defer cache.Close()
 	}
+	env.Posture = datastorePosture(vars, valkeyTLS)
 
 	report := doctor.Run(ctx, env, doctor.DefaultChecks())
 
@@ -99,6 +98,72 @@ func runDoctor(args []string) int {
 		doctor.RenderHuman(os.Stdout, report)
 	}
 	return report.ExitCode()
+}
+
+// valkeyProbeCreds returns the ACL credentials the probe may use. A nil TLS
+// config — cert set absent OR incomplete — means a plaintext dial, so the
+// credentials are withheld: they must never cross an unencrypted socket.
+func valkeyProbeCreds(tlsCfg *tls.Config, user, pass string) (string, string) {
+	if tlsCfg == nil {
+		return "", ""
+	}
+	return user, pass
+}
+
+// datastorePosture derives the spec-32 auth posture the doctor reports. Safe
+// fields only (users, modes, cert CNs) — never credentials or raw DSNs.
+func datastorePosture(vars map[string]string, valkeyTLS *tls.Config) *doctor.DatastorePosture {
+	p := &doctor.DatastorePosture{
+		ValkeyUser:   vars["CONTROL_VALKEY_USERNAME"],
+		ValkeyMTLS:   valkeyTLS != nil,
+		ValkeyCertCN: clientCertCN(valkeyTLS),
+	}
+	dsn := vars["CONTROL_DATABASE_URL"]
+	sslmode, sslcert := datastore.PostgresTLSPosture(dsn)
+	if datastore.RequirePostgresTLS(dsn) == nil {
+		p.PostgresMTLS = true
+		p.PostgresCertCN = pemCertCN(sslcert)
+	} else if sslmode == "verify-full" {
+		p.PostgresDetail = "verify-full without complete client-cert material"
+	} else {
+		p.PostgresDetail = fmt.Sprintf("sslmode=%q", sslmode)
+	}
+	return p
+}
+
+// clientCertCN returns the CN of cfg's client certificate. Best-effort display
+// value: "" (posture shown as unknown) on a nil config or unparseable cert —
+// the mTLS on/off verdict is carried separately, so no error is swallowed.
+func clientCertCN(cfg *tls.Config) string {
+	if cfg == nil || len(cfg.Certificates) == 0 || len(cfg.Certificates[0].Certificate) == 0 {
+		return ""
+	}
+	leaf, err := x509.ParseCertificate(cfg.Certificates[0].Certificate[0])
+	if err != nil {
+		return ""
+	}
+	return leaf.Subject.CommonName
+}
+
+// pemCertCN reads a PEM certificate file and returns its CN. Same best-effort
+// display contract as clientCertCN.
+func pemCertCN(path string) string {
+	if path == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	return leaf.Subject.CommonName
 }
 
 // resolveCertPaths returns the cert/key files to inspect. A path is included when

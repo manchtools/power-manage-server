@@ -33,7 +33,24 @@ type Env struct {
 	// can report "no .env file found" rather than a false pass).
 	FromEnvFile bool
 
+	// Posture is the config-derived datastore auth posture (spec 32), computed by
+	// the subcommand; nil when not computed (pure-config tests). Report-only.
+	Posture *DatastorePosture
+
 	Now func() time.Time
+}
+
+// DatastorePosture is what the doctor REPORTS about datastore authentication
+// (spec 32): the ACL user, whether mutual TLS is configured, and the client-cert
+// CNs. It never carries secrets — CNs and mode names only.
+type DatastorePosture struct {
+	ValkeyUser   string // CONTROL_VALKEY_USERNAME ("" = none configured)
+	ValkeyMTLS   bool   // client cert, key, and CA all configured
+	ValkeyCertCN string // CN of the Valkey client cert ("" when unknown)
+
+	PostgresMTLS   bool   // DSN passes RequirePostgresTLS (verify-full + cert material)
+	PostgresCertCN string // CN of the Postgres client cert ("" when unknown)
+	PostgresDetail string // safe reason PostgresMTLS is false (sslmode etc.), "" when true
 }
 
 // timeNow is the package clock seam (WS0): runtime code never calls time.Now()

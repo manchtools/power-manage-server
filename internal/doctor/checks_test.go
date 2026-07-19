@@ -205,6 +205,53 @@ func TestDatastoresCheck(t *testing.T) {
 	t.Run("nil handles → critical", func(t *testing.T) {
 		assert.Equal(t, SeverityCritical, worst(run1(t, DatastoresCheck{}, testEnv(nil))))
 	})
+	// spec 32: doctor reports the datastore auth posture (ACL user, mTLS on/off,
+	// client-cert CN) — never secrets. mTLS is the only supported posture, so a
+	// plaintext configuration is a Warning, not a silent omission.
+	t.Run("posture mTLS on both → ok, reports user and CN", func(t *testing.T) {
+		env := testEnv(nil)
+		env.DB, env.Cache = fakeDB{}, fakeCache{}
+		env.Posture = &DatastorePosture{
+			ValkeyUser: "pm-control", ValkeyMTLS: true, ValkeyCertCN: "powermanage",
+			PostgresMTLS: true, PostgresCertCN: "powermanage",
+		}
+		findings := run1(t, DatastoresCheck{}, env)
+		assert.Equal(t, SeverityOK, worst(findings))
+		var joined string
+		for _, f := range findings {
+			joined += f.Message + " "
+		}
+		assert.Contains(t, joined, "pm-control")
+		assert.Contains(t, joined, "powermanage")
+		assert.Contains(t, joined, "mTLS")
+	})
+	t.Run("posture valkey plaintext → warning", func(t *testing.T) {
+		env := testEnv(nil)
+		env.DB, env.Cache = fakeDB{}, fakeCache{}
+		env.Posture = &DatastorePosture{ValkeyUser: "pm-control", PostgresMTLS: true}
+		assert.Equal(t, SeverityWarning, worst(run1(t, DatastoresCheck{}, env)))
+	})
+	t.Run("posture postgres plaintext → warning with detail", func(t *testing.T) {
+		env := testEnv(nil)
+		env.DB, env.Cache = fakeDB{}, fakeCache{}
+		env.Posture = &DatastorePosture{
+			ValkeyMTLS: true, ValkeyCertCN: "powermanage",
+			PostgresDetail: `sslmode="disable"`,
+		}
+		findings := run1(t, DatastoresCheck{}, env)
+		assert.Equal(t, SeverityWarning, worst(findings))
+		var joined string
+		for _, f := range findings {
+			joined += f.Message + " "
+		}
+		assert.Contains(t, joined, "disable")
+	})
+	t.Run("nil posture → reachability findings only", func(t *testing.T) {
+		env := testEnv(nil)
+		env.DB, env.Cache = fakeDB{}, fakeCache{}
+		findings := run1(t, DatastoresCheck{}, env)
+		assert.Len(t, findings, 2)
+	})
 }
 
 func TestQueuesCheck(t *testing.T) {
