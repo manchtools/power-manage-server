@@ -34,27 +34,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/connection"
 )
 
-// recordingControlForStream is the AgentService end's view of the
-// upstream Internal API — only VerifyDevice matters for these tests
-// (StoreLuksKey etc. are exercised by agent_luks_test.go). Returning
-// an error here forces Stream to bail at the device-verification gate.
-type recordingControlForStream struct {
-	pmv1connect.UnimplementedInternalServiceHandler
-	mu               sync.Mutex
-	verifyDeviceErr  error
-	lastVerifyDevice string
-}
-
-func (r *recordingControlForStream) VerifyDevice(_ context.Context, req *connect.Request[pm.VerifyDeviceRequest]) (*connect.Response[pm.VerifyDeviceResponse], error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastVerifyDevice = req.Msg.DeviceId
-	if r.verifyDeviceErr != nil {
-		return nil, r.verifyDeviceErr
-	}
-	return connect.NewResponse(&pm.VerifyDeviceResponse{}), nil
-}
-
 type fakeStreamWorkerManager struct {
 	mu      sync.Mutex
 	started []string
@@ -84,11 +63,10 @@ func (f *fakeStreamWorkerManager) snapshot() (started, stopped []string) {
 // returns an AgentServiceClient pointed at it, plus the recording
 // control stub so tests can flip the VerifyDevice outcome.
 type streamFixture struct {
-	client      pmv1connect.AgentServiceClient
-	internalSrv *httptest.Server
-	control     *recordingControlForStream
-	worker      *fakeStreamWorkerManager
-	server      *httptest.Server
+	client  pmv1connect.AgentServiceClient
+	control *fakeAgentOps
+	worker  *fakeStreamWorkerManager
+	server  *httptest.Server
 }
 
 func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
@@ -102,23 +80,19 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string) *streamFixture {
 	t.Helper()
 
-	// 1) httptest InternalService stub for ControlProxy.VerifyDevice.
-	control := &recordingControlForStream{}
-	internalMux := http.NewServeMux()
-	internalPath, internalH := pmv1connect.NewInternalServiceHandler(control)
-	internalMux.Handle(internalPath, internalH)
-	internalSrv := httptest.NewServer(internalMux)
-	t.Cleanup(internalSrv.Close)
+	// 1) Recording AgentOps double. The httptest InternalService this used to
+	// stand up is gone with the RPC boundary — VerifyDevice is an in-process
+	// call now.
+	control := &fakeAgentOps{}
 
-	// 2) Real ControlProxy + connection.Manager + recording fakes for
-	// the queue and per-device worker manager.
-	proxy := NewControlProxy(internalSrv.Client(), internalSrv.URL, "test-gateway")
+	// 2) connection.Manager + recording fakes for the queue and the per-device
+	// worker manager.
 	mgr := connection.NewManager()
 	worker := &fakeStreamWorkerManager{}
 	h := &AgentHandler{
 		manager:           mgr,
 		aqClient:          &fakeEnqueuer{},
-		controlProxy:      proxy,
+		ops:               control,
 		workerMgr:         worker,
 		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		serverVersion:     "test",
@@ -161,11 +135,10 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 	client := pmv1connect.NewAgentServiceClient(httpClient, srv.URL)
 
 	return &streamFixture{
-		client:      client,
-		internalSrv: internalSrv,
-		control:     control,
-		worker:      worker,
-		server:      srv,
+		client:  client,
+		control: control,
+		worker:  worker,
+		server:  srv,
 	}
 }
 
@@ -261,7 +234,7 @@ func TestStream_NoCertDeviceIDWhenTLSRequiredIsUnauthenticated(t *testing.T) {
 	err := recvErr(stream)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	assert.Empty(t, f.control.lastVerifyDevice, "VerifyDevice must not run without a cert identity")
+	assert.Empty(t, f.control.verifiedLast(), "VerifyDevice must not run without a cert identity")
 	started, _ := f.worker.snapshot()
 	assert.Empty(t, started, "no worker started")
 }
@@ -289,7 +262,7 @@ func TestStream_CertHelloDeviceIDMismatchRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"cert/Hello device-ID mismatch MUST be CodePermissionDenied")
-	assert.Empty(t, f.control.lastVerifyDevice, "VerifyDevice must not run on a cert/Hello mismatch")
+	assert.Empty(t, f.control.verifiedLast(), "VerifyDevice must not run on a cert/Hello mismatch")
 	started, _ := f.worker.snapshot()
 	assert.Empty(t, started, "no worker started on a mismatch")
 }
@@ -301,7 +274,7 @@ func TestStream_VerifyDeviceFailureRejectsConnection(t *testing.T) {
 	// can't keep streaming heartbeats. Coverage of the
 	// CodePermissionDenied branch is critical for compliance review.
 	f := newStreamFixture(t, false)
-	f.control.verifyDeviceErr = connect.NewError(connect.CodeNotFound, errors.New("device deleted"))
+	f.control.verifyErr = connect.NewError(connect.CodeNotFound, errors.New("device deleted"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -319,7 +292,7 @@ func TestStream_VerifyDeviceFailureRejectsConnection(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"deleted/unknown device MUST surface CodePermissionDenied — agents whose record was removed must not retain a stream")
-	assert.Equal(t, "01HZX9ABCD0000000000000000", f.control.lastVerifyDevice,
+	assert.Equal(t, "01HZX9ABCD0000000000000000", f.control.verifiedLast(),
 		"VerifyDevice must be called with the Hello-supplied device_id")
 }
 
@@ -341,7 +314,7 @@ func TestStream_HappyPathRegistersStartsWorkerAndSendsWelcome(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, msg.GetWelcome(), "successful stream setup must send Welcome to the agent")
 	assert.Equal(t, "test", msg.GetWelcome().ServerVersion)
-	assert.Equal(t, "01HZX9DEFGH000000000000000", f.control.lastVerifyDevice)
+	assert.Equal(t, "01HZX9DEFGH000000000000000", f.control.verifiedLast())
 
 	started, stopped := f.worker.snapshot()
 	assert.Equal(t, []string{"01HZX9DEFGH000000000000000"}, started)

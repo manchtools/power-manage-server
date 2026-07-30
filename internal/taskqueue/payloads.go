@@ -161,13 +161,6 @@ type DeviceHelloPayload struct {
 	DeviceID     string `json:"device_id"`
 	Hostname     string `json:"hostname"`
 	AgentVersion string `json:"agent_version"`
-	// GatewayID self-asserts which gateway relayed this device-origin
-	// task. The control:inbox worker cross-references it against the
-	// device→gateway routing binding (registry.CheckDeviceGatewayBinding)
-	// to confine a device-origin event to the gateway the device is
-	// actually live on — the peer-class gateway mTLS cert carries no
-	// per-gateway identity, so this is the only binding signal.
-	GatewayID string `json:"gateway_id"`
 }
 
 // DeviceHeartbeatPayload is the payload for TypeDeviceHeartbeat tasks.
@@ -184,8 +177,6 @@ type DeviceHelloPayload struct {
 type DeviceHeartbeatPayload struct {
 	DeviceID     string `json:"device_id"`
 	AgentVersion string `json:"agent_version,omitempty"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // ExecutionResultPayload is the payload for TypeExecutionResult tasks.
@@ -196,8 +187,6 @@ type ExecutionResultPayload struct {
 	// pm.ActionResult (proto.Marshal), so no proto message is ever sent as JSON
 	// over the gateway→control queue.
 	ActionResultProto []byte `json:"action_result_proto"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // ExecutionOutputChunkPayload is the payload for TypeExecutionOutputChunk tasks.
@@ -207,8 +196,6 @@ type ExecutionOutputChunkPayload struct {
 	Stream      string `json:"stream"` // "stdout" or "stderr"
 	Data        string `json:"data"`
 	Sequence    int64  `json:"sequence"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // OSQueryResultPayload is the payload for TypeOSQueryResult tasks.
@@ -218,16 +205,12 @@ type OSQueryResultPayload struct {
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
 	RowsJSON []byte `json:"rows_json"` // JSON-encoded []map[string]string
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // InventoryUpdatePayload is the payload for TypeInventoryUpdate tasks.
 type InventoryUpdatePayload struct {
 	DeviceID string           `json:"device_id"`
 	Tables   []InventoryTable `json:"tables"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // InventoryTable is a single inventory table in an update.
@@ -242,8 +225,6 @@ type SecurityAlertPayload struct {
 	AlertType string            `json:"alert_type"`
 	Message   string            `json:"message"`
 	Details   map[string]string `json:"details,omitempty"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // RevokeLuksDeviceKeyResultPayload is the payload for TypeRevokeLuksDeviceKeyResult tasks.
@@ -252,8 +233,6 @@ type RevokeLuksDeviceKeyResultPayload struct {
 	ActionID string `json:"action_id"`
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // LogQueryResultPayload is the payload for TypeLogQueryResult tasks.
@@ -263,8 +242,6 @@ type LogQueryResultPayload struct {
 	Success  bool   `json:"success"`
 	Error    string `json:"error,omitempty"`
 	Logs     string `json:"logs"`
-	// GatewayID — see DeviceHelloPayload.GatewayID.
-	GatewayID string `json:"gateway_id"`
 }
 
 // TerminalAuditChunkPayload carries a stdin chunk from a terminal
@@ -277,11 +254,6 @@ type TerminalAuditChunkPayload struct {
 	UserID    string `json:"user_id"`
 	Data      []byte `json:"data"`
 	Sequence  int64  `json:"sequence"`
-	// GatewayID — see DeviceHelloPayload.GatewayID. Bound against the
-	// DeviceID the audit chunk claims, so a confused/compromised gateway
-	// cannot relay terminal-stdin audit bytes for a device that is live
-	// on a different gateway.
-	GatewayID string `json:"gateway_id"`
 }
 
 // === Search index payloads (search queue) ===

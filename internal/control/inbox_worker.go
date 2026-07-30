@@ -22,7 +22,6 @@ import (
 	"github.com/manchtools/power-manage/server/internal/dyngroupeval"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/resolution"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
@@ -48,19 +47,10 @@ type InboxWorker struct {
 	signer     ca.ActionSigner
 	taskSigner *taskqueue.Signer
 	logger     *slog.Logger
-	// resolver looks up which gateway a device is currently live on, so
-	// every device-origin handler can confine the task to that gateway
-	// (registry.CheckDeviceGatewayBinding). Required: production always wires
-	// the Valkey-backed registry (the worker only runs with Valkey), and the
-	// binding check fails closed on nil (spec 31 D6).
-	resolver registry.DeviceGatewayLookup
 }
 
-// NewInboxWorker creates a new inbox worker. resolver is the
-// device→gateway routing lookup used to bind device-origin tasks to the
-// gateway the device is live on; it is required — a nil resolver makes every
-// device-origin task fail closed (spec 31 D6).
-func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger, resolver registry.DeviceGatewayLookup) *InboxWorker {
+// NewInboxWorker creates a new inbox worker.
+func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.ActionSigner, taskSigner *taskqueue.Signer, logger *slog.Logger) *InboxWorker {
 	return &InboxWorker{
 		now:        time.Now,
 		store:      st,
@@ -68,38 +58,19 @@ func NewInboxWorker(st *store.Store, aqClient *taskqueue.Client, signer ca.Actio
 		signer:     signer,
 		taskSigner: taskSigner,
 		logger:     logger,
-		resolver:   resolver,
 	}
 }
 
-// verifyDeviceGatewayBinding maps the shared binding policy to an inbox drop.
-// Returns nil when the binding is OK.
+// The device→gateway binding check that used to guard every device-origin
+// handler here is gone with the gateway.
 //
-// D5: only a PERMANENT binding verdict — one of the three sentinels (missing
-// gateway_id, device not live on any gateway, or a gateway mismatch) — is a
-// forged/unsatisfiable claim that a retry can never fix, so those are wrapped
-// with asynq.SkipRetry and the event is dropped. A transient lookup failure
-// (registry backend unreachable, context cancellation) is NOT one of those
-// sentinels; wrapping it in SkipRetry would silently drop a legitimate
-// device-origin event on a Valkey blip. Return it unwrapped so Asynq retries.
-// The nil-resolver error (spec 31 D6) stays retryable DELIBERATELY: it is a
-// wiring bug, and retrying keeps the device-origin events queued until a
-// restart with fixed wiring — SkipRetry would discard legitimate events.
-func (w *InboxWorker) verifyDeviceGatewayBinding(ctx context.Context, deviceID, gatewayID string) error {
-	err := registry.CheckDeviceGatewayBinding(ctx, w.resolver, deviceID, gatewayID)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, registry.ErrBindingGatewayMissing) ||
-		errors.Is(err, registry.ErrBindingDeviceNotLive) ||
-		errors.Is(err, registry.ErrBindingMismatch) {
-		w.logger.Warn("inbox: dropping device-origin task: gateway binding", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
-		return fmt.Errorf("%w: device→gateway binding: %v", asynq.SkipRetry, err)
-	}
-	// Transient — keep it retryable (no SkipRetry).
-	w.logger.Warn("inbox: retrying device-origin task: transient gateway-binding lookup failure", "device_id", deviceID, "claimed_gateway_id", gatewayID, "error", err)
-	return fmt.Errorf("device→gateway binding lookup: %w", err)
-}
+// It asked whether the INTERMEDIARY submitting a task was entitled to speak for
+// the device it named — a real question when an untrusted relay terminated the
+// agent stream and asserted a device id on its behalf. Control now terminates
+// that stream itself, and the stream handler proves the device's identity
+// against its mTLS client certificate before anything is enqueued. The
+// authority moved from a registry lookup to the certificate, which is strictly
+// stronger: it cannot be satisfied by a stale or forged registry entry.
 
 // NewMux returns an Asynq ServeMux with handlers for the main
 // control inbox queue. The terminal audit chunk handler is split
@@ -142,10 +113,6 @@ func (w *InboxWorker) handleDeviceHello(ctx context.Context, t *asynq.Task) erro
 	var payload taskqueue.DeviceHelloPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal device hello: %w", err)
-	}
-
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
 	}
 
 	logger := w.logger.With("device_id", payload.DeviceID, "hostname", payload.Hostname)
@@ -197,10 +164,6 @@ func (w *InboxWorker) handleDeviceHeartbeat(ctx context.Context, t *asynq.Task) 
 		return fmt.Errorf("unmarshal device heartbeat: %w", err)
 	}
 
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
-	}
-
 	// Skip processing for deleted or unknown devices.
 	deleted, err := w.store.Repos().Device.IsDeleted(ctx, payload.DeviceID)
 	if err != nil {
@@ -249,10 +212,6 @@ func (w *InboxWorker) handleExecutionResult(ctx context.Context, t *asynq.Task) 
 	resultID := result.GetActionId().GetValue()
 	if resultID == "" {
 		return fmt.Errorf("action result missing action ID")
-	}
-
-	if err := w.verifyDeviceGatewayBinding(ctx, deviceID, payload.GatewayID); err != nil {
-		return err
 	}
 
 	logger := w.logger.With("device_id", deviceID, "result_id", resultID)
@@ -541,10 +500,6 @@ func (w *InboxWorker) handleExecutionOutputChunk(ctx context.Context, t *asynq.T
 		return fmt.Errorf("unmarshal output chunk: %w", err)
 	}
 
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
-	}
-
 	// Second-line size guard (audit F-33). The gateway already caps
 	// at 64 KiB on the agent-facing side (handler/agent.go,
 	// maxOutputChunkBytes), but the inbox worker is also a trust
@@ -607,10 +562,6 @@ func (w *InboxWorker) handleOSQueryResult(ctx context.Context, t *asynq.Task) er
 		return fmt.Errorf("unmarshal osquery result: %w", err)
 	}
 
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
-	}
-
 	w.logger.Info("received query result",
 		"device_id", payload.DeviceID,
 		"query_id", payload.QueryID,
@@ -643,10 +594,6 @@ func (w *InboxWorker) handleLogQueryResult(ctx context.Context, t *asynq.Task) e
 		return fmt.Errorf("unmarshal log query result: %w", err)
 	}
 
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
-	}
-
 	w.logger.Info("received log query result",
 		"device_id", payload.DeviceID,
 		"query_id", payload.QueryID,
@@ -674,10 +621,6 @@ func (w *InboxWorker) handleInventoryUpdate(ctx context.Context, t *asynq.Task) 
 	var payload taskqueue.InventoryUpdatePayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal inventory update: %w", err)
-	}
-
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
 	}
 
 	// Skip processing for deleted or unknown devices. A just-deleted
@@ -766,10 +709,6 @@ func (w *InboxWorker) handleSecurityAlert(ctx context.Context, t *asynq.Task) er
 		return fmt.Errorf("unmarshal security alert: %w", err)
 	}
 
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
-	}
-
 	// Skip processing for deleted or unknown devices — do not append a
 	// new alert event onto a deleted device's stream. Best-effort like the
 	// inventory guard above (see its note); the residual TOCTOU is benign —
@@ -813,10 +752,6 @@ func (w *InboxWorker) handleRevokeLuksDeviceKeyResult(ctx context.Context, t *as
 	var payload taskqueue.RevokeLuksDeviceKeyResultPayload
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal revoke luks result: %w", err)
-	}
-
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
 	}
 
 	w.logger.Info("received LUKS device key revocation result",
@@ -1216,10 +1151,6 @@ func (w *InboxWorker) handleTerminalAuditChunk(ctx context.Context, t *asynq.Tas
 		w.logger.Warn("dropping terminal audit chunk with missing fields",
 			"session_id", payload.SessionID, "device_id", payload.DeviceID, "user_id", payload.UserID)
 		return nil
-	}
-
-	if err := w.verifyDeviceGatewayBinding(ctx, payload.DeviceID, payload.GatewayID); err != nil {
-		return err
 	}
 
 	// The session row is the authority on who owns the stdin stream.

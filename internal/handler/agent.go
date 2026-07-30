@@ -3,7 +3,6 @@ package handler
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +17,10 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/connection"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
@@ -36,7 +33,23 @@ const (
 	DeviceIDContextKey contextKey = "device_id"
 )
 
-const registryDetachTimeout = 5 * time.Second
+// AgentOps is the control-side logic the stream handler invokes on behalf of a
+// connected agent. It is an interface here rather than a concrete type so this
+// package does not depend on internal/api, and so tests can drive the handler
+// without a database.
+//
+// Every method takes deviceID as its own argument, sourced from the stream's
+// mTLS identity. Passing it separately rather than reading it from the request
+// is what prevents one device naming another; api.AgentOps guards that shape
+// with a reflection test.
+type AgentOps interface {
+	VerifyDevice(ctx context.Context, deviceID string) error
+	SyncActions(ctx context.Context, deviceID string) (*pm.SyncActionsResponse, error)
+	ValidateLuksToken(ctx context.Context, deviceID string, req *pm.ValidateLuksTokenRequest) (*pm.ValidateLuksTokenResponse, error)
+	GetLuksKey(ctx context.Context, deviceID string, req *pm.GetLuksKeyRequest) (*pm.GetLuksKeyResponse, error)
+	StoreLuksKey(ctx context.Context, deviceID string, req *pm.StoreLuksKeyRequest) (*pm.StoreLuksKeyResponse, error)
+	StoreLpsPasswords(ctx context.Context, deviceID string, req *pm.StoreLpsPasswordsRequest) (*pm.StoreLpsPasswordsResponse, error)
+}
 
 type deviceWorkerManager interface {
 	StartWorker(deviceID string) error
@@ -53,19 +66,12 @@ type AgentHandler struct {
 	// wiring still passes the concrete *taskqueue.Client which
 	// implements the interface.
 	aqClient          taskqueue.Enqueuer
-	controlProxy      *ControlProxy
+	ops               AgentOps
 	workerMgr         deviceWorkerManager
 	logger            *slog.Logger
 	serverVersion     string
 	heartbeatInterval time.Duration
 	requireTLS        bool
-
-	// Multi-gateway routing. registry and gatewayID are set via
-	// SetGatewayRouting at startup. nil registry means single-
-	// gateway mode: device→gateway entries are not published and
-	// the control server falls back to its static gateway URL.
-	registry  *registry.Registry
-	gatewayID string
 
 	// terminalSessions is the gateway-side registry of active
 	// WebSocket terminal bridge sessions. Set via
@@ -80,7 +86,7 @@ type AgentHandler struct {
 func NewAgentHandler(
 	manager *connection.Manager,
 	aqClient taskqueue.Enqueuer,
-	controlProxy *ControlProxy,
+	ops AgentOps,
 	workerMgr deviceWorkerManager,
 	serverVersion string,
 	heartbeatInterval time.Duration,
@@ -89,7 +95,7 @@ func NewAgentHandler(
 	return &AgentHandler{
 		manager:           manager,
 		aqClient:          aqClient,
-		controlProxy:      controlProxy,
+		ops:               ops,
 		workerMgr:         workerMgr,
 		serverVersion:     serverVersion,
 		heartbeatInterval: heartbeatInterval,
@@ -102,7 +108,7 @@ func NewAgentHandler(
 func NewAgentHandlerWithTLS(
 	manager *connection.Manager,
 	aqClient taskqueue.Enqueuer,
-	controlProxy *ControlProxy,
+	ops AgentOps,
 	workerMgr deviceWorkerManager,
 	serverVersion string,
 	heartbeatInterval time.Duration,
@@ -111,24 +117,13 @@ func NewAgentHandlerWithTLS(
 	return &AgentHandler{
 		manager:           manager,
 		aqClient:          aqClient,
-		controlProxy:      controlProxy,
+		ops:               ops,
 		workerMgr:         workerMgr,
 		serverVersion:     serverVersion,
 		heartbeatInterval: heartbeatInterval,
 		logger:            logger,
 		requireTLS:        true,
 	}
-}
-
-// SetGatewayRouting wires the multi-gateway registry into the
-// handler. Called from cmd/gateway/main.go at startup. After this
-// is set, every agent connect / heartbeat / disconnect publishes
-// the device→gateway mapping to Valkey so the control server can
-// route terminal sessions to the correct gateway. nil registry
-// disables routing (single-gateway deployments).
-func (h *AgentHandler) SetGatewayRouting(reg *registry.Registry, gatewayID string) {
-	h.registry = reg
-	h.gatewayID = gatewayID
 }
 
 // SetTerminalSessions wires the terminal session registry so the
@@ -204,20 +199,23 @@ func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger
 		// before its (1-year) natural expiry. r.TLS.PeerCertificates[0] is the
 		// same leaf the peer-class check used, so it's non-nil here.
 		//
-		// A nil checker or one whose list has not loaded means we CANNOT prove
-		// this cert is unrevoked → reject, never admit. There is no opt-out from
-		// this gate — a deployment without a loaded CRL rejects every call here.
-		if revocation == nil || !revocation.Loaded() {
-			logger.Warn("mTLS rejected: certificate revocation unavailable (fail-closed)",
-				"device_id", deviceID,
-				"remote_addr", r.RemoteAddr,
-				"checker_nil", revocation == nil,
-			)
+		// A nil checker, or a lookup that ERRORS, means we CANNOT prove this cert
+		// is unrevoked → reject, never admit. There is no opt-out from this gate.
+		if revocation == nil {
+			logger.Warn("mTLS rejected: no revocation checker configured (fail-closed)",
+				"device_id", deviceID, "remote_addr", r.RemoteAddr)
 			http.Error(w, "client certificate revocation unavailable", http.StatusForbidden)
 			return
 		}
 		fp := ca.FingerprintFromCert(r.TLS.PeerCertificates[0])
-		if revocation.IsRevoked(fp) {
+		revoked, rerr := revocation.IsRevoked(r.Context(), fp)
+		if rerr != nil {
+			logger.Error("mTLS rejected: revocation lookup failed (fail-closed)",
+				"device_id", deviceID, "remote_addr", r.RemoteAddr, "error", rerr)
+			http.Error(w, "client certificate revocation unavailable", http.StatusForbidden)
+			return
+		}
+		if revoked {
 			logger.Warn("mTLS rejected: certificate revoked",
 				"device_id", deviceID,
 				"remote_addr", r.RemoteAddr,
@@ -347,7 +345,7 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	}
 
 	// Verify the device exists and is not deleted on the control server.
-	if err := h.controlProxy.VerifyDevice(ctx, deviceID); err != nil {
+	if err := h.ops.VerifyDevice(ctx, deviceID); err != nil {
 		h.logger.Warn("device verification failed, rejecting connection",
 			"device_id", deviceID,
 			"error", err,
@@ -365,19 +363,6 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	// Register the agent connection
 	agent := h.manager.Register(ctx, deviceID, hello.Hostname, hello.AgentVersion, stream)
 
-	// Publish the device→gateway mapping in the multi-gateway
-	// registry so ControlService.StartTerminal can route the user's
-	// WebSocket to this specific gateway. Best-effort: a Valkey
-	// failure here is logged but does not refuse the connection,
-	// because terminal sessions are an optional feature on top of
-	// the existing agent stream.
-	if h.registry != nil {
-		if err := h.registry.AttachDevice(ctx, deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
-			h.logger.Warn("failed to publish device→gateway mapping",
-				"device_id", deviceID, "gateway_id", h.gatewayID, "error", err)
-		}
-	}
-
 	// Start per-device Asynq worker to process action dispatches
 	if err := h.workerMgr.StartWorker(deviceID); err != nil {
 		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
@@ -394,20 +379,6 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		// The agent may have reconnected and replaced us while we waited.
 		if current, ok := h.manager.Get(deviceID); ok && current == agent {
 			h.manager.Unregister(deviceID)
-			// Detach from the registry too. Same race-aware pattern:
-			// only delete if we're still the current connection,
-			// otherwise we'd evict a freshly-attached entry from a
-			// reconnect that already happened. The detach context is
-			// derived from the stream context but detached from its
-			// cancellation so cleanup can finish after the RPC ends.
-			if h.registry != nil {
-				detachCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), registryDetachTimeout)
-				defer cancel()
-				if err := h.registry.DetachDevice(detachCtx, deviceID, h.gatewayID); err != nil {
-					h.logger.Warn("failed to remove device→gateway mapping",
-						"device_id", deviceID, "error", err)
-				}
-			}
 		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
@@ -417,7 +388,6 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		DeviceID:     deviceID,
 		Hostname:     hello.Hostname,
 		AgentVersion: hello.AgentVersion,
-		GatewayID:    h.gatewayID,
 	}); err != nil {
 		h.logger.Warn("failed to enqueue device hello", "error", err)
 	}
@@ -509,6 +479,8 @@ func (h *AgentHandler) handleAgentMessage(ctx context.Context, deviceID string, 
 		return h.handleGetLuksKey(ctx, deviceID, msg.Id, p.GetLuksKey)
 	case *pm.AgentMessage_StoreLuksKey:
 		return h.handleStoreLuksKey(ctx, deviceID, msg.Id, p.StoreLuksKey)
+	case *pm.AgentMessage_StoreLpsPasswords:
+		return h.handleStoreLpsPasswords(ctx, deviceID, msg.Id, p.StoreLpsPasswords)
 	case *pm.AgentMessage_RevokeLuksDeviceKeyResult:
 		return h.handleRevokeLuksResult(deviceID, p.RevokeLuksDeviceKeyResult)
 	case *pm.AgentMessage_LogQueryResult:
@@ -559,18 +531,12 @@ func (h *AgentHandler) handleHeartbeat(ctx context.Context, deviceID string, hb 
 	// were dead writes into the event store. Live metrics will need a
 	// dedicated DeviceMetricsPayload + projection if we ever want them.
 	_ = hb
-	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID, GatewayID: h.gatewayID}
+	payload := taskqueue.DeviceHeartbeatPayload{DeviceID: deviceID}
 	// Refresh the device→gateway TTL on every heartbeat. Best-effort:
 	// a Valkey failure here is logged but does not refuse the
 	// heartbeat — the existing UpdateLastSeen path is the source of
 	// truth for connection liveness. Inherits the bidi-stream ctx so
 	// the refresh aborts when the agent stream tears down (audit N006).
-	if h.registry != nil {
-		if err := h.registry.RefreshDevice(ctx, deviceID, h.gatewayID, registry.DefaultDeviceTTL); err != nil {
-			h.logger.Warn("failed to refresh device→gateway mapping",
-				"device_id", deviceID, "error", err)
-		}
-	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
 }
 
@@ -590,10 +556,6 @@ func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, 
 		"duration_ms", result.DurationMs,
 	)
 
-	if err := h.proxyLpsRotations(ctx, deviceID, resultID, result); err != nil {
-		return err
-	}
-
 	// Binary protobuf, not protojson: no proto message is serialized as JSON over
 	// the gateway→control queue (the result rides as binary inside the task).
 	resultProto, err := proto.Marshal(result)
@@ -603,82 +565,7 @@ func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, 
 	return h.aqClient.EnqueueToControl(taskqueue.TypeExecutionResult, taskqueue.ExecutionResultPayload{
 		DeviceID:          deviceID,
 		ActionResultProto: resultProto,
-		GatewayID:         h.gatewayID,
 	})
-}
-
-// proxyLpsRotations extracts LPS password rotations from metadata, proxies them
-// via internal RPC, and strips the key before the result is enqueued to Valkey.
-// The gateway relays each rotation's SEALED password opaquely: the agent sealed
-// it to control's LPS public key (spec 18), so the gateway — the least-trusted
-// server-side actor — can no longer read rotated passwords. Unmarshal failures
-// strip immediately (malformed, retry won't help). StoreLpsPasswords failures
-// return an error — the agent will resend the result on reconnect, preserving
-// the metadata for retry.
-func (h *AgentHandler) proxyLpsRotations(ctx context.Context, deviceID, resultID string, result *pm.ActionResult) error {
-	if result.Metadata == nil {
-		return nil
-	}
-	rotationsJSON, ok := result.Metadata["lps.rotations"]
-	if !ok || rotationsJSON == "" {
-		return nil
-	}
-
-	// sealed_password is base64 of the agent's crypto.SealLpsPassword output.
-	// A legacy agent (pre-sealed-transport) emits the old `password` cleartext
-	// field instead; those entries are dropped loudly below — the gateway must
-	// never proxy or enqueue a cleartext password.
-	var rotations []struct {
-		Username       string `json:"username"`
-		SealedPassword string `json:"sealed_password"`
-		RotatedAt      string `json:"rotated_at"`
-		Reason         string `json:"reason"`
-	}
-	if err := json.Unmarshal([]byte(rotationsJSON), &rotations); err != nil {
-		delete(result.Metadata, "lps.rotations")
-		h.logger.Error("failed to unmarshal lps.rotations metadata", "error", err)
-		return nil
-	}
-	if len(rotations) == 0 {
-		delete(result.Metadata, "lps.rotations")
-		return nil
-	}
-
-	protoRotations := make([]*pm.LpsPasswordRotation, 0, len(rotations))
-	for _, r := range rotations {
-		if r.SealedPassword == "" {
-			// Legacy cleartext entry (or a malformed one): the agent predates
-			// sealed LPS transport. The local rotation already happened; it
-			// becomes centrally recoverable again at the next post-upgrade
-			// rotation. Drop it — never proxy cleartext.
-			h.logger.Error("dropping LPS rotation without a sealed password (agent predates sealed LPS transport)",
-				"device_id", deviceID)
-			continue
-		}
-		sealed, err := base64.StdEncoding.DecodeString(r.SealedPassword)
-		if err != nil {
-			h.logger.Error("dropping LPS rotation with undecodable sealed password",
-				"device_id", deviceID, "error", err)
-			continue
-		}
-		protoRotations = append(protoRotations, &pm.LpsPasswordRotation{
-			Username:       r.Username,
-			SealedPassword: sealed,
-			RotatedAt:      r.RotatedAt,
-			Reason:         rotationReasonFromAgentString(r.Reason),
-		})
-	}
-	// Every entry was legacy/malformed and dropped: nothing to proxy, but the
-	// metadata must still be stripped before the result is enqueued to Valkey.
-	if len(protoRotations) == 0 {
-		delete(result.Metadata, "lps.rotations")
-		return nil
-	}
-	if err := h.controlProxy.StoreLpsPasswords(ctx, deviceID, resultID, protoRotations); err != nil {
-		return fmt.Errorf("store lps passwords: %w", err)
-	}
-	delete(result.Metadata, "lps.rotations")
-	return nil
 }
 
 // maxOutputChunkBytes is the per-chunk ceiling enforced by the
@@ -727,7 +614,6 @@ func (h *AgentHandler) handleOutputChunk(ctx context.Context, deviceID string, c
 		Stream:      streamType,
 		Data:        string(chunk.Data),
 		Sequence:    int64(chunk.Sequence),
-		GatewayID:   h.gatewayID,
 	})
 }
 
@@ -746,12 +632,11 @@ func (h *AgentHandler) handleQueryResult(deviceID string, result *pm.OSQueryResu
 		rowsBytes = []byte("[]")
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeOSQueryResult, taskqueue.OSQueryResultPayload{
-		DeviceID:  deviceID,
-		QueryID:   result.QueryId,
-		Success:   result.Success,
-		Error:     result.Error,
-		RowsJSON:  rowsBytes,
-		GatewayID: h.gatewayID,
+		DeviceID: deviceID,
+		QueryID:  result.QueryId,
+		Success:  result.Success,
+		Error:    result.Error,
+		RowsJSON: rowsBytes,
 	})
 }
 
@@ -776,9 +661,8 @@ func (h *AgentHandler) handleInventory(deviceID string, inventory *pm.DeviceInve
 		})
 	}
 	return h.aqClient.EnqueueToControl(taskqueue.TypeInventoryUpdate, taskqueue.InventoryUpdatePayload{
-		DeviceID:  deviceID,
-		Tables:    tables,
-		GatewayID: h.gatewayID,
+		DeviceID: deviceID,
+		Tables:   tables,
 	})
 }
 
@@ -794,12 +678,11 @@ func (h *AgentHandler) handleSecurityAlert(ctx context.Context, deviceID string,
 		AlertType: alert.Type.String(),
 		Message:   alert.Message,
 		Details:   alert.Details,
-		GatewayID: h.gatewayID,
 	})
 }
 
 func (h *AgentHandler) handleGetLuksKey(ctx context.Context, deviceID, msgID string, req *pm.GetLuksKeyRequest) error {
-	resp, err := h.controlProxy.GetLuksKey(ctx, deviceID, req.ActionId)
+	resp, err := h.ops.GetLuksKey(ctx, deviceID, req)
 	if err != nil {
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msgID,
@@ -820,26 +703,10 @@ func (h *AgentHandler) handleGetLuksKey(ctx context.Context, deviceID, msgID str
 }
 
 func (h *AgentHandler) handleStoreLuksKey(ctx context.Context, deviceID, msgID string, req *pm.StoreLuksKeyRequest) error {
-	// Legacy-cleartext guard (spec 25): a pre-sealed-transport agent puts a
-	// cleartext passphrase where sealed bytes belong (string→bytes is
-	// wire-compatible). Anything shorter than a minimal sealed blob cannot
-	// be one — drop it loudly and never proxy. Control's unseal is the
-	// authority for the remainder; the gateway just refuses the obvious.
-	if len(req.SealedPassphrase) < sdkcrypto.MinSealedLen {
-		h.logger.Error("dropping LUKS key store without a sealed passphrase (agent predates sealed LUKS transport)",
-			"device_id", deviceID, "action_id", req.ActionId)
-		return h.manager.Send(deviceID, &pm.ServerMessage{
-			Id: msgID,
-			Payload: &pm.ServerMessage_Error{
-				Error: &pm.Error{
-					Code:    connect.CodeInvalidArgument.String(),
-					Message: "sealed passphrase required: update the agent (sealed LUKS transport, spec 25)",
-				},
-			},
-		})
-	}
-
-	resp, err := h.controlProxy.StoreLuksKey(ctx, deviceID, req.ActionId, req.DevicePath, req.SealedPassphrase, req.RotationReason)
+	// The sealed-blob length guard is gone with the seal itself: the passphrase
+	// now arrives as plaintext over the stream's own mTLS, and control encrypts
+	// it at rest. There is no relay left to withhold it from.
+	resp, err := h.ops.StoreLuksKey(ctx, deviceID, req)
 	if err != nil {
 		return h.manager.Send(deviceID, &pm.ServerMessage{
 			Id: msgID,
@@ -859,6 +726,39 @@ func (h *AgentHandler) handleStoreLuksKey(ctx context.Context, deviceID, msgID s
 	})
 }
 
+// handleStoreLpsPasswords persists a batch of rotated local passwords.
+//
+// The agent used to smuggle these through ActionResult metadata as sealed
+// base64, because the gateway relaying the result was not trusted to read them.
+// They are now a first-class stream message carrying plaintext over mTLS.
+//
+// The reply is not optional. LPS rotation is irreversible — the agent has
+// already changed the passwords locally — and the agent blocks on this response
+// before clearing its pending state. A missing reply looks to it exactly like a
+// lost batch, which is why the failure path answers with an error rather than
+// returning silently.
+func (h *AgentHandler) handleStoreLpsPasswords(ctx context.Context, deviceID, msgID string, req *pm.StoreLpsPasswordsRequest) error {
+	resp, err := h.ops.StoreLpsPasswords(ctx, deviceID, req)
+	if err != nil {
+		h.logger.Error("failed to store LPS passwords", "device_id", deviceID, "error", err)
+		return h.manager.Send(deviceID, &pm.ServerMessage{
+			Id: msgID,
+			Payload: &pm.ServerMessage_Error{
+				Error: &pm.Error{
+					Code:    connect.CodeInternal.String(),
+					Message: "failed to store LPS passwords",
+				},
+			},
+		})
+	}
+	return h.manager.Send(deviceID, &pm.ServerMessage{
+		Id: msgID,
+		Payload: &pm.ServerMessage_StoreLpsPasswords{
+			StoreLpsPasswords: resp,
+		},
+	})
+}
+
 func (h *AgentHandler) handleRevokeLuksResult(deviceID string, result *pm.RevokeLuksDeviceKeyResult) error {
 	h.logger.Info("received LUKS device key revocation result",
 		"device_id", deviceID,
@@ -867,11 +767,10 @@ func (h *AgentHandler) handleRevokeLuksResult(deviceID string, result *pm.Revoke
 		"error", result.Error,
 	)
 	return h.aqClient.EnqueueToControl(taskqueue.TypeRevokeLuksDeviceKeyResult, taskqueue.RevokeLuksDeviceKeyResultPayload{
-		DeviceID:  deviceID,
-		ActionID:  result.ActionId,
-		Success:   result.Success,
-		Error:     result.Error,
-		GatewayID: h.gatewayID,
+		DeviceID: deviceID,
+		ActionID: result.ActionId,
+		Success:  result.Success,
+		Error:    result.Error,
 	})
 }
 
@@ -882,12 +781,11 @@ func (h *AgentHandler) handleLogQueryResult(deviceID string, result *pm.LogQuery
 		"success", result.Success,
 	)
 	return h.aqClient.EnqueueToControl(taskqueue.TypeLogQueryResult, taskqueue.LogQueryResultPayload{
-		DeviceID:  deviceID,
-		QueryID:   result.QueryId,
-		Success:   result.Success,
-		Error:     result.Error,
-		Logs:      result.Logs,
-		GatewayID: h.gatewayID,
+		DeviceID: deviceID,
+		QueryID:  result.QueryId,
+		Success:  result.Success,
+		Error:    result.Error,
+		Logs:     result.Logs,
 	})
 }
 
@@ -924,7 +822,7 @@ func (h *AgentHandler) ValidateLuksToken(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	resp, err := h.controlProxy.ValidateLuksToken(ctx, req.Msg.DeviceId, req.Msg.Token)
+	resp, err := h.ops.ValidateLuksToken(ctx, req.Msg.DeviceId, req.Msg)
 	if err != nil {
 		h.logger.Warn("LUKS token validation failed", "device_id", req.Msg.DeviceId, "error", err)
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("token is invalid or has expired"))
@@ -947,7 +845,7 @@ func (h *AgentHandler) SyncActions(ctx context.Context, req *connect.Request[pm.
 
 	h.logger.Info("agent syncing actions", "device_id", deviceID)
 
-	resp, err := h.controlProxy.SyncActions(ctx, deviceID)
+	resp, err := h.ops.SyncActions(ctx, deviceID)
 	if err != nil {
 		h.logger.Error("failed to proxy sync actions", "device_id", deviceID, "error", err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to get assigned actions"))

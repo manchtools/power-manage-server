@@ -8,38 +8,31 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 )
 
-// spyInternalClient records whether ProxyValidateTerminalToken was called so a
-// test can prove the bridge does NOT consult control when a token arrives via
-// the rejected ?token= query transport. Embedding the interface means any other
-// method call would nil-panic (none are exercised here).
-type spyInternalClient struct {
-	pmv1connect.InternalServiceClient
+// spyTokenValidator records whether the bridge consulted the token store, so a
+// test can prove it does NOT when a token arrives via the rejected ?token=
+// query transport. The redemption is single-use, so a call the bridge should
+// never have made would burn a legitimate client's token.
+type spyTokenValidator struct {
 	validateCalls int
 	validateErr   error
 }
 
-func (s *spyInternalClient) ProxyValidateTerminalToken(
-	context.Context, *connect.Request[pm.InternalValidateTerminalTokenRequest],
-) (*connect.Response[pm.InternalValidateTerminalTokenResponse], error) {
+func (s *spyTokenValidator) ValidateTerminalToken(context.Context, string, string) (*TerminalSession, error) {
 	s.validateCalls++
 	if s.validateErr != nil {
 		return nil, s.validateErr
 	}
-	return connect.NewResponse(&pm.InternalValidateTerminalTokenResponse{}), nil
+	return &TerminalSession{}, nil
 }
 
-func bridgeWithSpy(spy *spyInternalClient) *TerminalBridgeHandler {
+func bridgeWithSpy(spy *spyTokenValidator) *TerminalBridgeHandler {
 	return &TerminalBridgeHandler{
-		controlProxy: &ControlProxy{client: spy, gatewayID: "gw"},
-		logger:       slog.Default(),
+		tokens: spy,
+		logger: slog.Default(),
 	}
 }
 
@@ -61,7 +54,7 @@ func TestExtractTerminalToken_SubprotocolPreferred(t *testing.T) {
 // Sec-WebSocket-Protocol header where it does not leak into access logs /
 // Referer / devtools.
 func TestServeHTTP_QueryStringTokenRejected(t *testing.T) {
-	spy := &spyInternalClient{}
+	spy := &spyTokenValidator{}
 	h := bridgeWithSpy(spy)
 
 	r := httptest.NewRequest(http.MethodGet, "/terminal?session_id=s1&token=leaky-url-token", nil)
@@ -79,7 +72,7 @@ func TestServeHTTP_QueryStringTokenRejected(t *testing.T) {
 // the transport gate). The spy returns an error so the flow stops at the
 // invalid-token 401 without needing a live agent/WebSocket upgrade.
 func TestServeHTTP_SubprotocolTokenReachesValidation(t *testing.T) {
-	spy := &spyInternalClient{validateErr: errors.New("invalid token")}
+	spy := &spyTokenValidator{validateErr: errors.New("invalid token")}
 	h := bridgeWithSpy(spy)
 
 	r := httptest.NewRequest(http.MethodGet, "/terminal?session_id=s1", nil)
@@ -95,7 +88,7 @@ func TestServeHTTP_SubprotocolTokenReachesValidation(t *testing.T) {
 // TestServeHTTP_NoTokenIsBadRequest pins that a request with neither transport
 // is a 400 and never consults control.
 func TestServeHTTP_NoTokenIsBadRequest(t *testing.T) {
-	spy := &spyInternalClient{}
+	spy := &spyTokenValidator{}
 	h := bridgeWithSpy(spy)
 
 	r := httptest.NewRequest(http.MethodGet, "/terminal?session_id=s1", nil)

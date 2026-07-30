@@ -19,6 +19,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/datastore"
+	agenthandler "github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -45,8 +46,8 @@ type Config struct {
 	AdminEmail               string
 	AdminPassword            string
 	CORSOrigins              []string
-	GatewayURL               string
-	TerminalGatewayURL       string // public WebSocket URL of the gateway terminal endpoint, e.g. wss://gw.example.com/terminal
+	ControlURL               string
+	TerminalPublicURL        string
 	DynamicGroupEvalInterval time.Duration
 	PasswordAuthEnabled      bool
 	SSOCallbackBaseURL       string
@@ -61,6 +62,7 @@ type Config struct {
 
 	// Internal mTLS listener (InternalService for gateway communication)
 	InternalListenAddr string
+	HeartbeatInterval  time.Duration
 	InternalTLSCert    string
 	InternalTLSKey     string
 
@@ -68,7 +70,6 @@ type Config struct {
 	// presents to GatewayAuthService.EnrollGateway. Empty disables enrollment
 	// (every attempt is rejected). PM_GATEWAY_ENROLL_TOKEN — a cross-service
 	// secret shared with the gateway (same PM_* convention as PM_TASK_SIGNING_KEY).
-	GatewayEnrollToken string
 
 	// CORS
 	CORSAllowAll bool // Allow all origins (development only)
@@ -133,19 +134,19 @@ func main() {
 	// Redact the gateway URL on the startup line too. If a bad shape
 	// slipped in (e.g. https://u:p@host/ despite the validator, or an
 	// operator paste-mistake), it shouldn't land in every boot log.
-	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
+	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "control_url", api.RedactControlURL(cfg.ControlURL), "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
 	// CONTROL_GATEWAY_URL is fatal when invalid: registration hands
 	// it back to the agent verbatim, so any invalid shape — empty
 	// string, bare hostname (parses as a relative path), http://
 	// (agents refuse h2c), userinfo, or non-https scheme — turns
 	// every successful enrollment into an agent that can never
-	// connect. api.ValidateGatewayURL is the shared validator
+	// connect. api.ValidateControlURL is the shared validator
 	// (also invoked defensively in the registration handler).
-	if err := api.ValidateGatewayURL(cfg.GatewayURL); err != nil {
+	if err := api.ValidateControlURL(cfg.ControlURL); err != nil {
 		// Redact userinfo before logging — the validator rejects
 		// URLs that contain credentials, but those credentials
 		// shouldn't land in the startup error line regardless.
-		logger.Error("CONTROL_GATEWAY_URL is invalid", "gateway_url", api.RedactGatewayURL(cfg.GatewayURL), "error", err)
+		logger.Error("CONTROL_PUBLIC_URL is invalid", "control_url", api.RedactControlURL(cfg.ControlURL), "error", err)
 		os.Exit(1)
 	}
 
@@ -310,7 +311,7 @@ func main() {
 	actionSigner := ca.NewActionSigner(certAuth)
 
 	// Setup Connect-RPC service
-	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.GatewayURL, logger, encryptor, api.ControlServiceConfig{
+	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.ControlURL, logger, encryptor, api.ControlServiceConfig{
 		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
 		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
 		SCIMBaseURL:         cfg.SCIMBaseURL,
@@ -409,7 +410,6 @@ func main() {
 		Register:    auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
 		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
 		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
-		GetCRL:      auth.NewRateLimiter(30, 1*time.Minute), // agent CRL fetch — generous headroom over the legitimate few-per-hour cadence (retries, many agents behind one NAT)
 		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
 		SSO:         auth.NewRateLimiter(10, 1*time.Minute), // expensive unauth endpoint (DB write + outbound discovery)
 		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
@@ -440,27 +440,14 @@ func main() {
 	// embedded content) while still bounding the pre-auth buffer.
 	const controlMaxRequestBytes = 8 << 20
 
+	// A single agent frame may legitimately be large (an inventory snapshot, a
+	// batch of action results), so the agent listener gets its own ceiling
+	// rather than the control API's. Carried over from the gateway unchanged.
+	const maxAgentMessageBytes = 64 << 20
+
 	mux := http.NewServeMux()
 	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
 	mux.Handle(path, handler)
-
-	// GatewayAuthService (spec 31): public, token-gated gateway self-enrollment.
-	// Mounted WITHOUT the auth/authz interceptors (like InternalService) — it
-	// has no JWT and self-gates on the bootstrap token + a per-IP rate limiter in
-	// the handler, so a foreign-service procedure never enters ControlService's
-	// PublicProcedures allow-list. Validation + logging + deadline still apply.
-	gatewayAuthInterceptors := connect.WithInterceptors(
-		api.NewLoggingInterceptor(logger),
-		api.NewRequestDeadlineInterceptor(api.RequestDeadline),
-		api.NewValidationInterceptor(),
-	)
-	gatewayEnrollLimiter := auth.NewRateLimiter(5, 1*time.Minute) // 5/min/IP (spec 31 AC4)
-	gatewayAuthHandler := api.NewGatewayAuthHandler(st, certAuth, cfg.GatewayEnrollToken, cfg.GatewayURL, gatewayEnrollLimiter, logger.With("component", "gateway_auth"))
-	gwAuthPath, gwAuthHandler := pmv1connect.NewGatewayAuthServiceHandler(gatewayAuthHandler, gatewayAuthInterceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
-	mux.Handle(gwAuthPath, gwAuthHandler)
-	if cfg.GatewayEnrollToken == "" {
-		logger.Warn("gateway self-enrollment disabled: PM_GATEWAY_ENROLL_TOKEN is empty — every EnrollGateway attempt will be rejected")
-	}
 
 	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
 	// delete path can clean up pm-tty-* / USER actions when the
@@ -489,89 +476,39 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	// Mount InternalService on a separate mTLS-protected listener.
-	// The gateway presents its CA-signed certificate as a client cert.
-	internalHandler := api.NewInternalHandler(st, encryptor, logger.With("component", "internal_service"), actionSigner)
+	// Control terminates the agent stream itself. The listener that used to
+	// carry InternalService — the gateway's privileged back-channel into control
+	// — now carries AgentService, and its peer class changes accordingly: agents
+	// present device certs, not gateway certs.
+	//
+	// The revocation gate is unchanged in intent and stronger in mechanism. It
+	// used to consult a Valkey-published CRL snapshot that could be up to one
+	// refresh interval stale; it now queries revoked_certificates per handshake,
+	// so a certificate revoked inside a renewal transaction stops working on the
+	// very next connection. A lookup error is treated as revoked.
+	agentOps := api.NewAgentOps(st, encryptor, actionSigner, logger.With("component", "agent_ops"))
 
-	// LPS sealing keypair: event-sourced (#495) — the version-1 OCC append on
-	// the lps_keypair/global stream is the cross-replica first-writer-wins,
-	// and the lps_keypair row is a projection. MUST run after
-	// wireSystemActions → projectors.WireAll (the #317 ordering): the
-	// synchronous LpsKeypairListener materialises the projection row during
-	// the append. The agent seals rotated LPS passwords to this public key so
-	// the gateway relays them opaquely; control unseals at receipt (spec 18).
-	// A failure here is fatal — running without it would silently disable LPS
-	// rotation on every agent (fail closed).
-	lpsPriv, lpsPub, err := api.EnsureLpsKeypair(ctx, st, encryptor)
-	if err != nil {
-		logger.Error("failed to initialize LPS sealing keypair", "error", err)
-		os.Exit(1)
-	}
-	signedLpsPub, err := api.BuildSignedLpsPublicKey(lpsPub, actionSigner)
-	if err != nil {
-		logger.Error("failed to sign LPS public key for distribution", "error", err)
-		os.Exit(1)
-	}
-	internalHandler.SetLpsKeypair(lpsPriv, signedLpsPub)
+	agentHandler := agenthandler.NewAgentHandlerWithTLS(
+		valkey.ConnMgr,
+		valkey.aqClient,
+		agentOps,
+		valkey.WorkerMgr,
+		version,
+		cfg.HeartbeatInterval,
+		logger.With("component", "agent_service"),
+	)
+	agentHandler.SetTerminalSessions(valkey.TerminalSessions)
 
-	if valkey != nil && valkey.TerminalTokenStore != nil {
-		// Shared with the ControlService.StartTerminal handler so the
-		// gateway can validate tokens minted on this instance via
-		// ProxyValidateTerminalToken.
-		internalHandler.SetTerminalTokenStore(valkey.TerminalTokenStore)
-	}
-	if valkey != nil && valkey.GatewayRegistry != nil {
-		// Confine every device-origin InternalService request to the gateway the
-		// device is actually live on (server#403). Wired whenever the
-		// Valkey-backed routing registry is available; without it the binding
-		// check fails closed on its own (spec 31 D6). Independently, a
-		// no-Valkey control also has no loaded CRL, so RequirePeerClassNotRevoked
-		// below already rejects every gateway on this listener (audit L11) —
-		// two separate fail-closed layers, not one implying the other.
-		internalHandler.SetDeviceGatewayResolver(valkey.GatewayRegistry)
-	}
-	// spec 31: the gateway-cert renewal path needs the CA (to re-sign) and the
-	// CRL (to revoke the superseded fingerprint). The CA is always available; the
-	// CRL only when Valkey is configured. On a no-Valkey control the nil CRL is
-	// never consulted: RequirePeerClassNotRevoked below fails closed without a
-	// loaded CRL, so no gateway call — renewal included — reaches this handler
-	// (audit L11). The nil wiring only keeps the handler total; the typed nil
-	// keeps main.go free of a crl import.
-	if valkey != nil {
-		internalHandler.SetGatewayRenewal(certAuth, valkey.CRLStore)
-	} else {
-		internalHandler.SetGatewayRenewal(certAuth, nil)
-	}
-	internalPath, internalH := pmv1connect.NewInternalServiceHandler(
-		internalHandler,
+	agentPath, agentH := pmv1connect.NewAgentServiceHandler(
+		agentHandler,
 		connect.WithInterceptors(api.NewValidationInterceptor()),
-		connect.WithReadMaxBytes(controlMaxRequestBytes),
+		connect.WithReadMaxBytes(maxAgentMessageBytes),
 	)
 
-	// Peer-class gate: InternalService handles credential-bearing
-	// proxy calls (LUKS keys, LPS passwords). A compromised agent
-	// cert must NOT be usable here — only gateway replicas, which
-	// present certs issued out of band by setup.sh with a spiffe://
-	// peer-class URI, are admitted.
-	// Revocation gate on the internal listener (WS12 #2): a revoked gateway
-	// cert must not be able to call the credential-bearing proxy RPCs. With
-	// Valkey the loaded CRL cache backs it. Without a CRL (a no-Valkey control
-	// server) internalRevocation stays nil, which RequirePeerClassNotRevoked
-	// treats as FAIL-CLOSED — every gateway call to this listener is rejected
-	// (403) until a real CRL is loaded. There is no permissive opt-out: a
-	// gateway needs Valkey to function at all, so a no-Valkey control has no
-	// legitimate InternalService caller to admit (audit L11).
-	var internalRevocation mtls.RevocationChecker
-	if valkey != nil && valkey.CRLCache != nil {
-		internalRevocation = valkey.CRLCache
-	} else {
-		logger.Warn("InternalService mTLS listener has no certificate revocation list (no Valkey CRL configured) — every gateway call to it will be rejected (fail-closed)")
-	}
+	revocation := store.NewRevocationChecker(st)
+
 	internalMux := http.NewServeMux()
-	// WithPeerCert (inside the class/revocation gate) injects the authenticated
-	// gateway peer cert into the request context so RenewGatewayCertificate can
-	// read the gateway_id from the peer cert CN (spec 31), not a request field.
-	internalMux.Handle(internalPath, mtls.RequirePeerClassNotRevoked(logger, internalRevocation, mtls.PeerClassGateway)(mtls.WithPeerCert(internalH)))
+	internalMux.Handle(agentPath, mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(mtls.WithPeerCert(agentH)))
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

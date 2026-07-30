@@ -25,16 +25,40 @@ const (
 	terminalStartTimeout = 30 * time.Second
 )
 
+// TerminalSession is the metadata a validated terminal token yields. It
+// replaces pm.InternalValidateTerminalTokenResponse, which existed only because
+// the answer used to cross an RPC boundary from the gateway to control. The
+// bridge now runs in the same process as the token store, so the shape is a
+// plain struct rather than a wire message.
+type TerminalSession struct {
+	DeviceId string
+	UserId   string
+	TtyUser  string
+	Cols     uint32
+	Rows     uint32
+}
+
+// TerminalTokenValidator redeems the short-lived bearer token a web client
+// presents when opening the terminal WebSocket.
+//
+// Redemption is SINGLE-USE and that is load-bearing: a token leaked through a
+// reverse-proxy access log cannot be replayed to mint a second connection
+// inside its TTL. A forged attempt (right session, wrong bearer) must NOT
+// consume the entry, or a guess would lock out the legitimate client.
+type TerminalTokenValidator interface {
+	ValidateTerminalToken(ctx context.Context, sessionID, token string) (*TerminalSession, error)
+}
+
 // TerminalBridgeHandler is the HTTP handler for the gateway's
 // WebSocket terminal endpoint. It validates the session token against
 // the control server, bridges WebSocket frames to/from the agent's
 // bidi stream via the connection manager and terminal session
 // registry, and tees stdin to the audit queue.
 type TerminalBridgeHandler struct {
-	manager      *connection.Manager
-	sessions     *connection.TerminalSessionRegistry
-	controlProxy *ControlProxy
-	aqClient     *taskqueue.Client
+	manager  *connection.Manager
+	sessions *connection.TerminalSessionRegistry
+	tokens   TerminalTokenValidator
+	aqClient *taskqueue.Client
 	// gatewayID self-asserts which gateway is relaying the terminal-stdin
 	// audit chunks this bridge tees to control:inbox. The inbox worker
 	// binds it against the session's device→gateway routing so a
@@ -53,18 +77,18 @@ type TerminalBridgeHandler struct {
 func NewTerminalBridgeHandler(
 	manager *connection.Manager,
 	sessions *connection.TerminalSessionRegistry,
-	controlProxy *ControlProxy,
+	tokens TerminalTokenValidator,
 	aqClient *taskqueue.Client,
 	gatewayID string,
 	logger *slog.Logger,
 ) *TerminalBridgeHandler {
 	return &TerminalBridgeHandler{
-		manager:      manager,
-		sessions:     sessions,
-		controlProxy: controlProxy,
-		aqClient:     aqClient,
-		gatewayID:    gatewayID,
-		logger:       logger,
+		manager:   manager,
+		sessions:  sessions,
+		tokens:    tokens,
+		aqClient:  aqClient,
+		gatewayID: gatewayID,
+		logger:    logger,
 	}
 }
 
@@ -136,7 +160,7 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 	// Validate the token against the control server. This returns
 	// the session metadata (device_id, tty_user, cols, rows, user_id)
 	// or an error if the token is invalid/expired.
-	validated, err := h.controlProxy.ValidateTerminalToken(r.Context(), sessionID, token)
+	validated, err := h.tokens.ValidateTerminalToken(r.Context(), sessionID, token)
 	if err != nil {
 		logger.Warn("terminal token validation failed", "error", err)
 		http.Error(w, "invalid or expired session token", http.StatusUnauthorized)
@@ -416,7 +440,7 @@ func (h *TerminalBridgeHandler) bridgeWSToAgent(
 	ctx context.Context,
 	ws *websocket.Conn,
 	sess *connection.TerminalSession,
-	validated *pm.InternalValidateTerminalTokenResponse,
+	validated *TerminalSession,
 	logger *slog.Logger,
 ) error {
 	audit := newTerminalAuditBatcher(logger, func(data []byte, seq int64) {
@@ -530,7 +554,7 @@ func (h *TerminalBridgeHandler) bridgeAgentToWS(
 // not break the session.
 func (h *TerminalBridgeHandler) enqueueAuditChunk(
 	sess *connection.TerminalSession,
-	validated *pm.InternalValidateTerminalTokenResponse,
+	validated *TerminalSession,
 	data []byte,
 	seq int64,
 ) {
@@ -543,7 +567,6 @@ func (h *TerminalBridgeHandler) enqueueAuditChunk(
 		UserID:    validated.UserId,
 		Data:      data,
 		Sequence:  seq,
-		GatewayID: h.gatewayID,
 	}
 	if err := h.aqClient.EnqueueToControl(taskqueue.TypeTerminalAuditChunk, payload); err != nil {
 		h.logger.Debug("failed to enqueue terminal audit chunk",

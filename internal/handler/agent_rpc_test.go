@@ -14,9 +14,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -24,64 +21,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 )
 
-type recordingInternalForRPC struct {
-	pmv1connect.UnimplementedInternalServiceHandler
-	mu                       sync.Mutex
-	lastValidateLuksDeviceID string
-	lastValidateLuksToken    string
-	validateLuksResp         *pm.ValidateLuksTokenResponse
-	validateLuksErr          error
-	lastSyncActionsDeviceID  string
-	syncActionsResp          *pm.SyncActionsResponse
-	syncActionsErr           error
-}
-
-func (r *recordingInternalForRPC) ProxyValidateLuksToken(_ context.Context, req *connect.Request[pm.InternalValidateLuksTokenRequest]) (*connect.Response[pm.ValidateLuksTokenResponse], error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastValidateLuksDeviceID = req.Msg.DeviceId
-	r.lastValidateLuksToken = req.Msg.Token
-	if r.validateLuksErr != nil {
-		return nil, r.validateLuksErr
-	}
-	resp := r.validateLuksResp
-	if resp == nil {
-		resp = &pm.ValidateLuksTokenResponse{}
-	}
-	return connect.NewResponse(resp), nil
-}
-
-func (r *recordingInternalForRPC) ProxySyncActions(_ context.Context, req *connect.Request[pm.InternalSyncActionsRequest]) (*connect.Response[pm.SyncActionsResponse], error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.lastSyncActionsDeviceID = req.Msg.DeviceId
-	if r.syncActionsErr != nil {
-		return nil, r.syncActionsErr
-	}
-	resp := r.syncActionsResp
-	if resp == nil {
-		resp = &pm.SyncActionsResponse{}
-	}
-	return connect.NewResponse(resp), nil
-}
-
-func setupAgentForRPCTest(t *testing.T) (*AgentHandler, *recordingInternalForRPC) {
+func setupAgentForRPCTest(t *testing.T) (*AgentHandler, *fakeAgentOps) {
 	t.Helper()
-	stub := &recordingInternalForRPC{}
-	mux := http.NewServeMux()
-	path, h := pmv1connect.NewInternalServiceHandler(stub)
-	mux.Handle(path, h)
-	srv := httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-
-	hh := &AgentHandler{
-		controlProxy: NewControlProxy(srv.Client(), srv.URL, "test-gateway"),
-		logger:       slog.Default(),
-	}
-	return hh, stub
+	ops := &fakeAgentOps{}
+	return &AgentHandler{ops: ops, logger: slog.Default()}, ops
 }
 
 // =============================================================================
@@ -102,9 +47,9 @@ func TestValidateLuksToken_EmptyToken_Rejected(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestValidateLuksToken_HappyPath_PropagatesToProxy(t *testing.T) {
+func TestValidateLuksToken_HappyPath_ReachesOps(t *testing.T) {
 	h, stub := setupAgentForRPCTest(t)
-	stub.validateLuksResp = &pm.ValidateLuksTokenResponse{
+	stub.validateResp = &pm.ValidateLuksTokenResponse{
 		ActionId:   "act-1",
 		DevicePath: "/dev/sda1",
 		MinLength:  16,
@@ -117,18 +62,18 @@ func TestValidateLuksToken_HappyPath_PropagatesToProxy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "act-1", resp.Msg.ActionId)
 	assert.Equal(t, "/dev/sda1", resp.Msg.DevicePath)
-	assert.Equal(t, "dev-1", stub.lastValidateLuksDeviceID)
-	assert.Equal(t, "the-token", stub.lastValidateLuksToken,
+	assert.Equal(t, "dev-1", stub.validateDev)
+	assert.Equal(t, "the-token", stub.lastValidate.Token,
 		"token MUST round-trip verbatim — control's TTL store keys on this exact byte sequence")
 }
 
-func TestValidateLuksToken_ProxyError_MappedToNotFound(t *testing.T) {
+func TestValidateLuksToken_OpsError_MappedToNotFound(t *testing.T) {
 	// Whatever the proxy returns (Internal, Unavailable, etc.), the
 	// handler MUST surface CodeNotFound — leaking the underlying
 	// failure mode to the agent would let an attacker probe for
 	// "control unreachable" vs "wrong token" timing differences.
 	h, stub := setupAgentForRPCTest(t)
-	stub.validateLuksErr = connect.NewError(connect.CodeUnavailable, errors.New("control unreachable"))
+	stub.validateErr = connect.NewError(connect.CodeUnavailable, errors.New("control unreachable"))
 
 	_, err := h.ValidateLuksToken(context.Background(), connect.NewRequest(&pm.ValidateLuksTokenRequest{
 		DeviceId: "dev-1",
@@ -155,8 +100,8 @@ func TestValidateLuksToken_TLS_DeviceIDMismatch_PermissionDenied(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"cert/request device-ID mismatch MUST be CodePermissionDenied — anything else lets a device redeem another's LUKS token")
-	assert.Empty(t, stub.lastValidateLuksToken,
-		"the control proxy MUST NOT be called on a cert mismatch — the guard runs before the work")
+	assert.Nil(t, stub.lastValidate,
+		"ops MUST NOT be called on a cert mismatch — the guard runs before the work")
 }
 
 func TestValidateLuksToken_TLS_NoDeviceIDInContext_Unauthenticated(t *testing.T) {
@@ -168,13 +113,13 @@ func TestValidateLuksToken_TLS_NoDeviceIDInContext_Unauthenticated(t *testing.T)
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	assert.Empty(t, stub.lastValidateLuksToken, "no proxy call without an authenticated cert identity")
+	assert.Nil(t, stub.lastValidate, "no ops call without an authenticated cert identity")
 }
 
-func TestValidateLuksToken_TLS_MatchingDeviceID_PropagatesToProxy(t *testing.T) {
+func TestValidateLuksToken_TLS_MatchingDeviceID_ReachesOps(t *testing.T) {
 	h, stub := setupAgentForRPCTest(t)
 	h.requireTLS = true
-	stub.validateLuksResp = &pm.ValidateLuksTokenResponse{ActionId: "act-1"}
+	stub.validateResp = &pm.ValidateLuksTokenResponse{ActionId: "act-1"}
 	ctx := contextWithDeviceID(context.Background(), "dev-1")
 	resp, err := h.ValidateLuksToken(ctx, connect.NewRequest(&pm.ValidateLuksTokenRequest{
 		DeviceId: "dev-1",
@@ -182,16 +127,17 @@ func TestValidateLuksToken_TLS_MatchingDeviceID_PropagatesToProxy(t *testing.T) 
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, "act-1", resp.Msg.ActionId)
-	assert.Equal(t, "the-token", stub.lastValidateLuksToken, "a matching cert identity proceeds to the proxy")
+	require.NotNil(t, stub.lastValidate, "a matching cert identity must reach ops")
+	assert.Equal(t, "the-token", stub.lastValidate.Token)
 }
 
 // =============================================================================
 // SyncActions
 // =============================================================================
 
-func TestSyncActions_HappyPath_NonTLS_PropagatesToProxy(t *testing.T) {
+func TestSyncActions_HappyPath_NonTLS_ReachesOps(t *testing.T) {
 	h, stub := setupAgentForRPCTest(t)
-	stub.syncActionsResp = &pm.SyncActionsResponse{
+	stub.syncResp = &pm.SyncActionsResponse{
 		StandaloneActions:   []*pm.Action{{Id: &pm.ActionId{Value: "act-1"}}},
 		SyncIntervalMinutes: 15,
 	}
@@ -201,7 +147,7 @@ func TestSyncActions_HappyPath_NonTLS_PropagatesToProxy(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	assert.Equal(t, int32(15), resp.Msg.SyncIntervalMinutes)
-	assert.Equal(t, "dev-1", stub.lastSyncActionsDeviceID)
+	assert.Equal(t, "dev-1", stub.syncedLast())
 }
 
 func TestSyncActions_TLS_DeviceIDMismatch_PermissionDenied(t *testing.T) {
@@ -242,9 +188,9 @@ func TestSyncActions_EmptyDeviceID_Rejected(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
-func TestSyncActions_ProxyError_MappedToInternal(t *testing.T) {
+func TestSyncActions_OpsError_MappedToInternal(t *testing.T) {
 	h, stub := setupAgentForRPCTest(t)
-	stub.syncActionsErr = connect.NewError(connect.CodeUnavailable, errors.New("control down"))
+	stub.syncErr = connect.NewError(connect.CodeUnavailable, errors.New("control down"))
 
 	_, err := h.SyncActions(context.Background(), connect.NewRequest(&pm.SyncActionsRequest{
 		DeviceId: &pm.DeviceId{Value: "dev-1"},

@@ -22,20 +22,19 @@ import (
 //
 // gateway_id (server SA-C2 / #403) is a deliberate addition: the relaying
 // gateway self-asserts its identity so the control:inbox worker can bind the
-// device-origin task to the device→gateway routing registry. It is always
-// emitted (no omitempty) so the binding signal is explicit on the wire even
-// when empty (single-gateway deployments, where the binding is disabled).
+// gateway_id is absent: it identified the relaying gateway for the inbox
+// binding check, and both are gone. Control is the only producer now, so the
+// field would be a constant empty string on every task.
 func TestDeviceHelloPayload_WireContract(t *testing.T) {
 	in := taskqueue.DeviceHelloPayload{
 		DeviceID:     "01HXAMPLE",
 		Hostname:     "host-1",
 		AgentVersion: "2026.6.0",
-		GatewayID:    "gw-A",
 	}
 
 	got, err := json.Marshal(in)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"device_id":"01HXAMPLE","hostname":"host-1","agent_version":"2026.6.0","gateway_id":"gw-A"}`, string(got),
+	assert.JSONEq(t, `{"device_id":"01HXAMPLE","hostname":"host-1","agent_version":"2026.6.0"}`, string(got),
 		"device-hello wire shape changed — agent↔control contract; update both sides deliberately")
 
 	var back taskqueue.DeviceHelloPayload

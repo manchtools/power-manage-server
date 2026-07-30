@@ -19,11 +19,9 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
@@ -33,20 +31,15 @@ import (
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/asynqutil"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/control"
-	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/datastore"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
+	"github.com/manchtools/power-manage/server/internal/gateway"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 )
-
-// controlCRLRefreshInterval is how often the control server reloads the CRL
-// cache that gates its InternalService mTLS listener. Matches the gateway's
-// cadence; revocations propagate to the internal plane within one interval.
-const controlCRLRefreshInterval = 30 * time.Second
 
 // valkeySubsystem owns every long-lived component constructed when
 // the operator configures Valkey. Close() unwinds them in reverse
@@ -66,29 +59,20 @@ type valkeySubsystem struct {
 	// verify (audit F-02).
 	taskSigner *taskqueue.Signer
 
+	// ConnMgr holds every live agent bidi stream, WorkerMgr runs the per-device
+	// Asynq consumer for dispatches, and TerminalSessions maps a WebSocket
+	// bridge to the stream carrying its PTY. All three moved here from the
+	// gateway with the AgentService itself; they live in this subsystem because
+	// the worker manager needs the same Asynq options as the rest of it.
+	ConnMgr          *connection.Manager
+	WorkerMgr        *gateway.DeviceWorkerManager
+	TerminalSessions *connection.TerminalSessionRegistry
+
 	// TerminalTokenStore is exported because main() hands it to the
 	// InternalHandler later in the boot sequence — they MUST share
 	// one instance so ProxyValidateTerminalToken can validate tokens
 	// minted by the same control replica.
 	TerminalTokenStore *terminal.TokenStore
-
-	// CRLStore is the Valkey-backed certificate revocation list. main() hands
-	// it to the ControlService so renewal/device-deletion revoke the old cert;
-	// gateways read the same Valkey key to enforce it on mTLS connections.
-	CRLStore *crl.Store
-
-	// CRLCache is a loaded, in-memory snapshot of CRLStore used to gate the
-	// InternalService mTLS listener (WS12 #2: a revoked gateway cert must not
-	// be able to call ProxyGetLuksKey / ProxyStoreLpsPasswords). It is loaded
-	// synchronously at subsystem init — a failed initial load fails the whole
-	// subsystem (fail-closed, mirroring the gateway's boot).
-	CRLCache *crl.Cache
-
-	// GatewayRegistry is the device→gateway routing registry. main() hands it to
-	// the InternalHandler (SetDeviceGatewayResolver) so every device-origin
-	// InternalService request is confined to the gateway the device is live on
-	// (server#403). The same registry backs terminal URL lookup + fan-out.
-	GatewayRegistry *registry.Registry
 }
 
 // Close stops the Asynq servers and closes the Valkey clients.
@@ -179,6 +163,24 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 		ReadTimeout: 30 * time.Second,
 	})
 
+	// Agent-stream infrastructure. The per-device worker consumes that device's
+	// dispatch queue, so it needs the same Valkey connection options the client
+	// above uses.
+	v.ConnMgr = connection.NewManager()
+	v.TerminalSessions = connection.NewTerminalSessionRegistry()
+	taskFactory := gateway.NewTaskHandlerFactory(v.ConnMgr, v.taskSigner, logger.With("component", "device_task"))
+	v.WorkerMgr = gateway.NewDeviceWorkerManager(
+		asynq.RedisClientOpt{
+			Addr:      cfg.ValkeyAddr,
+			Username:  cfg.ValkeyUsername,
+			Password:  cfg.ValkeyPassword,
+			DB:        cfg.ValkeyDB,
+			TLSConfig: valkeyTLS,
+		},
+		taskFactory.NewMux,
+		logger.With("component", "device_worker"),
+	)
+
 	searchIdx := search.New(v.rdb, st, v.aqClient, logger.With("component", "search"))
 	svc.SetSearchIndex(searchIdx)
 
@@ -186,34 +188,18 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	st.RegisterEventListener(api.SearchListener(st, searchIdx, logger.With("component", "search_listener")))
 
 	v.TerminalTokenStore = terminal.NewTokenStore(terminal.NewValkeyBackend(v.rdb))
-	v.CRLStore = crl.NewStore(v.rdb)
-	svc.SetCRLStore(v.CRLStore)
-	// Load the CRL cache that gates the InternalService mTLS listener. Fail the
-	// subsystem if the initial load errors — symmetry with the gateway's
-	// fail-closed boot: never admit gateway certs against an unloaded CRL.
-	v.CRLCache = crl.NewCache(v.CRLStore, logger.With("component", "crl"))
-	if err := v.CRLCache.Refresh(ctx); err != nil {
-		return nil, fmt.Errorf("initial CRL load failed (refusing to start the internal mTLS listener without a loaded revocation list): %w", err)
-	}
-	go v.CRLCache.Run(ctx, controlCRLRefreshInterval)
-	gatewayReg := registry.New(registry.NewValkeyBackend(v.rdb), logger.With("component", "gateway_registry"))
-	v.GatewayRegistry = gatewayReg
-	// ListGateways filters on real liveness (this registry) so a restarted
-	// gateway's departed ephemeral id stops showing "Active" (spec 31).
-	svc.SetGatewayLiveness(gatewayReg)
+	// Certificate revocation is no longer a Valkey-published list: control
+	// terminates agent mTLS itself and queries revoked_certificates during the
+	// handshake, so there is nothing to distribute and no cache to warm.
+	//
+	// The device→gateway registry is gone for the same reason — it answered
+	// "which gateway holds this device", and control holds every stream.
 	termHandler := api.NewTerminalHandler(
 		st,
 		v.TerminalTokenStore,
-		gatewayReg,
-		api.GatewayBaseURL(cfg.TerminalGatewayURL),
+		api.TerminalBaseURL(cfg.TerminalPublicURL),
 		logger.With("component", "terminal_handler"),
 	)
-	if err := configureTerminalAdminFanout(cfg, termHandler, logger); err != nil {
-		// Fan-out is best-effort — log warn (already done inside the
-		// helper) but don't fail the subsystem. Single-gateway
-		// deployments don't need fan-out at all.
-		_ = err
-	}
 	svc.SetTerminalHandler(termHandler)
 
 	// Close a user's live terminal sessions when their terminal access is
@@ -224,13 +210,10 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	// never block the disable/delete/revoke.
 	st.RegisterEventListener(api.TerminalRevocationListener(termHandler, st.Repos().User, logger.With("component", "terminal_revocation")))
 
-	if cfg.TerminalGatewayURL != "" {
-		logger.Info("remote terminal sessions enabled",
-			"fallback_gateway_url", cfg.TerminalGatewayURL,
-			"registry_enabled", true,
-		)
+	if cfg.TerminalPublicURL != "" {
+		logger.Info("remote terminal sessions enabled", "terminal_url", cfg.TerminalPublicURL)
 	} else {
-		logger.Warn("CONTROL_TERMINAL_GATEWAY_URL is empty: this node can validate terminal tokens via registry but will not mint sessions with a static fallback URL")
+		logger.Warn("CONTROL_TERMINAL_URL is empty: StartTerminal will return Unavailable on this node")
 	}
 
 	// Audit-event index hook — see audit_index.go for the rationale.
@@ -241,7 +224,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	}
 
 	// Asynq mux + servers.
-	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"), gatewayReg)
+	inboxWorker := control.NewInboxWorker(st, v.aqClient, actionSigner, v.taskSigner, logger.With("component", "inbox_worker"))
 	aqLogger := logger.With("component", "asynq_server")
 	v.inboxServer = newInboxAsynqServer(cfg, valkeyTLS, aqLogger)
 	if err := v.inboxServer.Start(inboxWorker.NewMux()); err != nil {
@@ -271,42 +254,6 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 // can choose to bail or warn-and-continue. main() warns: a missing
 // internal cert is normal in single-gateway deployments and must
 // not fail boot.
-func configureTerminalAdminFanout(cfg *Config, termHandler *api.TerminalHandler, logger *slog.Logger) error {
-	if cfg.InternalTLSCert == "" || cfg.CACertPath == "" {
-		return nil
-	}
-	gwCert, err := tls.LoadX509KeyPair(cfg.InternalTLSCert, cfg.InternalTLSKey)
-	if err != nil {
-		logger.Warn("terminal admin fan-out disabled: failed to load internal TLS key pair",
-			"cert", cfg.InternalTLSCert, "key", cfg.InternalTLSKey, "error", err)
-		return err
-	}
-	caCert, err := os.ReadFile(cfg.CACertPath)
-	if err != nil {
-		logger.Warn("terminal admin fan-out disabled: failed to read CA certificate",
-			"path", cfg.CACertPath, "error", err)
-		return err
-	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caCert) {
-		logger.Warn("terminal admin fan-out disabled: CA certificate file contained no valid PEM certificates",
-			"path", cfg.CACertPath)
-		return errors.New("CA bundle contained no valid PEM certificates")
-	}
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			Certificates: []tls.Certificate{gwCert},
-			RootCAs:      caPool,
-			MinVersion:   tls.VersionTLS13,
-		},
-	}
-	// A client-level Timeout backstops the per-call context deadlines on the
-	// terminal admin fan-out (WS11 #8) so a half-open connection to a gateway
-	// can't pin a request goroutine indefinitely.
-	termHandler.SetInternalHTTPClient(&http.Client{Transport: transport, Timeout: 30 * time.Second})
-	logger.Info("terminal admin fan-out enabled (mTLS client configured)")
-	return nil
-}
 
 // auditIndexListener returns an event listener that enqueues every
 // persisted event for indexing into the audit-event search index.

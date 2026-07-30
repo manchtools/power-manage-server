@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -27,13 +28,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/mtls"
 )
 
@@ -61,21 +59,34 @@ func newRealAgentCert(t *testing.T) (*x509.Certificate, *tls.ConnectionState) {
 	return cert, &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
 }
 
-// loadedCacheWithRevoked returns a real, already-loaded crl.Cache (miniredis
-// backed) with the given fingerprints revoked, under a fixed clock (no
-// time.Now()).
-func loadedCacheWithRevoked(t *testing.T, now time.Time, fps ...string) *crl.Cache {
-	t.Helper()
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-	store := crl.NewStore(rdb, crl.WithClock(func() time.Time { return now }))
-	for _, fp := range fps {
-		require.NoError(t, store.Revoke(context.Background(), fp, now.Add(time.Hour)))
+// revocationSet is a RevocationChecker over a fixed fingerprint set, or a fixed
+// lookup error.
+//
+// It replaces a miniredis-backed crl.Cache. The cache is gone because
+// revocations are no longer a published list — control queries its own table
+// per handshake — but the property this file tests is unchanged and does not
+// depend on the backing store: the middleware must compute the REAL DER
+// fingerprint of the presented certificate and match it exactly. The
+// fingerprints below still come from ca.FingerprintFromCert over a real cert,
+// which is the part that matters.
+type revocationSet struct {
+	revoked map[string]bool
+	err     error
+}
+
+func (r revocationSet) IsRevoked(_ context.Context, fp string) (bool, error) {
+	if r.err != nil {
+		return false, r.err
 	}
-	cache := crl.NewCache(store, newTestLogger())
-	require.NoError(t, cache.Refresh(context.Background()))
-	return cache
+	return r.revoked[fp], nil
+}
+
+func revocationWith(fps ...string) revocationSet {
+	set := map[string]bool{}
+	for _, fp := range fps {
+		set[fp] = true
+	}
+	return revocationSet{revoked: set}
 }
 
 func newOKHandler() http.Handler {
@@ -182,21 +193,10 @@ func TestNewAgentHandlerWithTLS_RequiresTLS(t *testing.T) {
 	assert.True(t, h.requireTLS)
 }
 
-func TestSetGatewayRouting_StoresRegistryAndID(t *testing.T) {
-	h := NewAgentHandler(nil, nil, nil, nil, "v", 0, newTestLogger())
-	// nil registry is the documented "single-gateway mode" — verify
-	// the setter records nil without crashing, since tests + dev
-	// deploys both rely on this shape.
-	h.SetGatewayRouting(nil, "gw-1")
-	assert.Nil(t, h.registry)
-	assert.Equal(t, "gw-1", h.gatewayID)
-}
-
 func TestSetTerminalSessions_StoresRegistry(t *testing.T) {
 	h := NewAgentHandler(nil, nil, nil, nil, "v", 0, newTestLogger())
-	// nil disables terminal routing — same defensive contract as
-	// SetGatewayRouting. The bidi-stream's terminal-output path
-	// nil-guards on this.
+	// nil disables terminal routing; the bidi-stream terminal-output path
+	// nil-guards on it, so the setter must record nil without crashing.
 	h.SetTerminalSessions(nil)
 	assert.Nil(t, h.terminalSessions)
 }
@@ -320,13 +320,12 @@ func TestBootstrapRedirectMiddleware_IPv6HostHeaderHandledCorrectly(t *testing.T
 		"IPv6 bracketed authority MUST match — the strings.IndexByte(':') bug truncated host at the first internal colon, leaving reqHost = '['")
 }
 
-// fakeRevocation is a RevocationChecker whose verdict is fixed, so a CRL test
-// doesn't have to predict the synthetic cert's fingerprint. It reports loaded so
-// it exercises the IsRevoked branch (not the fail-closed-unloaded branch).
+// fakeRevocation is a RevocationChecker whose verdict is fixed, so a test does
+// not have to predict a synthetic cert's fingerprint. It answers without error,
+// exercising the revoked/not-revoked branches rather than the fail-closed one.
 type fakeRevocation struct{ revoked bool }
 
-func (f fakeRevocation) IsRevoked(string) bool { return f.revoked }
-func (f fakeRevocation) Loaded() bool          { return true }
+func (f fakeRevocation) IsRevoked(context.Context, string) (bool, error) { return f.revoked, nil }
 
 // TestMTLSMiddleware_RevokedCertRejected pins the CRL gate (audit #6): an
 // agent cert whose fingerprint is on the revocation list is rejected at the
@@ -363,10 +362,9 @@ func TestMTLSMiddleware_RevokedCertRejected(t *testing.T) {
 // sourced via ca.FingerprintFromCert into a real Store, never from the value the
 // middleware computes.
 func TestMTLSMiddleware_RealCacheRevokesByFingerprint(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
 	revokedCert, revokedTLS := newRealAgentCert(t)
 	fp := ca.FingerprintFromCert(revokedCert)
-	cache := loadedCacheWithRevoked(t, now, fp)
+	cache := revocationWith(fp)
 
 	called := false
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
@@ -377,7 +375,7 @@ func TestMTLSMiddleware_RealCacheRevokesByFingerprint(t *testing.T) {
 	req.TLS = revokedTLS
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusForbidden, rec.Code, "the real Cache must reject a cert whose DER fingerprint is revoked")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "a revoked DER fingerprint must be rejected")
 	assert.False(t, called)
 
 	// ABSENT: a different non-revoked agent cert through the SAME cache → 200
@@ -410,7 +408,7 @@ func TestMTLSMiddleware_RealCacheRevokesByFingerprint(t *testing.T) {
 	// admitted — proves the binding is the exact fingerprint, sourced from intent.
 	flipped := []byte(fp)
 	flipped[len(flipped)-1] ^= 0xFF // any mutation makes the seed differ from every real fingerprint
-	cacheBadSeed := loadedCacheWithRevoked(t, now, string(flipped))
+	cacheBadSeed := revocationWith(string(flipped))
 	called = false
 	mw4 := MTLSMiddleware(inner, cacheBadSeed, newTestLogger())
 	req4 := httptest.NewRequest(http.MethodGet, "/api", nil)
@@ -425,15 +423,13 @@ func TestMTLSMiddleware_RealCacheRevokesByFingerprint(t *testing.T) {
 // cannot prove a cert is unrevoked, so the middleware must fail CLOSED. RED
 // today (an empty cache reports IsRevoked==false → admits).
 func TestMTLSMiddleware_NotLoadedCacheFailsClosed(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
 	agent := mtls.PeerClassAgent
 
 	// never-loaded cache: Refresh never called → Loaded()==false.
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { _ = rdb.Close() })
-	notLoaded := crl.NewCache(crl.NewStore(rdb, crl.WithClock(func() time.Time { return now })), newTestLogger())
-	require.False(t, notLoaded.Loaded())
+	// The "not yet loaded" state is gone: there is no snapshot to be unloaded.
+	// Its replacement is an indeterminate lookup, which must fail closed for the
+	// same reason — we cannot prove the certificate is unrevoked.
+	notLoaded := revocationSet{err: errors.New("revocation backend unreachable")}
 
 	called := false
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
@@ -442,18 +438,18 @@ func TestMTLSMiddleware_NotLoadedCacheFailsClosed(t *testing.T) {
 	req.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusForbidden, rec.Code, "a not-yet-loaded CRL must fail closed — cannot prove the cert is unrevoked")
-	assert.False(t, called, "an unloaded CRL must not admit")
+	assert.Equal(t, http.StatusForbidden, rec.Code, "an indeterminate revocation lookup must fail closed — cannot prove the cert is unrevoked")
+	assert.False(t, called, "an indeterminate lookup must not admit")
 
 	// loaded-but-empty cache → admits (a genuinely empty CRL still admits).
 	called = false
-	loadedEmpty := loadedCacheWithRevoked(t, now)
+	loadedEmpty := revocationWith()
 	mw2 := MTLSMiddleware(inner, loadedEmpty, newTestLogger())
 	req2 := httptest.NewRequest(http.MethodGet, "/api", nil)
 	req2.TLS = fakeTLSStateWithPeerClass(t, "device-1", &agent)
 	rec2 := httptest.NewRecorder()
 	mw2.ServeHTTP(rec2, req2)
-	assert.Equal(t, http.StatusOK, rec2.Code, "a loaded-but-empty CRL must still admit non-revoked certs")
+	assert.Equal(t, http.StatusOK, rec2.Code, "an empty revocation set must still admit non-revoked certs")
 	assert.True(t, called)
 }
 
