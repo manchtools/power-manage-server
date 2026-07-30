@@ -499,6 +499,13 @@ func main() {
 	)
 	agentHandler.SetTerminalSessions(valkey.TerminalSessions)
 
+	// Criterion 5: revoking a certificate stops the next handshake but leaves an
+	// established stream untouched, because the certificate is checked once at
+	// connect. Post-commit so a rolled-back revocation never disconnects a device
+	// whose certificate is still valid.
+	st.RegisterEventListener(api.DeviceStreamRevocationListener(valkey.ConnMgr,
+		logger.With("component", "device_stream_revocation")))
+
 	agentPath, agentH := pmv1connect.NewAgentServiceHandler(
 		agentHandler,
 		connect.WithInterceptors(api.NewValidationInterceptor()),
