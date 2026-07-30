@@ -1,0 +1,10 @@
+/pm.v1.ControlService/GetCertificateRevocationList
+/pm.v1.ControlService/ListGateways
+/pm.v1.ControlService/RevokeGatewayCertificate
+/pm.v1.GatewayAuthService/EnrollGateway
+/pm.v1.GatewayService/ListGatewayTerminalSessions
+/pm.v1.GatewayService/TerminateGatewayTerminalSession
+/pm.v1.InternalService/ProxyGetLuksKey
+/pm.v1.InternalService/ProxyStoreLpsPasswords
+/pm.v1.InternalService/ProxyStoreLuksKey
+/pm.v1.InternalService/ProxySyncActions

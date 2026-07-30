@@ -184,6 +184,46 @@ for k in pm:crl:revoked pm:gateway:smoke-probe pm:device:smoke-probe traefik/smo
 done
 green "pm-gateway CRL is read-only; pm-indexer is confined to its search namespaces"
 
+# 5b. RPC SURFACE: the assertion no unit test can make — does the RUNNING
+#     listener serve exactly the procedures that belong on it? Every other
+#     surface guard in the tree checks code against code. This checks a real
+#     process on a real listener.
+#
+#     Scoped PER LISTENER, not globally: the contract's services live in
+#     different processes on purpose (ControlService on control's public
+#     listener, InternalService on its mTLS listener, AgentService wherever the
+#     agent stream terminates, DeviceAuthService on the agent's own enrollment
+#     socket). A global list would report the other processes' services as
+#     missing here, and could not express the property that matters — that a
+#     service is NOT reachable on a listener it does not belong to.
+info "probing the served RPC surface of control's public listener"
+command -v go >/dev/null 2>&1 || { red "FAIL: go toolchain unavailable — cannot derive the expected RPC surface"; exit 1; }
+
+# Expected: exactly ControlService on this listener.
+go -C "$SRC_DIR/.." run ./cmd/rpcsurface -services ControlService \
+  > "$WORK_DIR/expected-rpcs.txt" 2>"$WORK_DIR/rpcsurface.err" || {
+  red "FAIL: could not derive the expected RPC surface"; cat "$WORK_DIR/rpcsurface.err"; exit 1; }
+
+# Must NOT be served here, from two sources:
+#   - every other live service (exposure: AgentService must never be reachable
+#     on the public listener, which requires no client certificate)
+#   - the procedures spec 41 removed from the contract entirely
+go -C "$SRC_DIR/.." run ./cmd/rpcsurface -services ControlService -invert \
+  > "$WORK_DIR/forbidden-rpcs.txt" 2>>"$WORK_DIR/rpcsurface.err" || {
+  red "FAIL: could not derive the forbidden RPC surface"; cat "$WORK_DIR/rpcsurface.err"; exit 1; }
+[[ -f "$SRC_DIR/removed-rpcs.txt" ]] && cat "$SRC_DIR/removed-rpcs.txt" >> "$WORK_DIR/forbidden-rpcs.txt"
+
+# --user 0:0 because WORK_DIR is a mktemp dir (mode 700) owned by the host user;
+# the curl image's unprivileged default cannot traverse it. --entrypoint sh
+# because the image's entrypoint is curl itself.
+CONTROL_CID="$(compose ps -q control)"
+[[ -n "$CONTROL_CID" ]] || { red "FAIL: control container not found for the RPC probe"; exit 1; }
+docker run --rm --network "container:${CONTROL_CID}" --user 0:0 \
+  -v "$WORK_DIR:/w:ro" -v "$SRC_DIR/rpc-surface-probe.sh:/probe.sh:ro" \
+  --entrypoint sh docker.io/curlimages/curl:8.11.1 \
+  /probe.sh https://localhost:8081 /w/expected-rpcs.txt /w/forbidden-rpcs.txt \
+  || { red "FAIL: served RPC surface does not match the contract"; exit 1; }
+
 # 6. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
 compose up -d traefik >>up.log 2>&1 || true
 sleep 8   # let control/indexer subscribe to asynq:cancel + traefik connect
