@@ -381,6 +381,13 @@ type OsqueryResult struct {
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
+type RevokedCertificate struct {
+	Fingerprint string    `json:"fingerprint"`
+	RevokedAt   time.Time `json:"revoked_at"`
+	NotAfter    time.Time `json:"not_after"`
+	Reason      string    `json:"reason"`
+}
+
 type RevokedToken struct {
 	Jti       string    `json:"jti"`
 	RevokedAt time.Time `json:"revoked_at"`

@@ -40,6 +40,7 @@ import (
 var operationalTables = map[string]string{
 	"auth_states":          "short-lived OIDC flow rows (state/nonce/PKCE), consumed on first read; in PG so ANY control replica can complete the callback (no sticky sessions); loss = user redoes login",
 	"revoked_tokens":       "JWT refresh-token denylist, TTL-bounded by token expiry; primary operational security state (the denylist must be authoritative and immediately consistent, not an eventually-projected view). Logout/RefreshToken now audit-log the session lifecycle (#496), but the denylist row itself stays operational — it is not reconstructable from an audit event alone",
+	"revoked_certificates": "mTLS certificate denylist (spec 41), TTL-bounded by each certificate's own not_after; the same class as revoked_tokens and operational for the same reason — the handshake gate must be authoritative and immediately consistent, so the row is written IN the renewal/deletion transaction (criterion 6) rather than projected after it. Not reconstructable from the stream either: DeviceCertRenewed carries the NEW fingerprint, never the superseded one, so a replay could not name what to revoke",
 	"luks_tokens":          "hashed one-time LUKS enrollment tokens (WS10); single-use by design, loss = operator re-issues; deliberately not replayable",
 	"osquery_results":      "transient result staging for DispatchOSQuery — agent reply fills, reads expire; loss = re-run the query",
 	"log_query_results":    "transient result staging for QueryDeviceLogs — same lifecycle as osquery_results",
