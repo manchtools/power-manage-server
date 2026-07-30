@@ -10,7 +10,6 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -42,7 +41,6 @@ type ControlService struct {
 	compliance       *ComplianceHandler
 	compliancePolicy *CompliancePolicyHandler
 	certificate      *CertificateHandler
-	gateway          *GatewayHandler
 	search           *SearchHandler
 	settings         *SettingsHandler
 	systemActions    *SystemActionManager
@@ -85,7 +83,6 @@ func NewControlService(st *store.Store, jwtManager *auth.JWTManager, signer ca.A
 		compliance:       NewComplianceHandler(st, logger.With("component", "compliance_handler")),
 		compliancePolicy: NewCompliancePolicyHandler(st, logger.With("component", "compliance_policy_handler")),
 		certificate:      NewCertificateHandler(st, certAuth, logger),
-		gateway:          NewGatewayHandler(st, logger.With("component", "gateway_handler")),
 		search:           NewSearchHandler(logger.With("component", "search_handler")),
 		settings:         settingsHandler,
 		systemActions:    systemActions,
@@ -106,23 +103,10 @@ func (s *ControlService) SetTaskQueueClient(c *taskqueue.Client) {
 	s.device.SetTaskQueueClient(c)
 }
 
-// SetCRLStore wires the Valkey-backed certificate revocation list into the
-// handlers that supersede or remove agent certs (renewal, device deletion).
-// Called from main.go after the Valkey subsystem comes up; nil-safe (the
-// handlers skip revocation when unset).
-func (s *ControlService) SetCRLStore(store *crl.Store) {
-	s.certificate.SetCRLStore(store)
-	s.device.SetCRLStore(store)
-	s.gateway.SetCRLStore(store)
-}
-
-// SetGatewayLiveness wires the registry-backed liveness source so ListGateways
-// reflects actually-live gateways (Valkey heartbeat) rather than the
-// projection's cert-not-expired view. Called from main.go after the Valkey
-// subsystem comes up; nil-safe (ListGateways falls back to the not_after view).
-func (s *ControlService) SetGatewayLiveness(l gatewayLiveness) {
-	s.gateway.SetGatewayLiveness(l)
-}
+// Certificate revocation needs no wiring here: renewal and device deletion
+// write the revocation row inside their own transaction via the store (spec 41
+// criterion 6). The handshake-side lookup is store.RevocationCache, wired into
+// the mTLS listener in main.go.
 
 // SetTerminalHandler wires the terminal session RPC handler. Called
 // from main.go after the Valkey-backed token store is constructed.
@@ -157,18 +141,10 @@ func (s *ControlService) RenewCertificate(ctx context.Context, req *connect.Requ
 	return s.certificate.RenewCertificate(ctx, req)
 }
 
-// Certificate Revocation List (agent-facing) + gateway revocation (spec 31)
-func (s *ControlService) GetCertificateRevocationList(ctx context.Context, req *connect.Request[pm.GetCertificateRevocationListRequest]) (*connect.Response[pm.GetCertificateRevocationListResponse], error) {
-	return s.gateway.GetCertificateRevocationList(ctx, req)
-}
-
-func (s *ControlService) RevokeGatewayCertificate(ctx context.Context, req *connect.Request[pm.RevokeGatewayCertificateRequest]) (*connect.Response[pm.RevokeGatewayCertificateResponse], error) {
-	return s.gateway.RevokeGatewayCertificate(ctx, req)
-}
-
-func (s *ControlService) ListGateways(ctx context.Context, req *connect.Request[pm.ListGatewaysRequest]) (*connect.Response[pm.ListGatewaysResponse], error) {
-	return s.gateway.ListGateways(ctx, req)
-}
+// GetCertificateRevocationList, RevokeGatewayCertificate and ListGateways were
+// removed with the gateway tier (spec 41). Revocation is no longer distributed:
+// control terminates agent mTLS itself and consults revoked_certificates during
+// the handshake, so there is nothing to publish to a relay.
 
 // Authentication
 func (s *ControlService) Login(ctx context.Context, req *connect.Request[pm.LoginRequest]) (*connect.Response[pm.LoginResponse], error) {

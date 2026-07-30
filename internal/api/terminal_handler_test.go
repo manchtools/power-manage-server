@@ -14,7 +14,6 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 	"github.com/manchtools/power-manage/server/internal/testutil"
@@ -58,8 +57,14 @@ func setLinuxUsername(t *testing.T, st *store.Store, userID, linuxUsername strin
 func newTerminalHandler(t *testing.T, st *store.Store) (*api.TerminalHandler, *terminal.TokenStore) {
 	t.Helper()
 	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	// nil registry → single-gateway fallback path using the static URL.
-	h := api.NewTerminalHandler(st, tokenStore, nil, "wss://gateway.example.com/terminal", slog.Default())
+	h := api.NewTerminalHandler(st, tokenStore, "wss://control.example.com/terminal", slog.Default())
+	// Default transport: device connected, stop succeeds and finds the session.
+	// Tests that need the offline or indeterminate paths override this.
+	h.SetTerminalTransport(
+		func(context.Context) ([]*pm.TerminalSessionInfo, error) { return nil, nil },
+		func(context.Context, string, string, string) (bool, error) { return true, nil },
+		func(string) bool { return true },
+	)
 	return h, tokenStore
 }
 
@@ -86,7 +91,7 @@ func TestStartTerminal_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, resp.Msg.SessionId)
 	assert.NotEmpty(t, resp.Msg.SessionToken)
-	assert.Equal(t, "wss://gateway.example.com/terminal", resp.Msg.GatewayUrl)
+	assert.Equal(t, "wss://control.example.com/terminal", resp.Msg.TerminalUrl)
 	assert.Equal(t, "pm-tty-alice", resp.Msg.TtyUser)
 	assert.NotNil(t, resp.Msg.ExpiresAt)
 
@@ -318,7 +323,7 @@ func TestTerminateTerminalSession_NotAuthenticated(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connectErr.Code())
 }
 
-func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
+func TestTerminalBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 	cases := map[string]string{
 		"":                                    "",
 		"wss://gw/terminal":                   "wss://gw/terminal",
@@ -331,167 +336,16 @@ func TestGatewayBaseURL_StripsTokenAndTrailingSlash(t *testing.T) {
 		"wss://user@gw/terminal?token=abc": "wss://gw/terminal",
 	}
 	for in, want := range cases {
-		got := api.GatewayBaseURL(in)
+		got := api.TerminalBaseURL(in)
 		if got != want {
 			t.Errorf("GatewayBaseURL(%q) = %q, want %q", in, got, want)
 		}
 	}
 	// The resulting base must contain neither '?', '#', nor '@'.
 	for in := range cases {
-		out := api.GatewayBaseURL(in)
+		out := api.TerminalBaseURL(in)
 		if strings.ContainsAny(out, "?#@") {
 			t.Errorf("GatewayBaseURL(%q) leaked query/fragment/userinfo: %q", in, out)
 		}
 	}
-}
-
-// TestStartTerminal_RegistryRouting verifies that when a registry is
-// configured, StartTerminal resolves the gateway URL dynamically from
-// the device→gateway→URL chain instead of using the static fallback.
-func TestStartTerminal_RegistryRouting(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	backend := registry.NewFakeBackend(nil)
-	reg := registry.New(backend, slog.Default())
-	// Empty fallback so we know the returned URL came from the registry.
-	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
-
-	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
-	setLinuxUsername(t, st, userID, "alice")
-	deviceID := testutil.CreateTestDevice(t, st, "host-reg")
-	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
-
-	// Simulate the gateway publishing its registration + the device mapping.
-	ctx := context.Background()
-	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-42", registry.DefaultDeviceTTL))
-	stop, err := reg.RegisterGateway(ctx, "gw-42", "wss://gw-42.gateway.example.com/terminal", registry.DefaultGatewayTTL, registry.DefaultGatewayRefreshInterval)
-	require.NoError(t, err)
-	defer stop()
-
-	resp, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
-		DeviceId: deviceID,
-	}))
-	require.NoError(t, err)
-	assert.Equal(t, "wss://gw-42.gateway.example.com/terminal", resp.Msg.GatewayUrl)
-	assert.NotEmpty(t, resp.Msg.SessionId)
-	assert.NotEmpty(t, resp.Msg.SessionToken)
-}
-
-// TestStartTerminal_RegistryDeviceNotConnected verifies that when the
-// device has no device→gateway mapping in the registry (not connected
-// to any gateway), StartTerminal returns FailedPrecondition.
-func TestStartTerminal_RegistryDeviceNotConnected(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
-	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
-
-	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
-	setLinuxUsername(t, st, userID, "alice")
-	deviceID := testutil.CreateTestDevice(t, st, "host-unreg")
-	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
-
-	// No AttachDevice call — device is not connected.
-	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
-		DeviceId: deviceID,
-	}))
-	require.Error(t, err)
-	var connectErr *connect.Error
-	require.True(t, errors.As(err, &connectErr))
-	assert.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
-}
-
-// TestStartTerminal_GatewayNotRegistered_PersistentMisconfig covers
-// the rc11 #79 split: when the device→gateway mapping exists AND the
-// gateway has registered its internal URL but NOT a terminal URL,
-// resolveGatewayURL distinguishes this persistent operator-facing
-// misconfig (operator forgot GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE)
-// from a transient gateway-gone race. Persistent → ErrGatewayNotRegistered
-// with the actionable "set the env" message.
-func TestStartTerminal_GatewayNotRegistered_PersistentMisconfig(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
-	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
-
-	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
-	setLinuxUsername(t, st, userID, "alice")
-	deviceID := testutil.CreateTestDevice(t, st, "host-misconfig")
-	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
-
-	// Simulate the rc10 staging failure mode: agent is connected
-	// (device→gateway mapping exists), gateway has published its
-	// internal URL (alive, control can fan out admin RPCs), but the
-	// terminal URL is missing because the operator never set
-	// GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE on the gateway.
-	ctx := context.Background()
-	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-misconfig", registry.DefaultDeviceTTL))
-	require.NoError(t, reg.RegisterGatewayInternal(ctx, "gw-misconfig",
-		"https://gw-misconfig.internal:8080", registry.DefaultGatewayTTL))
-	// Note: NO RegisterGateway call — terminal URL never published.
-
-	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
-		DeviceId: deviceID,
-	}))
-	require.Error(t, err)
-	var connectErr *connect.Error
-	require.True(t, errors.As(err, &connectErr))
-	// Unavailable gRPC code (transient-style retry semantics for the
-	// connection layer), with the persistent error code so the web
-	// client can show the operator-actionable message. Asserting the
-	// structured Code is the primary contract — the SDK + web client
-	// switch on it via ErrorDetail.findDetails. Message substring is
-	// kept as a secondary check on the operator hint.
-	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
-	assert.Equal(t, api.ErrGatewayNotRegistered, errorCode(t, connectErr),
-		"persistent-misconfig path must surface ErrGatewayNotRegistered, not the transient code")
-	assert.Contains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
-		"persistent-misconfig path must name the missing env var so the operator can fix it")
-}
-
-// TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss covers
-// the other half of the rc11 #79 split: when the device→gateway
-// mapping briefly exists but BOTH the gateway's internal URL and
-// terminal URL are missing (gateway disappeared between the device
-// lookup and the URL lookup), resolveGatewayURL surfaces this as
-// ErrDeviceNotConnected with retry semantics — not as a config
-// error. The previous cut conflated this with the persistent
-// misconfig case and produced the wrong UI message.
-func TestStartTerminal_GatewayNotRegistered_TransientGatewayLoss(t *testing.T) {
-	st := testutil.SetupPostgres(t)
-	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
-	reg := registry.New(registry.NewFakeBackend(nil), slog.Default())
-	h := api.NewTerminalHandler(st, tokenStore, reg, "", slog.Default())
-
-	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@test.com", "pass", "admin")
-	setLinuxUsername(t, st, userID, "alice")
-	deviceID := testutil.CreateTestDevice(t, st, "host-transient")
-	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
-
-	// Simulate the transient race: device→gateway mapping exists,
-	// but the gateway has no published URLs at all (it died, or
-	// hasn't refreshed yet). The internal-URL probe also returns
-	// ErrNoGateway → the resolver classifies this as transient.
-	ctx := context.Background()
-	require.NoError(t, reg.AttachDevice(ctx, deviceID, "gw-gone", registry.DefaultDeviceTTL))
-	// Note: NEITHER RegisterGateway nor RegisterGatewayInternal —
-	// gateway is fully gone from the registry's URL keys.
-
-	_, err := h.StartTerminal(authedCtx(userID), connect.NewRequest(&pm.StartTerminalRequest{
-		DeviceId: deviceID,
-	}))
-	require.Error(t, err)
-	var connectErr *connect.Error
-	require.True(t, errors.As(err, &connectErr))
-	assert.Equal(t, connect.CodeUnavailable, connectErr.Code())
-	assert.Equal(t, api.ErrDeviceNotConnected, errorCode(t, connectErr),
-		"transient gateway-loss path must surface ErrDeviceNotConnected, not the persistent code")
-	// The transient path must NOT surface the "set the env var" hint.
-	// The negative assertion is the high-signal contract test —
-	// CodeUnavailable + ErrDeviceNotConnected together already encode
-	// "transient, retryable" for callers, so we don't pin the exact
-	// wording of the operator-facing message (it's free to evolve via
-	// copy edits without breaking the SDK contract).
-	assert.NotContains(t, connectErr.Error(), "GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE",
-		"transient gateway-loss path must not surface a config-error message")
 }

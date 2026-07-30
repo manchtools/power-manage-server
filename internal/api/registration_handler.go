@@ -19,7 +19,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// ValidateGatewayURL returns nil when raw is a gateway URL an agent
+// ValidateControlURL returns nil when raw is a control URL an agent
 // can actually connect to over mTLS. A surprising number of shapes
 // pass `url.Parse` without being usable:
 //   - bare hostnames like `gateway.example.com` parse with Scheme="",
@@ -37,7 +37,7 @@ import (
 // Used both at control server startup (fatal on violation, so a
 // misconfiguration is visible at boot) and defensively in the
 // registration handler before the URL is handed to the agent.
-func ValidateGatewayURL(raw string) error {
+func ValidateControlURL(raw string) error {
 	if raw == "" {
 		return fmt.Errorf("gateway URL is empty")
 	}
@@ -52,7 +52,7 @@ func ValidateGatewayURL(raw string) error {
 	// only, no host) and "https://[::1]:443" (IPv6) both validate
 	// under the same rule. u.Host would accept ":8443" silently.
 	if u.Hostname() == "" {
-		return fmt.Errorf("gateway URL has no host — bare hostnames like %q are not absolute URLs", RedactGatewayURL(raw))
+		return fmt.Errorf("control URL has no host — bare hostnames like %q are not absolute URLs", RedactControlURL(raw))
 	}
 	if u.User != nil {
 		return fmt.Errorf("gateway URL must not contain userinfo (credentials in URL leak on every enrollment response)")
@@ -63,7 +63,7 @@ func ValidateGatewayURL(raw string) error {
 	return nil
 }
 
-// RedactGatewayURL strips userinfo from a URL-shaped string for safe
+// RedactControlURL strips userinfo from a URL-shaped string for safe
 // logging / panic messages. Exported so cmd/control/main.go can use
 // the same redaction on the startup-log error path.
 //
@@ -72,7 +72,7 @@ func ValidateGatewayURL(raw string) error {
 // credentials in a substring shouldn't leak just because the parser
 // rejected it (e.g. "https://u:p@host:notaport" fails to parse as
 // a URL but still contains "u:p" in-band).
-func RedactGatewayURL(raw string) string {
+func RedactControlURL(raw string) string {
 	if raw == "" {
 		return ""
 	}
@@ -92,28 +92,28 @@ func RedactGatewayURL(raw string) string {
 type RegistrationHandler struct {
 	store      *store.Store
 	ca         *ca.CA
-	gatewayURL string
+	controlURL string
 	logger     *slog.Logger
 	now        func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewRegistrationHandler creates a new registration handler. Panics
-// when gatewayURL fails ValidateGatewayURL — caller is expected to
+// when controlURL fails ValidateControlURL — caller is expected to
 // have validated at startup, so reaching the handler constructor
 // with a bad value is a programmer error, not a runtime condition.
 // Startup-time validation (cmd/control/main.go) surfaces the same
 // check with a clean operator-facing error message.
-func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, gatewayURL string, logger *slog.Logger) *RegistrationHandler {
-	if err := ValidateGatewayURL(gatewayURL); err != nil {
+func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, controlURL string, logger *slog.Logger) *RegistrationHandler {
+	if err := ValidateControlURL(controlURL); err != nil {
 		// Redact userinfo before panicking — a gateway URL that
 		// contains credentials (which the validator is rejecting)
 		// would otherwise leak them into the crash log.
-		panic(fmt.Sprintf("NewRegistrationHandler: invalid gateway URL %q: %v", RedactGatewayURL(gatewayURL), err))
+		panic(fmt.Sprintf("NewRegistrationHandler: invalid control URL %q: %v", RedactControlURL(controlURL), err))
 	}
 	return &RegistrationHandler{
 		store:      st,
 		ca:         certAuth,
-		gatewayURL: gatewayURL,
+		controlURL: controlURL,
 		logger:     logger,
 		now:        time.Now,
 	}
@@ -131,14 +131,14 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 
 	// Defence in depth: the startup guard in cmd/control/main.go
 	// plus the NewRegistrationHandler constructor both run
-	// ValidateGatewayURL, so reaching this check with an invalid
+	// ValidateControlURL, so reaching this check with an invalid
 	// URL would mean both earlier layers regressed. We re-run the
 	// full validator (not just the emptiness check) so the agent
 	// never receives a URL shape that the URL validators missed —
 	// bare hostnames, http://, userinfo, etc.
-	if err := ValidateGatewayURL(h.gatewayURL); err != nil {
-		logger.Error("registration refused: gatewayURL failed validation",
-			"gateway_url", RedactGatewayURL(h.gatewayURL), "error", err)
+	if err := ValidateControlURL(h.controlURL); err != nil {
+		logger.Error("registration refused: controlURL failed validation",
+			"control_url", RedactControlURL(h.controlURL), "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "server misconfiguration: gateway URL is invalid")
 	}
 
@@ -244,7 +244,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 		DeviceId:    &pm.DeviceId{Value: deviceID},
 		CaCert:      h.ca.CACertPEM(),
 		Certificate: cert.CertPEM,
-		GatewayUrl:  h.gatewayURL,
+		ControlUrl:  h.controlURL,
 	}), nil
 }
 

@@ -197,7 +197,7 @@ func TestRegister_ValidToken(t *testing.T) {
 	assert.NotEmpty(t, resp.Msg.DeviceId.Value)
 	assert.NotEmpty(t, resp.Msg.Certificate)
 	assert.NotEmpty(t, resp.Msg.CaCert)
-	assert.Equal(t, "https://gateway.test:8080", resp.Msg.GatewayUrl)
+	assert.Equal(t, "https://gateway.test:8080", resp.Msg.ControlUrl)
 
 	// Verify device projection exists
 	device, err := st.Queries().GetDeviceByID(context.Background(), db.GetDeviceByIDParams{

@@ -9,17 +9,16 @@ import (
 )
 
 // ScopedSessionsForTest exposes the unexported device-scope session filter so the
-// external api_test package can exercise it without standing up the gateway
-// fan-out plumbing ListActiveTerminalSessions otherwise requires.
+// external api_test package can exercise it directly.
 func (h *TerminalHandler) ScopedSessionsForTest(ctx context.Context, sessions []*pm.TerminalSessionInfo) ([]*pm.TerminalSessionInfo, error) {
 	return h.scopedSessions(ctx, sessions)
 }
 
-// SetGatewaySessionsForTest overrides the unscoped gateway session enumeration
-// seam so the H1 revocation regression test can inject a known session set
-// without standing up the gateway fan-out. Compiled only into test binaries.
-func (h *TerminalHandler) SetGatewaySessionsForTest(fn func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)) {
-	h.gatewaySessions = fn
+// SetLiveSessionsForTest overrides the unscoped live-session enumeration seam so
+// the H1 revocation regression test can inject a known session set without a
+// real connection registry. Compiled only into test binaries.
+func (h *TerminalHandler) SetLiveSessionsForTest(fn func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)) {
+	h.liveSessions = fn
 }
 
 // SessionsForUserTest exposes the unexported unscoped per-user session

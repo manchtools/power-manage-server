@@ -27,12 +27,6 @@ var idRuleExemptFields = map[string]bool{
 	"ExportAuditEventsRequest.ActorId": true,
 	// Gateway identifier: an operator/registry-assigned gateway id (bounded
 	// string, not a ULID — see the device→gateway registry / WS2).
-	"VerifyDeviceRequest.GatewayId":              true,
-	"InternalSyncActionsRequest.GatewayId":       true,
-	"InternalValidateLuksTokenRequest.GatewayId": true,
-	"InternalGetLuksKeyRequest.GatewayId":        true,
-	"InternalStoreLuksKeyRequest.GatewayId":      true,
-	"InternalStoreLpsPasswordsRequest.GatewayId": true,
 }
 
 // TestRequestIDFieldsCarryULIDRule pins WS17b f4's intent-derived-rule depth:
@@ -45,7 +39,6 @@ var idRuleExemptFields = map[string]bool{
 func TestRequestIDFieldsCarryULIDRule(t *testing.T) {
 	ifaces := []reflect.Type{
 		reflect.TypeOf((*pmv1connect.ControlServiceClient)(nil)).Elem(),
-		reflect.TypeOf((*pmv1connect.InternalServiceHandler)(nil)).Elem(),
 	}
 	seen := map[reflect.Type]bool{}
 	idFields := 0

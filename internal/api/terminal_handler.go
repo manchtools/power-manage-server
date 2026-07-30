@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -15,80 +13,89 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	sdkterminal "github.com/manchtools/power-manage-sdk/sys/terminal"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
-	"github.com/manchtools/power-manage/server/internal/gateway/registry"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/terminal"
 )
 
-// TerminalHandler handles the four ControlService terminal session
-// RPCs from manchtools/power-manage-sdk#16 step 5. The List/Terminate
-// admin RPCs land in a follow-up PR alongside the gateway-side
-// inventory; this handler implements the user-initiated open and
-// graceful stop paths.
+// TerminalHandler handles the four ControlService terminal session RPCs.
+//
+// Spec 41 collapsed the routing this used to do. Terminal frames always
+// travelled to the agent over the AgentService bidi stream; the gateway was
+// only the WebSocket bridge for the browser and the registry that answered
+// "which gateway holds this device". With one process, control holds every
+// stream, so there is nothing to route to and nothing to fan out across.
 type TerminalHandler struct {
 	store       *store.Store
 	tokenStore  *terminal.TokenStore
-	registry    *registry.Registry // multi-gateway routing; may be nil for single-gateway fallback
-	fallbackURL string             // used only when registry is nil
+	terminalURL string // public WebSocket URL of control's own terminal endpoint
 	logger      *slog.Logger
 
-	// internalHTTPClient is an mTLS-configured HTTP client used to
-	// call GatewayService on each live gateway for admin fan-out
-	// (ListActiveTerminalSessions, TerminateTerminalSession). Set
-	// via SetInternalHTTPClient at startup. nil means admin RPCs
-	// return Unavailable.
-	internalHTTPClient *http.Client
+	// liveSessions enumerates every live terminal session with NO caller-scope
+	// filtering, and stopSession closes one on the agent that holds it. Both are
+	// injected by main.go over the connection manager rather than imported,
+	// keeping this package free of a dependency on the stream layer — and both
+	// stay function seams because tests override them.
+	//
+	// The scoped RPC (ListActiveTerminalSessions) layers scopedSessions on top of
+	// liveSessions; the internal revocation path (TerminateUserSessions) uses it
+	// raw so a system-initiated revocation sees every session (H1 / #391 —
+	// routing revocation through the scoped RPC under a user-less context
+	// silently filtered to zero and terminated nothing).
+	//
+	// nil means the terminal transport was never wired: the admin RPCs return
+	// Unavailable, exactly as the unset-registry path did before.
+	liveSessions func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)
 
-	// gatewaySessions enumerates every live terminal session across all
-	// gateways with NO caller-scope filtering. Defaults to fanOutSessions;
-	// overridden in tests. The scoped RPC (ListActiveTerminalSessions) layers
-	// scopedSessions on top of this; the internal revocation path
-	// (TerminateUserSessions) uses it raw so a system-initiated revocation sees
-	// every session (H1 / #391 — routing revocation through the scoped RPC under
-	// a user-less context silently filtered to zero and terminated nothing).
-	gatewaySessions func(ctx context.Context) ([]*pm.TerminalSessionInfo, error)
+	// stopSession closes a session on the agent holding it. It reports found
+	// SEPARATELY from err on purpose: "the session is not there" and "we could
+	// not tell whether it stopped" are different answers. Conflating them lets
+	// an operational failure be reported to the operator as a successful
+	// termination while the privileged shell is still live.
+	stopSession func(ctx context.Context, deviceID, sessionID, reason string) (found bool, err error)
+
+	// isConnected reports whether the device currently holds a stream on this
+	// control instance. Terminal sessions are bridged over that stream, so
+	// without it there is nothing to bridge to.
+	isConnected func(deviceID string) bool
 
 	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
-// SetInternalHTTPClient configures the mTLS HTTP client used for
-// gateway fan-out. Called from main.go with the same mTLS client
-// used for the InternalService proxy.
-func (h *TerminalHandler) SetInternalHTTPClient(c *http.Client) {
-	h.internalHTTPClient = c
+// SetTerminalTransport wires the live-session source and the stop path. Called
+// from main.go once the connection manager exists. Leaving it unset disables
+// the admin RPCs rather than failing open.
+func (h *TerminalHandler) SetTerminalTransport(
+	list func(ctx context.Context) ([]*pm.TerminalSessionInfo, error),
+	stop func(ctx context.Context, deviceID, sessionID, reason string) (bool, error),
+	connected func(deviceID string) bool,
+) {
+	h.liveSessions = list
+	h.stopSession = stop
+	h.isConnected = connected
 }
 
-// NewTerminalHandler constructs a TerminalHandler.
-//
-// reg is the multi-gateway registry; when non-nil, StartTerminal
-// looks up the gateway hosting each device and returns its specific
-// terminal URL. fallbackURL is the static gateway URL used when
-// reg is nil (single-gateway deployments without a registry).
-//
-// In production at least one of reg or fallbackURL must be supplied,
-// or every StartTerminal call returns Unavailable.
-func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, reg *registry.Registry, fallbackURL string, logger *slog.Logger) *TerminalHandler {
-	h := &TerminalHandler{
+// NewTerminalHandler constructs a TerminalHandler. terminalURL is control's own
+// public WebSocket endpoint; when empty, StartTerminal returns Unavailable so
+// operators see a clear misconfiguration rather than a token minted against a
+// URL that does not exist.
+func NewTerminalHandler(st *store.Store, tokenStore *terminal.TokenStore, terminalURL string, logger *slog.Logger) *TerminalHandler {
+	return &TerminalHandler{
 		store:       st,
 		tokenStore:  tokenStore,
-		registry:    reg,
-		fallbackURL: GatewayBaseURL(fallbackURL),
+		terminalURL: TerminalBaseURL(terminalURL),
 		logger:      logger,
 		now:         time.Now,
 	}
-	h.gatewaySessions = h.fanOutSessions
-	return h
 }
 
 // StartTerminal verifies the caller is authenticated, resolves the
 // dedicated TTY username from the user's stored linux_username,
 // validates the target device, mints a short-lived session token, and
-// returns the gateway WebSocket URL the web client should connect to.
+// returns the WebSocket URL the web client should connect to.
 //
 // Permission gating happens in the AuthzInterceptor (the permission
 // key is "StartTerminal" — same convention as every other handler),
@@ -161,22 +168,27 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to look up device")
 	}
 
-	// Resolve which gateway is currently hosting this device. In a
-	// multi-gateway deployment we MUST return the URL of the
-	// specific gateway holding the agent's bidi stream — any other
-	// gateway has no way to bridge the WebSocket to the agent. The
-	// device→gateway mapping is published by the gateway side via
-	// internal/gateway/registry as part of the agent connect/heart-
-	// beat lifecycle.
-	//
-	// Single-gateway deployments without a registry fall back to
-	// the static fallbackURL passed at construction time. If both
-	// the registry and the fallback are unset, we have no way to
-	// route — return Unavailable so operators see a clear failure
-	// instead of minting tokens against a URL that doesn't exist.
-	resolvedURL, err := h.resolveGatewayURL(ctx, req.Msg.DeviceId)
-	if err != nil {
-		return nil, err
+	// Control bridges every session itself, so there is no per-device routing
+	// left to do — the URL is the same for every device. Unset means terminals
+	// were never configured on this instance.
+	if h.terminalURL == "" {
+		return nil, apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnavailable,
+			"remote terminal sessions are not configured on this control instance")
+	}
+
+	// The device must actually be connected. Routing used to answer this
+	// implicitly — resolving a device to its gateway failed when no gateway
+	// held it — so when routing collapsed the liveness check had to become
+	// explicit or it would simply be gone. Checked BEFORE the append and the
+	// mint: otherwise an offline device yields a TerminalSessionStarted event
+	// and a usable token for a session that can never be bridged.
+	if h.isConnected == nil {
+		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
+			"terminal transport is not configured on this control instance")
+	}
+	if !h.isConnected(req.Msg.DeviceId) {
+		return nil, apiErrorCtx(ctx, ErrDeviceNotConnected, connect.CodeFailedPrecondition,
+			"device is not currently connected")
 	}
 
 	cols := req.Msg.Cols
@@ -262,145 +274,10 @@ func (h *TerminalHandler) StartTerminal(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&pm.StartTerminalResponse{
 		SessionId:    sessionID,
 		SessionToken: mintRes.Token,
-		GatewayUrl:   resolvedURL,
+		TerminalUrl:  h.terminalURL,
 		ExpiresAt:    timestamppb.New(mintRes.ExpiresAt),
 		TtyUser:      ttyUser,
 	}), nil
-}
-
-// resolveGatewayURL returns the public terminal WebSocket URL for
-// the gateway currently hosting the given device. Lookup chain:
-//
-//  1. If the registry is configured, look up
-//     pm:device:gateway:<deviceID> → gatewayID, then
-//     pm:gateway:terminal:<gatewayID> → URL. Returns
-//     FailedPrecondition if the device isn't connected to any
-//     gateway, Unavailable if the gateway has expired between the
-//     two lookups (race during failover).
-//  2. If the registry is not configured, return the static
-//     fallbackURL passed at construction. This is the
-//     single-gateway path.
-//  3. If neither is configured, return Unavailable so operators
-//     see a clear misconfiguration error rather than minting
-//     tokens against an empty URL.
-func (h *TerminalHandler) resolveGatewayURL(ctx context.Context, deviceID string) (string, error) {
-	if h.registry == nil {
-		if h.fallbackURL == "" {
-			return "", apiErrorCtx(ctx, ErrUnimplemented, connect.CodeUnavailable,
-				"remote terminal sessions are not configured on this control instance")
-		}
-		return h.fallbackURL, nil
-	}
-
-	gatewayID, err := h.registry.LookupDeviceGateway(ctx, deviceID)
-	if err != nil {
-		if errors.Is(err, registry.ErrNoGateway) {
-			return "", apiErrorCtx(ctx, ErrDeviceNotConnected, connect.CodeFailedPrecondition,
-				"device is not currently connected to any gateway")
-		}
-		h.logger.Error("device gateway lookup failed",
-			"device_id", deviceID, "error", err)
-		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-			"device gateway lookup failed (registry unavailable)")
-	}
-
-	terminalURL, err := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
-	if err != nil {
-		if errors.Is(err, registry.ErrNoGateway) {
-			// Two distinct causes surface as ErrNoGateway here:
-			//
-			//   1. Transient — the gateway died between the device
-			//      lookup and the URL lookup. Retry recovers once
-			//      the agent reconnects elsewhere.
-			//   2. Persistent — the gateway is up and the device is
-			//      connected to it, but the gateway never published
-			//      its terminal URL because
-			//      GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is unset.
-			//      The rc10 staging failure mode.
-			//
-			// Probe the internal-URL key for the same gatewayID to
-			// distinguish: if internal is present and terminal is
-			// not, the gateway is alive and the missing terminal URL
-			// is persistent operator-facing misconfig
-			// (ErrGatewayNotRegistered with the "set the env var"
-			// message). If neither is present the gateway is gone —
-			// surface that as ErrDeviceNotConnected so the web
-			// suggests retry rather than reporting a config error
-			// for a transient race.
-			_, internalErr := h.registry.LookupGatewayInternalURL(ctx, gatewayID)
-			if internalErr == nil {
-				// The terminal-URL and internal-URL keys are
-				// refreshed by independent goroutines on the
-				// gateway side (registry.RegisterGateway and
-				// cmd/gateway/main.go's RegisterGatewayInternal
-				// loop). Same TTL, same refresh interval, but the
-				// tickers drift — so the terminal-URL key can
-				// expire ~tens of ms before the internal-URL key
-				// just from natural skew. Without dampening that
-				// race surfaces as ErrGatewayNotRegistered (the
-				// persistent-misconfig branch) and pages operators
-				// for what's actually transient. Retry the
-				// terminal-URL lookup briefly before classifying
-				// as persistent — round-6 review fix on rc11 #79.
-				const (
-					driftRetries = 3
-					driftBackoff = 30 * time.Millisecond
-				)
-				for i := 0; i < driftRetries; i++ {
-					select {
-					case <-ctx.Done():
-						return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-							"context cancelled during gateway terminal URL retry")
-					case <-time.After(driftBackoff):
-					}
-					recoveredURL, retryErr := h.registry.LookupGatewayTerminalURL(ctx, gatewayID)
-					if retryErr == nil {
-						h.logger.Debug("gateway terminal URL recovered after retry (refresh-goroutine drift bridged)",
-							"device_id", deviceID, "gateway_id", gatewayID, "attempt", i+1)
-						return recoveredURL, nil
-					}
-					if !errors.Is(retryErr, registry.ErrNoGateway) {
-						// A different registry error during retry
-						// (e.g. backend unreachable) — fall through
-						// to the persistent classification below
-						// rather than retrying further on a
-						// non-recoverable failure mode.
-						h.logger.Warn("gateway terminal URL retry failed with non-ErrNoGateway error",
-							"device_id", deviceID, "gateway_id", gatewayID, "error", retryErr)
-						break
-					}
-				}
-
-				// Case 2 — gateway alive, terminal URL still missing
-				// after the drift-tolerant retry window. Persistent
-				// misconfiguration.
-				h.logger.Warn("gateway hosting device has no terminal URL registered (alive, terminal-URL not published)",
-					"device_id", deviceID, "gateway_id", gatewayID)
-				return "", apiErrorCtx(ctx, ErrGatewayNotRegistered, connect.CodeUnavailable,
-					"gateway hosting this device has not published its terminal URL — ensure GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set on the gateway")
-			}
-			if errors.Is(internalErr, registry.ErrNoGateway) {
-				// Case 1 — gateway gone. Transient; UI should
-				// suggest retry rather than imply config error.
-				h.logger.Info("gateway hosting device disappeared between lookups (transient)",
-					"device_id", deviceID, "gateway_id", gatewayID)
-				return "", apiErrorCtx(ctx, ErrDeviceNotConnected, connect.CodeUnavailable,
-					"device's gateway is no longer connected; retry shortly")
-			}
-			// Internal-URL probe failed for a different reason
-			// (registry unreachable, etc.). Fall through to the
-			// generic registry-unavailable path below.
-			h.logger.Error("registry probe failed when distinguishing persistent vs transient gateway loss",
-				"device_id", deviceID, "gateway_id", gatewayID, "internal_probe_error", internalErr)
-			return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-				"registry lookup failed; retry shortly")
-		}
-		h.logger.Error("gateway URL lookup failed",
-			"gateway_id", gatewayID, "error", err)
-		return "", apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-			"gateway URL lookup failed (registry unavailable)")
-	}
-	return terminalURL, nil
 }
 
 // StopTerminal is the user-initiated graceful stop. The caller must
@@ -508,16 +385,14 @@ func (h *TerminalHandler) StopTerminal(ctx context.Context, req *connect.Request
 	return connect.NewResponse(&pm.StopTerminalResponse{}), nil
 }
 
-// ListActiveTerminalSessions fans out to every live gateway via the
-// registry and merges the results. Each gateway returns its local
-// session snapshot; the control enriches with user/device metadata
-// from the database and returns the merged list.
+// ListActiveTerminalSessions returns the live sessions this control instance is
+// bridging, confined to the caller's device-group scope.
 func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *connect.Request[pm.ListActiveTerminalSessionsRequest]) (*connect.Response[pm.ListActiveTerminalSessionsResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
 	}
 
-	all, err := h.gatewaySessions(ctx)
+	all, err := h.listSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +400,7 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 	// Scope (#3): confine the merged list to sessions on devices in the caller's
 	// ListActiveTerminalSessions device-group scope. A global holder sees all.
 	// The internal revocation path (TerminateUserSessions) deliberately does NOT
-	// apply this — it enumerates via h.gatewaySessions directly (H1 / #391).
+	// apply this — it enumerates via h.listSessions directly (H1 / #391).
 	scoped, err := h.scopedSessions(ctx, all)
 	if err != nil {
 		return nil, err
@@ -540,61 +415,21 @@ func (h *TerminalHandler) ListActiveTerminalSessions(ctx context.Context, req *c
 	}), nil
 }
 
-// fanOutSessions is the real gateway fan-out backing h.gatewaySessions: it calls
-// GatewayService on every live gateway and merges their local session snapshots
-// with NO caller-scope filtering. The registry/internalHTTPClient wiring guard
-// lives here so both callers (the scoped RPC and the internal revocation path)
-// get the same Unavailable behaviour when the fan-out plumbing is unset.
-func (h *TerminalHandler) fanOutSessions(ctx context.Context) ([]*pm.TerminalSessionInfo, error) {
-	if h.registry == nil || h.internalHTTPClient == nil {
+// listSessions returns every live terminal session with NO caller-scope
+// filtering, via the transport wired by SetTerminalTransport. It replaces a
+// concurrent HTTP fan-out across every registered gateway: with one process the
+// sessions are in memory, so there is no merge, no per-gateway timeout, and no
+// partial result when one peer is unreachable.
+//
+// The wiring guard lives here so both callers (the scoped RPC and the internal
+// revocation path) get the same Unavailable behaviour when the transport is
+// unset — unchanged from the unset-registry behaviour it replaces.
+func (h *TerminalHandler) listSessions(ctx context.Context) ([]*pm.TerminalSessionInfo, error) {
+	if h.liveSessions == nil {
 		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
-			"terminal admin RPCs require a configured registry and internal HTTP client")
+			"terminal admin RPCs require a configured terminal transport")
 	}
-
-	gateways, err := h.registry.ListGatewayInternalURLs(ctx)
-	if err != nil {
-		h.logger.Error("failed to list gateways for session fan-out", "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-			"failed to enumerate gateways")
-	}
-
-	var (
-		mu  sync.Mutex
-		all []*pm.TerminalSessionInfo
-		wg  sync.WaitGroup
-	)
-
-	for gwID, gwURL := range gateways {
-		wg.Add(1)
-		go func(gwID, gwURL string) {
-			defer wg.Done()
-			childCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-			client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
-			resp, err := client.ListGatewayTerminalSessions(childCtx, connect.NewRequest(&pm.ListGatewayTerminalSessionsRequest{}))
-			if err != nil {
-				h.logger.Warn("gateway fan-out failed",
-					"gateway_id", gwID, "url", gwURL, "error", err)
-				return
-			}
-			mu.Lock()
-			for _, s := range resp.Msg.Sessions {
-				all = append(all, &pm.TerminalSessionInfo{
-					SessionId:      s.SessionId,
-					UserId:         s.UserId,
-					DeviceId:       s.DeviceId,
-					TtyUser:        s.TtyUser,
-					StartedAt:      s.StartedAt,
-					LastActivityAt: s.LastActivityAt,
-					GatewayId:      gwID,
-				})
-			}
-			mu.Unlock()
-		}(gwID, gwURL)
-	}
-	wg.Wait()
-
-	return all, nil
+	return h.liveSessions(ctx)
 }
 
 // scopedSessions filters a merged terminal-session list to those on devices
@@ -631,9 +466,8 @@ func (h *TerminalHandler) scopedSessions(ctx context.Context, sessions []*pm.Ter
 	return out, nil
 }
 
-// TerminateTerminalSession finds which gateway hosts the session
-// (via the token store's device_id → registry lookup) and calls
-// TerminateGatewayTerminalSession on that gateway.
+// TerminateTerminalSession closes a session on the agent holding it and
+// revokes its token. Admin path; StopTerminal is the user-initiated one.
 func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *connect.Request[pm.TerminateTerminalSessionRequest]) (*connect.Response[pm.TerminateTerminalSessionResponse], error) {
 	if err := Validate(ctx, req.Msg); err != nil {
 		return nil, err
@@ -651,7 +485,7 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 
 	// Look up the session to find the device, then authorize the scope BEFORE the
 	// infra-config check below — a caller must be told "denied" for an
-	// out-of-scope session regardless of whether the gateway plumbing is wired.
+	// out-of-scope session regardless of whether the terminal transport is wired.
 	session, err := h.tokenStore.Lookup(ctx, req.Msg.SessionId)
 	if err != nil {
 		if errors.Is(err, terminal.ErrTokenNotFound) {
@@ -668,66 +502,35 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 		return nil, err
 	}
 
-	if h.registry == nil || h.internalHTTPClient == nil {
+	if h.stopSession == nil {
 		return nil, apiErrorCtx(ctx, ErrTerminalNotConfigured, connect.CodeUnavailable,
-			"terminal admin RPCs require a configured registry and internal HTTP client")
+			"terminal admin RPCs require a configured terminal transport")
 	}
 
-	gatewayID, err := h.registry.LookupDeviceGateway(ctx, session.DeviceID)
+	// Close the session on the agent holding it. This replaces a device→gateway
+	// lookup, a gateway→URL lookup, and a TerminateGatewayTerminalSession call
+	// over mTLS; control holds the stream, so it sends TerminalStop on it.
+	//
+	// A session that is genuinely ABSENT is not an error: it ended with the
+	// stream, and the token must still be revoked and the termination still
+	// audited. An INDETERMINATE stop is different — we cannot say the shell is
+	// closed, so reporting success would tell an operator a root shell is gone
+	// while it is still running. Fail the RPC instead and let them retry.
+	found, err := h.stopSession(ctx, session.DeviceID, req.Msg.SessionId, req.Msg.Reason)
 	if err != nil {
-		if errors.Is(err, registry.ErrNoGateway) {
-			// Device not connected — session may have already ended.
-			// Revoke the token anyway and return success.
-			if rErr := h.tokenStore.Revoke(ctx, req.Msg.SessionId); rErr != nil {
-				h.logger.Error("failed to revoke terminal session token after no-gateway",
-					"session_id", req.Msg.SessionId, "error", rErr)
-				return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
-					"failed to revoke terminal session token")
-			}
-			return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
-		}
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeUnavailable,
-			"failed to look up gateway for device")
-	}
-
-	gwURL, err := h.registry.LookupGatewayInternalURL(ctx, gatewayID)
-	if err != nil {
-		// Gateway disappeared between lookups. Revoke token and return.
-		if rErr := h.tokenStore.Revoke(ctx, req.Msg.SessionId); rErr != nil {
-			h.logger.Error("failed to revoke terminal session token after gateway disappearance",
-				"session_id", req.Msg.SessionId, "error", rErr)
-			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
-				"failed to revoke terminal session token")
-		}
-		return connect.NewResponse(&pm.TerminateTerminalSessionResponse{}), nil
-	}
-
-	// Call the gateway to terminate the session under a bounded context
-	// (WS11 #8): the bare request ctx carries no deadline, so a stuck or slow
-	// gateway would hang this admin RPC indefinitely. Matches the 10s bound
-	// used by the ListActiveTerminalSessions fan-out above.
-	gwCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	client := pmv1connect.NewGatewayServiceClient(h.internalHTTPClient, gwURL)
-	resp, err := client.TerminateGatewayTerminalSession(gwCtx, connect.NewRequest(&pm.TerminateGatewayTerminalSessionRequest{
-		SessionId: req.Msg.SessionId,
-		Reason:    req.Msg.Reason,
-	}))
-	if err != nil {
-		h.logger.Error("gateway terminate fan-out failed",
-			"gateway_id", gatewayID, "session_id", req.Msg.SessionId, "error", err)
+		h.logger.Error("terminal stop failed; session may still be live",
+			"session_id", req.Msg.SessionId, "device_id", session.DeviceID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
-			"failed to terminate session on gateway")
+			"failed to terminate session on the device")
 	}
-
-	if !resp.Msg.Found {
-		h.logger.Debug("session not found on gateway (may have ended naturally)",
-			"gateway_id", gatewayID, "session_id", req.Msg.SessionId)
+	if !found {
+		h.logger.Info("terminal session was already gone; revoking and auditing anyway",
+			"session_id", req.Msg.SessionId, "device_id", session.DeviceID)
 	}
 
 	// Revoke the token and emit audit event.
 	if err := h.tokenStore.Revoke(ctx, req.Msg.SessionId); err != nil {
-		h.logger.Error("failed to revoke terminal session token after gateway termination",
+		h.logger.Error("failed to revoke terminal session token after termination",
 			"session_id", req.Msg.SessionId, "error", err)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
 			"failed to revoke terminal session token")
@@ -775,14 +578,14 @@ func (h *TerminalHandler) TerminateTerminalSession(ctx context.Context, req *con
 }
 
 // TerminateUserSessions force-closes every LIVE terminal session belonging to
-// userID across all gateways. It's the revocation path (audit l.174): a disabled
+// userID. It's the revocation path (audit l.174): a disabled
 // or deleted user's already-open, root-capable shell must be killed, not left
 // running until they happen to disconnect. The single-use token already blocks
 // NEW sessions and pending tokens expire within the token TTL, so this closes
 // the gap of an ALREADY-ACCEPTED session.
 //
 // Best-effort and non-fatal: per-session failures are logged so one stuck
-// gateway can't strand the others. Reuses the admin RPCs — ListActiveTerminal
+// session can't strand the others. Reuses the admin RPCs — ListActiveTerminal
 // Sessions has no in-method auth gate, and Terminate is invoked under a
 // synthetic system actor so the audit event is correctly attributed to the
 // system, not an admin. Intended to run on a background goroutine (see
@@ -815,14 +618,14 @@ func (h *TerminalHandler) TerminateUserSessions(ctx context.Context, userID stri
 	}
 }
 
-// sessionsForUser returns the live terminal sessions belonging to userID across
-// all gateways, WITHOUT caller-scope filtering. The internal revocation path is
+// sessionsForUser returns the live terminal sessions belonging to userID,
+// WITHOUT caller-scope filtering. The internal revocation path is
 // a system operation and must see every session regardless of any device-group
 // scope; routing it through the scoped ListActiveTerminalSessions RPC under a
 // user-less context silently filtered to zero and terminated nothing (H1 /
 // #391).
 func (h *TerminalHandler) sessionsForUser(ctx context.Context, userID string) ([]*pm.TerminalSessionInfo, error) {
-	all, err := h.gatewaySessions(ctx)
+	all, err := h.listSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -835,12 +638,12 @@ func (h *TerminalHandler) sessionsForUser(ctx context.Context, userID string) ([
 	return out, nil
 }
 
-// GatewayBaseURL normalises the configured gateway URL into the
-// token-free form returned by StartTerminalResponse.gateway_url:
+// TerminalBaseURL normalises the configured terminal URL into the
+// token-free form returned by StartTerminalResponse.terminal_url:
 // any query string, fragment, or trailing slash is stripped so the
 // web client can safely append ?token=<session_token> when opening
 // its WebSocket. Exported so main.go can call it once at startup.
-func GatewayBaseURL(raw string) string {
+func TerminalBaseURL(raw string) string {
 	if raw == "" {
 		return ""
 	}

@@ -13,7 +13,6 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/crl"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/mtls"
@@ -25,10 +24,6 @@ type CertificateHandler struct {
 	store  *store.Store
 	ca     *ca.CA
 	logger *slog.Logger
-	// crl, when set, receives the superseded fingerprint on renewal so the
-	// old cert stops working at the gateway (revocation). nil disables it
-	// (no Valkey configured / tests).
-	crl *crl.Store
 }
 
 // NewCertificateHandler creates a new certificate handler.
@@ -39,10 +34,6 @@ func NewCertificateHandler(st *store.Store, certAuth *ca.CA, logger *slog.Logger
 		logger: logger,
 	}
 }
-
-// SetCRLStore wires the certificate revocation list (post-construction, after
-// the Valkey subsystem comes up).
-func (h *CertificateHandler) SetCRLStore(s *crl.Store) { h.crl = s }
 
 // renewCertTestHook is a test-only seam invoked between the fingerprint check
 // and the certificate issuance/append in renewLocked. It is nil (a no-op) in
@@ -186,10 +177,31 @@ func (h *CertificateHandler) renewLocked(ctx context.Context, deviceID string, m
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to issue certificate")
 	}
 
-	// Emit DeviceCertRenewed event (projection handler already exists in migration 001)
+	// The superseded certificate stays cryptographically valid for its full
+	// remaining lifetime, so renewal MUST revoke it — otherwise both the old and
+	// the new certificate authenticate this device. Parse its expiry before
+	// writing anything: revocation rows are pruned at not_after, so without it
+	// there is no row to write. A failure here aborts the renewal rather than
+	// warning, because the alternative is issuing the new certificate while the
+	// old one stays admitted. The PEM already parsed twice above (peer class,
+	// proof-of-possession), so this is a can't-happen guard, not a live path.
+	oldNotAfter, err := ca.NotAfterFromPEM(msg.CurrentCertificate)
+	if err != nil {
+		h.logger.Error("could not parse superseded cert expiry; refusing to renew without revoking",
+			"device_id", deviceID, "error", err)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record certificate renewal")
+	}
+
+	// Emit DeviceCertRenewed (advancing the stored fingerprint) and revoke the
+	// superseded fingerprint in ONE transaction — spec 41 criterion 6. This was
+	// previously an append followed by a best-effort revoke, justified by the
+	// revocation living in a separate datastore that must not be able to fail an
+	// already-committed renewal. It now lives in this database, so the window
+	// where a renewed device still presents an accepted old certificate is
+	// closed by atomicity instead of by a reconvergence argument.
 	fingerprint := newCert.Fingerprint
 	notAfterStr := newCert.NotAfter.Format(time.RFC3339Nano)
-	if err := h.store.AppendEvent(ctx, store.Event{
+	if err := h.store.AppendEventAndRevoke(ctx, store.Event{
 		StreamType: "device",
 		StreamID:   deviceID,
 		EventType:  string(eventtypes.DeviceCertRenewed),
@@ -199,23 +211,9 @@ func (h *CertificateHandler) renewLocked(ctx context.Context, deviceID string, m
 		},
 		ActorType: "device",
 		ActorID:   deviceID,
-	}); err != nil {
-		h.logger.Error("failed to append cert renewed event", "error", err, "device_id", deviceID)
+	}, currentFP, oldNotAfter, "superseded by renewal"); err != nil {
+		h.logger.Error("failed to record certificate renewal", "error", err, "device_id", deviceID)
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to record certificate renewal")
-	}
-
-	// Revoke the superseded cert: add its fingerprint to the CRL until its own
-	// expiry, so a gateway stops admitting the old cert immediately (it would
-	// otherwise stay valid for its full year). Best-effort — a CRL failure must
-	// not fail the renewal the agent already committed to; it's logged and the
-	// next renewal/the periodic refresh re-converge. The DB fingerprint was
-	// already advanced by the DeviceCertRenewed event above.
-	if h.crl != nil {
-		if oldNotAfter, err := ca.NotAfterFromPEM(msg.CurrentCertificate); err != nil {
-			h.logger.Warn("could not parse old cert expiry for CRL; superseded cert not revoked", "device_id", deviceID, "error", err)
-		} else if err := h.crl.Revoke(ctx, currentFP, oldNotAfter); err != nil {
-			h.logger.Error("failed to revoke superseded cert in CRL", "device_id", deviceID, "error", err)
-		}
 	}
 
 	h.logger.Info("certificate renewed", "device_id", deviceID, "not_after", newCert.NotAfter)

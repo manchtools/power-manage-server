@@ -7,7 +7,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/api"
 )
 
-// TestValidateGatewayURL covers the shapes the control server may be
+// TestValidateControlURL covers the shapes the control server may be
 // handed via CONTROL_GATEWAY_URL and the ones registration_handler
 // rechecks defensively. Each case captures a real operator footgun
 // rc10 reviewers flagged:
@@ -22,7 +22,7 @@ import (
 //   - userinfo — credentials in the URL leak on every enrollment
 //     response and are never the right answer.
 //   - fragment — meaningless on the wire.
-func TestValidateGatewayURL(t *testing.T) {
+func TestValidateControlURL(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       string
@@ -50,18 +50,18 @@ func TestValidateGatewayURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := api.ValidateGatewayURL(tc.in)
+			err := api.ValidateControlURL(tc.in)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("ValidateGatewayURL(%q) = nil, want error containing %q", tc.in, tc.wantWord)
+					t.Fatalf("ValidateControlURL(%q) = nil, want error containing %q", tc.in, tc.wantWord)
 				}
 				if tc.wantWord != "" && !strings.Contains(err.Error(), tc.wantWord) {
-					t.Errorf("ValidateGatewayURL(%q) err = %q, want substring %q", tc.in, err.Error(), tc.wantWord)
+					t.Errorf("ValidateControlURL(%q) err = %q, want substring %q", tc.in, err.Error(), tc.wantWord)
 				}
 				return
 			}
 			if err != nil {
-				t.Errorf("ValidateGatewayURL(%q) = %v, want nil", tc.in, err)
+				t.Errorf("ValidateControlURL(%q) = %v, want nil", tc.in, err)
 			}
 		})
 	}

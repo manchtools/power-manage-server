@@ -48,8 +48,6 @@ var validateExemptControlRPCs = map[string]bool{
 	"SetupTOTP":                  true,
 	// Gateway CRL/list RPCs (spec 31): empty request messages, no validatable
 	// fields. The CRL fetch is agent-facing; ListGateways is permission-gated.
-	"GetCertificateRevocationList": true,
-	"ListGateways":                 true,
 	// UpdateServerSettings is a partial update — every field is optional.
 	"UpdateServerSettings": true,
 	// Validate* RPCs return the verdict in their RESPONSE; an empty query is a

@@ -24,11 +24,11 @@ import (
 // test injects two live sessions and asserts the target user's session is
 // selected even under context.Background() (exactly the listener's bgCtx shape).
 func TestTerminateUserSessions_EnumeratesUnscoped(t *testing.T) {
-	h := api.NewTerminalHandler(nil, nil, nil, "", slog.Default())
+	h := api.NewTerminalHandler(nil, nil, "", slog.Default())
 
 	// Two live sessions across the fleet — one per user. The internal
 	// revocation path must see BOTH regardless of caller scope.
-	h.SetGatewaySessionsForTest(func(context.Context) ([]*pm.TerminalSessionInfo, error) {
+	h.SetLiveSessionsForTest(func(context.Context) ([]*pm.TerminalSessionInfo, error) {
 		return []*pm.TerminalSessionInfo{
 			{SessionId: "sess-a", UserId: "user-A", DeviceId: "dev-1"},
 			{SessionId: "sess-b", UserId: "user-B", DeviceId: "dev-2"},

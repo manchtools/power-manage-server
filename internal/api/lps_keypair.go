@@ -8,10 +8,7 @@ import (
 	"fmt"
 
 	sdkcrypto "github.com/manchtools/power-manage-sdk/crypto"
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
-	"github.com/manchtools/power-manage-sdk/verify"
 
-	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/eventtypes"
 	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
@@ -207,33 +204,4 @@ func mustPublic(raw []byte) *ecdh.PublicKey {
 		return &ecdh.PublicKey{}
 	}
 	return pub
-}
-
-// BuildSignedLpsPublicKey mints the CA-signed LpsPublicKey the sync response
-// carries. The agent verifies this signature against its enrollment CA before
-// trusting the key, so a relaying gateway cannot substitute its own key. Signed
-// once at boot (the CA key and the LPS key are both stable) and cached.
-func BuildSignedLpsPublicKey(publicKey []byte, signer ca.ActionSigner) (*pm.LpsPublicKey, error) {
-	if signer == nil {
-		return nil, errors.New("lps keypair: nil signer; cannot sign public key for distribution")
-	}
-	// Parse before signing: reject a nil/malformed key up front (never
-	// distribute a CA-signed unusable key), and use the parsed key's own
-	// Bytes() so the signed message owns a copy — a later mutation of the
-	// caller's slice cannot desync the bytes from the signature.
-	pub, err := sdkcrypto.ParseX25519PublicKey(publicKey)
-	if err != nil {
-		return nil, fmt.Errorf("parse lps public key for signing: %w", err)
-	}
-	msg := &pm.LpsPublicKey{PublicKey: pub.Bytes()}
-	canonical, err := verify.LpsPublicKeyCanonical(msg)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize lps public key: %w", err)
-	}
-	sig, err := signer.SignDomain(verify.LpsPublicKeySignatureDomain, canonical)
-	if err != nil {
-		return nil, fmt.Errorf("sign lps public key: %w", err)
-	}
-	msg.Signature = sig
-	return msg, nil
 }

@@ -33,7 +33,7 @@ import (
 //     list), each RPC is classified mutating/read-only by its leading verb
 //     (an unclassifiable verb fails the test), and every mutating RPC's
 //     intra-package call graph must reach Store.AppendEvent /
-//     Store.AppendEventWithVersion.
+//     Store.AppendEventWithVersion / Store.AppendEventAndRevoke.
 //
 //  2. TestNoDirectStoreWritesFromHandlers — no non-test file in this package
 //     may call a generated write query (Insert*/Update*/Delete*/Upsert* on
@@ -88,7 +88,8 @@ var knownGaps = map[string]string{}
 // RPC method names are globally unique in the proto, so the ControlService
 // delegation method and the sub-handler method it forwards to share a name
 // and are traversed together. Calls into other packages are leaves; only
-// AppendEvent / AppendEventWithVersion count as the win condition, so the
+// AppendEvent / AppendEventWithVersion / AppendEventAndRevoke count as the win
+// condition, so the
 // walk cannot be satisfied by a projection write or a task enqueue.
 func TestEveryMutatingControlRPCAppendsEvent(t *testing.T) {
 	rpcs := controlServiceRPCNames(t)
@@ -213,8 +214,7 @@ var apiAllowedDirectWrites = map[string]string{
 	// CreateLuksToken, redeemed exactly once by the agent via the internal
 	// proxy. The resulting key STORAGE is event-sourced (ProxyStoreLuksKey
 	// appends). CreateLuksToken now appends its own audit event (#496).
-	"device_handler.go:CreateLuksToken:CreateToken":           "luks_tokens one-time token row (WS10); the RPC audit event is appended (#496), the token row itself is not event-sourced",
-	"internal_handler.go:ProxyValidateLuksToken:ConsumeToken": "destructive one-time redemption of the luks_tokens row; key storage itself is event-sourced",
+	"device_handler.go:CreateLuksToken:CreateToken": "luks_tokens one-time token row (WS10); the RPC audit event is appended (#496), the token row itself is not event-sourced",
 
 	// Async result staging for device-pull operations: a pending row is
 	// created at dispatch, expired on signing/enqueue failure (dispatch site)
@@ -446,8 +446,12 @@ func parsePackageDecls(t *testing.T) map[string][]*ast.FuncDecl {
 }
 
 // reachesEventAppend reports whether any function named name — or anything it
-// transitively calls inside this package — calls AppendEvent or
-// AppendEventWithVersion. visited memoizes explored names (a cyclic revisit
+// transitively calls inside this package — calls AppendEvent,
+// AppendEventWithVersion, or AppendEventAndRevoke. The third is a real append:
+// it runs the same appendOne inside a transaction that also writes the
+// certificate revocation, and fires post-commit listeners exactly as
+// AppendEvent does (spec 41 criterion 6). It is listed because the scanner
+// matches method names, not because it is a weaker form of appending. visited memoizes explored names (a cyclic revisit
 // reports false, which can only under-approximate — a visible failure, never
 // a silent pass).
 //
@@ -470,7 +474,8 @@ func reachesEventAppend(name string, decls map[string][]*ast.FuncDecl, visited m
 				return true
 			}
 			callee := calleeName(call.Fun)
-			if callee == "AppendEvent" || callee == "AppendEventWithVersion" {
+			if callee == "AppendEvent" || callee == "AppendEventWithVersion" ||
+				callee == "AppendEventAndRevoke" {
 				found = true
 				return false
 			}
