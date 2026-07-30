@@ -1,6 +1,7 @@
 package mtls
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -21,14 +23,20 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// fakeRev is a RevocationChecker with a fixed revoked-set and loaded flag.
+// fakeRev is a RevocationChecker with a fixed revoked-set, or a fixed lookup
+// error. err takes precedence: it models the backend being unreachable, where
+// the gate has no answer and must refuse rather than guess.
 type fakeRev struct {
 	revoked map[string]bool
-	loaded  bool
+	err     error
 }
 
-func (f fakeRev) IsRevoked(fp string) bool { return f.revoked[fp] }
-func (f fakeRev) Loaded() bool             { return f.loaded }
+func (f fakeRev) IsRevoked(_ context.Context, fp string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.revoked[fp], nil
+}
 
 // realCertWithClass builds a real x509 cert (populated .Raw) carrying the given
 // peer-class SPIFFE URI, so the revocation gate's DER fingerprint is meaningful.
@@ -182,9 +190,9 @@ func TestRequirePeerClass_HealthBypass(t *testing.T) {
 }
 
 // TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint pins WS12 #2: the
-// CRL-consulting wrapper for the internal mTLS listeners. Peer-class is enforced
-// FIRST (additive, not replaced), then revocation; a nil/unloaded checker fails
-// closed; the match is the exact DER fingerprint; health bypasses.
+// revocation-consulting wrapper for the mTLS listeners. Peer-class is enforced
+// FIRST (additive, not replaced), then revocation; a nil checker or a failed
+// lookup fails closed; the match is the exact DER fingerprint; health bypasses.
 func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -208,10 +216,10 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 		for _, fp := range fps {
 			set[fp] = true
 		}
-		return fakeRev{revoked: set, loaded: true}
+		return fakeRev{revoked: set}
 	}
 
-	t.Run("gateway class, not revoked, loaded → 200", func(t *testing.T) {
+	t.Run("gateway class, not revoked → 200", func(t *testing.T) {
 		assert.Equal(t, http.StatusOK, callWith(loaded(), gwCert, "/x"))
 	})
 	t.Run("gateway class, revoked → 403", func(t *testing.T) {
@@ -230,9 +238,10 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 		assert.Equal(t, http.StatusOK, callWith(loaded(string(flipped)), gwCert, "/x"),
 			"a tampered seed fingerprint matches no real cert → admitted")
 	})
-	t.Run("not-loaded cache fails closed even for a non-revoked cert", func(t *testing.T) {
-		assert.Equal(t, http.StatusForbidden, callWith(fakeRev{loaded: false}, gwCert, "/x"),
-			"an unloaded CRL must fail closed on the internal listener too")
+	t.Run("lookup error fails closed even for a non-revoked cert", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden,
+			callWith(fakeRev{err: errors.New("database unreachable")}, gwCert, "/x"),
+			"an indeterminate revocation answer must reject: we cannot prove the cert is unrevoked")
 	})
 	t.Run("nil checker fails closed", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, callWith(nil, gwCert, "/x"),
@@ -240,7 +249,7 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 	})
 	t.Run("health bypasses with no cert", func(t *testing.T) {
 		for _, p := range []string{"/health", "/ready"} {
-			assert.Equal(t, http.StatusOK, callWith(fakeRev{loaded: false}, nil, p),
+			assert.Equal(t, http.StatusOK, callWith(fakeRev{err: errors.New("database unreachable")}, nil, p),
 				"%s must bypass both peer-class and revocation", p)
 		}
 	})

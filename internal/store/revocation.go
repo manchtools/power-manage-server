@@ -3,103 +3,53 @@ package store
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
-// RevocationCache answers "is this certificate revoked" during the mTLS
-// handshake. It satisfies mtls.RevocationChecker structurally, exactly as the
-// Valkey-backed crl.Cache did before spec 41 — the gate itself is unchanged.
+// RevocationChecker answers "is this certificate revoked" during the mTLS
+// handshake by querying the table directly. It satisfies mtls.RevocationChecker.
 //
-// Why a cache rather than a query per handshake: the check runs on every
-// connection, including a whole fleet reconnecting at once after a control
-// restart. A snapshot keeps that path a map lookup. The cost is a bounded
-// staleness window, which is the same tradeoff the Valkey cache made.
+// Deliberately NOT a cache. The predecessor kept a periodically-refreshed
+// snapshot because each check would otherwise have been a Valkey round-trip.
+// Revocations now live in this database, so the check is a local indexed
+// primary-key lookup — and a snapshot would be actively wrong here: it is stale
+// for up to one refresh interval, which re-opens on the read side exactly the
+// window AppendEventAndRevoke closes on the write side. Writing the revocation
+// in the same transaction buys nothing if the gate goes on admitting the
+// certificate until the next tick.
 //
-// FAIL-CLOSED UNTIL LOADED is preserved deliberately. A freshly constructed
-// cache reports Loaded()==false, and the gate rejects while unloaded: without a
-// snapshot we cannot prove a certificate is unrevoked, and admitting it would
-// mean a control restart briefly honours revoked certificates. There is no
-// opt-out — an earlier NoopRevocationChecker fail-open escape hatch was removed
-// as audit finding L11 and is not being reintroduced here.
-type RevocationCache struct {
-	store  *Store
-	logger *slog.Logger
-
-	mu      sync.RWMutex
-	revoked map[string]struct{}
-	loaded  bool
+// A lookup error is returned, never swallowed: the gate fails closed on it.
+type RevocationChecker struct {
+	store *Store
 }
 
-// NewRevocationCache returns an UNLOADED cache. Call Refresh before serving, or
-// run Run to keep it fresh; until the first successful load every check fails
-// closed.
-func NewRevocationCache(st *Store, logger *slog.Logger) *RevocationCache {
-	return &RevocationCache{
-		store:   st,
-		logger:  logger,
-		revoked: map[string]struct{}{},
-	}
+// NewRevocationChecker returns a checker backed by st.
+func NewRevocationChecker(st *Store) *RevocationChecker {
+	return &RevocationChecker{store: st}
 }
 
-// IsRevoked reports whether fingerprint is in the last successful snapshot.
-func (c *RevocationCache) IsRevoked(fingerprint string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, ok := c.revoked[fingerprint]
-	return ok
-}
-
-// Loaded reports whether at least one snapshot has been taken. False means the
-// gate rejects: see the fail-closed note on the type.
-func (c *RevocationCache) Loaded() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.loaded
-}
-
-// Refresh replaces the snapshot with every revocation still inside its validity
-// window. A failure leaves the previous snapshot in place — a database blip must
-// not silently un-revoke a certificate, so the last known-good list keeps
-// serving rather than being cleared.
-func (c *RevocationCache) Refresh(ctx context.Context) error {
-	fps, err := c.store.Queries().ListActiveRevokedFingerprints(ctx)
+// IsRevoked reports whether fingerprint is currently revoked. An error means
+// "unknown", and every caller must treat that as revoked.
+func (c *RevocationChecker) IsRevoked(ctx context.Context, fingerprint string) (bool, error) {
+	revoked, err := c.store.Queries().IsCertificateRevoked(ctx, fingerprint)
 	if err != nil {
-		return fmt.Errorf("refresh revocation snapshot: %w", err)
+		return false, fmt.Errorf("revocation lookup: %w", err)
 	}
-
-	next := make(map[string]struct{}, len(fps))
-	for _, fp := range fps {
-		next[fp] = struct{}{}
-	}
-
-	c.mu.Lock()
-	c.revoked = next
-	c.loaded = true
-	c.mu.Unlock()
-	return nil
+	return revoked, nil
 }
 
-// Run refreshes on an interval until ctx is cancelled. A failed refresh is
-// logged and retried on the next tick; the previous snapshot stays authoritative
-// in the meantime.
-func (c *RevocationCache) Run(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := c.Refresh(ctx); err != nil && c.logger != nil {
-				c.logger.Warn("certificate revocation refresh failed; keeping previous snapshot",
-					"error", err)
-			}
-		}
+// DeleteExpiredRevocations drops revocation rows whose certificate has expired:
+// such a certificate can no longer authenticate anything, so the row is dead
+// weight. Without this the table grows by one row per certificate rotation
+// forever, which contradicts calling it TTL-bounded.
+func (s *Store) DeleteExpiredRevocations(ctx context.Context) (int64, error) {
+	n, err := s.Queries().DeleteExpiredRevocations(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired revocations: %w", err)
 	}
+	return n, nil
 }
 
 // RevokeInTx records a revocation on the given transaction, so the row lands

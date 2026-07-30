@@ -105,29 +105,40 @@ func TestAppendEventAndRevoke_RejectsUnattributableEvent(t *testing.T) {
 		"no revocation row for an event that was never appended")
 }
 
-func TestRevocationCache_FailsClosedUntilLoaded(t *testing.T) {
+// The read-side half of criterion 6. Writing the revocation in the same
+// transaction is worthless if the gate does not see it until some later
+// refresh, so this asserts the revocation is visible IMMEDIATELY — no refresh,
+// no tick, no warm-up. The predecessor of this test asserted the opposite (that
+// a fresh revocation was invisible until Refresh), which encoded the very
+// staleness window this change exists to remove.
+func TestRevocationChecker_NewRevocationIsVisibleImmediately(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := t.Context()
 
-	c := store.NewRevocationCache(st, nil)
-	require.False(t, c.Loaded(),
-		"a fresh cache must report unloaded so the handshake gate rejects rather than admitting blind")
-
+	c := store.NewRevocationChecker(st)
 	const fp = "9988776655"
+
+	revoked, err := c.IsRevoked(ctx, fp)
+	require.NoError(t, err)
+	require.False(t, revoked, "not revoked before the write")
+
 	require.NoError(t, st.AppendEventAndRevoke(ctx,
 		devEvent("01J0000000000000000000DEV4", eventtypes.DeviceDeleted), fp, time.Now().Add(time.Hour), "device deleted"))
 
-	require.False(t, c.IsRevoked(fp), "not visible before the first refresh")
-	require.NoError(t, c.Refresh(ctx))
-	assert.True(t, c.Loaded())
-	assert.True(t, c.IsRevoked(fp), "visible after refresh")
-	assert.False(t, c.IsRevoked("never-revoked"))
+	revoked, err = c.IsRevoked(ctx, fp)
+	require.NoError(t, err)
+	assert.True(t, revoked,
+		"a committed revocation must be visible to the very next handshake, with no refresh in between")
+
+	other, err := c.IsRevoked(ctx, "never-revoked")
+	require.NoError(t, err)
+	assert.False(t, other)
 }
 
-// An expired revocation drops out of the snapshot: the certificate it names can
-// no longer authenticate anything, so keeping the row would grow the list
-// without bound for no security gain.
-func TestRevocationCache_ExpiredRevocationLeavesTheSnapshot(t *testing.T) {
+// An expired revocation is not reported: the certificate it names is refused by
+// TLS on validity alone, so answering "revoked" would conflate two distinct
+// rejection reasons.
+func TestRevocationChecker_ExpiredRevocationIsNotReported(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := t.Context()
 
@@ -135,7 +146,28 @@ func TestRevocationCache_ExpiredRevocationLeavesTheSnapshot(t *testing.T) {
 	require.NoError(t, st.AppendEventAndRevoke(ctx,
 		devEvent("01J0000000000000000000DEV5", eventtypes.DeviceDeleted), fp, time.Now().Add(-time.Hour), "device deleted"))
 
-	c := store.NewRevocationCache(st, nil)
-	require.NoError(t, c.Refresh(ctx))
-	assert.False(t, c.IsRevoked(fp), "a revocation past its not_after must not stay in the snapshot")
+	revoked, err := store.NewRevocationChecker(st).IsRevoked(ctx, fp)
+	require.NoError(t, err)
+	assert.False(t, revoked, "a revocation past its not_after must not be reported")
+}
+
+// The retention sweep must actually remove expired rows: the table is called
+// TTL-bounded, and every certificate rotation writes one, so an uncalled or
+// non-functioning sweep means unbounded growth.
+func TestDeleteExpiredRevocations_RemovesOnlyExpired(t *testing.T) {
+	st := testutil.SetupPostgres(t)
+	ctx := t.Context()
+
+	const live = "livefp0001"
+	const dead = "deadfp0001"
+	require.NoError(t, st.AppendEventAndRevoke(ctx,
+		devEvent("01J0000000000000000000DEV6", eventtypes.DeviceDeleted), live, time.Now().Add(time.Hour), "device deleted"))
+	require.NoError(t, st.AppendEventAndRevoke(ctx,
+		devEvent("01J0000000000000000000DEV7", eventtypes.DeviceDeleted), dead, time.Now().Add(-time.Hour), "device deleted"))
+
+	n, err := st.DeleteExpiredRevocations(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "exactly the expired row is swept")
+	assert.Equal(t, int64(1), revocationRowCount(t, st, live), "the live revocation must survive")
+	assert.Equal(t, int64(0), revocationRowCount(t, st, dead))
 }

@@ -44,33 +44,6 @@ func (q *Queries) IsCertificateRevoked(ctx context.Context, fingerprint string) 
 	return exists, err
 }
 
-const listActiveRevokedFingerprints = `-- name: ListActiveRevokedFingerprints :many
-SELECT fingerprint FROM revoked_certificates WHERE not_after > now()
-`
-
-// Every fingerprint still inside its validity window. Used to warm the
-// in-process checker at boot and on refresh, so the handshake path stays a map
-// lookup rather than a query per connection.
-func (q *Queries) ListActiveRevokedFingerprints(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, listActiveRevokedFingerprints)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var fingerprint string
-		if err := rows.Scan(&fingerprint); err != nil {
-			return nil, err
-		}
-		items = append(items, fingerprint)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const revokeCertificate = `-- name: RevokeCertificate :execrows
 
 INSERT INTO revoked_certificates (fingerprint, not_after, reason)

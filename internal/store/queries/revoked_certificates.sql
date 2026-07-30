@@ -21,12 +21,6 @@ SELECT EXISTS (
   WHERE fingerprint = $1 AND not_after > now()
 );
 
--- name: ListActiveRevokedFingerprints :many
--- Every fingerprint still inside its validity window. Used to warm the
--- in-process checker at boot and on refresh, so the handshake path stays a map
--- lookup rather than a query per connection.
-SELECT fingerprint FROM revoked_certificates WHERE not_after > now();
-
 -- name: DeleteExpiredRevocations :execrows
 -- Retention sweep. An expired certificate is refused by TLS itself, so its
 -- revocation row buys nothing; every agent renews at 80% of lifetime and each
