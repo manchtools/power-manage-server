@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"time"
 
 	"connectrpc.com/connect"
+	"github.com/oklog/ulid/v2"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/crypto"
+	"github.com/manchtools/power-manage/server/internal/eventtypes"
+	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
@@ -46,11 +51,13 @@ type AgentOps struct {
 	// bug: sync fails closed rather than hand the agent an unsigned action it
 	// would reject anyway.
 	signer ca.ActionSigner
+
+	now func() time.Time // clock seam; defaults to time.Now, overridden in tests
 }
 
 // NewAgentOps constructs the agent-facing control logic.
 func NewAgentOps(st *store.Store, enc *crypto.Encryptor, signer ca.ActionSigner, logger *slog.Logger) *AgentOps {
-	return &AgentOps{store: st, encryptor: enc, signer: signer, logger: logger}
+	return &AgentOps{store: st, encryptor: enc, signer: signer, logger: logger, now: time.Now}
 }
 
 // VerifyDevice admits a device's stream: it checks the device exists and is not
@@ -140,4 +147,144 @@ func (h *AgentOps) GetLuksKey(ctx context.Context, deviceID string, req *pm.GetL
 	}
 
 	return &pm.GetLuksKeyResponse{Passphrase: passphrase}, nil
+}
+
+// StoreLuksKey encrypts and records a rotated LUKS passphrase.
+//
+// The agent sends the passphrase as plaintext over its authenticated stream.
+// It used to seal it to a control public key first, because the blob crossed a
+// gateway that was explicitly not trusted with it — the seal defended against a
+// relay reading or relocating the bytes in flight. With the relay gone the
+// stream's own mTLS is the confidentiality boundary, and the seal would be a
+// second encryption of the same bytes over the same trusted hop.
+//
+// The AT-REST encryption is untouched: the same AES-GCM under the same
+// device|action|"luks" AAD. Only the transport step is removed, so a stored
+// ciphertext stays byte-compatible with one written before this change.
+func (h *AgentOps) StoreLuksKey(ctx context.Context, deviceID string, req *pm.StoreLuksKeyRequest) (*pm.StoreLuksKeyResponse, error) {
+	if err := Validate(ctx, req); err != nil {
+		return nil, err
+	}
+	if deviceID == "" || req.ActionId == "" || req.Passphrase == "" {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			"device_id, action_id and passphrase are required")
+	}
+
+	encPassphrase, err := h.encryptor.EncryptWithContext(req.Passphrase, crypto.SecretAAD(deviceID, req.ActionId, "luks"))
+	if err != nil {
+		h.logger.Error("failed to encrypt LUKS passphrase", "error", err, "device_id", deviceID)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt passphrase")
+	}
+
+	if err := h.store.AppendEvent(ctx, store.Event{
+		StreamType: "luks_key",
+		StreamID:   ulid.Make().String(),
+		EventType:  string(eventtypes.LuksKeyRotated),
+		Data: payloads.LuksKeyRotated{
+			DeviceID:       deviceID,
+			ActionID:       req.ActionId,
+			DevicePath:     req.DevicePath,
+			Passphrase:     encPassphrase,
+			RotatedAt:      h.now().UTC(),
+			RotationReason: rotationReasonToString(req.RotationReason),
+		},
+		ActorType: "device",
+		ActorID:   deviceID,
+	}); err != nil {
+		h.logger.Error("failed to store LUKS key event", "error", err, "device_id", deviceID)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to store LUKS key")
+	}
+
+	return &pm.StoreLuksKeyResponse{Success: true}, nil
+}
+
+// StoreLpsPasswords encrypts and records a batch of rotated local passwords.
+//
+// Two phases, and the split is load-bearing. Phase 1 encrypts and parses EVERY
+// rotation before a single event is appended, so a bad entry cannot leave half
+// a batch behind. Only once the whole batch is known persistable does phase 2
+// append.
+//
+// Phase 2 must fail closed, and the reason is that LPS rotation is
+// IRREVERSIBLE: the agent has already run chpasswd locally, so the old password
+// is gone. If persistence silently fails, the only copy of the new one is lost
+// and the user is locked out. Any append failure therefore returns an error,
+// which leaves the agent's rotation metadata in place for a retry.
+func (h *AgentOps) StoreLpsPasswords(ctx context.Context, deviceID string, req *pm.StoreLpsPasswordsRequest) (*pm.StoreLpsPasswordsResponse, error) {
+	if err := Validate(ctx, req); err != nil {
+		return nil, err
+	}
+	if deviceID == "" || req.ActionId == "" {
+		return nil, apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument,
+			"device_id and action_id are required")
+	}
+
+	staged := make([]payloads.LpsPasswordRotated, 0, len(req.Rotations))
+	for _, r := range req.Rotations {
+		encPassword, err := h.encryptor.EncryptWithContext(r.Password, crypto.SecretAAD(deviceID, req.ActionId, "lps"))
+		if err != nil {
+			h.logger.Error("failed to encrypt LPS password", "error", err, "device_id", deviceID, "action_id", req.ActionId)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to encrypt password")
+		}
+
+		// rotated_at rides the wire as an RFC 3339 string; parse it back so the
+		// typed payload matches the projector's decoder. An unparseable stamp
+		// falls back to now rather than failing the batch — the projector needs
+		// a non-zero rotated_at, and losing the password over a malformed
+		// timestamp would be the worse outcome.
+		rotatedAt, err := time.Parse(time.RFC3339Nano, r.RotatedAt)
+		if err != nil {
+			if rotatedAt, err = time.Parse(time.RFC3339, r.RotatedAt); err != nil {
+				h.logger.Warn("LpsPasswordRotation rotated_at unparseable; falling back to now",
+					"raw", r.RotatedAt, "error", err)
+				rotatedAt = h.now().UTC()
+			}
+		}
+
+		staged = append(staged, payloads.LpsPasswordRotated{
+			DeviceID:       deviceID,
+			ActionID:       req.ActionId,
+			Username:       r.Username,
+			Password:       encPassword,
+			RotatedAt:      rotatedAt,
+			RotationReason: rotationReasonToString(r.Reason),
+		})
+	}
+
+	var (
+		persisted int
+		firstErr  error
+	)
+	for _, payload := range staged {
+		if err := h.store.AppendEvent(ctx, store.Event{
+			StreamType: "lps_password",
+			StreamID:   ulid.Make().String(),
+			EventType:  string(eventtypes.LpsPasswordRotated),
+			Data:       payload,
+			ActorType:  "device",
+			ActorID:    deviceID,
+		}); err != nil {
+			h.logger.Error("failed to append LpsPasswordRotated event",
+				"device_id", deviceID, "action_id", req.ActionId,
+				"persisted_before_failure", persisted, "total_rotations", len(staged), "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		persisted++
+	}
+	if firstErr != nil {
+		// Partial success is reported as failure on purpose: the agent retries
+		// the whole list, and a re-appended rotation is harmless — the
+		// projection dedupes by (device_id, username) and keeps the most
+		// recent, while the event log honestly records that we saw it twice.
+		h.logger.Error("LPS rotation persistence failed; returning error to trigger retry",
+			"device_id", deviceID, "action_id", req.ActionId,
+			"persisted", persisted, "total_rotations", len(staged), "first_error", firstErr)
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal,
+			fmt.Sprintf("failed to persist %d of %d LPS rotations", len(staged)-persisted, len(staged)))
+	}
+
+	return &pm.StoreLpsPasswordsResponse{}, nil
 }

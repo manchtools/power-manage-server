@@ -12,13 +12,26 @@ import (
 // callers and the LUKS status caller are ordinary device read paths — so they
 // move here rather than dying with the proxy that happened to host them.
 
+// rotationReasonToString converts the wire enum into the lowercase string the
+// events table and projection columns store. UNSPECIFIED maps to the empty
+// string so the projector defaulting logic (LpsPasswordRotatedFromEvent,
+// LuksKeyRotatedFromEvent) sees the shape it already handles.
+func rotationReasonToString(r pm.RotationReason) string {
+	switch r {
+	case pm.RotationReason_ROTATION_REASON_INITIAL:
+		return "initial"
+	case pm.RotationReason_ROTATION_REASON_SCHEDULED:
+		return "scheduled"
+	case pm.RotationReason_ROTATION_REASON_AUTH_GRACE:
+		return "auth_grace"
+	default:
+		return ""
+	}
+}
+
 // rotationReasonFromString decodes the string-typed rotation_reason column
 // stored by the events table and projections back into the wire enum. Unknown
 // values (including the empty string) collapse to UNSPECIFIED.
-//
-// The encoding direction lives with whichever handler writes a rotation; it is
-// absent right now because the LPS store path has not been rehomed onto the
-// agent stream yet, and carrying an unused encoder is dead code.
 func rotationReasonFromString(s string) pm.RotationReason {
 	switch s {
 	case "initial":

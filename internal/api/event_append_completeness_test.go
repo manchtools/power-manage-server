@@ -194,6 +194,7 @@ var apiAllowedDirectWrites = map[string]string{
 	// backfilled onto the projection row AFTER appendEvent(ActionCreated /
 	// ActionParamsUpdated) — the projector doesn't set them. Failure emits a
 	// compensating ActionDeleted (rollbackUnsignedCreate).
+	"agent_ops.go:ValidateLuksToken:ConsumeToken":           "destructive one-time redemption of the luks_tokens row; the KEY storage it gates is event-sourced (LuksKeyRotated). Relocated verbatim from internal_handler.go:ProxyValidateLuksToken with the gateway tier; same call, same justification, new home",
 	"action_crud.go:persistActionSignature:UpdateSignature": "post-append signature backfill; projector-owned row, columns the projector doesn't set",
 	"system_action_store.go:SignActionByID:UpdateSignature": "same sign-after-append backfill for system-managed actions",
 
