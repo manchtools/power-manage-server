@@ -111,14 +111,6 @@ jobs:
           go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
             -o dist/control-linux-${{ matrix.arch }} ./cmd/control
 
-      - name: Build gateway
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
-        run: |
-          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
-            -o dist/gateway-linux-${{ matrix.arch }} ./cmd/gateway
 
       - name: Build indexer
         env:
@@ -179,19 +171,6 @@ jobs:
           DEOF
           docker build --provenance=false -f Dockerfile.control -t ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
           docker push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }}
-
-      - name: Build and push gateway image
-        run: |
-          chmod +x dist/gateway-linux-${{ matrix.arch }}
-          cat > Dockerfile.gateway <<'DEOF'
-          FROM docker.io/library/alpine:3.21
-          RUN apk add --no-cache ca-certificates
-          COPY dist/gateway-linux-* /usr/local/bin/gateway
-          EXPOSE 8080
-          ENTRYPOINT ["/usr/local/bin/gateway"]
-          DEOF
-          docker build --provenance=false -f Dockerfile.gateway -t ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
-          docker push ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-${{ matrix.arch }}
 
       - name: Build and push indexer image
         run: |
@@ -270,29 +249,6 @@ jobs:
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
             ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
           docker manifest push ghcr.io/manchtools/power-manage-control:latest
-
-      - name: Create gateway version manifest
-        run: |
-          docker manifest create ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }} \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}
-
-      - name: Update gateway latest-rc tag
-        if: ${{ needs.build.outputs.is_prerelease == 'true' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest-rc \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest-rc
-
-      - name: Update gateway latest tag
-        if: ${{ needs.build.outputs.is_prerelease == 'false' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-gateway:latest \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-gateway:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-gateway:latest
 
       - name: Create indexer version manifest
         run: |
@@ -383,7 +339,6 @@ jobs:
 
           \`\`\`bash
           docker pull ghcr.io/manchtools/power-manage-control:latest-rc
-          docker pull ghcr.io/manchtools/power-manage-gateway:latest-rc
           docker pull ghcr.io/manchtools/power-manage-indexer:latest-rc
           \`\`\`
 
@@ -391,7 +346,6 @@ jobs:
 
           \`\`\`bash
           docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
-          docker pull ghcr.io/manchtools/power-manage-gateway:${VERSION}
           docker pull ghcr.io/manchtools/power-manage-indexer:${VERSION}
           \`\`\`
           EOF
@@ -401,7 +355,6 @@ jobs:
 
           \`\`\`bash
           docker pull ghcr.io/manchtools/power-manage-control:latest
-          docker pull ghcr.io/manchtools/power-manage-gateway:latest
           docker pull ghcr.io/manchtools/power-manage-indexer:latest
           \`\`\`
 
@@ -409,7 +362,6 @@ jobs:
 
           \`\`\`bash
           docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
-          docker pull ghcr.io/manchtools/power-manage-gateway:${VERSION}
           docker pull ghcr.io/manchtools/power-manage-indexer:${VERSION}
           \`\`\`
           EOF
@@ -422,8 +374,6 @@ jobs:
           |--------|----------|
           | `control-linux-amd64` | Linux x86_64 |
           | `control-linux-arm64` | Linux ARM64 |
-          | `gateway-linux-amd64` | Linux x86_64 |
-          | `gateway-linux-arm64` | Linux ARM64 |
           | `indexer-linux-amd64` | Linux x86_64 |
           | `indexer-linux-arm64` | Linux ARM64 |
           EOF

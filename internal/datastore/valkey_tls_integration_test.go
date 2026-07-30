@@ -198,22 +198,12 @@ func TestValkeyProductionACL_NamespaceConfinement_Integration(t *testing.T) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// pm-gateway: reads the CRL and writes its own namespaces, but never writes
-	// the CRL (A1 — revocation-defeat guard).
-	gw := redis.NewClient(&redis.Options{Addr: addr, Username: "pm-gateway", Password: "gwpw", Protocol: 2, TLSConfig: clientTLS})
-	defer gw.Close()
-	if err := gw.ZRange(cctx, "pm:crl:revoked", 0, -1).Err(); err != nil {
-		t.Errorf("pm-gateway must be able to READ pm:crl:revoked: %v", err)
-	}
-	if err := gw.Set(cctx, "pm:gateway:probe", "v", 0).Err(); err != nil {
-		t.Errorf("pm-gateway must write its own pm:gateway:* namespace: %v", err)
-	}
-	if err := gw.ZAdd(cctx, "pm:crl:revoked", redis.Z{Score: 1, Member: "fp"}).Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
-		t.Errorf("pm-gateway must be denied ZADD pm:crl:revoked with NOPERM (spec 32 A1), got: %v", err)
-	}
-	if err := gw.ZRem(cctx, "pm:crl:revoked", "fp").Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
-		t.Errorf("pm-gateway must be denied ZREM pm:crl:revoked with NOPERM (spec 32 A1), got: %v", err)
-	}
+	// The pm-gateway assertions that stood here are gone with the user and the
+	// key they guarded: revocation moved into control's own database, so there
+	// is no pm:crl:* in Valkey to defeat and no pm-gateway ACL to confine.
+	// A1 (a compromised relay must not un-revoke a fleet) is not weakened — the
+	// relay it described cannot be deployed, and the revocation row is now
+	// written inside the renewal transaction.
 
 	// pm-indexer: confined to its search namespaces; cannot reach other keyspaces
 	// (A2 — the ~* grant re-opens the full blast radius).
@@ -225,12 +215,14 @@ func TestValkeyProductionACL_NamespaceConfinement_Integration(t *testing.T) {
 	if err := ix.Set(cctx, "search:device:probe", "v", 0).Err(); err != nil {
 		t.Errorf("pm-indexer must write its own search:* namespace: %v", err)
 	}
-	for _, k := range []string{"traefik/probe", "pm:gateway:probe", "pm:device:probe"} {
+	for _, k := range []string{"traefik/probe", "pm:device:probe"} {
 		if err := ix.Set(cctx, k, "v", 0).Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
 			t.Errorf("pm-indexer must be denied write to %q with NOPERM (spec 32 A2), got: %v", k, err)
 		}
 	}
-	if err := ix.ZAdd(cctx, "pm:crl:revoked", redis.Z{Score: 1, Member: "fp"}).Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
-		t.Errorf("pm-indexer must be denied ZADD pm:crl:revoked with NOPERM (spec 32 A2), got: %v", err)
+	// pm:secret is the highest-value namespace the indexer must never reach; it
+	// replaces the CRL probe here now that revocation lives in Postgres.
+	if err := ix.Set(cctx, "pm:secret:probe", "v", 0).Err(); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Errorf("pm-indexer must be denied write to pm:secret:* with NOPERM (spec 32 A2), got: %v", err)
 	}
 }

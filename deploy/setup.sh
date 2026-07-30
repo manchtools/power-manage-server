@@ -5,7 +5,7 @@
 # This script:
 # 1. Validates the .env configuration
 # 2. Generates the internal CA for agent certificate signing
-# 3. Generates the gateway server certificate (signed by the CA)
+# 3. Generates the control server certificates (signed by the CA)
 # 4. Generates the control server certificate for internal mTLS (signed by the CA)
 # 5. Generates the control public TLS certificate (signed by the CA, for web UI / API)
 # 6. Prepares data directories for PostgreSQL and Traefik
@@ -88,7 +88,7 @@ check_env() {
 
     # Asynq task-signing key — must be 64 hex chars (32 bytes). Without
     # this, compose substitutes blank and HMAC verification fails
-    # silently across control/gateway/indexer. The placeholder in
+    # silently across control/indexer. The placeholder in
     # .env.example is intentionally not a valid hex string so this
     # check fires loudly on a non-interactive run that forgot to
     # generate one.
@@ -112,18 +112,6 @@ check_env() {
 
     if [[ -z "$CONTROL_DOMAIN" ]] || [[ "$CONTROL_DOMAIN" == *"example.com" ]]; then
         log_error "CONTROL_DOMAIN must be set to your actual domain in .env"
-        missing=1
-    fi
-
-    if [[ -z "$GATEWAY_DOMAIN" ]] || [[ "$GATEWAY_DOMAIN" == *"example.com" ]]; then
-        log_error "GATEWAY_DOMAIN must be set to your actual domain in .env"
-        missing=1
-    fi
-
-    # spec 31: the shared bootstrap token gateways present to self-enroll. One
-    # PM_* secret read by both control and the gateway; must be a real value.
-    if [[ -z "$PM_GATEWAY_ENROLL_TOKEN" ]] || [[ "$PM_GATEWAY_ENROLL_TOKEN" == CHANGE_ME* ]]; then
-        log_error "PM_GATEWAY_ENROLL_TOKEN must be set in .env (generate with: openssl rand -base64 32)"
         missing=1
     fi
 
@@ -190,45 +178,6 @@ generate_ca() {
     log_info "CA generated successfully"
 }
 
-generate_gateway_cert() {
-    if [[ -f "$CERTS_DIR/gateway.crt" ]] && [[ -f "$CERTS_DIR/gateway.key" ]]; then
-        log_warn "Gateway certificate already exists"
-        read -p "Regenerate gateway certificate? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing gateway certificate"
-            return
-        fi
-    fi
-
-    log_info "Generating gateway server certificate for ${GATEWAY_DOMAIN}..."
-
-    # Generate private key
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/gateway.key"
-
-    # Generate CSR
-    openssl req -new -key "$CERTS_DIR/gateway.key" \
-        -subj "/CN=${GATEWAY_DOMAIN}/O=Power Manage" \
-        -out "$CERTS_DIR/gateway.csr"
-
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain
-    # matching, plus a spiffe:// URI SAN that identifies this cert as
-    # a "gateway" peer class — the control server's peer-class
-    # middleware requires that class on the InternalService listener
-    # so a leaked agent cert cannot impersonate a gateway).
-    openssl x509 -req -in "$CERTS_DIR/gateway.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf "subjectAltName=DNS:%s,URI:spiffe://power-manage/gateway\nauthorityKeyIdentifier=keyid:always" "${GATEWAY_DOMAIN}") \
-        -out "$CERTS_DIR/gateway.crt"
-
-    rm -f "$CERTS_DIR/gateway.csr"
-    chmod 600 "$CERTS_DIR/gateway.key"
-    chmod 644 "$CERTS_DIR/gateway.crt"
-
-    log_info "Gateway certificate generated (valid 825 days)"
-}
-
 generate_control_cert() {
     if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
         log_warn "Control certificate already exists"
@@ -252,7 +201,7 @@ generate_control_cert() {
 
     # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain
     # matching, plus a spiffe:// URI SAN marking this cert as the
-    # "control" peer class — the gateway's GatewayService listener
+    # "control" peer class — reserved for control-to-control callers
     # requires that class so an agent cert cannot pose as the control
     # plane and issue admin fan-out calls).
     openssl x509 -req -in "$CERTS_DIR/control.csr" \
@@ -336,7 +285,7 @@ generate_datastore_cert() {
 # Postgres + Valkey (SAN MUST match the compose service hostname each client
 # dials, or verify-full rejects the connection), and per-component client certs.
 # Postgres 'cert' auth maps a client cert's CN to a DB role, so control→powermanage
-# and indexer→pm_indexer CNs MUST equal the roles; gateway/traefik never touch
+# and indexer→pm_indexer CNs MUST equal the roles; traefik never touches
 # Postgres so their CN is only cosmetic (Valkey verifies chain-to-CA, not CN).
 generate_datastore_certs() {
     generate_datastore_cert postgres postgres "DNS:postgres,DNS:localhost" "serverAuth"
@@ -344,7 +293,6 @@ generate_datastore_certs() {
     generate_datastore_cert valkey   valkey   "DNS:valkey,DNS:localhost"     "serverAuth,clientAuth"
     generate_datastore_cert control-datastore powermanage "" "clientAuth"
     generate_datastore_cert indexer-datastore pm_indexer  "" "clientAuth"
-    generate_datastore_cert gateway-datastore pm-gateway  "" "clientAuth"
     generate_datastore_cert traefik-datastore pm-traefik  "" "clientAuth"
 }
 
@@ -354,7 +302,7 @@ generate_datastore_certs() {
 # rather than prompt. Idempotent: an already-set value is left untouched.
 ensure_acl_passwords() {
     local var generated
-    for var in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
         # A CHANGE_ME* placeholder is not a credential — treat it as missing and
         # regenerate, or it would be rendered into valkey.conf as the real ACL
         # password (spec 32 AC 8 rejects placeholders).
@@ -402,13 +350,12 @@ show_instructions() {
     echo ""
     echo "1. Ensure DNS records point to this server:"
     echo "   - ${CONTROL_DOMAIN}"
-    echo "   - ${GATEWAY_DOMAIN}"
     echo ""
     echo "2. Start the services:"
     echo "   docker compose up -d"
     echo ""
     echo "   Traefik obtains a Let's Encrypt certificate for the control domain."
-    echo "   The gateway uses its internal CA-signed certificate for agent mTLS."
+    echo "   Control uses its internal CA-signed certificate for agent mTLS."
     echo ""
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
@@ -432,7 +379,7 @@ show_instructions() {
 #   * Offers to auto-generate strong defaults for secrets
 #   * Validates URL-safety / hex / hostname constraints inline so the
 #     operator can fix typos before they cause obscure runtime errors
-#   * Auto-composes URL-template strings (GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE)
+#   * Auto-composes the terminal URL (CONTROL_TERMINAL_URL)
 #     from the chosen TTY domain — operator never types {id} by hand
 ###############################################################################
 
@@ -596,56 +543,38 @@ guided_setup() {
     write_env_var CONTROL_DOMAIN "$REPLY_VALUE"
     CONTROL_DOMAIN="$REPLY_VALUE"
 
-    prompt_string "Gateway domain — agent mTLS endpoint (GATEWAY_DOMAIN)" "" "${GATEWAY_DOMAIN:-}"
-    write_env_var GATEWAY_DOMAIN "$REPLY_VALUE"
-    GATEWAY_DOMAIN="$REPLY_VALUE"
-
     # Terminal sessions are optional but recommended; offer the full set.
     if prompt_yes_no "Enable remote terminal (TTY) sessions?"; then
-        # Validate distinct host inline so the rc10 collision check
-        # never fires.
+        # The terminal WebSocket is served by control itself now, so there is
+        # no second host to keep distinct: the rc10 collision check existed
+        # because Traefik TCP-passthrough for the gateway's mTLS SNI would
+        # shadow an HTTP router sharing that host. One service, one host.
         local default_tty=""
         local control_parent
         control_parent="$(parent_domain "$CONTROL_DOMAIN")"
         if [[ -n "$control_parent" ]]; then
             default_tty="tty.$control_parent"
         fi
-        # Single-label CONTROL_DOMAIN (e.g. `localhost`) leaves the
-        # default empty so the operator types something meaningful
-        # rather than accepting `tty.localhost`.
-        prompt_string "TTY domain (must differ from GATEWAY_DOMAIN)" "$default_tty" "${GATEWAY_TTY_DOMAIN:-}"
-        if [[ "$REPLY_VALUE" == "$GATEWAY_DOMAIN" ]]; then
-            log_error "GATEWAY_TTY_DOMAIN must differ from GATEWAY_DOMAIN; aborting"
-            log_error "  Traefik TCP-passthrough for mTLS would shadow the TTY HTTP router on a shared SNI."
-            exit 1
-        fi
-        write_env_var GATEWAY_TTY_DOMAIN "$REPLY_VALUE"
-        local tty_dom="$REPLY_VALUE"
+        prompt_string "TTY domain for terminal sessions" "$default_tty" "${CONTROL_TERMINAL_DOMAIN:-}"
+        write_env_var CONTROL_TERMINAL_DOMAIN "$REPLY_VALUE"
 
-        # Auto-compose the URL template. Operator never types {id}.
-        write_env_var GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE "wss://${tty_dom}/gw/{id}/terminal"
-        echo "    ✓ GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE composed automatically."
-
-        # The TTY HTTP listener inside the container — Traefik
-        # terminates public TLS and forwards cleartext.
-        write_env_var GATEWAY_WEB_LISTEN_ADDR ":8443"
-        echo "    ✓ GATEWAY_WEB_LISTEN_ADDR set to :8443."
+        # Auto-compose the URL the web client dials. No {id} substitution any
+        # more — there is no per-gateway route to resolve.
+        write_env_var CONTROL_TERMINAL_URL "wss://${REPLY_VALUE}/terminal"
+        echo "    ✓ CONTROL_TERMINAL_URL composed automatically."
     else
-        # Operator chose No. If an existing .env already has any of
-        # these set (e.g. a rerun where terminals were previously
-        # enabled), simply skipping leaves the feature on — the
-        # gateway would still publish its terminal URL on next boot.
-        # Clear all three explicitly so the No answer matches the
-        # observable state. Caught in #80 review.
+        # Clear explicitly rather than skipping: on a rerun where terminals were
+        # previously enabled, leaving the values in place would keep the feature
+        # on while the operator answered No.
         local was_enabled=0
-        for k in GATEWAY_TTY_DOMAIN GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE GATEWAY_WEB_LISTEN_ADDR; do
+        for k in CONTROL_TERMINAL_DOMAIN CONTROL_TERMINAL_URL; do
             if grep -qE "^${k}=" "$SCRIPT_DIR/.env" 2>/dev/null; then
                 was_enabled=1
                 clear_env_var "$k"
             fi
         done
         if [[ "$was_enabled" -eq 1 ]]; then
-            log_info "  Terminal sessions disabled — cleared GATEWAY_TTY_DOMAIN, GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE, and GATEWAY_WEB_LISTEN_ADDR from .env."
+            log_info "  Terminal sessions disabled — cleared CONTROL_TERMINAL_DOMAIN and CONTROL_TERMINAL_URL from .env."
         else
             log_info "  Terminal sessions disabled — none of the terminal env vars were set, nothing to clear."
         fi
@@ -679,13 +608,6 @@ guided_setup() {
     # per-service Valkey ACL passwords are minted automatically by
     # ensure_acl_passwords after this loop, so nothing to prompt for here.
 
-    # Gateway self-enrollment shared secret (spec 31). control serves
-    # EnrollGateway and BOTH control + the gateway read this one PM_* token; a
-    # gateway presents it on boot to obtain its per-gateway mTLS cert. check_env
-    # requires it, so it MUST be set here (a fresh deploy has no other source).
-    prompt_secret "Gateway enrollment token (PM_GATEWAY_ENROLL_TOKEN)" "openssl rand -base64 32" "${PM_GATEWAY_ENROLL_TOKEN:-}"
-    write_env_var PM_GATEWAY_ENROLL_TOKEN "$REPLY_VALUE"
-
     prompt_secret "JWT secret (JWT_SECRET, min 32 chars)" "openssl rand -base64 48" "${JWT_SECRET:-}"
     if [[ ${#REPLY_VALUE} -lt 32 ]]; then
         log_error "JWT_SECRET must be at least 32 characters; got ${#REPLY_VALUE}. Aborting."
@@ -702,7 +624,7 @@ guided_setup() {
     write_env_var CONTROL_ENCRYPTION_KEY "$REPLY_VALUE"
 
     # Asynq task-signing key (audit F-02). 64 hex chars (32 bytes).
-    # Shared between control, gateway, and indexer — every service
+    # Shared between control and indexer — every service
     # that touches the Valkey-backed task queue HMAC-signs and
     # verifies the envelope so a Valkey compromise can't forge tasks.
     prompt_secret "Asynq task signing key (PM_TASK_SIGNING_KEY, 64 hex chars)" "openssl rand -hex 32" "${PM_TASK_SIGNING_KEY:-}"
@@ -829,8 +751,6 @@ main() {
     check_env
     clean_stray_cert_dirs
     generate_ca
-    # spec 31: the gateway no longer has a static cert — it self-enrolls on boot
-    # (PM_GATEWAY_ENROLL_TOKEN). generate_gateway_cert is intentionally not called.
     generate_control_cert
     generate_control_public_cert
     # spec 32: datastore mutual-TLS PKI (Postgres + Valkey server + client certs).
@@ -886,11 +806,11 @@ render_valkey_config() {
     # rendered config exactly as the operator generated it.
     #
     # spec 32: substitute the four per-service ACL passwords (control,
-    # gateway, indexer, traefik) in turn. Each is minted by
+    # indexer, traefik) in turn. Each is minted by
     # ensure_acl_passwords into .env + the environment before this runs.
     local content placeholder value remaining ph
     content="$(<"$template")"
-    for ph in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for ph in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
         placeholder="__${ph}__"
         value="${!ph}"
         remaining="$content"

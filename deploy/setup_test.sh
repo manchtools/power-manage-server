@@ -179,20 +179,14 @@ case_disable_terminals_clears_all_three_vars() {
     # has all three terminal vars set; operator answers No; the
     # disable path must clear all three.
     cat > "$SCRIPT_DIR/.env" <<EOF
-GATEWAY_DOMAIN=gateway.example.com
-GATEWAY_TTY_DOMAIN=tty.example.com
-GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=wss://tty.example.com/gw/{id}/terminal
-GATEWAY_WEB_LISTEN_ADDR=:8443
 ADMIN_EMAIL=admin@example.com
 EOF
     # Inline equivalent of the No-branch in guided_setup.
-    for k in GATEWAY_TTY_DOMAIN GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE GATEWAY_WEB_LISTEN_ADDR; do
+    for k in CONTROL_TERMINAL_DOMAIN CONTROL_TERMINAL_URL; do
         clear_env_var "$k"
     done
-    ! grep -qE '^GATEWAY_TTY_DOMAIN=' "$SCRIPT_DIR/.env" \
-        && ! grep -qE '^GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=' "$SCRIPT_DIR/.env" \
-        && ! grep -qE '^GATEWAY_WEB_LISTEN_ADDR=' "$SCRIPT_DIR/.env" \
-        && grep -qE '^GATEWAY_DOMAIN=gateway\.example\.com$' "$SCRIPT_DIR/.env" \
+    ! grep -qE '^CONTROL_TERMINAL_DOMAIN=' "$SCRIPT_DIR/.env" \
+        && ! grep -qE '^CONTROL_TERMINAL_URL=' "$SCRIPT_DIR/.env" \
         && grep -qE '^ADMIN_EMAIL=admin@example\.com$' "$SCRIPT_DIR/.env"
 }
 
@@ -205,7 +199,7 @@ case_acl_passwords_regenerates_placeholder() {
 VALKEY_CONTROL_PASSWORD=CHANGE_ME_PLEASE
 EOF
     VALKEY_CONTROL_PASSWORD="CHANGE_ME_PLEASE"
-    VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
     ensure_acl_passwords
     [[ "$VALKEY_CONTROL_PASSWORD" != CHANGE_ME* && -n "$VALKEY_CONTROL_PASSWORD" ]] \
         && ! grep -q 'CHANGE_ME' "$SCRIPT_DIR/.env" \
@@ -215,17 +209,17 @@ EOF
 case_acl_passwords_keeps_real_value() {
     : > "$SCRIPT_DIR/.env"
     VALKEY_CONTROL_PASSWORD="realsecretvalue"
-    VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
     ensure_acl_passwords
     [[ "$VALKEY_CONTROL_PASSWORD" == "realsecretvalue" ]]
 }
 
 case_acl_passwords_mints_all_missing() {
     : > "$SCRIPT_DIR/.env"
-    VALKEY_CONTROL_PASSWORD="" VALKEY_GATEWAY_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_CONTROL_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
     ensure_acl_passwords
     local var
-    for var in VALKEY_CONTROL_PASSWORD VALKEY_GATEWAY_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
         [[ -n "${!var}" ]] || return 1
         grep -qE "^${var}=[0-9a-f]{48}\$" "$SCRIPT_DIR/.env" || return 1
     done

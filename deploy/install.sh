@@ -379,10 +379,6 @@ print_summary() {
     fi
     echo ""
     echo "  Control UI:    https://${CONTROL_DOMAIN:-<unset>}"
-    echo "  Gateway mTLS:  https://${GATEWAY_DOMAIN:-<unset>}"
-    if [[ -n "${GATEWAY_TTY_DOMAIN:-}" ]]; then
-        echo "  TTY traffic:   https://${GATEWAY_TTY_DOMAIN}"
-    fi
     echo ""
     echo "  Admin login:   ${ADMIN_EMAIL:-<unset>}"
     echo "  Install dir:   $INSTALL_DIR"

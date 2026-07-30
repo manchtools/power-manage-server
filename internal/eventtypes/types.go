@@ -68,9 +68,6 @@ const (
 	CompliancePolicyRuleUpdated        EventType = "CompliancePolicyRuleUpdated"
 
 	// gateway stream (spec 31 — per-gateway mTLS identity lifecycle)
-	GatewayEnrolled    EventType = "GatewayEnrolled"
-	GatewayCertRenewed EventType = "GatewayCertRenewed"
-	GatewayRevoked     EventType = "GatewayRevoked"
 
 	// device stream
 	DeviceRegistered      EventType = "DeviceRegistered"
@@ -290,7 +287,6 @@ func All() []EventType {
 		ComplianceResultUpdated, ComplianceResultRemoved,
 		CompliancePolicyCreated, CompliancePolicyRenamed, CompliancePolicyDescriptionUpdated, CompliancePolicyDeleted,
 		CompliancePolicyRuleAdded, CompliancePolicyRuleRemoved, CompliancePolicyRuleUpdated,
-		GatewayEnrolled, GatewayCertRenewed, GatewayRevoked,
 		DeviceRegistered, DeviceSeen, DeviceHeartbeat, DeviceCertRenewed, DeviceLabelsUpdated,
 		DeviceLabelSet, DeviceLabelRemoved, DeviceDeleted, DeviceAssigned, DeviceUnassigned,
 		DeviceGroupAssigned, DeviceGroupUnassigned, DeviceSyncIntervalSet, DeviceInventoryIntervalSet,

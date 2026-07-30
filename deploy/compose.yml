@@ -1,16 +1,16 @@
 # Power Manage Server - Docker/Podman Compose
 #
-# Brings up the full stack: Traefik, PostgreSQL, Control Server, and Gateway.
+# Brings up the full stack: Traefik, PostgreSQL, Valkey, Control and Indexer.
 # Traefik handles TLS termination with automatic Let's Encrypt certificates.
 #
 # Usage:
 #   1. cp .env.example .env && $EDITOR .env
-#   2. ./setup.sh            (generates internal CA + gateway/control certs)
+#   2. ./setup.sh            (generates the internal CA + control certs)
 #   3. docker compose up -d  (or: podman-compose up -d)
 #
 # Architecture:
 #   Internet -> Traefik (:443, HTTPS)       -> Control (:8081) -> Web UI / API
-#            -> Traefik (:443, TCP passthru) -> Gateway (:8080) -> Agent mTLS Streaming
+#            -> Traefik (:443, TCP passthru) -> Control (:8082) -> Agent mTLS Streaming
 #              (:80 redirects to :443 for control only)
 
 services:
@@ -29,15 +29,11 @@ services:
       - ./certs/traefik-datastore.crt:/certs/traefik-datastore.crt:ro,z
       - ./certs/traefik-datastore.key:/certs/traefik-datastore.key:ro,z
     command:
-      # Docker provider stays for the non-gateway services
+      # Docker provider for the stack services
       # (control, indexer) that don't scale horizontally.
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=pm-internal"
-      # Redis KV provider — each gateway replica self-registers its
-      # routing config into Valkey at startup (see
-      # server/cmd/gateway/main.go). Lets `docker compose up
-      # --scale gateway=N` work without per-replica labels.
       - "--providers.redis=true"
       - "--providers.redis.endpoints=valkey:6379"
       # spec 32: read-only ACL user + datastore mutual TLS. Traefik is the
@@ -52,14 +48,6 @@ services:
       - "--providers.redis.tls.key=/certs/traefik-datastore.key"
       - "--entrypoints.web.address=:80"
       # One :443 entrypoint serves both the LE-terminated HTTP
-      # routers (control) and the gateway's TCP-passthrough mTLS
-      # router. Traefik dispatches by SNI: a TCP router with
-      # HostSNI(${GATEWAY_DOMAIN}) + tls.passthrough=true takes
-      # precedence when the ClientHello SNI matches the gateway
-      # subdomain; otherwise the HTTP router for the control
-      # subdomain wins and terminates TLS normally. No dedicated
-      # mtls entrypoint is needed — that used to be on :8443 but
-      # splitting ports added deploy friction for no real benefit.
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
@@ -188,10 +176,7 @@ services:
       - CONTROL_JWT_SECRET=${JWT_SECRET}
       - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - CONTROL_GATEWAY_URL=https://${GATEWAY_DOMAIN}
-      # spec 31: shared bootstrap token gateways present to EnrollGateway. Same
-      # PM_* cross-service secret the gateway reads (like PM_TASK_SIGNING_KEY).
-      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
+      - CONTROL_PUBLIC_URL=https://${CONTROL_DOMAIN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -216,13 +201,13 @@ services:
       - CONTROL_VALKEY_TLS_KEY=/certs/control-datastore.key
       - CONTROL_VALKEY_TLS_CA=/certs/ca.crt
       # Asynq task signing (audit F-02). Identical 64-hex value on
-      # control, gateway, and indexer — they HMAC every task payload
+      # control and indexer — they HMAC every task payload
       # so a Valkey compromise can't forge dispatches.
       - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
-      # Remote terminal fallback URL for single-gateway deployments.
-      # Leave empty when using multi-gateway routing (the control
-      # server resolves the correct gateway from the registry).
-      - CONTROL_TERMINAL_GATEWAY_URL=${CONTROL_TERMINAL_GATEWAY_URL:-}
+      # Public WebSocket URL of control's own terminal endpoint. Empty makes
+      # StartTerminal return Unavailable rather than mint a token against a URL
+      # that does not exist.
+      - CONTROL_TERMINAL_URL=${CONTROL_TERMINAL_URL:-}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
       interval: 10s
@@ -270,77 +255,6 @@ services:
       - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - internal
-
-  gateway:
-    # No container_name: scaling to N replicas needs Compose to auto-name
-    # containers (pm-server-gateway-1, -2, ...). Self-registration into
-    # Traefik's Redis KV means no per-replica Traefik labels are needed.
-    image: ghcr.io/manchtools/power-manage-gateway:${IMAGE_TAG:-latest}
-    restart: unless-stopped
-    depends_on:
-      valkey:
-        condition: service_healthy
-      control:
-        condition: service_healthy
-    volumes:
-      # spec 31: the gateway self-enrolls its agent-facing cert on boot (held in
-      # memory) — no static gateway.crt/key, and never the CA signing key on disk.
-      # spec 32: it DOES need a static datastore client keypair (CN=pm-gateway) +
-      # the CA cert to reach Valkey over mutual TLS. This is separate from the
-      # per-boot enrolled identity, so datastore access doesn't gate on enrollment.
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
-      - ./certs/gateway-datastore.crt:/certs/gateway-datastore.crt:ro,z
-      - ./certs/gateway-datastore.key:/certs/gateway-datastore.key:ro,z
-    environment:
-      - GATEWAY_VALKEY_ADDR=valkey:6379
-      # spec 32: per-service ACL user + datastore mutual TLS.
-      - GATEWAY_VALKEY_USERNAME=pm-gateway
-      - GATEWAY_VALKEY_PASSWORD=${VALKEY_GATEWAY_PASSWORD}
-      - GATEWAY_VALKEY_TLS_CERT=/certs/gateway-datastore.crt
-      - GATEWAY_VALKEY_TLS_KEY=/certs/gateway-datastore.key
-      - GATEWAY_VALKEY_TLS_CA=/certs/ca.crt
-      - GATEWAY_VALKEY_DB=${GATEWAY_VALKEY_DB:-0}
-      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
-      - GATEWAY_CONTROL_URL=https://control:8082
-      # spec 31 self-enrollment: the shared bootstrap token (the same PM_* secret
-      # control reads) and control's PUBLIC URL where EnrollGateway is served. The
-      # enrolled cert's DNS SAN is taken from GATEWAY_DOMAIN below (the gateway's
-      # public host) — there is no separate GATEWAY_HOSTNAME.
-      - PM_GATEWAY_ENROLL_TOKEN=${PM_GATEWAY_ENROLL_TOKEN}
-      - GATEWAY_CONTROL_ENROLL_URL=https://${CONTROL_DOMAIN}
-      - GATEWAY_LISTEN_ADDR=:8080
-      - GATEWAY_LOG_LEVEL=${LOG_LEVEL:-info}
-      # rc3: configurable agent heartbeat cadence (Go duration, 5s..5m).
-      - GATEWAY_HEARTBEAT_INTERVAL=${GATEWAY_HEARTBEAT_INTERVAL:-30s}
-      # Remote terminal (multi-gateway routing). Leave empty to disable.
-      # (spec 31: GATEWAY_ID is superseded — the gateway_id is the enrolled cert
-      # CN, a fresh ULID per boot — so it is no longer passed here.)
-      - GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE=${GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE:-}
-      - GATEWAY_BOOTSTRAP_HOST=${GATEWAY_BOOTSTRAP_HOST:-}
-      - GATEWAY_WEB_LISTEN_ADDR=${GATEWAY_WEB_LISTEN_ADDR:-}
-      - GATEWAY_INTERNAL_URL=${GATEWAY_INTERNAL_URL:-}
-      # Traefik self-registration via Redis KV. The gateway publishes
-      # its own routing entry into Valkey at startup; each replica's
-      # backend host:port is auto-derived from the container's IP on
-      # the pm-internal network plus the listener ports below.
-      #
-      # Everything else has a sensible default inside the binary
-      # (SelfRegister=true, RootKey=traefik, entrypoints=websecure,
-      # TTY cert resolver=letsencrypt, MTLS host=GATEWAY_DOMAIN,
-      # TTY host=GATEWAY_TTY_DOMAIN). Only override via
-      # GATEWAY_TRAEFIK_* in .env when your Traefik topology diverges
-      # from the reference stack.
-      - GATEWAY_DOMAIN=${GATEWAY_DOMAIN}
-      - GATEWAY_TTY_DOMAIN=${GATEWAY_TTY_DOMAIN:-}
-    # No command flags (spec 31): the static -tls-cert/-tls-key/-tls-ca flags
-    # were removed; the gateway self-enrolls on boot.
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
       interval: 10s
       timeout: 5s
       retries: 3

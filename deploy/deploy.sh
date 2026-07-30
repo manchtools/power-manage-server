@@ -7,13 +7,13 @@
 #
 # Usage:
 #   ./deploy.sh <ssh-host>                              # build + deploy all
-#   ./deploy.sh <ssh-host> control gateway              # build + deploy specific services
+#   ./deploy.sh <ssh-host> control indexer              # build + deploy specific services
 #   ./deploy.sh -i ~/.ssh/mykey <ssh-host>              # use specific SSH key
 #   ./deploy.sh --build-only                            # build images locally without deploying
 #
 # Examples:
 #   ./deploy.sh user@pm.example.com
-#   ./deploy.sh -i ~/.ssh/hetzner user@pm.example.com gateway
+#   ./deploy.sh -i ~/.ssh/hetzner user@pm.example.com control
 #   ./deploy.sh --build-only
 #
 # Prerequisites:
@@ -43,7 +43,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$PROJECT_ROOT/server/dist"
 
 REGISTRY="ghcr.io/manchtools"
-ALL_SERVICES=(control gateway indexer)
+ALL_SERVICES=(control indexer)
 
 # Parse arguments
 BUILD_ONLY=false
@@ -136,7 +136,7 @@ done
 ###############################################################################
 log_step "Building container images..."
 
-declare -A PORTS=([control]=8081 [gateway]=8080 [indexer]=8082)
+declare -A PORTS=([control]=8081 [indexer]=8082)
 
 for svc in "${SERVICES[@]}"; do
     IMAGE="$REGISTRY/power-manage-$svc:latest"

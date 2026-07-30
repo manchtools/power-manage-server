@@ -9,12 +9,12 @@
 # flow. The Go integration tests use synthetic minimal configs via
 # testcontainers; they prove the mechanism but never exercise these artifacts.
 #
-# Scope: postgres + valkey + control + indexer + gateway, all gated on their
+# Scope: postgres + valkey + control + indexer, all gated on their
 # healthchecks, plus Traefik (log-scanned). A smoke-only Compose override enables
 # control's real public TLS listener with setup.sh's CA-signed control-public
 # cert, adds Docker DNS aliases matching that cert, and installs the same CA into
-# the gateway image's system trust. This exercises real gateway self-enrollment
-# without external DNS or Let's Encrypt.
+# control's own TLS listener, so agent-facing mTLS is exercised without external
+# DNS or Let's Encrypt.
 #
 # Usage:  ./smoke-test.sh            # uses IMAGE_TAG below (published alpha3)
 #         IMAGE_TAG=mytag ./smoke-test.sh
@@ -24,7 +24,7 @@ IMAGE_TAG="${IMAGE_TAG:-2026.08-alpha3}"
 PROJECT="pm-smoke"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$(mktemp -d)"
-GATED_SERVICES=(postgres valkey control indexer gateway)
+GATED_SERVICES=(postgres valkey control indexer)
 
 red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
 green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
@@ -54,25 +54,21 @@ cp -r "$SRC_DIR/initdb.d" "$WORK_DIR/"
 cat > "$WORK_DIR/.env" <<EOF
 IMAGE_TAG=${IMAGE_TAG}
 CONTROL_DOMAIN=control.smoke.test
-GATEWAY_DOMAIN=gateway.smoke.test
 ACME_EMAIL=smoke@smoke.test
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 INDEXER_POSTGRES_PASSWORD=$(openssl rand -hex 24)
 JWT_SECRET=$(openssl rand -hex 32)
 CONTROL_ENCRYPTION_KEY=$(openssl rand -hex 32)
 PM_TASK_SIGNING_KEY=$(openssl rand -hex 32)
-PM_GATEWAY_ENROLL_TOKEN=$(openssl rand -base64 32)
 ADMIN_EMAIL=admin@smoke.test
 ADMIN_PASSWORD=$(openssl rand -hex 24)
 EOF
 
 # Smoke-only orchestration:
-# - control serves the real public GatewayAuthService over TLS directly (no
-#   external Traefik/LE dependency), using setup.sh's control-public cert.
-# - control.smoke.test / gateway.smoke.test are Docker DNS aliases matching the
-#   certificate SANs setup.sh stamps from CONTROL_DOMAIN/GATEWAY_DOMAIN.
-# - the published gateway image normally trusts public roots for enrollment; the
-#   smoke override installs setup.sh's internal CA into its system trust first.
+# - control serves its real public listener over TLS directly (no external
+#   Traefik/LE dependency), using setup.sh's control-public cert.
+# - control.smoke.test is a Docker DNS alias matching the certificate SAN
+#   setup.sh stamps from CONTROL_DOMAIN.
 cat > "$WORK_DIR/smoke.override.yml" <<'EOF'
 services:
   # No host port exposure in CI/local smoke: Traefik still runs and exercises
@@ -92,18 +88,6 @@ services:
         aliases:
           - control.smoke.test
 
-  gateway:
-    entrypoint:
-      - "sh"
-      - "-c"
-      - "cp /certs/ca.crt /usr/local/share/ca-certificates/power-manage-smoke.crt && update-ca-certificates >/dev/null && exec /usr/local/bin/gateway"
-    environment:
-      - GATEWAY_CONTROL_ENROLL_URL=https://control.smoke.test:8081
-      - GATEWAY_INTERNAL_URL=https://gateway.smoke.test:8080
-    networks:
-      internal:
-        aliases:
-          - gateway.smoke.test
 EOF
 
 cd "$WORK_DIR"
@@ -167,22 +151,20 @@ DANGEROUS_OUT="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_CONTROL_PASSWORD" val
 [[ "$DANGEROUS_OUT" == *NOPERM* ]] || { red "FAIL: pm-control can run FLUSHALL"; exit 1; }
 green "pm-control found an indexed search document; unrelated keys + dangerous commands remain denied"
 
-# 5b. Least-privilege confinement of the OTHER writers (spec 32 A1/A2). The
-# gateway reads the CRL but must never write it (else a compromised gateway
-# un-revokes a device fleet-wide); the indexer owns the search namespaces but
-# must not reach the CRL, gateway/device routes, or traefik KV.
-CRL_READ="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_GATEWAY_PASSWORD" valkey \
-  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-gateway ZRANGE pm:crl:revoked 0 -1 2>&1 || true)"
-[[ "$CRL_READ" != *NOPERM* ]] || { red "FAIL: pm-gateway cannot READ pm:crl:revoked"; printf '%s\n' "$CRL_READ"; exit 1; }
-CRL_WRITE="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_GATEWAY_PASSWORD" valkey \
-  valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-gateway ZADD pm:crl:revoked 1 smoke-probe 2>&1 || true)"
-[[ "$CRL_WRITE" == *NOPERM* ]] || { red "FAIL: pm-gateway can WRITE pm:crl:revoked (spec 32 A1)"; printf '%s\n' "$CRL_WRITE"; exit 1; }
-for k in pm:crl:revoked pm:gateway:smoke-probe pm:device:smoke-probe traefik/smoke-probe; do
+# 5b. Least-privilege confinement of the indexer (spec 32 A2): it owns the
+# search namespaces and must not reach anything else in the keyspace.
+#
+# The pm-gateway CRL probes that used to sit here are gone with the CRL and the
+# user that read it — revocations live in control's own database now. The
+# indexer half is NOT gateway-related and stays: it is the only assertion in
+# this block about a service that still exists, and deleting the block wholesale
+# would have dropped it silently.
+for k in pm:device:smoke-probe traefik/smoke-probe; do
   IX_WRITE="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_INDEXER_PASSWORD" valkey \
     valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-indexer SET "$k" v 2>&1 || true)"
   [[ "$IX_WRITE" == *NOPERM* ]] || { red "FAIL: pm-indexer can write $k outside its namespace (spec 32 A2)"; printf '%s\n' "$IX_WRITE"; exit 1; }
 done
-green "pm-gateway CRL is read-only; pm-indexer is confined to its search namespaces"
+green "pm-indexer is confined to its search namespaces"
 
 # 5b. RPC SURFACE: the assertion no unit test can make — does the RUNNING
 #     listener serve exactly the procedures that belong on it? Every other
@@ -240,4 +222,4 @@ if [[ -n "$BAD" ]]; then
   exit 1
 fi
 
-green "PASS — full stack including gateway enrollment is healthy; mTLS/ACL/TLS logs clean"
+green "PASS — full stack is healthy; mTLS/ACL/TLS logs clean; served RPC surface matches the contract"
