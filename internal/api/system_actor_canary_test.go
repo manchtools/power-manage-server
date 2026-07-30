@@ -50,9 +50,6 @@ var knownSystemActorSites = map[string]string{
 
 	// LPS sealing keypair is boot infrastructure the control server owns
 	// (#495): both the fresh-generation append and the upgrade backfill of
-	// the singleton LpsKeypairGenerated event have no user actor.
-	"lps_keypair.go:EnsureLpsKeypair":         "server generates the singleton LPS sealing keypair at boot; no user actor",
-	"lps_keypair.go:backfillLpsKeypairStream": "server backfills the LpsKeypairGenerated event for pre-#495 deployments; no user actor",
 
 	// Settings cascades into server-owned system actions on a bulk toggle — no
 	// per-user actor. (The top-level ServerSettingUpdated event is now attributed

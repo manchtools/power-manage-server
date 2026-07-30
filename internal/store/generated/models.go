@@ -6,8 +6,6 @@ package generated
 
 import (
 	"time"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type ActionSetMembersProjection struct {
@@ -319,13 +317,6 @@ type LogQueryResult struct {
 	Logs        string     `json:"logs"`
 	CreatedAt   time.Time  `json:"created_at"`
 	CompletedAt *time.Time `json:"completed_at"`
-}
-
-type LpsKeypair struct {
-	ID            string             `json:"id"`
-	PublicKey     []byte             `json:"public_key"`
-	PrivateKeyEnc string             `json:"private_key_enc"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type LpsPasswordsProjection struct {

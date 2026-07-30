@@ -40,10 +40,6 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 		st,
 		loggerFor(logger, "lps_password_projector"),
 	))
-	st.RegisterEventListener(LpsKeypairListener(
-		st,
-		loggerFor(logger, "lps_keypair_projector"),
-	))
 	st.RegisterEventListener(LuksKeyListener(
 		st,
 		loggerFor(logger, "luks_key_projector"),
@@ -167,9 +163,6 @@ func WireAll(st *store.Store, logger *slog.Logger) {
 	// user_roles_projection is co-owned by ApplyUser (creation-time
 	// role_ids) and ApplyUserRole (grants) — see ApplyUserWithRoles.
 	st.RegisterRebuildApply("users", ApplyUserWithRoles)
-	// lps_keypair (#495): the singleton sealing-keypair row is a projection
-	// of the lps_keypair/global stream; replay reproduces it 1:1.
-	st.RegisterRebuildApply("lps_keypair", ApplyLpsKeypair)
 	// #497: close the replay gaps — every projection stream now has a
 	// rebuild target so a full replay reproduces RBAC grants, 2FA, SSO
 	// links/providers, security alerts, compliance, and the encrypted
