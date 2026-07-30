@@ -30,13 +30,10 @@ var PublicProcedures = map[string]bool{
 	"/pm.v1.ControlService/Logout":           true,
 	"/pm.v1.ControlService/Register":         true,
 	"/pm.v1.ControlService/RenewCertificate": true,
-	// Agent-facing CRL fetch (spec 31): served over CA-pinned TLS, no JWT —
-	// mirrors RenewCertificate. Rate-limited below.
-	"/pm.v1.ControlService/GetCertificateRevocationList": true,
-	"/pm.v1.ControlService/VerifyLoginTOTP":              true,
-	"/pm.v1.ControlService/ListAuthMethods":              true,
-	"/pm.v1.ControlService/GetSSOLoginURL":               true,
-	"/pm.v1.ControlService/SSOCallback":                  true,
+	"/pm.v1.ControlService/VerifyLoginTOTP":  true,
+	"/pm.v1.ControlService/ListAuthMethods":  true,
+	"/pm.v1.ControlService/GetSSOLoginURL":   true,
+	"/pm.v1.ControlService/SSOCallback":      true,
 }
 
 // procedureAlternatives maps a Connect-RPC procedure path to the
@@ -284,7 +281,6 @@ func ClientIP(req connect.AnyRequest) string { return clientIP(req) }
 //   - Register                              → Register
 //   - Logout                                → Logout
 //   - RenewCertificate                      → RenewCert
-//   - GetCertificateRevocationList          → GetCRL
 //   - ListAuthMethods                       → AuthMethods
 //
 // Replica scope (L12, audit 2026-07-17): every limiter here is a PROCESS-LOCAL
@@ -306,10 +302,6 @@ type RateLimiters struct {
 	Register  *RateLimiter
 	Logout    *RateLimiter
 	RenewCert *RateLimiter
-	// GetCRL throttles the unauthenticated agent-facing CRL fetch (spec 31):
-	// each call does a Valkey ZRANGEBYSCORE, so an unthrottled flood is a
-	// resource-amplification vector. Keyed by client IP.
-	GetCRL *RateLimiter
 	// AuthMethods throttles the unauthenticated ListAuthMethods lookup, which
 	// reflects whether an email exists and its auth config — an enumeration
 	// oracle if left unthrottled (audit). Keyed by client IP.
@@ -424,17 +416,6 @@ func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			if !i.limiters.RenewCert.Allow(ip) {
 				i.logger.Warn("rate limit exceeded", "limiter", "renew_cert", "ip", ip, "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many certificate renewal attempts, try again later")
-			}
-		}
-
-		// Rate limit GetCertificateRevocationList — public, agent-facing (spec
-		// 31). Each call hits Valkey; a legitimate agent fetches at most a few
-		// times an hour, so the ceiling is low.
-		if procedure == "/pm.v1.ControlService/GetCertificateRevocationList" && i.limiters.GetCRL != nil {
-			ip := clientIP(req)
-			if !i.limiters.GetCRL.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "get_crl", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
 			}
 		}
 
