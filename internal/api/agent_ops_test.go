@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	"github.com/manchtools/power-manage-sdk/verify"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -42,34 +43,106 @@ func countEventsByTypeForActor(t *testing.T, st *store.Store, eventType, actorID
 	return n
 }
 
+// agentOpsVerifier is the CA verifier paired with the signer newAgentOps
+// installs, so a test can check a signature rather than merely its length.
+var agentOpsVerifier *verify.ActionVerifier
+
 func newAgentOps(t *testing.T) (*api.AgentOps, *store.Store, *crypto.Encryptor) {
 	t.Helper()
 	st := testutil.SetupPostgres(t)
 	enc := testutil.NewEncryptor(t)
-	signer, _ := newDispatchTestCA(t)
+	signer, verifier := newDispatchTestCA(t)
+	agentOpsVerifier = verifier
 	return api.NewAgentOps(st, enc, signer, slog.Default()), st, enc
 }
 
-// A malformed request must be rejected before the store is touched. The
-// credential-bearing paths are exactly where a missing validate lets a
-// malformed identifier reach a query.
-func TestAgentOps_ValidatesBeforeStoreWork(t *testing.T) {
+// Every request-taking AgentOps method must reject a ZERO request before it
+// touches the store — the in-process replacement for the InternalService
+// boundary sweep that spec 41 deleted.
+//
+// Driven by reflection rather than a hand-picked list, because a hand-picked
+// list is how this regressed: the first version named two methods and left
+// StoreLuksKey — a credential-bearing path — unguarded, while reading as though
+// the property were covered. A method added later is now covered automatically
+// or fails here.
+func TestAgentOps_EveryRequestMethodValidatesBeforeStoreWork(t *testing.T) {
 	ops, _, _ := newAgentOps(t)
 	ctx := context.Background()
 	const deviceID = "01J0000000000000000000DEVA"
 
-	t.Run("GetLuksKey rejects a non-ULID action id", func(t *testing.T) {
-		_, err := ops.GetLuksKey(ctx, deviceID, &pm.GetLuksKeyRequest{ActionId: "not-a-ulid"})
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
-			"a malformed action id must fail validation, not reach the store as a lookup miss")
-	})
+	typ := reflect.TypeOf(ops)
+	protoPkg := reflect.TypeOf(pm.GetLuksKeyRequest{}).PkgPath()
 
-	t.Run("ValidateLuksToken rejects an empty request", func(t *testing.T) {
-		_, err := ops.ValidateLuksToken(ctx, deviceID, &pm.ValidateLuksTokenRequest{})
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	})
+	checked := 0
+	for i := 0; i < typ.NumMethod(); i++ {
+		m := typ.Method(i)
+		if m.Type.NumIn() < 4 {
+			continue // (recv, ctx, deviceID, req)
+		}
+		reqType := m.Type.In(3)
+		if reqType.Kind() != reflect.Ptr || reqType.Elem().PkgPath() != protoPkg {
+			continue
+		}
+
+		t.Run(m.Name, func(t *testing.T) {
+			// NOT a zero request. Every method also has an explicit non-empty
+			// check, so a zero request is rejected either way and cannot tell
+			// whether Validate ran — the first version of this sweep passed with
+			// Validate deleted, which is the failure it was written to prevent.
+			//
+			// Instead: fill every string field with a non-empty value that is
+			// invalid for its format tag. The emptiness checks are satisfied, so
+			// only the tag-driven validation can reject it.
+			req := reflect.New(reqType.Elem())
+			fillStringsWithInvalidIDs(req.Elem())
+			out := m.Func.Call([]reflect.Value{
+				reflect.ValueOf(ops), reflect.ValueOf(ctx), reflect.ValueOf(deviceID), req,
+			})
+			errVal := out[len(out)-1]
+			require.False(t, errVal.IsNil(),
+				"%s accepted a request whose ids are malformed — Validate does not run before the store work "+
+					"(the explicit non-empty checks cannot catch this shape)", m.Name)
+			err, _ := errVal.Interface().(error)
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+				"%s rejected the zero request, but not as a validation failure", m.Name)
+		})
+		checked++
+	}
+
+	require.Positive(t, checked,
+		"no request-taking methods discovered — the reflection walk is broken and this would pass vacuously")
+}
+
+// fillStringsWithInvalidIDs sets every exported string field to a non-empty
+// value that no `ulid` tag accepts, recursing into nested messages and slices so
+// a batch request's elements are covered too.
+func fillStringsWithInvalidIDs(v reflect.Value) {
+	if v.Kind() != reflect.Struct {
+		return
+	}
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if !f.CanSet() {
+			continue
+		}
+		switch f.Kind() {
+		case reflect.String:
+			f.SetString("not-a-ulid")
+		case reflect.Ptr:
+			if f.Type().Elem().Kind() == reflect.Struct {
+				if f.IsNil() {
+					f.Set(reflect.New(f.Type().Elem()))
+				}
+				fillStringsWithInvalidIDs(f.Elem())
+			}
+		case reflect.Slice:
+			if f.Type().Elem().Kind() == reflect.Ptr && f.Type().Elem().Elem().Kind() == reflect.Struct {
+				elem := reflect.New(f.Type().Elem().Elem())
+				fillStringsWithInvalidIDs(elem.Elem())
+				f.Set(reflect.Append(f, elem))
+			}
+		}
+	}
 }
 
 // The cross-device property. A LUKS key is bound by AAD to device+action, so
@@ -237,6 +310,9 @@ func TestAgentOps_SyncActions_SignsEnvelopesBoundToTheDevice(t *testing.T) {
 	actionID := testutil.CreateTestAction(t, st, adminID, "sync-me", int(pm.ActionType_ACTION_TYPE_SHELL))
 	testutil.CreateTestAssignment(t, st, adminID, "action", actionID, "device", deviceID, 0)
 
+	verifier := agentOpsVerifier
+	require.NotNil(t, verifier, "the fixture must expose the CA verifier, or the signature check below is skipped")
+
 	resp, err := ops.SyncActions(ctx, deviceID)
 	require.NoError(t, err)
 
@@ -247,8 +323,28 @@ func TestAgentOps_SyncActions_SignsEnvelopesBoundToTheDevice(t *testing.T) {
 	require.NotEmpty(t, all, "the assigned action must reach the device, or this test proves nothing")
 
 	for _, a := range all {
-		assert.NotEmpty(t, a.SignedEnvelope, "action %s synced without a signed envelope", a.Id.GetValue())
-		assert.NotEmpty(t, a.Signature, "action %s synced without a signature", a.Id.GetValue())
+		require.NotEmpty(t, a.SignedEnvelope, "action %s synced without a signed envelope", a.Id.GetValue())
+		require.NotEmpty(t, a.Signature, "action %s synced without a signature", a.Id.GetValue())
+
+		// Non-empty bytes are not the property. An envelope signed for the wrong
+		// device, or with a stale key, is non-empty and useless — the agent
+		// verifies before executing, so it silently does nothing and the device
+		// looks idle rather than broken. Verify the signature, and verify it is
+		// bound to THIS device.
+		require.NoError(t, verifier.Verify(a.SignedEnvelope, a.Signature),
+			"action %s carries a signature that does not verify against the CA", a.Id.GetValue())
+		assert.Contains(t, string(a.SignedEnvelope), deviceID,
+			"the signed envelope for action %s is not bound to the syncing device", a.Id.GetValue())
+	}
+
+	// Device binding must be exclusive, not incidental: an envelope minted for
+	// this device must not verify as one minted for another.
+	other := testutil.CreateTestDevice(t, st, "other-sync-host")
+	otherResp, err := ops.SyncActions(ctx, other)
+	require.NoError(t, err)
+	for _, a := range otherResp.StandaloneActions {
+		assert.NotContains(t, string(a.SignedEnvelope), deviceID,
+			"another device's envelope must not carry this device's id")
 	}
 }
 
