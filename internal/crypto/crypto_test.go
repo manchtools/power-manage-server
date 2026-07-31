@@ -225,6 +225,66 @@ func TestDecryptWithContext_InvalidBase64(t *testing.T) {
 	require.Error(t, err)
 }
 
+// Spec 41 criterion 9 / R6: a LUKS secret opened under the LPS domain tag must
+// fail. Domain separation used to be enforced on the WIRE — the X25519 sealed
+// transport bound "luks" vs "lps" into its seal AAD, and sdk's
+// TestLuksLpsDomainSeparation asserted the two could not be interchanged. Spec
+// 41 deleted that transport, and TestProxyStoreLuksKey_RejectsCrossDomainBlob,
+// which asserted the same property against the gateway proxy, went with it.
+// The property did not go anywhere: it now lives entirely in the at-rest AAD's
+// third segment, which is the only thing distinguishing a stored LUKS
+// passphrase from a stored LPS password for the SAME (device, action).
+//
+// Both directions are pinned because the tag is a plain string appended to the
+// same prefix: a construction bug that drops or fixes the segment breaks one
+// direction and not necessarily the other.
+func TestDecryptWithContext_LuksBlobDoesNotOpenUnderTheLpsDomain(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+
+	const deviceID = "01HDEVICEA"
+	const actionID = "01HACTIONA"
+	const passphrase = "a-real-luks-passphrase"
+
+	ct, err := enc.EncryptWithContext(passphrase, crypto.SecretAAD(deviceID, actionID, "luks"))
+	require.NoError(t, err)
+
+	// Positive control: the LUKS domain still opens it. Without this the
+	// negative below would also pass for a ciphertext that opens under NO
+	// domain at all.
+	pt, err := enc.DecryptWithContext(ct, crypto.SecretAAD(deviceID, actionID, "luks"))
+	require.NoError(t, err)
+	require.Equal(t, passphrase, pt)
+
+	// Same device, same action, wrong domain — the whole of the separation.
+	_, err = enc.DecryptWithContext(ct, crypto.SecretAAD(deviceID, actionID, "lps"))
+	require.Error(t, err,
+		"a LUKS passphrase must not open under the LPS domain tag: with the sealed transport gone the domain "+
+			"segment of the at-rest AAD is the only thing keeping a disk passphrase out of the LPS password list")
+}
+
+// The reverse direction of criterion 9 / R6.
+func TestDecryptWithContext_LpsBlobDoesNotOpenUnderTheLuksDomain(t *testing.T) {
+	enc, err := crypto.NewEncryptor(testKey())
+	require.NoError(t, err)
+
+	const deviceID = "01HDEVICEA"
+	const actionID = "01HACTIONA"
+	const password = "a-real-lps-password"
+
+	ct, err := enc.EncryptWithContext(password, crypto.SecretAAD(deviceID, actionID, "lps"))
+	require.NoError(t, err)
+
+	pt, err := enc.DecryptWithContext(ct, crypto.SecretAAD(deviceID, actionID, "lps"))
+	require.NoError(t, err)
+	require.Equal(t, password, pt)
+
+	_, err = enc.DecryptWithContext(ct, crypto.SecretAAD(deviceID, actionID, "luks"))
+	require.Error(t, err,
+		"an LPS password must not open under the LUKS domain tag — a rotated account password surfacing as a "+
+			"disk passphrase is the same confusion in the other direction")
+}
+
 func TestNilEncryptor_Passthrough(t *testing.T) {
 	// nil encryptor means encryption is disabled (test setups only —
 	// production boot requires the key since WS11).

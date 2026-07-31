@@ -275,8 +275,16 @@ func TestAgentOps_StoreLpsPasswords_BadEntryPersistsNothing(t *testing.T) {
 
 // The happy path: every rotation in the batch lands, encrypted under the lps
 // AAD, and an unparseable timestamp does not lose the password.
+//
+// "Encrypted under the lps AAD" is asserted the way the LUKS sibling above
+// asserts it — by trying to open the stored ciphertext under another action and
+// another device. Spec 41 R5 ("LPS blob replayed against another device → AAD
+// mismatch, rejected") had no LPS-side test at all: the transport that used to
+// bind the device is gone, so the only thing left standing between a
+// DB-level attacker and a working row-swap is this AAD, and merely counting
+// events proves nothing about it.
 func TestAgentOps_StoreLpsPasswords_PersistsWholeBatch(t *testing.T) {
-	ops, st, _ := newAgentOps(t)
+	ops, st, enc := newAgentOps(t)
 	ctx := context.Background()
 
 	deviceID := testutil.CreateTestDevice(t, st, "lps-ok-host")
@@ -295,6 +303,27 @@ func TestAgentOps_StoreLpsPasswords_PersistsWholeBatch(t *testing.T) {
 
 	assert.Equal(t, 2, countEventsByTypeForActor(t, st, "LpsPasswordRotated", deviceID),
 		"both rotations must be persisted")
+
+	// The R5 half. ListCurrent returns the stored column verbatim — the
+	// decryption happens in the read handler — so these are the real
+	// ciphertexts as an attacker with database access would find them.
+	rows, err := st.Repos().Lps.ListCurrent(ctx, deviceID)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "both rotations must reach the projection, or the AAD checks below run over nothing")
+
+	for _, r := range rows {
+		// Positive control first: the real (device, action) opens it. Without
+		// this the relocation failures below would also be produced by a row
+		// that decrypts under no context at all.
+		pt, err := enc.DecryptWithContext(r.Password, crypto.SecretAAD(deviceID, actionID, "lps"))
+		require.NoError(t, err, "the stored password for %s must open under its own device|action", r.Username)
+		require.NotEmpty(t, pt)
+
+		_, err = enc.DecryptWithContext(r.Password, crypto.SecretAAD(deviceID, testutil.NewID(), "lps"))
+		require.Error(t, err, "a ciphertext relocated to another action must fail to decrypt, not yield the password")
+		_, err = enc.DecryptWithContext(r.Password, crypto.SecretAAD(testutil.NewID(), actionID, "lps"))
+		require.Error(t, err, "a ciphertext relocated to another device must fail to decrypt")
+	}
 }
 
 // Orphaned property re-homed: SyncActions signs each delivered action bound to
