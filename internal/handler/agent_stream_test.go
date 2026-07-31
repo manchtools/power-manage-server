@@ -75,11 +75,24 @@ func newStreamFixture(t *testing.T, requireTLS bool) *streamFixture {
 	return newStreamFixtureWithCert(t, requireTLS, "")
 }
 
+// newWorkerlessStreamFixture builds the wiring main.go refuses to boot — a
+// handler with no device worker manager — so the stream's own refusal path can
+// be driven. The workerMgr field stays an untyped nil interface: assigning a
+// nil *fakeStreamWorkerManager would make the interface non-nil and dodge the
+// gate.
+func newWorkerlessStreamFixture(t *testing.T) *streamFixture {
+	return newStreamFixtureOpts(t, false, "", false)
+}
+
 // newStreamFixtureWithCert is newStreamFixture plus an mTLS-cert-derived device
 // id stamped into the server-side request context (mimicking MTLSMiddleware), so
 // the cert/Hello device-id mismatch gate can be driven. certDeviceID == ""
 // injects nothing — the requireTLS path then sees no cert identity.
 func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string) *streamFixture {
+	return newStreamFixtureOpts(t, requireTLS, certDeviceID, true)
+}
+
+func newStreamFixtureOpts(t *testing.T, requireTLS bool, certDeviceID string, withWorker bool) *streamFixture {
 	t.Helper()
 
 	// 1) Recording AgentOps double. The httptest InternalService this used to
@@ -96,11 +109,13 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 		manager:           mgr,
 		aqClient:          queue,
 		ops:               control,
-		workerMgr:         worker,
 		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
 		serverVersion:     "test",
 		heartbeatInterval: 30 * time.Second,
 		requireTLS:        requireTLS,
+	}
+	if withWorker {
+		h.workerMgr = worker
 	}
 
 	// 3) AgentService over h2c httptest server. Both server and
@@ -145,6 +160,39 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 		queue:   queue,
 		server:  srv,
 	}
+}
+
+// TestStream_WorkerlessRefusalUnregistersTheConnection drives the
+// defence-in-depth refusal for a handler built without a worker manager. The
+// refusal happens AFTER Register, so the teardown defers must already be in
+// place: a refused stream that leaves its registration in the connection map
+// would make the device look connected forever and shadow its next real
+// stream's supersede-and-replace path.
+func TestStream_WorkerlessRefusalUnregistersTheConnection(t *testing.T) {
+	f := newWorkerlessStreamFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream := f.client.Stream(ctx)
+	require.NoError(t, stream.Send(&pm.AgentMessage{
+		Payload: &pm.AgentMessage_Hello{Hello: &pm.Hello{
+			DeviceId:     &pm.DeviceId{Value: "01HZXWORKERLESS00000000000"},
+			Hostname:     "workerless-host",
+			AgentVersion: "old",
+		}},
+	}))
+
+	_, err := stream.Receive()
+	require.Error(t, err, "a control that cannot dispatch must refuse the stream")
+	var cerr *connect.Error
+	require.ErrorAs(t, err, &cerr)
+	assert.Equal(t, connect.CodeUnavailable, cerr.Code())
+
+	// The refusal must tear down what the handler had already built. By the
+	// time the client observes the error the handler has returned, and its
+	// defers with it — so this read is not racing the unwind.
+	assert.False(t, f.manager.IsConnected("01HZXWORKERLESS00000000000"),
+		"refused stream left its connection registered")
 }
 
 // recvErr drives the bidi stream's Receive loop until it returns the

@@ -403,20 +403,6 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 			"device_id", deviceID)
 	}
 
-	// Start per-device Asynq worker to process action dispatches
-	// Defence in depth against the wiring that main.go now refuses: a handler
-	// built without a worker manager must reject the stream rather than panic
-	// on the device's first frame, which would kill the process with the
-	// connection already registered.
-	if h.workerMgr == nil {
-		h.logger.Error("agent stream refused: no device worker manager (no task queue configured)",
-			"device_id", deviceID)
-		return connect.NewError(connect.CodeUnavailable, errors.New("server cannot dispatch to devices"))
-	}
-	if err := h.workerMgr.StartWorker(deviceID); err != nil {
-		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
-	}
-
 	// Registered BEFORE the teardown defer below so it runs AFTER it: the
 	// unregister has to have cancelled this agent first, or a send that starts
 	// while we wait would reopen the window we are closing.
@@ -465,6 +451,22 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()
+
+	// Start per-device Asynq worker to process action dispatches.
+	// Defence in depth against the wiring that main.go now refuses: a handler
+	// built without a worker manager must reject the stream rather than panic
+	// on the device's first frame. Sits BELOW the teardown defers so the
+	// refusal unwinds through them — a refused stream must not leave its
+	// registration in the connection map, or the device looks connected
+	// forever and shadows its next real stream's supersede path.
+	if h.workerMgr == nil {
+		h.logger.Error("agent stream refused: no device worker manager (no task queue configured)",
+			"device_id", deviceID)
+		return connect.NewError(connect.CodeUnavailable, errors.New("server cannot dispatch to devices"))
+	}
+	if err := h.workerMgr.StartWorker(deviceID); err != nil {
+		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
+	}
 
 	// Notify control server about agent connection so it can dispatch pending actions
 	if err := h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHello, taskqueue.DeviceHelloPayload{
