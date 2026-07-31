@@ -531,6 +531,18 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 
 			h.manager.UpdateLastSeen(deviceID)
 
+			// Spec 41 criterion 14. An agent from before the gateway removal must
+			// be told so, rather than served a connection that silently loses what
+			// it reports. Returning ends the RPC, which is the only way the agent
+			// hears it: a per-message error here is logged and swallowed below.
+			if err := refusePreSpec41Agent(r.msg); err != nil {
+				h.logger.Error("refusing a stream from an agent that predates the gateway removal",
+					"device_id", deviceID,
+					"reason", err,
+				)
+				return err
+			}
+
 			if err := h.handleAgentMessage(ctx, deviceID, r.msg); err != nil {
 				h.logger.Warn("handle agent message",
 					"device_id", deviceID,
@@ -645,6 +657,51 @@ func (h *AgentHandler) handleHeartbeat(ctx context.Context, deviceID string, hb 
 	// truth for connection liveness. Inherits the bidi-stream ctx so
 	// the refresh aborts when the agent stream tears down (audit N006).
 	return h.aqClient.EnqueueToControl(taskqueue.TypeDeviceHeartbeat, payload)
+}
+
+// preSpec41LpsMetadataKey is the ActionResult metadata key under which an agent
+// built before the gateway removal reported its LPS password rotations.
+const preSpec41LpsMetadataKey = "lps.rotations"
+
+// refusePreSpec41Agent returns the error the stream must end with when a frame
+// could only have come from an agent built before spec 41, and nil otherwise.
+//
+// The refusal cannot live at the handshake. Hello is byte-identical across the
+// change, so the only connect-time discriminator is agent_version — a
+// self-reported build string that reads "dev" on every source build. Gating on
+// it would be neither sound nor the version negotiation this spec declines to
+// build.
+//
+// This key is sound. A pre-spec-41 agent had no authenticated channel of its
+// own: the gateway relayed its action results, so it sealed each rotated LPS
+// password to control's X25519 key and smuggled the batch out as
+// ActionResult.metadata["lps.rotations"]. The current agent sends
+// StoreLpsPasswordsRequest on this stream and deliberately emits no metadata,
+// because a second copy of a credential travelling a path with no reader is
+// worth nothing. The key's only reader was the gateway hop deleted with the
+// tier.
+//
+// Left unguarded the frame is accepted and acknowledged, and the rotations go
+// nowhere: the device has ALREADY changed those local passwords, control never
+// records them, and the operator loses the accounts with nothing logged. The
+// sealed batch also rides on into the execution-result payload the deleted hop
+// stripped it from. Criterion 14 asks for a legible failure rather than
+// compatibility — this is that failure, named.
+func refusePreSpec41Agent(msg *pm.AgentMessage) error {
+	result := msg.GetActionResult()
+	if result == nil {
+		return nil
+	}
+	if _, ok := result.GetMetadata()[preSpec41LpsMetadataKey]; !ok {
+		return nil
+	}
+	// The key, never the value: the value is the sealed rotation batch, and this
+	// text reaches both an operator log and the agent.
+	return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
+		"this agent predates the gateway removal: it reported LPS rotations as %q action-result "+
+			"metadata, a path whose only reader was the gateway relay this server no longer runs. "+
+			"Reinstall the agent — control will not acknowledge passwords it cannot store",
+		preSpec41LpsMetadataKey))
 }
 
 func (h *AgentHandler) handleActionResult(ctx context.Context, deviceID string, result *pm.ActionResult) error {

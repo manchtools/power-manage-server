@@ -67,6 +67,7 @@ type streamFixture struct {
 	client  pmv1connect.AgentServiceClient
 	control *fakeAgentOps
 	worker  *fakeStreamWorkerManager
+	queue   *fakeEnqueuer
 	server  *httptest.Server
 }
 
@@ -90,9 +91,10 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 	// worker manager.
 	mgr := connection.NewManager()
 	worker := &fakeStreamWorkerManager{}
+	queue := &fakeEnqueuer{}
 	h := &AgentHandler{
 		manager:           mgr,
-		aqClient:          &fakeEnqueuer{},
+		aqClient:          queue,
 		ops:               control,
 		workerMgr:         worker,
 		logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -140,6 +142,7 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 		client:  client,
 		control: control,
 		worker:  worker,
+		queue:   queue,
 		server:  srv,
 	}
 }
