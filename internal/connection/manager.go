@@ -22,9 +22,38 @@ type Agent struct {
 	sendMu      sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
+
+	// write puts one frame on the wire. Production wires it to Stream.Send in
+	// Register; it is a seam because connect.BidiStream is a concrete type with
+	// no interface, so a test cannot otherwise produce the case that matters
+	// here — a write that blocks because the device stopped reading.
+	write func(*pm.ServerMessage) error
 }
 
-// Send sends a message to the agent.
+// SendTimeout bounds a single frame's write to a device. A package var so tests
+// can shorten it; there is no per-call deadline because connect's BidiStream.Send
+// takes no context and blocks on the underlying HTTP/2 write.
+//
+// Any value is a trade-off between tolerating a briefly congested link and
+// holding server-side state for a device that is gone. Ten seconds is far longer
+// than a healthy write and far shorter than the hours an unbounded write can
+// hang for on a black-holed connection.
+var SendTimeout = 10 * time.Second
+
+// Send sends a message to the agent, bounded by SendTimeout.
+//
+// The bound matters because a device that stops reading — suspended laptop,
+// black-holed route, hung agent — leaves Stream.Send blocked on TCP backpressure
+// indefinitely. Unbounded, that stalls every later send to the same device
+// behind the mutex, including the terminate frame that ends a live root shell,
+// and stalls Broadcast for every device queued behind it.
+//
+// On timeout the connection is declared dead rather than retried. That is also
+// what makes this safe: the abandoned write goroutine still owns Stream.Send,
+// and connect streams are not safe for concurrent use, so no other caller may
+// ever reach it. Cancelling the context guarantees that — every later Send
+// short-circuits on the ctx check below, and the cancellation tears the stream
+// down, which unblocks the abandoned write and lets its goroutine exit.
 func (a *Agent) Send(msg *pm.ServerMessage) error {
 	// Acquire the send lock FIRST, then check the context. If we checked
 	// the context before locking, Close() could race in between — cancelling
@@ -37,7 +66,26 @@ func (a *Agent) Send(msg *pm.ServerMessage) error {
 		return ErrAgentNotConnected
 	default:
 	}
-	return a.Stream.Send(msg)
+	if a.write == nil {
+		// No stream was ever attached. Registered-but-unwritable is not a
+		// connection an agent can be reached on.
+		return ErrAgentNotConnected
+	}
+
+	done := make(chan error, 1) // buffered: the goroutine must never block on a timed-out send
+	go func() { done <- a.write(msg) }()
+
+	timer := time.NewTimer(SendTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		// Fail closed: a device that cannot accept a frame is not connected,
+		// and leaving it registered would keep offering it work it never takes.
+		a.cancel()
+		return ErrSendTimeout
+	}
 }
 
 // Close closes the agent connection.
@@ -94,6 +142,9 @@ func (m *Manager) Register(parentCtx context.Context, deviceID, hostname, versio
 		Stream:      stream,
 		ctx:         ctx,
 		cancel:      cancel,
+	}
+	if stream != nil {
+		agent.write = stream.Send
 	}
 
 	m.mu.Lock()
