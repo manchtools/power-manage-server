@@ -1,44 +1,64 @@
 package auth
 
-// AuthzInput represents the input to the authorization check.
+import "context"
+
+// AuthzInput is one authorization question.
 type AuthzInput struct {
-	Permissions []string `json:"permissions,omitempty"` // user's permissions from JWT
-	SubjectID   string   `json:"subject_id"`
-	Action      string   `json:"action"`
-	ResourceID  string   `json:"resource_id,omitempty"`
+	// Permissions is the actor's flat permission set.
+	Permissions []string
+	// SubjectID is the acting principal's id.
+	SubjectID string
+	// SelfEligible reports whether the principal is one that can own
+	// resources. A reserved non-user principal is not, so no `:self`
+	// grant can admit it.
+	SelfEligible bool
+	Action       string
+	// ResourceID is the target, when the caller knows it. Empty means
+	// the target is not identified at this layer — a creation, or the
+	// interceptor's coarse pass before the handler resolves the row.
+	ResourceID string
 }
 
-// Authorize checks whether the given input is authorized. Agents authenticate
-// to the gateway over mTLS and never reach this control-plane interceptor, so
-// authorization here is permission-based user access only.
+// Authorize decides one permission question.
+//
+// Four ways to pass, in the order the tiers are written in a role:
+//
+//  1. the unrestricted permission;
+//  2. `:self` with no identified resource — a creation whose ownership
+//     the handler pins;
+//  3. `:self` where the resource IS the actor;
+//  4. `:assigned`, which admits the request so the handler's
+//     assigned-owner filter can decide which rows are visible.
+//
+// Tiers 2 and 3 require a principal that can own resources.
 func Authorize(input AuthzInput) bool {
-	return authorizeUser(input)
-}
-
-// authorizeUser checks permission-based user access.
-func authorizeUser(input AuthzInput) bool {
 	for _, p := range input.Permissions {
-		// Rule 1: Unrestricted permission match
 		if p == input.Action {
 			return true
 		}
-
-		// Rule 2+3: Self-scoped
-		if p == input.Action+":self" {
-			// No resource ID → creation action, handler enforces restriction
-			if input.ResourceID == "" {
-				return true
-			}
-			// Resource belongs to the requesting user
-			if input.ResourceID == input.SubjectID {
+		if p == input.Action+":self" && input.SelfEligible {
+			if input.ResourceID == "" || input.ResourceID == input.SubjectID {
 				return true
 			}
 		}
-
-		// Rule 4: Assigned-scope (SQL-level filtering handles actual data check)
 		if p == input.Action+":assigned" {
 			return true
 		}
 	}
 	return false
+}
+
+// AuthorizeContext answers the same question for the actor on ctx.
+func AuthorizeContext(ctx context.Context, action, resourceID string) bool {
+	user, ok := UserFromContext(ctx)
+	if !ok {
+		return false
+	}
+	return Authorize(AuthzInput{
+		Permissions:  user.Permissions,
+		SubjectID:    user.ID,
+		SelfEligible: user.CanOwnResources(),
+		Action:       action,
+		ResourceID:   resourceID,
+	})
 }

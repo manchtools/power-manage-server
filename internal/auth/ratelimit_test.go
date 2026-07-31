@@ -102,8 +102,8 @@ func TestRateLimiter_ConcurrentAccess(t *testing.T) {
 	assert.Equal(t, 100, trueCount, "exactly 100 attempts should be allowed")
 }
 
-// TestRateLimiter_Blocked pins the read-only check used by the per-account
-// login/TOTP ceiling: Blocked reports whether the key is at/over the limit
+// TestRateLimiter_Blocked pins the read-only check used by per-account
+// authentication ceilings: Blocked reports whether the key is at/over the limit
 // WITHOUT recording an attempt, so callers can gate up front and count only the
 // outcomes they choose (e.g. only failed logins).
 func TestRateLimiter_Blocked(t *testing.T) {

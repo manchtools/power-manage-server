@@ -2,429 +2,430 @@ package idp
 
 import (
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/oklog/ulid/v2"
 
-	"github.com/manchtools/power-manage/server/internal/eventtypes"
-	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
+	"github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/store"
 	db "github.com/manchtools/power-manage/server/internal/store/generated"
 )
 
-// ErrNoMatchingAccount is returned when no local account could be found or created for the external identity.
+// ErrNoMatchingAccount is what an external identity that cannot be
+// resolved to a local account gets. It is deliberately the same answer
+// for "no such account", "auto-link refused" and "auto-create
+// disabled": the caller is unauthenticated, and distinguishing those
+// cases would report whether an address exists locally.
 var ErrNoMatchingAccount = errors.New("no matching account found; contact an administrator to link your identity")
 
-// LinkResult represents the outcome of an identity linking attempt.
+// SystemActorSSO is the actor the linker attributes its writes to when
+// it provisions on an unauthenticated caller's behalf.
+const SystemActorSSO = "sso"
+
+// LinkResult is the outcome of resolving an external identity.
 type LinkResult struct {
 	UserID string
-	IsNew  bool // true if the user was auto-created
+	// IsNew reports that the subject was provisioned by this call.
+	IsNew bool
 }
 
-// Linker handles the logic of linking external identities to local users.
+// Linker resolves an external identity to a local subject, creating the
+// binding — and, when the provider is configured for it, the subject —
+// as it goes.
+//
+// Every write happens on the transaction handle the caller passes in,
+// and every write records its effect on the caller's audit recorder. A
+// login that provisions a user and a login that merely refreshes a
+// timestamp therefore both commit atomically with their evidence.
 type Linker struct {
-	queries  Querier
-	appender EventAppender
+	kek *crypto.Encryptor
+	now func() time.Time
 }
 
-// Querier is the interface for database queries needed by the linker.
-type Querier interface {
-	GetIdentityLinkByProviderAndExternalID(ctx context.Context, arg db.GetIdentityLinkByProviderAndExternalIDParams) (db.IdentityLinksProjection, error)
-	GetUserByEmail(ctx context.Context, email string) (db.UsersProjection, error)
-	GetUserByID(ctx context.Context, id string) (db.UsersProjection, error)
-	GetServerSettings(ctx context.Context) (db.ServerSettingsProjection, error)
-	GetNextLinuxUID(ctx context.Context) (int32, error)
-	GetUserGroupRoles(ctx context.Context, groupID string) ([]db.RolesProjection, error)
-}
-
-// EventAppender is the interface for appending events. MintUserDEK
-// mirrors store.MintUserDEK: the SSO auto-create path provisions users
-// and must mint their DEK before the creation event (spec 19 AC 1).
-type EventAppender interface {
-	AppendEvent(ctx context.Context, event EventInput) error
-	MintUserDEK(ctx context.Context, userID string) error
-}
-
-// EventInput is a simplified event structure for the linker. Data is
-// typed as `any` so callers can pass either a typed payload struct
-// (preferred — see internal/eventtypes/payloads) or the legacy
-// map[string]any literal during transitional emit-site migrations.
-type EventInput struct {
-	StreamType string
-	StreamID   string
-	EventType  string
-	Data       any
-	ActorType  string
-	ActorID    string
-}
-
-// NewLinker creates a new identity linker.
-func NewLinker(queries Querier, appender EventAppender) *Linker {
-	return &Linker{
-		queries:  queries,
-		appender: appender,
+// NewLinker creates a linker. The KEK is required: provisioning a
+// subject means minting its data-encryption key, and a subject without
+// one has no place to put class-three audit detail.
+func NewLinker(kek *crypto.Encryptor, now func() time.Time) *Linker {
+	if now == nil {
+		now = time.Now
 	}
+	return &Linker{kek: kek, now: now}
 }
 
-// LinkOrCreate attempts to link an external identity to a local user.
-// It follows this algorithm:
-// 1. Look up by (provider_id, external_id) → found: update last_login, return linked user
-// 2. If auto_link_by_email: find user by email → create link, return user
-// 3. If auto_create_users: create user (no password), assign default role, create link
-// 4. Otherwise: error
-func (l *Linker) LinkOrCreate(ctx context.Context, provider store.IdentityProvider, claims *UserClaims) (*LinkResult, error) {
-	slog.Debug("SSO linker: starting LinkOrCreate",
-		"provider_id", provider.ID,
-		"provider_slug", provider.Slug,
-		"subject", claims.Subject,
-		"email", claims.Email,
-		"auto_link_by_email", provider.AutoLinkByEmail,
-		"auto_create_users", provider.AutoCreateUsers,
-	)
+// LinkOrCreate resolves claims against provider, in this order:
+//
+//  1. an existing binding for (provider, external subject) — refresh
+//     its login timestamp and return the subject it names;
+//  2. auto-link by email, when the provider is configured for it and
+//     the takeover guard below allows it;
+//  3. auto-create, when the provider is configured for it.
+//
+// Anything else is ErrNoMatchingAccount.
+func (l *Linker) LinkOrCreate(
+	ctx context.Context,
+	tx *store.Tx,
+	rec *store.AuditRecorder,
+	provider store.IdentityProviderRow,
+	claims *UserClaims,
+) (*LinkResult, error) {
+	at := l.now().UTC()
 
-	// Step 1: Check for existing link
-	link, err := l.queries.GetIdentityLinkByProviderAndExternalID(ctx, db.GetIdentityLinkByProviderAndExternalIDParams{
+	link, err := tx.GetIdentityLinkByProviderAndExternalID(ctx, db.GetIdentityLinkByProviderAndExternalIDParams{
 		ProviderID: provider.ID,
 		ExternalID: claims.Subject,
 	})
-	if err == nil {
-		slog.Debug("SSO linker: found existing identity link",
-			"link_id", link.ID,
-			"user_id", link.UserID,
-			"external_id", link.ExternalID,
-		)
-
-		// Verify the linked user still exists (not soft-deleted)
-		_, userErr := l.queries.GetUserByID(ctx, link.UserID)
-		if store.IsNotFound(userErr) {
-			// User is soft-deleted — clean up the stale identity link and fall through
-			slog.Warn("SSO linker: linked user is deleted, cleaning up stale identity link",
-				"link_id", link.ID,
-				"user_id", link.UserID,
-			)
-			if err := l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "identity_provider",
-				StreamID:   link.ID,
-				EventType:  string(eventtypes.IdentityUnlinked),
-				Data:       payloads.IdentityUnlinked{UserID: link.UserID, ProviderID: link.ProviderID},
-				ActorType:  "system",
-				ActorID:    "sso",
-			}); err != nil {
-				slog.Warn("failed to append IdentityUnlinked event", "link_id", link.ID, "error", err)
-			}
-			// Fall through to Step 2/3
-		} else if userErr != nil {
-			return nil, fmt.Errorf("verify linked user: %w", userErr)
-		} else {
-			// User exists — update last login and return
-			err = l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "identity_provider",
-				StreamID:   link.ID,
-				EventType:  string(eventtypes.IdentityLinkLoginUpdated),
-				Data: payloads.IdentityLinkLoginUpdated{
-					UserID:        link.UserID,
-					ProviderID:    provider.ID,
-					ExternalID:    claims.Subject,
-					ExternalEmail: claims.Email,
-					ExternalName:  claims.Name,
-				},
-				ActorType: "system",
-				ActorID:   "sso",
-			})
-			if err != nil {
-				return nil, fmt.Errorf("update identity link login: %w", err)
-			}
-			return &LinkResult{UserID: link.UserID, IsNew: false}, nil
-		}
-	}
-	// Only a REAL lookup error (non-nil, non-NotFound) aborts. When err == nil
-	// we took the existing-link branch above: either it already returned
-	// (user-exists / other-error) or it cleaned up a soft-deleted user's stale
-	// link and intends to fall through to Step 2/3 — in that case err is still
-	// nil and must NOT be re-wrapped as a bogus "lookup identity link: <nil>".
-	if err != nil && !store.IsNotFound(err) {
-		return nil, fmt.Errorf("lookup identity link: %w", err)
-	}
-	slog.Debug("SSO linker: no existing identity link found", "provider_id", provider.ID, "subject", claims.Subject)
-
-	// Step 2: Auto-link by email
-	if provider.AutoLinkByEmail && claims.Email != "" {
-		slog.Debug("SSO linker: trying auto-link by email", "email", claims.Email)
-		user, err := l.queries.GetUserByEmail(ctx, claims.Email)
-		if err == nil {
-			// Account-takeover guard (spec 29 S2 — mirrors SCIM createUser WS5 #2).
-			// The IdP asserts this email; binding it to a pre-existing LOCAL
-			// PASSWORD account would let a compromised / self-service / over-trusted
-			// IdP seize that credential account (e.g. a local admin). email_verified
-			// is asserted by the same IdP being defended against, so it is not a
-			// backstop. Refuse unless the operator knowingly delegated identity to
-			// this provider via trust_email_assertions. Passwordless / already-SSO
-			// accounts are fine to link (no local credential to hijack).
-			if user.HasPassword && !provider.TrustEmailAssertions {
-				slog.Warn("SSO linker: refusing auto-link to a local password account by unverified email (spec 29 S2)",
-					"user_id", user.ID, "provider_id", provider.ID, "provider_slug", provider.Slug)
-				return nil, ErrNoMatchingAccount
-			}
-			// Info-level log on the actual link (audit F-28) — this
-			// is a trust-boundary event: the IdP's email-verification
-			// posture is what gates account hijack via this path, and
-			// an operator looking at boot logs after enabling
-			// auto-link-by-email must be able to see who gets linked.
-			slog.Info("SSO linker: auto-linked SSO identity to existing local user by email",
-				"user_id", user.ID,
-				"user_email", user.Email,
-				"provider_id", provider.ID,
-				"provider_slug", provider.Slug,
-				"external_subject", claims.Subject,
-			)
-			// Found user by email — create link
-			linkID := newULID()
-			err = l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "identity_provider",
-				StreamID:   linkID,
-				EventType:  string(eventtypes.IdentityLinked),
-				Data: payloads.IdentityLinked{
-					UserID:        user.ID,
-					ProviderID:    provider.ID,
-					ExternalID:    claims.Subject,
-					ExternalEmail: claims.Email,
-					ExternalName:  claims.Name,
-				},
-				ActorType: "system",
-				ActorID:   "sso",
-			})
-			if err != nil {
-				return nil, fmt.Errorf("create identity link: %w", err)
-			}
-			return &LinkResult{UserID: user.ID, IsNew: false}, nil
-		}
-		if !store.IsNotFound(err) {
-			return nil, fmt.Errorf("lookup user by email: %w", err)
-		}
-		slog.Debug("SSO linker: no user found by email", "email", claims.Email)
-	} else if !provider.AutoLinkByEmail {
-		slog.Debug("SSO linker: auto_link_by_email is disabled, skipping email lookup")
-	} else if claims.Email == "" {
-		slog.Debug("SSO linker: email claim is empty, skipping email lookup")
-	}
-
-	// Step 3: Auto-create user
-	if provider.AutoCreateUsers && claims.Email != "" {
-		slog.Debug("SSO linker: auto-creating new user", "email", claims.Email)
-		userID := newULID()
-
-		linuxUID, err := l.queries.GetNextLinuxUID(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("assign linux uid: %w", err)
-		}
-		linuxUsername := deriveLinuxUsernameFromEmail(claims.Email, claims.PreferredUsername)
-		if linuxUsername == "" {
-			linuxUsername = "user_" + userID[:8]
-		}
-
-		// Resolve the role ID set BEFORE emitting the event so the
-		// user INSERT and the per-role INSERT land atomically inside
-		// the projector's WithTx (issue #135). SSO only ever assigns
-		// the provider's configured default role on auto-create; if
-		// no default is configured the slice stays empty and the
-		// projector skips the per-role INSERT loop.
-		var roleIDs []string
-		if provider.DefaultRoleID != "" {
-			roleIDs = []string{provider.DefaultRoleID}
-		}
-
-		// Spec 19 AC 1: mint the user's DEK BEFORE the creation event —
-		// the sealer fails closed without it.
-		if err := l.appender.MintUserDEK(ctx, userID); err != nil {
-			return nil, fmt.Errorf("mint user encryption key: %w", err)
-		}
-
-		// Create user without password (compound event lands the
-		// user row AND its role assignments in one tx).
-		role := "user"
-		err = l.appender.AppendEvent(ctx, EventInput{
-			StreamType: "user",
-			StreamID:   userID,
-			EventType:  string(eventtypes.UserCreatedWithRoles),
-			Data: payloads.UserCreatedWithRoles{
-				Email:             ptrStr(claims.Email),
-				Role:              &role,
-				DisplayName:       ptrStr(claims.Name),
-				GivenName:         ptrStr(claims.GivenName),
-				FamilyName:        ptrStr(claims.FamilyName),
-				PreferredUsername: ptrStr(claims.PreferredUsername),
-				Picture:           ptrStr(claims.Picture),
-				Locale:            ptrStr(claims.Locale),
-				LinuxUsername:     ptrStr(linuxUsername),
-				LinuxUID:          &linuxUID,
-				RoleIDs:           roleIDs,
-			},
-			ActorType: "system",
-			ActorID:   "sso",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create user: %w", err)
-		}
-
-		// Auto-enable provisioning/SSH if global server settings are on
-		if settings, err := l.queries.GetServerSettings(ctx); err == nil {
-			if settings.UserProvisioningEnabled {
-				enabled := true
-				if err := l.appender.AppendEvent(ctx, EventInput{
-					StreamType: "user",
-					StreamID:   userID,
-					EventType:  string(eventtypes.UserProvisioningSettingsUpdated),
-					Data:       payloads.UserProvisioningSettingsUpdated{UserProvisioningEnabled: &enabled},
-					ActorType:  "system",
-					ActorID:    "sso",
-				}); err != nil {
-					slog.Warn("failed to auto-enable provisioning for SSO user", "user_id", userID, "error", err)
-				}
-			}
-			if settings.SshAccessForAll {
-				yes := true
-				no := false
-				if err := l.appender.AppendEvent(ctx, EventInput{
-					StreamType: "user",
-					StreamID:   userID,
-					EventType:  string(eventtypes.UserSshSettingsUpdated),
-					Data: payloads.UserSshSettingsUpdated{
-						SshAccessEnabled: &yes,
-						SshAllowPubkey:   &yes,
-						SshAllowPassword: &no,
-					},
-					ActorType: "system",
-					ActorID:   "sso",
-				}); err != nil {
-					slog.Warn("failed to auto-enable SSH for SSO user", "user_id", userID, "error", err)
-				}
-			}
-		} else {
-			slog.Warn("failed to check server settings for SSO user defaults", "error", err)
-		}
-
-		// Create identity link
-		linkID := newULID()
-		err = l.appender.AppendEvent(ctx, EventInput{
-			StreamType: "identity_provider",
-			StreamID:   linkID,
-			EventType:  string(eventtypes.IdentityLinked),
-			Data: payloads.IdentityLinked{
-				UserID:        userID,
-				ProviderID:    provider.ID,
-				ExternalID:    claims.Subject,
+	switch {
+	case err == nil:
+		// A binding exists. It may still name a subject that has since
+		// been erased, in which case the binding is stale and is
+		// cleared so the flow can fall through to link or create.
+		_, userErr := tx.GetUser(ctx, link.UserID)
+		if userErr == nil {
+			updated, err := tx.TouchIdentityLinkLogin(ctx, db.TouchIdentityLinkLoginParams{
+				ID:            link.ID,
+				LastLoginAt:   &at,
 				ExternalEmail: claims.Email,
 				ExternalName:  claims.Name,
-			},
-			ActorType: "system",
-			ActorID:   "sso",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create identity link: %w", err)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("refresh identity link: %w", err)
+			}
+			rec.Effect(store.AuditEffect{
+				ResourceType:  "identity_link",
+				ResourceID:    updated.ID,
+				Action:        "LOGIN",
+				Outcome:       store.EffectApplied,
+				ChangedFields: []string{"last_login_at"},
+				AfterRef:      &updated.UserID,
+			})
+			return &LinkResult{UserID: link.UserID}, nil
 		}
+		if !store.IsNotFound(userErr) {
+			return nil, fmt.Errorf("resolve linked subject: %w", userErr)
+		}
+		removed, err := tx.DeleteIdentityLink(ctx, link.ID)
+		if err != nil && !store.IsNotFound(err) {
+			return nil, fmt.Errorf("clear stale identity link: %w", err)
+		}
+		if err == nil {
+			rec.Effect(store.AuditEffect{
+				ResourceType: "identity_link",
+				ResourceID:   removed.ID,
+				Action:       "UNLINK_STALE",
+				Outcome:      store.EffectApplied,
+				BeforeRef:    &removed.UserID,
+			})
+		}
+	case store.IsNotFound(err):
+		// No binding yet; fall through.
+	default:
+		return nil, fmt.Errorf("look up identity link: %w", err)
+	}
 
+	if provider.AutoLinkByEmail && claims.Email != "" {
+		user, err := tx.GetUserByEmail(ctx, claims.Email)
+		switch {
+		case err == nil:
+			// Cross-provider takeover guard. An account that is ALREADY
+			// bound to some identity provider must not be silently
+			// re-bound because a second provider asserts the same
+			// address: the asserting provider is the very party the
+			// guard defends against, so its own email_verified claim is
+			// not a backstop. An account with no binding yet is the
+			// ordinary invite flow and links freely.
+			linked, err := tx.CountIdentityLinksForUser(ctx, user.ID)
+			if err != nil {
+				return nil, fmt.Errorf("count existing identity links: %w", err)
+			}
+			if linked > 0 && !provider.TrustEmailAssertions {
+				slog.Warn("SSO: refusing to auto-link an already-bound account by asserted email",
+					"provider_id", provider.ID, "provider_slug", provider.Slug)
+				return nil, ErrNoMatchingAccount
+			}
+			if err := l.createLink(ctx, tx, rec, provider, user.ID, claims, at); err != nil {
+				return nil, err
+			}
+			slog.Info("SSO: linked an external identity to an existing subject by asserted email",
+				"provider_id", provider.ID, "provider_slug", provider.Slug)
+			return &LinkResult{UserID: user.ID}, nil
+		case store.IsNotFound(err):
+			// Fall through to auto-create.
+		default:
+			return nil, fmt.Errorf("look up subject by email: %w", err)
+		}
+	}
+
+	if provider.AutoCreateUsers && claims.Email != "" {
+		userID, err := l.createUser(ctx, tx, rec, provider, claims, at)
+		if err != nil {
+			return nil, err
+		}
+		if err := l.createLink(ctx, tx, rec, provider, userID, claims, at); err != nil {
+			return nil, err
+		}
 		return &LinkResult{UserID: userID, IsNew: true}, nil
 	}
 
-	slog.Warn("SSO linker: no matching account found",
-		"provider_id", provider.ID,
-		"provider_slug", provider.Slug,
-		"subject", claims.Subject,
-		"email", claims.Email,
-		"auto_link_by_email", provider.AutoLinkByEmail,
-		"auto_create_users", provider.AutoCreateUsers,
-	)
+	slog.Warn("SSO: no local account matched an external identity",
+		"provider_id", provider.ID, "provider_slug", provider.Slug)
 	return nil, ErrNoMatchingAccount
 }
 
-// SyncGroupMemberships synchronizes a user's group memberships based on OIDC group claims.
-// It adds the user to mapped groups they belong to and removes them from mapped groups they don't.
-func (l *Linker) SyncGroupMemberships(ctx context.Context, userID string, externalGroups []string, groupMapping map[string]string) error {
-	if len(groupMapping) == 0 {
-		return nil
+// createUser provisions a subject for an external identity.
+//
+// The subject's data-encryption key is minted FIRST: it is what makes
+// class-three audit detail about the subject erasable, so a subject
+// that exists without one would produce evidence that erasure cannot
+// reach.
+func (l *Linker) createUser(
+	ctx context.Context,
+	tx *store.Tx,
+	rec *store.AuditRecorder,
+	provider store.IdentityProviderRow,
+	claims *UserClaims,
+	at time.Time,
+) (string, error) {
+	userID := ulid.Make().String()
+
+	wrapped, err := crypto.GenerateWrappedDEK(l.kek, userID)
+	if err != nil {
+		return "", fmt.Errorf("mint subject encryption key: %w", err)
+	}
+	if _, err := tx.InsertUserEncryptionKey(ctx, db.InsertUserEncryptionKeyParams{
+		UserID:     userID,
+		WrappedDek: wrapped,
+	}); err != nil {
+		return "", fmt.Errorf("store subject encryption key: %w", err)
 	}
 
-	// Parse group mapping from JSON bytes
-	// groupMapping maps external group names → internal user_group_ids
+	linuxUID, err := tx.GetNextLinuxUID(ctx)
+	if err != nil {
+		return "", fmt.Errorf("assign linux uid: %w", err)
+	}
+	linuxUsername := DeriveLinuxUsername(claims.Email, claims.PreferredUsername)
+	if linuxUsername == "" {
+		linuxUsername = "user_" + strings.ToLower(userID[:8])
+	}
 
-	// Determine which internal groups the user should be in
-	desiredGroups := make(map[string]bool)
-	for _, extGroup := range externalGroups {
-		if internalGroupID, ok := groupMapping[extGroup]; ok {
-			desiredGroups[internalGroupID] = true
+	if _, err := tx.InsertUser(ctx, db.InsertUserParams{
+		ID:                userID,
+		Email:             claims.Email,
+		DisplayName:       claims.Name,
+		GivenName:         claims.GivenName,
+		FamilyName:        claims.FamilyName,
+		PreferredUsername: claims.PreferredUsername,
+		LinuxUsername:     linuxUsername,
+		LinuxUid:          linuxUID,
+		CreatedAt:         &at,
+	}); err != nil {
+		return "", fmt.Errorf("create subject: %w", err)
+	}
+	rec.Effect(store.AuditEffect{
+		ResourceType:        "user",
+		ResourceID:          userID,
+		Action:              "PROVISION",
+		Outcome:             store.EffectApplied,
+		ChangedFields:       []string{"email", "linux_username", "linux_uid"},
+		AfterRef:            &provider.ID,
+		EvidenceKind:        "email_sha256",
+		EvidenceFingerprint: fingerprint(claims.Email),
+	})
+
+	if provider.DefaultRoleID != "" {
+		grantID := ulid.Make().String()
+		if _, err := tx.InsertUserRoleGrant(ctx, db.InsertUserRoleGrantParams{
+			GrantID:    grantID,
+			UserID:     userID,
+			RoleID:     provider.DefaultRoleID,
+			AssignedAt: at,
+			AssignedBy: SystemActorSSO,
+		}); err != nil {
+			return "", fmt.Errorf("assign provider default role: %w", err)
 		}
+		rec.Effect(store.AuditEffect{
+			ResourceType: "user_role",
+			ResourceID:   grantID,
+			Action:       "GRANT",
+			Outcome:      store.EffectApplied,
+			BeforeRef:    &userID,
+			AfterRef:     &provider.DefaultRoleID,
+		})
 	}
 
-	// For each mapped group, add/remove the user
-	for _, groupID := range groupMapping {
-		if desiredGroups[groupID] {
-			// Add user to group (idempotent via ON CONFLICT DO NOTHING in projector)
-			if err := l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "user_group",
-				StreamID:   groupID,
-				EventType:  string(eventtypes.UserGroupMemberAdded),
-				Data: payloads.UserGroupMemberAdded{
-					GroupID: groupID,
-					UserID:  userID,
-				},
-				ActorType: "system",
-				ActorID:   "sso",
-			}); err != nil {
-				slog.Warn("failed to add user to SSO group", "user_id", userID, "group_id", groupID, "error", err)
-			} else if l.groupIsAdminBearing(ctx, groupID) {
-				// Defense-in-depth audit (#9): a forged or misconfigured IdP
-				// group claim can confer admin via group membership. The mapping
-				// is admin-configured (it is the gate), but a privileged grant
-				// driven by an external claim must be visible in the audit trail.
-				slog.Warn("SSO group claim placed a user in an ADMIN-bearing group",
-					"user_id", userID, "group_id", groupID, "source", "sso_group_mapping")
-			}
-		} else {
-			// Remove user from group
-			if err := l.appender.AppendEvent(ctx, EventInput{
-				StreamType: "user_group",
-				StreamID:   groupID,
-				EventType:  string(eventtypes.UserGroupMemberRemoved),
-				Data: payloads.UserGroupMemberRemoved{
-					GroupID: groupID,
-					UserID:  userID,
-				},
-				ActorType: "system",
-				ActorID:   "sso",
-			}); err != nil {
-				slog.Warn("failed to remove user from SSO group", "user_id", userID, "group_id", groupID, "error", err)
-			}
+	settings, err := tx.GetServerSettings(ctx)
+	if err != nil {
+		return "", fmt.Errorf("read server settings: %w", err)
+	}
+	if settings.UserProvisioningEnabled {
+		if _, err := tx.SetUserProvisioningEnabled(ctx, db.SetUserProvisioningEnabledParams{
+			ID:                      userID,
+			UserProvisioningEnabled: true,
+			UpdatedAt:               &at,
+		}); err != nil {
+			return "", fmt.Errorf("apply provisioning default: %w", err)
 		}
+		yes := true
+		rec.Effect(store.AuditEffect{
+			ResourceType:  "user",
+			ResourceID:    userID,
+			Action:        "SET_PROVISIONING",
+			Outcome:       store.EffectApplied,
+			ChangedFields: []string{"user_provisioning_enabled"},
+			AfterFlag:     &yes,
+		})
+	}
+	if settings.SshAccessForAll {
+		if _, err := tx.UpdateUserSshSettings(ctx, db.UpdateUserSshSettingsParams{
+			ID:               userID,
+			SshAccessEnabled: true,
+			SshAllowPubkey:   true,
+			SshAllowPassword: false,
+			UpdatedAt:        &at,
+		}); err != nil {
+			return "", fmt.Errorf("apply ssh default: %w", err)
+		}
+		yes := true
+		rec.Effect(store.AuditEffect{
+			ResourceType:  "user",
+			ResourceID:    userID,
+			Action:        "SET_SSH_SETTINGS",
+			Outcome:       store.EffectApplied,
+			ChangedFields: []string{"ssh_access_enabled", "ssh_allow_pubkey", "ssh_allow_password"},
+			AfterFlag:     &yes,
+		})
 	}
 
+	return userID, nil
+}
+
+func (l *Linker) createLink(
+	ctx context.Context,
+	tx *store.Tx,
+	rec *store.AuditRecorder,
+	provider store.IdentityProviderRow,
+	userID string,
+	claims *UserClaims,
+	at time.Time,
+) error {
+	linkID := ulid.Make().String()
+	if _, err := tx.InsertIdentityLink(ctx, db.InsertIdentityLinkParams{
+		ID:            linkID,
+		UserID:        userID,
+		ProviderID:    provider.ID,
+		ExternalID:    claims.Subject,
+		ExternalEmail: claims.Email,
+		ExternalName:  claims.Name,
+		LinkedAt:      at,
+	}); err != nil {
+		return fmt.Errorf("create identity link: %w", err)
+	}
+	rec.Effect(store.AuditEffect{
+		ResourceType:        "identity_link",
+		ResourceID:          linkID,
+		Action:              "LINK",
+		Outcome:             store.EffectApplied,
+		BeforeRef:           &provider.ID,
+		AfterRef:            &userID,
+		EvidenceKind:        "external_subject_sha256",
+		EvidenceFingerprint: fingerprint(claims.Subject),
+	})
 	return nil
 }
 
-// groupIsAdminBearing reports whether the user group currently carries the
-// Admin system role. Best-effort: a lookup failure logs and returns false so it
-// never blocks the SSO sync (it only gates an audit log).
-func (l *Linker) groupIsAdminBearing(ctx context.Context, groupID string) bool {
-	roles, err := l.queries.GetUserGroupRoles(ctx, groupID)
-	if err != nil {
-		slog.Warn("failed to check SSO group roles for audit", "group_id", groupID, "error", err)
-		return false
+// SyncGroupMemberships reconciles a subject's membership of the mapped
+// groups against the provider's group claim.
+//
+// Only groups the operator has explicitly mapped are touched: a group
+// the mapping does not name is never joined or left because of a claim.
+// Group membership confers the group's role grants, so each change is
+// recorded as its own effect.
+func (l *Linker) SyncGroupMemberships(
+	ctx context.Context,
+	tx *store.Tx,
+	rec *store.AuditRecorder,
+	userID string,
+	externalGroups []string,
+	groupMapping map[string]string,
+) error {
+	if len(groupMapping) == 0 {
+		return nil
 	}
-	for _, r := range roles {
-		if r.IsSystem && r.Name == "Admin" {
-			return true
+	at := l.now().UTC()
+
+	desired := make(map[string]bool, len(externalGroups))
+	for _, ext := range externalGroups {
+		if internalID, ok := groupMapping[ext]; ok {
+			desired[internalID] = true
 		}
 	}
-	return false
+
+	// Iterate the mapping's distinct targets in a stable order so two
+	// runs against the same claim produce the same effect sequence.
+	targets := make([]string, 0, len(groupMapping))
+	seen := make(map[string]bool, len(groupMapping))
+	for _, groupID := range groupMapping {
+		if groupID == "" || seen[groupID] {
+			continue
+		}
+		seen[groupID] = true
+		targets = append(targets, groupID)
+	}
+	slices.Sort(targets)
+
+	for _, groupID := range targets {
+		if desired[groupID] {
+			n, err := tx.InsertUserGroupMember(ctx, db.InsertUserGroupMemberParams{
+				GroupID: groupID,
+				UserID:  userID,
+				AddedAt: at,
+				AddedBy: SystemActorSSO,
+			})
+			if err != nil {
+				return fmt.Errorf("add subject to mapped group: %w", err)
+			}
+			if n == 0 {
+				continue // already a member; nothing changed
+			}
+			rec.Effect(store.AuditEffect{
+				ResourceType: "user_group_member",
+				ResourceID:   groupID,
+				Action:       "JOIN",
+				Outcome:      store.EffectApplied,
+				AfterRef:     &userID,
+			})
+			continue
+		}
+		n, err := tx.DeleteUserGroupMember(ctx, db.DeleteUserGroupMemberParams{
+			GroupID: groupID,
+			UserID:  userID,
+		})
+		if err != nil {
+			return fmt.Errorf("remove subject from mapped group: %w", err)
+		}
+		if n == 0 {
+			continue
+		}
+		rec.Effect(store.AuditEffect{
+			ResourceType: "user_group_member",
+			ResourceID:   groupID,
+			Action:       "LEAVE",
+			Outcome:      store.EffectApplied,
+			BeforeRef:    &userID,
+		})
+	}
+	return nil
 }
 
-// ParseGroupMapping parses the JSONB group_mapping from the database into a map.
+// ParseGroupMapping decodes the provider's stored group mapping.
 func ParseGroupMapping(data []byte) map[string]string {
 	if len(data) == 0 {
 		return nil
@@ -436,15 +437,22 @@ func ParseGroupMapping(data []byte) map[string]string {
 	return m
 }
 
-func newULID() string {
-	entropy := ulid.Monotonic(rand.Reader, 0)
-	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
+// fingerprint reduces a value to its SHA-256 hex digest, which is what
+// the audit log accepts as class-two evidence. The value itself never
+// reaches an audit row.
+func fingerprint(v string) string {
+	if v == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
 }
 
 var linuxUsernameSanitizeRe = regexp.MustCompile(`[^a-z0-9_.\-]`)
 
-// deriveLinuxUsernameFromEmail derives a Linux username from email/preferred_username.
-func deriveLinuxUsernameFromEmail(email, preferredUsername string) string {
+// DeriveLinuxUsername derives a Linux account name from the preferred
+// username, falling back to the local part of the email.
+func DeriveLinuxUsername(email, preferredUsername string) string {
 	var username string
 	switch {
 	case preferredUsername != "":
@@ -460,11 +468,4 @@ func deriveLinuxUsernameFromEmail(email, preferredUsername string) string {
 		username = username[:32]
 	}
 	return username
-}
-
-// ptrStr returns a *string for the value. Used by the typed-payload
-// emit sites that take pointer fields with omitempty — wrapping the
-// claim/computed value here keeps the call site readable.
-func ptrStr(s string) *string {
-	return &s
 }

@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net"
@@ -11,11 +13,12 @@ import (
 	"connectrpc.com/connect"
 	"github.com/golang-jwt/jwt/v5"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 )
 
-// Error code constants for structured error details.
+// Error code constants carried in the structured error detail.
 const (
 	errRateLimited      = "rate_limited"
 	errNotAuthenticated = "not_authenticated"
@@ -23,80 +26,71 @@ const (
 	errPermissionDenied = "permission_denied"
 )
 
-// PublicProcedures are procedures that don't require authentication.
+// ControlProcedurePrefix is the Connect path prefix every control
+// procedure shares.
+const ControlProcedurePrefix = "/" + powermanagev1connect.ControlServiceName + "/"
+
+// PublicProcedures are the procedures that carry no session token.
+//
+// Human login is OIDC only, so the public set is the SSO handshake, the
+// session lifecycle a client must be able to drive without a valid
+// access token, and the two device-certificate procedures whose caller
+// authenticates with an enrollment token or its existing certificate.
 var PublicProcedures = map[string]bool{
-	"/pm.v1.ControlService/Login":            true,
-	"/pm.v1.ControlService/RefreshToken":     true,
-	"/pm.v1.ControlService/Logout":           true,
-	"/pm.v1.ControlService/Register":         true,
-	"/pm.v1.ControlService/RenewCertificate": true,
-	"/pm.v1.ControlService/VerifyLoginTOTP":  true,
-	"/pm.v1.ControlService/ListAuthMethods":  true,
-	"/pm.v1.ControlService/GetSSOLoginURL":   true,
-	"/pm.v1.ControlService/SSOCallback":      true,
+	powermanagev1connect.ControlServiceRefreshTokenProcedure:     true,
+	powermanagev1connect.ControlServiceLogoutProcedure:           true,
+	powermanagev1connect.ControlServiceRegisterProcedure:         true,
+	powermanagev1connect.ControlServiceRenewCertificateProcedure: true,
+	powermanagev1connect.ControlServiceListAuthMethodsProcedure:  true,
+	powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:   true,
+	powermanagev1connect.ControlServiceSSOCallbackProcedure:      true,
 }
 
-// procedureAlternatives maps a Connect-RPC procedure path to the
-// set of permission keys that can authorize it. The AuthzInterceptor
-// passes the procedure if the actor holds ANY of the listed
-// alternatives — handler-level dispatch then narrows to the specific
-// permission based on the request shape.
+// procedureAlternatives maps a procedure to the permission keys that
+// can authorize it. The authorization interceptor passes the procedure
+// when the actor holds ANY of the alternatives; the handler then
+// narrows to the specific permission for the request shape.
 //
-// Used for RPCs whose authorization depends on a runtime property
-// of the request (e.g. CreateDeviceGroup is satisfied by either
-// CreateStaticDeviceGroup or CreateDynamicDeviceGroup depending on
-// whether the request carries a dynamic query). The handler MUST
-// re-check the specific permission against the request shape — the
-// interceptor only guarantees "actor holds at least one of these".
+// It exists for procedures whose authorization depends on a runtime
+// property of the request — CreateDeviceGroup is satisfied by either
+// the static or the dynamic creation permission depending on whether
+// the request carries a query. A procedure listed here is gated
+// EXCLUSIVELY by its alternatives; the default base-key path is not a
+// fallback.
 //
-// Lookup precedence inside WrapUnary:
-//  1. PublicProcedures (bypass)
-//  2. Device context (separate authz path)
-//  3. procedureAlternatives (this map) — if a procedure has an
-//     entry, ONLY the alternatives are checked. The default
-//     base-key Authorize path is NOT a fallback.
-//  4. Default: Authorize with action derived from procedure name.
-//
-// Unexported by design: an exported mutable map of authorization
-// rules is a runtime-tampering surface. Out-of-package callers use
-// ProcedureAlternativesSnapshot for read-only access. Concurrent
-// reads inside WrapUnary are safe because the map is set once at
-// package init and never mutated. server #7 T-S2.
+// Unexported: an exported mutable map of authorization rules is a
+// runtime-tampering surface. Out-of-package callers read
+// ProcedureAlternativesSnapshot. The map is written once at package
+// init and only read afterwards, so concurrent reads are safe.
 var procedureAlternatives = map[string][]string{
-	// CreateDeviceGroup splits authorization on req.IsDynamic.
-	"/pm.v1.ControlService/CreateDeviceGroup": {
+	powermanagev1connect.ControlServiceCreateDeviceGroupProcedure: {
 		"CreateStaticDeviceGroup",
 		"CreateDynamicDeviceGroup",
 	},
-	"/pm.v1.ControlService/CreateUserGroup": {
+	powermanagev1connect.ControlServiceCreateUserGroupProcedure: {
 		"CreateStaticUserGroup",
 		"CreateDynamicUserGroup",
 	},
-	// UpdateDeviceGroupQuery is dynamic-only. The legacy permission
-	// name was renamed to UpdateDynamicDeviceGroupQuery; the RPC
-	// name stays for backward compat. Static-only admins cannot
-	// satisfy this procedure because only the dynamic-update perm
-	// is listed.
-	"/pm.v1.ControlService/UpdateDeviceGroupQuery": {
+	// The query-update procedures are dynamic-only: a static-group
+	// admin cannot satisfy them because only the dynamic permission is
+	// listed.
+	powermanagev1connect.ControlServiceUpdateDeviceGroupQueryProcedure: {
 		"UpdateDynamicDeviceGroupQuery",
 	},
-	"/pm.v1.ControlService/UpdateUserGroupQuery": {
+	powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure: {
 		"UpdateDynamicUserGroupQuery",
 	},
-	// ExportAuditEvents is gated by the SAME permission as the list
-	// (spec 26): the export is a formatting of what ListAuditEvents
-	// already returns, so a separate permission could only drift wider
-	// or narrower than the data it re-serves. No handler-level
-	// narrowing needed — the alternative IS the exact gate.
-	"/pm.v1.ControlService/ExportAuditEvents": {
+	// The export is a re-serialisation of what the list already
+	// returns, so a separate permission could only drift wider or
+	// narrower than the data it re-serves.
+	powermanagev1connect.ControlServiceExportAuditEventsProcedure: {
 		"ListAuditEvents",
 	},
 }
 
 // ProcedureAlternativesSnapshot returns a deep copy of the
-// procedure-alternatives map for read-only inspection by tests and
-// out-of-package callers. The returned value is freshly allocated;
-// mutating it does NOT affect the live authorization policy.
+// procedure-alternatives map. The returned value is freshly allocated;
+// mutating it does not affect the live authorization policy.
 func ProcedureAlternativesSnapshot() map[string][]string {
 	out := make(map[string][]string, len(procedureAlternatives))
 	for k, v := range procedureAlternatives {
@@ -105,42 +99,30 @@ func ProcedureAlternativesSnapshot() map[string][]string {
 	return out
 }
 
-// proceduresAcceptingAlternative builds the inverse of
-// procedureAlternatives: a permission key → true map of every
-// permission that appears as an alternative for SOME procedure.
-// Used by the parity tests to recognize split / renamed permissions
-// (CreateStaticDeviceGroup etc.) as RPC-backed via the alternatives
-// map even though no RPC has that literal name.
-func proceduresAcceptingAlternative() map[string]bool {
-	out := make(map[string]bool)
+// PermissionIsAlternative reports whether a permission key gates some
+// procedure through the alternatives map.
+func PermissionIsAlternative(permKey string) bool {
 	for _, alts := range procedureAlternatives {
 		for _, perm := range alts {
-			out[perm] = true
+			if perm == permKey {
+				return true
+			}
 		}
 	}
-	return out
+	return false
 }
 
-// PermissionIsAlternative returns true if the given permission key
-// appears in procedureAlternatives as a satisfying alternative for
-// some procedure. Exported for parity-test consumption.
-func PermissionIsAlternative(permKey string) bool {
-	return proceduresAcceptingAlternative()[permKey]
-}
-
-// TrustedProxies is the set of IP addresses/CIDRs trusted to set
-// X-Forwarded-For / X-Real-IP headers. If empty, proxy headers are ignored
-// and the direct peer address is always used.
+// TrustedProxies is the set of addresses trusted to set X-Forwarded-For
+// / X-Real-IP. Empty means proxy headers are ignored entirely and the
+// direct peer address is always used.
 var TrustedProxies []*net.IPNet
 
-// SetTrustedProxies parses a list of CIDR strings (e.g. "10.0.0.0/8",
-// "172.16.0.0/12") and sets them as trusted proxy sources. Plain IPs
-// like "127.0.0.1" are treated as /32 (IPv4) or /128 (IPv6).
+// SetTrustedProxies parses CIDR strings and installs them as the
+// trusted proxy set. A bare IP is treated as /32 or /128.
 func SetTrustedProxies(cidrs []string) {
 	var nets []*net.IPNet
 	for _, cidr := range cidrs {
 		if !strings.Contains(cidr, "/") {
-			// Bare IP — convert to /32 or /128
 			ip := net.ParseIP(cidr)
 			if ip == nil {
 				continue
@@ -152,15 +134,13 @@ func SetTrustedProxies(cidrs []string) {
 			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 			continue
 		}
-		_, ipNet, err := net.ParseCIDR(cidr)
-		if err == nil {
+		if _, ipNet, err := net.ParseCIDR(cidr); err == nil {
 			nets = append(nets, ipNet)
 		}
 	}
 	TrustedProxies = nets
 }
 
-// isTrustedProxy checks if an IP is in the trusted proxy list.
 func isTrustedProxy(addr string) bool {
 	if len(TrustedProxies) == 0 {
 		return false
@@ -177,21 +157,17 @@ func isTrustedProxy(addr string) bool {
 	return false
 }
 
-// resolveClientIP applies trusted-proxy semantics to a direct peer address and
-// its forwarded headers, returning the attributable client IP. It is the single
-// resolver shared by clientIP (Connect interceptor) and ClientIPFromHTTP, so the
-// two paths cannot drift.
+// resolveClientIP applies trusted-proxy semantics to a direct peer
+// address and its forwarded headers.
 //
-// Proxy headers are honoured only when peerIP is itself a trusted proxy —
-// an untrusted direct peer's headers are ignored entirely. X-Forwarded-For is
-// walked RIGHT TO LEFT (spec 29): trusted-proxy hops are skipped and the first
-// untrusted address is the client. This defeats a spoofed leftmost entry, which
-// the previous first-hop selection trusted. A malformed hop encountered before a
-// trustworthy client is established, or an all-trusted chain, falls back to the
-// direct peer rather than to a farther-left, attacker-controllable value.
-// X-Real-IP is consulted only when X-Forwarded-For is absent. Returns peerIP
-// (unvalidated) when no forwarded value applies; callers decide how to treat an
-// unparsable peer.
+// Proxy headers are honoured only when the direct peer is itself a
+// trusted proxy. X-Forwarded-For is walked RIGHT TO LEFT: trusted hops
+// are skipped and the first untrusted address is the client, which
+// defeats a spoofed leftmost entry. A malformed hop encountered before
+// a trustworthy client is established, or an all-trusted chain, falls
+// back to the direct peer rather than to a farther-left,
+// attacker-controllable value. X-Real-IP is consulted only when
+// X-Forwarded-For is absent.
 func resolveClientIP(peerIP, xff, xri string) string {
 	if !isTrustedProxy(peerIP) {
 		return peerIP
@@ -201,16 +177,13 @@ func resolveClientIP(peerIP, xff, xri string) string {
 		for i := len(hops) - 1; i >= 0; i-- {
 			hop := strings.TrimSpace(hops[i])
 			if net.ParseIP(hop) == nil {
-				// Malformed hop: the chain is untrustworthy from here leftward.
 				return peerIP
 			}
 			if isTrustedProxy(hop) {
-				continue // a proxy we placed, not the client
+				continue
 			}
-			return hop // first untrusted address, walking right to left
+			return hop
 		}
-		// Every hop was a trusted proxy — the real client is farther upstream
-		// than any recorded address; fall back to the direct peer.
 		return peerIP
 	}
 	if xri != "" {
@@ -221,15 +194,13 @@ func resolveClientIP(peerIP, xff, xri string) string {
 	return peerIP
 }
 
-// ClientIPFromHTTP is the http.Request analogue of clientIP — used by
-// non-Connect handlers (SCIM, /health, OIDC callback) that need the
-// same trusted-proxy semantics. Falls back to RemoteAddr when proxy
-// headers are absent or the peer isn't in the trusted-proxy CIDR set.
+// ClientIPFromHTTP is the http.Request analogue of clientIP, for
+// handlers outside the Connect chain (SCIM, health, the OIDC callback).
 //
-// Returns the empty string if neither RemoteAddr nor proxy headers
-// yield a parsable IP — callers should treat that as "could not
-// identify" and skip per-IP rate-limit bookkeeping rather than coalesce
-// every anonymous request onto a single bucket.
+// It returns the empty string when neither the peer address nor the
+// proxy headers yield a parsable IP: callers treat that as "could not
+// identify" rather than coalescing every anonymous request onto one
+// bucket by accident.
 func ClientIPFromHTTP(r *http.Request) string {
 	peerIP := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
@@ -242,20 +213,16 @@ func ClientIPFromHTTP(r *http.Request) string {
 	return ""
 }
 
-// clientIP extracts the real client IP. Proxy headers (X-Forwarded-For,
-// X-Real-IP) are only trusted when the direct peer is in TrustedProxies.
-// Falls back to the direct peer address.
+// clientIP resolves the attributable client address of a Connect
+// request. An unparsable peer yields "", which is also the safer
+// limiter key: unidentifiable peers share one restrictive bucket
+// instead of each getting a fresh one from an attacker-varied string.
 func clientIP(req connect.AnyRequest) string {
 	peerAddr := req.Peer().Addr
 	peerIP := peerAddr
 	if host, _, err := net.SplitHostPort(peerAddr); err == nil {
 		peerIP = host
 	}
-	// Validate the resolved value exactly as ClientIPFromHTTP does, so the two
-	// paths cannot drift: a peer that isn't a parsable IP (non-TCP transport,
-	// unix socket) yields "" rather than a raw non-IP string. "" is also the
-	// safer limiter key — unidentifiable peers share one restrictive bucket
-	// instead of each getting a fresh one from an attacker-varied string.
 	resolved := resolveClientIP(peerIP, req.Header().Get("X-Forwarded-For"), req.Header().Get("X-Real-IP"))
 	if net.ParseIP(resolved) != nil {
 		return resolved
@@ -263,75 +230,60 @@ func clientIP(req connect.AnyRequest) string {
 	return ""
 }
 
-// ClientIP is the exported form of clientIP, for handlers that self-gate rate
-// limiting outside the interceptor chain (GatewayAuthService, mounted without
-// the AuthInterceptor). It applies the same trusted-proxy resolution so the
-// limiter key matches what the interceptor would compute.
+// ClientIP is the exported form of clientIP, for handlers that gate
+// themselves outside the interceptor chain.
 func ClientIP(req connect.AnyRequest) string { return clientIP(req) }
 
-// RateLimiters bundles the per-procedure-family rate limiters the
-// AuthInterceptor consults. nil fields disable the corresponding gate.
-// The split lets each family carry a different ceiling: Login is a
-// credential-spray vector and gets the tightest budget; RefreshToken
-// has the loosest because legitimate clients refresh frequently.
+// RateLimiters bundles the per-procedure-family limiters the
+// authentication interceptor consults. A nil field disables that gate.
 //
-// Procedure → field mapping (see WrapUnary):
-//   - Login / VerifyLoginTOTP / SSOCallback → Login
-//   - RefreshToken                          → Refresh
-//   - Register                              → Register
-//   - Logout                                → Logout
-//   - RenewCertificate                      → RenewCert
-//   - ListAuthMethods                       → AuthMethods
-//
-// Replica scope (L12, audit 2026-07-17): every limiter here is a PROCESS-LOCAL
-// in-memory window, so each ceiling is enforced PER REPLICA. On the default
-// single-instance compose deployment that is the exact configured limit. Under
-// multi-replica control HA (ADR 0031) an attacker whose requests load-balance
-// across N replicas gets up to N× the configured throughput against a single
-// IP / user / enumeration oracle. This is a deliberate design choice — these
-// ceilings bound DoS and enumeration (not a credential check, unlike the
-// DB-backed SSO state and refresh single-use), so the per-replica multiplier is
-// accepted rather than paying a shared-store round-trip on every request. If you
-// run N replicas, size the limits for the per-replica budget (effective ceiling
-// ≈ limit×N) or enforce a global ceiling at the load balancer / API gateway. A
-// shared-store token bucket is the upgrade path if strict global ceilings are
-// ever required.
+// Every limiter is a PROCESS-LOCAL sliding window, which is exactly
+// right for the single control instance this design targets: the
+// ceiling is the configured ceiling, with no shared store on the
+// request path.
 type RateLimiters struct {
-	Login     *RateLimiter
-	Refresh   *RateLimiter
+	// SSOCallback throttles the code-exchange leg of the login flow.
+	SSOCallback *RateLimiter
+	// Refresh throttles session rotation.
+	Refresh *RateLimiter
+	// Register and RenewCert throttle the two certificate procedures,
+	// each of which runs a CA signing operation and a database write.
 	Register  *RateLimiter
-	Logout    *RateLimiter
 	RenewCert *RateLimiter
-	// AuthMethods throttles the unauthenticated ListAuthMethods lookup, which
-	// reflects whether an email exists and its auth config — an enumeration
-	// oracle if left unthrottled (audit). Keyed by client IP.
+	// Logout is public, so without a ceiling anyone who learned a
+	// refresh token could invalidate that session arbitrarily often.
+	Logout *RateLimiter
+	// AuthMethods throttles the unauthenticated provider list, which
+	// reflects deployment configuration to anonymous callers.
 	AuthMethods *RateLimiter
-	// SSO throttles the unauthenticated GetSSOLoginURL — the most expensive public
-	// endpoint: each call writes an auth_state row, AES-GCM-decrypts the provider
-	// secret, and performs an outbound OIDC discovery request (spec 29 S3). Left
-	// unthrottled it is a storage + outbound-amplification DoS. Keyed by client IP.
+	// SSO throttles GetSSOLoginURL: the most expensive unauthenticated
+	// endpoint, since each call writes an auth_state row, decrypts the
+	// provider secret and performs outbound OIDC discovery.
 	SSO *RateLimiter
-	// Authenticated is the general per-user ceiling applied to EVERY
-	// authenticated control RPC after the token validates (WS11 #6). It bounds
-	// a compromised token or a runaway client from hammering the API. Keyed by
-	// the authenticated user ID, so two users never share a bucket.
+	// Authenticated is the general per-user ceiling applied to every
+	// authenticated procedure once the token validates. Keyed by the
+	// subject id, so two subjects never share a bucket.
 	Authenticated *RateLimiter
-	// Expensive is a tighter per-user ceiling applied ON TOP of Authenticated
-	// to the self-discovered set of heavy procedures (query evaluation, search,
-	// projector rebuild, log/osquery fan-out — see isExpensiveProcedure). Keyed
-	// by the authenticated user ID.
+	// Expensive is a tighter per-user ceiling layered on top for the
+	// self-discovered heavy set (see isExpensiveProcedure).
 	Expensive *RateLimiter
+	// Rejected bounds how fast one source address can produce
+	// authentication FAILURES. It gates the rejection-audit write, so
+	// a credential-stuffing flood cannot turn the audit log into an
+	// amplification target.
+	Rejected *RateLimiter
 }
 
-// isExpensiveProcedure reports whether an authenticated control procedure runs
-// a heavy operation — dynamic-group query evaluation, search, a projector
-// rebuild, a log/osquery fan-out, or a bulk export — that warrants a tighter
-// per-user ceiling than ordinary reads. It is self-discovered from the action
-// name so a newly added Evaluate* / Search* / Rebuild* / Query* / *Query /
-// Export* RPC is covered automatically rather than from a hand-maintained list
-// that fails open. A test (TestIsExpensiveProcedure_MatchesRealProcedures)
-// walks the ControlService descriptor and asserts the matcher recognises at
-// least one real procedure, so it can never silently match zero.
+// isExpensiveProcedure reports whether an authenticated procedure runs
+// a heavy operation — query evaluation, search, an index rebuild, a
+// log/osquery fan-out or a bulk export — and warrants a tighter
+// per-user ceiling.
+//
+// Self-discovered from the action name so a newly added Evaluate* /
+// Search* / Rebuild* / Query* / *Query / Export* procedure is covered
+// automatically rather than from a hand-maintained list that fails
+// open. A test walks the real procedure set and asserts the matcher
+// recognises at least one, so it can never silently match zero.
 func isExpensiveProcedure(action string) bool {
 	return strings.HasPrefix(action, "Evaluate") ||
 		strings.HasPrefix(action, "Search") ||
@@ -341,171 +293,265 @@ func isExpensiveProcedure(action string) bool {
 		strings.HasPrefix(action, "Export")
 }
 
-// procedureAction extracts the trailing method name from a Connect procedure
-// path ("/pm.v1.ControlService/EvaluateDynamicGroup" -> "EvaluateDynamicGroup").
-func procedureAction(procedure string) string {
+// IsExpensiveProcedure reports whether an action name matches the
+// heavy set. Exported so a guard test can assert the matcher recognises
+// at least one real procedure — a self-discovering matcher that matches
+// nothing would gate nothing while looking like it did.
+func IsExpensiveProcedure(action string) bool { return isExpensiveProcedure(action) }
+
+// ProcedureAction extracts the trailing method name from a Connect
+// procedure path.
+func ProcedureAction(procedure string) string {
 	parts := strings.Split(procedure, "/")
 	return parts[len(parts)-1]
 }
 
-// AuthInterceptor provides Connect-RPC authentication interceptor.
+// RejectionRecorder is the audit seam the authentication interceptor
+// uses for the dedicated rejected-authentication operation class. It is
+// satisfied by *store.Store; declared as an interface here so the auth
+// package does not depend on a concrete store for a single call.
+type RejectionRecorder interface {
+	RecordRejectedAuthentication(ctx context.Context, att RejectedAuthentication) error
+}
+
+// RejectedAuthentication describes one failed authentication attempt.
+// Every field is code-derived or a digest: the presented credential
+// never appears, only the SHA-256 of it, and the peer address is
+// likewise reduced to a digest because it is personal data.
+type RejectedAuthentication struct {
+	// Procedure is the full Connect method that was attempted.
+	Procedure string
+	// Reason is a fixed code constant naming why the attempt failed.
+	Reason string
+	// CredentialFingerprint is the SHA-256 hex digest of the presented
+	// bearer value, empty when none was presented.
+	CredentialFingerprint string
+	// OriginFingerprint is the SHA-256 hex digest of the client
+	// address, empty when the peer could not be identified.
+	OriginFingerprint string
+}
+
+// There is deliberately no claimed-subject field. A rejected attempt
+// never authenticated, so it has no actor; recording the id a forged
+// token asserted would put an attacker-chosen value in the column that
+// means "who did this".
+
+// Fingerprint reduces a value to its SHA-256 hex digest. The empty
+// string maps to the empty string rather than to the digest of nothing,
+// so "absent" and "present but empty" do not collide.
+func Fingerprint(v string) string {
+	if v == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
+}
+
+// AuthInterceptor authenticates Connect requests.
 type AuthInterceptor struct {
 	logger     *slog.Logger
 	jwtManager *JWTManager
 	limiters   RateLimiters
+	rejections RejectionRecorder
+	// bootstrap admits the host-authorized setup principal. Nil when
+	// no bootstrap path is wired.
+	bootstrap BootstrapAuthenticator
 }
 
-// NewAuthInterceptor creates a new authentication interceptor.
-func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, limiters RateLimiters) *AuthInterceptor {
-	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, limiters: limiters}
+// BootstrapAuthenticator consumes a host-authorized bootstrap token and
+// returns the reserved principal it admits. Consumption is single-use
+// and audited by the implementation.
+type BootstrapAuthenticator interface {
+	AuthenticateBootstrapToken(ctx context.Context, token string) (*UserContext, error)
 }
+
+// NewAuthInterceptor creates the authentication interceptor.
+func NewAuthInterceptor(logger *slog.Logger, jwtManager *JWTManager, limiters RateLimiters, rejections RejectionRecorder) *AuthInterceptor {
+	return &AuthInterceptor{logger: logger, jwtManager: jwtManager, limiters: limiters, rejections: rejections}
+}
+
+// WithBootstrapAuthenticator wires the host-authorized setup path.
+func (i *AuthInterceptor) WithBootstrapAuthenticator(b BootstrapAuthenticator) *AuthInterceptor {
+	i.bootstrap = b
+	return i
+}
+
+// BootstrapTokenScheme is the Authorization scheme a host-authorized
+// bootstrap token is presented under. It is deliberately NOT "Bearer":
+// a bootstrap token must never be accepted anywhere a session token is
+// expected, and a distinct scheme makes that a parse-level property
+// rather than a validation-order one.
+const BootstrapTokenScheme = "PowerManage-Bootstrap"
 
 // WrapUnary implements connect.Interceptor.
 func (i *AuthInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
 
-		// Rate limit login attempts by client IP. Login + VerifyLoginTOTP +
-		// SSOCallback share one budget — they're all credential-spray
-		// vectors that a defender treats as one logical "auth attempt"
-		// regardless of which RPC the attacker pokes.
-		if (procedure == "/pm.v1.ControlService/Login" || procedure == "/pm.v1.ControlService/VerifyLoginTOTP" || procedure == "/pm.v1.ControlService/SSOCallback") && i.limiters.Login != nil {
-			ip := clientIP(req)
-			if !i.limiters.Login.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "login", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many login attempts, try again later")
-			}
+		if err := i.applyPublicLimiters(ctx, procedure, req); err != nil {
+			return nil, err
 		}
 
-		// Rate limit token refresh attempts by client IP
-		if procedure == "/pm.v1.ControlService/RefreshToken" && i.limiters.Refresh != nil {
-			ip := clientIP(req)
-			if !i.limiters.Refresh.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "refresh", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many refresh attempts, try again later")
-			}
-		}
-
-		// Rate limit registration attempts by client IP
-		if procedure == "/pm.v1.ControlService/Register" && i.limiters.Register != nil {
-			ip := clientIP(req)
-			if !i.limiters.Register.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "register", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many registration attempts, try again later")
-			}
-		}
-
-		// Rate limit Logout — public procedure (#142). Without a limiter,
-		// an attacker who learned a session token (XSS, log leak, shared
-		// browser) could invalidate that user's sessions arbitrarily often:
-		// each call is a single DB write with no backoff.
-		if procedure == "/pm.v1.ControlService/Logout" && i.limiters.Logout != nil {
-			ip := clientIP(req)
-			if !i.limiters.Logout.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "logout", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many logout attempts, try again later")
-			}
-		}
-
-		// Rate limit RenewCertificate — public procedure (#142). Each
-		// call exercises the CA signing path + a DB write; concurrent
-		// floods could exhaust signer throughput. Cert rotation happens
-		// once per cert-lifetime so the legitimate ceiling is very low.
-		if procedure == "/pm.v1.ControlService/RenewCertificate" && i.limiters.RenewCert != nil {
-			ip := clientIP(req)
-			if !i.limiters.RenewCert.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "renew_cert", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many certificate renewal attempts, try again later")
-			}
-		}
-
-		// Rate limit ListAuthMethods — public, unauthenticated procedure. It
-		// reflects whether an email exists and its auth config (password / TOTP /
-		// linked providers) to drive the login UI, which makes it an enumeration
-		// oracle. Throttling by IP bounds bulk enumeration without removing the
-		// legitimate single-email lookup the login page needs (audit).
-		if procedure == "/pm.v1.ControlService/ListAuthMethods" && i.limiters.AuthMethods != nil {
-			ip := clientIP(req)
-			if !i.limiters.AuthMethods.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "auth_methods", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
-			}
-		}
-
-		// GetSSOLoginURL (public, spec 29 S3) — the most expensive unauthenticated
-		// endpoint (auth_state DB write + secret decrypt + outbound OIDC discovery).
-		if procedure == "/pm.v1.ControlService/GetSSOLoginURL" && i.limiters.SSO != nil {
-			ip := clientIP(req)
-			if !i.limiters.SSO.Allow(ip) {
-				i.logger.Warn("rate limit exceeded", "limiter", "sso", "ip", ip, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
-			}
-		}
-
-		// Skip auth for public procedures
 		if PublicProcedures[procedure] {
 			return next(ctx, req)
 		}
 
-		// Extract token from Authorization: Bearer header
-		authHeader := req.Header().Get("Authorization")
-		if authHeader == "" {
-			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
-		}
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid authorization header format")
-		}
-		tokenString := parts[1]
-		if tokenString == "" {
-			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "missing authentication credentials")
-		}
-
-		// Validate token. Distinguish "expired" from "malformed /
-		// signature-invalid / wrong-type" so the web client can show
-		// the right UX (silent refresh vs forced re-login). Falls back
-		// to errNotAuthenticated for non-expiry failures so the web
-		// error mapping doesn't trigger refresh-and-retry on a token
-		// that can never become valid (#139, audit Bundle A).
-		claims, err := i.jwtManager.ValidateToken(tokenString, TokenTypeAccess)
+		scheme, credential, err := parseAuthorization(req.Header().Get("Authorization"))
 		if err != nil {
-			if errors.Is(err, jwt.ErrTokenExpired) {
-				return nil, authErrorCtx(ctx, errTokenExpired, connect.CodeUnauthenticated, "token expired")
-			}
-			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "invalid token")
+			return nil, i.rejectAuthentication(ctx, req, procedure, errNotAuthenticated, "",
+				connect.CodeUnauthenticated, err.Error())
 		}
 
-		// Authenticated-RPC rate limiting (WS11 #6). The caller is now
-		// authenticated, so key per-user: a stolen token or a misbehaving
-		// client cannot exhaust the API, and two users never share a bucket.
-		// The general ceiling counts every authenticated call; the tighter
-		// "expensive" ceiling additionally gates the self-discovered heavy set.
-		// Both run BEFORE next so the limiter gates ahead of any handler work.
-		if i.limiters.Authenticated != nil {
-			if !i.limiters.Authenticated.Allow("uid:" + claims.UserID) {
-				i.logger.Warn("rate limit exceeded", "limiter", "authenticated", "user_id", claims.UserID, "procedure", procedure)
-				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
-			}
+		if strings.EqualFold(scheme, BootstrapTokenScheme) {
+			return i.authenticateBootstrap(ctx, next, req, procedure, credential)
 		}
-		if i.limiters.Expensive != nil && isExpensiveProcedure(procedureAction(procedure)) {
+		if !strings.EqualFold(scheme, "Bearer") {
+			return nil, i.rejectAuthentication(ctx, req, procedure, errNotAuthenticated, credential,
+				connect.CodeUnauthenticated, "invalid authorization header format")
+		}
+
+		claims, err := i.jwtManager.ValidateToken(credential, TokenTypeAccess)
+		if err != nil {
+			// An expired token is separated from every other failure so
+			// the client can distinguish "refresh and retry" from "this
+			// value can never become valid, log in again". Signature,
+			// algorithm, issuer and token-type failures all collapse
+			// into the second case: telling a caller WHICH check their
+			// forgery failed is an oracle.
+			code, msg := errNotAuthenticated, "invalid token"
+			if errors.Is(err, jwt.ErrTokenExpired) {
+				code, msg = errTokenExpired, "token expired"
+			}
+			return nil, i.rejectAuthentication(ctx, req, procedure, code, credential, connect.CodeUnauthenticated, msg)
+		}
+
+		if i.limiters.Authenticated != nil && !i.limiters.Authenticated.Allow("uid:"+claims.UserID) {
+			i.logger.Warn("rate limit exceeded", "limiter", "authenticated", "procedure", procedure)
+			return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many requests, try again later")
+		}
+		if i.limiters.Expensive != nil && isExpensiveProcedure(ProcedureAction(procedure)) {
 			if !i.limiters.Expensive.Allow("uid:" + claims.UserID) {
-				i.logger.Warn("rate limit exceeded", "limiter", "expensive", "user_id", claims.UserID, "procedure", procedure)
+				i.logger.Warn("rate limit exceeded", "limiter", "expensive", "procedure", procedure)
 				return nil, authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, "too many expensive requests, try again later")
 			}
 		}
 
-		// Add user context with permissions + scoped grants from JWT
-		userCtx := &UserContext{
+		ctx = WithUser(ctx, &UserContext{
 			ID:             claims.UserID,
+			Kind:           PrincipalUser,
 			Email:          claims.Email,
 			Permissions:    claims.Permissions,
 			ScopedGrants:   claims.ScopedGrants,
 			SessionVersion: claims.SessionVersion,
-		}
-		ctx = WithUser(ctx, userCtx)
-
+		})
 		return next(ctx, req)
 	}
+}
+
+// authenticateBootstrap consumes a host-authorized setup token. The
+// token is single-use, so a rejection here is terminal for that value.
+func (i *AuthInterceptor) authenticateBootstrap(
+	ctx context.Context,
+	next connect.UnaryFunc,
+	req connect.AnyRequest,
+	procedure, credential string,
+) (connect.AnyResponse, error) {
+	if i.bootstrap == nil {
+		return nil, i.rejectAuthentication(ctx, req, procedure, errNotAuthenticated, credential,
+			connect.CodeUnauthenticated, "invalid token")
+	}
+	principal, err := i.bootstrap.AuthenticateBootstrapToken(ctx, credential)
+	if err != nil {
+		return nil, i.rejectAuthentication(ctx, req, procedure, errNotAuthenticated, credential,
+			connect.CodeUnauthenticated, "invalid token")
+	}
+	return next(WithUser(ctx, principal), req)
+}
+
+// applyPublicLimiters runs the per-procedure ceilings that gate the
+// unauthenticated surface, before any handler work.
+func (i *AuthInterceptor) applyPublicLimiters(ctx context.Context, procedure string, req connect.AnyRequest) error {
+	type gate struct {
+		limiter *RateLimiter
+		name    string
+		message string
+	}
+	var g gate
+	switch procedure {
+	case powermanagev1connect.ControlServiceSSOCallbackProcedure:
+		g = gate{i.limiters.SSOCallback, "sso_callback", "too many login attempts, try again later"}
+	case powermanagev1connect.ControlServiceRefreshTokenProcedure:
+		g = gate{i.limiters.Refresh, "refresh", "too many refresh attempts, try again later"}
+	case powermanagev1connect.ControlServiceRegisterProcedure:
+		g = gate{i.limiters.Register, "register", "too many registration attempts, try again later"}
+	case powermanagev1connect.ControlServiceLogoutProcedure:
+		g = gate{i.limiters.Logout, "logout", "too many logout attempts, try again later"}
+	case powermanagev1connect.ControlServiceRenewCertificateProcedure:
+		g = gate{i.limiters.RenewCert, "renew_cert", "too many certificate renewal attempts, try again later"}
+	case powermanagev1connect.ControlServiceListAuthMethodsProcedure:
+		g = gate{i.limiters.AuthMethods, "auth_methods", "too many requests, try again later"}
+	case powermanagev1connect.ControlServiceGetSSOLoginURLProcedure:
+		g = gate{i.limiters.SSO, "sso", "too many requests, try again later"}
+	default:
+		return nil
+	}
+	if g.limiter == nil {
+		return nil
+	}
+	if !g.limiter.Allow(clientIP(req)) {
+		i.logger.Warn("rate limit exceeded", "limiter", g.name, "procedure", procedure)
+		return authErrorCtx(ctx, errRateLimited, connect.CodeResourceExhausted, g.message)
+	}
+	return nil
+}
+
+// rejectAuthentication records the attempt under the dedicated
+// rejected-authentication operation class and returns the error the
+// caller sees.
+//
+// The audit write is gated by the Rejected limiter: a flood of bad
+// credentials from one source is throttled, so the audit log cannot be
+// used as a write amplifier. The rejection itself is unconditional —
+// throttling changes what is RECORDED, never what is ADMITTED.
+func (i *AuthInterceptor) rejectAuthentication(
+	ctx context.Context,
+	req connect.AnyRequest,
+	procedure, reason, credential string,
+	code connect.Code,
+	message string,
+) error {
+	ip := clientIP(req)
+	if i.rejections != nil && (i.limiters.Rejected == nil || i.limiters.Rejected.Allow("rej:"+ip)) {
+		att := RejectedAuthentication{
+			Procedure:             procedure,
+			Reason:                reason,
+			CredentialFingerprint: Fingerprint(credential),
+			OriginFingerprint:     Fingerprint(ip),
+		}
+		if err := i.rejections.RecordRejectedAuthentication(ctx, att); err != nil {
+			i.logger.Error("failed to record rejected authentication",
+				"procedure", procedure, "reason", reason, "error", err)
+		}
+	}
+	return authErrorCtx(ctx, reason, code, message)
+}
+
+// parseAuthorization splits an Authorization header into its scheme and
+// credential. A missing header, a malformed one and an empty credential
+// are all reported as the same "no usable credential" condition.
+func parseAuthorization(header string) (scheme, credential string, err error) {
+	if header == "" {
+		return "", "", errors.New("missing authentication credentials")
+	}
+	parts := strings.SplitN(header, " ", 2)
+	if len(parts) != 2 {
+		return "", "", errors.New("invalid authorization header format")
+	}
+	scheme, credential = parts[0], strings.TrimSpace(parts[1])
+	if credential == "" {
+		return "", "", errors.New("missing authentication credentials")
+	}
+	return scheme, credential, nil
 }
 
 // WrapStreamingClient implements connect.Interceptor.
@@ -513,52 +559,36 @@ func (i *AuthInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) 
 	return next
 }
 
-// WrapStreamingHandler implements connect.Interceptor.
-// Rejects streaming RPCs with Unauthenticated — the control server does not use streaming RPCs.
-// If streaming is ever needed, this must be updated with proper auth logic.
-func (i *AuthInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+// WrapStreamingHandler refuses streaming: the control API is unary
+// only, and an unauthenticated streaming path would be a hole around
+// the unary gate above.
+func (i *AuthInterceptor) WrapStreamingHandler(connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(context.Context, connect.StreamingHandlerConn) error {
 		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
 	}
 }
 
-// AuthzInterceptor provides Connect-RPC authorization interceptor.
-// It uses the Go Authorize function with permissions already on the UserContext (from JWT).
+// AuthzInterceptor is the coarse permission gate. It answers "does this
+// actor hold anything that could authorize this procedure"; each
+// handler still expresses its own resource-specific authorization.
 type AuthzInterceptor struct{}
 
-// NewAuthzInterceptor creates a new authorization interceptor.
-func NewAuthzInterceptor() *AuthzInterceptor {
-	return &AuthzInterceptor{}
-}
+// NewAuthzInterceptor creates the authorization interceptor.
+func NewAuthzInterceptor() *AuthzInterceptor { return &AuthzInterceptor{} }
 
 // WrapUnary implements connect.Interceptor.
 func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
 		procedure := req.Spec().Procedure
-
-		// Skip authz for public procedures
 		if PublicProcedures[procedure] {
 			return next(ctx, req)
 		}
 
-		// Extract action name from procedure (e.g., "/pm.v1.ControlService/GetUser" -> "GetUser")
-		parts := strings.Split(procedure, "/")
-		action := parts[len(parts)-1]
-
-		// User context — permissions already on UserContext from JWT
 		userCtx, ok := UserFromContext(ctx)
 		if !ok {
 			return nil, authErrorCtx(ctx, errNotAuthenticated, connect.CodeUnauthenticated, "not authenticated")
 		}
 
-		// Procedures whose authorization depends on the request
-		// shape (e.g. CreateDeviceGroup → static vs dynamic) consult
-		// the procedureAlternatives map: ANY of the listed perms
-		// admits the caller. The handler then narrows to the
-		// specific permission against the request shape. The
-		// default Authorize path is NOT a fallback here — a
-		// procedure in the alternatives map is exclusively gated by
-		// that list. server #7 T-S2.
 		if alts, hasAlt := procedureAlternatives[procedure]; hasAlt {
 			for _, alt := range alts {
 				for _, perm := range userCtx.Permissions {
@@ -570,16 +600,14 @@ func (i *AuthzInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 			return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
 
-		input := AuthzInput{
-			Permissions: userCtx.Permissions,
-			SubjectID:   userCtx.ID,
-			Action:      action,
-		}
-
-		if !Authorize(input) {
+		if !Authorize(AuthzInput{
+			Permissions:  userCtx.Permissions,
+			SubjectID:    userCtx.ID,
+			SelfEligible: userCtx.CanOwnResources(),
+			Action:       ProcedureAction(procedure),
+		}) {
 			return nil, authErrorCtx(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
 		}
-
 		return next(ctx, req)
 	}
 }
@@ -589,19 +617,20 @@ func (i *AuthzInterceptor) WrapStreamingClient(next connect.StreamingClientFunc)
 	return next
 }
 
-// WrapStreamingHandler implements connect.Interceptor.
-// Rejects streaming RPCs — the control server does not use streaming RPCs.
-func (i *AuthzInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+// WrapStreamingHandler refuses streaming, matching the authentication
+// interceptor.
+func (i *AuthzInterceptor) WrapStreamingHandler(connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(context.Context, connect.StreamingHandlerConn) error {
 		return connect.NewError(connect.CodeUnimplemented, errors.New("streaming RPCs are not supported on the control server"))
 	}
 }
 
-// authErrorCtx creates a connect.Error with a structured ErrorDetail containing the error code
-// and the request ID from context for client-side correlation.
+// authErrorCtx builds a connect error carrying the structured detail
+// the web client correlates on. The message is a fixed string; no
+// request input and no credential material reaches it.
 func authErrorCtx(ctx context.Context, code string, connectCode connect.Code, msg string) *connect.Error {
 	e := connect.NewError(connectCode, errors.New(msg))
-	detail := &pm.ErrorDetail{Code: code, RequestId: middleware.RequestIDFromContext(ctx)}
+	detail := &pmv1.ErrorDetail{Code: code, RequestId: middleware.RequestIDFromContext(ctx)}
 	if d, err := connect.NewErrorDetail(detail); err == nil {
 		e.AddDetail(d)
 	}

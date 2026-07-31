@@ -65,6 +65,33 @@ var nonMutatingExports = map[string]string{
 	"GetUser":              "read",
 	"CountUsers":           "read",
 	"GetUserEncryptionKey": "read",
+
+	// Identity reads.
+	"GetUserByEmail":                "read",
+	"GetUserSessionState":           "read",
+	"ListUsers":                     "read",
+	"ListUserPermissions":           "read",
+	"ListUserScopedGrants":          "read",
+	"ListUserRoleGrants":            "read",
+	"ListUserGroupRoleGrants":       "read",
+	"ListInheritedRolesForUser":     "read",
+	"ListUserGroupIDsForUser":       "read",
+	"ListUserSSHKeys":               "read",
+	"GetRole":                       "read",
+	"GetRoleByName":                 "read",
+	"ListRoles":                     "read",
+	"CountRoles":                    "read",
+	"CountRoleHolders":              "read",
+	"GetIdentityProvider":           "read",
+	"GetIdentityProviderBySlug":     "read",
+	"ListIdentityProviders":         "read",
+	"ListEnabledIdentityProviders":  "read",
+	"CountIdentityProviders":        "read",
+	"GetIdentityLink":               "read",
+	"ListIdentityLinksForUser":      "read",
+	"IsTokenRevoked":                "read",
+	"GetServerSettings":             "read",
+	"CountLiveBootstrapAdminTokens": "read",
 }
 
 // forbiddenExports are the shapes that would hand a caller a generic

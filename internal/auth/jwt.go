@@ -2,6 +2,7 @@
 package auth
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -11,16 +12,28 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// TokenType distinguishes between access and refresh tokens.
+// TokenType distinguishes an access token from a refresh token. The
+// type is part of the claims, so a refresh token presented as a bearer
+// credential is rejected by the type check rather than admitted because
+// its signature happens to verify.
 type TokenType string
 
 const (
-	TokenTypeAccess        TokenType = "access"
-	TokenTypeRefresh       TokenType = "refresh"
-	TokenTypeTOTPChallenge TokenType = "totp_challenge"
+	TokenTypeAccess  TokenType = "access"
+	TokenTypeRefresh TokenType = "refresh"
 )
 
-// Claims represents the JWT claims for user authentication.
+// SigningAlgorithm is the one algorithm session tokens are signed with.
+// Ed25519 is also the CA and leaf certificate algorithm, so the
+// deployment has exactly one signature primitive to reason about.
+var SigningAlgorithm = jwt.SigningMethodEdDSA
+
+// ErrNoSigningKey is returned when a manager is constructed without
+// usable key material. Minting or verifying without a key would either
+// panic or accept anything, so both fail closed here.
+var ErrNoSigningKey = errors.New("auth: no Ed25519 session signing key")
+
+// Claims are the session-token claims.
 type Claims struct {
 	jwt.RegisteredClaims
 	UserID         string        `json:"uid"`
@@ -31,9 +44,13 @@ type Claims struct {
 	SessionVersion int32         `json:"sv,omitempty"`
 }
 
-// JWTConfig holds JWT configuration.
+// JWTConfig holds the session-token configuration.
 type JWTConfig struct {
-	Secret             []byte
+	// PrivateKey signs. PublicKey verifies; it is derived from
+	// PrivateKey when left nil.
+	PrivateKey ed25519.PrivateKey
+	PublicKey  ed25519.PublicKey
+
 	AccessTokenExpiry  time.Duration
 	RefreshTokenExpiry time.Duration
 	Issuer             string
@@ -42,61 +59,93 @@ type JWTConfig struct {
 	Now func() time.Time
 }
 
-// JWTManager handles JWT token generation and validation.
+// JWTManager mints and validates session tokens.
 type JWTManager struct {
 	config JWTConfig
 }
 
-// NewJWTManager creates a new JWT manager.
+// Session-token lifetimes.
 //
-// AccessTokenExpiry defaults to 5 minutes (audit F-01 follow-up).
-// The shorter window bounds permission-revocation staleness: when an
-// admin revokes a user's permissions or disables their account, the
-// existing access token continues to authorise the embedded
-// permissions until it expires. 15 min was the prior default; 5 min
-// is the SOC2-compatible upper bound for "access propagation" without
-// needing a real-time revocation deny-list. Silent refresh on the
-// client side keeps the user experience unchanged.
+// The access token carries the caller's permission set, so its lifetime
+// bounds how long a revoked permission keeps working. Five minutes is
+// short enough that no separate access-token deny-list is needed.
 //
-// RefreshTokenExpiry stays at 7 days — the refresh path consults the
-// session-version table on every call, so revocation propagates to
-// every refresh within the same window regardless of access-token
-// TTL.
-func NewJWTManager(config JWTConfig) *JWTManager {
+// The refresh token lives far longer, but every refresh re-reads the
+// subject's session_version, disabled flag and permissions from the
+// database, so a revocation propagates on the next refresh regardless.
+const (
+	DefaultAccessTokenExpiry  = 5 * time.Minute
+	DefaultRefreshTokenExpiry = 7 * 24 * time.Hour
+	// DefaultIssuer is the `iss` claim; validation requires it.
+	DefaultIssuer = "power-manage"
+)
+
+// NewJWTManager creates a session-token manager. It refuses to build
+// one without a usable Ed25519 private key: a manager with no key
+// could neither sign nor verify, and returning one would push the
+// failure to the first request instead of to startup.
+func NewJWTManager(config JWTConfig) (*JWTManager, error) {
+	if len(config.PrivateKey) != ed25519.PrivateKeySize {
+		return nil, ErrNoSigningKey
+	}
+	if config.PublicKey == nil {
+		pub, ok := config.PrivateKey.Public().(ed25519.PublicKey)
+		if !ok {
+			return nil, ErrNoSigningKey
+		}
+		config.PublicKey = pub
+	}
 	if config.AccessTokenExpiry == 0 {
-		config.AccessTokenExpiry = 5 * time.Minute
+		config.AccessTokenExpiry = DefaultAccessTokenExpiry
 	}
 	if config.RefreshTokenExpiry == 0 {
-		config.RefreshTokenExpiry = 7 * 24 * time.Hour
+		config.RefreshTokenExpiry = DefaultRefreshTokenExpiry
 	}
 	if config.Issuer == "" {
-		config.Issuer = "power-manage"
+		config.Issuer = DefaultIssuer
 	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
-	return &JWTManager{config: config}
+	return &JWTManager{config: config}, nil
 }
 
-// TokenPair represents an access/refresh token pair.
+// GenerateSessionKey mints a fresh Ed25519 session-signing key.
+func GenerateSessionKey() (ed25519.PublicKey, ed25519.PrivateKey, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate session signing key: %w", err)
+	}
+	return pub, priv, nil
+}
+
+// TokenPair is an access/refresh token pair.
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    time.Time
 }
 
-// GenerateTokens creates a new access/refresh token pair.
-// Permissions and scoped grants are only embedded in the access token,
-// not the refresh token.
+// AccessTokenTTL reports the configured access-token lifetime.
+func (m *JWTManager) AccessTokenTTL() time.Duration { return m.config.AccessTokenExpiry }
+
+// GenerateTokens mints an access/refresh pair for a subject.
+//
+// Permissions and scoped grants ride only on the access token: the
+// refresh token is an identity assertion, and the authority it produces
+// is resolved from the database at refresh time.
 func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, scopedGrants []ScopedGrant, sessionVersion int32) (*TokenPair, error) {
 	now := m.config.Now()
 	accessExpiry := now.Add(m.config.AccessTokenExpiry)
 	entropy := ulid.Monotonic(rand.Reader, 0)
 
-	accessJTI := ulid.MustNew(ulid.Timestamp(now), entropy).String()
+	accessJTI, err := ulid.New(ulid.Timestamp(now), entropy)
+	if err != nil {
+		return nil, fmt.Errorf("mint access token id: %w", err)
+	}
 	accessClaims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        accessJTI,
+			ID:        accessJTI.String(),
 			Issuer:    m.config.Issuer,
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(accessExpiry),
@@ -109,17 +158,18 @@ func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, 
 		TokenType:      TokenTypeAccess,
 		SessionVersion: sessionVersion,
 	}
-
-	accessToken := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims)
-	accessTokenString, err := accessToken.SignedString(m.config.Secret)
+	accessToken, err := jwt.NewWithClaims(SigningAlgorithm, accessClaims).SignedString(m.config.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("sign access token: %w", err)
 	}
 
-	refreshJTI := ulid.MustNew(ulid.Timestamp(now), entropy).String()
+	refreshJTI, err := ulid.New(ulid.Timestamp(now), entropy)
+	if err != nil {
+		return nil, fmt.Errorf("mint refresh token id: %w", err)
+	}
 	refreshClaims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        refreshJTI,
+			ID:        refreshJTI.String(),
 			Issuer:    m.config.Issuer,
 			Subject:   userID,
 			ExpiresAt: jwt.NewNumericDate(now.Add(m.config.RefreshTokenExpiry)),
@@ -130,62 +180,41 @@ func (m *JWTManager) GenerateTokens(userID, email string, permissions []string, 
 		TokenType:      TokenTypeRefresh,
 		SessionVersion: sessionVersion,
 	}
-
-	refreshToken := jwt.NewWithClaims(jwt.SigningMethodHS256, refreshClaims)
-	refreshTokenString, err := refreshToken.SignedString(m.config.Secret)
+	refreshToken, err := jwt.NewWithClaims(SigningAlgorithm, refreshClaims).SignedString(m.config.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("sign refresh token: %w", err)
 	}
 
 	return &TokenPair{
-		AccessToken:  accessTokenString,
-		RefreshToken: refreshTokenString,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
 		ExpiresAt:    accessExpiry,
 	}, nil
 }
 
-// GenerateTOTPChallenge creates a short-lived JWT (5 minutes) for TOTP verification during login.
-func (m *JWTManager) GenerateTOTPChallenge(userID, email string, sessionVersion int32) (string, error) {
-	now := m.config.Now()
-	entropy := ulid.Monotonic(rand.Reader, 0)
-	jti := ulid.MustNew(ulid.Timestamp(now), entropy).String()
-
-	claims := &Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			ID:        jti,
-			Issuer:    m.config.Issuer,
-			Subject:   userID,
-			ExpiresAt: jwt.NewNumericDate(now.Add(5 * time.Minute)),
-			IssuedAt:  jwt.NewNumericDate(now),
-		},
-		UserID:         userID,
-		Email:          email,
-		TokenType:      TokenTypeTOTPChallenge,
-		SessionVersion: sessionVersion,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenString, err := token.SignedString(m.config.Secret)
-	if err != nil {
-		return "", fmt.Errorf("sign TOTP challenge token: %w", err)
-	}
-	return tokenString, nil
-}
-
-// ValidateToken validates a JWT token and returns the claims.
+// ValidateToken parses and verifies a session token of the expected
+// type.
+//
+// The signing method is pinned to EdDSA and the key is the Ed25519
+// public key, so neither an algorithm substitution ("none", or an HMAC
+// header verified against the public key as a shared secret) nor a
+// token signed by another key can validate. Issuer and expiry are
+// required.
 func (m *JWTManager) ValidateToken(tokenString string, expectedType TokenType) (*Claims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		// Pin the algorithm to HS256 (audit F-14). Accepting any
-		// HMAC family lets an attacker forge a token under HS384 /
-		// HS512 if the shared secret length supports it — issuance
-		// always uses HS256 (jwt.SigningMethodHS256 in GenerateAccessToken
-		// / GenerateRefreshToken / TOTP challenge), so anything else
-		// is by definition forged.
-		if token.Method != jwt.SigningMethodHS256 {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return m.config.Secret, nil
-	})
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		&Claims{},
+		func(t *jwt.Token) (any, error) {
+			if t.Method != jwt.SigningMethod(SigningAlgorithm) {
+				return nil, fmt.Errorf("unexpected signing method %q", t.Method.Alg())
+			}
+			return m.config.PublicKey, nil
+		},
+		jwt.WithValidMethods([]string{SigningAlgorithm.Alg()}),
+		jwt.WithIssuer(m.config.Issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithTimeFunc(m.config.Now),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("parse token: %w", err)
 	}
@@ -194,32 +223,37 @@ func (m *JWTManager) ValidateToken(tokenString string, expectedType TokenType) (
 	if !ok || !token.Valid {
 		return nil, errors.New("invalid token")
 	}
-
 	if claims.TokenType != expectedType {
 		return nil, fmt.Errorf("unexpected token type: expected %s, got %s", expectedType, claims.TokenType)
 	}
-
+	if claims.UserID == "" {
+		return nil, errors.New("token carries no subject")
+	}
 	return claims, nil
 }
 
-// RefreshResult contains the parsed refresh claims and the old refresh token's JTI for revocation.
-// The caller is responsible for resolving fresh permissions from DB and calling GenerateTokens.
+// RefreshResult carries the validated refresh claims plus the old
+// token's identity, which the caller revokes before minting the
+// replacement.
 type RefreshResult struct {
 	Claims *Claims
 	OldJTI string
 	OldExp time.Time
 }
 
-// ValidateRefreshToken validates a refresh token, checks revocation, and returns its claims.
-// The caller should then resolve fresh permissions from DB and generate new tokens.
+// ValidateRefreshToken validates a refresh token and checks it against
+// the revocation list. isRevoked may be nil only in tests that do not
+// exercise revocation; a nil check in production would make rotation
+// replayable.
 func (m *JWTManager) ValidateRefreshToken(refreshTokenString string, isRevoked func(string) (bool, error)) (*RefreshResult, error) {
 	claims, err := m.ValidateToken(refreshTokenString, TokenTypeRefresh)
 	if err != nil {
 		return nil, fmt.Errorf("validate refresh token: %w", err)
 	}
-
-	// Check if this refresh token has been revoked
-	if claims.ID != "" && isRevoked != nil {
+	if claims.ID == "" {
+		return nil, errors.New("refresh token carries no id")
+	}
+	if isRevoked != nil {
 		revoked, err := isRevoked(claims.ID)
 		if err != nil {
 			return nil, fmt.Errorf("check token revocation: %w", err)
@@ -228,10 +262,9 @@ func (m *JWTManager) ValidateRefreshToken(refreshTokenString string, isRevoked f
 			return nil, errors.New("refresh token has been revoked")
 		}
 	}
-
-	return &RefreshResult{
-		Claims: claims,
-		OldJTI: claims.ID,
-		OldExp: claims.ExpiresAt.Time,
-	}, nil
+	var exp time.Time
+	if claims.ExpiresAt != nil {
+		exp = claims.ExpiresAt.Time
+	}
+	return &RefreshResult{Claims: claims, OldJTI: claims.ID, OldExp: exp}, nil
 }

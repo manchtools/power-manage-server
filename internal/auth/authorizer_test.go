@@ -1,216 +1,140 @@
-package auth
+package auth_test
 
 import (
+	"context"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/manchtools/power-manage/server/internal/auth"
 )
 
-// ============================================================================
-// Permission-based user access
-// ============================================================================
+const (
+	subjectA = "01J0000000000000000000000A"
+	subjectB = "01J0000000000000000000000B"
+)
 
-// TestAuthorize_UpdateUserLinuxUsername_AdminOnly pins the #354 fix at the
-// authorization layer: a stock User must NOT be authorized for
-// UpdateUserLinuxUsername, while an admin must be. The interceptor invokes
-// Authorize with an EMPTY ResourceID (it never extracts the target id), so a
-// :self grant would short-circuit to allowed here — which is exactly how the
-// bug let any user rewrite any user's linux_username. The fix removes the
-// :self variant, so the stock User role no longer authorizes the action.
-func TestAuthorize_UpdateUserLinuxUsername_AdminOnly(t *testing.T) {
-	// Stock User: denied (no linux_username permission of any kind).
-	deniedUser := Authorize(AuthzInput{
-		Permissions: DefaultUserPermissions(),
-		SubjectID:   "user-1",
-		Action:      "UpdateUserLinuxUsername",
-		ResourceID:  "", // interceptor shape: target id not threaded in
-	})
-	assert.False(t, deniedUser, "stock User must not be authorized for UpdateUserLinuxUsername")
-
-	// The :self variant being removed from the registry is asserted in
-	// reconcile_test (TestUpdateUserLinuxUsername_IsAdminOnly); here we pin the
-	// authorization outcome for the stock role and the admin.
-
-	// Admin: allowed via the base TargetUser permission.
-	allowedAdmin := Authorize(AuthzInput{
-		Permissions: []string{"UpdateUserLinuxUsername"},
-		SubjectID:   "admin-1",
-		Action:      "UpdateUserLinuxUsername",
-	})
-	assert.True(t, allowedAdmin, "an admin holding UpdateUserLinuxUsername must be authorized")
+func TestAuthorize_AdmitsTheUnrestrictedTier(t *testing.T) {
+	t.Parallel()
+	assert.True(t, auth.Authorize(auth.AuthzInput{
+		Permissions: []string{"GetUser"}, SubjectID: subjectA, SelfEligible: true,
+		Action: "GetUser", ResourceID: subjectB,
+	}), "the unrestricted permission reaches any target")
 }
 
-func TestAuthorize_UnrestrictedPermission(t *testing.T) {
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"CreateUser", "ListUsers", "DeleteUser"},
-		SubjectID:   "user-1",
-		Action:      "CreateUser",
-	})
-	assert.True(t, allowed)
-}
-
-func TestAuthorize_UnrestrictedPermissionDenied(t *testing.T) {
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"ListUsers"},
-		SubjectID:   "user-1",
-		Action:      "CreateUser",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_AdminPermissionsAllowAll(t *testing.T) {
-	adminPerms := AdminPermissions()
-	actions := []string{
-		"CreateUser", "GetUser", "ListUsers", "DeleteUser",
-		"ListDevices", "GetDevice", "DeleteDevice",
-		"CreateToken", "DeleteToken",
-		"CreateAction", "DispatchAction",
-		"CreateDefinition", "DeleteDefinition",
-		"CreateStaticDeviceGroup", "CreateDynamicDeviceGroup", "DeleteDeviceGroup",
-		"CreateAssignment", "DeleteAssignment",
-		"ListAuditEvents",
-		"CreateRole", "UpdateRole", "DeleteRole",
+func TestAuthorize_SelfTierIsConfinedToTheActor(t *testing.T) {
+	t.Parallel()
+	base := auth.AuthzInput{
+		Permissions: []string{"GetUser:self"}, SubjectID: subjectA, SelfEligible: true, Action: "GetUser",
 	}
 
-	for _, action := range actions {
-		allowed := Authorize(AuthzInput{
-			Permissions: adminPerms,
-			SubjectID:   "admin-1",
-			Action:      action,
+	own := base
+	own.ResourceID = subjectA
+	assert.True(t, auth.Authorize(own))
+
+	other := base
+	other.ResourceID = subjectB
+	assert.False(t, auth.Authorize(other), "the self tier does not reach another subject")
+
+	// No identified resource is a creation whose ownership the handler
+	// pins; the coarse gate admits it so the handler can decide.
+	unidentified := base
+	assert.True(t, auth.Authorize(unidentified))
+}
+
+// A principal that cannot own resources can never take the self path,
+// even asked about its own id.
+func TestAuthorize_SelfTierRefusesAPrincipalThatOwnsNothing(t *testing.T) {
+	t.Parallel()
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions:  []string{"GetUser:self"},
+		SubjectID:    auth.BootstrapPrincipalID,
+		SelfEligible: false,
+		Action:       "GetUser",
+		ResourceID:   auth.BootstrapPrincipalID,
+	}))
+
+	// And with no identified resource either: the creation short-cut is
+	// still a self grant.
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions:  []string{"CreateToken:self"},
+		SubjectID:    auth.BootstrapPrincipalID,
+		SelfEligible: false,
+		Action:       "CreateToken",
+	}))
+}
+
+func TestAuthorize_AssignedTierDefersToTheOwnerFilter(t *testing.T) {
+	t.Parallel()
+	assert.True(t, auth.Authorize(auth.AuthzInput{
+		Permissions: []string{"ListDevices:assigned"}, SubjectID: subjectA, SelfEligible: true,
+		Action: "ListDevices",
+	}), "the assigned tier admits the request so the row filter can decide what is visible")
+}
+
+func TestAuthorize_RefusesWhatTheActorDoesNotHold(t *testing.T) {
+	t.Parallel()
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions: []string{"ListUsers"}, SubjectID: subjectA, SelfEligible: true, Action: "DeleteUser",
+	}))
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions: nil, SubjectID: subjectA, SelfEligible: true, Action: "ListUsers",
+	}))
+}
+
+// A permission is matched exactly: a scoped variant must not satisfy a
+// lookup for a different action that shares a prefix.
+func TestAuthorize_MatchesPermissionKeysExactly(t *testing.T) {
+	t.Parallel()
+	assert.False(t, auth.Authorize(auth.AuthzInput{
+		Permissions: []string{"GetUserGroup"}, SubjectID: subjectA, SelfEligible: true, Action: "GetUser",
+	}), "GetUserGroup is not GetUser")
+}
+
+func TestCanOwnResources_RequiresAUserPrincipalWithAULID(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		user *auth.UserContext
+		want bool
+	}{
+		{"an ordinary subject", &auth.UserContext{ID: subjectA, Kind: auth.PrincipalUser}, true},
+		{"the reserved principal", &auth.UserContext{ID: auth.BootstrapPrincipalID, Kind: auth.PrincipalBootstrapAdmin}, false},
+		{"a user principal with a non-ULID id", &auth.UserContext{ID: "not-a-ulid", Kind: auth.PrincipalUser}, false},
+		{"a user principal with no id", &auth.UserContext{Kind: auth.PrincipalUser}, false},
+		{"nothing at all", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, tc.user.CanOwnResources())
 		})
-		assert.True(t, allowed, "admin should be allowed %s", action)
 	}
 }
 
-func TestAuthorize_SelfScopeAllowed(t *testing.T) {
-	allowed := Authorize(AuthzInput{
+func TestEnforceSelfScope_MirrorsTheAuthorizerTiers(t *testing.T) {
+	t.Parallel()
+
+	unauthenticated := context.Background()
+	err := auth.EnforceSelfScope(unauthenticated, "GetUser", subjectA)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+
+	selfOnly := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: subjectA, Kind: auth.PrincipalUser, Permissions: []string{"GetUser:self"},
+	})
+	assert.NoError(t, auth.EnforceSelfScope(selfOnly, "GetUser", subjectA))
+	err = auth.EnforceSelfScope(selfOnly, "GetUser", subjectB)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+
+	reserved := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: auth.BootstrapPrincipalID, Kind: auth.PrincipalBootstrapAdmin,
 		Permissions: []string{"GetUser:self"},
-		SubjectID:   "user-1",
-		Action:      "GetUser",
-		ResourceID:  "user-1",
 	})
-	assert.True(t, allowed)
-}
-
-func TestAuthorize_SelfScopeDeniedForOtherUser(t *testing.T) {
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"GetUser:self"},
-		SubjectID:   "user-1",
-		Action:      "GetUser",
-		ResourceID:  "user-2",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_SelfScopeUpdatePassword(t *testing.T) {
-	// Can update own password
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"UpdateUserPassword:self"},
-		SubjectID:   "user-1",
-		Action:      "UpdateUserPassword",
-		ResourceID:  "user-1",
-	})
-	assert.True(t, allowed)
-
-	// Cannot update other's password
-	allowed = Authorize(AuthzInput{
-		Permissions: []string{"UpdateUserPassword:self"},
-		SubjectID:   "user-1",
-		Action:      "UpdateUserPassword",
-		ResourceID:  "user-2",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_SelfScopeNoResource(t *testing.T) {
-	// Self-scope without resource_id (creation actions) should be allowed
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"CreateToken:self"},
-		SubjectID:   "user-1",
-		Action:      "CreateToken",
-	})
-	assert.True(t, allowed)
-
-	// But unrestricted CreateToken should not match self-scope
-	allowed = Authorize(AuthzInput{
-		Permissions: []string{"CreateToken:self"},
-		SubjectID:   "user-1",
-		Action:      "DeleteToken",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_AssignedScopeAllowed(t *testing.T) {
-	// Assigned scope just requires the permission; SQL filtering handles the rest
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{"ListDevices:assigned"},
-		SubjectID:   "user-1",
-		Action:      "ListDevices",
-	})
-	assert.True(t, allowed)
-}
-
-func TestAuthorize_NoPermissionsDenied(t *testing.T) {
-	allowed := Authorize(AuthzInput{
-		Permissions: []string{},
-		SubjectID:   "user-1",
-		Action:      "CreateUser",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_NilPermissionsDenied(t *testing.T) {
-	allowed := Authorize(AuthzInput{
-		SubjectID: "user-1",
-		Action:    "CreateUser",
-	})
-	assert.False(t, allowed)
-}
-
-func TestAuthorize_DefaultUserPermissions(t *testing.T) {
-	userPerms := DefaultUserPermissions()
-
-	// GetCurrentUser should work (unrestricted in user perms)
-	assert.True(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "GetCurrentUser",
-	}))
-
-	// GetUser:self should work for own user
-	assert.True(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "GetUser",
-		ResourceID:  "user-1",
-	}))
-
-	// GetUser:self should NOT work for other user
-	assert.False(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "GetUser",
-		ResourceID:  "user-2",
-	}))
-
-	// CreateUser should be denied
-	assert.False(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "CreateUser",
-	}))
-
-	// ListDevices:assigned should work
-	assert.True(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "ListDevices",
-	}))
-
-	// DeleteDevice should be denied
-	assert.False(t, Authorize(AuthzInput{
-		Permissions: userPerms,
-		SubjectID:   "user-1",
-		Action:      "DeleteDevice",
-	}))
+	err = auth.EnforceSelfScope(reserved, "GetUser", auth.BootstrapPrincipalID)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err),
+		"a principal that is no subject cannot be its own resource")
 }

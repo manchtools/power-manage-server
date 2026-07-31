@@ -40,13 +40,93 @@ type PermissionInfo struct {
 	// TargetKind classifies what kind of target this permission
 	// acts on, used by the role-assignment handler to gate scoped
 	// grants. TargetUnspecified (zero value) means the permission
-	// is not scopable. server #7.
+	// is not scopable.
 	TargetKind PermissionTargetKind
+	// PrivilegeGranting marks a permission whose holder can create or
+	// widen authority — define a role, attach a role to a subject,
+	// place a subject in a group that carries roles, mint a subject,
+	// or configure an identity source that mints subjects.
+	//
+	// Such a permission is GLOBAL-ONLY: attaching a scope to a role
+	// containing one is refused. A scope would be a lie, because the
+	// authority the holder mints inside their scope is not itself
+	// confined to that scope — a scope-confined admin who may add a
+	// user to a role-bearing group can add themselves and inherit
+	// whatever that group carries.
+	//
+	// The narrower question "does this permission's EFFECT stay inside
+	// the scope" is what keeps device-side privileges (terminal sudo
+	// policy, SSH settings, provisioning) scopable: they act only on
+	// the members of the scope they were granted for.
+	PrivilegeGranting bool
+}
+
+// privilegeGrantingKeys is the set of permissions that can create or
+// widen authority. Listed once, applied to the registry below, so the
+// classification is auditable in a single place rather than spread
+// across a hundred struct literals.
+var privilegeGrantingKeys = map[string]bool{
+	// Defining what a role may do, and who holds it.
+	"CreateRole":              true,
+	"UpdateRole":              true,
+	"DeleteRole":              true,
+	"AssignRoleToUser":        true,
+	"RevokeRoleFromUser":      true,
+	"AssignRoleToUserGroup":   true,
+	"RevokeRoleFromUserGroup": true,
+	"AssignRoleScope":         true,
+	// Group membership confers the group's roles, so placing a subject
+	// in a group is a role grant by another name.
+	"AddUserToGroup":      true,
+	"RemoveUserFromGroup": true,
+	// Minting and re-enabling subjects.
+	"CreateUser":      true,
+	"SetUserDisabled": true,
+	// Identity sources that mint subjects and map external groups onto
+	// local ones.
+	"CreateIdentityProvider": true,
+	"UpdateIdentityProvider": true,
+	"DeleteIdentityProvider": true,
+	"EnableSCIM":             true,
+	"DisableSCIM":            true,
+	"RotateSCIMToken":        true,
+	// Deployment-wide switches for provisioning and SSH.
+	"UpdateServerSettings": true,
 }
 
 // AllPermissions returns every available permission with metadata.
+//
+// The registry literals below carry key, group, description and target
+// kind; the privilege-granting flag is applied here from
+// privilegeGrantingKeys so that classification lives in exactly one
+// readable place.
 func AllPermissions() []PermissionInfo {
-	return []PermissionInfo{
+	raw := registryPermissions()
+	perms := make([]PermissionInfo, len(raw))
+	for i, e := range raw {
+		perms[i] = PermissionInfo{
+			Key:               e.key,
+			Group:             e.group,
+			Description:       e.description,
+			TargetKind:        e.targetKind,
+			PrivilegeGranting: privilegeGrantingKeys[e.key],
+		}
+	}
+	return perms
+}
+
+// permEntry is one registry line. Positional fields: key, UI group,
+// description, target kind.
+type permEntry struct {
+	key         string
+	group       string
+	description string
+	targetKind  PermissionTargetKind
+}
+
+// registryPermissions is the raw registry.
+func registryPermissions() []permEntry {
+	return []permEntry{
 		// Users
 		{"GetCurrentUser", "Users", "View own profile", TargetUnspecified},
 		{"GetUser", "Users", "View any user", TargetUser},
@@ -55,9 +135,9 @@ func AllPermissions() []PermissionInfo {
 		{"CreateUser", "Users", "Create users", TargetUnspecified},
 		{"UpdateUserEmail", "Users", "Change any user's email", TargetUser},
 		{"UpdateUserEmail:self", "Users", "Change own email", TargetUnspecified},
-		{"UpdateUserPassword", "Users", "Change any user's password", TargetUser},
-		{"UpdateUserPassword:self", "Users", "Change own password", TargetUnspecified},
-		{"SetUserDisabled", "Users", "Disable/enable users", TargetUser},
+		// Re-enabling a subject restores every authority it held, so
+		// this is privilege-granting and stays global-only.
+		{"SetUserDisabled", "Users", "Disable/enable users", TargetUnspecified},
 		{"UpdateUserProfile", "Users", "Update any user's profile", TargetUser},
 		{"UpdateUserProfile:self", "Users", "Update own profile", TargetUnspecified},
 		{"DeleteUser", "Users", "Delete users", TargetUser},
@@ -217,13 +297,6 @@ func AllPermissions() []PermissionInfo {
 		{"GetDeviceLuksKeys", "LUKS", "View LUKS keys", TargetUnspecified},
 		{"CreateLuksToken", "LUKS", "Create LUKS recovery token", TargetUnspecified},
 		{"RevokeLuksDeviceKey", "LUKS", "Revoke LUKS device key", TargetUnspecified},
-		// TOTP
-		{"SetupTOTP", "Authentication", "Set up TOTP 2FA", TargetUnspecified},
-		{"VerifyTOTP", "Authentication", "Verify TOTP setup", TargetUnspecified},
-		{"DisableTOTP", "Authentication", "Disable TOTP 2FA", TargetUnspecified},
-		{"AdminDisableUserTOTP", "Users", "Disable TOTP for any user", TargetUser},
-		{"GetTOTPStatus", "Authentication", "View TOTP status", TargetUnspecified},
-		{"RegenerateBackupCodes", "Authentication", "Regenerate backup codes", TargetUnspecified},
 		// Roles — org-tier. AssignRoleScope grants the authority to
 		// attach a scope to a role grant (paired-or-neither
 		// scope_kind+scope_id). server #7.
@@ -249,8 +322,10 @@ func AllPermissions() []PermissionInfo {
 		{"ListUserGroups", "User Groups", "List user groups", TargetUser},
 		{"UpdateUserGroup", "User Groups", "Update user groups", TargetUser},
 		{"DeleteUserGroup", "User Groups", "Delete user groups", TargetUser},
-		{"AddUserToGroup", "User Groups", "Add users to groups", TargetUser},
-		{"RemoveUserFromGroup", "User Groups", "Remove users from groups", TargetUser},
+		// Membership confers the group's roles, so these are privilege-
+		// granting and therefore global-only, not user-group scopable.
+		{"AddUserToGroup", "User Groups", "Add users to groups", TargetUnspecified},
+		{"RemoveUserFromGroup", "User Groups", "Remove users from groups", TargetUnspecified},
 		{"AssignRoleToUserGroup", "User Groups", "Assign roles to user groups", TargetUnspecified},
 		{"RevokeRoleFromUserGroup", "User Groups", "Revoke roles from user groups", TargetUnspecified},
 		{"ListUserGroupsForUser", "User Groups", "List user groups for a user", TargetUser},
@@ -309,13 +384,7 @@ func DefaultUserPermissions() []string {
 		"GetCurrentUser",
 		"GetUser:self",
 		"UpdateUserEmail:self",
-		"UpdateUserPassword:self",
 		"UpdateUserProfile:self",
-		"SetupTOTP",
-		"VerifyTOTP",
-		"DisableTOTP",
-		"GetTOTPStatus",
-		"RegenerateBackupCodes",
 		"ListDevices:assigned",
 		"GetDevice:assigned",
 		"CreateToken:self",
@@ -354,7 +423,30 @@ var permTargetKinds = func() map[string]PermissionTargetKind {
 
 // TargetKindFor returns the target kind of a permission key. An unknown
 // key (or the zero value) is TargetUnspecified — not scopable — which is
-// the safe default for the self-discovering scopability check (#7 S5).
+// the safe default for the self-discovering scopability check.
 func TargetKindFor(key string) PermissionTargetKind {
 	return permTargetKinds[key]
+}
+
+// IsPrivilegeGranting reports whether a permission key can create or
+// widen authority and is therefore global-only. An unknown key is
+// treated as privilege-granting: refusing to scope something the
+// registry cannot classify is the fail-closed answer.
+func IsPrivilegeGranting(key string) bool {
+	if privilegeGrantingKeys[key] {
+		return true
+	}
+	return !ValidPermissionKeys()[key]
+}
+
+// FirstPrivilegeGranting returns the first permission in perms that is
+// global-only, and whether one was found. The role-assignment handler
+// uses it to refuse a scoped grant of a role that could mint authority.
+func FirstPrivilegeGranting(perms []string) (string, bool) {
+	for _, p := range perms {
+		if IsPrivilegeGranting(p) {
+			return p, true
+		}
+	}
+	return "", false
 }

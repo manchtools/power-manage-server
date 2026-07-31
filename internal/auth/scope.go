@@ -229,7 +229,7 @@ func EnforceUnscopedGrantAuthority(ctx context.Context) error {
 }
 
 // EnforceUserScopeOrSelf authorizes a user-target action across every grant
-// tier, for handlers that previously used EnforceSelfScope:
+// tier:
 //   - caller holds `permission` as the base — unrestricted OR user-group-scoped:
 //     defer to EnforceUserScope (global ⇒ any target; scoped ⇒ only targets in a
 //     covered user group). The base appears in the flat permission set for BOTH

@@ -10,6 +10,27 @@ import (
 	"time"
 )
 
+const bumpUserSessionVersion = `-- name: BumpUserSessionVersion :one
+UPDATE users SET session_version = session_version + 1, updated_at = $2
+WHERE id = $1 AND is_deleted = FALSE
+RETURNING session_version
+`
+
+type BumpUserSessionVersionParams struct {
+	ID        string     `json:"id"`
+	UpdatedAt *time.Time `json:"updated_at"`
+}
+
+// Any change to what a subject may do invalidates the sessions minted
+// under the old authority. The new value is returned so the caller can
+// record the transition as audit evidence.
+func (q *Queries) BumpUserSessionVersion(ctx context.Context, arg BumpUserSessionVersionParams) (int32, error) {
+	row := q.db.QueryRow(ctx, bumpUserSessionVersion, arg.ID, arg.UpdatedAt)
+	var session_version int32
+	err := row.Scan(&session_version)
+	return session_version, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE is_deleted = FALSE
 `
@@ -44,6 +65,22 @@ func (q *Queries) GetNextLinuxUID(ctx context.Context) (int32, error) {
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const getServerSettings = `-- name: GetServerSettings :one
+SELECT id, user_provisioning_enabled, ssh_access_for_all, updated_at FROM server_settings WHERE id = 'global'
+`
+
+func (q *Queries) GetServerSettings(ctx context.Context) (ServerSetting, error) {
+	row := q.db.QueryRow(ctx, getServerSettings)
+	var i ServerSetting
+	err := row.Scan(
+		&i.ID,
+		&i.UserProvisioningEnabled,
+		&i.SshAccessForAll,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getUser = `-- name: GetUser :one
@@ -118,17 +155,50 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const getUserSessionState = `-- name: GetUserSessionState :one
+SELECT id, disabled, is_deleted, session_version FROM users WHERE id = $1
+`
+
+type GetUserSessionStateRow struct {
+	ID             string `json:"id"`
+	Disabled       bool   `json:"disabled"`
+	IsDeleted      bool   `json:"is_deleted"`
+	SessionVersion int32  `json:"session_version"`
+}
+
+// Deliberately unfiltered by is_deleted: the refresh path must be able
+// to tell a retired subject from an unknown one and refuse both.
+func (q *Queries) GetUserSessionState(ctx context.Context, id string) (GetUserSessionStateRow, error) {
+	row := q.db.QueryRow(ctx, getUserSessionState, id)
+	var i GetUserSessionStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.Disabled,
+		&i.IsDeleted,
+		&i.SessionVersion,
+	)
+	return i, err
+}
+
 const insertUser = `-- name: InsertUser :one
-INSERT INTO users (id, email, display_name, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $4)
+INSERT INTO users (
+    id, email, display_name, given_name, family_name, preferred_username,
+    linux_username, linux_uid, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
 RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
 `
 
 type InsertUserParams struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	DisplayName string     `json:"display_name"`
-	CreatedAt   *time.Time `json:"created_at"`
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	DisplayName       string     `json:"display_name"`
+	GivenName         string     `json:"given_name"`
+	FamilyName        string     `json:"family_name"`
+	PreferredUsername string     `json:"preferred_username"`
+	LinuxUsername     string     `json:"linux_username"`
+	LinuxUid          int32      `json:"linux_uid"`
+	CreatedAt         *time.Time `json:"created_at"`
 }
 
 // A user carries no authorization of its own: what the subject may do
@@ -138,6 +208,11 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (User, e
 		arg.ID,
 		arg.Email,
 		arg.DisplayName,
+		arg.GivenName,
+		arg.FamilyName,
+		arg.PreferredUsername,
+		arg.LinuxUsername,
+		arg.LinuxUid,
 		arg.CreatedAt,
 	)
 	var i User
@@ -170,6 +245,66 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) (User, e
 	return i, err
 }
 
+const listUsers = `-- name: ListUsers :many
+SELECT id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv FROM users
+WHERE is_deleted = FALSE AND id > $1
+ORDER BY id
+LIMIT $2
+`
+
+type ListUsersParams struct {
+	ID    string `json:"id"`
+	Limit int32  `json:"limit"`
+}
+
+// Keyset pagination on the ULID primary key: ULIDs sort by mint time,
+// so ordering by id is a stable cursor a concurrent insert cannot
+// shift rows across.
+func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error) {
+	rows, err := q.db.Query(ctx, listUsers, arg.ID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []User{}
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastLoginAt,
+			&i.Disabled,
+			&i.IsDeleted,
+			&i.SessionVersion,
+			&i.DisplayName,
+			&i.GivenName,
+			&i.FamilyName,
+			&i.PreferredUsername,
+			&i.Picture,
+			&i.Locale,
+			&i.LinuxUsername,
+			&i.LinuxUid,
+			&i.SshAccessEnabled,
+			&i.SshAllowPubkey,
+			&i.SshAllowPassword,
+			&i.SystemUserActionID,
+			&i.SystemSshActionID,
+			&i.SystemTtyActionID,
+			&i.UserProvisioningEnabled,
+			&i.SearchTsv,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setUserDisabled = `-- name: SetUserDisabled :execrows
 UPDATE users
 SET disabled = $2, session_version = session_version + 1, updated_at = $3
@@ -192,6 +327,67 @@ func (q *Queries) SetUserDisabled(ctx context.Context, arg SetUserDisabledParams
 	return result.RowsAffected(), nil
 }
 
+const setUserProvisioningEnabled = `-- name: SetUserProvisioningEnabled :one
+UPDATE users SET user_provisioning_enabled = $2, updated_at = $3
+WHERE id = $1 AND is_deleted = FALSE
+RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+`
+
+type SetUserProvisioningEnabledParams struct {
+	ID                      string     `json:"id"`
+	UserProvisioningEnabled bool       `json:"user_provisioning_enabled"`
+	UpdatedAt               *time.Time `json:"updated_at"`
+}
+
+func (q *Queries) SetUserProvisioningEnabled(ctx context.Context, arg SetUserProvisioningEnabledParams) (User, error) {
+	row := q.db.QueryRow(ctx, setUserProvisioningEnabled, arg.ID, arg.UserProvisioningEnabled, arg.UpdatedAt)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.Disabled,
+		&i.IsDeleted,
+		&i.SessionVersion,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.SystemTtyActionID,
+		&i.UserProvisioningEnabled,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const touchUserLastLogin = `-- name: TouchUserLastLogin :execrows
+UPDATE users SET last_login_at = $2, updated_at = $2 WHERE id = $1 AND is_deleted = FALSE
+`
+
+type TouchUserLastLoginParams struct {
+	ID          string     `json:"id"`
+	LastLoginAt *time.Time `json:"last_login_at"`
+}
+
+func (q *Queries) TouchUserLastLogin(ctx context.Context, arg TouchUserLastLoginParams) (int64, error) {
+	result, err := q.db.Exec(ctx, touchUserLastLogin, arg.ID, arg.LastLoginAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const updateUserEmail = `-- name: UpdateUserEmail :execrows
 UPDATE users SET email = $2, updated_at = $3 WHERE id = $1 AND is_deleted = FALSE
 `
@@ -208,4 +404,166 @@ func (q *Queries) UpdateUserEmail(ctx context.Context, arg UpdateUserEmailParams
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const updateUserLinuxUsername = `-- name: UpdateUserLinuxUsername :one
+UPDATE users SET linux_username = $2, updated_at = $3
+WHERE id = $1 AND is_deleted = FALSE
+RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+`
+
+type UpdateUserLinuxUsernameParams struct {
+	ID            string     `json:"id"`
+	LinuxUsername string     `json:"linux_username"`
+	UpdatedAt     *time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserLinuxUsername(ctx context.Context, arg UpdateUserLinuxUsernameParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserLinuxUsername, arg.ID, arg.LinuxUsername, arg.UpdatedAt)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.Disabled,
+		&i.IsDeleted,
+		&i.SessionVersion,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.SystemTtyActionID,
+		&i.UserProvisioningEnabled,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateUserProfile = `-- name: UpdateUserProfile :one
+UPDATE users
+SET display_name = $2,
+    given_name = $3,
+    family_name = $4,
+    preferred_username = $5,
+    picture = $6,
+    locale = $7,
+    updated_at = $8
+WHERE id = $1 AND is_deleted = FALSE
+RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+`
+
+type UpdateUserProfileParams struct {
+	ID                string     `json:"id"`
+	DisplayName       string     `json:"display_name"`
+	GivenName         string     `json:"given_name"`
+	FamilyName        string     `json:"family_name"`
+	PreferredUsername string     `json:"preferred_username"`
+	Picture           string     `json:"picture"`
+	Locale            string     `json:"locale"`
+	UpdatedAt         *time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserProfile,
+		arg.ID,
+		arg.DisplayName,
+		arg.GivenName,
+		arg.FamilyName,
+		arg.PreferredUsername,
+		arg.Picture,
+		arg.Locale,
+		arg.UpdatedAt,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.Disabled,
+		&i.IsDeleted,
+		&i.SessionVersion,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.SystemTtyActionID,
+		&i.UserProvisioningEnabled,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateUserSshSettings = `-- name: UpdateUserSshSettings :one
+UPDATE users
+SET ssh_access_enabled = $2, ssh_allow_pubkey = $3, ssh_allow_password = $4, updated_at = $5
+WHERE id = $1 AND is_deleted = FALSE
+RETURNING id, email, created_at, updated_at, last_login_at, disabled, is_deleted, session_version, display_name, given_name, family_name, preferred_username, picture, locale, linux_username, linux_uid, ssh_access_enabled, ssh_allow_pubkey, ssh_allow_password, system_user_action_id, system_ssh_action_id, system_tty_action_id, user_provisioning_enabled, search_tsv
+`
+
+type UpdateUserSshSettingsParams struct {
+	ID               string     `json:"id"`
+	SshAccessEnabled bool       `json:"ssh_access_enabled"`
+	SshAllowPubkey   bool       `json:"ssh_allow_pubkey"`
+	SshAllowPassword bool       `json:"ssh_allow_password"`
+	UpdatedAt        *time.Time `json:"updated_at"`
+}
+
+func (q *Queries) UpdateUserSshSettings(ctx context.Context, arg UpdateUserSshSettingsParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserSshSettings,
+		arg.ID,
+		arg.SshAccessEnabled,
+		arg.SshAllowPubkey,
+		arg.SshAllowPassword,
+		arg.UpdatedAt,
+	)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.LastLoginAt,
+		&i.Disabled,
+		&i.IsDeleted,
+		&i.SessionVersion,
+		&i.DisplayName,
+		&i.GivenName,
+		&i.FamilyName,
+		&i.PreferredUsername,
+		&i.Picture,
+		&i.Locale,
+		&i.LinuxUsername,
+		&i.LinuxUid,
+		&i.SshAccessEnabled,
+		&i.SshAllowPubkey,
+		&i.SshAllowPassword,
+		&i.SystemUserActionID,
+		&i.SystemSshActionID,
+		&i.SystemTtyActionID,
+		&i.UserProvisioningEnabled,
+		&i.SearchTsv,
+	)
+	return i, err
 }
