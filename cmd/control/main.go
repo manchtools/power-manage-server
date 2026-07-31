@@ -242,6 +242,11 @@ func main() {
 
 	startStaleExecutionExpiry(ctx, st, logger, time.Now)
 
+	// Every agent handshake consults the revocation list, so nothing else ever
+	// removes a row from it. Rows whose certificate has already expired are
+	// inert and stay on that lookup path forever without this.
+	startRevocationSweeper(ctx, st, logger)
+
 	// M1: scheduled projection-drift detection. A post-commit projector
 	// apply that fails after the event commits drifts silently; this tick
 	// surfaces it at ERROR so an operator can rebuild before retention prunes

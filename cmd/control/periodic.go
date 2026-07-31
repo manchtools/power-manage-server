@@ -444,3 +444,35 @@ func expireStaleExecutions(ctx context.Context, st *store.Store, logger *slog.Lo
 		return nil
 	})
 }
+
+// revocationSweepInterval is how often expired revocation rows are dropped.
+//
+// Not configurable: the rows become deletable only once the certificate itself
+// has expired, so nothing observable depends on the cadence — a daily sweep and
+// an hourly one differ only in how long already-inert rows linger. Agent certs
+// are issued for a year, so the table grows by at most one row per revocation
+// per year regardless.
+const revocationSweepInterval = 24 * time.Hour
+
+// startRevocationSweeper drops revocation rows whose certificate has expired.
+//
+// The revocation list is consulted on every agent handshake, so it is a table
+// that only ever grows unless something prunes it. A revoked certificate that
+// has passed its own notAfter is already rejected by expiry — keeping the row
+// buys nothing and costs a lookup forever.
+//
+// Deliberately non-fatal: a failed sweep leaves rows that are redundant, never
+// rows that should have been removed for correctness. Failing the boot over
+// garbage collection would trade a real outage for a cosmetic one.
+func startRevocationSweeper(ctx context.Context, st *store.Store, logger *slog.Logger) {
+	go runPeriodic(ctx, revocationSweepInterval, func() {
+		n, err := st.DeleteExpiredRevocations(ctx)
+		if err != nil {
+			logger.Error("revocation sweep failed", "error", err)
+			return
+		}
+		if n > 0 {
+			logger.Info("swept expired certificate revocations", "deleted", n)
+		}
+	}, true)
+}
