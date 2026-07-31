@@ -13,7 +13,7 @@ This repo is part of a Go workspace. Clone all four repos (`sdk`, `server`, `age
 ```bash
 # Build
 go build ./cmd/control
-go build ./cmd/gateway
+go build ./cmd/indexer
 
 # Run tests
 go test ./...

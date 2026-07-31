@@ -7,9 +7,9 @@
 //
 // -services SELECTS, and selecting is mandatory in practice, because the
 // contract's services are deliberately spread across DIFFERENT processes and
-// listeners: ControlService on control's public listener, InternalService on
-// its mTLS listener, AgentService wherever the agent stream terminates, and
-// DeviceAuthService on the agent's own local enrollment socket. A single global
+// listeners: ControlService on control's public listener, AgentService on
+// control's mTLS agent listener, and DeviceAuthService on the agent's own
+// local enrollment socket. A single global
 // list is therefore not a meaningful expectation for any one listener — it
 // would report the other processes' services as missing, and, worse, could not
 // express the property that actually matters: that a service is NOT reachable
