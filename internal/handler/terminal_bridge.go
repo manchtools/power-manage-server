@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
+	"github.com/manchtools/power-manage/server/internal/terminal"
 
 	"github.com/oklog/ulid/v2"
 )
@@ -49,26 +51,29 @@ type TerminalTokenValidator interface {
 	ValidateTerminalToken(ctx context.Context, sessionID, token string) (*TerminalSession, error)
 }
 
-// TerminalBridgeHandler is the HTTP handler for the gateway's
-// WebSocket terminal endpoint. It validates the session token against
-// the control server, bridges WebSocket frames to/from the agent's
-// bidi stream via the connection manager and terminal session
-// registry, and tees stdin to the audit queue.
+// TerminalBridgeHandler is the HTTP handler for control's /terminal WebSocket
+// endpoint. It redeems the session token against the in-process token store,
+// bridges WebSocket frames to/from the agent's bidi stream via the connection
+// manager and terminal session registry, and tees stdin to the audit queue.
+//
+// There is no gateway identity to assert any more. The audit chunks this bridge
+// enqueues used to carry a gatewayID that the inbox worker bound against the
+// session's device→gateway routing, so a compromised relay could not forge
+// audit bytes for a device live elsewhere. With the relay gone the bridge, the
+// connection manager, and the audit consumer are one process: the device the
+// bytes are attributed to is the one this handler is streaming.
 type TerminalBridgeHandler struct {
 	manager  *connection.Manager
 	sessions *connection.TerminalSessionRegistry
 	tokens   TerminalTokenValidator
 	aqClient *taskqueue.Client
-	// gatewayID self-asserts which gateway is relaying the terminal-stdin
-	// audit chunks this bridge tees to control:inbox. The inbox worker
-	// binds it against the session's device→gateway routing so a
-	// confused/compromised gateway cannot forge audit bytes for a device
-	// live elsewhere. Empty in single-gateway deployments (binding
-	// disabled there, matching the rest of the device-origin pipeline).
-	logger *slog.Logger
+	logger   *slog.Logger
 }
 
-// NewTerminalBridgeHandler constructs a bridge handler. gatewayID is
+// NewTerminalBridgeHandler constructs a bridge handler over the connection
+// manager and session registry the agent stream handler shares, the token
+// validator that redeems the web client's bearer, and the queue client the
+// stdin audit tee enqueues on (nil disables the tee).
 func NewTerminalBridgeHandler(
 	manager *connection.Manager,
 	sessions *connection.TerminalSessionRegistry,
@@ -150,12 +155,34 @@ func (h *TerminalBridgeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	logger := h.logger.With("session_id", sessionID)
 
-	// Validate the token against the control server. This returns
-	// the session metadata (device_id, tty_user, cols, rows, user_id)
-	// or an error if the token is invalid/expired.
+	// Redeem the token. This returns the session metadata (device_id, tty_user,
+	// cols, rows, user_id), or an error saying why not.
+	//
+	// The three outcomes are NOT one outcome. A store that cannot answer is not
+	// a token that is invalid: answering 401 there tells the client its
+	// just-minted token was rejected and that retrying is pointless, when the
+	// session would open the moment the store returns. And ErrTokenMismatch —
+	// the right session with the wrong bearer — is the forgery signal the
+	// terminal package documents as distinguished for the audit log; a sentinel
+	// nothing branches on records nothing.
+	//
+	// What the CLIENT sees stays deliberately coarse: mismatch and not-found
+	// share one 401 and one message, so a bearer probe cannot tell "wrong token
+	// for a live session" from "no such session". Only the log severity differs.
+	// errors.Is is the right recogniser here because internal/terminal produces
+	// these sentinels itself — they are not a driver error in disguise.
 	validated, err := h.tokens.ValidateTerminalToken(r.Context(), sessionID, token)
 	if err != nil {
-		logger.Warn("terminal token validation failed", "error", err)
+		switch {
+		case errors.Is(err, terminal.ErrTokenMismatch):
+			logger.Warn("terminal token mismatch (possible forgery attempt)")
+		case errors.Is(err, terminal.ErrTokenNotFound):
+			logger.Debug("terminal token unknown, expired, or already consumed")
+		default:
+			logger.Error("terminal token validation failed", "error", err)
+			http.Error(w, "session token could not be validated, try again", http.StatusServiceUnavailable)
+			return
+		}
 		http.Error(w, "invalid or expired session token", http.StatusUnauthorized)
 		return
 	}
