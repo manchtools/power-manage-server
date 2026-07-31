@@ -2,131 +2,179 @@ package scim
 
 import (
 	"context"
+	"crypto/subtle"
 	"net/http"
 	"strings"
-
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// withAuth wraps a handler with SCIM bearer token authentication.
-// It extracts the slug from the URL path, looks up the identity provider,
-// verifies the bearer token against the stored bcrypt hash, and stores
-// the provider in the request context.
-func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
+// bearerScheme is the only authentication scheme this surface accepts.
+const bearerScheme = "Bearer "
+
+// absentTokenDigest is what an unknown provider is compared against.
+//
+// Every credential path does the same work — digest the presented
+// value, compare it in constant time against a 64-character hex string
+// — so "no such directory" and "wrong token" differ in neither the
+// response nor the work performed. The value is not a digest of
+// anything; no token can produce it.
+const absentTokenDigest = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// withAuth is the SCIM trust boundary. It runs in the design's order:
+// the request's shape is validated, then the credential is
+// authenticated, and only then does a route body see the provider it is
+// allowed to act for.
+//
+// Every refusal returns one identical body. A client that could tell
+// "no such directory" from "wrong token" could enumerate which
+// directories a deployment has configured, so the branches differ only
+// in what they record server-side.
+func (h *Handler) withAuth(descriptor string, next routeHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h.logger.Debug("SCIM request received", "method", r.Method, "path", r.URL.Path)
+		ctx := r.Context()
 
-		// Extract bearer token from Authorization header
-		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" {
-			h.logger.Warn("SCIM auth failed: missing authorization header", "method", r.Method, "path", r.URL.Path)
-			writeError(w, http.StatusUnauthorized, "missing authorization header")
-			return
-		}
-
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			h.logger.Warn("SCIM auth failed: not a Bearer token", "method", r.Method, "path", r.URL.Path)
-			writeError(w, http.StatusUnauthorized, "authorization header must use Bearer scheme")
-			return
-		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if token == "" {
-			h.logger.Warn("SCIM auth failed: empty token", "method", r.Method, "path", r.URL.Path)
-			writeError(w, http.StatusUnauthorized, "bearer token is empty")
-			return
-		}
-
-		// Get slug from path
+		// --- validate -------------------------------------------------
 		slug := r.PathValue("slug")
 		if slug == "" {
-			h.logger.Warn("SCIM auth failed: missing slug", "method", r.Method, "path", r.URL.Path)
 			writeError(w, http.StatusBadRequest, "missing provider slug")
 			return
 		}
+		if !acceptableContentType(r) {
+			writeError(w, http.StatusUnsupportedMediaType,
+				"Content-Type must be application/scim+json or application/json")
+			return
+		}
 
-		// Rate limit per provider slug (before bcrypt to prevent CPU DoS)
-		if !h.rateLimiter.Allow(slug) {
-			h.logger.Warn("SCIM rate limit exceeded", "slug", slug, "method", r.Method, "path", r.URL.Path)
+		clientIP := auth.ClientIPFromHTTP(r)
+
+		// The credential path is gated before any digest work. The
+		// per-slug bucket bounds one directory; the (slug, address)
+		// bucket stops an attacker holding several valid slugs from
+		// spreading requests across them to evade it. An address that
+		// cannot be identified skips the second bucket rather than
+		// coalescing every anonymous caller onto one, which would let a
+		// misconfigured deployment throttle everyone.
+		if !h.providerLimiter.Allow(slug) {
 			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
 		}
-		// Secondary rate-limit bucket keyed on (slug, client IP) so an
-		// attacker that distributes requests across multiple known
-		// slugs cannot evade the per-slug cap (audit F-08). The IP
-		// fallback path returns "" for unparsable RemoteAddr — coalescing
-		// those onto a single bucket would let a misconfigured deploy
-		// rate-limit everyone to 20/min, so we skip the IP gate when
-		// the address can't be identified and rely on the slug limit
-		// + the underlying TCP-level peer accounting.
-		if ip := auth.ClientIPFromHTTP(r); ip != "" {
-			if !h.ipRateLimiter.Allow(slug + "|" + ip) {
-				h.logger.Warn("SCIM per-IP rate limit exceeded",
-					"slug", slug, "client_ip", ip,
-					"method", r.Method, "path", r.URL.Path)
-				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
-				return
-			}
+		if clientIP != "" && !h.providerIPLimit.Allow(slug+"|"+clientIP) {
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
 		}
 
-		// Look up provider by slug, restricted to SCIM-enabled AND
-		// login-enabled providers (WS5 #5). Unknown slug, SCIM-disabled, and
-		// login-disabled all return ErrNotFound here.
-		//
-		// WS5 #9/#11 — no existence/timing oracle. The unknown-provider,
-		// token-not-configured, and wrong-token branches ALL return one
-		// identical 401 ("invalid credentials") AND perform a bcrypt compare,
-		// so a client cannot distinguish "this slug exists" from "wrong token"
-		// by response message or wall-clock. Distinct Warn lines stay
-		// server-side for operators.
-		provider, err := h.store.Repos().IdentityProvider.GetBySlugForSCIM(r.Context(), slug)
-		if err != nil {
-			if store.IsNotFound(err) {
-				h.logger.Warn("SCIM auth failed: unknown provider, SCIM not enabled, or provider disabled", "slug", slug)
-				_ = bcrypt.CompareHashAndPassword([]byte(auth.DummyHash), []byte(token))
-				writeError(w, http.StatusUnauthorized, "invalid credentials")
-				return
-			}
-			h.logger.Error("failed to look up SCIM provider", "slug", slug, "error", err)
+		// --- authenticate ---------------------------------------------
+		token, ok := bearerToken(r.Header.Get("Authorization"))
+		if !ok {
+			h.refuse(ctx, w, descriptor, reasonMissingCredentials, token, clientIP)
+			return
+		}
+		presented := fingerprint(token)
+
+		expected := absentTokenDigest
+		reason := ""
+		provider, err := h.store.GetIdentityProviderBySlug(ctx, slug)
+		switch {
+		case err != nil && store.IsNotFound(err):
+			reason = reasonUnknownProvider
+		case err != nil:
+			h.logger.Error("scim: failed to resolve provider", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
+		case !provider.Enabled:
+			// One switch turns the whole provider off. A directory that
+			// kept provisioning through a disabled provider would keep
+			// minting subjects nobody can sign in as.
+			reason = reasonProviderDisabled
+		case !provider.ScimEnabled:
+			reason = reasonSCIMDisabled
+		case provider.ScimTokenHash == "":
+			reason = reasonNoTokenConfigured
+		default:
+			expected = provider.ScimTokenHash
 		}
 
-		// Verify bearer token against stored bcrypt hash.
-		if provider.ScimTokenHash == "" {
-			h.logger.Warn("SCIM auth failed: token not configured", "slug", slug, "provider_id", provider.ID)
-			_ = bcrypt.CompareHashAndPassword([]byte(auth.DummyHash), []byte(token))
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
+		// The comparison runs on every path, including the ones already
+		// refused above, so the work is the same whatever went wrong.
+		matched := subtle.ConstantTimeCompare([]byte(presented), []byte(expected)) == 1
+		if reason == "" && !matched {
+			reason = reasonInvalidToken
+		}
+		if reason != "" {
+			h.refuse(ctx, w, descriptor, reason, token, clientIP)
 			return
 		}
 
-		if err := bcrypt.CompareHashAndPassword([]byte(provider.ScimTokenHash), []byte(token)); err != nil {
-			h.logger.Warn("SCIM auth failed: invalid bearer token", "slug", slug, "provider_id", provider.ID)
-			writeError(w, http.StatusUnauthorized, "invalid credentials")
-			return
-		}
-
-		// Validate Content-Type on requests with a body
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-			ct := r.Header.Get("Content-Type")
-			if ct != "" && !strings.HasPrefix(ct, "application/scim+json") && !strings.HasPrefix(ct, "application/json") {
-				writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/scim+json or application/json")
-				return
-			}
-		}
-
-		// Store provider in context and proceed
-		h.logger.Debug("SCIM request authenticated", "slug", slug, "provider_id", provider.ID, "method", r.Method, "path", r.URL.Path)
-		ctx := context.WithValue(r.Context(), providerContextKey, provider)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next(w, r, &session{
+			provider:          provider,
+			descriptor:        descriptor,
+			tokenFingerprint:  presented,
+			originFingerprint: fingerprint(clientIP),
+		})
 	}
 }
 
-// providerFromContext extracts the authenticated identity provider from the context.
-func providerFromContext(ctx context.Context) (store.IdentityProvider, bool) {
-	provider, ok := ctx.Value(providerContextKey).(store.IdentityProvider)
-	return provider, ok
+// refuse answers a failed credential and records it under the dedicated
+// rejected-authentication class.
+//
+// The audit write is gated by a per-address limiter: a flood of bad
+// credentials from one source is throttled, so the audit log cannot be
+// used as a write amplifier. The refusal itself is unconditional —
+// throttling changes what is RECORDED, never what is ADMITTED.
+func (h *Handler) refuse(ctx context.Context, w http.ResponseWriter, descriptor, reason, credential, clientIP string) {
+	// Logging stays metadata-only: the reason and the route, never the
+	// presented value.
+	h.logger.Warn("scim: refused credential", "route", descriptor, "reason", reason)
+
+	if h.rejectionLimiter.Allow("rej:" + clientIP) {
+		_, err := h.store.RecordOperation(ctx, store.AuditOperation{
+			Class: store.ClassRejectedAuthentication,
+			// Not "scim_provider": nothing about the attempt is known
+			// to be a provider, and an actor id is what a rejected
+			// attempt has by definition failed to establish.
+			ActorType:            auth.AnonymousActorType,
+			ActorFingerprint:     fingerprint(credential),
+			Origin:               Origin,
+			OriginFingerprint:    fingerprint(clientIP),
+			RequestDescriptor:    descriptor,
+			AuthorizationOutcome: store.AuthorizationDenied,
+			AuthorizationDetail:  AuthorizationDetail,
+			Result:               store.ResultRejected,
+			ResultCode:           reason,
+		})
+		if err != nil {
+			h.logger.Error("scim: failed to record rejected authentication",
+				"route", descriptor, "reason", reason, "error", err)
+		}
+	}
+
+	writeError(w, http.StatusUnauthorized, "invalid credentials")
+}
+
+// bearerToken extracts the credential from an Authorization header. A
+// missing header, a different scheme and an empty credential are all
+// reported as the same "no usable credential" condition.
+func bearerToken(header string) (string, bool) {
+	if !strings.HasPrefix(header, bearerScheme) {
+		return "", false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, bearerScheme))
+	return token, token != ""
+}
+
+// acceptableContentType reports whether a request that carries a body
+// declared a type this surface parses. A request with no body imposes
+// no requirement.
+func acceptableContentType(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+	default:
+		return true
+	}
+	ct := r.Header.Get("Content-Type")
+	return ct == "" ||
+		strings.HasPrefix(ct, scimContentType) ||
+		strings.HasPrefix(ct, "application/json")
 }

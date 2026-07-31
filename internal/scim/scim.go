@@ -27,10 +27,11 @@ const scimContentType = "application/scim+json"
 // maxSCIMBodySize is the maximum allowed SCIM request body size (1 MiB).
 const maxSCIMBodySize = 1 << 20
 
-// limitBody wraps r.Body with a size-limited reader and returns a cleanup func.
-// If the body exceeds maxSCIMBodySize, json.Decode will fail with an error.
-func limitBody(r *http.Request) {
-	r.Body = http.MaxBytesReader(nil, r.Body, maxSCIMBodySize)
+// limitBody caps how much of a request body the decoder will read. A
+// body over the cap makes the decode fail, so an oversized payload is
+// refused rather than buffered.
+func limitBody(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSCIMBodySize)
 }
 
 // SCIMError represents a SCIM protocol error response.

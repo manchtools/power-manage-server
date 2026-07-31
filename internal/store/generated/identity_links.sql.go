@@ -87,6 +87,34 @@ func (q *Queries) GetIdentityLinkByProviderAndExternalID(ctx context.Context, ar
 	return i, err
 }
 
+const getIdentityLinkByProviderAndUser = `-- name: GetIdentityLinkByProviderAndUser :one
+SELECT id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at FROM identity_links WHERE provider_id = $1 AND user_id = $2
+`
+
+type GetIdentityLinkByProviderAndUserParams struct {
+	ProviderID string `json:"provider_id"`
+	UserID     string `json:"user_id"`
+}
+
+// The ownership question: is this subject bound to this provider? No
+// row is the answer a provider gets for every subject it did not
+// provision, which is what keeps one directory out of another's users.
+func (q *Queries) GetIdentityLinkByProviderAndUser(ctx context.Context, arg GetIdentityLinkByProviderAndUserParams) (IdentityLink, error) {
+	row := q.db.QueryRow(ctx, getIdentityLinkByProviderAndUser, arg.ProviderID, arg.UserID)
+	var i IdentityLink
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ProviderID,
+		&i.ExternalID,
+		&i.ExternalEmail,
+		&i.ExternalName,
+		&i.LinkedAt,
+		&i.LastLoginAt,
+	)
+	return i, err
+}
+
 const insertIdentityLink = `-- name: InsertIdentityLink :one
 
 INSERT INTO identity_links (id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at)
@@ -211,6 +239,41 @@ func (q *Queries) TouchIdentityLinkLogin(ctx context.Context, arg TouchIdentityL
 	row := q.db.QueryRow(ctx, touchIdentityLinkLogin,
 		arg.ID,
 		arg.LastLoginAt,
+		arg.ExternalEmail,
+		arg.ExternalName,
+	)
+	var i IdentityLink
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.ProviderID,
+		&i.ExternalID,
+		&i.ExternalEmail,
+		&i.ExternalName,
+		&i.LinkedAt,
+		&i.LastLoginAt,
+	)
+	return i, err
+}
+
+const updateIdentityLinkExternalIdentity = `-- name: UpdateIdentityLinkExternalIdentity :one
+UPDATE identity_links
+SET external_id = $2, external_email = $3, external_name = $4
+WHERE id = $1
+RETURNING id, user_id, provider_id, external_id, external_email, external_name, linked_at, last_login_at
+`
+
+type UpdateIdentityLinkExternalIdentityParams struct {
+	ID            string `json:"id"`
+	ExternalID    string `json:"external_id"`
+	ExternalEmail string `json:"external_email"`
+	ExternalName  string `json:"external_name"`
+}
+
+func (q *Queries) UpdateIdentityLinkExternalIdentity(ctx context.Context, arg UpdateIdentityLinkExternalIdentityParams) (IdentityLink, error) {
+	row := q.db.QueryRow(ctx, updateIdentityLinkExternalIdentity,
+		arg.ID,
+		arg.ExternalID,
 		arg.ExternalEmail,
 		arg.ExternalName,
 	)

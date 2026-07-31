@@ -1,128 +1,60 @@
 package scim
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"strconv"
+	"time"
 
-	"github.com/manchtools/power-manage/server/internal/eventtypes"
-	"github.com/manchtools/power-manage/server/internal/eventtypes/payloads"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-// listGroups handles GET /scim/v2/{slug}/Groups
-func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("SCIM listGroups called")
-	provider, ok := providerFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
+// A directory group is a MAPPING onto a local user group, not a group
+// of its own. The local group is what carries role grants, so the two
+// are kept as separate rows: unmapping a directory group must not
+// destroy the authority an operator attached to it.
 
-	startIndex := 1
-	if s := r.URL.Query().Get("startIndex"); s != "" {
-		if v, err := strconv.Atoi(s); err == nil && v > 0 {
-			startIndex = v
-		}
-	}
-
+// listGroups handles GET /Groups.
+func (h *Handler) listGroups(w http.ResponseWriter, r *http.Request, s *session) {
 	ctx := r.Context()
-	baseURL := baseURLFromRequest(r, provider.Slug)
+	baseURL := baseURLFromRequest(r, s.provider.Slug)
+	startIndex, _ := pageWindow(r)
 
-	// Check for filter parameter
-	if filterStr := r.URL.Query().Get("filter"); filterStr != "" {
-		h.listGroupsFiltered(w, r, provider, filterStr, startIndex, baseURL)
-		return
-	}
-
-	// List all SCIM group mappings for this provider
-	mappings, err := h.store.Repos().SCIM.ListGroupMappings(ctx, provider.ID)
+	mappings, err := h.store.ListSCIMGroupMappings(ctx, s.provider.ID)
 	if err != nil {
-		h.logger.Error("failed to list SCIM group mappings", "error", err)
+		h.logger.Error("scim: failed to list group mappings", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list groups")
 		return
 	}
 
+	if expr := r.URL.Query().Get("filter"); expr != "" {
+		mappings, err = filterGroupMappings(mappings, expr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filter: %s", err))
+			return
+		}
+	}
+
 	resources := make([]any, 0, len(mappings))
 	for _, m := range mappings {
-		group, err := h.buildGroupResource(ctx, provider.ID, m, baseURL)
-		if err != nil {
-			h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
-			continue
-		}
-		resources = append(resources, group)
-	}
-
-	writeJSON(w, http.StatusOK, SCIMListResponse{
-		Schemas:      []string{ListResponseSchema},
-		TotalResults: len(resources),
-		StartIndex:   startIndex,
-		ItemsPerPage: len(resources),
-		Resources:    resources,
-	})
-}
-
-// listGroupsFiltered handles filtered group list requests.
-func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, provider store.IdentityProvider, filterStr string, startIndex int, baseURL string) {
-	f, err := parseFilter(filterStr)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid filter: %s", err))
-		return
-	}
-
-	ctx := r.Context()
-	var resources []any
-
-	switch f.Attribute {
-	case "displayName":
-		// Search by display name — iterate through mappings
-		mappings, err := h.store.Repos().SCIM.ListGroupMappings(ctx, provider.ID)
-		if err != nil {
-			h.logger.Error("failed to list SCIM group mappings for filter", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to search groups")
-			return
-		}
-
-		for _, m := range mappings {
-			if m.SCIMDisplayName == f.Value {
-				group, err := h.buildGroupResource(ctx, provider.ID, m, baseURL)
-				if err != nil {
-					h.logger.Error("failed to build group resource", "mapping_id", m.ID, "error", err)
-					continue
-				}
-				resources = append(resources, group)
-			}
-		}
-
-	case "externalId":
-		mapping, err := h.store.Repos().SCIM.GetGroupMapping(ctx, store.SCIMGroupMappingKey{ProviderID: provider.ID, SCIMGroupID: f.Value})
+		resource, err := h.groupResource(ctx, m, baseURL)
 		if err != nil {
 			if store.IsNotFound(err) {
-				resources = []any{}
-			} else {
-				h.logger.Error("failed to find SCIM group mapping", "error", err)
-				writeError(w, http.StatusInternalServerError, "failed to search groups")
-				return
+				// The local group was retired outside this surface. The
+				// mapping is stale and is reported as absent; the
+				// directory's next create re-establishes the pair.
+				continue
 			}
-		} else {
-			group, err := h.buildGroupResource(ctx, provider.ID, mapping, baseURL)
-			if err != nil {
-				resources = []any{}
-				h.logger.Error("failed to build group resource", "mapping_id", mapping.ID, "error", err)
-			} else {
-				resources = []any{group}
-			}
+			h.logger.Error("scim: failed to build group resource", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list groups")
+			return
 		}
+		resources = append(resources, resource)
+	}
 
-	default:
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("unsupported filter attribute for groups: %s", f.Attribute))
+	if !h.recordListRead(ctx, w, s, "LIST_GROUPS", int64(len(resources))) {
 		return
 	}
-
-	if resources == nil {
-		resources = []any{}
-	}
-
 	writeJSON(w, http.StatusOK, SCIMListResponse{
 		Schemas:      []string{ListResponseSchema},
 		TotalResults: len(resources),
@@ -132,98 +64,122 @@ func (h *Handler) listGroupsFiltered(w http.ResponseWriter, r *http.Request, pro
 	})
 }
 
-// createGroup handles POST /scim/v2/{slug}/Groups
-// getGroup handles GET /scim/v2/{slug}/Groups/{id}
-func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("SCIM getGroup called")
-	provider, ok := providerFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-
-	groupID := r.PathValue("id")
-	if groupID == "" {
-		writeError(w, http.StatusBadRequest, "missing group id")
-		return
-	}
-
-	ctx := r.Context()
-	baseURL := baseURLFromRequest(r, provider.Slug)
-
-	// Look up the SCIM group mapping by user_group_id
-	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
+// filterGroupMappings applies the equality filters a directory uses to
+// find a group it may already have mapped.
+func filterGroupMappings(mappings []store.SCIMGroupMappingRow, expr string) ([]store.SCIMGroupMappingRow, error) {
+	f, err := parseFilter(expr)
 	if err != nil {
-		if store.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "group not found")
-			return
+		return nil, err
+	}
+	var match func(store.SCIMGroupMappingRow) bool
+	switch f.Attribute {
+	case "displayName":
+		match = func(m store.SCIMGroupMappingRow) bool { return m.ScimDisplayName == f.Value }
+	case "externalId":
+		match = func(m store.SCIMGroupMappingRow) bool { return m.ScimGroupID == f.Value }
+	default:
+		return nil, fmt.Errorf("unsupported filter attribute for groups: %s", f.Attribute)
+	}
+	out := make([]store.SCIMGroupMappingRow, 0, len(mappings))
+	for _, m := range mappings {
+		if match(m) {
+			out = append(out, m)
 		}
-		h.logger.Error("failed to get SCIM group mapping", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to get group")
-		return
 	}
-
-	group, err := h.buildGroupResource(ctx, provider.ID, mapping, baseURL)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "group not found")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, group)
+	return out, nil
 }
 
-// replaceGroup handles PUT /scim/v2/{slug}/Groups/{id}
-// deleteGroup handles DELETE /scim/v2/{slug}/Groups/{id}
-func (h *Handler) deleteGroup(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("SCIM deleteGroup called")
-	provider, ok := providerFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-
-	groupID := r.PathValue("id")
-	if groupID == "" {
-		writeError(w, http.StatusBadRequest, "missing group id")
-		return
-	}
-
+// getGroup handles GET /Groups/{id}.
+func (h *Handler) getGroup(w http.ResponseWriter, r *http.Request, s *session) {
 	ctx := r.Context()
-
-	// Look up the mapping
-	mapping, err := h.store.Repos().SCIM.GetGroupMappingByUserGroup(ctx, store.SCIMGroupMappingByUserGroupKey{ProviderID: provider.ID, UserGroupID: groupID})
+	mapping, ok := h.resolveGroup(ctx, w, s, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	resource, err := h.groupResource(ctx, mapping, baseURLFromRequest(r, s.provider.Slug))
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}
-		h.logger.Error("failed to get SCIM group mapping for delete", "error", err)
+		h.logger.Error("scim: failed to build group resource", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to get group")
 		return
 	}
 
-	// Remove the SCIM group mapping (do NOT delete the user group itself)
-	err = h.store.AppendEvent(ctx, store.Event{
-		StreamType: "scim_group_mapping",
-		StreamID:   mapping.ID,
-		EventType:  string(eventtypes.SCIMGroupUnmapped),
-		Data: payloads.SCIMGroupUnmapped{
-			ProviderID:  provider.ID,
-			SCIMGroupID: mapping.SCIMGroupID,
+	members := int64(len(resource.Members))
+	if _, err := h.store.RecordOperation(ctx, h.sensitiveReadOp(s), store.AuditEffect{
+		ResourceType: "user_group",
+		ResourceID:   mapping.UserGroupID,
+		Action:       "READ",
+		Outcome:      store.EffectApplied,
+		BeforeRef:    &s.provider.ID,
+		AfterCount:   &members,
+	}); err != nil {
+		h.logger.Error("scim: failed to record sensitive read", "route", s.descriptor, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to record the read")
+		return
+	}
+	writeJSON(w, http.StatusOK, resource)
+}
+
+// resolveGroup resolves the mapping this directory holds on a local
+// group.
+//
+// A group mapped by a DIFFERENT directory and a group that does not
+// exist get the same not-found answer, so the id space cannot be probed
+// for another directory's groups.
+func (h *Handler) resolveGroup(ctx context.Context, w http.ResponseWriter, s *session, groupID string) (store.SCIMGroupMappingRow, bool) {
+	if groupID == "" {
+		writeError(w, http.StatusBadRequest, "missing group id")
+		return store.SCIMGroupMappingRow{}, false
+	}
+	mapping, err := h.store.GetSCIMGroupMappingByUserGroup(ctx, s.provider.ID, groupID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "group not found")
+			return store.SCIMGroupMappingRow{}, false
+		}
+		h.logger.Error("scim: failed to resolve group mapping", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get group")
+		return store.SCIMGroupMappingRow{}, false
+	}
+	return mapping, true
+}
+
+// groupResource shapes a mapping and its local group as a SCIM group.
+// ErrNotFound when the local group has been retired.
+func (h *Handler) groupResource(ctx context.Context, mapping store.SCIMGroupMappingRow, baseURL string) (SCIMGroup, error) {
+	group, err := h.store.GetUserGroup(ctx, mapping.UserGroupID)
+	if err != nil {
+		return SCIMGroup{}, err
+	}
+	memberIDs, err := h.store.ListUserGroupMemberIDs(ctx, mapping.UserGroupID)
+	if err != nil {
+		return SCIMGroup{}, err
+	}
+
+	members := make([]SCIMMember, 0, len(memberIDs))
+	for _, userID := range memberIDs {
+		member := SCIMMember{Value: userID, Ref: baseURL + "/Users/" + userID}
+		if row, err := h.store.GetUser(ctx, userID); err == nil {
+			member.Display = row.Email
+		}
+		members = append(members, member)
+	}
+
+	out := SCIMGroup{
+		Schemas:     []string{GroupSchema},
+		ID:          mapping.UserGroupID,
+		ExternalID:  mapping.ScimGroupID,
+		DisplayName: group.Name,
+		Members:     members,
+		Meta: &SCIMMeta{
+			ResourceType: "Group",
+			Location:     baseURL + "/Groups/" + mapping.UserGroupID,
+			Created:      mapping.CreatedAt.Format(time.RFC3339),
+			LastModified: group.UpdatedAt.Format(time.RFC3339),
 		},
-		ActorType: "scim",
-		ActorID:   provider.ID,
-	})
-	if err != nil {
-		h.logger.Error("failed to unmap SCIM group", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to delete group mapping")
-		return
 	}
-
-	w.WriteHeader(http.StatusNoContent)
+	return out, nil
 }
-
-// reconcileGroupMembers diffs the requested members against current members and
-// emits add/remove events as needed.
-// reconcileGroupMembers / buildGroupResource / restoreOrphanedGroup +
-// extractMembers / extractUserIDFromMemberFilter live in groups_helpers.go.

@@ -5,7 +5,7 @@ import (
 )
 
 // serviceProviderConfig handles GET /scim/v2/{slug}/ServiceProviderConfig
-func (h *Handler) serviceProviderConfig(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serviceProviderConfig(w http.ResponseWriter, r *http.Request, s *session) {
 	config := map[string]any{
 		"schemas":          []string{SPConfigSchema},
 		"documentationUri": "https://tools.ietf.org/html/rfc7644",
@@ -42,7 +42,7 @@ func (h *Handler) serviceProviderConfig(w http.ResponseWriter, r *http.Request) 
 		},
 		"meta": map[string]any{
 			"resourceType": "ServiceProviderConfig",
-			"location":     baseURLFromRequest(r, r.PathValue("slug")) + "/ServiceProviderConfig",
+			"location":     baseURLFromRequest(r, s.provider.Slug) + "/ServiceProviderConfig",
 		},
 	}
 
@@ -50,8 +50,8 @@ func (h *Handler) serviceProviderConfig(w http.ResponseWriter, r *http.Request) 
 }
 
 // schemas handles GET /scim/v2/{slug}/Schemas
-func (h *Handler) schemas(w http.ResponseWriter, r *http.Request) {
-	baseURL := baseURLFromRequest(r, r.PathValue("slug"))
+func (h *Handler) schemas(w http.ResponseWriter, r *http.Request, s *session) {
+	baseURL := baseURLFromRequest(r, s.provider.Slug)
 
 	userSchema := map[string]any{
 		"schemas":     []string{SchemaSchema},
@@ -254,8 +254,8 @@ func (h *Handler) schemas(w http.ResponseWriter, r *http.Request) {
 }
 
 // resourceTypes handles GET /scim/v2/{slug}/ResourceTypes
-func (h *Handler) resourceTypes(w http.ResponseWriter, r *http.Request) {
-	baseURL := baseURLFromRequest(r, r.PathValue("slug"))
+func (h *Handler) resourceTypes(w http.ResponseWriter, r *http.Request, s *session) {
+	baseURL := baseURLFromRequest(r, s.provider.Slug)
 
 	userResourceType := map[string]any{
 		"schemas":     []string{ResourceTypeSchema},

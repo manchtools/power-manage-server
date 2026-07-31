@@ -92,6 +92,19 @@ var nonMutatingExports = map[string]string{
 	"IsTokenRevoked":                "read",
 	"GetServerSettings":             "read",
 	"CountLiveBootstrapAdminTokens": "read",
+
+	// Directory-provisioning reads.
+	"ListSCIMUsers":                    "read",
+	"CountSCIMUsers":                   "read",
+	"FindSCIMUserByEmail":              "read",
+	"FindSCIMUserByExternalID":         "read",
+	"GetIdentityLinkByProviderAndUser": "read",
+	"CountIdentityLinksForUser":        "read",
+	"GetUserGroup":                     "read",
+	"ListUserGroupMemberIDs":           "read",
+	"GetSCIMGroupMapping":              "read",
+	"GetSCIMGroupMappingByUserGroup":   "read",
+	"ListSCIMGroupMappings":            "read",
 }
 
 // forbiddenExports are the shapes that would hand a caller a generic

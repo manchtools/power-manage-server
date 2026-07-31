@@ -1,9 +1,9 @@
 package testutil
 
-// Identity-provider, identity-link, SCIM, TOTP, and Encryptor
-// fixtures. Everything that touches the SSO + 2FA + SCIM surface
+// Identity-provider, identity-link, TOTP, and Encryptor
+// fixtures. Everything that touches the SSO + 2FA surface
 // lives here so the file boundary mirrors the IdP code organization
-// in internal/idp + internal/scim.
+// in internal/idp.
 
 import (
 	"context"
@@ -196,32 +196,4 @@ func CreateTestIdentityLink(t *testing.T, st *store.Store, userID, providerID, e
 	}
 
 	return id
-}
-
-// EnableSCIMForProvider enables SCIM on an identity provider and returns the plaintext bearer token.
-func EnableSCIMForProvider(t *testing.T, st *store.Store, actorID, providerID string) string {
-	t.Helper()
-	ctx := context.Background()
-
-	token := "scim-test-token-" + NewID()
-	hash, err := bcrypt.GenerateFromPassword([]byte(token), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("hash SCIM token: %v", err)
-	}
-
-	err = st.AppendEvent(ctx, store.Event{
-		StreamType: "identity_provider",
-		StreamID:   providerID,
-		EventType:  string(eventtypes.IdentityProviderSCIMEnabled),
-		Data: map[string]any{
-			"scim_token_hash": string(hash),
-		},
-		ActorType: "user",
-		ActorID:   actorID,
-	})
-	if err != nil {
-		t.Fatalf("enable SCIM for provider: %v", err)
-	}
-
-	return token
 }

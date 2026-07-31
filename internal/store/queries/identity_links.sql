@@ -13,6 +13,18 @@ SELECT * FROM identity_links WHERE id = $1;
 -- name: GetIdentityLinkByProviderAndExternalID :one
 SELECT * FROM identity_links WHERE provider_id = $1 AND external_id = $2;
 
+-- name: GetIdentityLinkByProviderAndUser :one
+-- The ownership question: is this subject bound to this provider? No
+-- row is the answer a provider gets for every subject it did not
+-- provision, which is what keeps one directory out of another's users.
+SELECT * FROM identity_links WHERE provider_id = $1 AND user_id = $2;
+
+-- name: UpdateIdentityLinkExternalIdentity :one
+UPDATE identity_links
+SET external_id = $2, external_email = $3, external_name = $4
+WHERE id = $1
+RETURNING *;
+
 -- name: ListIdentityLinksForUser :many
 SELECT
     l.id,

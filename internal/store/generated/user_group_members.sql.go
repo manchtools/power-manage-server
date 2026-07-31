@@ -68,3 +68,27 @@ func (q *Queries) InsertUserGroupMember(ctx context.Context, arg InsertUserGroup
 	}
 	return result.RowsAffected(), nil
 }
+
+const listUserGroupMemberIDs = `-- name: ListUserGroupMemberIDs :many
+SELECT user_id FROM user_group_members WHERE group_id = $1 ORDER BY user_id
+`
+
+func (q *Queries) ListUserGroupMemberIDs(ctx context.Context, groupID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listUserGroupMemberIDs, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

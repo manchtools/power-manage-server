@@ -7,7 +7,7 @@
 //   - factories_user.go    — users, roles, user groups, contexts, JWT
 //   - factories_device.go  — devices, device groups, device assignments
 //   - factories_action.go  — actions, action sets, definitions, assignments, tokens
-//   - factories_idp.go     — identity providers, SCIM, TOTP, Encryptor
+//   - factories_idp.go     — identity providers, TOTP, Encryptor
 //
 // All public symbols stay on `testutil` — call sites are unchanged.
 package testutil
