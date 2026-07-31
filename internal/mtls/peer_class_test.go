@@ -87,7 +87,7 @@ func mustURL(t *testing.T, s string) *url.URL {
 // TestPeerClassFromCert_Roundtrip asserts that every well-known
 // class encodes to a SPIFFE URI and decodes back to the same class.
 func TestPeerClassFromCert_Roundtrip(t *testing.T) {
-	for _, class := range []PeerClass{PeerClassAgent, PeerClassGateway, PeerClassControl} {
+	for _, class := range []PeerClass{PeerClassAgent, PeerClassControl} {
 		t.Run(string(class), func(t *testing.T) {
 			u, err := PeerClassURI(class)
 			if err != nil {
@@ -138,7 +138,10 @@ func TestRequirePeerClass_AllowsAllowedRejectsOthers(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := RequirePeerClass(discardLogger, PeerClassGateway)(next)
+	// The agent listener is the real instance of this: it admits the agent
+	// class and nothing else. With PeerClassGateway gone, control is the other
+	// class — and it must be refused here exactly as a gateway cert was.
+	handler := RequirePeerClass(discardLogger, PeerClassAgent)(next)
 
 	// Simulate a TLS connection state carrying a peer cert with a
 	// given class. httptest.Server with a real TLS handshake would
@@ -155,14 +158,11 @@ func TestRequirePeerClass_AllowsAllowedRejectsOthers(t *testing.T) {
 		return rr.Code
 	}
 
-	if code := call(PeerClassGateway); code != http.StatusOK {
-		t.Errorf("allowed class got %d, want 200", code)
-	}
-	if code := call(PeerClassAgent); code != http.StatusForbidden {
-		t.Errorf("disallowed agent class got %d, want 403", code)
+	if code := call(PeerClassAgent); code != http.StatusOK {
+		t.Errorf("allowed agent class got %d, want 200", code)
 	}
 	if code := call(PeerClassControl); code != http.StatusForbidden {
-		t.Errorf("disallowed control class got %d, want 403", code)
+		t.Errorf("disallowed control class got %d, want 403 — a control-class cert must not reach the agent listener", code)
 	}
 }
 
@@ -174,7 +174,10 @@ func TestRequirePeerClass_HealthBypass(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := RequirePeerClass(discardLogger, PeerClassGateway)(next)
+	// The agent listener is the real instance of this: it admits the agent
+	// class and nothing else. With PeerClassGateway gone, control is the other
+	// class — and it must be refused here exactly as a gateway cert was.
+	handler := RequirePeerClass(discardLogger, PeerClassAgent)(next)
 
 	for _, path := range []string{"/health", "/ready"} {
 		t.Run(path, func(t *testing.T) {
@@ -197,11 +200,11 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
-	gwCert := realCertWithClass(t, PeerClassGateway)
-	revokedFP := indepFingerprint(gwCert) // sourced independently of the middleware
+	agentCert := realCertWithClass(t, PeerClassAgent)
+	revokedFP := indepFingerprint(agentCert) // sourced independently of the middleware
 
 	callWith := func(rev RevocationChecker, cert *x509.Certificate, path string) int {
-		h := RequirePeerClassNotRevoked(logger, rev, PeerClassGateway)(next)
+		h := RequirePeerClassNotRevoked(logger, rev, PeerClassAgent)(next)
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
 		if cert != nil {
 			req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}
@@ -219,32 +222,32 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 		return fakeRev{revoked: set}
 	}
 
-	t.Run("gateway class, not revoked → 200", func(t *testing.T) {
-		assert.Equal(t, http.StatusOK, callWith(loaded(), gwCert, "/x"))
+	t.Run("agent class, not revoked → 200", func(t *testing.T) {
+		assert.Equal(t, http.StatusOK, callWith(loaded(), agentCert, "/x"))
 	})
-	t.Run("gateway class, revoked → 403", func(t *testing.T) {
-		assert.Equal(t, http.StatusForbidden, callWith(loaded(revokedFP), gwCert, "/x"),
-			"a revoked gateway cert must be rejected at the internal listener (no ProxyGetLuksKey/LPS)")
+	t.Run("agent class, revoked → 403", func(t *testing.T) {
+		assert.Equal(t, http.StatusForbidden, callWith(loaded(revokedFP), agentCert, "/x"),
+			"a revoked agent cert must be rejected at the agent listener before it can open a stream")
 	})
 	t.Run("wrong class rejected first (peer-class is additive)", func(t *testing.T) {
 		controlCert := realCertWithClass(t, PeerClassControl)
-		// Even with an empty revocation set, a control-class cert on a
-		// gateway-only listener is 403 from the peer-class gate.
+		// Even with an empty revocation set, a control-class cert on the
+		// agent-only listener is 403 from the peer-class gate.
 		assert.Equal(t, http.StatusForbidden, callWith(loaded(), controlCert, "/x"))
 	})
 	t.Run("byte-tampered seed → real cert admitted (exact-fingerprint binding)", func(t *testing.T) {
 		flipped := []byte(revokedFP)
 		flipped[len(flipped)-1] ^= 0xFF
-		assert.Equal(t, http.StatusOK, callWith(loaded(string(flipped)), gwCert, "/x"),
+		assert.Equal(t, http.StatusOK, callWith(loaded(string(flipped)), agentCert, "/x"),
 			"a tampered seed fingerprint matches no real cert → admitted")
 	})
 	t.Run("lookup error fails closed even for a non-revoked cert", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
-			callWith(fakeRev{err: errors.New("database unreachable")}, gwCert, "/x"),
+			callWith(fakeRev{err: errors.New("database unreachable")}, agentCert, "/x"),
 			"an indeterminate revocation answer must reject: we cannot prove the cert is unrevoked")
 	})
 	t.Run("nil checker fails closed", func(t *testing.T) {
-		assert.Equal(t, http.StatusForbidden, callWith(nil, gwCert, "/x"),
+		assert.Equal(t, http.StatusForbidden, callWith(nil, agentCert, "/x"),
 			"a bare nil checker must fail closed, never silently admit")
 	})
 	t.Run("health bypasses with no cert", func(t *testing.T) {
@@ -259,7 +262,7 @@ func TestRequirePeerClassNotRevoked_RejectsRevokedFingerprint(t *testing.T) {
 // any TLS state is rejected before a nil dereference can happen.
 func TestRequirePeerClass_RejectsMissingTLS(t *testing.T) {
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := RequirePeerClass(discardLogger, PeerClassGateway)(http.NotFoundHandler())
+	handler := RequirePeerClass(discardLogger, PeerClassControl)(http.NotFoundHandler())
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

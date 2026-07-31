@@ -310,3 +310,46 @@ func stalledDevice(t *testing.T, a *Agent) *atomic.Int32 {
 	}
 	return &writes
 }
+
+// A departing handler must not tear down the connection that replaced it.
+//
+// Teardown used to be Get-then-Unregister with the lock released in between. A
+// device reconnecting in that gap had its FRESH registration deleted by the
+// handler that was leaving: the device believed it was connected while the
+// server held no route to it, and the shared per-device worker was stopped out
+// from under the live connection.
+//
+// UnregisterIfCurrent decides and deletes under one lock, so the outcome is the
+// same whichever side wins the race — the newcomer survives either way.
+func TestManager_UnregisterIfCurrentLeavesAReplacementAlone(t *testing.T) {
+	m := NewManager()
+
+	old := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+	// The device reconnects: Register replaces the entry, exactly as a real
+	// reconnect does while the previous handler is still unwinding.
+	fresh := m.Register(context.Background(), "device-1", "host1", "1.0.1", nil)
+	require.NotSame(t, old, fresh)
+
+	// The departing handler now runs its teardown.
+	assert.False(t, m.UnregisterIfCurrent("device-1", old),
+		"the stale handler must report that it removed nothing — it no longer owns the registration")
+
+	got, ok := m.Get("device-1")
+	require.True(t, ok, "the reconnected device was unregistered by the handler it replaced")
+	assert.Same(t, fresh, got, "the surviving registration must be the new one")
+	assert.False(t, fresh.Terminated(), "the replacement's connection was closed by the departing handler")
+}
+
+// The ordinary case still works: the current registration removes itself.
+func TestManager_UnregisterIfCurrentRemovesTheLiveRegistration(t *testing.T) {
+	m := NewManager()
+	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+
+	assert.True(t, m.UnregisterIfCurrent("device-1", agent))
+	_, ok := m.Get("device-1")
+	assert.False(t, ok, "the live registration must actually be removed")
+	assert.True(t, agent.Terminated(), "removing a registration must close its connection")
+
+	assert.False(t, m.UnregisterIfCurrent("device-1", agent),
+		"a second teardown must be a no-op, not a removal of whatever is there now")
+}

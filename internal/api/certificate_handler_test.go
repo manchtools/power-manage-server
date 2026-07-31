@@ -173,7 +173,7 @@ func TestRenewCertificate_RejectsNonAgentPeerClass(t *testing.T) {
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, gwKey)
 	require.NoError(t, err)
 	gwCSR := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
-	gwCert, err := certAuth.IssueGatewayCertificateFromCSR(gatewayID, gwCSR, "gw.example.com")
+	gwCert, err := certAuth.IssueServerCertificateFromCSR(gatewayID, gwCSR, "gw.example.com")
 	require.NoError(t, err)
 	renewDER, err := x509.CreateCertificateRequest(rand.Reader, csrTemplate, gwKey)
 	require.NoError(t, err)

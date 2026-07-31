@@ -200,6 +200,32 @@ func (m *Manager) Unregister(deviceID string) {
 	}
 }
 
+// UnregisterIfCurrent removes deviceID's registration ONLY if it is still the
+// one passed in, and reports whether it did.
+//
+// The stream handler's teardown cannot use Get-then-Unregister: between the two
+// the same device can reconnect and Register a replacement, and the departing
+// handler then closes the newcomer's connection and deletes its entry. The
+// device is left believing it is connected while the server has no route to it,
+// until the next reconnect — and the shared per-device worker is stopped out
+// from under the live registration.
+//
+// The comparison and the delete happen under one lock, so a reconnect either
+// wins the map before this runs (nothing is removed, false) or after it
+// (removal already done, the newcomer is untouched).
+func (m *Manager) UnregisterIfCurrent(deviceID string, agent *Agent) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.agents[deviceID]
+	if !ok || current != agent {
+		return false
+	}
+	current.Close()
+	delete(m.agents, deviceID)
+	return true
+}
+
 // Get returns an agent by device ID.
 func (m *Manager) Get(deviceID string) (*Agent, bool) {
 	m.mu.RLock()

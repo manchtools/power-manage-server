@@ -70,7 +70,6 @@ func TestErrCodes_AreSnakeCase(t *testing.T) {
 		ErrValidationFailed,
 		ErrSCIMAlreadyEnabled,
 		ErrTerminalNotConfigured,
-		ErrGatewayNotRegistered,
 		ErrLastAuthMethod,
 	}
 	for _, c := range cases {

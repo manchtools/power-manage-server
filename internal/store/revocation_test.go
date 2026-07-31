@@ -135,20 +135,35 @@ func TestRevocationChecker_NewRevocationIsVisibleImmediately(t *testing.T) {
 	assert.False(t, other)
 }
 
-// An expired revocation is not reported: the certificate it names is refused by
-// TLS on validity alone, so answering "revoked" would conflate two distinct
-// rejection reasons.
-func TestRevocationChecker_ExpiredRevocationIsNotReported(t *testing.T) {
+// A revoked fingerprint stays revoked no matter what not_after says.
+//
+// This replaces TestRevocationChecker_ExpiredRevocationIsNotReported, which
+// asserted the opposite. That property was real but rested on a false premise:
+// it argued an expired certificate is refused by TLS on validity alone, so
+// reporting it revoked only muddles the logs. True — if one clock decides both.
+// Two do. TLS validity is judged by the CONTROL host and not_after by the
+// DATABASE, so a database running ahead calls the row expired while control
+// still accepts the certificate, and the handshake succeeds. Clock drift
+// between two machines was enough to un-revoke a certificate.
+//
+// The lookup no longer consults a clock at all, so the case that used to return
+// "not revoked" now returns "revoked" — the conservative answer, and the one
+// this test pins.
+func TestRevocationChecker_RevocationSurvivesItsNotAfter(t *testing.T) {
 	st := testutil.SetupPostgres(t)
 	ctx := t.Context()
 
 	const fp = "expired0001"
+	// not_after already in the past — the shape a skewed database clock
+	// produces for a certificate control still considers valid.
 	require.NoError(t, st.AppendEventAndRevoke(ctx,
 		devEvent("01J0000000000000000000DEV5", eventtypes.DeviceDeleted), fp, time.Now().Add(-time.Hour), "device deleted"))
 
 	revoked, err := store.NewRevocationChecker(st).IsRevoked(ctx, fp)
 	require.NoError(t, err)
-	assert.False(t, revoked, "a revocation past its not_after must not be reported")
+	assert.True(t, revoked,
+		"a listed fingerprint must report revoked regardless of not_after — otherwise a database clock "+
+			"running ahead of control silently re-admits a revoked certificate")
 }
 
 // The retention sweep must actually remove expired rows: the table is called
@@ -159,15 +174,23 @@ func TestDeleteExpiredRevocations_RemovesOnlyExpired(t *testing.T) {
 	ctx := t.Context()
 
 	const live = "livefp0001"
-	const dead = "deadfp0001"
+	const recentlyExpired = "recentfp01"
+	const longExpired = "deadfp0001"
 	require.NoError(t, st.AppendEventAndRevoke(ctx,
 		devEvent("01J0000000000000000000DEV6", eventtypes.DeviceDeleted), live, time.Now().Add(time.Hour), "device deleted"))
+	// Inside the skew grace: expired by the database's reckoning, but recently
+	// enough that a clock difference could explain it.
 	require.NoError(t, st.AppendEventAndRevoke(ctx,
-		devEvent("01J0000000000000000000DEV7", eventtypes.DeviceDeleted), dead, time.Now().Add(-time.Hour), "device deleted"))
+		devEvent("01J0000000000000000000DEV8", eventtypes.DeviceDeleted), recentlyExpired, time.Now().Add(-time.Hour), "device deleted"))
+	require.NoError(t, st.AppendEventAndRevoke(ctx,
+		devEvent("01J0000000000000000000DEV7", eventtypes.DeviceDeleted), longExpired, time.Now().Add(-30*24*time.Hour), "device deleted"))
 
 	n, err := st.DeleteExpiredRevocations(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), n, "exactly the expired row is swept")
+	assert.Equal(t, int64(1), n, "exactly the long-expired row is swept")
 	assert.Equal(t, int64(1), revocationRowCount(t, st, live), "the live revocation must survive")
-	assert.Equal(t, int64(0), revocationRowCount(t, st, dead))
+	assert.Equal(t, int64(1), revocationRowCount(t, st, recentlyExpired),
+		"a just-expired revocation must survive the skew grace — deleting it is irreversible, and a database "+
+			"clock ahead of control would drop a revocation control still needs")
+	assert.Equal(t, int64(0), revocationRowCount(t, st, longExpired))
 }

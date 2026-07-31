@@ -43,7 +43,6 @@ const (
 	ErrExecutionNotFound    = "execution_not_found"
 	ErrAssignmentNotFound   = "assignment_not_found"
 	ErrQueryResultNotFound  = "query_result_not_found"
-	ErrGatewayNotFound      = "gateway_not_found"
 )
 
 // Conflict error codes.
@@ -87,15 +86,12 @@ const (
 	ErrTerminalLinuxUsernameNotSet = "terminal_linux_username_not_set"
 	ErrTerminalNotConfigured       = "terminal_not_configured"
 
-	// ErrGatewayNotRegistered is returned by StartTerminal when the
-	// device's gateway is connected but has not published its terminal
-	// URL to the registry — typically because the operator did not set
-	// GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE on that gateway. Distinct
-	// from ErrDeviceNotConnected (no gateway at all) and from a generic
-	// internal error so the web client can show a useful "fix the
-	// config" message instead of "An unexpected error occurred". See
-	// rc11 #79.
-	ErrGatewayNotRegistered = "gateway_not_registered"
+	// Spec 41 removed ErrGatewayNotFound and ErrGatewayNotRegistered.
+	// The latter meant "the device's gateway is connected but has not
+	// published its terminal URL to the registry" — a state with no
+	// gateway, no registry, and no way to reach it. Control serves the
+	// terminal itself, so the remaining failure is
+	// ErrTerminalNotConfigured: no CONTROL_TERMINAL_URL.
 )
 
 // Compliance policy error codes.

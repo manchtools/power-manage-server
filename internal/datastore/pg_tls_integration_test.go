@@ -90,7 +90,7 @@ func genKeyCSR(t *testing.T, cn string) (keyPEM, csrPEM []byte) {
 func caIssuedPKI(t *testing.T, certAuth *ca.CA, clientRole string) (caPEM, srvCertPEM, srvKeyPEM, cliCertPEM, cliKeyPEM []byte) {
 	t.Helper()
 	srvKeyPEM, srvCSR := genKeyCSR(t, "datastore-server")
-	srvCert, err := certAuth.IssueGatewayCertificateFromCSR(ulid.Make().String(), srvCSR, "localhost")
+	srvCert, err := certAuth.IssueServerCertificateFromCSR(ulid.Make().String(), srvCSR, "localhost")
 	if err != nil {
 		t.Fatalf("issue datastore server cert: %v", err)
 	}

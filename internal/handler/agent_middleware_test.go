@@ -268,7 +268,7 @@ func TestMTLSMiddleware_GatewayClassRejectedOnAgentService(t *testing.T) {
 	// agent simultaneously.
 	mw := MTLSMiddleware(newOKHandler(), nil, newTestLogger())
 	req := httptest.NewRequest(http.MethodGet, "/api", nil)
-	gw := mtls.PeerClassGateway
+	gw := mtls.PeerClassControl
 	req.TLS = fakeTLSStateWithPeerClass(t, "gateway-1", &gw)
 	rec := httptest.NewRecorder()
 	mw.ServeHTTP(rec, req)

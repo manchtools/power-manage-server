@@ -346,12 +346,12 @@ func TestIssueCertificateFromCSR_ForgedSignatureRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid CSR signature")
 }
 
-// TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity pins spec 31
+// TestIssueServerCertificateFromCSR_StampsGatewayClassAndValidity pins spec 31
 // AC1/AC7: a gateway cert carries CN = SerialNumber = the server gateway_id, the
 // gateway peer-class SAN (never the agent class), and a fixed 45-day validity
 // distinct from the agent-cert validity. A past clock proves NotAfter derives
 // from clock+45d, not the wall clock.
-func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing.T) {
+func TestIssueServerCertificateFromCSR_StampsGatewayClassAndValidity(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	fixed := time.Date(2020, 6, 1, 12, 0, 0, 0, time.UTC)
 	// Agent validity is deliberately NOT 45d so the assertion below distinguishes
@@ -363,7 +363,7 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	const gatewayHost = "gw.example.com"
 	csrPEM := generateCSRWithSAN(t, "csr-chosen-id", func(*x509.CertificateRequest) {})
 
-	cert, err := c.IssueGatewayCertificateFromCSR(gatewayID, csrPEM, gatewayHost)
+	cert, err := c.IssueServerCertificateFromCSR(gatewayID, csrPEM, gatewayHost)
 	require.NoError(t, err)
 
 	block, _ := pem.Decode(cert.CertPEM)
@@ -377,7 +377,7 @@ func TestIssueGatewayCertificateFromCSR_StampsGatewayClassAndValidity(t *testing
 	require.Len(t, parsed.URIs, 1, "a gateway cert must carry exactly one URI SAN")
 	class, err := mtls.PeerClassFromCert(parsed)
 	require.NoError(t, err)
-	assert.Equal(t, mtls.PeerClassGateway, class, "a gateway cert must be the gateway peer class, never agent")
+	assert.Equal(t, mtls.PeerClassControl, class, "a server cert must carry the control peer class, never agent")
 
 	const want45d = 45 * 24 * time.Hour
 	assert.True(t, cert.NotAfter.Equal(fixed.Add(want45d)),
@@ -416,10 +416,10 @@ func TestIssueCertificateFromCSR_AgentIsClientAuthOnly(t *testing.T) {
 		"an agent cert must be client-auth only")
 }
 
-// TestIssueGatewayCertificateFromCSR_RejectsSAN pins that the gateway path
+// TestIssueServerCertificateFromCSR_RejectsSAN pins that the gateway path
 // enforces the same caller-SAN rejection as the agent path — an enrolling
 // gateway cannot request a control peer class or a server hostname.
-func TestIssueGatewayCertificateFromCSR_RejectsSAN(t *testing.T) {
+func TestIssueServerCertificateFromCSR_RejectsSAN(t *testing.T) {
 	certPEM, keyPEM := generateTestCA(t)
 	c, err := ca.NewFromPEM(certPEM, keyPEM, 24*time.Hour)
 	require.NoError(t, err)
@@ -432,7 +432,7 @@ func TestIssueGatewayCertificateFromCSR_RejectsSAN(t *testing.T) {
 	csrPEM := generateCSRWithSAN(t, "gw-1", func(r *x509.CertificateRequest) {
 		r.URIs = []*url.URL{mustURL("spiffe://power-manage/control")}
 	})
-	cert, err := c.IssueGatewayCertificateFromCSR("gw-1", csrPEM, "gw-1.example.com")
+	cert, err := c.IssueServerCertificateFromCSR("gw-1", csrPEM, "gw-1.example.com")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not request subject alternative names")
 	assert.Nil(t, cert)

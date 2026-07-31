@@ -36,6 +36,12 @@ func (h *AgentOps) SyncActions(ctx context.Context, deviceID string) (*pm.SyncAc
 		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "action signer not configured")
 	}
 	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID}); err != nil {
+		// A database outage is not a deleted device. Reported as NotFound the
+		// agent concludes it has been decommissioned and stops syncing.
+		if !store.IsNotFound(err) {
+			h.logger.Error("sync actions: device lookup failed", "device_id", deviceID, "error", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "device lookup failed")
+		}
 		h.logger.Warn("sync actions for unknown/deleted device", "device_id", deviceID)
 		return nil, apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
 	}

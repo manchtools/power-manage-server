@@ -11,13 +11,19 @@ import (
 )
 
 const deleteExpiredRevocations = `-- name: DeleteExpiredRevocations :execrows
-DELETE FROM revoked_certificates WHERE not_after <= now()
+DELETE FROM revoked_certificates WHERE not_after <= now() - INTERVAL '7 days'
 `
 
 // Retention sweep. An expired certificate is refused by TLS itself, so its
 // revocation row buys nothing; every agent renews at 80% of lifetime and each
 // rotation writes a row, so without this the table grows with fleet size times
 // renewals forever.
+//
+// The grace period is the same clock-skew argument as the lookup above, applied
+// to a DESTRUCTIVE operation: deleting on `not_after <= now()` lets a database
+// clock running ahead drop a revocation for a certificate control still treats
+// as valid, and the row does not come back. A week is far beyond any plausible
+// NTP drift and costs a handful of inert rows.
 func (q *Queries) DeleteExpiredRevocations(ctx context.Context) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteExpiredRevocations)
 	if err != nil {
@@ -29,14 +35,24 @@ func (q *Queries) DeleteExpiredRevocations(ctx context.Context) (int64, error) {
 const isCertificateRevoked = `-- name: IsCertificateRevoked :one
 SELECT EXISTS (
   SELECT 1 FROM revoked_certificates
-  WHERE fingerprint = $1 AND not_after > now()
+  WHERE fingerprint = $1
 )
 `
 
-// The handshake question. Bounded by not_after so an expired certificate is not
-// reported revoked: TLS refuses it on validity alone, and answering "revoked"
-// for something already refused conflates two distinct rejection reasons in the
-// logs.
+// The handshake question: is this fingerprint listed. Presence alone — NOT
+// bounded by not_after.
+//
+// The bound was `AND not_after > now()`, reasoning that TLS refuses an expired
+// certificate on validity alone so the row buys nothing. That is true only if
+// both judgements use the same clock, and they do not: TLS validity is decided
+// by the CONTROL host, this predicate by the DATABASE. A database clock running
+// ahead declares the row expired while control still considers the certificate
+// valid, and the handshake is admitted — the one outcome revocation exists to
+// prevent, produced by nothing more than clock drift between two machines.
+//
+// Presence-only removes the second clock from the decision entirely. The cost
+// is that a revoked-and-expired certificate is reported "revoked" rather than
+// "expired" in the logs, which is a labelling question, not a security one.
 func (q *Queries) IsCertificateRevoked(ctx context.Context, fingerprint string) (bool, error) {
 	row := q.db.QueryRow(ctx, isCertificateRevoked, fingerprint)
 	var exists bool

@@ -118,11 +118,10 @@ func NewFromPEM(certPEM, keyPEM []byte, validity time.Duration, opts ...Option) 
 	return c, nil
 }
 
-// gatewayCertValidity is the fixed short-lived TTL for gateway certificates
-// (spec 31 AC7): 45 days, distinct from the agent-cert ca.validity. Short-lived
-// so an abandoned or revoked gateway cert self-expires within the window even if
-// the CRL is unavailable.
-const gatewayCertValidity = 45 * 24 * time.Hour
+// serverCertValidity is the fixed short-lived TTL for control-plane server
+// certificates: 45 days, distinct from the agent-cert ca.validity. Short-lived
+// so an abandoned or revoked one self-expires within the window on its own.
+const serverCertValidity = 45 * 24 * time.Hour
 
 // IssueCertificateFromCSR signs an agent Certificate Signing Request and returns
 // the certificate. The private key stays on the agent - this method only signs
@@ -131,31 +130,32 @@ func (ca *CA) IssueCertificateFromCSR(deviceID string, csrPEM []byte) (*Certific
 	return ca.issueFromCSR(deviceID, csrPEM, mtls.PeerClassAgent, ca.validity, nil)
 }
 
-// IssueGatewayCertificateFromCSR signs a gateway CSR (spec 31). The issued cert
-// carries CN = SerialNumber = gatewayID, the gateway peer-class SAN, the fixed
-// 45-day gateway validity, and — when hostname is non-empty — a server-chosen
-// DNS SAN for that hostname. The DNS SAN is load-bearing: an agent connects to
-// the gateway by hostname and verifies its server cert with STANDARD TLS
-// (ServerName match against DNS SANs), so a gateway cert without a DNS SAN
-// matching its public hostname cannot be verified. hostname is NOT a CSR-supplied
-// SAN: on enrollment it is the enroller's self-reported EnrollGateway request
-// hostname (proto format-validated only — there is no operator hostname
-// allow-list today, so a CONTROL_GATEWAY_ENROLL_TOKEN holder can request any DNS
-// SAN; the gateway identity/CN is still a server-minted ULID, so this is not
-// identity forgery — audit L1); on renewal it is the current cert's
-// previously-server-stamped DNS SAN. Callers reach this from GatewayAuthService
-// enrollment and InternalService renewal.
-func (ca *CA) IssueGatewayCertificateFromCSR(gatewayID string, csrPEM []byte, hostname string) (*Certificate, error) {
+// IssueServerCertificateFromCSR signs a CSR for a control-plane TLS SERVER —
+// today only the datastore integration tests, which need a cert something can
+// actually be served on. CN = SerialNumber = id, the control peer class, and a
+// server-chosen DNS SAN when hostname is non-empty.
+//
+// This replaces IssueServerCertificateFromCSR. That entry point had no
+// production caller once the gateway was deleted — GatewayAuthService
+// enrollment and InternalService renewal were its two callers, and both went
+// with the tier — but three tests still reached for it whenever they wanted a
+// server-capable certificate, which kept a live ability to mint gateway-class
+// identities in the shipped CA for no reason other than test convenience.
+//
+// The DNS SAN is server-chosen here, never CSR-supplied: issueFromCSR rejects a
+// CSR that requests SANs of its own, so a caller cannot mint a certificate for
+// a hostname the server did not assign.
+func (ca *CA) IssueServerCertificateFromCSR(id string, csrPEM []byte, hostname string) (*Certificate, error) {
 	var dnsNames []string
 	if hostname != "" {
 		dnsNames = []string{hostname}
 	}
-	return ca.issueFromCSR(gatewayID, csrPEM, mtls.PeerClassGateway, gatewayCertValidity, dnsNames)
+	return ca.issueFromCSR(id, csrPEM, mtls.PeerClassControl, serverCertValidity, dnsNames)
 }
 
 // issueFromCSR is the shared issuance body. deviceID becomes the cert CN and
 // Subject.SerialNumber; class selects the peer-class URI SAN stamped on the
-// cert; validity sets NotAfter; dnsNames are server-chosen DNS SANs (gateway
+// cert; validity sets NotAfter; dnsNames are server-chosen DNS SANs (a server
 // hostname). The CA authoritatively stamps the identity, class, and any DNS
 // SANs — caller-supplied SANs in the CSR are rejected below — so an enrolling
 // peer can never mint a different identity, peer class, or hostname than the
@@ -198,23 +198,20 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 	notAfter := now.Add(validity)
 
 	// Stamp the SPIFFE URI SAN that marks this cert's peer class. The
-	// gateway's mTLS middleware requires the agent class on its agent-facing
-	// listener, and the control server's internal listener requires the
-	// gateway class — so even if an agent cert leaks, the attacker cannot use
-	// it to reach the internal listener and read other devices' LUKS keys or
-	// LPS passwords. The class is server-chosen here, never CSR-supplied.
+	// agent listener requires the agent class, so a leaked control-class cert
+	// cannot be replayed against it and vice versa. The class is server-chosen
+	// here, never CSR-supplied.
 	peerURI, err := mtls.PeerClassURI(class)
 	if err != nil {
 		return nil, fmt.Errorf("build peer-class URI: %w", err)
 	}
 
-	// Agent certs are TLS clients only. A gateway cert is BOTH a client (to
-	// control's internal listener) AND the TLS server cert on its agent-facing
-	// mTLS listener, so it also needs ServerAuth — an agent verifies the
-	// gateway's server cert with the ServerAuth EKU, which a client-only cert
-	// would fail (spec 31).
+	// Agent certs are TLS clients only. A cert carrying a server hostname is
+	// also serving TLS on it, so it needs ServerAuth as well — a client-only
+	// cert fails a peer's ServerAuth check. Keyed on the DNS SAN rather than on
+	// a peer class, because it is the SAN that says this cert is served.
 	extKeyUsage := []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
-	if class == mtls.PeerClassGateway {
+	if len(dnsNames) > 0 {
 		extKeyUsage = append(extKeyUsage, x509.ExtKeyUsageServerAuth)
 	}
 
@@ -230,7 +227,7 @@ func (ca *CA) issueFromCSR(deviceID string, csrPEM []byte, class mtls.PeerClass,
 		ExtKeyUsage:           extKeyUsage,
 		BasicConstraintsValid: true,
 		URIs:                  []*url.URL{peerURI},
-		// Server-chosen DNS SANs (gateway hostname). Empty for agent certs.
+		// Server-chosen DNS SANs (a server hostname). Empty for agent certs.
 		DNSNames: dnsNames,
 	}
 
@@ -367,10 +364,10 @@ func NotAfterFromPEM(certPEM []byte) (time.Time, error) {
 // FingerprintFromCert computes the fingerprint of an already-parsed
 // certificate. It is byte-for-byte identical to FingerprintFromPEM /
 // IssueCertificateFromCSR (hex of SHA-256 over the DER), so a fingerprint the
-// control server stored or revoked matches one the gateway derives from the
+// control server stored or revoked matches one control derives from the
 // cert presented on an mTLS connection. cert.Raw is the DER encoding.
 func FingerprintFromCert(cert *x509.Certificate) string {
-	// Defensive: callers reach this from the gateway mTLS path where the leaf is
+	// Defensive: callers reach this from the mTLS path where the leaf is
 	// already verified non-nil, but never panic on a hot request path. An empty
 	// fingerprint matches no revoked entry — a nil cert is already rejected by
 	// the peer-class / TLS checks upstream, so this fails safe, not open.

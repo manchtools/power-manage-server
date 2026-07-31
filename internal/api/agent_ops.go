@@ -72,6 +72,14 @@ func (h *AgentOps) VerifyDevice(ctx context.Context, deviceID string) error {
 		return apiErrorCtx(ctx, ErrValidationFailed, connect.CodeInvalidArgument, "device_id is required")
 	}
 	if _, err := h.store.Repos().Device.Get(ctx, store.GetDeviceKey{ID: deviceID}); err != nil {
+		// Distinguish "no such device" from "the database did not answer".
+		// Collapsing both into NotFound tells an operator their fleet was
+		// deleted during an outage, and tells the agent to stop retrying
+		// something that would succeed once the database is back.
+		if !store.IsNotFound(err) {
+			h.logger.Error("device lookup failed", "device_id", deviceID, "error", err)
+			return apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "device lookup failed")
+		}
 		h.logger.Warn("device verification failed", "device_id", deviceID, "error", err)
 		return apiErrorCtx(ctx, ErrDeviceNotFound, connect.CodeNotFound, "device not found or deleted")
 	}
@@ -98,6 +106,13 @@ func (h *AgentOps) ValidateLuksToken(ctx context.Context, deviceID string, req *
 		DeviceID: deviceID,
 	})
 	if err != nil {
+		if !store.IsNotFound(err) {
+			h.logger.Error("LUKS token lookup failed", "device_id", deviceID, "error", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "token lookup failed")
+		}
+		// A token for another device is ALSO not-found here, deliberately: the
+		// lookup is scoped by deviceID, so a leaked token is inert and reveals
+		// nothing about whether it exists elsewhere.
 		h.logger.Warn("LUKS token validation failed", "device_id", deviceID, "error", err)
 		return nil, apiErrorCtx(ctx, ErrTokenNotFound, connect.CodeNotFound, "token is invalid or has expired")
 	}
@@ -138,6 +153,13 @@ func (h *AgentOps) GetLuksKey(ctx context.Context, deviceID string, req *pm.GetL
 		DeviceID: deviceID, ActionID: req.ActionId,
 	})
 	if err != nil {
+		if !store.IsNotFound(err) {
+			h.logger.Error("LUKS key lookup failed", "device_id", deviceID, "action_id", req.ActionId, "error", err)
+			return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "key lookup failed")
+		}
+		// Another device's key is also not-found: the lookup is scoped by
+		// deviceID, so this stays a uniform answer rather than an existence
+		// oracle.
 		return nil, apiErrorCtx(ctx, ErrLuksKeyNotFound, connect.CodeNotFound, "no LUKS key found for this action")
 	}
 

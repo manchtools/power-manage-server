@@ -413,18 +413,29 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	}
 
 	defer func() {
-		// Only clean up if this is still the current agent connection.
-		// A newer connection may have already replaced us via Register(),
-		// and we must not stop its worker or unregister it.
-		if current, ok := h.manager.Get(deviceID); ok && current == agent {
-			if h.workerMgr != nil {
-				h.workerMgr.StopWorker(deviceID)
-			}
+		// Remove OUR registration, and only ours. Both the identity check and
+		// the delete happen under the manager's lock, so a device reconnecting
+		// while this handler unwinds either wins the map before this runs — in
+		// which case nothing is removed — or after it, in which case the
+		// newcomer is untouched.
+		//
+		// The previous shape was Get-then-Unregister, twice, with the lock
+		// released in between: a reconnect landing in either gap had its fresh
+		// registration deleted and its worker stopped by the departing handler.
+		// The device believed it was connected while the server had no route to
+		// it, until whatever made it reconnect happened again.
+		if !h.manager.UnregisterIfCurrent(deviceID, agent) {
+			// Superseded — the replacement owns the worker now.
+			h.logger.Info("agent disconnected (superseded by a newer connection)", "device_id", deviceID)
+			return
 		}
-		// Re-check after StopWorker because it blocks during Shutdown().
-		// The agent may have reconnected and replaced us while we waited.
-		if current, ok := h.manager.Get(deviceID); ok && current == agent {
-			h.manager.Unregister(deviceID)
+		// Ours was the live registration and is now gone, so the shared
+		// per-device worker belongs to nobody. Stopping it AFTER the removal is
+		// what keeps this safe: a reconnect racing us re-registers and starts
+		// its own worker, and StartWorker on an already-running worker is the
+		// idempotent case, whereas stopping first could halt the newcomer's.
+		if h.workerMgr != nil {
+			h.workerMgr.StopWorker(deviceID)
 		}
 		h.logger.Info("agent disconnected", "device_id", deviceID)
 	}()

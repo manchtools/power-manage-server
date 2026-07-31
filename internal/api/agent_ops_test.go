@@ -421,3 +421,52 @@ func TestAgentOps_ValidateLuksToken_AcceptsATokenThisServerIssued(t *testing.T) 
 	require.Error(t, err, "a one-time token must not be redeemable twice")
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
+
+// A database that cannot answer is not a device that does not exist.
+//
+// Every agent-facing lookup mapped ANY repository error to NotFound. During an
+// outage the fleet is told, uniformly and authoritatively, that it has been
+// deleted — and NotFound is a terminal answer, so agents stop retrying work
+// that would succeed the moment the database returns. The same collapse hid
+// context cancellation and driver faults behind a message asserting the row is
+// gone.
+//
+// The uniform-NotFound rule this looked like is about AUTHORIZATION: a row that
+// exists but is not yours must be indistinguishable from one that does not
+// exist, so there is no existence oracle. It says nothing about infrastructure
+// failures, and the scoping that provides it is the deviceID in the query,
+// which is unchanged.
+//
+// Driven through a CLOSED store so the repository returns a real driver error
+// rather than a no-rows sentinel — the one distinction under test.
+func TestAgentOps_RepositoryFailureIsInternalNotNotFound(t *testing.T) {
+	ops, st, _ := newAgentOps(t)
+	ctx := context.Background()
+
+	deviceID := testutil.CreateTestDevice(t, st, "outage-host")
+	st.Close() // every subsequent query fails with a driver error, not ErrNoRows
+
+	t.Run("VerifyDevice", func(t *testing.T) {
+		err := ops.VerifyDevice(ctx, deviceID)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+			"a failed lookup reported as NotFound tells a live device it was decommissioned")
+	})
+
+	t.Run("ValidateLuksToken", func(t *testing.T) {
+		_, err := ops.ValidateLuksToken(ctx, deviceID, &pm.ValidateLuksTokenRequest{
+			DeviceId: deviceID,
+			Token:    testutil.NewID(),
+		})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+			"an unreachable database must not report a valid token as expired")
+	})
+
+	t.Run("GetLuksKey", func(t *testing.T) {
+		_, err := ops.GetLuksKey(ctx, deviceID, &pm.GetLuksKeyRequest{ActionId: testutil.NewID()})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
+			"an unreachable database must not report an existing LUKS key as absent — the agent would treat the volume as unmanaged")
+	})
+}

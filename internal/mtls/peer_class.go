@@ -21,7 +21,7 @@ import (
 // specific class so a leaked cert of one class (e.g. an agent
 // cert pulled from a compromised host) cannot be used to reach
 // a listener intended for another class (e.g. the control
-// server's InternalService, which accepts only gateway peers).
+// agent listener, which accepts only agent peers).
 //
 // The SPIFFE URI shape is standard, machine-readable, and puts the
 // class in a field (SAN URI) that X.509 parsers treat as structured
@@ -32,22 +32,22 @@ type PeerClass string
 const (
 	// PeerClassAgent identifies a managed-device cert issued by the
 	// control server's Register / RenewCertificate RPC. Agents
-	// present this on the gateway's public mTLS listener.
+	// present this on control's own mTLS listener.
 	PeerClassAgent PeerClass = "agent"
-	// PeerClassGateway identifies a gateway replica cert issued out
-	// of band by setup.sh. Gateways present this when calling the
-	// control server's InternalService (ProxyGetLuksKey, etc.).
-	PeerClassGateway PeerClass = "gateway"
-	// PeerClassControl identifies the control server's internal
-	// cert issued out of band by setup.sh. The control server
-	// presents this when calling the gateway's GatewayService
-	// (admin list/terminate fan-out).
+	// PeerClassControl identifies the control server's own cert,
+	// issued out of band by setup.sh and presented on its agent
+	// listener.
+	//
+	// Spec 41 removed PeerClassGateway. A class is a thing that can
+	// authenticate; keeping one for a tier that cannot be deployed left
+	// the CA able to mint identities no listener would ever admit, and
+	// left a value that reads as a supported topology.
 	PeerClassControl PeerClass = "control"
 )
 
 // peerClassURIScheme and peerClassURIHost match the URI SAN layout
 // that ca.IssueCertificateFromCSR emits for agent certs and that
-// setup.sh emits for gateway/control certs. Keeping them in one
+// setup.sh emits for the control cert. Keeping them in one
 // place makes it obvious where to add a new class.
 const (
 	peerClassURIScheme = "spiffe"
@@ -90,7 +90,7 @@ func PeerClassFromCert(cert *x509.Certificate) (PeerClass, error) {
 		return "", errors.New("certificate has no peer-class URI SAN")
 	}
 	switch found {
-	case PeerClassAgent, PeerClassGateway, PeerClassControl:
+	case PeerClassAgent, PeerClassControl:
 		return found, nil
 	default:
 		return "", fmt.Errorf("unknown peer class %q", found)
@@ -118,7 +118,7 @@ func PeerClassFromTLS(state *tls.ConnectionState) (PeerClass, error) {
 //
 // The classes are allowed as a set (variadic) rather than a single
 // class so a listener that serves multiple peer populations (not
-// currently needed, but possible — e.g. a GatewayService endpoint
+// currently needed, but possible — e.g. an endpoint
 // reachable by both control and admin CLI peers) does not need to
 // be wrapped twice.
 func RequirePeerClass(logger *slog.Logger, allowed ...PeerClass) func(http.Handler) http.Handler {
@@ -201,9 +201,8 @@ func fingerprintFromCert(cert *x509.Certificate) string {
 }
 
 // RequirePeerClassNotRevoked is RequirePeerClass plus a fail-closed CRL gate, for
-// the internal mTLS listeners (control's InternalService, gateway's control-class
-// GatewayService). After the peer-class checks pass it consults the revocation
-// list, so a revoked gateway/control cert is rejected at connect time rather
+// control's agent mTLS listener. After the peer-class checks pass it consults
+// the revocation list, so a revoked cert is rejected at connect time rather
 // than usable until its natural expiry (WS12 #2). Health endpoints bypass as in
 // RequirePeerClass.
 //
@@ -272,7 +271,7 @@ func allowedClassString(classes []PeerClass) string {
 // duplicating the format literal.
 func PeerClassURI(class PeerClass) (*url.URL, error) {
 	switch class {
-	case PeerClassAgent, PeerClassGateway, PeerClassControl:
+	case PeerClassAgent, PeerClassControl:
 	default:
 		return nil, fmt.Errorf("unknown peer class %q", class)
 	}
