@@ -2,6 +2,8 @@ package connection
 
 import (
 	"context"
+	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -188,8 +190,8 @@ func TestManager_ConcurrentAccess(t *testing.T) {
 
 // A device that stops reading must not strand the server.
 //
-// Stream.Send blocks on TCP backpressure with no deadline of its own, and the
-// send mutex is held for its whole duration. Unbounded, the first stalled write
+// A write blocks on TCP backpressure until the transport's deadline fires, and
+// the send mutex is held for its whole duration. Unbounded, the first stalled write
 // pins every later send to that device — including the terminate frame that ends
 // a live root shell — and pins Broadcast for every device queued behind it.
 func TestAgent_SendDoesNotBlockForeverOnAStalledDevice(t *testing.T) {
@@ -200,10 +202,10 @@ func TestAgent_SendDoesNotBlockForeverOnAStalledDevice(t *testing.T) {
 	m := NewManager()
 	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 
-	// A device that accepted the stream and then stopped reading it.
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	agent.write = func(*pm.ServerMessage) error { <-release; return nil }
+	// A device that accepted the stream and then stopped reading it, wired the
+	// way the real transport behaves: the write blocks until the armed deadline
+	// fires, then returns os.ErrDeadlineExceeded.
+	stalledDevice(t, agent)
 
 	done := make(chan error, 1)
 	go func() { done <- agent.Send(&pm.ServerMessage{}) }()
@@ -216,8 +218,7 @@ func TestAgent_SendDoesNotBlockForeverOnAStalledDevice(t *testing.T) {
 		t.Fatal("Send never returned — a device that stops reading blocks the server indefinitely")
 	}
 
-	// Fail closed: the connection is declared dead, which is also what makes the
-	// abandoned write goroutine safe (no later caller can reach the stream).
+	// Fail closed: the connection is declared dead rather than retried.
 	assert.True(t, agent.Terminated(),
 		"a device that cannot accept a frame must be disconnected, not left registered")
 }
@@ -233,9 +234,7 @@ func TestAgent_StalledDeviceDoesNotBlockAnother(t *testing.T) {
 	stalled := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 	healthy := m.Register(context.Background(), "device-2", "host2", "1.0.0", nil)
 
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	stalled.write = func(*pm.ServerMessage) error { <-release; return nil }
+	stalledDevice(t, stalled)
 
 	var delivered atomic.Int32
 	healthy.write = func(*pm.ServerMessage) error { delivered.Add(1); return nil }
@@ -254,8 +253,7 @@ func TestAgent_StalledDeviceDoesNotBlockAnother(t *testing.T) {
 }
 
 // After a timeout the connection is closed, so a retry is refused outright
-// rather than queueing behind the abandoned write — the property that keeps
-// exactly one goroutine in the non-concurrency-safe stream.
+// instead of entering the stream again.
 func TestAgent_SendAfterTimeoutIsRefusedNotQueued(t *testing.T) {
 	restore := SendTimeout
 	SendTimeout = 50 * time.Millisecond
@@ -264,10 +262,7 @@ func TestAgent_SendAfterTimeoutIsRefusedNotQueued(t *testing.T) {
 	m := NewManager()
 	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
 
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	var writes atomic.Int32
-	agent.write = func(*pm.ServerMessage) error { writes.Add(1); <-release; return nil }
+	writes := stalledDevice(t, agent)
 
 	require.ErrorIs(t, agent.Send(&pm.ServerMessage{}), ErrSendTimeout)
 
@@ -278,4 +273,40 @@ func TestAgent_SendAfterTimeoutIsRefusedNotQueued(t *testing.T) {
 		"the retry must be refused immediately, not wait out another timeout")
 	assert.Equal(t, int32(1), writes.Load(),
 		"only the first send may enter the stream — connect streams are not safe for concurrent use")
+}
+
+// stalledDevice wires an agent to behave like a device that accepted the stream
+// and then stopped reading: the write blocks until the deadline the transport
+// armed for it expires, then returns os.ErrDeadlineExceeded — exactly what
+// net/http reports when a write deadline fires.
+//
+// Faking the DEADLINE rather than the timeout is the point. The bound under test
+// belongs to the transport, so a fake that ignored the deadline and returned on
+// a timer of its own would pass whether or not Send ever armed one.
+func stalledDevice(t *testing.T, a *Agent) *atomic.Int32 {
+	t.Helper()
+	var writes atomic.Int32
+	deadline := make(chan time.Time, 1)
+
+	a.SetWriteDeadlineFunc(func(d time.Time) error {
+		if d.IsZero() { // cleared after the write
+			return nil
+		}
+		select {
+		case deadline <- d:
+		default:
+		}
+		return nil
+	})
+	a.write = func(*pm.ServerMessage) error {
+		writes.Add(1)
+		select {
+		case d := <-deadline:
+			time.Sleep(time.Until(d))
+			return os.ErrDeadlineExceeded
+		case <-time.After(5 * time.Second):
+			return errors.New("Send never armed a write deadline — the write would block forever on a real transport")
+		}
+	}
+	return &writes
 }

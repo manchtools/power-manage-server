@@ -368,3 +368,56 @@ func TestAgentOps_SyncActions_CarriesNoLpsPublicKey(t *testing.T) {
 	assert.False(t, found,
 		"SyncActionsResponse still carries LpsPublicKey; the seal it fed was removed with the relay it defended against")
 }
+
+// A token this server ISSUES must be redeemable through the path that consumes
+// it. Nothing tested that round trip: one test asserted the issued token is 64
+// characters, another exercised redemption with a fixture token, and no test
+// carried a real token from one to the other.
+//
+// The gap had teeth. `ValidateLuksTokenRequest.Token` was tagged
+// `required,uuid` while the issuer mints 32 random bytes as 64 hex characters —
+// a token that has never been a UUID. It went unnoticed because the redemption
+// path did not run the validator; the moment it did, every legitimate operator
+// redemption started failing with InvalidArgument, and only in production,
+// because the fixtures were UUIDs.
+//
+// This drives BOTH production handlers, so the contract cannot drift on either
+// side without failing here.
+func TestAgentOps_ValidateLuksToken_AcceptsATokenThisServerIssued(t *testing.T) {
+	ops, st, enc := newAgentOps(t)
+	ctx := context.Background()
+
+	userID := testutil.CreateTestUser(t, st, testutil.NewID()+"@user.com", "pass", "user")
+	deviceID := testutil.CreateTestDevice(t, st, "luks-roundtrip-host")
+	actionID := testutil.CreateTestAction(t, st, userID, "Encrypt Disk", int(pm.ActionType_ACTION_TYPE_ENCRYPTION))
+	testutil.AssignDeviceToUser(t, st, userID, deviceID, userID)
+
+	// Issue through the production handler — never a hand-built token.
+	devices := api.NewDeviceHandler(st, enc, slog.Default(), api.NoOpSigner{})
+	issued, err := devices.CreateLuksToken(testutil.UserContext(userID), connect.NewRequest(&pm.CreateLuksTokenRequest{
+		DeviceId: deviceID,
+		ActionId: actionID,
+	}))
+	require.NoError(t, err)
+	require.NotEmpty(t, issued.Msg.Token)
+
+	// Redeem it through the production path the agent uses. DeviceId is set
+	// because the SDK client sets it (sdk/client.go ValidateLuksToken) and the
+	// request tags it required; the value the server TRUSTS is still the stream
+	// argument, not this field.
+	got, err := ops.ValidateLuksToken(ctx, deviceID, &pm.ValidateLuksTokenRequest{
+		DeviceId: deviceID,
+		Token:    issued.Msg.Token,
+	})
+	require.NoError(t, err,
+		"the server refused a token it had just issued — the redemption contract does not match the issued format")
+	assert.Equal(t, actionID, got.ActionId, "redemption must resolve to the action the token was minted for")
+
+	// One-time: the second redemption must fail, or a leaked token is reusable.
+	_, err = ops.ValidateLuksToken(ctx, deviceID, &pm.ValidateLuksTokenRequest{
+		DeviceId: deviceID,
+		Token:    issued.Msg.Token,
+	})
+	require.Error(t, err, "a one-time token must not be redeemable twice")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}

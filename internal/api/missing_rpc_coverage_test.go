@@ -392,7 +392,8 @@ func TestDeviceHandler_CreateLuksToken_ReturnsTokenAndCliCommand(t *testing.T) {
 		ActionId: actionID,
 	}))
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.Token, 64, "the token must be a fixed-width 64-char identifier — operator-readability + collision-resistance contract")
+	require.Len(t, resp.Msg.Token, 26,
+		"the token must be a ULID — the redemption contract validates it as one, and identifiers are ULIDs tree-wide (F-15)")
 	assert.Contains(t, resp.Msg.CliCommand, resp.Msg.Token, "the CLI command must embed the same token that was returned")
 }
 

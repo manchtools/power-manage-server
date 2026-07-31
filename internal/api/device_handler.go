@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/hibiken/asynq"
+	"github.com/oklog/ulid/v2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -1141,12 +1142,18 @@ func (h *DeviceHandler) CreateLuksToken(ctx context.Context, req *connect.Reques
 	}
 	complexity := int32(luksParams.UserPassphraseComplexity)
 
-	// Generate one-time token
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeInternal, "failed to generate token")
-	}
-	token := hex.EncodeToString(tokenBytes)
+	// Generate the one-time token. A ULID like every other identifier in the
+	// tree (spec 20 / F-15) — the contract validates it as one, and the issuer
+	// minted a 64-char hex string that no validator has ever accepted.
+	//
+	// crypto/rand rather than ulid.Make(): Make() draws from the package's
+	// MONOTONIC entropy source, which derives each value in a given millisecond
+	// from the previous one. That is exactly right for identifiers, which is
+	// what it exists for, and wrong here — this value is a bearer secret, and an
+	// attacker who obtains or triggers one token could derive a sibling issued
+	// in the same millisecond. The archtest clock rule exempts
+	// ulid.Timestamp(time.Now()) as ID generation.
+	token := ulid.MustNew(ulid.Timestamp(time.Now()), rand.Reader).String()
 
 	// WS10 #3: store only the SHA-256 hash of the token, never the
 	// plaintext (consistent with registration/terminal tokens). The

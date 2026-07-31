@@ -149,7 +149,7 @@ func main() {
 		// Redact userinfo before logging — the validator rejects
 		// URLs that contain credentials, but those credentials
 		// shouldn't land in the startup error line regardless.
-		logger.Error("CONTROL_PUBLIC_URL is invalid", "control_url", api.RedactControlURL(cfg.ControlURL), "error", err)
+		logger.Error("CONTROL_AGENT_URL is invalid", "agent_url", api.RedactControlURL(cfg.ControlURL), "error", err)
 		os.Exit(1)
 	}
 
@@ -576,9 +576,17 @@ func main() {
 	// handler test — the tests inject the device id directly — and then fails
 	// EVERY real agent call with Unauthenticated, because the key the handler
 	// reads is never set.
-	internalMux.Handle(agentPath,
-		mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(
-			agenthandler.MTLSMiddleware(agentH, revocation, logger)))
+	// Only when there is a queue to dispatch through. Without one the handler
+	// has no worker manager, and the first agent to connect would panic the
+	// process on its Hello — after the connection had already been registered,
+	// so the device would be recorded as connected by a server that just died.
+	// The boot warning above already promises the listener is not started; this
+	// is what makes that true.
+	if valkey != nil {
+		internalMux.Handle(agentPath,
+			mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(
+				agenthandler.MTLSMiddleware(agentH, revocation, logger)))
+	}
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

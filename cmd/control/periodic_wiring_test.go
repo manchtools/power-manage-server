@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,15 +27,27 @@ func TestEveryPeriodicWorkerIsStarted(t *testing.T) {
 	require.NotEmpty(t, launchers,
 		"no start* workers discovered in periodic.go — the scan is broken and this would pass vacuously")
 
-	callSites := nonTestSourceExcept(t, "periodic.go")
+	callSites := stripComments(nonTestSourceExcept(t, "periodic.go"))
 	require.NotEmpty(t, callSites, "no non-test sources read — the scan is broken")
 
 	for _, m := range launchers {
 		name := m[1]
-		assert.Containsf(t, callSites, name+"(",
-			"%s is declared in periodic.go but never called outside it — the worker is defined and never runs, "+
-				"so whatever it maintains is silently unmaintained in production", name)
+		// Not assert.Contains: on failure it dumps the whole concatenated
+		// package source, which buries the one line that matters.
+		if !strings.Contains(callSites, name+"(") {
+			t.Errorf("%s is declared in periodic.go but never called outside it — the worker is defined and "+
+				"never runs, so whatever it maintains is silently unmaintained in production", name)
+		}
 	}
+}
+
+// stripComments removes // and /* */ comments so a worker merely NAMED in prose
+// cannot satisfy the guard. Without this the check passes on a comment reading
+// "startRevocationSweeper(...) runs daily" while nothing calls it — the exact
+// shape of the defect this test exists to catch.
+func stripComments(src string) string {
+	src = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(src, "")
+	return regexp.MustCompile(`(?m)//.*$`).ReplaceAllString(src, "")
 }
 
 // nonTestSourceExcept concatenates the package's non-test Go sources, skipping

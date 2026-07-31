@@ -3,7 +3,9 @@ package connection
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -28,11 +30,19 @@ type Agent struct {
 	// no interface, so a test cannot otherwise produce the case that matters
 	// here — a write that blocks because the device stopped reading.
 	write func(*pm.ServerMessage) error
+
+	// setWriteDeadline arms the TRANSPORT's write deadline, so a blocked write
+	// returns instead of being abandoned. Production wires it to
+	// http.ResponseController.SetWriteDeadline; nil means the transport offers
+	// no deadline support and Send falls back to an unbounded write.
+	setWriteDeadline func(time.Time) error
+
+	// now is the clock seam, copied from the manager at Register.
+	now func() time.Time
 }
 
 // SendTimeout bounds a single frame's write to a device. A package var so tests
-// can shorten it; there is no per-call deadline because connect's BidiStream.Send
-// takes no context and blocks on the underlying HTTP/2 write.
+// can shorten it.
 //
 // Any value is a trade-off between tolerating a briefly congested link and
 // holding server-side state for a device that is gone. Ten seconds is far longer
@@ -43,17 +53,22 @@ var SendTimeout = 10 * time.Second
 // Send sends a message to the agent, bounded by SendTimeout.
 //
 // The bound matters because a device that stops reading — suspended laptop,
-// black-holed route, hung agent — leaves Stream.Send blocked on TCP backpressure
+// black-holed route, hung agent — leaves the write blocked on TCP backpressure
 // indefinitely. Unbounded, that stalls every later send to the same device
 // behind the mutex, including the terminate frame that ends a live root shell,
 // and stalls Broadcast for every device queued behind it.
 //
-// On timeout the connection is declared dead rather than retried. That is also
-// what makes this safe: the abandoned write goroutine still owns Stream.Send,
-// and connect streams are not safe for concurrent use, so no other caller may
-// ever reach it. Cancelling the context guarantees that — every later Send
-// short-circuits on the ctx check below, and the cancellation tears the stream
-// down, which unblocks the abandoned write and lets its goroutine exit.
+// The bound is the TRANSPORT's write deadline, and it has to be: connect streams
+// are not safe for concurrent use, and the handler owns the stream only until it
+// returns. An earlier version ran the write on its own goroutine and abandoned
+// it on timeout — which bounded the caller but left that goroutine inside
+// Stream.Send while cancellation let the handler return and connect finalise the
+// response underneath it. That traded a wedged device for a data race. Here the
+// write is synchronous: the deadline makes it return on its own, so there is
+// never a write in flight that nobody is waiting for.
+//
+// A transport with no deadline support leaves the write unbounded — the
+// pre-existing behaviour, and better than pretending to bound it.
 func (a *Agent) Send(msg *pm.ServerMessage) error {
 	// Acquire the send lock FIRST, then check the context. If we checked
 	// the context before locking, Close() could race in between — cancelling
@@ -72,20 +87,35 @@ func (a *Agent) Send(msg *pm.ServerMessage) error {
 		return ErrAgentNotConnected
 	}
 
-	done := make(chan error, 1) // buffered: the goroutine must never block on a timed-out send
-	go func() { done <- a.write(msg) }()
+	if a.setWriteDeadline != nil && a.now != nil {
+		if err := a.setWriteDeadline(a.now().Add(SendTimeout)); err != nil {
+			// The transport refused a deadline. Send anyway rather than drop a
+			// frame we could deliver, but the write is then unbounded.
+			a.setWriteDeadline = nil
+		} else {
+			// Clear it afterwards so an idle stream is not torn down by a
+			// deadline left armed from the previous frame.
+			defer func() { _ = a.setWriteDeadline(time.Time{}) }()
+		}
+	}
 
-	timer := time.NewTimer(SendTimeout)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
+	err := a.write(msg)
+	if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
 		// Fail closed: a device that cannot accept a frame is not connected,
 		// and leaving it registered would keep offering it work it never takes.
 		a.cancel()
 		return ErrSendTimeout
 	}
+	return err
+}
+
+// SetWriteDeadlineFunc installs the transport write-deadline seam. The agent
+// stream handler wires this from http.ResponseController once it has the
+// response writer; without it Send cannot bound a stalled write.
+func (a *Agent) SetWriteDeadlineFunc(fn func(time.Time) error) {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+	a.setWriteDeadline = fn
 }
 
 // Close closes the agent connection.
@@ -146,6 +176,7 @@ func (m *Manager) Register(parentCtx context.Context, deviceID, hostname, versio
 	if stream != nil {
 		agent.write = stream.Send
 	}
+	agent.now = m.now
 
 	m.mu.Lock()
 	// Close existing connection if any

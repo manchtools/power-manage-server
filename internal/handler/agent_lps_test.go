@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,7 @@ import (
 
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/devicedispatch"
 )
 
 // The dispatch case for StoreLpsPasswords, tested directly.
@@ -89,4 +92,44 @@ func TestHandleAgentMessage_RoutesStoreLpsPasswords(t *testing.T) {
 		"reaching the send path proves the message was routed, not dropped as unknown")
 	require.NotNil(t, ops.lastStoreLps,
 		"StoreLpsPasswords was not dispatched — an agent's irreversible rotation would be discarded")
+}
+
+// A control server with no task queue must refuse the agent stream, not crash.
+//
+// main.go declines to mount AgentService without a queue, but the handler is
+// still constructed, and the stream path then reads its worker manager on the
+// device's first frame. The nil arrives as a TYPED nil — a non-nil interface
+// holding a nil *DeviceWorkerManager, which is exactly how main.go passes it —
+// so the obvious `h.workerMgr == nil` guard downstream was false and the frame
+// dereferenced it, panicking the process with the device already registered as
+// connected.
+//
+// Asserting on the normalisation is asserting on the fix: everything downstream
+// is a plain nil check, which is only correct because of this.
+func TestAgentHandler_TypedNilWorkerManagerIsNormalised(t *testing.T) {
+	var typedNil *devicedispatch.DeviceWorkerManager
+
+	// The premise — that a typed nil is a NON-nil interface — is not asserted
+	// here: staticcheck proves it statically (SA4023 rejects the comparison as
+	// never true), which is stronger than a runtime check and is why the guard
+	// under test has to exist at all.
+	//
+	// The assertion below uses a plain Go comparison, not testify: Nil/NotNil
+	// are reflection-based and report a typed nil as nil, so they would pass
+	// whether or not the normalisation exists.
+
+	h := NewAgentHandlerWithTLS(
+		connection.NewManager(),
+		nil,
+		nil,
+		typedNil,
+		"test",
+		time.Minute,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+
+	if h.workerMgr != nil {
+		t.Fatal("a nil worker manager reached the handler as a NON-nil interface — every guard against it is " +
+			"decorative, and the first agent frame dereferences it and panics the process")
+	}
 }

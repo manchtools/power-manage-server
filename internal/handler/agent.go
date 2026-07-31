@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -92,6 +93,15 @@ func NewAgentHandler(
 	heartbeatInterval time.Duration,
 	logger *slog.Logger,
 ) *AgentHandler {
+	// A nil *DeviceWorkerManager arrives here as a NON-nil interface value
+	// holding a nil pointer, so every later `h.workerMgr == nil` check would be
+	// false and the first Hello would dereference it. Normalise it once, here,
+	// so the guard downstream is real rather than decorative.
+	if workerMgr != nil {
+		if v := reflect.ValueOf(workerMgr); v.Kind() == reflect.Ptr && v.IsNil() {
+			workerMgr = nil
+		}
+	}
 	return &AgentHandler{
 		manager:           manager,
 		aqClient:          aqClient,
@@ -114,6 +124,15 @@ func NewAgentHandlerWithTLS(
 	heartbeatInterval time.Duration,
 	logger *slog.Logger,
 ) *AgentHandler {
+	// A nil *DeviceWorkerManager arrives here as a NON-nil interface value
+	// holding a nil pointer, so every later `h.workerMgr == nil` check would be
+	// false and the first Hello would dereference it. Normalise it once, here,
+	// so the guard downstream is real rather than decorative.
+	if workerMgr != nil {
+		if v := reflect.ValueOf(workerMgr); v.Kind() == reflect.Ptr && v.IsNil() {
+			workerMgr = nil
+		}
+	}
 	return &AgentHandler{
 		manager:           manager,
 		aqClient:          aqClient,
@@ -150,6 +169,12 @@ func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger
 			next.ServeHTTP(w, r)
 			return
 		}
+
+		// Carry the transport's write-deadline control down to the stream
+		// handler. connect gives the handler no access to the ResponseWriter,
+		// and without a deadline a write to a device that stopped reading
+		// blocks with nothing able to interrupt it.
+		r = r.WithContext(withWriteDeadliner(r.Context(), http.NewResponseController(w)))
 
 		// Extract device ID from client certificate
 		deviceID, err := mtls.DeviceIDFromRequest(r)
@@ -363,7 +388,26 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	// Register the agent connection
 	agent := h.manager.Register(ctx, deviceID, hello.Hostname, hello.AgentVersion, stream)
 
+	// Bound writes to this device on the transport itself. Without this a send
+	// to a device that has stopped reading blocks forever, wedging every later
+	// send to it — including the frame that terminates a live root shell.
+	if wd := writeDeadlinerFrom(ctx); wd != nil {
+		agent.SetWriteDeadlineFunc(wd.SetWriteDeadline)
+	} else {
+		h.logger.Warn("no transport write-deadline control on this stream; writes to this device are unbounded",
+			"device_id", deviceID)
+	}
+
 	// Start per-device Asynq worker to process action dispatches
+	// Defence in depth against the wiring that main.go now refuses: a handler
+	// built without a worker manager must reject the stream rather than panic
+	// on the device's first frame, which would kill the process with the
+	// connection already registered.
+	if h.workerMgr == nil {
+		h.logger.Error("agent stream refused: no device worker manager (no task queue configured)",
+			"device_id", deviceID)
+		return connect.NewError(connect.CodeUnavailable, errors.New("server cannot dispatch to devices"))
+	}
 	if err := h.workerMgr.StartWorker(deviceID); err != nil {
 		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
 	}
@@ -373,7 +417,9 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		// A newer connection may have already replaced us via Register(),
 		// and we must not stop its worker or unregister it.
 		if current, ok := h.manager.Get(deviceID); ok && current == agent {
-			h.workerMgr.StopWorker(deviceID)
+			if h.workerMgr != nil {
+				h.workerMgr.StopWorker(deviceID)
+			}
 		}
 		// Re-check after StopWorker because it blocks during Shutdown().
 		// The agent may have reconnected and replaced us while we waited.
