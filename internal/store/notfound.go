@@ -8,19 +8,16 @@ import (
 )
 
 // ErrNotFound is the canonical "no row matched" sentinel for store
-// reads. Handlers, projectors, scim/idp glue — anything outside the
-// store package — must test for not-found via store.IsNotFound(err)
-// rather than reaching for pgx.ErrNoRows directly. The pgx symbol is
-// an implementation detail of the Postgres backend; pinning the
-// abstraction here lets a future backend register its own no-rows
-// error without touching every caller. See tracker #242.
+// reads. Code outside this package must test for it via IsNotFound
+// rather than reaching for a driver error: the driver symbol is an
+// implementation detail of the Postgres backend, and pinning the
+// recognizer here lets a future backend register its own no-rows error
+// without touching call sites.
 var ErrNotFound = errors.New("not found")
 
-// IsNotFound reports whether err signals a missing row from any
-// supported storage backend. Today that's pgx.ErrNoRows or
-// ErrNotFound itself (callers that already wrap with errors.Join
-// also match). Future backends extend this function — no other
-// recognizer should be needed at call sites.
+// IsNotFound reports whether err signals a missing row. Extending this
+// function is how a new backend joins; no other recognizer should be
+// needed at call sites.
 func IsNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -28,45 +25,46 @@ func IsNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows)
 }
 
-// ErrVersionConflict is the canonical "optimistic-concurrency lost"
-// sentinel for AppendEvent writes. The Postgres backend recognises a
-// unique-violation on (stream_type, stream_id, stream_version) as the
-// conflict signal (`pgconn.PgError.Code == "23505"`); a future MySQL /
-// SQLite backend would map ER_DUP_ENTRY 1062 / SQLITE_CONSTRAINT_UNIQUE
-// onto the same sentinel without callers needing to know.
-var ErrVersionConflict = errors.New("version conflict")
-
-// IsVersionConflict reports whether err signals a stream-version
-// collision on AppendEvent. Mirrors IsNotFound — the only intended
-// recognizer for OCC failures outside the store package.
-func IsVersionConflict(err error) bool {
-	if err == nil {
-		return false
+// translateNotFound maps the driver's no-rows error to ErrNotFound at
+// the point a read leaves this package. The original error is dropped
+// on purpose: callers depend on IsNotFound and have no use for the
+// backend-specific cause. Every other error passes through unchanged
+// so a wrapping caller keeps the underlying chain.
+func translateNotFound(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
 	}
-	if errors.Is(err, ErrVersionConflict) {
-		return true
-	}
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-		return true
-	}
-	return false
+	return err
 }
 
-// isDeadlock reports whether err is a Postgres deadlock (SQLSTATE
-// 40P01). A deadlock aborts the whole transaction, so — like a version
-// conflict — the batch-append path (AppendEvents) retries the entire
-// transaction rather than surfacing a transient failure. Two overlapping
-// multi-stream batches that lock the same streams in opposite orders are
-// the classic trigger; retrying resolves them.
-//
-// Deliberately NOT folded into IsVersionConflict: a deadlock is not an
-// optimistic-concurrency loss, and IsVersionConflict's handler callers
-// map it to a 409/Aborted status where a deadlock does not belong.
-func isDeadlock(err error) bool {
+// ErrConflict is the canonical "a conditional write lost" sentinel.
+// Consume-once tokens, delivery transitions, registration, revocation
+// and the other semantic state machines write conditionally; when the
+// condition no longer holds, the caller sees this rather than a
+// backend-specific constraint error. The Postgres backend recognises a
+// unique violation (SQLSTATE 23505) as the signal.
+var ErrConflict = errors.New("conflict")
+
+// IsConflict reports whether err signals a lost conditional write.
+func IsConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrConflict) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// IsAppendOnlyViolation reports whether err is the audit log's
+// append-only guard refusing an UPDATE, DELETE or TRUNCATE. The guard
+// raises SQLSTATE 23001 (restrict_violation), which no ordinary write
+// in this schema produces.
+func IsAppendOnlyViolation(err error) bool {
 	if err == nil {
 		return false
 	}
 	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+	return errors.As(err, &pgErr) && pgErr.Code == "23001"
 }

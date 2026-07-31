@@ -24,9 +24,10 @@ const deleteUserEncryptionKey = `-- name: DeleteUserEncryptionKey :execrows
 DELETE FROM user_encryption_keys WHERE user_id = $1
 `
 
-// THE crypto-shred: destroying the wrapped DEK makes every copy of the
-// user's PII (live log, archives, future rebuilds) permanently
-// unreadable. Called only from the shared delete-with-shred flow.
+// The erasure itself: destroying the wrapped key makes every copy of
+// the subject's sealed data — live rows, archives, backups —
+// permanently unreadable at once. There is no recovery path, which is
+// the point.
 func (q *Queries) DeleteUserEncryptionKey(ctx context.Context, userID string) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteUserEncryptionKey, userID)
 	if err != nil {
@@ -58,12 +59,14 @@ type InsertUserEncryptionKeyParams struct {
 	WrappedDek string `json:"wrapped_dek"`
 }
 
-// Per-user DEK envelope (spec 19 / ADR 0033). The wrapped_dek is the
-// KEK-wrapped data-encryption key every PII field of the user's events
-// is sealed under; deleting the row IS the erasure ("crypto-shred").
-// ON CONFLICT DO NOTHING: minting is first-write-wins so a re-provision
-// race (e.g. SCIM retrying a create) can never silently REPLACE a DEK
-// that already sealed PII — replacing it would be an accidental shred.
+// Per-subject data-encryption keys. wrapped_dek is the subject's DEK
+// wrapped under the deployment KEK; every value sealed for that
+// subject — including class-three audit detail, which is never
+// deleted — is readable only through it.
+// ON CONFLICT DO NOTHING: minting is first-write-wins, so a
+// re-provision race can never silently REPLACE a key that has already
+// sealed data. Replacing it would be an accidental, irreversible
+// erasure.
 func (q *Queries) InsertUserEncryptionKey(ctx context.Context, arg InsertUserEncryptionKeyParams) (int64, error) {
 	result, err := q.db.Exec(ctx, insertUserEncryptionKey, arg.UserID, arg.WrappedDek)
 	if err != nil {
