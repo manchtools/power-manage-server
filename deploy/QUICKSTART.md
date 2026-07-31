@@ -71,7 +71,7 @@ docker compose up -d
 ## What the installer does NOT do
 
 - **Install Docker.** Use [the official convenience script](https://docs.docker.com/engine/install/) or your distro's package manager first.
-- **Configure DNS.** You need an A/AAAA record pointing your `CONTROL_DOMAIN` at this host, plus one for the terminal hostname if terminal sessions are enabled. Agents connect to `CONTROL_DOMAIN` directly — there is no separate gateway host.
+- **Configure DNS.** You need A/AAAA records for BOTH `CONTROL_DOMAIN` (web UI, API, terminal) and `AGENT_DOMAIN` (the agent mTLS stream) pointing at this host. They must be different names: Traefik dispatches :443 by SNI, terminating TLS for the web host and passing the agent host through to control's mTLS listener, so one name cannot serve both.
 - **Open firewall ports.** Traefik binds `:80` (LE http-01 challenge + redirect-to-https) and `:443` (everything else) on the host. Open those before the first start so Let's Encrypt can issue certificates.
 - **Migrate from a pre-rc11 deploy.** This installer is for fresh installs and same-release upgrades. Migrating across breaking releases follows the per-release migration runbook.
 

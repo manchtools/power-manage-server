@@ -20,7 +20,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/ca"
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/datastore"
-	"github.com/manchtools/power-manage/server/internal/gateway"
+	"github.com/manchtools/power-manage/server/internal/devicedispatch"
 	agenthandler "github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -532,7 +532,7 @@ func main() {
 	// just cannot carry agent traffic, and says so.
 	var (
 		aqClient  taskqueue.Enqueuer
-		workerMgr *gateway.DeviceWorkerManager
+		workerMgr *devicedispatch.DeviceWorkerManager
 	)
 	if valkey != nil {
 		aqClient = valkey.aqClient

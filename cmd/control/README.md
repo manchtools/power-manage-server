@@ -11,13 +11,13 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 - **Event Store**: All state changes are recorded as immutable events in PostgreSQL
 - **Projections**: Read models are automatically updated via database triggers
 - **Asynq Task Queue**: Action dispatching and agent event processing via Valkey-backed task queues
-- **InternalService**: Connect-RPC service for gateway to proxy credential-bearing operations
+- **AgentService**: the agent's bidirectional mTLS stream, terminated on control's own listener (`:8082`)
 
 ```
 ┌─────────────────────┐     ┌─────────────────────┐
 │   Control Server    │───▶│     PostgreSQL      │
-│  (Connect-RPC API)  │     │   - events table    │
-│  (InternalService)  │     │   - projections     │
+│  :8081 API (JWT)    │     │   - events table    │
+│  :8082 agent mTLS   │     │   - projections     │
 └─────────┬───────────┘     │   - triggers        │
           │                 └─────────────────────┘
           │
@@ -27,7 +27,8 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 │   (JWT Auth)        │     │   - device:* queues │
 └─────────────────────┘     │   - control:inbox   │
                             │   - search indexes  │
-                            │   → Gateway dispatch│
+                            │   → per-device      │
+                            │     dispatch workers│
                             └─────────────────────┘
 ```
 
@@ -45,7 +46,7 @@ The Control Server uses a **CQRS/Event Sourcing** architecture:
 | `-cert-validity` | `8760h` (1 year) | Certificate validity duration |
 | `-log-level` | `info` | Log level (debug, info, warn, error) |
 | `-log-format` | `text` | Log format (text, json) |
-| `-gateway-url` | (required) | Gateway URL returned to agents during registration |
+| `-agent-url` | (required) | URL agents dial for the mTLS stream, returned during registration. Must resolve to the agent listener, not the web UI |
 | `-admin-email` | (optional) | Initial admin user email |
 | `-admin-password` | (optional) | Initial admin user password |
 | `-dynamic-group-eval-interval` | `1h` | Interval for evaluating queued dynamic groups (min 30m, max 8h, 0 to disable) |
@@ -62,7 +63,7 @@ Environment variables override command-line flags:
 | `CONTROL_JWT_SECRET` | JWT signing secret. **Must decode (hex or base64) to ≥32 random bytes** — a bare passphrase is rejected at boot. Generate with `openssl rand -base64 48` or `openssl rand -hex 32`. |
 | `CONTROL_CA_CERT` | CA certificate path |
 | `CONTROL_CA_KEY` | CA private key path |
-| `CONTROL_GATEWAY_URL` | Gateway URL returned to agents during registration |
+| `CONTROL_AGENT_URL` | URL agents dial for the mTLS stream, returned during registration. Must resolve to the agent listener (`AGENT_DOMAIN`), never the web UI origin |
 | `CONTROL_ADMIN_EMAIL` | Bootstrap admin email (first-boot only; see [Bootstrap Admin](#bootstrap-admin)) |
 | `CONTROL_ADMIN_PASSWORD` | Bootstrap admin password (first-boot only; see [Bootstrap Admin](#bootstrap-admin)). When set it must be **≥12 characters**; leave empty after first boot to skip bootstrap. |
 | `CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL` | Interval for evaluating queued dynamic groups (e.g., `30m`, `1h`, `4h`) |
@@ -83,7 +84,6 @@ Environment variables override command-line flags:
 | `CONTROL_RETENTION_ARCHIVE_PATH` | **Absolute** directory for sealed retention archives. Required when enabled — the archives are the ONLY copy of pruned history; back them up together with `user_encryption_keys`. |
 | `CONTROL_RETENTION_INTERVAL` | How often the retention worker checks for prunable history (default `1h`, clamped `10m`–`24h`) |
 | `CONTROL_INVENTORY_SCHEDULER_ENABLED` | Enable the periodic inventory collection scheduler (spec 22; default: `true`). Every 15 minutes it sends a CA-signed inventory request to each connected device whose inventory is older than its resolved interval (device override > group minimum > 24 h default). Set to `false` for change-frozen environments that must not run osquery on a cadence — manual refresh and the `inventory_overdue` flag are unaffected. |
-| `PM_GATEWAY_ENROLL_TOKEN` | Shared bootstrap token for gateway self-enrollment (spec 31) — the **same** `PM_*` cross-service secret the gateway reads (like `PM_TASK_SIGNING_KEY`). A gateway presents it to `GatewayAuthService.EnrollGateway` and receives a per-gateway mTLS certificate whose CN is a fresh ULID `gateway_id`. Generate with `openssl rand -base64 32`. Empty **disables** enrollment (every attempt is rejected). Rotate + restart to stop *future* enrollments with a leaked token — an already-enrolled gateway's certificate must be revoked separately via `RevokeGatewayCertificate` (token rotation alone does not cut off a gateway that already holds a valid cert). |
 
 ## Setup
 
@@ -126,7 +126,7 @@ export CONTROL_JWT_SECRET="$(openssl rand -base64 48)"
 export CONTROL_ENCRYPTION_KEY="$(openssl rand -hex 32)"
 export CONTROL_CA_CERT="./dev/certs/ca.crt"
 export CONTROL_CA_KEY="./dev/certs/ca.key"
-export CONTROL_GATEWAY_URL="https://gateway.example.com"
+export CONTROL_AGENT_URL="https://agents.example.com"
 export CONTROL_ADMIN_EMAIL="admin@localhost.com"
 export CONTROL_ADMIN_PASSWORD="$(openssl rand -base64 18)"   # ≥12 chars; rotate after first login
 
@@ -688,7 +688,7 @@ The Control Server uses **dynamic role-based access control** with:
 
 Beyond actions (ADR 0003), the Control Server **CA-signs the four root
 stream-RPC dispatches** so the agent can verify they originated here — not from
-a compromised Gateway/Valkey relay — before running them as root:
+a compromised Valkey relay — before running them as root:
 
 | Dispatch | Signs over | Domain |
 |----------|-----------|--------|
@@ -701,7 +701,8 @@ Signing is **fail-closed-loud**: a nil signer or signing error refuses the
 dispatch rather than enqueueing an unsigned task the agent would drop. Raw-SQL
 osquery is signed like any other query (not removed) — a signed raw query from
 an RBAC-authorized operator still runs; an unsigned one is refused at the agent.
-The Gateway relays the signature opaquely and never originates it. See
+The signature is end-to-end: control originates it and the agent verifies it, so
+the queue in between carries it opaquely. See
 `server/docs/adr/0007-stream-rpc-signing.md`.
 
 ### Self-Service Device Registration
@@ -726,11 +727,11 @@ Users can register their own devices without admin involvement:
    power-manage-agent -server=https://control.example.com:8081 -token=abc123
    ```
 
-   The agent registers with the **Control Server**, which validates the token, signs the agent's certificate, and returns the gateway URL for streaming connections.
+   The agent registers with the **Control Server**, which validates the token, signs the agent's certificate, and returns the URL it should dial for its stream — control's agent listener, which is a different host from the API it registered against.
 
 3. **Device is auto-assigned** to the token owner - the user can immediately see and manage their device.
 
-4. **Agent connects to the Gateway** using the gateway URL and mTLS certificates received during registration.
+4. **Agent opens its stream** to that URL using the mTLS certificates received during registration.
 
 #### URI Scheme Format
 
@@ -798,25 +799,31 @@ limit the RPC returns `CodeResourceExhausted`.
 ### Resource bounds & timeouts
 
 The request boundary is bounded against resource-exhaustion DoS (WS13): the
-ControlService/InternalService handlers cap request bodies at 8 MiB
+ControlService handlers cap request bodies at 8 MiB
 (`connect.WithReadMaxBytes`, over-cap rejected pre-handler); list pagination
 offset is capped at `maxListOffset` (100_000) and a deeper token is rejected
 rather than scanned; the database pool applies a `statement_timeout` (30s
 per-statement; migrations exempt) and every unary RPC runs under a 30s
-request-deadline interceptor; and gateway↔control proxy calls carry per-call
-deadlines. These are fixed defaults today.
+request-deadline interceptor; and a write to a connected device is bounded by a
+send timeout, so one device that stops reading cannot wedge delivery to the
+rest. These are fixed defaults today.
 
 ## Certificate Revocation
 
 When a certificate is superseded (`RenewCertificate`) or a device is deleted, the
-Control Server publishes the old fingerprint to a shared Valkey CRL. Beyond the
-gateway's agent listener, the **InternalService mTLS listener now consults the
-CRL too**: a revoked gateway certificate is rejected at connect time on the
-credential-bearing proxy plane, giving operators immediate revocation instead of
-waiting for the certificate's natural expiry. The gate fails closed — if the CRL
-cache cannot load at boot (Valkey unavailable) the subsystem refuses to start
-rather than admitting unverifiable certs. A no-Valkey dev deployment runs the
-internal listener with an explicit, WARN-logged no-op checker.
+Control Server records the old fingerprint in `revoked_certificates` — in the
+same transaction as the event, so a committed revocation is never missing from
+the list. The agent listener queries the table per handshake, giving operators
+immediate revocation instead of waiting for the certificate's natural expiry,
+and a post-commit listener drops the device's live stream so an
+already-connected session does not survive its own revocation. The gate fails
+closed on a lookup error: an unverifiable peer is refused.
+
+This replaced a shared Valkey CRL, which was a periodically refreshed snapshot —
+between refreshes a revoked certificate was still accepted, and the window was
+invisible because the check itself looked correct. Rows whose certificate has
+expired are swept daily; they are inert by then, since expiry rejects them on
+its own.
 
 ## CA Rotation
 
@@ -834,8 +841,6 @@ The server will:
 - **Return the active CA certificate** in `RenewCertificate` responses so agents automatically update their stored CA
 
 Agents pick up the new CA certificate during their regular certificate renewal cycle (at 80% of cert lifetime). Once all agents have renewed, the old CA can be removed from the trust bundle.
-
-The Gateway needs no code changes — configure its `-tls-ca` flag with the same trust bundle PEM file.
 
 ## Development
 

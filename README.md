@@ -2,56 +2,74 @@
 
 The server side of Power Manage, providing the API, web UI, agent registration, and real-time agent communication. It consists of two binaries:
 
-- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing), PostgreSQL event store
-- **[Gateway Server](cmd/gateway/)** — Bidirectional streaming endpoint for agents, dispatches actions in real time (stateless, no database)
+- **[Control Server](cmd/control/)** — API for the web UI, user management, agent registration (token validation + certificate signing), the agent mTLS stream, PostgreSQL event store
 - **[Indexer](cmd/indexer/)** — Full-text search indexer, reads from PostgreSQL and writes to Valkey RediSearch
+
+> Spec 41 removed the Gateway Server. Agents now terminate their mTLS stream on
+> control's own listener; there is no relay tier.
 
 > **Security:** the threat model, trust boundaries, CA-compromise surface, and
 > vulnerability-disclosure process are documented in **[SECURITY.md](SECURITY.md)**.
 
 ## Architecture
 
+Traefik terminates the web host on :443 and forwards to control's public
+listener. The agent host is a **TCP-passthrough** router on the same :443
+entrypoint, dispatched by SNI, so control validates each agent's client
+certificate itself — a terminating proxy would strip it. The two hosts must
+differ: a passthrough router matching the web host would swallow the browser's
+traffic.
+
 ```
-                          ┌───────────────────────┐
-    Web UI / CLI ───────▶│   Control Server      │
-    (JWT auth)            │   :8081               │
-                          │                       │
-                          │  - Connect-RPC API    │
-                          │  - Agent registration │
-                          │  - Certificate signing│
-                          │  - InternalService    │
-                          └───┬──────────────┬────┘
-                              │              │
-                              ▼              ▼
-                   ┌──────────────┐  ┌──────────────┐
-                   │  PostgreSQL  │  │    Valkey    │
-                   │              │  │              │
-                   │ - Event store│  │ - Asynq tasks│
-                   │ - Projections│  │ - device:*   │
-                   └──────┬───────┘  │ - control:*  │
-                          │          │ - search idx │
-                          ▼          └──┬────────┬──┘
-                   ┌──────────────┐     │        │
-                   │   Indexer    │─────┘        │
-                   │  (search)    │              │
-                   └──────────────┘              ▼
-                          ┌──────────────────────┐
-    Agents ─────────────▶│   Gateway Server     │
-    (mTLS)                │   :8080              │
-                          │                      │
-                          │  - Streaming RPC     │
-                          │  - Asynq workers     │
-                          │  - Connect-RPC proxy │
-                          └──────────────────────┘
+                          ┌───────────────────────────┐
+    Web UI / CLI ───────▶│   Control Server          │
+    (JWT, via Traefik)    │   :8081  public listener  │
+                          │                           │
+                          │  - Connect-RPC API        │
+                          │  - Agent registration     │
+                          │  - Certificate signing    │
+                          │  - /terminal WebSocket    │
+    Agents ─────────────▶│                           │
+    (mTLS, SNI            │   :8082  agent listener   │
+     passthrough)         │  - AgentService stream    │
+                          │  - per-device dispatch    │
+                          └───┬──────────────────┬────┘
+                              │                  │
+                              ▼                  ▼
+                   ┌──────────────┐     ┌──────────────┐
+                   │  PostgreSQL  │     │    Valkey    │
+                   │              │     │              │
+                   │ - Event store│     │ - Asynq tasks│
+                   │ - Projections│     │ - device:*   │
+                   └──────┬───────┘     │ - search idx │
+                          │             └──────┬───────┘
+                          ▼                    │
+                   ┌──────────────┐            │
+                   │   Indexer    │────────────┘
+                   │  (search)    │
+                   └──────────────┘
 ```
 
 ## Event Sourcing
 
 All state changes are recorded as immutable events in a single `events` table. PostgreSQL trigger functions project events into read-optimized `*_projection` tables automatically. Queries read from projections, never from the event store directly.
 
-Inter-service communication uses **Asynq** (Valkey-backed task queue) — when the Control Server dispatches an action, it enqueues an Asynq task to the device's queue (`device:<id>`). The Gateway runs per-device Asynq workers that pick up tasks and stream them to connected agents. Agent responses flow back via the `control:inbox` queue. Credential-bearing operations (LUKS keys, LPS passwords) are proxied via Connect-RPC (`InternalService`) to avoid plaintext secrets in the queue.
+Action dispatch uses **Asynq** (Valkey-backed task queue): dispatching an action
+enqueues a task on the device's queue (`device:<id>`), and control runs a
+per-device worker that picks it up and streams it to the connected agent
+(`internal/devicedispatch`). Agent responses flow back via the `control:inbox`
+queue. Credential-bearing operations (LUKS keys, LPS passwords) are handled
+in-process (`api.AgentOps`) straight off the stream.
 
-**Device-origin binding** (ADR 0005): the gateway peer cert is shared and carries no per-gateway identity, so every device-origin request (`InternalService`) and event (`control:inbox`) self-asserts a `gateway_id` that control cross-checks against the device→gateway routing registry the agent's own mTLS heartbeat populated (`registry.CheckDeviceGatewayBinding`, fail-closed). A compromised gateway therefore cannot pull another device's secrets or forge its events; the `events` audit trail is DB-enforced append-only (migration 011). The binding is bypassed only when no resolver is wired (single-gateway / non-HA).
+**Device identity** is the client certificate. Spec 41 removed the `gateway_id`
+self-assertion and the device→gateway routing registry that cross-checked it
+(ADR 0005): those existed because a shared gateway peer cert carried no
+per-device identity, so a device-origin request had to name the device it
+claimed to speak for. Control now terminates the agent's mTLS itself and takes
+the device ID from the verified client certificate at the stream boundary, which
+is strictly stronger than a registry lookup — there is no longer a point in the
+path where an unauthenticated claim could be made. The `events` audit trail
+remains DB-enforced append-only (migration 011).
 
 See the [Control Server README](cmd/control/) for details on the event model, API endpoints, and authorization policies.
 
@@ -61,19 +79,18 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 |---------|---------|
 | `internal/actionparams` | Per-action-type parameter validation, schedule serialization, and proto/wire conversion shared by the action and dispatch handlers. A single proto-reflection registry (`paramsFieldByActionType` + `ExtractParamsMsg`/`ParamsMatchType`) is the one source of the `ActionType → params-oneof` mapping — adding an action type touches one entry, not six switches. Event payloads are proto-native (typed `payloads.*`, protojson for proto-derived JSONB); see ADR 0004 |
 | `internal/api` | Control Server RPC handlers (actions, devices, users, tokens, assignments, roles, user groups, identity providers, SCIM, TOTP, compliance, etc.) |
-| `internal/asynqutil` | Asynq task-queue helpers shared between the control inbox worker and the per-device gateway dispatchers |
+| `internal/asynqutil` | Asynq task-queue helpers shared between the control inbox worker and the per-device dispatchers |
 | `internal/auth` | JWT bearer authentication, dynamic-RBAC permission map (Go authorizer in `authorizer.go`), TOTP 2FA, rate limiting, self-scope enforcement |
 | `internal/ca` | Internal CA for signing agent certificates, certificate renewal verification, action payloads, and CA rotation via trust bundles |
-| `internal/config` | Configuration loading (gateway) |
-| `internal/connection` | Gateway connection manager — tracks connected agents, routes messages |
-| `internal/control` | Asynq inbox worker — processes gateway-to-control task queue (`control:inbox`) |
+| `internal/config` | Environment/flag parsing helpers (`EnvString`, `ClampInterval`, …) shared by control and the indexer |
+| `internal/connection` | Connection manager — tracks connected agents, routes messages, owns terminal-session registration |
+| `internal/control` | Asynq inbox worker — processes the agent-to-control task queue (`control:inbox`) |
 | `internal/crypto` | AES-GCM encryption for secrets (identity provider client secrets, LUKS keys, LPS passwords) |
-| `internal/gateway` | Per-device Asynq workers and task handlers for control-to-gateway dispatch |
-| `internal/gateway/registry` | Multi-gateway device→gateway routing registry (Valkey-backed) |
-| `internal/handler` | Gateway RPC handlers (agent streaming, Connect-RPC proxy to control, auto-update info) |
+| `internal/devicedispatch` | Per-device Asynq workers and task handlers that stream dispatched actions to connected agents |
+| `internal/handler` | Agent-facing RPC handlers (bidi streaming, terminal bridge, auto-update info) |
 | `internal/idp` | OIDC identity provider SSO (authorization code flow, token exchange, user linking) |
 | `internal/middleware` | HTTP middleware (request ID injection, security headers, logging) |
-| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certs, enforces SPIFFE peer-class URI SANs (`agent` / `gateway` / `control`) on each listener |
+| `internal/mtls` | mTLS setup (`RequireAndVerifyClientCert`, TLS 1.3), extracts device identity from client certs, enforces SPIFFE peer-class URI SANs (`agent` / `control`) on each listener, and checks each peer fingerprint against the revocation table |
 | `internal/projectors` | Go event-listener projector ports (tracker #107) — pure decoders + listener factories + sqlc-driven applies that replace the older PL/pgSQL projector functions |
 | `internal/resolution` | Assignment resolution engine (user/user_group/device/device_group targets) |
 | `internal/scim` | SCIM v2 provisioning server (REST endpoints for user/group sync from external IdPs) |
@@ -85,7 +102,7 @@ See the [Control Server README](cmd/control/) for details on the event model, AP
 
 ## API Reference
 
-The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`); the Gateway Server exposes `pm.v1.AgentService`. The full proto definitions live in [`sdk/proto/pm/v1`](https://github.com/manchtools/power-manage-sdk/tree/main/proto/pm/v1). The section headings below are categorical, not exhaustive — refer to the proto for the authoritative method list.
+The Control Server exposes a Connect-RPC API (`pm.v1.ControlService`) on its public listener and `pm.v1.AgentService` on its agent mTLS listener. The full proto definitions live in [`sdk/proto/pm/v1`](https://github.com/manchtools/power-manage-sdk/tree/main/proto/pm/v1). The section headings below are categorical, not exhaustive — refer to the proto for the authoritative method list.
 
 ### Authentication
 
@@ -101,25 +118,27 @@ RS256) are rejected. `Login` returns the same generic *invalid credentials* for 
 wrong password, a non-existent account, and a **disabled** account, so a
 credential holder can't probe account state.
 
-**Certificate revocation (mTLS plane).** Revoked agent/gateway/control
-certificate fingerprints are published to a shared Valkey CRL. Both the
-gateway's agent listener and the **internal mTLS listeners** consult it: the
-control server's `InternalService` (credential-bearing proxy RPCs) and the
-gateway's control-class `GatewayService` reject a revoked peer cert at connect
-time — immediate revocation, not waiting for the cert's natural expiry. The
-revocation gate fails closed: if the CRL has not loaded (Valkey unavailable at
-boot) the listener refuses connections rather than admitting an unverifiable
-cert.
+**Certificate revocation (mTLS plane).** Revoked certificate fingerprints live
+in control's own database (`revoked_certificates`), written in the same
+transaction as the revocation event. The agent listener queries it per
+handshake, so a revocation takes effect on the next connection rather than
+waiting for the cert's natural expiry, and an already-connected device's stream
+is dropped by a post-commit listener. The gate fails closed on a lookup error:
+an unverifiable peer is refused, not admitted. Expired rows are swept daily —
+once the certificate itself has expired the row is inert.
+
+Spec 41 replaced the previous shared Valkey CRL, which was a periodically
+refreshed snapshot: between refreshes a revoked certificate was still accepted.
 
 **Request-boundary resource bounds.** The request boundary is bounded against
 resource-exhaustion DoS: list pagination offset is capped (`maxListOffset`,
 deep-OFFSET scans rejected with `CodeInvalidArgument`); request bodies are size-
-capped via `connect.WithReadMaxBytes` (Control/Internal 8 MiB, Gateway 4 MiB —
+capped via `connect.WithReadMaxBytes` (public 8 MiB, agent listener 4 MiB —
 over-cap rejected pre-handler with `CodeResourceExhausted`); the DB pool sets a
 `statement_timeout` (single-query wall-clock bound) and every unary RPC runs
-under a request-deadline interceptor; gateway↔control proxy calls carry per-call
-deadlines; and event-store rebuild streams in bounded batches instead of buffering
-the whole stream.
+under a request-deadline interceptor; writes to a device are bounded by a send
+timeout so one stalled device cannot wedge the others; and event-store rebuild
+streams in bounded batches instead of buffering the whole stream.
 
 **Rate limiting & client IP.** Unauthenticated endpoints (login, refresh,
 register, logout, cert renewal, auth-methods lookup) are throttled per client IP;
@@ -377,10 +396,10 @@ When `scope` is empty, results are returned from all three indexes (actions, act
 
 | Method | Description |
 |--------|-------------|
-| `Register` | Agent registration. Validates token (hash, expiry, disabled, max uses), signs agent CSR to issue mTLS client certificate, generates device ID, auto-assigns to token owner. Returns device ID, CA cert, signed cert, gateway URL. |
+| `Register` | Agent registration. Validates token (hash, expiry, disabled, max uses), signs agent CSR to issue mTLS client certificate, generates device ID, auto-assigns to token owner. Returns device ID, CA cert, signed cert, and the control URL the agent dials for its stream. |
 | `RenewCertificate` | Certificate renewal. Agent presents its current (still valid) certificate and a new CSR. Server verifies the certificate was issued by the CA, checks the fingerprint matches the database, signs the new CSR, and emits a `DeviceCertRenewed` event. No JWT required. |
 
-### Gateway — Agent Service
+### Agent Service (control's mTLS listener)
 
 | Method | Description |
 |--------|-------------|
@@ -476,9 +495,9 @@ JWTs travel exclusively in the `Authorization: Bearer <token>` header. Clients r
 
 ### mTLS (`internal/ca/`, `internal/mtls/`)
 
-Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). The Gateway validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity. Actions are also signed by the CA so agents can verify authenticity.
+Internal CA signs agent CSRs during registration. Certificates use CN={deviceID}, valid for 1 year (configurable). Control's agent listener validates client certificates using `RequireAndVerifyClientCert` (TLS 1.3 minimum) and extracts device identity from the verified cert. Actions are also signed by the CA so agents can verify authenticity.
 
-**Peer-class enforcement.** Every non-CA certificate carries a SPIFFE URI SAN of the form `spiffe://power-manage/<class>`, where `<class>` is one of `agent`, `gateway`, or `control`. The internal CA stamps `agent` on every cert it issues via CSR; `setup.sh` stamps `gateway` / `control` on the out-of-band certs for gateway replicas and the control server's internal listener. Middleware on each mTLS listener accepts only the expected class: the control server's `InternalService` admits `gateway` peers, the gateway's `AgentService` admits `agent` peers, and the gateway's `GatewayService` admits `control` peers. A leaked cert of one class therefore cannot be replayed against a listener intended for another class.
+**Peer-class enforcement.** Every non-CA certificate carries a SPIFFE URI SAN of the form `spiffe://power-manage/<class>`, where `<class>` is `agent` or `control`. The internal CA stamps `agent` on every cert it issues via CSR; `setup.sh` stamps `control` on the control server's own certificate. Middleware on the agent listener accepts only the `agent` class, so a leaked control-class cert cannot be replayed against it. The `gateway` class went with the tier.
 
 Certificate renewal is handled via the `RenewCertificate` RPC — agents present their current certificate and a new CSR. The server verifies the certificate was issued by a trusted CA (from the trust bundle if configured), checks the fingerprint matches the database record (preventing use of revoked certificates), signs the new CSR with the `agent` peer-class URI SAN, and returns the active CA certificate so agents can update their trust store during CA rotation.
 
@@ -520,34 +539,25 @@ The Control Server sets `IdleTimeout` (120s) and `ReadHeaderTimeout` (10s) on th
 ```bash
 # All binaries
 CGO_ENABLED=0 go build -ldflags="-s -w" -o control ./cmd/control
-CGO_ENABLED=0 go build -ldflags="-s -w" -o gateway ./cmd/gateway
 CGO_ENABLED=0 go build -ldflags="-s -w" -o indexer ./cmd/indexer
 
 # With version injection
 CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o control ./cmd/control
-CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=2026.3.0" -o gateway ./cmd/gateway
 ```
 
 ## Configuration
 
-### Gateway Environment Variables
+### Agent-Facing Control Variables
+
+Spec 41 folded the gateway's configuration into control's. The `GATEWAY_*`
+variables are no longer read by anything.
 
 | Variable | Description |
 |----------|-------------|
-| `GATEWAY_VALKEY_ADDR` | Valkey address, e.g. `localhost:6379` |
-| `GATEWAY_VALKEY_PASSWORD` | Valkey password |
-| `GATEWAY_VALKEY_DB` | Valkey DB number (default `0`) |
-| `GATEWAY_CONTROL_URL` | URL of the Control Server |
-| `GATEWAY_ID` | Stable gateway identifier (empty = generate ULID at startup) |
-| `GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE` | Template for the public terminal WebSocket URL, e.g. `wss://{id}.gateway.example.com/terminal` |
-| `GATEWAY_BOOTSTRAP_HOST` | Wildcard root hostname for agent bootstrap redirect, e.g. `gateway.example.com` |
-| `GATEWAY_WEB_LISTEN_ADDR` | Listen address for the terminal-WebSocket HTTP listener (cleartext; Traefik terminates TLS upstream), e.g. `:8443` |
-| `GATEWAY_LOG_LEVEL` | Log level: `debug`, `info`, `warn`, `error` (default `info`) |
-| `GATEWAY_HEARTBEAT_INTERVAL` | Heartbeat cadence sent to agents (Go duration, 5s..5m; default `30s`) |
-| `GATEWAY_TRAEFIK_TTY_CERT_RESOLVER` | Traefik cert resolver name for the per-replica TTY HTTP router (e.g. `letsencrypt`) |
-| `CONTROL_TERMINAL_GATEWAY_URL` | Fallback terminal gateway URL for single-gateway deployments (deprecated in favor of registry) |
-
-> **rc3 migration:** the previously unprefixed `VALKEY_ADDR` / `VALKEY_PASSWORD` / `VALKEY_DB` / `LOG_LEVEL` are now `GATEWAY_*`-prefixed. The old names are no longer read — rename them in your `.env` before upgrading.
+| `CONTROL_AGENT_URL` | The endpoint agents dial for the mTLS stream, returned to each agent in its registration response. Must resolve to the agent listener (the `AGENT_DOMAIN` host), never the web UI origin |
+| `CONTROL_INTERNAL_LISTEN_ADDR` | Listen address for the agent mTLS listener (default `:8082`) |
+| `CONTROL_INTERNAL_TLS_CERT` / `_KEY` | Certificate and key the agent listener presents. Must carry `AGENT_DOMAIN` as a SAN, since the agent verifies control against the name it dialled |
+| `CONTROL_TERMINAL_URL` | Public WebSocket URL of control's own `/terminal` endpoint, on the **web** host. Empty disables terminal sessions (`StartTerminal` returns `Unavailable`) |
 
 ### Indexer Environment Variables
 
@@ -575,14 +585,12 @@ Requires a running PostgreSQL and Valkey instance. See the [self-hosting guide](
   -jwt-secret="$(openssl rand -base64 48)" \
   -ca-cert=certs/ca.crt \
   -ca-key=certs/ca.key \
-  -gateway-url=https://localhost:8080
-
-# Gateway server (no database required, connects to Valkey and Control)
-export GATEWAY_VALKEY_ADDR=localhost:6379
-export GATEWAY_VALKEY_PASSWORD=your-valkey-password
-export GATEWAY_CONTROL_URL=https://localhost:8082
-./gateway -tls-cert=certs/gateway.crt -tls-key=certs/gateway.key -tls-ca=certs/ca.crt
+  -agent-url=https://localhost:8082
 ```
+
+Control serves both listeners itself: the public API on `-addr` and the agent
+mTLS stream on `CONTROL_INTERNAL_LISTEN_ADDR`. There is no second binary to
+start.
 
 ## Regenerating Code
 
@@ -749,7 +757,7 @@ Each test spins up a PostgreSQL container and tests handler methods directly.
 |------|-------|----------------|
 | `internal/scim/handler_test.go` | 21 | Auth (missing/invalid/non-existent/valid token), Discovery (ServiceProviderConfig, Schemas, ResourceTypes), Users (create, get, list, filter, replace, patch deactivate, delete), Groups (create, get, list, patch add member, replace members, delete) |
 
-#### Gateway Handler Tests
+#### Agent Handler Tests
 
 | File | Tests | What it covers |
 |------|-------|----------------|

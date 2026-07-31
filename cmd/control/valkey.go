@@ -38,7 +38,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/control"
 	"github.com/manchtools/power-manage/server/internal/datastore"
-	"github.com/manchtools/power-manage/server/internal/gateway"
+	"github.com/manchtools/power-manage/server/internal/devicedispatch"
 	"github.com/manchtools/power-manage/server/internal/search"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/taskqueue"
@@ -71,7 +71,7 @@ type valkeySubsystem struct {
 	// and control must hold them whether or not a queue exists. Keeping them
 	// here made a nil subsystem a nil-pointer panic at boot, and would have tied
 	// the agent transport to a dependency that workstream B removes.
-	WorkerMgr *gateway.DeviceWorkerManager
+	WorkerMgr *devicedispatch.DeviceWorkerManager
 
 	// TerminalTokenStore is exported because main() hands it to the
 	// InternalHandler later in the boot sequence — they MUST share
@@ -173,8 +173,8 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	// Agent-stream infrastructure. The per-device worker consumes that device's
 	// dispatch queue, so it needs the same Valkey connection options the client
 	// above uses.
-	taskFactory := gateway.NewTaskHandlerFactory(connMgr, v.taskSigner, logger.With("component", "device_task"))
-	v.WorkerMgr = gateway.NewDeviceWorkerManager(
+	taskFactory := devicedispatch.NewTaskHandlerFactory(connMgr, v.taskSigner, logger.With("component", "device_task"))
+	v.WorkerMgr = devicedispatch.NewDeviceWorkerManager(
 		asynq.RedisClientOpt{
 			Addr:      cfg.ValkeyAddr,
 			Username:  cfg.ValkeyUsername,

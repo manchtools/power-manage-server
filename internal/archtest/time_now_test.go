@@ -13,8 +13,8 @@ import (
 // read the current time through an injected `now func() time.Time` seam
 // (defaulting to the bare time.Now value), so every time-dependent path
 // is deterministically testable with a fixed clock. This extends the
-// existing seam already used by internal/crl, internal/terminal,
-// internal/compliance and internal/gateway/registry to the whole module.
+// existing seam already used by internal/terminal and internal/compliance
+// to the whole module.
 //
 // The bare `time.Now` *value* (the injection default, e.g. `now: time.Now`)
 // is not a call and is therefore allowed — it is the single sanctioned
