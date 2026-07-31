@@ -1,9 +1,12 @@
 package handler
 
 // Coverage for the two top-level non-bidi RPCs on AgentHandler
-// (ValidateLuksToken, SyncActions) plus the small but uncovered
-// rotationReasonFromAgentString helper. Closes the remaining big
+// (ValidateLuksToken, SyncActions). Closes the remaining big
 // coverage gaps in agent.go from #150.
+//
+// The rotationReasonFromAgentString tests went with the helper: the agent
+// sets the RotationReason enum on the wire now, so there is no string form
+// left for the server to parse back.
 //
 // Strategy: extends the existing httptest InternalService stub
 // pattern. The proxy paths are exercised against a recording fake
@@ -197,35 +200,6 @@ func TestSyncActions_OpsError_MappedToInternal(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
-}
-
-// =============================================================================
-// rotationReasonFromAgentString
-// =============================================================================
-
-func TestRotationReasonFromAgentString_KnownValues(t *testing.T) {
-	cases := map[string]pm.RotationReason{
-		"initial":    pm.RotationReason_ROTATION_REASON_INITIAL,
-		"scheduled":  pm.RotationReason_ROTATION_REASON_SCHEDULED,
-		"auth_grace": pm.RotationReason_ROTATION_REASON_AUTH_GRACE,
-	}
-	for in, want := range cases {
-		t.Run(in, func(t *testing.T) {
-			assert.Equal(t, want, rotationReasonFromAgentString(in))
-		})
-	}
-}
-
-func TestRotationReasonFromAgentString_UnknownCollapsesToUnspecified(t *testing.T) {
-	// An unknown value (including empty string from older agents)
-	// MUST map to UNSPECIFIED. Downstream the projector defaults
-	// UNSPECIFIED to "scheduled" — matching the historical
-	// PL/pgSQL COALESCE behaviour. Returning a different known
-	// value here would silently rewrite history.
-	assert.Equal(t, pm.RotationReason_ROTATION_REASON_UNSPECIFIED,
-		rotationReasonFromAgentString(""))
-	assert.Equal(t, pm.RotationReason_ROTATION_REASON_UNSPECIFIED,
-		rotationReasonFromAgentString("totally-unknown-value"))
 }
 
 // contextWithDeviceID injects a device ID into the test ctx so
