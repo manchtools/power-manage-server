@@ -118,6 +118,33 @@ func (a *Agent) SetWriteDeadlineFunc(fn func(time.Time) error) {
 	a.setWriteDeadline = fn
 }
 
+// WaitForInFlightSend blocks until no Send is inside the stream. The stream
+// handler calls it on the way out, and nobody else needs to.
+//
+// The handler owns the connect stream — and the net/http ResponseWriter beneath
+// it — only until it returns: connect finalises the response as the handler
+// unwinds, and net/http forbids touching the writer after ServeHTTP returns. A
+// per-device dispatch worker or a terminal bridge can be inside Send at exactly
+// that moment, holding the send lock at a.write, and at the deferred deadline
+// clear that drives http.ResponseController on that same writer. Returning
+// through that window is the data race the bounded write was introduced to
+// avoid, arriving from the other direction.
+//
+// Taking and releasing the send lock IS the wait — Send holds it for the whole
+// write. It quiesces the connection only if no LATER send can enter, so the
+// caller must have cancelled the agent first: Send re-checks the context under
+// the lock and refuses a cancelled one. The transport write deadline bounds the
+// wait at SendTimeout; a transport with no deadline support leaves it exactly as
+// unbounded as the write it is waiting for.
+//
+// Deliberately NOT folded into Close/Unregister: Unregister holds the manager's
+// write lock across Close, so waiting there would pin every other device's
+// Register/Get behind one device's stalled write.
+func (a *Agent) WaitForInFlightSend() {
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
+}
+
 // Close closes the agent connection.
 func (a *Agent) Close() {
 	a.cancel()

@@ -311,6 +311,48 @@ func stalledDevice(t *testing.T, a *Agent) *atomic.Int32 {
 	return &writes
 }
 
+// The wait a departing stream handler makes has to be a real one.
+//
+// WaitForInFlightSend is what keeps the handler inside its own function while a
+// frame is still going out — connect finalises the response as the handler
+// unwinds, and net/http forbids touching the ResponseWriter afterwards. A
+// version that returned immediately would type-check, satisfy every caller, and
+// close nothing.
+func TestAgent_WaitForInFlightSendBlocksUntilTheWriteReleases(t *testing.T) {
+	m := NewManager()
+	agent := m.Register(context.Background(), "device-1", "host1", "1.0.0", nil)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	agent.write = func(*pm.ServerMessage) error {
+		close(entered)
+		<-release
+		return nil
+	}
+
+	sendDone := make(chan struct{})
+	go func() { defer close(sendDone); _ = agent.Send(&pm.ServerMessage{}) }()
+	<-entered
+
+	waited := make(chan struct{})
+	go func() { defer close(waited); agent.WaitForInFlightSend() }()
+
+	select {
+	case <-waited:
+		t.Fatal("WaitForInFlightSend returned while the write was still on the wire — " +
+			"a handler returning on it would hand the stream back mid-frame")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForInFlightSend never returned after the write finished")
+	}
+	<-sendDone
+}
+
 // A departing handler must not tear down the connection that replaced it.
 //
 // Teardown used to be Get-then-Unregister with the lock released in between. A

@@ -152,16 +152,21 @@ func (h *AgentHandler) SetTerminalSessions(reg *connection.TerminalSessionRegist
 	h.terminalSessions = reg
 }
 
-// MTLSMiddleware extracts the device ID from the client certificate
-// and adds it to the context. It also refuses any peer whose cert
-// does not carry the "agent" peer-class URI SAN — the AgentService
-// listener is for managed devices only, and a leaked gateway or
-// control cert must not be usable here.
-// MTLSMiddleware gates the gateway's AgentService listener. The revocation
-// checker is mtls.RevocationChecker (the gateway's *crl.Cache satisfies it); a
-// nil or not-yet-loaded checker fails CLOSED — see mtls.RevocationChecker and
-// the fail-closed block below. There is no permissive opt-out: without a loaded
-// CRL every call is rejected (the gateway refuses to boot without one).
+// MTLSMiddleware gates control's AgentService listener — the mTLS listener
+// control serves AgentService on, in place of the gateway tier that used to
+// terminate these connections.
+//
+// It extracts the device ID from the client certificate and puts it in the
+// context (AgentHandler reads it via DeviceIDFromContext), refuses any peer
+// whose cert does not carry the "agent" peer-class URI SAN — the listener is
+// for managed devices only, so a leaked control cert must not be usable here —
+// and refuses a certificate it cannot prove unrevoked.
+//
+// The revocation checker is an mtls.RevocationChecker; control passes one
+// reading revoked_certificates per handshake, so a certificate revoked inside a
+// renewal transaction stops working on the very next connection. A nil checker,
+// or a lookup that ERRORS, fails CLOSED — without an answer we cannot prove the
+// cert is unrevoked. There is no permissive opt-out.
 func MTLSMiddleware(next http.Handler, revocation mtls.RevocationChecker, logger *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip TLS check for health endpoints
@@ -411,6 +416,27 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 	if err := h.workerMgr.StartWorker(deviceID); err != nil {
 		h.logger.Warn("failed to start device worker", "device_id", deviceID, "error", err)
 	}
+
+	// Registered BEFORE the teardown defer below so it runs AFTER it: the
+	// unregister has to have cancelled this agent first, or a send that starts
+	// while we wait would reopen the window we are closing.
+	//
+	// The stream, and the ResponseWriter beneath it, are ours only until this
+	// function returns — connect finalises the response as we unwind, and
+	// net/http forbids touching the writer once ServeHTTP has returned. A
+	// per-device dispatch worker or a terminal bridge can be inside Agent.Send
+	// right now, holding the send lock at the write and at the deferred deadline
+	// clear that drives http.ResponseController on that same writer. Returning
+	// through that window makes net/http panic ("Write called after Handler
+	// finished") or, worse, corrupt the framing of a response nobody owns.
+	//
+	// Close is idempotent and this agent is already cancelled on every path that
+	// gets here; calling it makes the precondition local rather than inferred
+	// from what Register did to the connection we superseded.
+	defer func() {
+		agent.Close()
+		agent.WaitForInFlightSend()
+	}()
 
 	defer func() {
 		// Remove OUR registration, and only ours. Both the identity check and
