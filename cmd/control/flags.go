@@ -34,7 +34,14 @@ func parseFlags() *Config {
 	flag.StringVar(&cfg.LogFormat, "log-format", "text", "Log format (text, json)")
 	flag.StringVar(&cfg.AdminEmail, "admin-email", "", "Initial admin user email")
 	flag.StringVar(&cfg.AdminPassword, "admin-password", "", "Initial admin user password")
-	flag.StringVar(&cfg.ControlURL, "control-url", "", "Control URL returned to agents during registration")
+	// The endpoint AGENTS dial for the mTLS stream — not the web UI origin.
+	// The two are necessarily different hosts: the agent listener is reached
+	// through a TCP-passthrough router keyed on SNI, and a passthrough router
+	// sharing the web UI's host would shadow the HTTP router that terminates
+	// TLS for the browser. Naming this "public URL" is what previously got it
+	// pointed at the web domain, which routed every agent into the HTTP
+	// listener and left the fleet unable to connect.
+	flag.StringVar(&cfg.ControlURL, "agent-url", "", "URL agents dial for the mTLS stream, returned to them during registration (must resolve to the agent listener, not the web UI)")
 	flag.StringVar(&cfg.TerminalPublicURL, "terminal-url", "", "Public WebSocket URL of the control terminal endpoint. When empty, StartTerminal returns CodeUnavailable.")
 	flag.DurationVar(&cfg.DynamicGroupEvalInterval, "dynamic-group-eval-interval", time.Hour, "Interval for evaluating dynamic groups (min 30m, max 8h, 0 to disable)")
 	// rc11 #77 — system-action reconciliation defaults: 1m interval keeps drift bounded for an
@@ -91,7 +98,7 @@ func applyEnvOverrides(cfg *Config) {
 	config.EnvString(&cfg.AdminPassword, "CONTROL_ADMIN_PASSWORD")
 	config.EnvString(&cfg.LogLevel, "CONTROL_LOG_LEVEL")
 	config.EnvString(&cfg.LogFormat, "CONTROL_LOG_FORMAT")
-	config.EnvString(&cfg.ControlURL, "CONTROL_PUBLIC_URL")
+	config.EnvString(&cfg.ControlURL, "CONTROL_AGENT_URL")
 	config.EnvString(&cfg.TerminalPublicURL, "CONTROL_TERMINAL_URL")
 	config.EnvCSV(&cfg.CORSOrigins, "CONTROL_CORS_ORIGINS")
 	config.EnvDuration(&cfg.DynamicGroupEvalInterval, "CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL")

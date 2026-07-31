@@ -22,12 +22,12 @@ import (
 // ValidateControlURL returns nil when raw is a control URL an agent
 // can actually connect to over mTLS. A surprising number of shapes
 // pass `url.Parse` without being usable:
-//   - bare hostnames like `gateway.example.com` parse with Scheme="",
-//     Host="", Path="gateway.example.com" — the agent would try to
+//   - bare hostnames like `agents.example.com` parse with Scheme="",
+//     Host="", Path="agents.example.com" — the agent would try to
 //     dial a relative path;
 //   - `http://...` is refused because rc10 agents refuse h2c;
 //   - `wss://...` or other schemes are refused because the agent's
-//     gateway client uses HTTPS transport;
+//     stream client uses HTTPS transport;
 //   - user-info (`https://user:pass@host/`) is refused because
 //     credentials in the URL are never the right answer and would
 //     leak on every enrollment response;
@@ -39,14 +39,14 @@ import (
 // registration handler before the URL is handed to the agent.
 func ValidateControlURL(raw string) error {
 	if raw == "" {
-		return fmt.Errorf("gateway URL is empty")
+		return fmt.Errorf("agent URL is empty")
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("gateway URL parse failed: %w", err)
+		return fmt.Errorf("agent URL parse failed: %w", err)
 	}
 	if u.Scheme != "https" {
-		return fmt.Errorf("gateway URL must use https scheme, got %q", u.Scheme)
+		return fmt.Errorf("agent URL must use https scheme, got %q", u.Scheme)
 	}
 	// u.Hostname() strips port and brackets so "https://:8443" (port
 	// only, no host) and "https://[::1]:443" (IPv6) both validate
@@ -55,10 +55,10 @@ func ValidateControlURL(raw string) error {
 		return fmt.Errorf("control URL has no host — bare hostnames like %q are not absolute URLs", RedactControlURL(raw))
 	}
 	if u.User != nil {
-		return fmt.Errorf("gateway URL must not contain userinfo (credentials in URL leak on every enrollment response)")
+		return fmt.Errorf("agent URL must not contain userinfo (credentials in URL leak on every enrollment response)")
 	}
 	if u.Fragment != "" {
-		return fmt.Errorf("gateway URL must not contain a fragment")
+		return fmt.Errorf("agent URL must not contain a fragment")
 	}
 	return nil
 }
@@ -105,7 +105,7 @@ type RegistrationHandler struct {
 // check with a clean operator-facing error message.
 func NewRegistrationHandler(st *store.Store, certAuth *ca.CA, controlURL string, logger *slog.Logger) *RegistrationHandler {
 	if err := ValidateControlURL(controlURL); err != nil {
-		// Redact userinfo before panicking — a gateway URL that
+		// Redact userinfo before panicking — an agent URL that
 		// contains credentials (which the validator is rejecting)
 		// would otherwise leak them into the crash log.
 		panic(fmt.Sprintf("NewRegistrationHandler: invalid control URL %q: %v", RedactControlURL(controlURL), err))
@@ -139,7 +139,7 @@ func (h *RegistrationHandler) Register(ctx context.Context, req *connect.Request
 	if err := ValidateControlURL(h.controlURL); err != nil {
 		logger.Error("registration refused: controlURL failed validation",
 			"control_url", RedactControlURL(h.controlURL), "error", err)
-		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "server misconfiguration: gateway URL is invalid")
+		return nil, apiErrorCtx(ctx, ErrInternal, connect.CodeFailedPrecondition, "server misconfiguration: agent URL is invalid")
 	}
 
 	// Validate CSR is present

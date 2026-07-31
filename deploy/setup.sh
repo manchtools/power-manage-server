@@ -110,6 +110,18 @@ check_env() {
         missing=1
     fi
 
+    if [[ -z "$AGENT_DOMAIN" ]] || [[ "$AGENT_DOMAIN" == *"example.com" ]]; then
+        log_error "AGENT_DOMAIN must be set to your actual agent domain in .env"
+        log_error "  Agents dial this host; it must differ from CONTROL_DOMAIN."
+        errors=$((errors + 1))
+    fi
+    if [[ "$AGENT_DOMAIN" == "$CONTROL_DOMAIN" ]] && [[ -n "$CONTROL_DOMAIN" ]]; then
+        log_error "AGENT_DOMAIN must differ from CONTROL_DOMAIN"
+        log_error "  Traefik dispatches :443 by SNI and a TCP-passthrough router"
+        log_error "  wins over the HTTP router, so sharing the host would send the"
+        log_error "  web UI into the agent mTLS listener."
+        errors=$((errors + 1))
+    fi
     if [[ -z "$CONTROL_DOMAIN" ]] || [[ "$CONTROL_DOMAIN" == *"example.com" ]]; then
         log_error "CONTROL_DOMAIN must be set to your actual domain in .env"
         missing=1
@@ -207,7 +219,7 @@ generate_control_cert() {
     openssl x509 -req -in "$CERTS_DIR/control.csr" \
         -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
         -days 825 \
-        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost,URI:spiffe://power-manage/control\nauthorityKeyIdentifier=keyid:always") \
+        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost,DNS:%s,URI:spiffe://power-manage/control\nauthorityKeyIdentifier=keyid:always" "${AGENT_DOMAIN}") \
         -out "$CERTS_DIR/control.crt"
 
     rm -f "$CERTS_DIR/control.csr"
@@ -285,15 +297,13 @@ generate_datastore_cert() {
 # Postgres + Valkey (SAN MUST match the compose service hostname each client
 # dials, or verify-full rejects the connection), and per-component client certs.
 # Postgres 'cert' auth maps a client cert's CN to a DB role, so control→powermanage
-# and indexer→pm_indexer CNs MUST equal the roles; traefik never touches
-# Postgres so their CN is only cosmetic (Valkey verifies chain-to-CA, not CN).
+# and indexer→pm_indexer CNs MUST equal the roles.
 generate_datastore_certs() {
     generate_datastore_cert postgres postgres "DNS:postgres,DNS:localhost" "serverAuth"
     # Valkey server cert doubles as the healthcheck's client cert, so both EKUs.
     generate_datastore_cert valkey   valkey   "DNS:valkey,DNS:localhost"     "serverAuth,clientAuth"
     generate_datastore_cert control-datastore powermanage "" "clientAuth"
     generate_datastore_cert indexer-datastore pm_indexer  "" "clientAuth"
-    generate_datastore_cert traefik-datastore pm-traefik  "" "clientAuth"
 }
 
 # ensure_acl_passwords mints any missing per-service Valkey ACL password (spec 32)
@@ -302,7 +312,7 @@ generate_datastore_certs() {
 # rather than prompt. Idempotent: an already-set value is left untouched.
 ensure_acl_passwords() {
     local var generated
-    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD; do
         # A CHANGE_ME* placeholder is not a credential — treat it as missing and
         # regenerate, or it would be rendered into valkey.conf as the real ACL
         # password (spec 32 AC 8 rejects placeholders).
@@ -349,19 +359,24 @@ show_instructions() {
     echo "Next steps:"
     echo ""
     echo "1. Ensure DNS records point to this server:"
-    echo "   - ${CONTROL_DOMAIN}"
+    echo "   - ${CONTROL_DOMAIN}   (web UI, API, terminal)"
+    echo "   - ${AGENT_DOMAIN}   (agent mTLS stream — agents cannot connect without it)"
     echo ""
     echo "2. Start the services:"
     echo "   docker compose up -d"
     echo ""
     echo "   Traefik obtains a Let's Encrypt certificate for the control domain."
-    echo "   Control uses its internal CA-signed certificate for agent mTLS."
+    echo "   ${AGENT_DOMAIN} needs no public certificate: Traefik passes that SNI"
+    echo "   through untouched and control presents its own CA-signed cert."
     echo ""
     echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
     echo "   Login with: ${ADMIN_EMAIL}"
     echo ""
     echo "4. Create a registration token, then install agents:"
     echo "   curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN} -t <TOKEN>"
+    echo ""
+    echo "   (Agents enroll against ${CONTROL_DOMAIN} and are handed"
+    echo "    https://${AGENT_DOMAIN} for the stream by the registration response.)"
     echo ""
 }
 
@@ -543,38 +558,50 @@ guided_setup() {
     write_env_var CONTROL_DOMAIN "$REPLY_VALUE"
     CONTROL_DOMAIN="$REPLY_VALUE"
 
+    # Agents dial their own host. It must be distinct from CONTROL_DOMAIN
+    # because Traefik resolves the shared :443 entrypoint by SNI and the
+    # TCP-passthrough router outranks the HTTP router — one host cannot both
+    # terminate TLS for the browser and pass it through to the mTLS listener.
+    local default_agent=""
+    local control_parent
+    control_parent="$(parent_domain "$CONTROL_DOMAIN")"
+    if [[ -n "$control_parent" ]]; then
+        default_agent="agents.$control_parent"
+    fi
+    while :; do
+        prompt_string "Agent domain — the host agents connect to (AGENT_DOMAIN)" "$default_agent" "${AGENT_DOMAIN:-}"
+        if [[ "$REPLY_VALUE" != "$CONTROL_DOMAIN" ]]; then
+            break
+        fi
+        log_error "AGENT_DOMAIN must differ from CONTROL_DOMAIN — see above."
+    done
+    write_env_var AGENT_DOMAIN "$REPLY_VALUE"
+    AGENT_DOMAIN="$REPLY_VALUE"
+
     # Terminal sessions are optional but recommended; offer the full set.
     if prompt_yes_no "Enable remote terminal (TTY) sessions?"; then
-        # The terminal WebSocket is served by control itself now, so there is
-        # no second host to keep distinct: the rc10 collision check existed
-        # because Traefik TCP-passthrough for the gateway's mTLS SNI would
-        # shadow an HTTP router sharing that host. One service, one host.
-        local default_tty=""
-        local control_parent
-        control_parent="$(parent_domain "$CONTROL_DOMAIN")"
-        if [[ -n "$control_parent" ]]; then
-            default_tty="tty.$control_parent"
-        fi
-        prompt_string "TTY domain for terminal sessions" "$default_tty" "${CONTROL_TERMINAL_DOMAIN:-}"
-        write_env_var CONTROL_TERMINAL_DOMAIN "$REPLY_VALUE"
-
-        # Auto-compose the URL the web client dials. No {id} substitution any
-        # more — there is no per-gateway route to resolve.
-        write_env_var CONTROL_TERMINAL_URL "wss://${REPLY_VALUE}/terminal"
-        echo "    ✓ CONTROL_TERMINAL_URL composed automatically."
+        # No host to ask for. The terminal WebSocket is served by control's
+        # own public listener at /terminal, which Traefik reaches through the
+        # SAME HTTP router as the web UI. A dedicated TTY host would need its
+        # own router and its own certificate; asking for one produced a URL
+        # that resolved nowhere, because Traefik only ever had a router for
+        # CONTROL_DOMAIN. The rc10 reason for a separate host — passthrough SNI
+        # shadowing an HTTP router — applies to AGENT_DOMAIN, not to this.
+        write_env_var CONTROL_TERMINAL_URL "wss://${CONTROL_DOMAIN}/terminal"
+        echo "    ✓ CONTROL_TERMINAL_URL composed automatically (wss://${CONTROL_DOMAIN}/terminal)."
     else
         # Clear explicitly rather than skipping: on a rerun where terminals were
         # previously enabled, leaving the values in place would keep the feature
         # on while the operator answered No.
         local was_enabled=0
-        for k in CONTROL_TERMINAL_DOMAIN CONTROL_TERMINAL_URL; do
+        for k in CONTROL_TERMINAL_URL; do
             if grep -qE "^${k}=" "$SCRIPT_DIR/.env" 2>/dev/null; then
                 was_enabled=1
                 clear_env_var "$k"
             fi
         done
         if [[ "$was_enabled" -eq 1 ]]; then
-            log_info "  Terminal sessions disabled — cleared CONTROL_TERMINAL_DOMAIN and CONTROL_TERMINAL_URL from .env."
+            log_info "  Terminal sessions disabled — cleared CONTROL_TERMINAL_URL from .env."
         else
             log_info "  Terminal sessions disabled — none of the terminal env vars were set, nothing to clear."
         fi
@@ -805,12 +832,12 @@ render_valkey_config() {
     # password containing &, \, /, |, $, or newlines lands in the
     # rendered config exactly as the operator generated it.
     #
-    # spec 32: substitute the four per-service ACL passwords (control,
-    # indexer, traefik) in turn. Each is minted by
-    # ensure_acl_passwords into .env + the environment before this runs.
+    # spec 32: substitute the per-service ACL passwords (control, indexer) in
+    # turn. Each is minted by ensure_acl_passwords into .env + the environment
+    # before this runs.
     local content placeholder value remaining ph
     content="$(<"$template")"
-    for ph in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for ph in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD; do
         placeholder="__${ph}__"
         value="${!ph}"
         remaining="$content"

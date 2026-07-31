@@ -2,7 +2,6 @@ package doctor
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -10,12 +9,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runTerminal runs TerminalCheck against vars + cache and fails on a could-not-run.
-func runTerminal(t *testing.T, vars map[string]string, cache CacheProbe) []Finding {
+// runTerminal runs TerminalCheck against vars and fails on a could-not-run.
+func runTerminal(t *testing.T, vars map[string]string) []Finding {
 	t.Helper()
-	env := NewEnv(vars)
-	env.Cache = cache
-	fs, err := TerminalCheck{}.Run(context.Background(), env)
+	fs, err := TerminalCheck{}.Run(context.Background(), NewEnv(vars))
 	require.NoError(t, err)
 	return fs
 }
@@ -31,87 +28,90 @@ func worstSev(fs []Finding) Severity {
 	return worst
 }
 
-// healthyTerminalVars is a consistent terminal config (distinct TTY host, web
-// listener set) for the cases that vary one thing at a time.
+// healthyTerminalVars is the shape a working deployment has: a wss URL on the
+// web host, an agent URL on a DIFFERENT host, and Valkey configured so control
+// actually mounts the bridge.
 func healthyTerminalVars() map[string]string {
 	return map[string]string{
-		"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE": "wss://tty.example.com/gw/{id}/terminal",
-		"GATEWAY_WEB_LISTEN_ADDR":              ":8443",
-		"GATEWAY_DOMAIN":                       "gateway.example.com",
-		"GATEWAY_TTY_DOMAIN":                   "tty.example.com",
+		"CONTROL_TERMINAL_URL": "wss://power-manage.example.com/terminal",
+		"CONTROL_AGENT_URL":    "https://agents.example.com",
+		"CONTROL_VALKEY_ADDR":  "valkey:6379",
 	}
 }
 
 func TestTerminalCheck_DisabledIsInfo(t *testing.T) {
-	fs := runTerminal(t, map[string]string{}, fakeCache{})
+	fs := runTerminal(t, map[string]string{})
 	require.Len(t, fs, 1)
 	assert.Equal(t, SeverityInfo, fs[0].Severity, "terminal unconfigured ⇒ info, not a finding")
 }
 
 func TestTerminalCheck_HealthyIsOK(t *testing.T) {
-	fs := runTerminal(t, healthyTerminalVars(), fakeCache{keyspaceNotif: "AKE"})
+	fs := runTerminal(t, healthyTerminalVars())
 	require.Len(t, fs, 1)
 	assert.Equal(t, SeverityOK, fs[0].Severity)
 }
 
-func TestTerminalCheck_WebListenAddrMissingWarns(t *testing.T) {
+// The failure this check exists for after spec 41: pointing the terminal at the
+// agent host puts the browser behind Traefik's TCP-passthrough router, which
+// hands it to the mTLS listener and demands a client certificate.
+func TestTerminalCheck_TerminalOnAgentHostWarns(t *testing.T) {
 	vars := healthyTerminalVars()
-	delete(vars, "GATEWAY_WEB_LISTEN_ADDR")
-	fs := runTerminal(t, vars, fakeCache{keyspaceNotif: "AKE"})
+	vars["CONTROL_TERMINAL_URL"] = "wss://agents.example.com/terminal"
+	fs := runTerminal(t, vars)
 	assert.Equal(t, SeverityWarning, worstSev(fs))
-	assert.True(t, anyRemediationContains(fs, "GATEWAY_WEB_LISTEN_ADDR"))
+	assert.True(t, anyRemediationContains(fs, "CONTROL_DOMAIN"),
+		"the collision warning must name the host to move it to")
 }
 
-func TestTerminalCheck_TTYHostCollisionWarns(t *testing.T) {
-	// TTY domain falls back to GATEWAY_DOMAIN ⇒ collides with the mTLS host.
-	vars := map[string]string{
-		"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE": "wss://gateway.example.com/gw/{id}/terminal",
+// A terminal URL on a host that merely SHARES a suffix with the agent host is
+// fine — only an exact host match is shadowed by the passthrough router.
+func TestTerminalCheck_DistinctHostWithSharedSuffixIsOK(t *testing.T) {
+	vars := healthyTerminalVars()
+	vars["CONTROL_TERMINAL_URL"] = "wss://pm.example.com/terminal"
+	vars["CONTROL_AGENT_URL"] = "https://agents.pm.example.com"
+	fs := runTerminal(t, vars)
+	require.Len(t, fs, 1)
+	assert.Equal(t, SeverityOK, fs[0].Severity)
+}
+
+func TestTerminalCheck_NonWssSchemeWarns(t *testing.T) {
+	vars := healthyTerminalVars()
+	vars["CONTROL_TERMINAL_URL"] = "https://power-manage.example.com/terminal"
+	fs := runTerminal(t, vars)
+	assert.Equal(t, SeverityWarning, worstSev(fs))
+}
+
+// The bridge is mounted only when the Valkey token store exists, so a terminal
+// URL without Valkey authorises sessions that cannot connect.
+func TestTerminalCheck_EnabledWithoutValkeyWarns(t *testing.T) {
+	vars := healthyTerminalVars()
+	delete(vars, "CONTROL_VALKEY_ADDR")
+	fs := runTerminal(t, vars)
+	assert.Equal(t, SeverityWarning, worstSev(fs))
+	assert.True(t, anyRemediationContains(fs, "CONTROL_VALKEY_ADDR"))
+}
+
+func TestTerminalCheck_UnparseableURLWarns(t *testing.T) {
+	vars := healthyTerminalVars()
+	vars["CONTROL_TERMINAL_URL"] = "wss://%zz"
+	fs := runTerminal(t, vars)
+	assert.Equal(t, SeverityWarning, worstSev(fs))
+}
+
+// The gateway variables this check used to read are gone. If any of them is
+// still consulted, a deployment that sets ONLY them would look configured —
+// which is exactly how the old check reported "disabled" on every live stack.
+func TestTerminalCheck_IgnoresRetiredGatewayVars(t *testing.T) {
+	fs := runTerminal(t, map[string]string{
+		"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE": "wss://tty.example.com/gw/{id}/terminal",
 		"GATEWAY_WEB_LISTEN_ADDR":              ":8443",
 		"GATEWAY_DOMAIN":                       "gateway.example.com",
-	}
-	fs := runTerminal(t, vars, fakeCache{keyspaceNotif: "AKE"})
-	assert.Equal(t, SeverityWarning, worstSev(fs))
-}
-
-func TestTerminalCheck_KeyspaceNotificationsOffWarns(t *testing.T) {
-	// Empty notify-keyspace-events is the Redis default — the field bug.
-	fs := runTerminal(t, healthyTerminalVars(), fakeCache{keyspaceNotif: ""})
-	assert.Equal(t, SeverityWarning, worstSev(fs))
-	assert.True(t, anyRemediationContains(fs, "notify-keyspace-events"),
-		"the keyspace warning must name the fix")
-}
-
-func TestTerminalCheck_SelfRegisterFalseSkipsKeyspace(t *testing.T) {
-	// Notifications off, but the gateway isn't using the KV provider — so Traefik
-	// isn't watching it and the keyspace state is irrelevant.
-	vars := healthyTerminalVars()
-	vars["GATEWAY_TRAEFIK_SELF_REGISTER"] = "false"
-	fs := runTerminal(t, vars, fakeCache{keyspaceNotif: ""})
+		"GATEWAY_TTY_DOMAIN":                   "tty.example.com",
+		"GATEWAY_TRAEFIK_SELF_REGISTER":        "true",
+	})
 	require.Len(t, fs, 1)
-	assert.Equal(t, SeverityOK, fs[0].Severity)
-}
-
-func TestTerminalCheck_KeyspaceProbeErrorIsExecError(t *testing.T) {
-	env := NewEnv(healthyTerminalVars())
-	env.Cache = fakeCache{keyspaceErr: errors.New("CONFIG GET refused")}
-	_, err := TerminalCheck{}.Run(context.Background(), env)
-	require.Error(t, err, "a reachable-Valkey CONFIG GET failure is a could-not-run (exit 2), not a clean pass")
-}
-
-func TestKeyspaceNotificationsSufficient(t *testing.T) {
-	for _, tc := range []struct {
-		val  string
-		want bool
-	}{
-		{"", false},   // Redis default — off
-		{"Ex", false}, // keyevent channel but no event class beyond expired
-		{"K", false},  // keyspace channel, no event classes
-		{"AKE", true}, // canonical form of "KEA"
-		{"KEA", true}, // operator's literal value
-		{"Kg", true},  // keyspace + generic events
-	} {
-		assert.Equalf(t, tc.want, keyspaceNotificationsSufficient(tc.val), "notify-keyspace-events=%q", tc.val)
-	}
+	assert.Equal(t, SeverityInfo, fs[0].Severity,
+		"gateway variables must not enable the terminal — the tier that served it is gone")
 }
 
 func anyRemediationContains(fs []Finding, sub string) bool {

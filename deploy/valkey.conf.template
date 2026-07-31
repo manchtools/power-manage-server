@@ -57,24 +57,18 @@ user default off
 # reverse:* and members:* relationship sets. Keep these explicit rather than ~*
 # so unrelated Valkey data stays inaccessible. &asynq:* is the task-cancellation
 # pub/sub channel.
-user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~traefik/* ~idx:* ~search:* ~reverse:* ~members:* &asynq:* +@all -@dangerous
+user pm-control on >__VALKEY_CONTROL_PASSWORD__ ~asynq:* ~pm:* ~idx:* ~search:* ~reverse:* ~members:* &asynq:* +@all -@dangerous
 
 
 # indexer — search-index consumer + FT index owner. Owns the search keyspace:
 # idx:* index names, search:* HASH documents, reverse:*/members:* relationship
 # sets, plus its own pm:indexer:* bookkeeping and the asynq:* task keys it
 # consumes. Confined to those namespaces (not ~*) so a compromised indexer
-# cannot reach pm:secret, device routes, or traefik KV.
+# cannot reach pm:secret or device routes.
 # Asynq Server → the cancellation channel.
 user pm-indexer on >__VALKEY_INDEXER_PASSWORD__ ~asynq:* ~idx:* ~search:* ~reverse:* ~members:* ~pm:indexer:* &asynq:* +@all -@dangerous
 
-# traefik — internet-facing + Docker-socket-exposed, so the smallest KEY surface:
-# READ-ONLY discovery on traefik/* only (writes + the queues + CRL are denied —
-# the highest-value reduction). Channels are `allchannels`: Valkey checks a
-# PSUBSCRIBE pattern against `&` grants by EXACT literal equality (not glob), and
-# Traefik's redis KV provider psubscribes to a keyspace-notification pattern we
-# don't pin here, so a scoped `&__keyspace@…` grant would still NOPERM. The
-# residual exposure is small — a compromised read-only Traefik could observe
-# keyspace *event* traffic but cannot read key values or write anything. Pin to
-# Traefik's exact psubscribe pattern here if you want to tighten it.
-user pm-traefik on >__VALKEY_TRAEFIK_PASSWORD__ ~traefik/* &* +@read +@connection +subscribe +psubscribe -@dangerous
+# The pm-traefik ACL user is gone with the Redis KV provider it authenticated.
+# Traefik discovered gateway-published routes through that keyspace; control
+# declares its routers as Docker labels, so nothing reads or writes traefik/*
+# any more and Traefik holds no Valkey credential at all.

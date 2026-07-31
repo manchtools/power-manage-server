@@ -3,95 +3,83 @@ package doctor
 import (
 	"context"
 	"fmt"
-	"strings"
+	"net/url"
 )
 
-// TerminalCheck validates the remote-terminal (TTY) plumbing the control relies
-// on (spec 15). The failure mode it primarily catches is the one hit in the
-// field: the gateway self-registers its Traefik routes — including the
-// per-replica TTY HTTP router — into Valkey, and Traefik's Redis provider
-// WATCHES that keyspace. But the watch only works if Valkey emits keyspace
-// notifications; with them off (the Redis default), Traefik reads the keyspace
-// once at boot and never sees a (re)deployed gateway's terminal route, so
-// terminal WebSockets 404 with nothing obvious in any log. It also flags two
-// config inconsistencies that silently break terminals.
+// TerminalCheck validates the remote-terminal (TTY) plumbing (spec 15).
+//
+// Every variable this check previously read (GATEWAY_PUBLIC_TERMINAL_URL_
+// TEMPLATE, GATEWAY_WEB_LISTEN_ADDR, GATEWAY_TTY_DOMAIN, GATEWAY_TRAEFIK_*)
+// belonged to the gateway. After spec 41 none of them are set on any
+// deployment, so the check took its "terminal disabled" branch every time and
+// reported an INFO — a green result that told the operator terminals were off
+// while they were on. It could not fail, which is the one thing a check must be
+// able to do.
+//
+// The terminal is now served by control's own PUBLIC listener at /terminal and
+// reached through the same Traefik HTTP router as the web UI. That leaves three
+// ways for it to break, and this check covers each:
+//
+//  1. The URL's host is the agent host. Traefik dispatches :443 by SNI and the
+//     agent host is a TCP-passthrough router, so a terminal URL pointing there
+//     hands the browser straight to the mTLS listener, which demands a client
+//     certificate no browser has.
+//  2. The scheme is not wss. The browser dials this verbatim.
+//  3. The URL is set but Valkey is not configured. control mounts the bridge
+//     only when the terminal token store exists, so StartTerminal would
+//     authorise sessions against a path that 404s.
 type TerminalCheck struct{}
 
 func (TerminalCheck) ID() string { return "terminal" }
 
-func (c TerminalCheck) Run(ctx context.Context, env *Env) ([]Finding, error) {
-	// Remote terminal is opt-in — the gateway only mints/serves sessions when the
-	// public terminal URL template is set. Unset ⇒ disabled, nothing to check.
-	if env.Get("GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE") == "" {
-		return []Finding{info(c.ID(), "remote terminal disabled (GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE unset)")}, nil
+func (c TerminalCheck) Run(_ context.Context, env *Env) ([]Finding, error) {
+	// Remote terminal is opt-in: control mints session URLs only when the
+	// public terminal URL is set, and returns Unavailable otherwise.
+	terminalURL := env.Get("CONTROL_TERMINAL_URL")
+	if terminalURL == "" {
+		return []Finding{info(c.ID(), "remote terminal disabled (CONTROL_TERMINAL_URL unset)")}, nil
 	}
 
 	var findings []Finding
 
-	// Config: the gateway serves the terminal WebSocket on GATEWAY_WEB_LISTEN_ADDR.
-	// Minting terminal URLs while that listener is off advertises sessions the
-	// gateway cannot serve — the browser WebSocket just fails.
-	if env.Get("GATEWAY_WEB_LISTEN_ADDR") == "" {
-		findings = append(findings, warn(c.ID(),
-			"GATEWAY_PUBLIC_TERMINAL_URL_TEMPLATE is set but GATEWAY_WEB_LISTEN_ADDR is empty — the gateway will not serve terminal WebSockets",
-			"set GATEWAY_WEB_LISTEN_ADDR (e.g. :8443) on the gateway and recreate the container"))
+	tu, err := url.Parse(terminalURL)
+	if err != nil {
+		f := warn(c.ID(),
+			"CONTROL_TERMINAL_URL is not a parseable URL — every terminal session hands the browser this value verbatim",
+			"set CONTROL_TERMINAL_URL to wss://<control-domain>/terminal")
+		f.Detail = fmt.Sprintf("parse error: %v", err)
+		return append(findings, f), nil
 	}
 
-	// Config: the TTY host must differ from the gateway mTLS host, or Traefik's
-	// TCP-passthrough router for the gateway SNI shadows the TTY HTTP router on
-	// the shared :443 entrypoint.
-	ttyHost := firstNonEmptyVar(env, "GATEWAY_TRAEFIK_TTY_HOST", "GATEWAY_TTY_DOMAIN", "GATEWAY_DOMAIN")
-	gwHost := firstNonEmptyVar(env, "GATEWAY_TRAEFIK_MTLS_HOST", "GATEWAY_DOMAIN")
-	if ttyHost != "" && ttyHost == gwHost {
+	if tu.Scheme != "wss" {
 		findings = append(findings, warn(c.ID(),
-			"the TTY host equals the gateway mTLS host — Traefik's TCP-passthrough router shadows the terminal HTTP router on the shared SNI",
-			"set a dedicated GATEWAY_TTY_DOMAIN distinct from GATEWAY_DOMAIN"))
+			fmt.Sprintf("CONTROL_TERMINAL_URL uses scheme %q — the browser opens this as a WebSocket and only wss is served over TLS", tu.Scheme),
+			"set CONTROL_TERMINAL_URL to wss://<control-domain>/terminal"))
 	}
 
-	// Live: Valkey keyspace notifications must be on so Traefik can WATCH the
-	// gateway's self-registered routes. Only relevant when the gateway self-
-	// registers via the Redis KV provider (the default; disabled only by an
-	// explicit GATEWAY_TRAEFIK_SELF_REGISTER=false).
-	if env.Get("GATEWAY_TRAEFIK_SELF_REGISTER") != "false" {
-		skip, proceed := cacheReady(ctx, c, env)
-		if !proceed {
-			return append(findings, skip...), nil
+	// The collision that matters now is with the AGENT host, not with a second
+	// terminal host. Traefik's TCP-passthrough router for the agent SNI wins
+	// over any HTTP router sharing that name, so a terminal URL on the agent
+	// host reaches control's mTLS listener instead of /terminal.
+	if agentURL := env.Get("CONTROL_AGENT_URL"); agentURL != "" && tu.Hostname() != "" {
+		if au, err := url.Parse(agentURL); err == nil && au.Hostname() == tu.Hostname() {
+			findings = append(findings, warn(c.ID(),
+				"CONTROL_TERMINAL_URL is on the same host as CONTROL_AGENT_URL — Traefik passes that SNI through to the agent mTLS listener, so the browser's WebSocket is asked for a client certificate and fails",
+				"point CONTROL_TERMINAL_URL at the control/web domain (CONTROL_DOMAIN), not the agent domain"))
 		}
-		notif, err := env.Cache.KeyspaceNotifications(ctx)
-		if err != nil {
-			// Valkey is reachable (cacheReady pinged it) but CONFIG GET failed —
-			// the check could not run, not a clean pass.
-			return nil, fmt.Errorf("read Valkey notify-keyspace-events: %w", err)
-		}
-		if !keyspaceNotificationsSufficient(notif) {
-			f := warn(c.ID(),
-				"Valkey keyspace notifications are off — Traefik cannot watch the gateway's self-registered routes, so a (re)deployed gateway's terminal route is not picked up until Traefik is restarted (terminal WebSockets 404)",
-				`set notify-keyspace-events to "KEA" in valkey.conf, then restart Valkey and Traefik`)
-			f.Detail = fmt.Sprintf("notify-keyspace-events=%q", notif)
-			findings = append(findings, f)
-		}
+	}
+
+	// control mounts the WebSocket bridge only when the Valkey-backed terminal
+	// token store is available. Without it StartTerminal still authorises the
+	// session and mints a token, and the browser then 404s on /terminal.
+	if env.Get("CONTROL_VALKEY_ADDR") == "" {
+		findings = append(findings, warn(c.ID(),
+			"CONTROL_TERMINAL_URL is set but CONTROL_VALKEY_ADDR is empty — control does not mount the terminal bridge without the token store, so sessions are authorised against a path that does not exist",
+			"set CONTROL_VALKEY_ADDR (e.g. valkey:6379) and recreate the control container"))
 	}
 
 	if len(findings) == 0 {
-		return []Finding{ok(c.ID(), "remote terminal config consistent; Valkey keyspace notifications enabled for Traefik route watching")}, nil
+		return []Finding{ok(c.ID(), "remote terminal reachable: wss URL on the web host, bridge mounted")}, nil
 	}
 	return findings, nil
-}
-
-// keyspaceNotificationsSufficient reports whether notify-keyspace-events is
-// configured enough for Traefik's Redis provider to WATCH the KV: it needs a
-// channel flag (K=keyspace or E=keyevent) AND event classes (A=all, or at least
-// generic 'g'). Empty (the Redis default) is the common broken case.
-func keyspaceNotificationsSufficient(s string) bool {
-	return strings.ContainsAny(s, "KE") && strings.ContainsAny(s, "Ag")
-}
-
-// firstNonEmptyVar returns the first non-empty env value among keys.
-func firstNonEmptyVar(env *Env, keys ...string) string {
-	for _, k := range keys {
-		if v := env.Get(k); v != "" {
-			return v
-		}
-	}
-	return ""
 }

@@ -9,45 +9,41 @@
 #   3. docker compose up -d  (or: podman-compose up -d)
 #
 # Architecture:
-#   Internet -> Traefik (:443, HTTPS)       -> Control (:8081) -> Web UI / API
-#            -> Traefik (:443, TCP passthru) -> Control (:8082) -> Agent mTLS Streaming
-#              (:80 redirects to :443 for control only)
+#   Internet -> Traefik (:443, HTTPS, SNI=CONTROL_DOMAIN) -> Control (:8081)
+#                 -> Web UI, API, and the terminal WebSocket at /terminal
+#            -> Traefik (:443, TCP passthrough, SNI=AGENT_DOMAIN) -> Control (:8082)
+#                 -> Agent mTLS stream
+#              (:80 redirects to :443 for the web host only)
+#
+# The two hosts must differ. Traefik dispatches the shared :443 entrypoint by
+# SNI, and a TCP router wins over the HTTP routers for a matching SNI — so a
+# passthrough router on CONTROL_DOMAIN would swallow the browser's traffic.
 
 services:
   traefik:
     image: docker.io/traefik:v3
     container_name: pm-traefik
     restart: unless-stopped
-    depends_on:
-      valkey:
-        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./data/traefik:/letsencrypt
-      # spec 32: only the CA + Traefik's own client keypair — never ca.key.
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
-      - ./certs/traefik-datastore.crt:/certs/traefik-datastore.crt:ro,z
-      - ./certs/traefik-datastore.key:/certs/traefik-datastore.key:ro,z
     command:
-      # Docker provider for the stack services
-      # (control, indexer) that don't scale horizontally.
+      # Docker labels are the only route source. The Redis KV provider that
+      # used to sit beside this one existed so horizontally-scaled gateways
+      # could publish their own routers at runtime; with the gateway gone
+      # nothing writes to that keyspace, so Traefik was watching an empty
+      # namespace and holding a Valkey dependency for it.
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=pm-internal"
-      - "--providers.redis=true"
-      - "--providers.redis.endpoints=valkey:6379"
-      # spec 32: read-only ACL user + datastore mutual TLS. Traefik is the
-      # internet-facing, Docker-socket-exposed component, so it gets the most
-      # confined Valkey credential (traefik/* read-only) and still authenticates
-      # with a CA-signed client cert.
-      - "--providers.redis.username=pm-traefik"
-      - "--providers.redis.password=${VALKEY_TRAEFIK_PASSWORD}"
-      - "--providers.redis.rootkey=traefik"
-      - "--providers.redis.tls.ca=/certs/ca.crt"
-      - "--providers.redis.tls.cert=/certs/traefik-datastore.crt"
-      - "--providers.redis.tls.key=/certs/traefik-datastore.key"
       - "--entrypoints.web.address=:80"
-      # One :443 entrypoint serves both the LE-terminated HTTP
+      # One :443 entrypoint serves both the LE-terminated HTTP router for the
+      # web host and control's TCP-passthrough mTLS router for the agent host.
+      # Traefik dispatches by SNI: the TCP router with HostSNI(${AGENT_DOMAIN})
+      # + tls.passthrough=true takes precedence when the ClientHello matches,
+      # otherwise the HTTP router for ${CONTROL_DOMAIN} terminates TLS as
+      # normal. No dedicated mTLS entrypoint — that used to be on :8443 and
+      # splitting ports added deploy friction for no benefit.
       - "--entrypoints.websecure.address=:443"
       - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
       - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
@@ -176,7 +172,11 @@ services:
       - CONTROL_JWT_SECRET=${JWT_SECRET}
       - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
       - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      - CONTROL_PUBLIC_URL=https://${CONTROL_DOMAIN}
+      # The endpoint agents dial for the mTLS stream, handed to each agent in its
+      # registration response. This is AGENT_DOMAIN, never CONTROL_DOMAIN: the
+      # web host terminates TLS at Traefik and lands on :8081, which does not
+      # serve AgentService and never asks for a client certificate.
+      - CONTROL_AGENT_URL=https://${AGENT_DOMAIN}
       - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
       - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
       - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
@@ -221,6 +221,17 @@ services:
       - "traefik.http.routers.control.middlewares=pm-headers"
       - "traefik.http.middlewares.pm-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.services.control.loadbalancer.server.port=8081"
+      # Agent mTLS stream. tls.passthrough is the whole point: Traefik must not
+      # terminate, because control validates the agent's client certificate
+      # itself and a terminating proxy would strip it. Traefik therefore needs
+      # no certificate for this host — which is also why this router works
+      # without Let's Encrypt, and why control.crt must carry ${AGENT_DOMAIN}
+      # as a SAN (setup.sh stamps it): the agent verifies control's identity
+      # against the name it dialled, not against a Traefik-issued cert.
+      - "traefik.tcp.routers.control-agents.rule=HostSNI(`${AGENT_DOMAIN}`)"
+      - "traefik.tcp.routers.control-agents.entrypoints=websecure"
+      - "traefik.tcp.routers.control-agents.tls.passthrough=true"
+      - "traefik.tcp.services.control-agents.loadbalancer.server.port=8082"
     networks:
       - internal
 

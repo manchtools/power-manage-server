@@ -174,19 +174,24 @@ case_parent_domain_deep_subdomain() {
     [[ "$got" == "b.c.example.com" ]]
 }
 
-case_disable_terminals_clears_all_three_vars() {
-    # Simulates the rerun footgun the review caught: existing .env
-    # has all three terminal vars set; operator answers No; the
-    # disable path must clear all three.
+case_disable_terminals_clears_terminal_vars() {
+    # Simulates the rerun footgun the review caught: an existing .env has the
+    # terminal config set, the operator answers No, and the disable path must
+    # clear it. The earlier version of this case seeded an .env that did NOT
+    # contain the terminal vars, so "they are absent afterwards" held before it
+    # did anything — it passed without ever exercising a clear.
     cat > "$SCRIPT_DIR/.env" <<EOF
 ADMIN_EMAIL=admin@example.com
+CONTROL_TERMINAL_URL=wss://power-manage.example.com/terminal
 EOF
-    # Inline equivalent of the No-branch in guided_setup.
-    for k in CONTROL_TERMINAL_DOMAIN CONTROL_TERMINAL_URL; do
+    grep -qE '^CONTROL_TERMINAL_URL=' "$SCRIPT_DIR/.env" || return 1  # precondition
+    # Inline equivalent of the No-branch in guided_setup. CONTROL_TERMINAL_DOMAIN
+    # is gone: the terminal is served on the control host, so there is no second
+    # hostname to clear.
+    for k in CONTROL_TERMINAL_URL; do
         clear_env_var "$k"
     done
-    ! grep -qE '^CONTROL_TERMINAL_DOMAIN=' "$SCRIPT_DIR/.env" \
-        && ! grep -qE '^CONTROL_TERMINAL_URL=' "$SCRIPT_DIR/.env" \
+    ! grep -qE '^CONTROL_TERMINAL_URL=' "$SCRIPT_DIR/.env" \
         && grep -qE '^ADMIN_EMAIL=admin@example\.com$' "$SCRIPT_DIR/.env"
 }
 
@@ -199,7 +204,7 @@ case_acl_passwords_regenerates_placeholder() {
 VALKEY_CONTROL_PASSWORD=CHANGE_ME_PLEASE
 EOF
     VALKEY_CONTROL_PASSWORD="CHANGE_ME_PLEASE"
-    VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_INDEXER_PASSWORD=""
     ensure_acl_passwords
     [[ "$VALKEY_CONTROL_PASSWORD" != CHANGE_ME* && -n "$VALKEY_CONTROL_PASSWORD" ]] \
         && ! grep -q 'CHANGE_ME' "$SCRIPT_DIR/.env" \
@@ -209,17 +214,17 @@ EOF
 case_acl_passwords_keeps_real_value() {
     : > "$SCRIPT_DIR/.env"
     VALKEY_CONTROL_PASSWORD="realsecretvalue"
-    VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_INDEXER_PASSWORD=""
     ensure_acl_passwords
     [[ "$VALKEY_CONTROL_PASSWORD" == "realsecretvalue" ]]
 }
 
 case_acl_passwords_mints_all_missing() {
     : > "$SCRIPT_DIR/.env"
-    VALKEY_CONTROL_PASSWORD="" VALKEY_INDEXER_PASSWORD="" VALKEY_TRAEFIK_PASSWORD=""
+    VALKEY_CONTROL_PASSWORD="" VALKEY_INDEXER_PASSWORD=""
     ensure_acl_passwords
     local var
-    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD VALKEY_TRAEFIK_PASSWORD; do
+    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD; do
         [[ -n "${!var}" ]] || return 1
         grep -qE "^${var}=[0-9a-f]{48}\$" "$SCRIPT_DIR/.env" || return 1
     done
@@ -238,10 +243,10 @@ run_case "isolation: helpers write into tmpdir"     case_isolation_writes_in_tmp
 run_case "parent_domain: dotted hostname"           case_parent_domain_with_dot
 run_case "parent_domain: single label returns empty" case_parent_domain_single_label
 run_case "parent_domain: deep subdomain"            case_parent_domain_deep_subdomain
-run_case "disable terminals clears all three vars"  case_disable_terminals_clears_all_three_vars
+run_case "disable terminals clears the terminal URL" case_disable_terminals_clears_terminal_vars
 run_case "acl passwords: CHANGE_ME* regenerated"    case_acl_passwords_regenerates_placeholder
 run_case "acl passwords: real value untouched"      case_acl_passwords_keeps_real_value
-run_case "acl passwords: mints all four missing"    case_acl_passwords_mints_all_missing
+run_case "acl passwords: mints every missing one"    case_acl_passwords_mints_all_missing
 
 # Meta: make sure the FAIL counting + final non-zero exit path actually
 # work. The previous cut had set-e + ( ... ) + $? which silently killed

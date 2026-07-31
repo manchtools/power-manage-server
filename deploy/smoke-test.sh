@@ -54,6 +54,7 @@ cp -r "$SRC_DIR/initdb.d" "$WORK_DIR/"
 cat > "$WORK_DIR/.env" <<EOF
 IMAGE_TAG=${IMAGE_TAG}
 CONTROL_DOMAIN=control.smoke.test
+AGENT_DOMAIN=agents.smoke.test
 ACME_EMAIL=smoke@smoke.test
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 INDEXER_POSTGRES_PASSWORD=$(openssl rand -hex 24)
@@ -71,10 +72,16 @@ EOF
 #   setup.sh stamps from CONTROL_DOMAIN.
 cat > "$WORK_DIR/smoke.override.yml" <<'EOF'
 services:
-  # No host port exposure in CI/local smoke: Traefik still runs and exercises
-  # its real Redis-provider mTLS/ACL path entirely inside the Compose network.
+  # No host port exposure in CI/local smoke; everything is probed from inside
+  # the Compose network. agents.smoke.test resolves to Traefik so the
+  # TCP-passthrough router is exercised for real — passthrough needs no
+  # certificate of its own, which is why this works without DNS or LE.
   traefik:
     ports: !reset []
+    networks:
+      internal:
+        aliases:
+          - agents.smoke.test
 
   control:
     environment:
@@ -159,7 +166,7 @@ green "pm-control found an indexed search document; unrelated keys + dangerous c
 # indexer half is NOT gateway-related and stays: it is the only assertion in
 # this block about a service that still exists, and deleting the block wholesale
 # would have dropped it silently.
-for k in pm:device:smoke-probe traefik/smoke-probe; do
+for k in pm:device:smoke-probe smoke-probe-unnamespaced; do
   IX_WRITE="$(compose exec -T -e REDISCLI_AUTH="$VALKEY_INDEXER_PASSWORD" valkey \
     valkey-cli "${VALKEY_TLS_ARGS[@]}" --user pm-indexer SET "$k" v 2>&1 || true)"
   [[ "$IX_WRITE" == *NOPERM* ]] || { red "FAIL: pm-indexer can write $k outside its namespace (spec 32 A2)"; printf '%s\n' "$IX_WRITE"; exit 1; }
@@ -206,15 +213,100 @@ docker run --rm --network "container:${CONTROL_CID}" --user 0:0 \
   /probe.sh https://localhost:8081 /w/expected-rpcs.txt /w/forbidden-rpcs.txt \
   || { red "FAIL: served RPC surface does not match the contract"; exit 1; }
 
-# 6. Traefik: start it (not gated — no DNS/LE here) so its Valkey ACL path runs.
+# 6. Traefik: start it (not gated — no DNS/LE here).
 compose up -d traefik >>up.log 2>&1 || true
-sleep 8   # let control/indexer subscribe to asynq:cancel + traefik connect
+sleep 8   # let control/indexer subscribe to asynq:cancel + traefik pick up labels
+
+# 6b. AGENT ROUTE: can an agent actually reach the stream through the deployed
+#     edge? Every other check in this file, and every Go test, stops at control's
+#     own listener. This one starts where an agent starts — the hostname control
+#     hands out at registration — and goes through Traefik.
+#
+#     It exists because the stack shipped in a state where it could not: the
+#     registration URL pointed at the web host, which Traefik terminates and
+#     routes to :8081 (no AgentService, no client-certificate request), while the
+#     agent listener on :8082 had no route at all and control.crt carried no
+#     public SAN. Unit tests were green throughout; nothing here could see it.
+info "probing the agent route: registration URL -> Traefik SNI -> control mTLS listener"
+
+# The URL control actually hands to agents, read from the running container
+# rather than restated here — if it is ever repointed at the web host again,
+# this probe follows it there and fails, which is the property under test.
+AGENT_URL="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$(compose ps -q control)" \
+  | sed -n 's/^CONTROL_AGENT_URL=//p')"
+[[ -n "$AGENT_URL" ]] || { red "FAIL: control has no CONTROL_AGENT_URL — agents receive no endpoint at registration"; exit 1; }
+AGENT_HOST="${AGENT_URL#https://}"; AGENT_HOST="${AGENT_HOST%%/*}"
+info "  registration hands agents: $AGENT_URL"
+
+# A CA-signed client certificate: the agent listener requires one, so this is
+# also what distinguishes it from the public listener.
+openssl ecparam -genkey -name prime256v1 -noout -out certs/smoke-agent.key 2>/dev/null
+openssl req -new -key certs/smoke-agent.key -subj "/CN=01SMOKEDEVICE0000000000000/O=Power Manage" \
+  -out certs/smoke-agent.csr 2>/dev/null
+openssl x509 -req -in certs/smoke-agent.csr -CA certs/ca.crt -CAkey certs/ca.key -CAcreateserial \
+  -days 1 -extfile <(printf "subjectAltName=URI:spiffe://power-manage/agent\nauthorityKeyIdentifier=keyid:always") \
+  -out certs/smoke-agent.crt 2>/dev/null
+chmod 644 certs/smoke-agent.key certs/smoke-agent.crt
+
+CONTROL_CID="$(compose ps -q control)"
+[[ -n "$CONTROL_CID" ]] || { red "FAIL: control container not found for the agent-route probe"; exit 1; }
+
+# Positive: through Traefik, with a client cert, verifying control's identity as
+# the name the agent dialled. This passes only if ALL of it holds — the TCP
+# router matched the SNI, passthrough left the handshake to control, control.crt
+# carries the agent host as a SAN, and the mTLS listener accepted the cert.
+AGENT_PROBE="$(docker run --rm --network "container:${CONTROL_CID}" --user 0:0 \
+  -v "$WORK_DIR/certs:/c:ro" --entrypoint curl docker.io/curlimages/curl:8.11.1 \
+  -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+  --cacert /c/ca.crt --cert /c/smoke-agent.crt --key /c/smoke-agent.key \
+  "https://${AGENT_HOST}/health" 2>&1 || true)"
+if [[ "$AGENT_PROBE" != "200" ]]; then
+  red "FAIL: an agent cannot reach the stream endpoint it is given at registration"
+  red "      dialled https://${AGENT_HOST}/health through Traefik, got: ${AGENT_PROBE}"
+  compose logs --tail 20 traefik || true
+  exit 1
+fi
+
+# Negative control: the same URL without a client certificate must NOT succeed.
+# Without this the positive result could come from any plain HTTPS listener —
+# which is exactly the misconfiguration being guarded against.
+#
+# This deliberately provokes a TLS handshake error in control's log, so the
+# boundary is recorded first: step 7 scans everything BEFORE this point, and the
+# error itself is asserted below instead of being filtered away.
+NEG_PROBE_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+sleep 1
+NOCERT_PROBE="$(docker run --rm --network "container:${CONTROL_CID}" --user 0:0 \
+  -v "$WORK_DIR/certs:/c:ro" --entrypoint curl docker.io/curlimages/curl:8.11.1 \
+  -sS -o /dev/null -w '%{http_code}' --max-time 20 \
+  --cacert /c/ca.crt "https://${AGENT_HOST}/health" 2>&1 || true)"
+if [[ "$NOCERT_PROBE" == "200" ]]; then
+  red "FAIL: ${AGENT_HOST} served /health WITHOUT a client certificate"
+  red "      the agent host must reach the mTLS listener, not the public one"
+  exit 1
+fi
+
+# ...and prove the refusal came from CONTROL, not from Traefik or a dead port.
+# A connection that never arrived would also produce a non-200, so without this
+# the negative control would pass for the wrong reason.
+sleep 2
+NEG_LOGS="$(compose logs --no-color --since "$NEG_PROBE_START" control 2>&1 || true)"
+if ! printf '%s\n' "$NEG_LOGS" | grep -q "client didn't provide a certificate"; then
+  red "FAIL: no client-certificate refusal in control's log — the certificate-less"
+  red "      probe did not reach control's mTLS listener, so its failure proves nothing"
+  printf '%s\n' "$NEG_LOGS"
+  exit 1
+fi
+green "agent route works: ${AGENT_HOST} -> Traefik passthrough -> control mTLS listener (client cert required)"
 
 # 7. The assertion that "healthy" can't make: no ACL, permission, connection,
 #    or TLS-identity failure in ANY service log. This catches NOPERM as well as
 #    a dial-address/certificate-name mismatch (TLS handshake / bad certificate).
+# Bounded at NEG_PROBE_START so the handshake error the negative control just
+# provoked on purpose is not rescanned as a fault. It is asserted above; a
+# blanket filter here would instead blind this scan to real ones.
 info "scanning logs for ACL / permission / connection / TLS failures"
-LOGS="$(compose logs --no-color 2>&1 || true)"
+LOGS="$(compose logs --no-color --until "$NEG_PROBE_START" 2>&1 || true)"
 BAD="$(printf '%s\n' "$LOGS" | grep -iE 'NOPERM|no permissions|permission denied|WRONGPASS|connection refused|i/o timeout|failed to configure tls|TLS handshake error|bad certificate' || true)"
 if [[ -n "$BAD" ]]; then
   red "FAIL: auth/permission/connection/TLS errors in logs:"
