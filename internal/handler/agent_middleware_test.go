@@ -470,3 +470,45 @@ func TestMTLSMiddleware_NilRevocationChecker(t *testing.T) {
 	mwNil.ServeHTTP(recNil, reqNil)
 	assert.Equal(t, http.StatusForbidden, recNil.Code, "a nil checker must fail closed, never silently admit")
 }
+
+// TestMTLSMiddleware_SetsTheKeyTheHandlerReads pins the compatibility between
+// the wrapper that establishes agent identity and the handler that consumes it.
+//
+// This is the defect it exists for, found in review after every other check was
+// green: control's agent listener was wrapped with mtls.WithPeerCert instead of
+// MTLSMiddleware. Both put the authenticated peer into the request context, so
+// the wiring type-checked and compiled. But they use different keys and
+// different shapes — WithPeerCert carries the raw x509 leaf, MTLSMiddleware
+// carries the extracted device id — so DeviceIDFromContext found nothing and
+// EVERY real agent call failed Unauthenticated.
+//
+// No unit test caught it because handler tests inject DeviceIDContextKey
+// directly, which is exactly the shortcut that makes a wiring bug invisible:
+// the tests prove the handler reads the key, and separately the middleware sets
+// it, while nothing proves the two are the same key.
+func TestMTLSMiddleware_SetsTheKeyTheHandlerReads(t *testing.T) {
+	cert, tlsState := newRealAgentCert(t)
+	require.NotEmpty(t, cert.Subject.CommonName, "fixture must carry a CN to compare against")
+
+	var (
+		reached  bool
+		gotID    string
+		gotFound bool
+	)
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		reached = true
+		gotID, gotFound = DeviceIDFromContext(r.Context())
+	})
+
+	mw := MTLSMiddleware(inner, revocationWith(), newTestLogger())
+	req := httptest.NewRequest(http.MethodPost, "/pm.v1.AgentService/Stream", nil)
+	req.TLS = tlsState
+	mw.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.True(t, reached, "the middleware must admit a valid agent cert")
+	require.True(t, gotFound,
+		"DeviceIDFromContext found nothing — the middleware wrapping the agent listener "+
+			"does not set the key the handler reads, so every real agent call fails Unauthenticated")
+	assert.Equal(t, cert.Subject.CommonName, gotID,
+		"the device id the handler sees must be the certificate CN, not some other value")
+}

@@ -63,6 +63,7 @@ func (f *fakeStreamWorkerManager) snapshot() (started, stopped []string) {
 // returns an AgentServiceClient pointed at it, plus the recording
 // control stub so tests can flip the VerifyDevice outcome.
 type streamFixture struct {
+	manager *connection.Manager
 	client  pmv1connect.AgentServiceClient
 	control *fakeAgentOps
 	worker  *fakeStreamWorkerManager
@@ -135,6 +136,7 @@ func newStreamFixtureWithCert(t *testing.T, requireTLS bool, certDeviceID string
 	client := pmv1connect.NewAgentServiceClient(httpClient, srv.URL)
 
 	return &streamFixture{
+		manager: mgr,
 		client:  client,
 		control: control,
 		worker:  worker,
@@ -336,4 +338,53 @@ func TestStream_HappyPathRegistersStartsWorkerAndSendsWelcome(t *testing.T) {
 
 	_, stopped = f.worker.snapshot()
 	assert.Equal(t, []string{"01HZX9DEFGH000000000000000"}, stopped)
+}
+
+// TestStream_RevocationTerminatesTheLiveStream is spec 41 criterion 5 asserted
+// at the level that matters: not "Unregister was called", but "the stream
+// stopped".
+//
+// The first attempt at this property tested the call and passed while the
+// property was false. Unregister cancels the agent's context, but the handler
+// blocked in Receive, which only returns when the client sends or the RPC
+// context dies — so a revoked agent kept an authenticated stream and its frames
+// kept reaching the dispatch path. Revoking a certificate stops the next
+// handshake; it did nothing to the connection already open.
+func TestStream_RevocationTerminatesTheLiveStream(t *testing.T) {
+	f := newStreamFixture(t, false)
+
+	stream := f.client.Stream(context.Background())
+	require.NoError(t, stream.Send(&pm.AgentMessage{
+		Payload: &pm.AgentMessage_Hello{Hello: &pm.Hello{
+			DeviceId: &pm.DeviceId{Value: "dev-revoke"}, Hostname: "h", AgentVersion: "v",
+		}},
+	}))
+
+	// Welcome proves the stream is established and the handler is in its loop.
+	_, err := stream.Receive()
+	require.NoError(t, err, "handler must accept the connection before we revoke it")
+
+	// The revocation path: exactly what DeviceStreamRevocationListener does
+	// post-commit.
+	f.manager.Unregister("dev-revoke")
+
+	// The handler must END. Receive returns an error (or EOF) rather than
+	// blocking forever, and no further frame is accepted.
+	done := make(chan error, 1)
+	go func() {
+		for {
+			if _, rerr := stream.Receive(); rerr != nil {
+				done <- rerr
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+		// Stream ended, which is the property.
+	case <-time.After(5 * time.Second):
+		t.Fatal("stream still live 5s after revocation — cancelling the agent context " +
+			"did not terminate the RPC, so a revoked device keeps an authenticated connection")
+	}
 }

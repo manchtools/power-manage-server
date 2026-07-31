@@ -8,11 +8,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"log/slog"
+
 	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"github.com/manchtools/power-manage/server/internal/api"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/testutil"
-	"log/slog"
 )
 
 // TestCreateUser_MintsExactlyOneDEK pins spec 19 AC 1 on the API

@@ -21,9 +21,13 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
@@ -59,14 +63,15 @@ type valkeySubsystem struct {
 	// verify (audit F-02).
 	taskSigner *taskqueue.Signer
 
-	// ConnMgr holds every live agent bidi stream, WorkerMgr runs the per-device
-	// Asynq consumer for dispatches, and TerminalSessions maps a WebSocket
-	// bridge to the stream carrying its PTY. All three moved here from the
-	// gateway with the AgentService itself; they live in this subsystem because
-	// the worker manager needs the same Asynq options as the rest of it.
-	ConnMgr          *connection.Manager
-	WorkerMgr        *gateway.DeviceWorkerManager
-	TerminalSessions *connection.TerminalSessionRegistry
+	// WorkerMgr runs the per-device Asynq consumer for dispatches. It lives here
+	// because it needs this subsystem's Valkey options.
+	//
+	// The connection manager and terminal-session registry deliberately do NOT:
+	// they are plain in-memory maps over live streams with no Valkey dependency,
+	// and control must hold them whether or not a queue exists. Keeping them
+	// here made a nil subsystem a nil-pointer panic at boot, and would have tied
+	// the agent transport to a dependency that workstream B removes.
+	WorkerMgr *gateway.DeviceWorkerManager
 
 	// TerminalTokenStore is exported because main() hands it to the
 	// InternalHandler later in the boot sequence — they MUST share
@@ -95,16 +100,18 @@ func (v *valkeySubsystem) Close() {
 	}
 }
 
-// newValkeySubsystem builds the entire Valkey-backed subsystem and
-// wires it into svc as side effects (matches the pre-extract main()
-// behaviour). Returns nil + nil when cfg.ValkeyAddr is empty so
-// callers can unconditionally invoke this function and let cfg
-// drive feature gating.
+// newValkeySubsystem builds the entire Valkey-backed subsystem and wires it
+// into svc as side effects.
+//
+// The nil,nil return for an empty ValkeyAddr is now unreachable in production:
+// validateConfig rejects that configuration at boot, because control terminates
+// agent streams through this subsystem and cannot serve anything without it.
+// The branch stays as a guard for direct callers in tests.
 //
 // Errors at the asynq.Start step partially-initialised components
 // are unwound by deferred Close on the returned subsystem; callers
 // MUST defer Close() on the returned value before checking err.
-func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *api.ControlService, actionSigner ca.ActionSigner, logger *slog.Logger) (*valkeySubsystem, error) {
+func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *api.ControlService, actionSigner ca.ActionSigner, connMgr *connection.Manager, sessions *connection.TerminalSessionRegistry, logger *slog.Logger) (*valkeySubsystem, error) {
 	if cfg.ValkeyAddr == "" {
 		return nil, nil
 	}
@@ -166,9 +173,7 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 	// Agent-stream infrastructure. The per-device worker consumes that device's
 	// dispatch queue, so it needs the same Valkey connection options the client
 	// above uses.
-	v.ConnMgr = connection.NewManager()
-	v.TerminalSessions = connection.NewTerminalSessionRegistry()
-	taskFactory := gateway.NewTaskHandlerFactory(v.ConnMgr, v.taskSigner, logger.With("component", "device_task"))
+	taskFactory := gateway.NewTaskHandlerFactory(connMgr, v.taskSigner, logger.With("component", "device_task"))
 	v.WorkerMgr = gateway.NewDeviceWorkerManager(
 		asynq.RedisClientOpt{
 			Addr:      cfg.ValkeyAddr,
@@ -200,6 +205,47 @@ func newValkeySubsystem(ctx context.Context, cfg *Config, st *store.Store, svc *
 		api.TerminalBaseURL(cfg.TerminalPublicURL),
 		logger.With("component", "terminal_handler"),
 	)
+	// Wire the transport the handler needs. Constructing TerminalHandler is not
+	// enough: without this every terminal RPC returns Unavailable, because the
+	// seams default to nil and the handler fails closed on them by design.
+	termHandler.SetTerminalTransport(
+		func(_ context.Context) ([]*pm.TerminalSessionInfo, error) {
+			live := sessions.List()
+			out := make([]*pm.TerminalSessionInfo, 0, len(live))
+			for _, s := range live {
+				out = append(out, &pm.TerminalSessionInfo{
+					SessionId:      s.SessionID,
+					UserId:         s.UserID,
+					DeviceId:       s.DeviceID,
+					TtyUser:        s.TtyUser,
+					StartedAt:      timestamppb.New(s.StartedAt),
+					LastActivityAt: timestamppb.New(s.LastActivity()),
+				})
+			}
+			return out, nil
+		},
+		func(_ context.Context, deviceID, sessionID, reason string) (bool, error) {
+			// found reports whether the session was actually here. Absent is not
+			// an error — it ended with its stream — but it must be
+			// distinguishable, or an operator is told a root shell closed when
+			// nothing was closed.
+			if sessions.Get(sessionID) == nil {
+				return false, nil
+			}
+			err := connMgr.Send(deviceID, &pm.ServerMessage{
+				Id: ulid.Make().String(),
+				Payload: &pm.ServerMessage_TerminalStop{
+					TerminalStop: &pm.TerminalStop{SessionId: sessionID, Reason: reason},
+				},
+			})
+			if err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		connMgr.IsConnected,
+	)
+
 	svc.SetTerminalHandler(termHandler)
 
 	// Close a user's live terminal sessions when their terminal access is

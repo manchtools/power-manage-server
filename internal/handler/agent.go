@@ -409,27 +409,77 @@ func (h *AgentHandler) Stream(ctx context.Context, stream *connect.BidiStream[pm
 		h.logger.Warn("failed to send Welcome", "device_id", deviceID, "error", err)
 	}
 
-	// Process incoming messages from agent
+	// Process incoming messages from the agent.
+	//
+	// Receive is drained on its own goroutine so the loop can also watch the
+	// AGENT's context, which the manager cancels on Unregister — the path
+	// certificate revocation takes. Blocking directly in Receive would ignore
+	// that cancellation entirely: the call only returns when the client sends
+	// or the RPC context dies, so a revoked agent that simply stays quiet would
+	// keep its authenticated stream open indefinitely, and a chatty one would
+	// keep having its frames dispatched. Returning here ends the RPC, which is
+	// what actually closes the connection.
+	//
+	// The channel is buffered so a Receive that lands after the loop has
+	// returned does not park the goroutine forever; the stream is torn down as
+	// this handler returns, so the pending Receive then fails and it exits.
+	type recvResult struct {
+		msg *pm.AgentMessage
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Receive()
+			select {
+			case recvCh <- recvResult{msg: msg, err: err}:
+			case <-agent.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	for {
-		msg, err := stream.Receive()
-		if err != nil {
-			// WS16 server#331: classify a clean agent shutdown as graceful
-			// instead of re-emitting it up the stack as an error (which logged
-			// every normal disconnect at error severity).
-			if isStreamClosed(err) {
-				h.logger.Info("agent stream closed", "device_id", deviceID)
+		select {
+		case <-agent.Done():
+			// Revoked, superseded by a newer connection for this device, or the
+			// RPC itself ending. Either way this stream is no longer entitled to
+			// deliver anything.
+			h.logger.Info("agent stream terminated", "device_id", deviceID)
+			return nil
+
+		case r := <-recvCh:
+			if r.err != nil {
+				// WS16 server#331: classify a clean agent shutdown as graceful
+				// instead of re-emitting it up the stack as an error (which logged
+				// every normal disconnect at error severity).
+				if isStreamClosed(r.err) {
+					h.logger.Info("agent stream closed", "device_id", deviceID)
+					return nil
+				}
+				return r.err
+			}
+
+			// Re-check before dispatching: a revocation may have landed while
+			// this frame was in flight, and a frame accepted after revocation
+			// would reach AgentOps and the inbox under an identity control has
+			// already withdrawn.
+			if agent.Terminated() {
+				h.logger.Info("dropping frame from a terminated agent stream", "device_id", deviceID)
 				return nil
 			}
-			return err
-		}
 
-		h.manager.UpdateLastSeen(deviceID)
+			h.manager.UpdateLastSeen(deviceID)
 
-		if err := h.handleAgentMessage(ctx, deviceID, msg); err != nil {
-			h.logger.Warn("handle agent message",
-				"device_id", deviceID,
-				"error", err,
-			)
+			if err := h.handleAgentMessage(ctx, deviceID, r.msg); err != nil {
+				h.logger.Warn("handle agent message",
+					"device_id", deviceID,
+					"error", err,
+				)
+			}
 		}
 	}
 }

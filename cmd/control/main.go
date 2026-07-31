@@ -18,7 +18,9 @@ import (
 	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
+	"github.com/manchtools/power-manage/server/internal/connection"
 	"github.com/manchtools/power-manage/server/internal/datastore"
+	"github.com/manchtools/power-manage/server/internal/gateway"
 	agenthandler "github.com/manchtools/power-manage/server/internal/handler"
 	"github.com/manchtools/power-manage/server/internal/inventorysched"
 	"github.com/manchtools/power-manage/server/internal/middleware"
@@ -29,6 +31,7 @@ import (
 	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
 	"github.com/manchtools/power-manage/server/internal/store/postgres"
+	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
 // version is set at build time via -ldflags.
@@ -344,7 +347,14 @@ func main() {
 	// api.SearchListener, and an event emitted before that listener exists is
 	// projected into Postgres but permanently misses its incremental search task
 	// (fresh-deploy bootstrap users/groups then remain absent until a rebuild).
-	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, logger)
+	// The agent transport is control's own, not the queue's: these are in-memory
+	// maps over live streams. Constructing them here rather than inside the
+	// Valkey subsystem keeps a queue-less control from panicking at boot, and
+	// keeps the transport standing when workstream B removes the queue.
+	connMgr := connection.NewManager()
+	terminalSessions := connection.NewTerminalSessionRegistry()
+
+	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, connMgr, terminalSessions, logger)
 	if err != nil {
 		// valkey may be partially-initialised on error — Close is nil-safe and
 		// only cleans up components that constructed successfully.
@@ -455,6 +465,27 @@ func main() {
 	scimHandler := scim.NewHandler(st, logger, svc.SystemActions())
 	mux.Handle("/scim/v2/", scimHandler)
 
+	// The terminal WebSocket bridge. StartTerminal hands the web client a URL
+	// ending in /terminal; without this mount that URL is a 404 and every
+	// session the RPC successfully authorises fails to connect — the RPC half
+	// working is what makes the omission easy to miss.
+	//
+	// Requires Valkey: the bridge needs the token store to redeem the bearer,
+	// and the session registry and connection manager to reach the device.
+	if valkey != nil && valkey.TerminalTokenStore != nil {
+		bridge := agenthandler.NewTerminalBridgeHandler(
+			connMgr,
+			terminalSessions,
+			agenthandler.NewTokenStoreValidator(valkey.TerminalTokenStore),
+			valkey.aqClient,
+			logger.With("component", "terminal_bridge"),
+		)
+		mux.Handle("/terminal", bridge)
+		logger.Info("terminal WebSocket bridge mounted", "path", "/terminal")
+	} else {
+		logger.Warn("terminal WebSocket bridge NOT mounted (no Valkey): StartTerminal will authorise sessions that cannot connect")
+	}
+
 	// Wrap with CORS and security headers middleware
 	corsHandler := middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, logger)(mux)
 	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
@@ -488,22 +519,39 @@ func main() {
 	// very next connection. A lookup error is treated as revoked.
 	agentOps := api.NewAgentOps(st, encryptor, actionSigner, logger.With("component", "agent_ops"))
 
+	// The handler reports agent results onto the queue and runs a per-device
+	// dispatch worker, so both come from the queue subsystem. Read them through
+	// a nil check rather than dereferencing: newValkeySubsystem returns nil by
+	// design when no queue is configured, and an unguarded read there was a
+	// panic at boot. A queue-less control still starts and serves its API; it
+	// just cannot carry agent traffic, and says so.
+	var (
+		aqClient  taskqueue.Enqueuer
+		workerMgr *gateway.DeviceWorkerManager
+	)
+	if valkey != nil {
+		aqClient = valkey.aqClient
+		workerMgr = valkey.WorkerMgr
+	} else {
+		logger.Warn("no task queue configured (CONTROL_VALKEY_ADDR empty): the agent listener is NOT started, so no device can connect")
+	}
+
 	agentHandler := agenthandler.NewAgentHandlerWithTLS(
-		valkey.ConnMgr,
-		valkey.aqClient,
+		connMgr,
+		aqClient,
 		agentOps,
-		valkey.WorkerMgr,
+		workerMgr,
 		version,
 		cfg.HeartbeatInterval,
 		logger.With("component", "agent_service"),
 	)
-	agentHandler.SetTerminalSessions(valkey.TerminalSessions)
+	agentHandler.SetTerminalSessions(terminalSessions)
 
 	// Criterion 5: revoking a certificate stops the next handshake but leaves an
 	// established stream untouched, because the certificate is checked once at
 	// connect. Post-commit so a rolled-back revocation never disconnects a device
 	// whose certificate is still valid.
-	st.RegisterEventListener(api.DeviceStreamRevocationListener(valkey.ConnMgr,
+	st.RegisterEventListener(api.DeviceStreamRevocationListener(connMgr,
 		logger.With("component", "device_stream_revocation")))
 
 	agentPath, agentH := pmv1connect.NewAgentServiceHandler(
@@ -515,7 +563,17 @@ func main() {
 	revocation := store.NewRevocationChecker(st)
 
 	internalMux := http.NewServeMux()
-	internalMux.Handle(agentPath, mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(mtls.WithPeerCert(agentH)))
+	// MTLSMiddleware, not WithPeerCert. Both put the authenticated peer into the
+	// context, but under different keys and different shapes: WithPeerCert
+	// carries the raw x509 leaf (what the deleted InternalService needed to read
+	// a gateway CN), while AgentHandler reads a device id via
+	// DeviceIDFromContext. Wrapping with the wrong one type-checks, passes every
+	// handler test — the tests inject the device id directly — and then fails
+	// EVERY real agent call with Unauthenticated, because the key the handler
+	// reads is never set.
+	internalMux.Handle(agentPath,
+		mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(
+			agenthandler.MTLSMiddleware(agentH, revocation, logger)))
 	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

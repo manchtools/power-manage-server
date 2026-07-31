@@ -45,6 +45,24 @@ func (a *Agent) Close() {
 	a.cancel()
 }
 
+// Done reports the agent's own cancellation, which fires on Close — Unregister,
+// or a newer connection superseding this one.
+//
+// Exported because cancelling it has to actually reach the stream handler. The
+// handler blocks in Receive, which only returns when the client sends or the
+// RPC context dies; neither observes this cancellation. Without a channel to
+// select on, revoking a certificate would cancel this context and leave the
+// authenticated stream running until the agent happened to disconnect.
+func (a *Agent) Done() <-chan struct{} {
+	return a.ctx.Done()
+}
+
+// Terminated reports whether this agent's connection has been closed, for the
+// re-check between receiving a frame and acting on it.
+func (a *Agent) Terminated() bool {
+	return a.ctx.Err() != nil
+}
+
 // Manager manages connected agents.
 type Manager struct {
 	now    func() time.Time // clock seam; defaults to time.Now, overridden in tests
