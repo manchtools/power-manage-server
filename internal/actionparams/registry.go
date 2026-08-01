@@ -3,15 +3,15 @@ package actionparams
 import (
 	"fmt"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // paramsOneofName is the name of the params oneof shared — identically — by
-// every message that carries action parameters: Action, SignedActionEnvelope,
-// ManagedAction, CreateActionRequest, UpdateActionParamsRequest. The field
-// names and wrapped message types are the same across all five; only the
+// every message that carries action parameters: Action, ManagedAction,
+// CreateActionRequest, UpdateActionParamsRequest. The field
+// names and wrapped message types are the same across all four; only the
 // generated Go wrapper type differs. That shared shape is what lets one
 // reflection helper replace the per-message switch tables.
 const paramsOneofName protoreflect.Name = "params"
@@ -23,13 +23,13 @@ const paramsOneofName protoreflect.Name = "params"
 //
 // This replaces the half-dozen hand-maintained ActionType→params-message
 // switch tables that previously had to stay in lockstep across two files and
-// three message types (PopulateAction / PopulateEnvelope / PopulateManagedAction,
+// message types (PopulateAction / PopulateManagedAction,
 // the extract* helpers, and actionParamsMatchType). A new ACTION_TYPE_* needs
 // exactly one entry here (or classification as param-less in isNoParamsActionType);
 // TestEveryActionTypeHandledInEveryParamsSwitch fails until it does.
 //
 // The field names are validated against the live proto descriptors of all
-// three target messages by registryFieldsAreValid (exercised in the charter
+// target messages by registryFieldsAreValid (exercised in the charter
 // test), so a proto rename or a typo here is caught structurally rather than
 // silently mis-routing params.
 var paramsFieldByActionType = map[pm.ActionType]protoreflect.Name{
@@ -58,13 +58,13 @@ var paramsFieldByActionType = map[pm.ActionType]protoreflect.Name{
 
 // populateParamsOneof unmarshals paramsJSON into the params-oneof field of msg
 // that corresponds to actionType, using the shared registry. msg must be a
-// message that carries the standard `params` oneof (Action, SignedActionEnvelope,
-// ManagedAction, …). It is the single implementation behind PopulateAction,
-// PopulateEnvelope, and PopulateManagedAction.
+// message that carries the standard `params` oneof (Action, ManagedAction, …).
+// It is the single implementation behind PopulateAction and
+// PopulateManagedAction.
 //
 // Fail-closed identically to the switches it replaced: a protojson parse
 // failure OR an unhandled action type returns an error so callers never
-// dispatch/sign an action with empty/nil params (#368). Param-less instant
+// dispatch an action with empty/nil params (#368). Param-less instant
 // types and the zero value leave the oneof unset and return nil.
 func populateParamsOneof(msg proto.Message, actionType pm.ActionType, paramsJSON []byte) error {
 	if isNoParamsActionType(actionType) {

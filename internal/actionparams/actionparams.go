@@ -5,7 +5,7 @@ package actionparams
 import (
 	"fmt"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -76,7 +76,6 @@ func isNoParamsActionType(t pm.ActionType) bool {
 }
 
 // PopulateAction deserializes params JSON into a wire-format Action proto.
-// Used by the gateway (action dispatch) and internal service (agent sync).
 //
 // Returns an error on a protojson parse failure OR an unhandled action type,
 // so callers can fail closed (retry/dead-letter, log) instead of dispatching an
@@ -84,15 +83,6 @@ func isNoParamsActionType(t pm.ActionType) bool {
 // proto-reflection registry (registry.go), not a switch.
 func PopulateAction(action *pm.Action, actionType int32, paramsJSON []byte) error {
 	return populateParamsOneof(action, pm.ActionType(actionType), paramsJSON)
-}
-
-// PopulateEnvelope deserializes params JSON into a SignedActionEnvelope's
-// params oneof — the signed/transported representation the agent verifies and
-// unmarshals to execute. Used by the dispatch signing path
-// (BuildAndSignEnvelope) so the bytes the CA signs carry exactly the typed
-// params that run. Fail-closed identically to PopulateAction.
-func PopulateEnvelope(env *pm.SignedActionEnvelope, actionType int32, paramsJSON []byte) error {
-	return populateParamsOneof(env, pm.ActionType(actionType), paramsJSON)
 }
 
 // PopulateManagedAction deserializes params JSON into an API-format

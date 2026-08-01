@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	pm "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	pm "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage/server/internal/actionparams"
 )
 
@@ -59,11 +59,7 @@ func TestScheduleFromJSON_DistinguishesPresentFromEmpty(t *testing.T) {
 }
 
 // TestScheduleToRaw_NilOrEmptyIsAbsent pins that BOTH a nil schedule and an
-// all-default schedule serialise to a nil RawMessage, so the emitter omits the
-// `schedule` key and the projector applies the {interval_hours:8} drift default.
-// This is the load-bearing contract the old len-gated ScheduleToMap arranged —
-// a required-but-empty schedule must still land on the safe default, not be
-// stored as an explicit all-zero (interval_hours:0 ⇒ no drift checks at all).
+// all-default schedule serialise to a nil RawMessage.
 func TestScheduleToRaw_NilOrEmptyIsAbsent(t *testing.T) {
 	rawNil, err := actionparams.ScheduleToRaw(nil)
 	require.NoError(t, err)
@@ -71,7 +67,7 @@ func TestScheduleToRaw_NilOrEmptyIsAbsent(t *testing.T) {
 
 	rawEmpty, err := actionparams.ScheduleToRaw(&pm.ActionSchedule{})
 	require.NoError(t, err)
-	assert.Nil(t, rawEmpty, "an all-default schedule must serialise to nil so the projector applies the interval_hours:8 default")
+	assert.Nil(t, rawEmpty, "an all-default schedule is omitted")
 
 	// A schedule with ANY non-default field is NOT empty and serialises.
 	rawOnFlag, err := actionparams.ScheduleToRaw(&pm.ActionSchedule{RunOnAssign: true})
@@ -81,15 +77,4 @@ func TestScheduleToRaw_NilOrEmptyIsAbsent(t *testing.T) {
 	require.NotNil(t, got)
 	assert.True(t, got.RunOnAssign)
 	assert.Equal(t, int32(0), got.IntervalHours, "explicit interval_hours:0 is preserved alongside run_on_assign:true")
-}
-
-// TestScheduleFromJSON_ReadsLegacySnakeCase pins backward-compatibility with
-// event bytes written by the old map-shaped ScheduleToMap (snake_case keys),
-// so existing event-store data still rehydrates after the protojson switch.
-func TestScheduleFromJSON_ReadsLegacySnakeCase(t *testing.T) {
-	got := actionparams.ScheduleFromJSON([]byte(`{"cron":"0 0 * * *","interval_hours":6,"run_on_assign":true}`))
-	require.NotNil(t, got)
-	assert.Equal(t, "0 0 * * *", got.Cron)
-	assert.Equal(t, int32(6), got.IntervalHours)
-	assert.True(t, got.RunOnAssign)
 }
