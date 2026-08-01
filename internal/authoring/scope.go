@@ -3,10 +3,17 @@ package authoring
 import (
 	"context"
 	"fmt"
+
+	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/store"
 )
 
 func (h *Handlers) directScopeGroups(ctx context.Context, objectType, id string) ([]string, error) {
-	targets, err := h.store.ListAuthoringAssignmentTargets(ctx, objectType, id)
+	return directScopeGroups(ctx, h.store, objectType, id)
+}
+
+func directScopeGroups(ctx context.Context, st *store.Store, objectType, id string) ([]string, error) {
+	targets, err := st.ListAuthoringAssignmentTargets(ctx, objectType, id)
 	if err != nil {
 		return nil, err
 	}
@@ -17,9 +24,9 @@ func (h *Handlers) directScopeGroups(ctx context.Context, objectType, id string)
 		case "device_group", "user_group":
 			ids = []string{target.TargetID}
 		case "device":
-			ids, err = h.store.ListDeviceGroupIDs(ctx, target.TargetID)
+			ids, err = st.ListDeviceGroupIDs(ctx, target.TargetID)
 		case "user":
-			ids, err = h.store.ListUserGroupIDsForUser(ctx, target.TargetID)
+			ids, err = st.ListUserGroupIDsForUser(ctx, target.TargetID)
 		default:
 			return nil, fmt.Errorf("authoring: unknown assignment target type %q", target.TargetType)
 		}
@@ -39,8 +46,8 @@ func (h *Handlers) directScopeGroups(ctx context.Context, objectType, id string)
 	return groups, nil
 }
 
-func (h *Handlers) effectiveActionScopeGroups(ctx context.Context, actionID string) ([]string, error) {
-	groups, err := h.directScopeGroups(ctx, "action", actionID)
+func effectiveActionScopeGroups(ctx context.Context, st *store.Store, actionID string) ([]string, error) {
+	groups, err := directScopeGroups(ctx, st, "action", actionID)
 	if err != nil {
 		return nil, err
 	}
@@ -48,20 +55,20 @@ func (h *Handlers) effectiveActionScopeGroups(ctx context.Context, actionID stri
 	for _, id := range groups {
 		seen[id] = struct{}{}
 	}
-	setIDs, err := h.store.ListContainingActionSetIDs(ctx, actionID)
+	setIDs, err := st.ListContainingActionSetIDs(ctx, actionID)
 	if err != nil {
 		return nil, err
 	}
 	definitionIDs := make(map[string]struct{})
 	for _, setID := range setIDs {
-		setGroups, err := h.directScopeGroups(ctx, "action_set", setID)
+		setGroups, err := directScopeGroups(ctx, st, "action_set", setID)
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range setGroups {
 			seen[id] = struct{}{}
 		}
-		ids, err := h.store.ListContainingDefinitionIDs(ctx, setID)
+		ids, err := st.ListContainingDefinitionIDs(ctx, setID)
 		if err != nil {
 			return nil, err
 		}
@@ -70,11 +77,24 @@ func (h *Handlers) effectiveActionScopeGroups(ctx context.Context, actionID stri
 		}
 	}
 	for definitionID := range definitionIDs {
-		definitionGroups, err := h.directScopeGroups(ctx, "definition", definitionID)
+		definitionGroups, err := directScopeGroups(ctx, st, "definition", definitionID)
 		if err != nil {
 			return nil, err
 		}
 		for _, id := range definitionGroups {
+			seen[id] = struct{}{}
+		}
+	}
+	policyIDs, err := st.ListCompliancePolicyIDsForAction(ctx, actionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, policyID := range policyIDs {
+		policyGroups, err := directScopeGroups(ctx, st, "compliance_policy", policyID)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range policyGroups {
 			seen[id] = struct{}{}
 		}
 	}
@@ -83,6 +103,24 @@ func (h *Handlers) effectiveActionScopeGroups(ctx context.Context, actionID stri
 		groups = append(groups, id)
 	}
 	return groups, nil
+}
+
+// ActionVisibleToCaller reports whether an Action belongs to a restricted
+// caller's effective transitive object scope. Global callers are visible by
+// definition; existence is checked separately by the handler.
+func ActionVisibleToCaller(ctx context.Context, st *store.Store, actionID string) (bool, error) {
+	if ctx == nil || st == nil {
+		return false, fmt.Errorf("authoring: scope context and store are required")
+	}
+	callerGroups, restricted := auth.ObjectScopeListFilter(ctx)
+	if !restricted {
+		return true, nil
+	}
+	objectGroups, err := effectiveActionScopeGroups(ctx, st, actionID)
+	if err != nil {
+		return false, err
+	}
+	return groupsOverlap(callerGroups, objectGroups), nil
 }
 
 func (h *Handlers) effectiveActionSetScopeGroups(ctx context.Context, setID string) ([]string, error) {

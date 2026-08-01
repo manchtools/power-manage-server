@@ -98,6 +98,27 @@ type DefinitionManifestAction struct {
 	Action      ActionRow
 }
 
+// CompliancePolicyRow is one live authored compliance policy.
+type CompliancePolicyRow = generated.CompliancePolicy
+
+// CompliancePolicyListFilter contains the keyset and object-scope narrowing
+// shared by the policy list and count reads.
+type CompliancePolicyListFilter struct {
+	AfterID         string
+	Limit           int32
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
+// CompliancePolicyView derives its rule count from live Actions.
+type CompliancePolicyView struct {
+	CompliancePolicyRow
+	LiveRuleCount int64
+}
+
+// CompliancePolicyRuleView is one live policy rule.
+type CompliancePolicyRuleView = generated.ListCompliancePolicyRulesRow
+
 // DeviceStatusFilter selects the server-derived online state for a device
 // listing. Zero keeps both states.
 type DeviceStatusFilter int32
@@ -281,6 +302,16 @@ func (s *Store) ListContainingDefinitionIDs(ctx context.Context, actionSetID str
 	return ids, nil
 }
 
+// ListCompliancePolicyIDsForAction returns the live policies that directly
+// contain an Action.
+func (s *Store) ListCompliancePolicyIDsForAction(ctx context.Context, actionID string) ([]string, error) {
+	ids, err := s.queries.ListContainingCompliancePolicyIDs(ctx, actionID)
+	if err != nil {
+		return nil, fmt.Errorf("compliance policy: list containing policies: %w", err)
+	}
+	return ids, nil
+}
+
 // CountActionSets returns the number of live authored sets.
 func (s *Store) CountActionSets(ctx context.Context) (int64, error) {
 	return s.CountAuthoringActionSets(ctx, ActionSetListFilter{})
@@ -374,6 +405,57 @@ func (s *Store) ListDefinitionMembers(ctx context.Context, id string) ([]Definit
 	rows, err := s.queries.ListDefinitionMembers(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("definition: list members: %w", err)
+	}
+	return rows, nil
+}
+
+// GetAuthoringCompliancePolicy returns one live compliance policy.
+func (s *Store) GetAuthoringCompliancePolicy(ctx context.Context, id string) (CompliancePolicyRow, error) {
+	row, err := s.queries.GetAuthoringCompliancePolicy(ctx, id)
+	if err != nil {
+		return CompliancePolicyRow{}, fmt.Errorf("compliance policy: get: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// ListAuthoringCompliancePolicies returns a deterministic keyset page with
+// rule counts derived from live Actions.
+func (s *Store) ListAuthoringCompliancePolicies(ctx context.Context, filter CompliancePolicyListFilter) ([]CompliancePolicyView, error) {
+	rows, err := s.queries.ListAuthoringCompliancePolicies(ctx, generated.ListAuthoringCompliancePoliciesParams{
+		AfterID: filter.AfterID, ScopeRestricted: filter.ScopeRestricted,
+		ScopeGroupIds: filter.ScopeGroupIDs, RowLimit: filter.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("compliance policy: list: %w", err)
+	}
+	views := make([]CompliancePolicyView, len(rows))
+	for i, row := range rows {
+		views[i] = CompliancePolicyView{CompliancePolicyRow: CompliancePolicyRow{
+			ID: row.ID, Name: row.Name, Description: row.Description,
+			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+			IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+		}, LiveRuleCount: row.RuleCount}
+	}
+	return views, nil
+}
+
+// CountAuthoringCompliancePolicies counts the same population selected by the
+// policy list filter.
+func (s *Store) CountAuthoringCompliancePolicies(ctx context.Context, filter CompliancePolicyListFilter) (int64, error) {
+	n, err := s.queries.CountAuthoringCompliancePolicies(ctx, generated.CountAuthoringCompliancePoliciesParams{
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("compliance policy: count: %w", err)
+	}
+	return n, nil
+}
+
+// ListCompliancePolicyRules returns live rules ordered by Action id.
+func (s *Store) ListCompliancePolicyRules(ctx context.Context, policyID string) ([]CompliancePolicyRuleView, error) {
+	rows, err := s.queries.ListCompliancePolicyRules(ctx, policyID)
+	if err != nil {
+		return nil, fmt.Errorf("compliance policy: list rules: %w", err)
 	}
 	return rows, nil
 }

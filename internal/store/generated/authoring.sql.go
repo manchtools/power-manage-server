@@ -194,6 +194,12 @@ WITH assignment_groups AS (
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
     WHERE ag.group_id = ANY($4::text[])
+    UNION
+    SELECT r.action_id
+    FROM compliance_policy_rules r
+    JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
+    WHERE ag.group_id = ANY($4::text[])
 )
 SELECT COUNT(*)
 FROM actions a
@@ -819,6 +825,12 @@ WITH assignment_groups AS (
     JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY($6::text[])
+    UNION
+    SELECT r.action_id
+    FROM compliance_policy_rules r
+    JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
     WHERE ag.group_id = ANY($6::text[])
 )
 SELECT a.id, a.name, a.description, a.action_type, a.desired_state, a.params, a.params_canonical, a.timeout_seconds, a.schedule, a.is_system, a.created_at, a.created_by, a.updated_at, a.is_deleted, a.search_tsv

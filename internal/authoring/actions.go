@@ -214,15 +214,11 @@ func (h *Handlers) operatorAction(ctx context.Context, id string) (store.ActionR
 }
 
 func (h *Handlers) enforceActionReadScope(ctx context.Context, id string) error {
-	callerGroups, restricted := auth.ObjectScopeListFilter(ctx)
-	if !restricted {
-		return nil
-	}
-	objectGroups, err := h.effectiveActionScopeGroups(ctx, id)
+	visible, err := ActionVisibleToCaller(ctx, h.store, id)
 	if err != nil {
 		return h.internal(ctx, "resolve action read scope", err)
 	}
-	if !groupsOverlap(callerGroups, objectGroups) {
+	if !visible {
 		h.logger.Warn("out-of-scope action read denied", "action_id", id)
 		return authoringNotFound(ctx, errActionNotFound, "action not found")
 	}

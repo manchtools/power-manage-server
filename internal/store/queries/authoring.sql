@@ -47,6 +47,12 @@ WITH assignment_groups AS (
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
     WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT r.action_id
+    FROM compliance_policy_rules r
+    JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
 )
 SELECT a.*
 FROM actions a
@@ -109,6 +115,12 @@ WITH assignment_groups AS (
     JOIN action_sets s ON s.id = dm.action_set_id AND s.is_deleted = FALSE
     JOIN action_set_members sm ON sm.set_id = s.id
     JOIN assignment_groups ag ON ag.source_type = 'definition' AND ag.source_id = d.id
+    WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
+    UNION
+    SELECT r.action_id
+    FROM compliance_policy_rules r
+    JOIN compliance_policies p ON p.id = r.policy_id AND p.is_deleted = FALSE
+    JOIN assignment_groups ag ON ag.source_type = 'compliance_policy' AND ag.source_id = p.id
     WHERE ag.group_id = ANY(sqlc.arg(scope_group_ids)::text[])
 )
 SELECT COUNT(*)
