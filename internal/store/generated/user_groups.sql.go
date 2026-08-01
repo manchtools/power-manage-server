@@ -38,6 +38,25 @@ func (q *Queries) BumpSessionsAffectedByUserGroupDelete(ctx context.Context, arg
 	return result.RowsAffected(), nil
 }
 
+const bumpUserSessionsByIDs = `-- name: BumpUserSessionsByIDs :execrows
+UPDATE users
+SET session_version = session_version + 1, updated_at = $1
+WHERE id = ANY($2::text[]) AND is_deleted = FALSE
+`
+
+type BumpUserSessionsByIDsParams struct {
+	UpdatedAt *time.Time `json:"updated_at"`
+	UserIds   []string   `json:"user_ids"`
+}
+
+func (q *Queries) BumpUserSessionsByIDs(ctx context.Context, arg BumpUserSessionsByIDsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bumpUserSessionsByIDs, arg.UpdatedAt, arg.UserIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countUserGroups = `-- name: CountUserGroups :one
 SELECT COUNT(*) FROM user_groups g
 WHERE g.is_deleted = FALSE
@@ -118,6 +137,62 @@ func (q *Queries) DeleteUserGroupUserRoleScopes(ctx context.Context, scopeID *st
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const enabledAdminExistsAfterDynamicUserGroupEvaluation = `-- name: EnabledAdminExistsAfterDynamicUserGroupEvaluation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND m.group_id <> $1
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR (
+              u.id = ANY($2::text[])
+              AND EXISTS (
+                  SELECT 1
+                  FROM user_group_roles gr
+                  JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+                  WHERE gr.group_id = $1
+                    AND gr.scope_kind IS NULL
+                    AND gr.scope_id IS NULL
+                    AND r.name = 'Admin'
+              )
+          )
+      )
+)
+`
+
+type EnabledAdminExistsAfterDynamicUserGroupEvaluationParams struct {
+	GroupID       string   `json:"group_id"`
+	WantedUserIds []string `json:"wanted_user_ids"`
+}
+
+func (q *Queries) EnabledAdminExistsAfterDynamicUserGroupEvaluation(ctx context.Context, arg EnabledAdminExistsAfterDynamicUserGroupEvaluationParams) (bool, error) {
+	row := q.db.QueryRow(ctx, enabledAdminExistsAfterDynamicUserGroupEvaluation, arg.GroupID, arg.WantedUserIds)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const enabledAdminExistsAfterUserGroupDelete = `-- name: EnabledAdminExistsAfterUserGroupDelete :one
@@ -201,6 +276,25 @@ func (q *Queries) EnabledAdminExistsAfterUserGroupMemberRemoval(ctx context.Cont
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const getDynamicUserGroupQueryForUpdate = `-- name: GetDynamicUserGroupQueryForUpdate :one
+SELECT is_dynamic, dynamic_query
+FROM user_groups
+WHERE id = $1 AND is_deleted = FALSE
+FOR UPDATE
+`
+
+type GetDynamicUserGroupQueryForUpdateRow struct {
+	IsDynamic    bool    `json:"is_dynamic"`
+	DynamicQuery *string `json:"dynamic_query"`
+}
+
+func (q *Queries) GetDynamicUserGroupQueryForUpdate(ctx context.Context, id string) (GetDynamicUserGroupQueryForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getDynamicUserGroupQueryForUpdate, id)
+	var i GetDynamicUserGroupQueryForUpdateRow
+	err := row.Scan(&i.IsDynamic, &i.DynamicQuery)
+	return i, err
 }
 
 const getUserGroup = `-- name: GetUserGroup :one
@@ -472,6 +566,49 @@ func (q *Queries) ListUserGroupsForUser(ctx context.Context, arg ListUserGroupsF
 	return items, nil
 }
 
+const listUsersForDynamicUserGroupEvaluation = `-- name: ListUsersForDynamicUserGroupEvaluation :many
+SELECT id, email, disabled, display_name, preferred_username, locale
+FROM users
+WHERE is_deleted = FALSE
+ORDER BY id
+`
+
+type ListUsersForDynamicUserGroupEvaluationRow struct {
+	ID                string `json:"id"`
+	Email             string `json:"email"`
+	Disabled          bool   `json:"disabled"`
+	DisplayName       string `json:"display_name"`
+	PreferredUsername string `json:"preferred_username"`
+	Locale            string `json:"locale"`
+}
+
+func (q *Queries) ListUsersForDynamicUserGroupEvaluation(ctx context.Context) ([]ListUsersForDynamicUserGroupEvaluationRow, error) {
+	rows, err := q.db.Query(ctx, listUsersForDynamicUserGroupEvaluation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUsersForDynamicUserGroupEvaluationRow{}
+	for rows.Next() {
+		var i ListUsersForDynamicUserGroupEvaluationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Disabled,
+			&i.DisplayName,
+			&i.PreferredUsername,
+			&i.Locale,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockLastAdminGuard = `-- name: LockLastAdminGuard :exec
 SELECT pg_advisory_xact_lock(418296719726)
 `
@@ -599,6 +736,45 @@ type UpdateUserGroupNameParams struct {
 
 func (q *Queries) UpdateUserGroupName(ctx context.Context, arg UpdateUserGroupNameParams) (UserGroup, error) {
 	row := q.db.QueryRow(ctx, updateUserGroupName, arg.ID, arg.Name, arg.UpdatedAt)
+	var i UserGroup
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.MemberCount,
+		&i.CreatedAt,
+		&i.CreatedBy,
+		&i.UpdatedAt,
+		&i.IsDeleted,
+		&i.IsDynamic,
+		&i.DynamicQuery,
+		&i.MaintenanceWindow,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
+const updateUserGroupQuery = `-- name: UpdateUserGroupQuery :one
+UPDATE user_groups
+SET is_dynamic = $1, dynamic_query = $2, updated_at = $3
+WHERE id = $4 AND is_deleted = FALSE
+RETURNING id, name, description, member_count, created_at, created_by, updated_at, is_deleted, is_dynamic, dynamic_query, maintenance_window, search_tsv
+`
+
+type UpdateUserGroupQueryParams struct {
+	IsDynamic    bool      `json:"is_dynamic"`
+	DynamicQuery *string   `json:"dynamic_query"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+}
+
+func (q *Queries) UpdateUserGroupQuery(ctx context.Context, arg UpdateUserGroupQueryParams) (UserGroup, error) {
+	row := q.db.QueryRow(ctx, updateUserGroupQuery,
+		arg.IsDynamic,
+		arg.DynamicQuery,
+		arg.UpdatedAt,
+		arg.ID,
+	)
 	var i UserGroup
 	err := row.Scan(
 		&i.ID,

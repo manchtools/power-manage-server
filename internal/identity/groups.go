@@ -551,6 +551,123 @@ func (h *Handlers) ListUserGroupsForUser(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(resp), nil
 }
 
+// UpdateUserGroupQuery changes the query or materializes an existing dynamic
+// group as static. Static groups cannot be converted through this RPC.
+func (h *Handlers) UpdateUserGroupQuery(ctx context.Context, req *connect.Request[pmv1.UpdateUserGroupQueryRequest]) (*connect.Response[pmv1.UpdateUserGroupQueryResponse], error) {
+	if err := h.validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	actor, err := h.requireActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, PermUpdateDynamicUserGroup, req.Msg.Id); err != nil {
+		return nil, err
+	}
+	var query *string
+	if req.Msg.IsDynamic {
+		if dynamicquery.ValidateUserQuery(req.Msg.DynamicQuery) != nil {
+			return nil, rpcError(ctx, ErrInvalidDynamicQuery, connect.CodeInvalidArgument, "invalid dynamic query")
+		}
+		query = &req.Msg.DynamicQuery
+	} else if req.Msg.DynamicQuery != "" {
+		return nil, rpcError(ctx, ErrInvalidDynamicQuery, connect.CodeInvalidArgument, "static groups cannot carry a dynamic query")
+	}
+
+	at := h.now().UTC()
+	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermUpdateDynamicUserGroup),
+		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			current, err := tx.GetDynamicUserGroupQueryForUpdate(ctx, req.Msg.Id)
+			if err != nil {
+				return err
+			}
+			if !current.IsDynamic {
+				return errUserGroupNotDynamic
+			}
+			if _, err := tx.UpdateUserGroupQuery(ctx, db.UpdateUserGroupQueryParams{
+				ID: req.Msg.Id, IsDynamic: req.Msg.IsDynamic, DynamicQuery: query, UpdatedAt: at,
+			}); err != nil {
+				return err
+			}
+			rec.Effect(userGroupEffect(req.Msg.Id, "UPDATE", "is_dynamic", "dynamic_query"))
+			return nil
+		})
+	if err != nil {
+		switch {
+		case errors.Is(err, errUserGroupNotDynamic):
+			return nil, rpcError(ctx, ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
+		case store.IsNotFound(err):
+			return nil, notFound(ctx, ErrUserGroupNotFound, "user group not found")
+		default:
+			return nil, internalError(ctx, "failed to update user group query")
+		}
+	}
+	group, err := h.loadUserGroupProto(ctx, req.Msg.Id, true)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.UpdateUserGroupQueryResponse{Group: group}), nil
+}
+
+// ValidateUserGroupQuery validates a query and previews its current match count.
+func (h *Handlers) ValidateUserGroupQuery(ctx context.Context, req *connect.Request[pmv1.ValidateUserGroupQueryRequest]) (*connect.Response[pmv1.ValidateUserGroupQueryResponse], error) {
+	if err := h.validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	if _, err := h.requireActor(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, PermValidateUserGroupQuery, ""); err != nil {
+		return nil, err
+	}
+	if dynamicquery.ValidateUserQuery(req.Msg.Query) != nil {
+		return connect.NewResponse(&pmv1.ValidateUserGroupQueryResponse{Valid: false, Error: "invalid query"}), nil
+	}
+	count, err := h.countMatchingUsers(ctx, req.Msg.Query)
+	if err != nil {
+		return nil, internalError(ctx, "failed to count dynamic user group matches")
+	}
+	return connect.NewResponse(&pmv1.ValidateUserGroupQueryResponse{
+		Valid: true, MatchingUserCount: boundedIdentityCount(count),
+	}), nil
+}
+
+// EvaluateDynamicUserGroup reconciles one dynamic group's membership.
+func (h *Handlers) EvaluateDynamicUserGroup(ctx context.Context, req *connect.Request[pmv1.EvaluateDynamicUserGroupRequest]) (*connect.Response[pmv1.EvaluateDynamicUserGroupResponse], error) {
+	if err := h.validate(ctx, req.Msg); err != nil {
+		return nil, err
+	}
+	actor, err := h.requireActor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, PermEvaluateDynamicGroup, req.Msg.Id); err != nil {
+		return nil, err
+	}
+	result, err := h.evaluateDynamicUserGroup(ctx, h.mutationOp(req, actor, PermEvaluateDynamicGroup), req.Msg.Id, actor.ID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errUserGroupNotDynamic):
+			return nil, rpcError(ctx, ErrGroupNotDynamic, connect.CodeFailedPrecondition, "group is not dynamic")
+		case errors.Is(err, errUserGroupInvalidQuery):
+			return nil, rpcError(ctx, ErrInvalidDynamicQuery, connect.CodeFailedPrecondition, "dynamic group query is invalid")
+		case errors.Is(err, errLastAdmin):
+			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
+		case store.IsNotFound(err):
+			return nil, notFound(ctx, ErrUserGroupNotFound, "user group not found")
+		default:
+			return nil, internalError(ctx, "failed to evaluate dynamic user group")
+		}
+	}
+	group, err := h.loadUserGroupProto(ctx, req.Msg.Id, true)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.EvaluateDynamicUserGroupResponse{
+		Group: group, UsersAdded: boundedIdentityCount(result.added), UsersRemoved: boundedIdentityCount(result.removed),
+	}), nil
+}
+
 func (h *Handlers) enforceUserGroupScope(ctx context.Context, permission, groupID string, hide bool) error {
 	if err := auth.EnforceUserGroupScope(ctx, permission, groupID); err != nil {
 		if hide {

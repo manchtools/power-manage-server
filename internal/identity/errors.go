@@ -54,6 +54,8 @@ const (
 	ErrDynamicGroupMembership = "dynamic_group_membership_managed"
 	ErrSCIMManagedResource    = "scim_managed_resource"
 	ErrCannotRemoveLastAdmin  = "cannot_remove_last_admin"
+	ErrInvalidDynamicQuery    = "invalid_dynamic_query"
+	ErrGroupNotDynamic        = "group_not_dynamic"
 )
 
 // rpcError builds a connect error carrying the structured detail the

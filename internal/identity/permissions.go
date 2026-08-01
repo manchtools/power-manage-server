@@ -44,6 +44,9 @@ const (
 	PermRemoveUserFromGroup     = "RemoveUserFromGroup"
 	PermListUserGroupsForUser   = "ListUserGroupsForUser"
 	PermSetUserGroupMaintenance = "SetUserGroupMaintenanceWindow"
+	PermUpdateDynamicUserGroup  = "UpdateDynamicUserGroupQuery"
+	PermValidateUserGroupQuery  = "ValidateUserGroupQuery"
+	PermEvaluateDynamicGroup    = "EvaluateDynamicUserGroup"
 
 	PermCreateIdentityProvider = "CreateIdentityProvider"
 	PermGetIdentityProvider    = "GetIdentityProvider"
@@ -74,6 +77,7 @@ var gatedPermissions = []string{
 	PermGetUserGroup, PermListUserGroups, PermUpdateUserGroup, PermDeleteUserGroup,
 	PermAddUserToGroup, PermRemoveUserFromGroup, PermListUserGroupsForUser,
 	PermSetUserGroupMaintenance,
+	PermUpdateDynamicUserGroup, PermValidateUserGroupQuery, PermEvaluateDynamicGroup,
 	PermCreateIdentityProvider, PermGetIdentityProvider, PermListIdentityProviders,
 	PermUpdateIdentityProvider, PermDeleteIdentityProvider,
 	PermEnableSCIM, PermDisableSCIM, PermRotateSCIMToken,

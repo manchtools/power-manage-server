@@ -137,3 +137,99 @@ func TestDeleteUserGroup_RefusesLastEnabledAdminPath(t *testing.T) {
 	assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceDeleteUserGroupProcedure),
 		"the refused mutation must not commit a success audit row")
 }
+
+func TestDynamicUserGroups_ValidateUpdateAndEvaluateDirectState(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	operator := f.seedActor(grant{Permissions: []string{
+		"CreateDynamicUserGroup", "ValidateUserGroupQuery", "UpdateDynamicUserGroupQuery",
+		"EvaluateDynamicUserGroup", "GetUserGroup",
+	}})
+	matched := f.seedSubject()
+	disabled := f.seedSubject()
+	_, err := f.raw.Exec(f.ctx(), `UPDATE users SET disabled = TRUE WHERE id = $1`, disabled.ID)
+	require.NoError(t, err)
+
+	preview, err := f.client.ValidateUserGroupQuery(f.ctx(), authed(&pmv1.ValidateUserGroupQueryRequest{
+		Query: `user.disabled equals "true"`,
+	}, operator.Token))
+	require.NoError(t, err)
+	assert.True(t, preview.Msg.Valid)
+	assert.Equal(t, int32(1), preview.Msg.MatchingUserCount)
+
+	invalid, err := f.client.ValidateUserGroupQuery(f.ctx(), authed(&pmv1.ValidateUserGroupQueryRequest{
+		Query: `user.has_password equals "true"`,
+	}, operator.Token))
+	require.NoError(t, err)
+	assert.False(t, invalid.Msg.Valid, "removed local-auth state cannot remain a dynamic-group field")
+
+	created, err := f.client.CreateUserGroup(f.ctx(), authed(&pmv1.CreateUserGroupRequest{
+		Name: "Selected user", IsDynamic: true,
+		DynamicQuery: `user.email equals "` + matched.Email + `"`,
+	}, operator.Token))
+	require.NoError(t, err)
+	groupID := created.Msg.Group.Id
+
+	first, err := f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{Id: groupID}, operator.Token))
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), first.Msg.UsersAdded)
+	assert.Zero(t, first.Msg.UsersRemoved)
+	assert.Equal(t, int32(1), first.Msg.Group.MemberCount)
+
+	updated, err := f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: groupID, IsDynamic: true, DynamicQuery: `user.disabled equals "true"`,
+	}, operator.Token))
+	require.NoError(t, err)
+	assert.Equal(t, `user.disabled equals "true"`, updated.Msg.Group.DynamicQuery)
+
+	second, err := f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{Id: groupID}, operator.Token))
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), second.Msg.UsersAdded)
+	assert.Equal(t, int32(1), second.Msg.UsersRemoved)
+	got, err := f.client.GetUserGroup(f.ctx(), authed(&pmv1.GetUserGroupRequest{Id: groupID}, operator.Token))
+	require.NoError(t, err)
+	require.Len(t, got.Msg.Members, 1)
+	assert.Equal(t, disabled.ID, got.Msg.Members[0].UserId)
+
+	materialized, err := f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+		Id: groupID, IsDynamic: false,
+	}, operator.Token))
+	require.NoError(t, err)
+	assert.False(t, materialized.Msg.Group.IsDynamic)
+	assert.Equal(t, int32(1), materialized.Msg.Group.MemberCount, "materializing preserves the compiled membership")
+	_, err = f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{Id: groupID}, operator.Token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+
+	ops := f.operationsFor(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure)
+	require.Len(t, ops, 2)
+	evaluate := f.effectWithAction(f.effectsOf(ops[0].OperationID), "EVALUATE")
+	require.NotNil(t, evaluate.BeforeCount)
+	require.NotNil(t, evaluate.AfterCount)
+	assert.Equal(t, int64(0), *evaluate.BeforeCount)
+	assert.Equal(t, int64(1), *evaluate.AfterCount)
+}
+
+func TestEvaluateDynamicUserGroup_RefusesLastAdminRemoval(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	soleAdmin := f.seedSubject()
+	groupID := f.insertUserGroup()
+	_, err := f.raw.Exec(f.ctx(),
+		`UPDATE user_groups SET is_dynamic = TRUE, dynamic_query = 'user.disabled equals "true"' WHERE id = $1`, groupID)
+	require.NoError(t, err)
+	f.addUserToGroup(groupID, soleAdmin.ID)
+	const adminRoleID = "00000000000000000000000001"
+	_, err = f.raw.Exec(f.ctx(),
+		`INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by)
+		 VALUES ($1, $2, $3, $4, '')`, newULID(), groupID, adminRoleID, f.now)
+	require.NoError(t, err)
+	token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
+
+	_, err = f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{Id: groupID}, token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+	members, err := f.store.ListUserGroupMembers(f.ctx(), groupID)
+	require.NoError(t, err)
+	require.Len(t, members, 1, "the refused evaluation must roll back its membership delta")
+	assert.Equal(t, soleAdmin.ID, members[0].UserID)
+	assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure))
+}

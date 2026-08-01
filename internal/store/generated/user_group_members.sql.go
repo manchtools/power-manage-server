@@ -10,6 +10,51 @@ import (
 	"time"
 )
 
+const addDynamicUserGroupMembers = `-- name: AddDynamicUserGroupMembers :many
+INSERT INTO user_group_members (group_id, user_id, added_at, added_by)
+SELECT $1, wanted.user_id, $2, $3
+FROM unnest($4::text[]) AS wanted(user_id)
+JOIN users u ON u.id = wanted.user_id AND u.is_deleted = FALSE
+WHERE EXISTS (
+    SELECT 1 FROM user_groups g
+    WHERE g.id = $1 AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+)
+ON CONFLICT (group_id, user_id) DO NOTHING
+RETURNING user_id
+`
+
+type AddDynamicUserGroupMembersParams struct {
+	GroupID string    `json:"group_id"`
+	AddedAt time.Time `json:"added_at"`
+	AddedBy string    `json:"added_by"`
+	UserIds []string  `json:"user_ids"`
+}
+
+func (q *Queries) AddDynamicUserGroupMembers(ctx context.Context, arg AddDynamicUserGroupMembersParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, addDynamicUserGroupMembers,
+		arg.GroupID,
+		arg.AddedAt,
+		arg.AddedBy,
+		arg.UserIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const addStaticUserGroupMember = `-- name: AddStaticUserGroupMember :execrows
 INSERT INTO user_group_members (group_id, user_id, added_at, added_by)
 SELECT $1, $2, $3, $4
@@ -149,6 +194,40 @@ func (q *Queries) ListUserGroupMembers(ctx context.Context, groupID string) ([]L
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const removeDynamicUserGroupMembers = `-- name: RemoveDynamicUserGroupMembers :many
+DELETE FROM user_group_members m
+USING user_groups g
+WHERE m.group_id = $1
+  AND m.user_id = ANY($2::text[])
+  AND g.id = m.group_id AND g.is_deleted = FALSE AND g.is_dynamic = TRUE
+RETURNING m.user_id
+`
+
+type RemoveDynamicUserGroupMembersParams struct {
+	GroupID string   `json:"group_id"`
+	UserIds []string `json:"user_ids"`
+}
+
+func (q *Queries) RemoveDynamicUserGroupMembers(ctx context.Context, arg RemoveDynamicUserGroupMembersParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, removeDynamicUserGroupMembers, arg.GroupID, arg.UserIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var user_id string
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

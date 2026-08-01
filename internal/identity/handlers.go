@@ -39,6 +39,7 @@ type Store interface {
 	ListUserGroupsForUser(ctx context.Context, userID string, filter store.UserGroupListFilter) ([]store.UserGroupView, error)
 	ListUserGroupMembers(ctx context.Context, groupID string) ([]store.UserGroupMemberView, error)
 	ListUserGroupRoleGrants(ctx context.Context, groupID string) ([]store.GroupRoleGrantRow, error)
+	ListUsersForDynamicUserGroupEvaluation(ctx context.Context) ([]store.UserDynamicEvaluationRow, error)
 	ListUserSSHKeys(ctx context.Context, userID string) ([]store.UserSSHKeyRow, error)
 	ListIdentityLinksForUser(ctx context.Context, userID string) ([]store.IdentityLinkWithProviderRow, error)
 	GetIdentityLink(ctx context.Context, id string) (store.IdentityLinkRow, error)

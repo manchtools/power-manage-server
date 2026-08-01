@@ -109,6 +109,12 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListUserGroupsForUserProcedure, h.ListUserGroupsForUser, opts...))
 	register(powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure, h.SetUserGroupMaintenanceWindow, opts...))
+	register(powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure, h.UpdateUserGroupQuery, opts...))
+	register(powermanagev1connect.ControlServiceValidateUserGroupQueryProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceValidateUserGroupQueryProcedure, h.ValidateUserGroupQuery, opts...))
+	register(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure, h.EvaluateDynamicUserGroup, opts...))
 
 	// Roles and grants.
 	register(powermanagev1connect.ControlServiceCreateRoleProcedure,
@@ -169,6 +175,8 @@ func MutationProcedures() []string {
 		powermanagev1connect.ControlServiceAddUserToGroupProcedure,
 		powermanagev1connect.ControlServiceRemoveUserFromGroupProcedure,
 		powermanagev1connect.ControlServiceSetUserGroupMaintenanceWindowProcedure,
+		powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure,
+		powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure,
 		powermanagev1connect.ControlServiceCreateRoleProcedure,
 		powermanagev1connect.ControlServiceUpdateRoleProcedure,
 		powermanagev1connect.ControlServiceDeleteRoleProcedure,
@@ -193,6 +201,7 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceGetUserGroupProcedure,
 		powermanagev1connect.ControlServiceListUserGroupsProcedure,
 		powermanagev1connect.ControlServiceListUserGroupsForUserProcedure,
+		powermanagev1connect.ControlServiceValidateUserGroupQueryProcedure,
 		powermanagev1connect.ControlServiceGetRoleProcedure,
 		powermanagev1connect.ControlServiceListRolesProcedure,
 		powermanagev1connect.ControlServiceListPermissionsProcedure,

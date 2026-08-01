@@ -25,6 +25,8 @@ type (
 	UserGroupView = generated.GetUserGroupViewRow
 	// UserGroupMemberView is one live group member.
 	UserGroupMemberView = generated.ListUserGroupMembersRow
+	// UserDynamicEvaluationRow is the non-secret user state available to dynamic groups.
+	UserDynamicEvaluationRow = generated.ListUsersForDynamicUserGroupEvaluationRow
 	// InheritedRoleRow is a role a subject holds through a group.
 	InheritedRoleRow = generated.ListInheritedRolesForUserRow
 	// ScopedGrantRow is one (permission, scope) tuple a subject holds.
@@ -184,6 +186,16 @@ func (s *Store) ListUserGroupMembers(ctx context.Context, groupID string) ([]Use
 	rows, err := s.queries.ListUserGroupMembers(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("user_group: members: %w", err)
+	}
+	return rows, nil
+}
+
+// ListUsersForDynamicUserGroupEvaluation returns every live user's
+// queryable non-secret fields in stable id order.
+func (s *Store) ListUsersForDynamicUserGroupEvaluation(ctx context.Context) ([]UserDynamicEvaluationRow, error) {
+	rows, err := s.queries.ListUsersForDynamicUserGroupEvaluation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("user_group: list evaluation users: %w", err)
 	}
 	return rows, nil
 }

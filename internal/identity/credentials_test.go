@@ -160,6 +160,18 @@ var authenticatedMutations = map[string]call{
 		}, token))
 		return err
 	},
+	powermanagev1connect.ControlServiceUpdateUserGroupQueryProcedure: func(f *fixture, token string) error {
+		_, err := f.client.UpdateUserGroupQuery(f.ctx(), authed(&pmv1.UpdateUserGroupQueryRequest{
+			Id: newULID(), IsDynamic: true, DynamicQuery: `user.disabled equals "true"`,
+		}, token))
+		return err
+	},
+	powermanagev1connect.ControlServiceEvaluateDynamicUserGroupProcedure: func(f *fixture, token string) error {
+		_, err := f.client.EvaluateDynamicUserGroup(f.ctx(), authed(&pmv1.EvaluateDynamicUserGroupRequest{
+			Id: newULID(),
+		}, token))
+		return err
+	},
 	powermanagev1connect.ControlServiceCreateRoleProcedure: func(f *fixture, token string) error {
 		_, err := f.client.CreateRole(f.ctx(), authed(&pmv1.CreateRoleRequest{
 			Name: "Auditors", Permissions: []string{"ListUsers"},

@@ -151,6 +151,72 @@ SET name = sqlc.arg(name), description = sqlc.arg(description), updated_at = sql
 WHERE id = sqlc.arg(id) AND is_deleted = FALSE
 RETURNING *;
 
+-- name: GetDynamicUserGroupQueryForUpdate :one
+SELECT is_dynamic, dynamic_query
+FROM user_groups
+WHERE id = $1 AND is_deleted = FALSE
+FOR UPDATE;
+
+-- name: ListUsersForDynamicUserGroupEvaluation :many
+SELECT id, email, disabled, display_name, preferred_username, locale
+FROM users
+WHERE is_deleted = FALSE
+ORDER BY id;
+
+-- name: UpdateUserGroupQuery :one
+UPDATE user_groups
+SET is_dynamic = sqlc.arg(is_dynamic), dynamic_query = sqlc.narg(dynamic_query), updated_at = sqlc.arg(updated_at)
+WHERE id = sqlc.arg(id) AND is_deleted = FALSE
+RETURNING *;
+
+-- name: BumpUserSessionsByIDs :execrows
+UPDATE users
+SET session_version = session_version + 1, updated_at = sqlc.arg(updated_at)
+WHERE id = ANY(sqlc.arg(user_ids)::text[]) AND is_deleted = FALSE;
+
+-- name: EnabledAdminExistsAfterDynamicUserGroupEvaluation :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND m.group_id <> sqlc.arg(group_id)
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR (
+              u.id = ANY(sqlc.arg(wanted_user_ids)::text[])
+              AND EXISTS (
+                  SELECT 1
+                  FROM user_group_roles gr
+                  JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+                  WHERE gr.group_id = sqlc.arg(group_id)
+                    AND gr.scope_kind IS NULL
+                    AND gr.scope_id IS NULL
+                    AND r.name = 'Admin'
+              )
+          )
+      )
+);
+
 -- name: SetUserGroupMaintenanceWindow :one
 UPDATE user_groups SET maintenance_window = sqlc.arg(maintenance_window), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND is_deleted = FALSE
