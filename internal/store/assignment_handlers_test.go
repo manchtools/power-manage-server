@@ -16,6 +16,7 @@ import (
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	"github.com/manchtools/power-manage/server/internal/assignment"
+	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/authoring"
 	"github.com/manchtools/power-manage/server/internal/compliance"
 )
@@ -172,7 +173,10 @@ func TestAssignmentHandlers_CRUDAcrossEverySourceAndTarget(t *testing.T) {
 	assert.Equal(t, created[0].Id, recreated.Msg.Assignment.Id, "soft-deleted tuple is reactivated")
 	assert.Equal(t, pmv1.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL, recreated.Msg.Assignment.Mode)
 
-	for _, procedure := range assignment.MutationProcedures() {
+	for _, procedure := range []string{
+		powermanagev1connect.ControlServiceCreateAssignmentProcedure,
+		powermanagev1connect.ControlServiceDeleteAssignmentProcedure,
+	} {
 		operation, err := latestOperationFor(t, f.store, f.raw, procedure)
 		require.NoError(t, err, procedure)
 		effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
@@ -243,6 +247,145 @@ func TestAssignmentHandlers_GetUserAssignmentsResolvesDirectAndGroupTargets(t *t
 	}
 }
 
+func TestAssignmentHandlers_AvailableSelectionIsAuditedDirectState(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	ctx := f.actor("CreateAssignment", "SetUserSelection", "ListAvailableActions", "ListDevices")
+	deviceID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE]
+	actionID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION]
+
+	_, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+		SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId:   actionID,
+		TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
+		TargetId:   deviceID,
+		Mode:       pmv1.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE,
+	}))
+	require.NoError(t, err)
+
+	before, err := f.handlers.ListAvailableActions(ctx, connect.NewRequest(&pmv1.ListAvailableActionsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	require.Len(t, before.Msg.Items, 1)
+	assert.Equal(t, actionID, before.Msg.Items[0].SourceId)
+	assert.False(t, before.Msg.Items[0].Selected)
+	require.Len(t, before.Msg.Items[0].Actions, 1)
+	assert.Equal(t, actionID, before.Msg.Items[0].Actions[0].Id)
+
+	selected, err := f.handlers.SetUserSelection(ctx, connect.NewRequest(&pmv1.SetUserSelectionRequest{
+		DeviceId: deviceID, SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId: actionID, Selected: true,
+	}))
+	require.NoError(t, err)
+	assert.True(t, selected.Msg.Selection.Selected)
+	selectionID := selected.Msg.Selection.Id
+
+	after, err := f.handlers.ListAvailableActions(ctx, connect.NewRequest(&pmv1.ListAvailableActionsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	require.Len(t, after.Msg.Items, 1)
+	assert.True(t, after.Msg.Items[0].Selected)
+
+	deselected, err := f.handlers.SetUserSelection(ctx, connect.NewRequest(&pmv1.SetUserSelectionRequest{
+		DeviceId: deviceID, SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId: actionID, Selected: false,
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, selectionID, deselected.Msg.Selection.Id, "the source tuple owns one stable selection row")
+	assert.False(t, deselected.Msg.Selection.Selected)
+
+	operations := 0
+	rows, err := f.raw.Query(context.Background(),
+		`SELECT operation_id FROM audit_operations WHERE request_descriptor = $1 ORDER BY chain_seq`,
+		powermanagev1connect.ControlServiceSetUserSelectionProcedure)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var operationID string
+		require.NoError(t, rows.Scan(&operationID))
+		effects, err := f.store.ListAuditEffects(context.Background(), operationID)
+		require.NoError(t, err)
+		require.Len(t, effects, 1)
+		assert.Equal(t, "user_selection", effects[0].ResourceType)
+		operations++
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 2, operations)
+}
+
+func TestAssignmentHandlers_SelectionRequiresAnAvailableAssignmentAndDeviceAccess(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	deviceID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE]
+	actionID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION]
+
+	ctx := f.actor("SetUserSelection", "ListDevices")
+	_, err := f.handlers.SetUserSelection(ctx, connect.NewRequest(&pmv1.SetUserSelectionRequest{
+		DeviceId: deviceID, SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId: actionID, Selected: true,
+	}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+
+	assignedOnly := f.actor("SetUserSelection", "ListDevices:assigned")
+	_, err = f.handlers.SetUserSelection(assignedOnly, connect.NewRequest(&pmv1.SetUserSelectionRequest{
+		DeviceId: deviceID, SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId: actionID, Selected: true,
+	}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "an unassigned actor gets no device existence oracle")
+}
+
+func TestAssignmentHandlers_AvailableSourcesResolveEveryTargetKind(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	ctx := f.actor("CreateAssignment", "ListAvailableActions", "ListDevices")
+	deviceID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE]
+	deviceGroupID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP]
+	userID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER]
+	userGroupID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP]
+
+	_, err := f.raw.Exec(context.Background(),
+		`INSERT INTO device_group_members (group_id, device_id) VALUES ($1, $2)`, deviceGroupID, deviceID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(),
+		`INSERT INTO device_assigned_users (device_id, user_id, assigned_by) VALUES ($1, $2, $3)`,
+		deviceID, userID, f.actorID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(),
+		`INSERT INTO device_assigned_groups (device_id, group_id, assigned_by) VALUES ($1, $2, $3)`,
+		deviceID, userGroupID, f.actorID)
+	require.NoError(t, err)
+
+	pairs := []struct {
+		source pmv1.AssignmentSourceType
+		target pmv1.AssignmentTargetType
+	}{
+		{pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE},
+		{pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET, pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP},
+		{pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION, pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER},
+		{pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY, pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP},
+	}
+	for _, pair := range pairs {
+		_, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+			SourceType: pair.source, SourceId: f.sources[pair.source],
+			TargetType: pair.target, TargetId: f.targets[pair.target],
+			Mode: pmv1.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE,
+		}))
+		require.NoError(t, err)
+	}
+
+	response, err := f.handlers.ListAvailableActions(ctx, connect.NewRequest(&pmv1.ListAvailableActionsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.Items, 4)
+	for _, item := range response.Msg.Items {
+		assert.Equal(t, f.sources[item.SourceType], item.SourceId)
+		assert.NotEmpty(t, item.SourceName)
+	}
+
+	assignedCtx := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: userID, Kind: auth.PrincipalUser,
+		Permissions: []string{"ListAvailableActions", "ListDevices:assigned"},
+	})
+	assigned, err := f.handlers.ListAvailableActions(assignedCtx,
+		connect.NewRequest(&pmv1.ListAvailableActionsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	assert.Len(t, assigned.Msg.Items, 4)
+}
+
 func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 	f := newAssignmentHandlerFixture(t)
 	mounted := f.handlers.Mount(http.NewServeMux())
@@ -251,12 +394,14 @@ func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceDeleteAssignmentProcedure,
 		powermanagev1connect.ControlServiceListAssignmentsProcedure,
 		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
+		powermanagev1connect.ControlServiceSetUserSelectionProcedure,
+		powermanagev1connect.ControlServiceListAvailableActionsProcedure,
 	}
 	assert.Equal(t, want, mounted)
-	assert.Equal(t, []string{want[0], want[1]}, assignment.MutationProcedures())
-	assert.Equal(t, []string{want[2], want[3]}, assignment.ReadProcedures())
+	assert.Equal(t, []string{want[0], want[1], want[4]}, assignment.MutationProcedures())
+	assert.Equal(t, []string{want[2], want[3], want[5]}, assignment.ReadProcedures())
 
 	sorted := append([]string(nil), mounted...)
 	sort.Strings(sorted)
-	assert.Len(t, sorted, 4)
+	assert.Len(t, sorted, 6)
 }

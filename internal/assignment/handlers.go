@@ -16,6 +16,7 @@ import (
 	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
+	"github.com/manchtools/power-manage/server/internal/authoring"
 	"github.com/manchtools/power-manage/server/internal/middleware"
 	"github.com/manchtools/power-manage/server/internal/store"
 )
@@ -202,6 +203,169 @@ func (h *Handlers) GetUserAssignments(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&pmv1.GetUserAssignmentsResponse{Assignments: out}), nil
 }
 
+// SetUserSelection persists one optional source choice for an accessible
+// device through the audited mutation primitive.
+func (h *Handlers) SetUserSelection(ctx context.Context, req *connect.Request[pmv1.SetUserSelectionRequest]) (*connect.Response[pmv1.SetUserSelectionResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "SetUserSelection", ""); err != nil {
+		return nil, err
+	}
+	if err := h.requireDeviceAccess(ctx, actor, req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	row, err := h.state.SetUserSelection(ctx, h.operation(req, actor,
+		powermanagev1connect.ControlServiceSetUserSelectionProcedure, "SetUserSelection"),
+		req.Msg.DeviceId, req.Msg.SourceType, req.Msg.SourceId, req.Msg.Selected, actor.ID)
+	if err != nil {
+		return nil, h.mapError(ctx, "set user selection", err)
+	}
+	return connect.NewResponse(&pmv1.SetUserSelectionResponse{Selection: userSelectionToProto(row)}), nil
+}
+
+// ListAvailableActions returns each live AVAILABLE source once with its
+// current device selection and a complete action preview.
+func (h *Handlers) ListAvailableActions(ctx context.Context, req *connect.Request[pmv1.ListAvailableActionsRequest]) (*connect.Response[pmv1.ListAvailableActionsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "ListAvailableActions", ""); err != nil {
+		return nil, err
+	}
+	if err := h.requireDeviceAccess(ctx, actor, req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	rows, err := h.store.ListAvailableSources(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "list available actions", err)
+	}
+	items := make([]*pmv1.AvailableItem, len(rows))
+	for i, row := range rows {
+		sourceType, ok := sourceTypeValue(row.SourceType)
+		if !ok {
+			return nil, h.internal(ctx, "decode available source", ErrInvalidInput)
+		}
+		actions, err := h.previewActions(ctx, sourceType, row.SourceID)
+		if err != nil {
+			return nil, h.internal(ctx, "build available preview", err)
+		}
+		items[i] = &pmv1.AvailableItem{
+			SourceType: sourceType, SourceId: row.SourceID,
+			SourceName: row.SourceName, SourceDescription: row.SourceDescription,
+			Selected: row.Selected, Actions: actions,
+		}
+	}
+	return connect.NewResponse(&pmv1.ListAvailableActionsResponse{Items: items}), nil
+}
+
+type assignmentScopeResolver struct{ store *store.Store }
+
+func (r assignmentScopeResolver) DeviceGroupsForDevice(ctx context.Context, deviceID string) ([]string, error) {
+	return r.store.ListDeviceGroupIDs(ctx, deviceID)
+}
+
+func (r assignmentScopeResolver) UserGroupsForUser(ctx context.Context, userID string) ([]string, error) {
+	return r.store.ListUserGroupIDsForUser(ctx, userID)
+}
+
+func (h *Handlers) requireDeviceAccess(ctx context.Context, actor *auth.UserContext, deviceID string) error {
+	if !auth.AuthorizeContext(ctx, "ListDevices", deviceID) {
+		return rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
+	}
+	if _, err := h.store.GetDevice(ctx, deviceID); err != nil {
+		if store.IsNotFound(err) {
+			return rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
+		}
+		return h.internal(ctx, "read selection device", err)
+	}
+	if auth.HasPermission(ctx, "ListDevices") {
+		if err := auth.EnforceDeviceScopeOnBaseTier(ctx, assignmentScopeResolver{store: h.store}, "ListDevices", deviceID); err != nil {
+			if connect.CodeOf(err) == connect.CodeInternal {
+				return h.internal(ctx, "resolve selection device scope", err)
+			}
+			return rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
+		}
+		return nil
+	}
+	assigned, err := h.store.IsDeviceAssignedToUser(ctx, deviceID, actor.ID)
+	if err != nil {
+		return h.internal(ctx, "check selection device assignment", err)
+	}
+	if !assigned {
+		return rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
+	}
+	return nil
+}
+
+func (h *Handlers) previewActions(ctx context.Context, sourceType pmv1.AssignmentSourceType, sourceID string) ([]*pmv1.ManagedAction, error) {
+	var rows []store.ActionRow
+	switch sourceType {
+	case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
+		row, err := h.store.GetManifestAction(ctx, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		rows = []store.ActionRow{row}
+	case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
+		var err error
+		rows, err = h.store.ListManifestActionSetActions(ctx, sourceID)
+		if err != nil {
+			return nil, err
+		}
+	case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
+		definitionRows, err := h.store.ListManifestDefinitionActions(ctx, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		rows = make([]store.ActionRow, len(definitionRows))
+		for i, row := range definitionRows {
+			rows[i] = row.Action
+		}
+	case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
+		rules, err := h.store.ListCompliancePolicyRules(ctx, sourceID)
+		if err != nil {
+			return nil, err
+		}
+		rows = make([]store.ActionRow, len(rules))
+		for i, rule := range rules {
+			rows[i], err = h.store.GetManifestAction(ctx, rule.ActionID)
+			if err != nil {
+				return nil, err
+			}
+		}
+	default:
+		return nil, ErrInvalidInput
+	}
+
+	actions := make([]*pmv1.ManagedAction, len(rows))
+	for i, row := range rows {
+		var err error
+		actions[i], err = authoring.ActionToProto(row)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return actions, nil
+}
+
+func userSelectionToProto(row store.UserSelectionRow) *pmv1.UserSelection {
+	value, _ := sourceTypeValue(row.SourceType)
+	return &pmv1.UserSelection{
+		Id: row.ID, DeviceId: row.DeviceID, SourceType: value,
+		SourceId: row.SourceID, Selected: row.Selected,
+		UpdatedAt: timestamppb.New(row.UpdatedAt),
+	}
+}
+
 func (h *Handlers) mapError(ctx context.Context, operation string, err error) error {
 	switch {
 	case errors.Is(err, ErrInvalidInput):
@@ -214,6 +378,8 @@ func (h *Handlers) mapError(ctx context.Context, operation string, err error) er
 		return rpcError(ctx, "assignment_not_found", connect.CodeNotFound, "assignment not found")
 	case errors.Is(err, ErrSystemAction):
 		return rpcError(ctx, "cannot_modify_system_action", connect.CodeFailedPrecondition, "system action cannot be assigned directly")
+	case errors.Is(err, ErrNoAvailableAssignment):
+		return rpcError(ctx, "no_assignment_found", connect.CodeNotFound, "no available assignment found")
 	default:
 		return h.internal(ctx, operation, err)
 	}
@@ -291,7 +457,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("assignment: mux is required")
 	}
-	mounted := make([]string, 0, 4)
+	mounted := make([]string, 0, 6)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -304,6 +470,10 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListAssignmentsProcedure, h.ListAssignments, opts...))
 	register(powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetUserAssignmentsProcedure, h.GetUserAssignments, opts...))
+	register(powermanagev1connect.ControlServiceSetUserSelectionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetUserSelectionProcedure, h.SetUserSelection, opts...))
+	register(powermanagev1connect.ControlServiceListAvailableActionsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListAvailableActionsProcedure, h.ListAvailableActions, opts...))
 	return mounted
 }
 
@@ -312,6 +482,7 @@ func MutationProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceCreateAssignmentProcedure,
 		powermanagev1connect.ControlServiceDeleteAssignmentProcedure,
+		powermanagev1connect.ControlServiceSetUserSelectionProcedure,
 	}
 }
 
@@ -320,5 +491,6 @@ func ReadProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceListAssignmentsProcedure,
 		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
+		powermanagev1connect.ControlServiceListAvailableActionsProcedure,
 	}
 }

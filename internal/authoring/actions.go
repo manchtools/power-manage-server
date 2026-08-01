@@ -38,7 +38,7 @@ func (h *Handlers) CreateAction(ctx context.Context, req *connect.Request[pmv1.C
 	if err != nil {
 		return nil, h.actionError(ctx, "create action", err)
 	}
-	action, err := actionToProto(row)
+	action, err := ActionToProto(row)
 	if err != nil {
 		return nil, h.internal(ctx, "encode created action", err)
 	}
@@ -64,7 +64,7 @@ func (h *Handlers) GetAction(ctx context.Context, req *connect.Request[pmv1.GetA
 	if err := h.enforceActionReadScope(ctx, req.Msg.Id); err != nil {
 		return nil, err
 	}
-	action, err := actionToProto(row)
+	action, err := ActionToProto(row)
 	if err != nil {
 		return nil, h.internal(ctx, "encode action", err)
 	}
@@ -116,7 +116,7 @@ func (h *Handlers) ListActions(ctx context.Context, req *connect.Request[pmv1.Li
 	}
 	actions := make([]*pmv1.ManagedAction, len(rows))
 	for i := range rows {
-		actions[i], err = actionToProto(rows[i])
+		actions[i], err = ActionToProto(rows[i])
 		if err != nil {
 			return nil, h.internal(ctx, "encode listed action", err)
 		}
@@ -274,7 +274,7 @@ func (h *Handlers) updatedAction(ctx context.Context, operation string, row stor
 	if err != nil {
 		return nil, h.actionError(ctx, operation, err)
 	}
-	action, err := actionToProto(row)
+	action, err := ActionToProto(row)
 	if err != nil {
 		return nil, h.internal(ctx, "encode updated action", err)
 	}

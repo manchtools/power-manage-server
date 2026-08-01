@@ -16,12 +16,13 @@ import (
 )
 
 var (
-	ErrInvalidInput   = errors.New("invalid assignment input")
-	ErrSourceNotFound = errors.New("assignment source not found")
-	ErrTargetNotFound = errors.New("assignment target not found")
-	ErrNotFound       = errors.New("assignment not found")
-	ErrSystemAction   = errors.New("system action cannot be assigned directly")
-	errAlreadyActive  = errors.New("assignment already active")
+	ErrInvalidInput          = errors.New("invalid assignment input")
+	ErrSourceNotFound        = errors.New("assignment source not found")
+	ErrTargetNotFound        = errors.New("assignment target not found")
+	ErrNotFound              = errors.New("assignment not found")
+	ErrSystemAction          = errors.New("system action cannot be assigned directly")
+	ErrNoAvailableAssignment = errors.New("no available assignment")
+	errAlreadyActive         = errors.New("assignment already active")
 )
 
 // Config supplies the direct store and clock.
@@ -147,6 +148,61 @@ func (s *State) Delete(ctx context.Context, op store.AuditOperation, id string) 
 		return ErrNotFound
 	}
 	return err
+}
+
+// SetUserSelection upserts one device/source choice only while a live
+// AVAILABLE assignment resolves to that device. The eligibility check, row
+// write and effect commit together.
+func (s *State) SetUserSelection(
+	ctx context.Context,
+	op store.AuditOperation,
+	deviceID string,
+	sourceType pmv1.AssignmentSourceType,
+	sourceID string,
+	selected bool,
+	actorID string,
+) (store.UserSelectionRow, error) {
+	typeName, ok := sourceTypeName(sourceType)
+	if ctx == nil || !ok || !validID(deviceID) || !validID(sourceID) || !validID(actorID) ||
+		(op.ActorID != "" && op.ActorID != actorID) {
+		return store.UserSelectionRow{}, ErrInvalidInput
+	}
+
+	var selection store.UserSelectionRow
+	_, err := s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		available, err := tx.AvailableAssignmentExistsForDevice(ctx, db.AvailableAssignmentExistsForDeviceParams{
+			DeviceID: deviceID, SourceType: typeName, SourceID: sourceID,
+		})
+		if err != nil {
+			return fmt.Errorf("assignment: check available selection: %w", err)
+		}
+		if !available {
+			return ErrNoAvailableAssignment
+		}
+
+		selection, err = tx.UpsertUserSelection(ctx, db.UpsertUserSelectionParams{
+			ID: ulid.Make().String(), DeviceID: deviceID, SourceType: typeName, SourceID: sourceID,
+			Selected: selected, UpdatedAt: s.now().UTC(), CreatedBy: actorID,
+		})
+		if err != nil {
+			return fmt.Errorf("assignment: upsert selection: %w", err)
+		}
+		after := selected
+		action := "DESELECT"
+		if selected {
+			action = "SELECT"
+		}
+		rec.Effect(store.AuditEffect{
+			ResourceType: "user_selection", ResourceID: selection.ID,
+			Action: action, Outcome: store.EffectApplied,
+			ChangedFields: []string{"selected"}, AfterFlag: &after,
+		})
+		return nil
+	})
+	if err != nil {
+		return store.UserSelectionRow{}, err
+	}
+	return selection, nil
 }
 
 type referenceQueries interface {

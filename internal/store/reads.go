@@ -79,6 +79,13 @@ type AssignmentView struct {
 	TargetName string
 }
 
+// AvailableAssignmentSource is one live AVAILABLE-mode source resolved to a
+// device, with its current selection state.
+type AvailableAssignmentSource = generated.ListAvailableAssignmentSourcesForDeviceRow
+
+// UserSelectionRow is one device/source selection.
+type UserSelectionRow = generated.UserSelection
+
 // AssignmentListFilter is the deterministic keyset and exact-match filter
 // shared by assignment list and count reads.
 type AssignmentListFilter struct {
@@ -570,6 +577,16 @@ func (s *Store) ListAssignmentsForUser(ctx context.Context, userID string) ([]As
 		}
 	}
 	return views, nil
+}
+
+// ListAvailableSources resolves direct, device-group, assigned-user and
+// assigned-user-group targets to one source list for a device.
+func (s *Store) ListAvailableSources(ctx context.Context, deviceID string) ([]AvailableAssignmentSource, error) {
+	rows, err := s.queries.ListAvailableAssignmentSourcesForDevice(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("assignment: list available sources: %w", err)
+	}
+	return rows, nil
 }
 
 // ListContainingActionSetIDs returns the live sets that directly contain an

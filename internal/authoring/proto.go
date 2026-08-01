@@ -10,7 +10,9 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store"
 )
 
-func actionToProto(row store.ActionRow) (*pmv1.ManagedAction, error) {
+// ActionToProto decodes one trusted stored Action for API consumers that need
+// the same complete authoring representation as the Action handlers.
+func ActionToProto(row store.ActionRow) (*pmv1.ManagedAction, error) {
 	action := &pmv1.ManagedAction{
 		Id: row.ID, Name: row.Name, Type: pmv1.ActionType(row.ActionType),
 		DesiredState: pmv1.DesiredState(row.DesiredState), TimeoutSeconds: row.TimeoutSeconds,

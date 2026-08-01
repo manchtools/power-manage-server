@@ -10,6 +10,64 @@ import (
 	"time"
 )
 
+const availableAssignmentExistsForDevice = `-- name: AvailableAssignmentExistsForDevice :one
+SELECT EXISTS (
+    SELECT 1
+    FROM assignments a
+    JOIN devices d ON d.id = $1 AND d.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE
+      AND a.mode = 1
+      AND a.source_type = $2
+      AND a.source_id = $3
+      AND (
+          (a.source_type = 'action' AND EXISTS (SELECT 1 FROM actions s WHERE s.id = a.source_id AND s.is_deleted = FALSE))
+          OR (a.source_type = 'action_set' AND EXISTS (SELECT 1 FROM action_sets s WHERE s.id = a.source_id AND s.is_deleted = FALSE))
+          OR (a.source_type = 'definition' AND EXISTS (SELECT 1 FROM definitions s WHERE s.id = a.source_id AND s.is_deleted = FALSE))
+          OR (a.source_type = 'compliance_policy' AND EXISTS (SELECT 1 FROM compliance_policies s WHERE s.id = a.source_id AND s.is_deleted = FALSE))
+      )
+      AND (
+          (a.target_type = 'device' AND a.target_id = d.id)
+          OR (a.target_type = 'device_group' AND EXISTS (
+              SELECT 1 FROM device_group_members dgm
+              JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+              WHERE dgm.device_id = d.id AND dgm.group_id = a.target_id
+          ))
+          OR (a.target_type = 'user' AND (
+              EXISTS (SELECT 1 FROM device_assigned_users dau
+                      JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+                      WHERE dau.device_id = d.id AND dau.user_id = a.target_id)
+              OR EXISTS (SELECT 1 FROM device_assigned_groups dag
+                         JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+                         JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+                         WHERE dag.device_id = d.id AND ugm.user_id = a.target_id)
+          ))
+          OR (a.target_type = 'user_group' AND (
+              EXISTS (SELECT 1 FROM device_assigned_groups dag
+                      JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+                      WHERE dag.device_id = d.id AND dag.group_id = a.target_id)
+              OR EXISTS (SELECT 1 FROM device_assigned_users dau
+                         JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+                         JOIN user_group_members ugm ON ugm.user_id = dau.user_id
+                         JOIN user_groups ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+                         WHERE dau.device_id = d.id AND ugm.group_id = a.target_id)
+          ))
+      )
+)
+`
+
+type AvailableAssignmentExistsForDeviceParams struct {
+	DeviceID   string `json:"device_id"`
+	SourceType string `json:"source_type"`
+	SourceID   string `json:"source_id"`
+}
+
+func (q *Queries) AvailableAssignmentExistsForDevice(ctx context.Context, arg AvailableAssignmentExistsForDeviceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, availableAssignmentExistsForDevice, arg.DeviceID, arg.SourceType, arg.SourceID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const countAssignmentViews = `-- name: CountAssignmentViews :one
 SELECT COUNT(*)
 FROM assignments a
@@ -349,6 +407,91 @@ func (q *Queries) ListAssignmentViewsForUser(ctx context.Context, userID string)
 	return items, nil
 }
 
+const listAvailableAssignmentSourcesForDevice = `-- name: ListAvailableAssignmentSourcesForDevice :many
+WITH available_sources AS (
+    SELECT DISTINCT a.source_type, a.source_id
+    FROM assignments a
+    JOIN devices d ON d.id = $1 AND d.is_deleted = FALSE
+    WHERE a.is_deleted = FALSE
+      AND a.mode = 1
+      AND (
+          (a.target_type = 'device' AND a.target_id = d.id)
+          OR (a.target_type = 'device_group' AND EXISTS (
+              SELECT 1 FROM device_group_members dgm
+              JOIN device_groups dg ON dg.id = dgm.group_id AND dg.is_deleted = FALSE
+              WHERE dgm.device_id = d.id AND dgm.group_id = a.target_id
+          ))
+          OR (a.target_type = 'user' AND (
+              EXISTS (SELECT 1 FROM device_assigned_users dau
+                      JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+                      WHERE dau.device_id = d.id AND dau.user_id = a.target_id)
+              OR EXISTS (SELECT 1 FROM device_assigned_groups dag
+                         JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+                         JOIN user_group_members ugm ON ugm.group_id = dag.group_id
+                         WHERE dag.device_id = d.id AND ugm.user_id = a.target_id)
+          ))
+          OR (a.target_type = 'user_group' AND (
+              EXISTS (SELECT 1 FROM device_assigned_groups dag
+                      JOIN user_groups ug ON ug.id = dag.group_id AND ug.is_deleted = FALSE
+                      WHERE dag.device_id = d.id AND dag.group_id = a.target_id)
+              OR EXISTS (SELECT 1 FROM device_assigned_users dau
+                         JOIN users u ON u.id = dau.user_id AND u.is_deleted = FALSE
+                         JOIN user_group_members ugm ON ugm.user_id = dau.user_id
+                         JOIN user_groups ug ON ug.id = ugm.group_id AND ug.is_deleted = FALSE
+                         WHERE dau.device_id = d.id AND ugm.group_id = a.target_id)
+          ))
+      )
+)
+SELECT available_sources.source_type,
+       available_sources.source_id,
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS source_name,
+       COALESCE(sa.description, ss.description, sd.description, sp.description, '')::text AS source_description,
+       COALESCE(us.selected, FALSE)::boolean AS selected
+FROM available_sources
+LEFT JOIN actions sa ON available_sources.source_type = 'action' AND sa.id = available_sources.source_id AND sa.is_deleted = FALSE
+LEFT JOIN action_sets ss ON available_sources.source_type = 'action_set' AND ss.id = available_sources.source_id AND ss.is_deleted = FALSE
+LEFT JOIN definitions sd ON available_sources.source_type = 'definition' AND sd.id = available_sources.source_id AND sd.is_deleted = FALSE
+LEFT JOIN compliance_policies sp ON available_sources.source_type = 'compliance_policy' AND sp.id = available_sources.source_id AND sp.is_deleted = FALSE
+LEFT JOIN user_selections us ON us.device_id = $1
+    AND us.source_type = available_sources.source_type AND us.source_id = available_sources.source_id
+WHERE COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
+ORDER BY available_sources.source_type, available_sources.source_id
+`
+
+type ListAvailableAssignmentSourcesForDeviceRow struct {
+	SourceType        string `json:"source_type"`
+	SourceID          string `json:"source_id"`
+	SourceName        string `json:"source_name"`
+	SourceDescription string `json:"source_description"`
+	Selected          bool   `json:"selected"`
+}
+
+func (q *Queries) ListAvailableAssignmentSourcesForDevice(ctx context.Context, deviceID string) ([]ListAvailableAssignmentSourcesForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listAvailableAssignmentSourcesForDevice, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAvailableAssignmentSourcesForDeviceRow{}
+	for rows.Next() {
+		var i ListAvailableAssignmentSourcesForDeviceRow
+		if err := rows.Scan(
+			&i.SourceType,
+			&i.SourceID,
+			&i.SourceName,
+			&i.SourceDescription,
+			&i.Selected,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteAssignment = `-- name: SoftDeleteAssignment :one
 UPDATE assignments SET is_deleted = TRUE
 WHERE id = $1 AND is_deleted = FALSE
@@ -425,6 +568,53 @@ func (q *Queries) UpsertAssignment(ctx context.Context, arg UpsertAssignmentPara
 		&i.CreatedAt,
 		&i.CreatedBy,
 		&i.IsDeleted,
+	)
+	return i, err
+}
+
+const upsertUserSelection = `-- name: UpsertUserSelection :one
+INSERT INTO user_selections (
+    id, device_id, source_type, source_id, selected, updated_at, created_by
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7
+)
+ON CONFLICT (device_id, source_type, source_id) DO UPDATE
+SET selected = EXCLUDED.selected,
+    updated_at = EXCLUDED.updated_at,
+    created_by = EXCLUDED.created_by
+RETURNING id, device_id, source_type, source_id, selected, updated_at, created_by
+`
+
+type UpsertUserSelectionParams struct {
+	ID         string    `json:"id"`
+	DeviceID   string    `json:"device_id"`
+	SourceType string    `json:"source_type"`
+	SourceID   string    `json:"source_id"`
+	Selected   bool      `json:"selected"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	CreatedBy  string    `json:"created_by"`
+}
+
+func (q *Queries) UpsertUserSelection(ctx context.Context, arg UpsertUserSelectionParams) (UserSelection, error) {
+	row := q.db.QueryRow(ctx, upsertUserSelection,
+		arg.ID,
+		arg.DeviceID,
+		arg.SourceType,
+		arg.SourceID,
+		arg.Selected,
+		arg.UpdatedAt,
+		arg.CreatedBy,
+	)
+	var i UserSelection
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.SourceType,
+		&i.SourceID,
+		&i.Selected,
+		&i.UpdatedAt,
+		&i.CreatedBy,
 	)
 	return i, err
 }
