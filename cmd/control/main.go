@@ -1,8 +1,10 @@
-// Package main provides the control server entry point.
+// Command control runs the single Power Manage control process.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,637 +12,133 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
-
-	"github.com/manchtools/power-manage-sdk/gen/go/pm/v1/pmv1connect"
 	"github.com/manchtools/power-manage-sdk/logging"
-	"github.com/manchtools/power-manage/server/internal/api"
-	"github.com/manchtools/power-manage/server/internal/archive"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/ca"
-	"github.com/manchtools/power-manage/server/internal/connection"
+	"github.com/manchtools/power-manage/server/internal/controlruntime"
+	pmcrypto "github.com/manchtools/power-manage/server/internal/crypto"
 	"github.com/manchtools/power-manage/server/internal/datastore"
-	"github.com/manchtools/power-manage/server/internal/devicedispatch"
-	agenthandler "github.com/manchtools/power-manage/server/internal/handler"
-	"github.com/manchtools/power-manage/server/internal/inventorysched"
-	"github.com/manchtools/power-manage/server/internal/middleware"
-	"github.com/manchtools/power-manage/server/internal/mtls"
-	"github.com/manchtools/power-manage/server/internal/pii"
-	"github.com/manchtools/power-manage/server/internal/projectors"
-	"github.com/manchtools/power-manage/server/internal/retention"
-	"github.com/manchtools/power-manage/server/internal/scim"
 	"github.com/manchtools/power-manage/server/internal/store"
-	"github.com/manchtools/power-manage/server/internal/store/postgres"
-	"github.com/manchtools/power-manage/server/internal/taskqueue"
 )
 
-// version is set at build time via -ldflags.
+// version is set at build time.
 var version = "dev"
 
-type Config struct {
-	ListenAddr               string
-	DatabaseURL              string
-	JWTSecret                string
-	CACertPath               string
-	CAKeyPath                string
-	CertValidity             time.Duration
-	LogLevel                 string
-	LogFormat                string
-	AdminEmail               string
-	AdminPassword            string
-	CORSOrigins              []string
-	ControlURL               string
-	TerminalPublicURL        string
-	DynamicGroupEvalInterval time.Duration
-	PasswordAuthEnabled      bool
-	SSOCallbackBaseURL       string
-	SCIMBaseURL              string
-	TrustedProxies           []string
-	CATrustBundlePath        string
-
-	// Public listener TLS (optional — plain HTTP/1.1 when disabled)
-	TLSEnabled bool
-	TLSCert    string
-	TLSKey     string
-
-	// Internal mTLS listener (InternalService for gateway communication)
-	InternalListenAddr string
-	HeartbeatInterval  time.Duration
-	InternalTLSCert    string
-	InternalTLSKey     string
-
-	// Gateway self-enrollment (spec 31). The shared bootstrap token a gateway
-	// presents to GatewayAuthService.EnrollGateway. Empty disables enrollment
-	// (every attempt is rejected). PM_GATEWAY_ENROLL_TOKEN — a cross-service
-	// secret shared with the gateway (same PM_* convention as PM_TASK_SIGNING_KEY).
-
-	// CORS
-	CORSAllowAll bool // Allow all origins (development only)
-
-	// Valkey (Asynq task queue)
-	ValkeyAddr     string
-	ValkeyPassword string
-	ValkeyDB       int
-	// Datastore mutual-TLS + per-service ACL (spec 32): ACL user + client-cert
-	// material for connecting to Valkey over mTLS. Control boot requires them
-	// (fail closed) once spec 32 lands; empty on pre-spec-32 deployments.
-	ValkeyUsername string
-	ValkeyTLSCert  string
-	ValkeyTLSKey   string
-	ValkeyTLSCA    string
-
-	// rc11 #77: derived-projection reconciler for system actions.
-	// Interval is the period between full SyncAllUsersSystemActions
-	// sweeps (safety net for the post-commit listener); 0 disables
-	// the periodic goroutine entirely. Timeout is the per-sweep
-	// context deadline so a hung query can't pile up missed ticks.
-	SystemActionReconcileInterval time.Duration
-	SystemActionReconcileTimeout  time.Duration
-
-	// Spec 19 audit-log retention (env-only config by decision — no
-	// RPC/UI surface). Retention.Enabled activates the rolling
-	// snapshot+prune worker; validation is fatal at boot (a destructive
-	// feature must never run on a half-read config).
-	Retention retention.EnvConfig
-
-	// Spec 22: server-side inventory collection scheduler. Default
-	// true; CONTROL_INVENTORY_SCHEDULER_ENABLED=false is the escape
-	// hatch for change-frozen environments that must not run osquery
-	// on a cadence (manual RefreshDeviceInventory and the
-	// inventory_overdue computation are unaffected).
-	InventorySchedulerEnabled bool
-}
-
 func main() {
-	// `control doctor` is a standalone, read-only stack-health pass
-	// (#322). It must run WITHOUT booting the server, so it intercepts before
-	// parseFlags (which would choke on the positional subcommand).
-	// docref: begin doctor-subcommand
-	if len(os.Args) > 1 && os.Args[1] == "doctor" {
-		os.Exit(runDoctor(os.Args[2:]))
+	command, args := "serve", os.Args[1:]
+	if len(args) > 0 && args[0] == "bootstrap-admin" {
+		command, args = "bootstrap-admin", args[1:]
 	}
-	// docref: end doctor-subcommand
-
-	// `control rebuild-projections [target…]` is the operator entry point
-	// for the emergency projection replay (spec 21 / #505). Like doctor it
-	// intercepts before parseFlags and never boots the server.
-	// docref: begin rebuild-subcommand
-	if len(os.Args) > 1 && os.Args[1] == "rebuild-projections" {
-		os.Exit(runRebuildProjections(os.Args[2:]))
+	cfg, err := loadConfig(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "control: invalid configuration:", err)
+		os.Exit(2)
 	}
-	// docref: end rebuild-subcommand
-
-	cfg := parseFlags()
+	if command == "bootstrap-admin" {
+		os.Exit(runBootstrapAdmin(context.Background(), cfg))
+	}
 
 	logger := logging.SetupLogger(cfg.LogLevel, cfg.LogFormat, os.Stderr)
 	slog.SetDefault(logger)
-	// Redact the gateway URL on the startup line too. If a bad shape
-	// slipped in (e.g. https://u:p@host/ despite the validator, or an
-	// operator paste-mistake), it shouldn't land in every boot log.
-	logger.Info("starting control server", "version", version, "listen_addr", cfg.ListenAddr, "control_url", api.RedactControlURL(cfg.ControlURL), "dynamic_group_eval_interval", cfg.DynamicGroupEvalInterval)
-	// CONTROL_GATEWAY_URL is fatal when invalid: registration hands
-	// it back to the agent verbatim, so any invalid shape — empty
-	// string, bare hostname (parses as a relative path), http://
-	// (agents refuse h2c), userinfo, or non-https scheme — turns
-	// every successful enrollment into an agent that can never
-	// connect. api.ValidateControlURL is the shared validator
-	// (also invoked defensively in the registration handler).
-	if err := api.ValidateControlURL(cfg.ControlURL); err != nil {
-		// Redact userinfo before logging — the validator rejects
-		// URLs that contain credentials, but those credentials
-		// shouldn't land in the startup error line regardless.
-		logger.Error("CONTROL_AGENT_URL is invalid", "agent_url", api.RedactControlURL(cfg.ControlURL), "error", err)
+	if err := run(cfg, logger); err != nil {
+		logger.Error("control stopped", "error", err)
 		os.Exit(1)
 	}
+}
 
-	// Setup signal handling
-	ctx, cancel := context.WithCancel(context.Background())
+func run(cfg *Config, logger *slog.Logger) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		logger.Info("received signal, shutting down", "signal", sig)
-		cancel()
-	}()
-
-	// spec 32: datastore access is mutual-TLS only — no plaintext fallback.
-	// Fail closed here (require a verify-full DSN carrying client-cert material)
-	// so a misconfigured deployment aborts rather than reaching Postgres in the
-	// clear. setup.sh provisions the certs and the verify-full DSN.
 	if err := datastore.RequirePostgresTLS(cfg.DatabaseURL); err != nil {
-		logger.Error("datastore mTLS required (spec 32)", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("database TLS: %w", err)
 	}
-
-	// Initialize store with PostgreSQL
 	st, err := store.New(ctx, cfg.DatabaseURL)
 	if err != nil {
-		logger.Error("failed to initialize store", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer st.Close()
 	st.SetLogger(logger)
-	st.SetRepos(postgres.NewRepos(st.Queries()))
-	logger.Info("database initialized", "url", maskDatabaseURL(cfg.DatabaseURL))
 
-	// NOTE: bootstrap event emissions (ensureAdminUser, seedSSHAccessForAll,
-	// bootstrapAllDevicesGroup) live AFTER wireSystemActions below. Tracker
-	// #107 / #317: Go-side projector listeners only fire for new events, so
-	// any AppendEvent before WireAll silently skips the projection write —
-	// the canonical case being a fresh install where the admin user lands
-	// in events but not in users_projection, and login then fails.
-
-	// Initialize CA
-	certAuth, err := ca.New(cfg.CACertPath, cfg.CAKeyPath, cfg.CertValidity)
+	certificateAuthority, err := ca.New(cfg.CACertFile, cfg.CAKeyFile, cfg.CertificateValidity)
 	if err != nil {
-		logger.Error("failed to initialize CA", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("load certificate authority: %w", err)
 	}
-	if cfg.CATrustBundlePath != "" {
-		bundlePEM, err := os.ReadFile(cfg.CATrustBundlePath)
-		if err != nil {
-			logger.Error("failed to read CA trust bundle", "error", err, "path", cfg.CATrustBundlePath)
-			os.Exit(1)
-		}
-		if err := certAuth.SetTrustBundle(bundlePEM); err != nil {
-			logger.Error("failed to load CA trust bundle", "error", err)
-			os.Exit(1)
-		}
-		logger.Info("CA trust bundle loaded", "path", cfg.CATrustBundlePath)
+	jwt, err := auth.NewJWTManager(auth.JWTConfig{PrivateKey: cfg.SessionSigningKey})
+	if err != nil {
+		return fmt.Errorf("load session signer: %w", err)
 	}
-	logger.Info("CA initialized", "validity", cfg.CertValidity)
+	atRest, err := pmcrypto.NewEncryptor(cfg.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("load at-rest encryption key: %w", err)
+	}
+	if atRest == nil {
+		return errors.New("load at-rest encryption key: key is required")
+	}
+	if err := auth.ReconcileSystemRoles(ctx, st, time.Now(), logger); err != nil {
+		return fmt.Errorf("reconcile system roles: %w", err)
+	}
 
-	// Initialize JWT manager
-	jwtManager := auth.NewJWTManager(auth.JWTConfig{
-		Secret: []byte(cfg.JWTSecret),
+	runtime := controlruntime.New(controlruntime.Config{
+		Store: st, CA: certificateAuthority, JWT: jwt, AtRest: atRest,
+		ControlSealingPrivateKey: cfg.SealingKey, Logger: logger, Version: version,
+		PublicBaseURL: cfg.PublicBaseURL, AgentURL: cfg.AgentURL, TerminalURL: cfg.TerminalURL,
+		CORSOrigins: cfg.CORSOrigins, CORSAllowAll: cfg.CORSAllowAll,
+		TerminalOriginPatterns: cfg.TerminalOrigins, TrustedProxies: cfg.TrustedProxies,
+		HeartbeatInterval: cfg.HeartbeatInterval,
 	})
-
-	// Start periodic cleanup of expired revoked tokens
-	go runPeriodic(ctx, 1*time.Hour, func() {
-		if err := st.Queries().CleanupExpiredRevocations(ctx); err != nil {
-			logger.Error("failed to cleanup expired token revocations", "error", err)
-		}
-	}, false)
-
-	// Sweep expired SSO auth_states (spec 29 S3). They are otherwise deleted only
-	// on a successful Consume, so an unauthenticated GetSSOLoginURL flood would
-	// grow the table unboundedly. Same 1h cadence as the revocation sweep.
-	go runPeriodic(ctx, 1*time.Hour, func() {
-		if err := st.Queries().CleanupExpiredAuthStates(ctx); err != nil {
-			logger.Error("failed to cleanup expired SSO auth states", "error", err)
-		}
-	}, false)
-
-	if cfg.DynamicGroupEvalInterval > 0 {
-		logger.Info("starting dynamic group evaluation worker", "interval", cfg.DynamicGroupEvalInterval)
-		startDynamicGroupWorker(ctx, st, cfg.DynamicGroupEvalInterval, logger)
-	} else {
-		logger.Info("dynamic group evaluation worker disabled")
-	}
-
-	startStaleExecutionExpiry(ctx, st, logger, time.Now)
-
-	// Every agent handshake consults the revocation list, so nothing else ever
-	// removes a row from it. Rows whose certificate has already expired are
-	// inert and stay on that lookup path forever without this.
-	startRevocationSweeper(ctx, st, logger)
-
-	// M1: scheduled projection-drift detection. A post-commit projector
-	// apply that fails after the event commits drifts silently; this tick
-	// surfaces it at ERROR so an operator can rebuild before retention prunes
-	// the source events (remediation stays operator-driven — see the worker).
-	startProjectionDriftCheck(ctx, st, logger)
-
-	// Spec 19 audit-log retention: rolling snapshot + prune of the event
-	// log. Config was validated at parse time (fatal on violation); the
-	// archive store and worker construction are fatal too — a destructive
-	// worker either boots correctly or the server does not boot.
-	if cfg.Retention.Enabled {
-		arch, err := archive.New(cfg.Retention.ArchiveConfig())
-		if err != nil {
-			logger.Error("failed to initialize retention archive store", "error", err)
-			os.Exit(1)
-		}
-		if err := startRetentionWorker(ctx, st, arch, cfg.Retention, logger); err != nil {
-			logger.Error("failed to start retention worker", "error", err)
-			os.Exit(1)
-		}
-		logger.Info("audit-log retention enabled",
-			"window", cfg.Retention.Window, "interval", cfg.Retention.Interval, "archive_path", cfg.Retention.ArchivePath)
-	} else {
-		logger.Info("audit-log retention disabled (CONTROL_RETENTION_ENABLED=false); the event log grows unbounded")
-	}
-
-	// Start periodic cleanup of stale OSQuery results
-	go runPeriodic(ctx, 5*time.Minute, func() {
-		if err := st.Queries().DeleteOldOSQueryResults(ctx); err != nil {
-			logger.Error("failed to cleanup old osquery results", "error", err)
-		}
-	}, false)
-
-	// Initialize secret encryptor. CONTROL_ENCRYPTION_KEY is MANDATORY —
-	// the former CONTROL_ENCRYPTION_KEY_REQUIRED=false plaintext opt-out was
-	// removed (WS11 #4); a missing key is a fatal boot error so secrets at
-	// rest can never be stored unencrypted, even by accident.
-	encryptor, err := initEncryptor(logger)
+	defer runtime.Close()
+	publicServer, err := buildPublicServer(cfg, runtime.PublicHandler)
 	if err != nil {
-		logger.Error("failed to initialize encryptor", "error", err)
-		os.Exit(1)
+		return err
 	}
-
-	// Spec 19: PII envelope encryption. The sealer encrypts pii-tagged
-	// payload fields under the subject user's DEK at append (fail-closed
-	// — plaintext PII never reaches the immutable log); the opener
-	// decrypts at projection-build time. Wired BEFORE any bootstrap
-	// event emission (ensureAdminUser below) so the very first user
-	// event is already sealed.
-	piiSealer, err := pii.NewSealer(encryptor, st.Repos().UserEncryptionKey)
+	agentServer, err := buildAgentServer(cfg, certificateAuthority, runtime.AgentHandler)
 	if err != nil {
-		logger.Error("failed to initialize PII sealer", "error", err)
-		os.Exit(1)
-	}
-	st.SetPIISealer(piiSealer)
-	piiMinter, err := pii.NewMinter(encryptor, st.Repos().UserEncryptionKey)
-	if err != nil {
-		logger.Error("failed to initialize PII minter", "error", err)
-		os.Exit(1)
-	}
-	st.SetPIIMinter(piiMinter)
-	piiOpener, err := pii.NewOpener(encryptor, st.Repos().UserEncryptionKey)
-	if err != nil {
-		logger.Error("failed to initialize PII opener", "error", err)
-		os.Exit(1)
-	}
-	projectors.SetPIIOpener(piiOpener)
-
-	// Initialize action signer (signs actions so agents can verify authenticity)
-	actionSigner := ca.NewActionSigner(certAuth)
-
-	// Setup Connect-RPC service
-	svc := api.NewControlService(st, jwtManager, actionSigner, certAuth, cfg.ControlURL, logger, encryptor, api.ControlServiceConfig{
-		PasswordAuthEnabled: cfg.PasswordAuthEnabled,
-		SSOCallbackBaseURL:  cfg.SSOCallbackBaseURL,
-		SCIMBaseURL:         cfg.SCIMBaseURL,
-	})
-
-	// Reconcile system roles (Admin/User) with current permission definitions.
-	// Bypasses the event store (direct UPDATE on roles_projection via sqlc),
-	// so the ordering vs WireAll doesn't matter for this call.
-	// Fail CLOSED: the reconciler is the authority that syncs the Admin/User
-	// system roles to the code-defined permission sets (the migration seed is a
-	// stale starting point). Booting anyway on failure would serve traffic with
-	// drifted system-role permissions, so a failure is fatal (#16).
-	if err := auth.ReconcileSystemRoles(ctx, st.Queries(), logger); err != nil {
-		logger.Error("failed to reconcile system roles", "error", err)
-		os.Exit(1)
+		return err
 	}
 
-	// rc11 #77: derived-projection wiring for system actions —
-	// projectors.WireAll + startup sweep + post-commit listener +
-	// periodic reconciler. See setup.go for the full rationale.
-	//
-	// Every bootstrap helper that emits events MUST run AFTER this call
-	// (#317). Go-side listeners are only registered here; an AppendEvent
-	// before WireAll persists the event but skips the projection write.
-	wireSystemActions(ctx, st, svc, cfg, logger)
-
-	// Valkey-backed subsystem: taskqueue.Client + RediSearch index +
-	// terminal token store + two Asynq servers. This MUST be initialized before
-	// any bootstrap helper below emits events: newValkeySubsystem registers
-	// api.SearchListener, and an event emitted before that listener exists is
-	// projected into Postgres but permanently misses its incremental search task
-	// (fresh-deploy bootstrap users/groups then remain absent until a rebuild).
-	// The agent transport is control's own, not the queue's: these are in-memory
-	// maps over live streams. Constructing them here rather than inside the
-	// Valkey subsystem keeps a queue-less control from panicking at boot, and
-	// keeps the transport standing when workstream B removes the queue.
-	connMgr := connection.NewManager()
-	terminalSessions := connection.NewTerminalSessionRegistry()
-
-	valkey, err := newValkeySubsystem(ctx, cfg, st, svc, actionSigner, connMgr, terminalSessions, logger)
-	if err != nil {
-		// valkey may be partially-initialised on error — Close is nil-safe and
-		// only cleans up components that constructed successfully.
-		valkey.Close()
-		logger.Error("failed to initialize Valkey subsystem", "error", err)
-		os.Exit(1)
-	}
-	defer valkey.Close()
-
-	// Bootstrap admin user (event-sourced via UserCreatedWithRoles).
-	// Runs after WireAll so UserListener materialises users_projection and after
-	// newValkeySubsystem so SearchListener enqueues the initial user document.
-	if cfg.AdminEmail != "" && cfg.AdminPassword != "" {
-		if err := ensureAdminUser(ctx, st, cfg.AdminEmail, cfg.AdminPassword, logger); err != nil {
-			logger.Error("failed to create admin user", "error", err)
-			os.Exit(1)
-		}
-	}
-
-	// One-shot env-driven seed of the global SSH-access-for-all flag.
-	// Emits ServerSettingUpdated; needs ServerSettingsListener registered.
-	seedSSHAccessForAll(ctx, st, logger)
-
-	// Boot-time seed of the "All Devices" dynamic group. Runs AFTER
-	// WireAll so the DeviceGroupCreated event flows through the
-	// registered projector listener (#242 Wave H — replaces the
-	// PL/pgSQL DO block in migration 008).
-	bootstrapAllDevicesGroup(ctx, st, logger)
-
-	configureTrustedProxies(cfg, logger)
-
-	// Spec 22: server-side inventory collection scheduler. Requests
-	// signed inventory from stale connected devices once per fixed
-	// tick; policy (device override > group min > 24h default) lives
-	// in the projections. AC 10: the escape hatch logs one boot line
-	// and starts nothing — manual RefreshDeviceInventory and the
-	// inventory_overdue computation are unaffected.
-	if !cfg.InventorySchedulerEnabled {
-		logger.Info("inventory collection scheduler disabled (CONTROL_INVENTORY_SCHEDULER_ENABLED=false); inventory refresh is manual-only")
-	} else if valkey == nil {
-		logger.Warn("inventory collection scheduler enabled but no task queue configured (CONTROL_VALKEY_ADDR empty) — scheduler not started")
-	} else {
-		startInventoryScheduleWorker(ctx, st, valkey.aqClient, actionSigner, logger)
-		logger.Info("inventory collection scheduler enabled",
-			"tick", inventorysched.Tick, "default_interval_minutes", inventorysched.DefaultIntervalMinutes)
-	}
-
-	// Per-procedure rate limits (audit F036 / #145 / #142). Shared
-	// limiters keyed by client IP; a determined attacker behind many
-	// IPs can rotate sources but the per-procedure ceiling is tight
-	// enough that any single IP is locked out of credential-spray
-	// patterns within seconds. Login + VerifyLoginTOTP + SSOCallback
-	// share one limiter — they're all auth-attempt vectors that a
-	// defender treats as one logical "attempt" per IP.
-	//
-	// These ceilings are process-local / PER REPLICA — under multi-replica
-	// control HA the effective limit is roughly limit×replicas. Size them for
-	// that budget; see the replica-scope note on auth.RateLimiters (L12, audit
-	// 2026-07-17).
-	rateLimiters := auth.RateLimiters{
-		Login:       auth.NewRateLimiter(10, 1*time.Minute), // credential-spray defense
-		Refresh:     auth.NewRateLimiter(60, 1*time.Minute), // legitimate refreshes are frequent
-		Register:    auth.NewRateLimiter(5, 1*time.Minute),  // registration spam protection
-		Logout:      auth.NewRateLimiter(30, 1*time.Minute), // legitimate multi-session logout ceiling
-		RenewCert:   auth.NewRateLimiter(5, 1*time.Minute),  // cert rotation = once/lifetime, not in tight loop
-		AuthMethods: auth.NewRateLimiter(30, 1*time.Minute), // unauth email-lookup oracle — bound bulk enumeration
-		SSO:         auth.NewRateLimiter(10, 1*time.Minute), // expensive unauth endpoint (DB write + outbound discovery)
-		// WS11 #6 — per-USER ceilings on authenticated control RPCs (keyed by
-		// user ID, not IP). Authenticated is a generous general ceiling
-		// (~10 rps sustained per user) that bounds a stolen token / runaway
-		// client; Expensive is a tighter ceiling applied on top for the
-		// self-discovered heavy set (query evaluation, search, rebuild,
-		// log/osquery fan-out).
-		Authenticated: auth.NewRateLimiter(600, 1*time.Minute),
-		Expensive:     auth.NewRateLimiter(60, 1*time.Minute),
-	}
-
-	interceptors := connect.WithInterceptors(
-		api.NewLoggingInterceptor(logger),
-		// Bound every unary handler's wall-clock (WS13 #10). Backstops the DB
-		// statement_timeout for non-DB blocking; streaming passes through.
-		api.NewRequestDeadlineInterceptor(api.RequestDeadline),
-		auth.NewAuthInterceptor(logger, jwtManager, rateLimiters),
-		api.NewValidationInterceptor(),
-		auth.NewAuthzInterceptor(),
-	)
-
-	// controlMaxRequestBytes bounds how much of a single request body the
-	// control server will buffer before the handler runs (WS13 #4). Without it,
-	// an UNAUTHENTICATED caller (Login/Register are public) could stream an
-	// arbitrarily large body and force unbounded allocation pre-auth. 8 MiB is
-	// generous for control-plane JSON/proto (including a FILE/SHELL action's
-	// embedded content) while still bounding the pre-auth buffer.
-	const controlMaxRequestBytes = 8 << 20
-
-	// A single agent frame may legitimately be large (an inventory snapshot, a
-	// batch of action results), so the agent listener gets its own ceiling
-	// rather than the control API's. Carried over from the gateway unchanged.
-	const maxAgentMessageBytes = 64 << 20
-
-	mux := http.NewServeMux()
-	path, handler := pmv1connect.NewControlServiceHandler(svc, interceptors, connect.WithReadMaxBytes(controlMaxRequestBytes))
-	mux.Handle(path, handler)
-
-	// Mount SCIM v2 handler. Passes svc.SystemActions() so the SCIM
-	// delete path can clean up pm-tty-* / USER actions when the
-	// last identity link is removed (rc11 #77).
-	scimHandler := scim.NewHandler(st, logger, svc.SystemActions())
-	mux.Handle("/scim/v2/", scimHandler)
-
-	// The terminal WebSocket bridge. StartTerminal hands the web client a URL
-	// ending in /terminal; without this mount that URL is a 404 and every
-	// session the RPC successfully authorises fails to connect — the RPC half
-	// working is what makes the omission easy to miss.
-	//
-	// Requires Valkey: the bridge needs the token store to redeem the bearer,
-	// and the session registry and connection manager to reach the device.
-	if valkey != nil && valkey.TerminalTokenStore != nil {
-		bridge := agenthandler.NewTerminalBridgeHandler(
-			connMgr,
-			terminalSessions,
-			agenthandler.NewTokenStoreValidator(valkey.TerminalTokenStore),
-			valkey.aqClient,
-			logger.With("component", "terminal_bridge"),
-		)
-		mux.Handle("/terminal", bridge)
-		logger.Info("terminal WebSocket bridge mounted", "path", "/terminal")
-	} else {
-		logger.Warn("terminal WebSocket bridge NOT mounted (no Valkey): StartTerminal will authorise sessions that cannot connect")
-	}
-
-	// Wrap with CORS and security headers middleware
-	corsHandler := middleware.CORS(cfg.CORSOrigins, cfg.CORSAllowAll, logger)(mux)
-	securedHandler := middleware.RequestID(middleware.SecurityHeaders(corsHandler))
-
-	server, err := buildPublicServer(cfg, securedHandler)
-	if err != nil {
-		logger.Error("failed to build public server", "error", err)
-		os.Exit(1)
-	}
-
-	// Public health endpoint — minimal response so unauthenticated
-	// callers cannot enumerate server versions for vulnerability
-	// scanning (audit F-26). The version is still reachable via
-	// authenticated control RPCs (GetServerVersion equivalent) and
-	// via the mTLS-protected internal /health below for operator
-	// scrape tools.
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	// Control terminates the agent stream itself. The listener that used to
-	// carry InternalService — the gateway's privileged back-channel into control
-	// — now carries AgentService, and its peer class changes accordingly: agents
-	// present device certs, not gateway certs.
-	//
-	// The revocation gate is unchanged in intent and stronger in mechanism. It
-	// used to consult a Valkey-published CRL snapshot that could be up to one
-	// refresh interval stale; it now queries revoked_certificates per handshake,
-	// so a certificate revoked inside a renewal transaction stops working on the
-	// very next connection. A lookup error is treated as revoked.
-	agentOps := api.NewAgentOps(st, encryptor, actionSigner, logger.With("component", "agent_ops"))
-
-	// The handler reports agent results onto the queue and runs a per-device
-	// dispatch worker, so both come from the queue subsystem. Read them through
-	// a nil check rather than dereferencing: newValkeySubsystem returns nil by
-	// design when no queue is configured, and an unguarded read there was a
-	// panic at boot. A queue-less control still starts and serves its API; it
-	// just cannot carry agent traffic, and says so.
-	var (
-		aqClient  taskqueue.Enqueuer
-		workerMgr *devicedispatch.DeviceWorkerManager
-	)
-	if valkey != nil {
-		aqClient = valkey.aqClient
-		workerMgr = valkey.WorkerMgr
-	} else {
-		logger.Warn("no task queue configured (CONTROL_VALKEY_ADDR empty): the agent listener is NOT started, so no device can connect")
-	}
-
-	agentHandler := agenthandler.NewAgentHandlerWithTLS(
-		connMgr,
-		aqClient,
-		agentOps,
-		workerMgr,
-		version,
-		cfg.HeartbeatInterval,
-		logger.With("component", "agent_service"),
-	)
-	agentHandler.SetTerminalSessions(terminalSessions)
-
-	// Criterion 5: revoking a certificate stops the next handshake but leaves an
-	// established stream untouched, because the certificate is checked once at
-	// connect. Post-commit so a rolled-back revocation never disconnects a device
-	// whose certificate is still valid.
-	st.RegisterEventListener(api.DeviceStreamRevocationListener(connMgr,
-		logger.With("component", "device_stream_revocation")))
-
-	agentPath, agentH := pmv1connect.NewAgentServiceHandler(
-		agentHandler,
-		connect.WithInterceptors(api.NewValidationInterceptor()),
-		connect.WithReadMaxBytes(maxAgentMessageBytes),
-	)
-
-	revocation := store.NewRevocationChecker(st)
-
-	internalMux := http.NewServeMux()
-	// MTLSMiddleware, not WithPeerCert. Both put the authenticated peer into the
-	// context, but under different keys and different shapes: WithPeerCert
-	// carries the raw x509 leaf (what the deleted InternalService needed to read
-	// a gateway CN), while AgentHandler reads a device id via
-	// DeviceIDFromContext. Wrapping with the wrong one type-checks, passes every
-	// handler test — the tests inject the device id directly — and then fails
-	// EVERY real agent call with Unauthenticated, because the key the handler
-	// reads is never set.
-	// Only when there is a queue to dispatch through. Without one the handler
-	// has no worker manager, and the first agent to connect would panic the
-	// process on its Hello — after the connection had already been registered,
-	// so the device would be recorded as connected by a server that just died.
-	// The boot warning above already promises the listener is not started; this
-	// is what makes that true.
-	if valkey != nil {
-		internalMux.Handle(agentPath,
-			mtls.RequirePeerClassNotRevoked(logger, revocation, mtls.PeerClassAgent)(
-				agenthandler.MTLSMiddleware(agentH, revocation, logger)))
-	}
-	internalMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	internalServer, err := buildInternalServer(cfg, certAuth, internalMux)
-	if err != nil {
-		logger.Error("failed to build internal mTLS server", "error", err)
-		os.Exit(1)
-	}
-
-	// Start public server
+	errorsCh := make(chan error, 3)
 	go func() {
-		if cfg.TLSEnabled {
-			logger.Info("control server listening (TLS)", "addr", cfg.ListenAddr)
-			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				logger.Error("server error", "error", err)
-				cancel()
-			}
+		if err := runtime.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			errorsCh <- fmt.Errorf("delivery dispatcher: %w", err)
+		}
+	}()
+	go func() {
+		logger.Info("public listener ready", "address", cfg.PublicListen)
+		var err error
+		if publicServer.TLSConfig == nil {
+			err = publicServer.ListenAndServe()
 		} else {
-			logger.Info("control server listening (plain HTTP)", "addr", cfg.ListenAddr)
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				logger.Error("server error", "error", err)
-				cancel()
-			}
+			err = publicServer.ListenAndServeTLS("", "")
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errorsCh <- fmt.Errorf("public listener: %w", err)
 		}
 	}()
-
-	// Start internal mTLS server
 	go func() {
-		logger.Info("internal mTLS server listening", "addr", cfg.InternalListenAddr)
-		if err := internalServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			logger.Error("internal server error", "error", err)
-			cancel()
+		logger.Info("agent mTLS listener ready", "address", cfg.AgentListen)
+		if err := agentServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errorsCh <- fmt.Errorf("agent listener: %w", err)
 		}
 	}()
 
-	// Wait for shutdown
-	<-ctx.Done()
-
-	// Graceful shutdown
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case serveErr = <-errorsCh:
+		cancel()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		logger.Error("failed to shutdown server", "error", err)
+	publicErr := publicServer.Shutdown(shutdownCtx)
+	agentErr := agentServer.Shutdown(shutdownCtx)
+	if serveErr != nil {
+		return serveErr
 	}
-	if err := internalServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("failed to shutdown internal server", "error", err)
+	if publicErr != nil {
+		return fmt.Errorf("shut down public listener: %w", publicErr)
 	}
-
-	logger.Info("control server stopped")
+	if agentErr != nil {
+		return fmt.Errorf("shut down agent listener: %w", agentErr)
+	}
+	return nil
 }
-
-// Note: parseFlags / applyEnvOverrides / clampDurations /
-// mustValidateConfig live in flags.go.
-// ensureAdminUser / maskDatabaseURL live in admin_user.go.

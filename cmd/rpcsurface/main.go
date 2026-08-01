@@ -1,5 +1,4 @@
-// Command rpcsurface prints pm.v1 procedure paths, one per line, as
-// `/pm.v1.<Service>/<Method>`.
+// Command rpcsurface prints powermanage.v1 procedure paths, one per line.
 //
 // It exists so the deployment gate can ask a RUNNING listener "do you serve
 // exactly these?" without anyone maintaining a list by hand. The set is derived
@@ -32,7 +31,7 @@ import (
 	// Imported for descriptor registration side effects: without this the
 	// registry is empty and the tool would print nothing, which the caller must
 	// treat as a failure rather than as "no RPCs".
-	_ "github.com/manchtools/power-manage-sdk/gen/go/pm/v1"
+	_ "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
 )
 
 func main() {
@@ -55,7 +54,7 @@ func main() {
 	seen := map[string]bool{}
 	var procedures []string
 	protoregistry.GlobalFiles.RangeFiles(func(fd protoreflect.FileDescriptor) bool {
-		if fd.Package() != "pm.v1" {
+		if fd.Package() != "powermanage.v1" {
 			return true
 		}
 		svcs := fd.Services()
@@ -68,14 +67,14 @@ func main() {
 			}
 			ms := sd.Methods()
 			for j := 0; j < ms.Len(); j++ {
-				procedures = append(procedures, fmt.Sprintf("/pm.v1.%s/%s", name, ms.Get(j).Name()))
+				procedures = append(procedures, fmt.Sprintf("/powermanage.v1.%s/%s", name, ms.Get(j).Name()))
 			}
 		}
 		return true
 	})
 
 	if len(seen) == 0 {
-		fmt.Fprintln(os.Stderr, "rpcsurface: no pm.v1 services in the descriptor registry — "+
+		fmt.Fprintln(os.Stderr, "rpcsurface: no powermanage.v1 services in the descriptor registry — "+
 			"the enumeration is broken, and emitting an empty set would let the gate pass vacuously")
 		os.Exit(1)
 	}
