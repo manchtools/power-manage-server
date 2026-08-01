@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -11,377 +10,152 @@ permissions:
 
 jobs:
   test:
-    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-
       - name: Resolve SDK ref
-        id: sdk_ref
+        id: sdk
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${TAG}" | grep -q .; then
-            echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${GITHUB_REF_NAME}" | grep -q .; then
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "ref=main" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Checkout SDK
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk_ref.outputs.ref }}
+          ref: ${{ steps.sdk.outputs.ref }}
           path: _sdk
-
-      - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
-
+      - run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      - name: Run unit tests
-        run: go test -count=1 ./internal/auth/... ./internal/connection/...
-
-      - name: Run integration tests
-        run: go test -count=1 -timeout 30m ./internal/store/... ./internal/api/... ./internal/handler/... ./internal/search/...
+      - run: go test -count=1 ./...
+      - run: go vet ./...
 
   build:
-    name: Build (${{ matrix.arch }})
+    needs: test
     runs-on: ubuntu-latest
-    needs: [test]
-    outputs:
-      is_prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
     strategy:
       matrix:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v5
-
       - name: Resolve SDK ref
-        id: sdk_ref
+        id: sdk
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${TAG}" | grep -q .; then
-            echo "ref=${TAG}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags https://github.com/MANCHTOOLS/power-manage-sdk.git "refs/tags/${GITHUB_REF_NAME}" | grep -q .; then
+            echo "ref=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "ref=main" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Checkout SDK
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
           repository: MANCHTOOLS/power-manage-sdk
-          ref: ${{ steps.sdk_ref.outputs.ref }}
+          ref: ${{ steps.sdk.outputs.ref }}
           path: _sdk
-
-      - name: Rewrite SDK replace directive
-        run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
-
+      - run: go mod edit -replace github.com/manchtools/power-manage-sdk=./_sdk
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      - name: Detect prerelease
-        id: prerelease
-        run: |
-          # Any tag with a pre-release suffix (a hyphen after vYYYY.MM[.PP]) is a
-          # prerelease → :latest-rc, never :latest. Covers -rc1, -alpha1, -alpha2,
-          # -beta1, etc. Only a bare vYYYY.MM / vYYYY.MM.PP publishes :latest.
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Build control
         env:
           CGO_ENABLED: '0'
           GOOS: linux
           GOARCH: ${{ matrix.arch }}
         run: |
-          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+          mkdir -p dist
+          go build -ldflags="-s -w -X main.version=${GITHUB_REF_NAME#v}" \
             -o dist/control-linux-${{ matrix.arch }} ./cmd/control
-
-
-      - name: Build indexer
-        env:
-          CGO_ENABLED: '0'
-          GOOS: linux
-          GOARCH: ${{ matrix.arch }}
-        run: |
-          go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
-            -o dist/indexer-linux-${{ matrix.arch }} ./cmd/indexer
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v5
         with:
-          name: binaries-${{ matrix.arch }}
-          path: dist/
+          name: control-${{ matrix.arch }}
+          path: dist/control-linux-${{ matrix.arch }}
 
   containers:
-    name: Container images (${{ matrix.arch }})
+    needs: build
     runs-on: ubuntu-latest
-    needs: [build]
     strategy:
       matrix:
         arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v5
-
-      - name: Download artifacts
-        uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v5
         with:
-          name: binaries-${{ matrix.arch }}
-          path: dist/
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+          name: control-${{ matrix.arch }}
+          path: dist
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push control image
         run: |
           chmod +x dist/control-linux-${{ matrix.arch }}
-          cat > Dockerfile.control <<'DEOF'
-          FROM docker.io/library/alpine:3.21
-          RUN apk add --no-cache ca-certificates
-          # docref: begin control-binary-name
-          COPY dist/control-linux-* /usr/local/bin/control
-          EXPOSE 8081
-          ENTRYPOINT ["/usr/local/bin/control"]
-          # docref: end control-binary-name
-          DEOF
-          docker build --provenance=false -f Dockerfile.control -t ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
-          docker push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-${{ matrix.arch }}
+          docker build --provenance=false -f deploy/Containerfile.control \
+            --build-arg BINARY=dist/control-linux-${{ matrix.arch }} \
+            -t ghcr.io/manchtools/power-manage-control:${GITHUB_REF_NAME#v}-${{ matrix.arch }} .
+          docker push ghcr.io/manchtools/power-manage-control:${GITHUB_REF_NAME#v}-${{ matrix.arch }}
 
-      - name: Build and push indexer image
-        run: |
-          chmod +x dist/indexer-linux-${{ matrix.arch }}
-          cat > Dockerfile.indexer <<'DEOF'
-          FROM docker.io/library/alpine:3.21
-          RUN apk add --no-cache ca-certificates
-          COPY dist/indexer-linux-* /usr/local/bin/indexer
-          EXPOSE 8082
-          ENTRYPOINT ["/usr/local/bin/indexer"]
-          DEOF
-          docker build --provenance=false -f Dockerfile.indexer -t ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-${{ matrix.arch }} .
-          docker push ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-${{ matrix.arch }}
-
-  # Deploy smoke test — boot the REAL stack from the deploy artifacts (setup.sh +
-  # compose.yml + valkey.conf.template + pg_hba.conf) using the just-built
-  # per-arch images, and assert the datastore layer comes up over mutual TLS with
-  # working ACLs. GATES the manifests/latest-rc/latest push below, so a broken
-  # deploy fails the release instead of shipping (the alpha3 lesson). GitHub
-  # runners have Docker natively, so the compose stack runs directly.
   smoke:
-    name: Deploy smoke test
+    needs: containers
     runs-on: ubuntu-latest
-    needs: [build, containers]
     steps:
       - uses: actions/checkout@v5
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-      - name: Boot the deployment stack and assert health + clean ACLs
+      - name: Verify deployed target
         env:
-          IMAGE_TAG: ${{ steps.version.outputs.version }}-amd64
-        run: bash deploy/smoke-test.sh
+          IMAGE_TAG: ${{ github.ref_name }}-amd64
+        run: |
+          IMAGE_TAG="${IMAGE_TAG#v}" bash deploy/smoke-test.sh
 
   manifests:
-    name: Multi-arch manifests
-    runs-on: ubuntu-latest
     needs: [build, containers, smoke]
+    runs-on: ubuntu-latest
     steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Create control version manifest
+      - name: Publish version and channel manifests
+        env:
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
         run: |
-          docker manifest create ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }} \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}
-
-      - name: Update control latest-rc tag
-        if: ${{ needs.build.outputs.is_prerelease == 'true' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest-rc \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-control:latest-rc
-
-      - name: Update control latest tag
-        if: ${{ needs.build.outputs.is_prerelease == 'false' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-control:latest \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-control:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-control:latest
-
-      - name: Create indexer version manifest
-        run: |
-          docker manifest create ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }} \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}
-
-      - name: Update indexer latest-rc tag
-        if: ${{ needs.build.outputs.is_prerelease == 'true' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-indexer:latest-rc \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-indexer:latest-rc
-
-      - name: Update indexer latest tag
-        if: ${{ needs.build.outputs.is_prerelease == 'false' }}
-        run: |
-          docker manifest create --amend ghcr.io/manchtools/power-manage-indexer:latest \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/manchtools/power-manage-indexer:${{ steps.version.outputs.version }}-arm64
-          docker manifest push ghcr.io/manchtools/power-manage-indexer:latest
+          version="${GITHUB_REF_NAME#v}"
+          image=ghcr.io/manchtools/power-manage-control
+          docker manifest create "$image:$version" "$image:$version-amd64" "$image:$version-arm64"
+          docker manifest push "$image:$version"
+          channel=latest
+          if [[ "$PRERELEASE" == true ]]; then channel=latest-rc; fi
+          docker manifest create --amend "$image:$channel" "$image:$version-amd64" "$image:$version-arm64"
+          docker manifest push "$image:$channel"
 
   release:
-    name: GitHub Release
-    runs-on: ubuntu-latest
     needs: [build, manifests]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
         with:
-          fetch-depth: 0
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v5
+          pattern: control-*
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        run: cd release && sha256sum control-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
         with:
-          path: artifacts/
-
-      - name: Extract version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare release assets
-        run: |
-          mkdir -p release
-          cp artifacts/binaries-amd64/* release/
-          cp artifacts/binaries-arm64/* release/
-          cd release && sha256sum * > SHA256SUMS
-
-      - name: Generate changelog
-        run: |
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1)
-          {
-            echo "## What's Changed"
-            echo ""
-            if [ -n "$PREV_TAG" ]; then
-              for entry in "feat:Features" "fix:Bug Fixes" "perf:Performance" "refactor:Refactoring" "docs:Documentation" "test:Tests" "chore:Chores"; do
-                prefix="${entry%%:*}"
-                label="${entry#*:}"
-                items=$(git log --pretty=format:"%s" "${PREV_TAG}..${GITHUB_REF_NAME}" | grep "^${prefix}[:(]" | sed "s/^${prefix}[^:]*: //" || true)
-                if [ -n "$items" ]; then
-                  echo "### ${label}"
-                  echo "$items" | while IFS= read -r line; do echo "- ${line}"; done
-                  echo ""
-                fi
-              done
-              others=$(git log --pretty=format:"%s" "${PREV_TAG}..${GITHUB_REF_NAME}" | grep -v "^\(feat\|fix\|perf\|refactor\|docs\|test\|chore\)[:(]" || true)
-              if [ -n "$others" ]; then
-                echo "### Other Changes"
-                echo "$others" | while IFS= read -r line; do echo "- ${line}"; done
-                echo ""
-              fi
-              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${GITHUB_REF_NAME}"
-            else
-              echo "Initial release."
-            fi
-          } > changelog.md
-
-      - name: Generate release body
-        id: body
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cat changelog.md > body.md
-          echo "" >> body.md
-          if [[ "${{ needs.build.outputs.is_prerelease }}" == "true" ]]; then
-            cat >> body.md <<EOF
-          ## Container Images
-
-          \`\`\`bash
-          docker pull ghcr.io/manchtools/power-manage-control:latest-rc
-          docker pull ghcr.io/manchtools/power-manage-indexer:latest-rc
-          \`\`\`
-
-          Or pull this specific version:
-
-          \`\`\`bash
-          docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
-          docker pull ghcr.io/manchtools/power-manage-indexer:${VERSION}
-          \`\`\`
-          EOF
-          else
-            cat >> body.md <<EOF
-          ## Container Images
-
-          \`\`\`bash
-          docker pull ghcr.io/manchtools/power-manage-control:latest
-          docker pull ghcr.io/manchtools/power-manage-indexer:latest
-          \`\`\`
-
-          Or pull this specific version:
-
-          \`\`\`bash
-          docker pull ghcr.io/manchtools/power-manage-control:${VERSION}
-          docker pull ghcr.io/manchtools/power-manage-indexer:${VERSION}
-          \`\`\`
-          EOF
-          fi
-          cat >> body.md <<'EOF'
-
-          ## Binaries
-
-          | Binary | Platform |
-          |--------|----------|
-          | `control-linux-amd64` | Linux x86_64 |
-          | `control-linux-arm64` | Linux ARM64 |
-          | `indexer-linux-amd64` | Linux x86_64 |
-          | `indexer-linux-arm64` | Linux ARM64 |
-          EOF
-
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ needs.build.outputs.is_prerelease == 'true' }}
-          name: Power Manage Server ${{ steps.version.outputs.version }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          name: Power Manage Server ${{ github.ref_name }}
           files: release/*
-          body_path: body.md
+          generate_release_notes: true

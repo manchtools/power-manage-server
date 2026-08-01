@@ -1,0 +1,9 @@
+FROM docker.io/library/alpine:3.23
+
+RUN apk add --no-cache ca-certificates
+
+ARG BINARY
+COPY ${BINARY} /usr/local/bin/control
+
+EXPOSE 8081 8082
+ENTRYPOINT ["/usr/local/bin/control"]

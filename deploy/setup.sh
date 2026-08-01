@@ -1,878 +1,215 @@
-#!/bin/bash
-#
-# Power Manage Server - Setup Script
-#
-# This script:
-# 1. Validates the .env configuration
-# 2. Generates the internal CA for agent certificate signing
-# 3. Generates the control server certificates (signed by the CA)
-# 4. Generates the control server certificate for internal mTLS (signed by the CA)
-# 5. Generates the control public TLS certificate (signed by the CA, for web UI / API)
-# 6. Prepares data directories for PostgreSQL and Traefik
-#
-# Usage: ./setup.sh
+#!/usr/bin/env bash
 
-set -e
-
-# Refuse to create files readable by group/other. Private keys are
-# chmod'd to 600 explicitly after generation, but a wider default
-# umask would still let openssl briefly create the key with 644
-# permissions on disk — a window where a racing reader on a
-# multi-user host could grab it before the chmod fires. umask 077
-# closes that window across every write in this script.
+set -euo pipefail
 umask 077
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERTS_DIR="$SCRIPT_DIR/certs"
+CONFIG_DIR="$SCRIPT_DIR/config"
+SECRETS_DIR="$SCRIPT_DIR/secrets"
 DATA_DIR="$SCRIPT_DIR/data"
 
-check_env() {
-    if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
-        log_error ".env file not found!"
-        log_info "Copy .env.example to .env and configure it:"
-        log_info "  cp .env.example .env"
-        log_info "  \$EDITOR .env"
-        exit 1
-    fi
+info() { printf '[INFO] %s\n' "$*"; }
+fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
+}
+
+load_environment() {
+    [[ -f "$SCRIPT_DIR/.env" ]] || fail "copy .env.example to .env and set the two domains and ACME email"
     set -a
+    # This is an operator-owned Compose environment file.
+    # shellcheck disable=SC1091
     source "$SCRIPT_DIR/.env"
     set +a
-
-    local missing=0
-
-    if [[ -z "$POSTGRES_PASSWORD" ]] || [[ "$POSTGRES_PASSWORD" == "CHANGE_ME"* ]]; then
-        log_error "POSTGRES_PASSWORD must be set in .env"
-        missing=1
-    fi
-
-    if [[ -z "$INDEXER_POSTGRES_PASSWORD" ]] || [[ "$INDEXER_POSTGRES_PASSWORD" == "CHANGE_ME"* ]]; then
-        log_error "INDEXER_POSTGRES_PASSWORD must be set in .env"
-        missing=1
-    fi
-
-    # spec 32: the single shared VALKEY_PASSWORD (requirepass) is gone —
-    # replaced by four per-service ACL passwords that ensure_acl_passwords
-    # mints automatically, so there is nothing for the operator to set here.
-
-    if [[ -z "$JWT_SECRET" ]] || [[ "$JWT_SECRET" == "CHANGE_ME"* ]]; then
-        log_error "JWT_SECRET must be set in .env"
-        missing=1
-    fi
-
-    if [[ ${#JWT_SECRET} -lt 32 ]]; then
-        log_error "JWT_SECRET must be at least 32 characters"
-        missing=1
-    fi
-
-    # AES-256-GCM key for at-rest secret encryption. MANDATORY — exactly
-    # 64 hex chars (32 bytes). The control server refuses to boot without it
-    # (no plaintext opt-out, WS11), so the check_env mirror flags both an
-    # empty and a malformed value on a --no-prompt run.
-    if [[ -z "${CONTROL_ENCRYPTION_KEY:-}" ]]; then
-        log_error "CONTROL_ENCRYPTION_KEY is required (generate with: openssl rand -hex 32)"
-        missing=1
-    elif [[ ! "$CONTROL_ENCRYPTION_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters"
-        missing=1
-    fi
-
-    # Asynq task-signing key — must be 64 hex chars (32 bytes). Without
-    # this, compose substitutes blank and HMAC verification fails
-    # silently across control/indexer. The placeholder in
-    # .env.example is intentionally not a valid hex string so this
-    # check fires loudly on a non-interactive run that forgot to
-    # generate one.
-    if [[ -z "${PM_TASK_SIGNING_KEY:-}" ]] || [[ "$PM_TASK_SIGNING_KEY" == "CHANGE_ME"* ]]; then
-        log_error "PM_TASK_SIGNING_KEY must be set in .env (generate with: openssl rand -hex 32)"
-        missing=1
-    elif [[ ! "$PM_TASK_SIGNING_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        log_error "PM_TASK_SIGNING_KEY must be exactly 64 hex characters"
-        missing=1
-    fi
-
-    if [[ -z "$ADMIN_EMAIL" ]]; then
-        log_error "ADMIN_EMAIL must be set in .env"
-        missing=1
-    fi
-
-    if [[ -z "$ADMIN_PASSWORD" ]] || [[ "$ADMIN_PASSWORD" == "CHANGE_ME"* ]]; then
-        log_error "ADMIN_PASSWORD must be set in .env"
-        missing=1
-    fi
-
-    if [[ -z "$AGENT_DOMAIN" ]] || [[ "$AGENT_DOMAIN" == *"example.com" ]]; then
-        log_error "AGENT_DOMAIN must be set to your actual agent domain in .env"
-        log_error "  Agents dial this host; it must differ from CONTROL_DOMAIN."
-        errors=$((errors + 1))
-    fi
-    if [[ "$AGENT_DOMAIN" == "$CONTROL_DOMAIN" ]] && [[ -n "$CONTROL_DOMAIN" ]]; then
-        log_error "AGENT_DOMAIN must differ from CONTROL_DOMAIN"
-        log_error "  Traefik dispatches :443 by SNI and a TCP-passthrough router"
-        log_error "  wins over the HTTP router, so sharing the host would send the"
-        log_error "  web UI into the agent mTLS listener."
-        errors=$((errors + 1))
-    fi
-    if [[ -z "$CONTROL_DOMAIN" ]] || [[ "$CONTROL_DOMAIN" == *"example.com" ]]; then
-        log_error "CONTROL_DOMAIN must be set to your actual domain in .env"
-        missing=1
-    fi
-
-    if [[ -z "$ACME_EMAIL" ]] || [[ "$ACME_EMAIL" == "admin@example.com" ]]; then
-        log_error "ACME_EMAIL must be set to a valid email for Let's Encrypt in .env"
-        missing=1
-    fi
-
-    if [[ $missing -eq 1 ]]; then
-        exit 1
-    fi
-
-    log_info "Environment configuration validated"
 }
 
-# clean_stray_cert_dirs undoes the Docker bind-mount footgun: if `docker compose
-# up` ran before the certs existed, Docker created each ./certs/<file> bind-mount
-# SOURCE as an empty DIRECTORY. openssl then fails cryptically ("Is a directory")
-# trying to write the cert over it. Remove any such empty dirs; if one can't be
-# removed (non-empty, or a running container still holds the mount), stop with
-# clear guidance instead of letting openssl fail three functions later.
-clean_stray_cert_dirs() {
-    [[ -d "$CERTS_DIR" ]] || return 0
-    local d
-    for d in "$CERTS_DIR"/*.crt "$CERTS_DIR"/*.key; do
-        [[ -d "$d" ]] || continue
-        if rmdir "$d" 2>/dev/null; then
-            log_warn "Removed stray directory $(basename "$d") — Docker created it as a bind-mount source because compose ran before setup.sh."
-        else
-            log_error "$(basename "$d") is a directory, not a file (Docker bind-mount footgun) and can't be removed — a container is likely still holding the mount."
-            log_error "Fix:  docker compose down --remove-orphans  &&  rm -rf certs  &&  ./setup.sh"
-            exit 1
-        fi
-    done
+validate_environment() {
+    local hostname='^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$'
+    [[ "${CONTROL_DOMAIN:-}" =~ $hostname ]] || fail "CONTROL_DOMAIN must be a fully-qualified hostname"
+    [[ "${AGENT_DOMAIN:-}" =~ $hostname ]] || fail "AGENT_DOMAIN must be a fully-qualified hostname"
+    [[ "$CONTROL_DOMAIN" != "$AGENT_DOMAIN" ]] || fail "CONTROL_DOMAIN and AGENT_DOMAIN must differ"
+    [[ "${ACME_EMAIL:-}" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || fail "ACME_EMAIL is invalid"
+    [[ "$CONTROL_DOMAIN" != manage.example.com && "$AGENT_DOMAIN" != agents.example.com ]] \
+        || fail "replace the example hostnames in .env"
+    [[ "$ACME_EMAIL" != admin@example.com ]] || fail "replace the example ACME email in .env"
+    [[ "${LOG_LEVEL:-info}" =~ ^(debug|info|warn|error)$ ]] || fail "LOG_LEVEL must be debug, info, warn, or error"
+    [[ "${LOG_FORMAT:-json}" =~ ^(json|text)$ ]] || fail "LOG_FORMAT must be json or text"
 }
 
-generate_ca() {
-    if [[ -f "$CERTS_DIR/ca.crt" ]] && [[ -f "$CERTS_DIR/ca.key" ]]; then
-        log_warn "CA already exists in $CERTS_DIR"
-        read -p "Regenerate CA? This will invalidate all existing agent registrations! [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing CA"
-            return
-        fi
+require_pair() {
+    local first="$1" second="$2" description="$3"
+    if [[ -e "$first" || -e "$second" ]]; then
+        [[ -f "$first" && -f "$second" ]] || fail "$description requires both $(basename "$first") and $(basename "$second")"
+        return 0
     fi
-
-    log_info "Generating internal Certificate Authority..."
-    mkdir -p "$CERTS_DIR"
-
-    log_info "Generating CA private key..."
-    openssl genrsa -out "$CERTS_DIR/ca.key" 4096
-
-    log_info "Generating CA certificate..."
-    openssl req -new -x509 -days 3650 -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" \
-        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
-        -addext "basicConstraints=critical,CA:TRUE" \
-        -addext "keyUsage=critical,keyCertSign,cRLSign" \
-        -addext "subjectKeyIdentifier=hash"
-
-    chmod 600 "$CERTS_DIR/ca.key"
-    chmod 644 "$CERTS_DIR/ca.crt"
-
-    log_info "CA generated successfully"
-}
-
-generate_control_cert() {
-    if [[ -f "$CERTS_DIR/control.crt" ]] && [[ -f "$CERTS_DIR/control.key" ]]; then
-        log_warn "Control certificate already exists"
-        read -p "Regenerate control certificate? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing control certificate"
-            return
-        fi
-    fi
-
-    log_info "Generating control server certificate..."
-
-    # Generate private key
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control.key"
-
-    # Generate CSR
-    openssl req -new -key "$CERTS_DIR/control.key" \
-        -subj "/CN=control/O=Power Manage" \
-        -out "$CERTS_DIR/control.csr"
-
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain
-    # matching, plus a spiffe:// URI SAN marking this cert as the
-    # "control" peer class — reserved for control-to-control callers
-    # requires that class so an agent cert cannot pose as the control
-    # plane and issue admin fan-out calls).
-    openssl x509 -req -in "$CERTS_DIR/control.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf "subjectAltName=DNS:control,DNS:localhost,DNS:%s,URI:spiffe://power-manage/control\nauthorityKeyIdentifier=keyid:always" "${AGENT_DOMAIN}") \
-        -out "$CERTS_DIR/control.crt"
-
-    rm -f "$CERTS_DIR/control.csr"
-    chmod 600 "$CERTS_DIR/control.key"
-    chmod 644 "$CERTS_DIR/control.crt"
-
-    log_info "Control certificate generated (valid 825 days)"
-}
-
-generate_control_public_cert() {
-    if [[ -f "$CERTS_DIR/control-public.crt" ]] && [[ -f "$CERTS_DIR/control-public.key" ]]; then
-        log_warn "Control public certificate already exists"
-        read -p "Regenerate control public certificate? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Keeping existing control public certificate"
-            return
-        fi
-    fi
-
-    log_info "Generating control public TLS certificate for ${CONTROL_DOMAIN}..."
-
-    # Generate private key
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/control-public.key"
-
-    # Generate CSR
-    openssl req -new -key "$CERTS_DIR/control-public.key" \
-        -subj "/CN=${CONTROL_DOMAIN}/O=Power Manage" \
-        -out "$CERTS_DIR/control-public.csr"
-
-    # Sign with CA (extfile sets SAN + AKI for reliable Go x509 chain matching)
-    openssl x509 -req -in "$CERTS_DIR/control-public.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf "subjectAltName=DNS:%s,DNS:localhost\nauthorityKeyIdentifier=keyid:always" "${CONTROL_DOMAIN}") \
-        -out "$CERTS_DIR/control-public.crt"
-
-    rm -f "$CERTS_DIR/control-public.csr"
-    chmod 600 "$CERTS_DIR/control-public.key"
-    chmod 644 "$CERTS_DIR/control-public.crt"
-
-    log_info "Control public certificate generated (valid 825 days)"
-}
-
-# generate_datastore_cert issues certs/<name>.{crt,key} signed by the internal
-# CA for spec-32 datastore mutual TLS. $san may be empty (client certs); $eku is
-# serverAuth (Postgres/Valkey server certs), clientAuth (component client certs),
-# or both. Idempotent: keeps an existing pair so a re-run doesn't rotate a cert
-# that services are already validating against.
-generate_datastore_cert() {
-    local name="$1" cn="$2" san="$3" eku="$4"
-    if [[ -f "$CERTS_DIR/${name}.crt" ]] && [[ -f "$CERTS_DIR/${name}.key" ]]; then
-        log_info "Datastore certificate ${name} already exists — keeping"
-        return
-    fi
-    log_info "Generating datastore certificate ${name} (CN=${cn})..."
-    openssl ecparam -genkey -name prime256v1 -noout -out "$CERTS_DIR/${name}.key"
-    openssl req -new -key "$CERTS_DIR/${name}.key" \
-        -subj "/CN=${cn}/O=Power Manage" \
-        -out "$CERTS_DIR/${name}.csr"
-    # ${san:+…} emits the subjectAltName line only when $san is non-empty (client
-    # certs have none). authorityKeyIdentifier gives Go/libpq a reliable chain.
-    openssl x509 -req -in "$CERTS_DIR/${name}.csr" \
-        -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial \
-        -days 825 \
-        -extfile <(printf 'authorityKeyIdentifier=keyid:always\nextendedKeyUsage=%s\n%s\n' "$eku" "${san:+subjectAltName=$san}") \
-        -out "$CERTS_DIR/${name}.crt"
-    rm -f "$CERTS_DIR/${name}.csr"
-    chmod 600 "$CERTS_DIR/${name}.key"
-    chmod 644 "$CERTS_DIR/${name}.crt"
-    log_info "Datastore certificate ${name} generated (valid 825 days)"
-}
-
-# generate_datastore_certs issues the spec-32 datastore PKI: TLS server certs for
-# Postgres + Valkey (SAN MUST match the compose service hostname each client
-# dials, or verify-full rejects the connection), and per-component client certs.
-# Postgres 'cert' auth maps a client cert's CN to a DB role, so control→powermanage
-# and indexer→pm_indexer CNs MUST equal the roles.
-generate_datastore_certs() {
-    generate_datastore_cert postgres postgres "DNS:postgres,DNS:localhost" "serverAuth"
-    # Valkey server cert doubles as the healthcheck's client cert, so both EKUs.
-    generate_datastore_cert valkey   valkey   "DNS:valkey,DNS:localhost"     "serverAuth,clientAuth"
-    generate_datastore_cert control-datastore powermanage "" "clientAuth"
-    generate_datastore_cert indexer-datastore pm_indexer  "" "clientAuth"
-}
-
-# ensure_acl_passwords mints any missing per-service Valkey ACL password (spec 32)
-# into .env AND the current shell. These are internal service credentials, not
-# operator-facing, so we generate them automatically like the other secrets
-# rather than prompt. Idempotent: an already-set value is left untouched.
-ensure_acl_passwords() {
-    local var generated
-    for var in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD; do
-        # A CHANGE_ME* placeholder is not a credential — treat it as missing and
-        # regenerate, or it would be rendered into valkey.conf as the real ACL
-        # password (spec 32 AC 8 rejects placeholders).
-        if [[ -z "${!var:-}" || "${!var}" == CHANGE_ME* ]]; then
-            generated="$(openssl rand -hex 24)"
-            write_env_var "$var" "$generated"
-            printf -v "$var" '%s' "$generated"
-            log_info "Generated ${var}"
-        fi
-    done
-}
-
-show_instructions() {
-    echo ""
-    echo "=========================================="
-    if [[ "${EXISTING_INSTALL:-0}" -eq 1 ]]; then
-        echo "  Power Manage Upgrade Prepared"
-        echo "=========================================="
-        echo ""
-        echo "Existing deployment — config and certificates refreshed in place."
-        echo "Your admin account, enrolled agents, DNS, and data are unchanged."
-        echo ""
-        echo "Next steps:"
-        echo ""
-        echo "1. Apply the new images / config:"
-        echo "   cd $SCRIPT_DIR && docker compose up -d"
-        echo ""
-        echo "2. Watch the control server start and apply any DB migrations:"
-        echo "   docker compose logs -f control     # look for the version + 'goose' lines"
-        echo ""
-        echo "3. Verify health & security posture:"
-        echo "   docker compose exec control control doctor"
-        echo ""
-        echo "If the indexer logs a Postgres auth failure (its DB role predates"
-        echo "INDEXER_POSTGRES_PASSWORD), set it once:"
-        echo "   docker exec -it pm-postgres psql -U powermanage -d powermanage \\"
-        echo "     -c \"ALTER ROLE pm_indexer PASSWORD '\$INDEXER_POSTGRES_PASSWORD'\""
-        echo ""
-        return
-    fi
-    echo "  Power Manage Setup Complete"
-    echo "=========================================="
-    echo ""
-    echo "Next steps:"
-    echo ""
-    echo "1. Ensure DNS records point to this server:"
-    echo "   - ${CONTROL_DOMAIN}   (web UI, API, terminal)"
-    echo "   - ${AGENT_DOMAIN}   (agent mTLS stream — agents cannot connect without it)"
-    echo ""
-    echo "2. Start the services:"
-    echo "   docker compose up -d"
-    echo ""
-    echo "   Traefik obtains a Let's Encrypt certificate for the control domain."
-    echo "   ${AGENT_DOMAIN} needs no public certificate: Traefik passes that SNI"
-    echo "   through untouched and control presents its own CA-signed cert."
-    echo ""
-    echo "3. Access the web UI at https://${CONTROL_DOMAIN}"
-    echo "   Login with: ${ADMIN_EMAIL}"
-    echo ""
-    echo "4. Create a registration token, then install agents:"
-    echo "   curl -fsSL https://github.com/MANCHTOOLS/power-manage-agent/releases/latest/download/install.sh | sudo bash -s -- -s https://${CONTROL_DOMAIN} -t <TOKEN>"
-    echo ""
-    echo "   (Agents enroll against ${CONTROL_DOMAIN} and are handed"
-    echo "    https://${AGENT_DOMAIN} for the stream by the registration response.)"
-    echo ""
-}
-
-###############################################################################
-# Guided env setup (rc11 #80)
-#
-# Interactive prompt loop that fills in missing .env values for
-# operators who'd rather click than read .env.example. Skipped when:
-#   * --no-prompt is passed
-#   * stdin is not a TTY (CI, piped input)
-#   * .env already has every required value (idempotent re-run)
-#
-# Each prompt:
-#   * Skips if the variable already has a non-placeholder value
-#   * Offers to auto-generate strong defaults for secrets
-#   * Validates URL-safety / hex / hostname constraints inline so the
-#     operator can fix typos before they cause obscure runtime errors
-#   * Auto-composes the terminal URL (CONTROL_TERMINAL_URL)
-#     from the chosen TTY domain — operator never types {id} by hand
-###############################################################################
-
-# is_placeholder returns 0 (truthy) if the value is empty, the
-# CHANGE_ME sentinel, or one of the example.com defaults from
-# .env.example. Used to decide whether a prompt should fire.
-is_placeholder() {
-    local v="$1"
-    [[ -z "$v" ]] && return 0
-    [[ "$v" == CHANGE_ME* ]] && return 0
-    [[ "$v" == *"example.com"* ]] && return 0
     return 1
 }
 
-# parent_domain returns the part of $1 after the first dot, or empty
-# when $1 has no dot at all. Used to derive sibling-subdomain defaults
-# without falling into the `${var#*.}` footgun where a no-match returns
-# the WHOLE string — that would make `tty.${CONTROL_DOMAIN#*.}` for a
-# single-label `localhost` resolve to `tty.localhost`, which is
-# self-referential and not a useful prompt default. Round-4 review
-# follow-up.
-parent_domain() {
-    local d="$1"
-    if [[ "$d" == *.* ]]; then
-        echo "${d#*.}"
-    else
-        echo ""
-    fi
+validate_key_pair() {
+    local certificate="$1" key="$2" description="$3"
+    openssl x509 -in "$certificate" -noout >/dev/null
+    openssl pkey -in "$key" -noout >/dev/null
+    cmp -s \
+        <(openssl x509 -in "$certificate" -pubkey -noout | openssl pkey -pubin -outform DER 2>/dev/null) \
+        <(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null) \
+        || fail "$description certificate and private key do not match"
 }
 
-# write_env_var atomically updates a single key=value line in .env.
-# Adds the key if missing; preserves surrounding comments/order.
-#
-# Atomicity: the temp file is created in the same directory as .env so
-# `mv` resolves to a same-filesystem rename(2), which is atomic on
-# POSIX. Default mktemp uses $TMPDIR (often a separate mount), in
-# which case mv falls back to copy-then-unlink — non-atomic and also
-# overwrites .env's mode/owner with the temp file's. Mode is copied
-# explicitly with chmod --reference so re-runs don't downgrade .env
-# off 0600.
-write_env_var() {
-    local key="$1" value="$2" envfile="$SCRIPT_DIR/.env"
-    if grep -qE "^${key}=" "$envfile"; then
-        local tmp
-        tmp="$(mktemp "${envfile}.XXXXXX")"
-        awk -v k="$key" -v v="$value" '
-            BEGIN { found = 0 }
-            $0 ~ "^"k"=" { print k"="v; found = 1; next }
-            { print }
-            END { if (!found) print k"="v }
-        ' "$envfile" > "$tmp"
-        chmod --reference="$envfile" "$tmp" 2>/dev/null || chmod 600 "$tmp"
-        mv "$tmp" "$envfile"
-    else
-        printf '%s=%s\n' "$key" "$value" >> "$envfile"
+# docref: begin generated-material
+ensure_ca() {
+    if require_pair "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" "certificate authority"; then
+        validate_key_pair "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.key" "certificate authority"
+        openssl verify -CAfile "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca.crt" >/dev/null
+        openssl x509 -in "$CERTS_DIR/ca.crt" -text -noout | grep -q 'CA:TRUE' \
+            || fail "ca.crt is not a certificate authority"
+        info "Using existing certificate authority"
+        return
     fi
+
+    info "Generating internal Ed25519 certificate authority"
+    openssl genpkey -algorithm Ed25519 -out "$CERTS_DIR/ca.key"
+    openssl req -new -x509 -key "$CERTS_DIR/ca.key" -days 3650 \
+        -subj "/CN=Power Manage Internal CA/O=Power Manage" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" \
+        -out "$CERTS_DIR/ca.crt"
 }
 
-# clear_env_var removes a key=value line from .env entirely. Used by
-# the guided setup when the operator answers No to a feature on a
-# rerun where existing values would otherwise leave the feature
-# silently enabled (caught in #80 review). No-op when the key is
-# absent. Same-filesystem mktemp + mode preservation as write_env_var.
-clear_env_var() {
-    local key="$1" envfile="$SCRIPT_DIR/.env"
-    if ! grep -qE "^${key}=" "$envfile"; then
-        return 0
+ensure_certificate() {
+    local name="$1" subject="$2" extensions="$3"
+    local certificate="$CERTS_DIR/$name.crt" key="$CERTS_DIR/$name.key" csr="$CERTS_DIR/$name.csr"
+    if require_pair "$certificate" "$key" "$name certificate"; then
+        validate_key_pair "$certificate" "$key" "$name"
+        openssl verify -CAfile "$CERTS_DIR/ca.crt" "$certificate" >/dev/null
+        return
     fi
-    local tmp
-    tmp="$(mktemp "${envfile}.XXXXXX")"
-    awk -v k="$key" '
-        $0 ~ "^"k"=" { next }
-        { print }
-    ' "$envfile" > "$tmp"
-    chmod --reference="$envfile" "$tmp" 2>/dev/null || chmod 600 "$tmp"
-    mv "$tmp" "$envfile"
+
+    info "Generating $name certificate"
+    openssl genpkey -algorithm Ed25519 -out "$key"
+    openssl req -new -key "$key" -subj "$subject" -out "$csr"
+    openssl x509 -req -in "$csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" \
+        -CAcreateserial -days 825 -extfile <(printf '%b\n' "$extensions") -out "$certificate"
+    rm -f "$csr"
+    openssl verify -CAfile "$CERTS_DIR/ca.crt" "$certificate" >/dev/null
 }
 
-# prompt_secret asks for a secret value, offers to generate one with
-# the supplied openssl command. Stores the chosen value in $REPLY_VALUE
-# and a "did the operator just choose a value?" flag in $REPLY_GENERATED
-# (1 = newly generated/entered this run, 0 = kept existing). Callers
-# use the flag to decide whether to print the value back as a one-time
-# capture banner — re-printing on every rerun would leak the stored
-# password to terminal scrollback every time setup.sh is re-run.
-# Round-5 review fix.
-#
-# The manual-entry branch uses `read -s` so the typed secret is never
-# echoed back to the terminal — the auto-generate path never traverses
-# stdin so it's already silent.
-prompt_secret() {
-    local prompt="$1" gen_cmd="$2" current="$3"
-    REPLY_VALUE=""
-    REPLY_GENERATED=0
-    if ! is_placeholder "$current"; then
-        log_info "  $prompt — already set, keeping current value"
-        REPLY_VALUE="$current"
-        return 0
-    fi
-    echo ""
-    read -r -p "  $prompt — generate strong value? [Y/n] " ans
-    if [[ -z "$ans" || "$ans" =~ ^[Yy] ]]; then
-        REPLY_VALUE="$(eval "$gen_cmd")"
-        REPLY_GENERATED=1
-        echo "    ✓ Generated."
-    else
-        read -r -s -p "    Enter value: " REPLY_VALUE
-        REPLY_GENERATED=1
-        # `read -s` suppresses the trailing newline; print one so the
-        # subsequent log lines start on a fresh row.
-        echo
-    fi
+ensure_certificates() {
+    ensure_certificate control "/CN=$AGENT_DOMAIN/O=Power Manage" \
+        "subjectAltName=DNS:$AGENT_DOMAIN,DNS:control,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
+    openssl x509 -in "$CERTS_DIR/control.crt" -checkhost "$AGENT_DOMAIN" -noout >/dev/null \
+        || fail "control.crt does not cover AGENT_DOMAIN; replace control.crt and control.key"
+
+    ensure_certificate postgres "/CN=postgres/O=Power Manage" \
+        "subjectAltName=DNS:postgres,DNS:localhost\nextendedKeyUsage=serverAuth\nkeyUsage=digitalSignature"
+    openssl x509 -in "$CERTS_DIR/postgres.crt" -checkhost postgres -noout >/dev/null \
+        || fail "postgres.crt does not cover the postgres service name"
+
+    ensure_certificate control-datastore "/CN=powermanage/O=Power Manage" \
+        "extendedKeyUsage=clientAuth\nkeyUsage=digitalSignature"
 }
 
-# prompt_string asks for a free-form value, with optional default.
-# Stores the chosen value in $REPLY_VALUE.
-prompt_string() {
-    local prompt="$1" default="$2" current="$3"
-    REPLY_VALUE=""
-    if ! is_placeholder "$current"; then
-        log_info "  $prompt — already set ($current), keeping"
-        REPLY_VALUE="$current"
-        return 0
+ensure_secret_files() {
+    if [[ ! -f "$SECRETS_DIR/postgres.password" ]]; then
+        openssl rand -base64 48 > "$SECRETS_DIR/postgres.password"
     fi
-    echo ""
-    if [[ -n "$default" ]]; then
-        read -r -p "  $prompt [$default]: " REPLY_VALUE
-        [[ -z "$REPLY_VALUE" ]] && REPLY_VALUE="$default"
-    else
-        read -r -p "  $prompt: " REPLY_VALUE
+    if [[ ! -f "$SECRETS_DIR/encryption.key" ]]; then
+        openssl rand -hex 32 > "$SECRETS_DIR/encryption.key"
     fi
+    if [[ ! -f "$SECRETS_DIR/session-signing.pem" ]]; then
+        openssl genpkey -algorithm Ed25519 -out "$SECRETS_DIR/session-signing.pem"
+    fi
+    if [[ ! -f "$SECRETS_DIR/sealing.key" ]]; then
+        openssl rand -hex 32 > "$SECRETS_DIR/sealing.key"
+    fi
+
+    printf '%s\n' \
+        'postgres://powermanage@postgres:5432/powermanage?sslmode=verify-full&sslrootcert=/run/certs/ca.crt&sslcert=/run/certs/control-datastore.crt&sslkey=/run/certs/control-datastore.key' \
+        > "$SECRETS_DIR/database.url"
+
+    [[ -s "$SECRETS_DIR/postgres.password" && "$(wc -c < "$SECRETS_DIR/postgres.password")" -le 256 ]] \
+        || fail "postgres.password must be non-empty and no larger than 256 bytes"
+    grep -Eq '^[0-9a-fA-F]{64}$' "$SECRETS_DIR/encryption.key" \
+        || fail "encryption.key must contain exactly 32 hex-encoded bytes"
+    grep -Eq '^[0-9a-fA-F]{64}$' "$SECRETS_DIR/sealing.key" \
+        || fail "sealing.key must contain exactly 32 hex-encoded bytes"
+    openssl pkey -in "$SECRETS_DIR/session-signing.pem" -text -noout 2>/dev/null | grep -q ED25519 \
+        || fail "session-signing.pem must contain an Ed25519 private key"
 }
 
-# prompt_yes_no asks a Y/n question, defaults to Yes.
-prompt_yes_no() {
-    local prompt="$1" default_yes="${2:-yes}"
-    local hint="[Y/n]"
-    [[ "$default_yes" != "yes" ]] && hint="[y/N]"
-    echo ""
-    read -r -p "  $prompt $hint " ans
-    if [[ -z "$ans" ]]; then
-        [[ "$default_yes" == "yes" ]] && return 0 || return 1
-    fi
-    [[ "$ans" =~ ^[Yy] ]]
+write_config() {
+    cat > "$CONFIG_DIR/control.json" <<EOF
+{
+  "public_listen": "0.0.0.0:8081",
+  "agent_listen": "172.30.0.3:8082",
+  "public_base_url": "https://${CONTROL_DOMAIN}",
+  "agent_url": "https://${AGENT_DOMAIN}",
+  "terminal_url": "wss://${CONTROL_DOMAIN}/terminal",
+  "cors_origins": ["https://${CONTROL_DOMAIN}"],
+  "terminal_origins": ["${CONTROL_DOMAIN}"],
+  "trusted_proxies": ["172.29.0.2"],
+  "agent_proxy_sources": ["172.30.0.2"],
+  "log_level": "${LOG_LEVEL:-info}",
+  "log_format": "${LOG_FORMAT:-json}",
+  "certificate_validity": "8760h",
+  "heartbeat_interval": "30s",
+  "ca_cert_file": "/run/certs/ca.crt",
+  "ca_key_file": "/run/certs/ca.key",
+  "agent_tls_cert_file": "/run/certs/control.crt",
+  "agent_tls_key_file": "/run/certs/control.key",
+  "database_url_file": "/run/secrets/database.url",
+  "encryption_key_file": "/run/secrets/encryption.key",
+  "session_signing_key_file": "/run/secrets/session-signing.pem",
+  "sealing_key_file": "/run/secrets/sealing.key"
 }
-
-# guided_setup runs the interactive prompt loop. Invoked from main()
-# only when stdin is a TTY and --no-prompt was not passed.
-guided_setup() {
-    log_info "Guided setup — prompting for missing values."
-    echo "  Press Ctrl-C at any time to abort. Existing .env values are kept."
-    echo ""
-
-    # Source current values so prompts can detect "already set".
-    set -a
-    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
-    set +a
-
-    # --- Domains ---
-    prompt_string "Control server public domain (CONTROL_DOMAIN)" "" "${CONTROL_DOMAIN:-}"
-    write_env_var CONTROL_DOMAIN "$REPLY_VALUE"
-    CONTROL_DOMAIN="$REPLY_VALUE"
-
-    # Agents dial their own host. It must be distinct from CONTROL_DOMAIN
-    # because Traefik resolves the shared :443 entrypoint by SNI and the
-    # TCP-passthrough router outranks the HTTP router — one host cannot both
-    # terminate TLS for the browser and pass it through to the mTLS listener.
-    local default_agent=""
-    local control_parent
-    control_parent="$(parent_domain "$CONTROL_DOMAIN")"
-    if [[ -n "$control_parent" ]]; then
-        default_agent="agents.$control_parent"
-    fi
-    while :; do
-        prompt_string "Agent domain — the host agents connect to (AGENT_DOMAIN)" "$default_agent" "${AGENT_DOMAIN:-}"
-        if [[ "$REPLY_VALUE" != "$CONTROL_DOMAIN" ]]; then
-            break
-        fi
-        log_error "AGENT_DOMAIN must differ from CONTROL_DOMAIN — see above."
-    done
-    write_env_var AGENT_DOMAIN "$REPLY_VALUE"
-    AGENT_DOMAIN="$REPLY_VALUE"
-
-    # Terminal sessions are optional but recommended; offer the full set.
-    if prompt_yes_no "Enable remote terminal (TTY) sessions?"; then
-        # No host to ask for. The terminal WebSocket is served by control's
-        # own public listener at /terminal, which Traefik reaches through the
-        # SAME HTTP router as the web UI. A dedicated TTY host would need its
-        # own router and its own certificate; asking for one produced a URL
-        # that resolved nowhere, because Traefik only ever had a router for
-        # CONTROL_DOMAIN. The rc10 reason for a separate host — passthrough SNI
-        # shadowing an HTTP router — applies to AGENT_DOMAIN, not to this.
-        write_env_var CONTROL_TERMINAL_URL "wss://${CONTROL_DOMAIN}/terminal"
-        echo "    ✓ CONTROL_TERMINAL_URL composed automatically (wss://${CONTROL_DOMAIN}/terminal)."
-    else
-        # Clear explicitly rather than skipping: on a rerun where terminals were
-        # previously enabled, leaving the values in place would keep the feature
-        # on while the operator answered No.
-        local was_enabled=0
-        for k in CONTROL_TERMINAL_URL; do
-            if grep -qE "^${k}=" "$SCRIPT_DIR/.env" 2>/dev/null; then
-                was_enabled=1
-                clear_env_var "$k"
-            fi
-        done
-        if [[ "$was_enabled" -eq 1 ]]; then
-            log_info "  Terminal sessions disabled — cleared CONTROL_TERMINAL_URL from .env."
-        else
-            log_info "  Terminal sessions disabled — none of the terminal env vars were set, nothing to clear."
-        fi
-    fi
-
-    prompt_string "Email for Let's Encrypt notifications (ACME_EMAIL)" "" "${ACME_EMAIL:-}"
-    write_env_var ACME_EMAIL "$REPLY_VALUE"
-
-    # --- Image tag ---
-    prompt_string "Image tag — :latest, :latest-rc, or pin to vYYYY.MM (IMAGE_TAG)" "latest" "${IMAGE_TAG:-}"
-    write_env_var IMAGE_TAG "$REPLY_VALUE"
-
-    # --- Secrets ---
-    echo ""
-    log_info "Generating / collecting secrets…"
-
-    prompt_secret "PostgreSQL password (POSTGRES_PASSWORD)" "openssl rand -base64 32" "${POSTGRES_PASSWORD:-}"
-    write_env_var POSTGRES_PASSWORD "$REPLY_VALUE"
-
-    # Indexer password MUST be URL-safe — used in a libpq DSN by the
-    # indexer. Hex output is the safest generator for this constraint.
-    prompt_secret "Indexer DB password (INDEXER_POSTGRES_PASSWORD, must be URL-safe)" "openssl rand -hex 32" "${INDEXER_POSTGRES_PASSWORD:-}"
-    if [[ "$REPLY_VALUE" =~ [^A-Za-z0-9_.-] ]]; then
-        log_error "INDEXER_POSTGRES_PASSWORD contains URL-unsafe characters: ${BASH_REMATCH[0]}"
-        log_error "  Use 'openssl rand -hex 32' or pick alphanumeric only. Aborting."
-        exit 1
-    fi
-    write_env_var INDEXER_POSTGRES_PASSWORD "$REPLY_VALUE"
-
-    # spec 32: there is no single shared VALKEY_PASSWORD anymore — the four
-    # per-service Valkey ACL passwords are minted automatically by
-    # ensure_acl_passwords after this loop, so nothing to prompt for here.
-
-    prompt_secret "JWT secret (JWT_SECRET, min 32 chars)" "openssl rand -base64 48" "${JWT_SECRET:-}"
-    if [[ ${#REPLY_VALUE} -lt 32 ]]; then
-        log_error "JWT_SECRET must be at least 32 characters; got ${#REPLY_VALUE}. Aborting."
-        exit 1
-    fi
-    write_env_var JWT_SECRET "$REPLY_VALUE"
-
-    # Encryption key must be exactly 64 hex chars (32 bytes).
-    prompt_secret "Encryption key for IdP/LUKS secrets (CONTROL_ENCRYPTION_KEY, 64 hex chars)" "openssl rand -hex 32" "${CONTROL_ENCRYPTION_KEY:-}"
-    if [[ ! "$REPLY_VALUE" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        log_error "CONTROL_ENCRYPTION_KEY must be exactly 64 hex characters; got ${#REPLY_VALUE} chars. Aborting."
-        exit 1
-    fi
-    write_env_var CONTROL_ENCRYPTION_KEY "$REPLY_VALUE"
-
-    # Asynq task-signing key (audit F-02). 64 hex chars (32 bytes).
-    # Shared between control and indexer — every service
-    # that touches the Valkey-backed task queue HMAC-signs and
-    # verifies the envelope so a Valkey compromise can't forge tasks.
-    prompt_secret "Asynq task signing key (PM_TASK_SIGNING_KEY, 64 hex chars)" "openssl rand -hex 32" "${PM_TASK_SIGNING_KEY:-}"
-    if [[ ! "$REPLY_VALUE" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        log_error "PM_TASK_SIGNING_KEY must be exactly 64 hex characters; got ${#REPLY_VALUE} chars. Aborting."
-        exit 1
-    fi
-    write_env_var PM_TASK_SIGNING_KEY "$REPLY_VALUE"
-
-    # --- Admin account ---
-    # The bootstrap admin is created ONCE, from these values, the first time the
-    # control server boots. On a re-run / upgrade — detected by an already
-    # generated CA, the canonical "this deployment is provisioned" marker — the
-    # admin already exists in the database. Re-prompting here is not just noise:
-    # a freshly entered password is written to .env, and if the original
-    # bootstrap admin had since been removed or renamed, the server's
-    # create-if-missing bootstrap would RESURRECT it on the next boot. So skip
-    # the admin prompts entirely once provisioned, leaving the operator's
-    # existing .env values untouched.
-    local admin_pass="" admin_pass_generated=0
-    if [[ "${EXISTING_INSTALL:-0}" -eq 1 ]]; then
-        log_info "  Upgrade mode — keeping the current admin; skipping bootstrap-admin prompts."
-    else
-        # admin@<parent-domain> if CONTROL_DOMAIN has a dot; admin@<full> for
-        # single-label cases (admin@localhost is a valid local-delivery address).
-        local admin_parent default_email
-        admin_parent="$(parent_domain "$CONTROL_DOMAIN")"
-        if [[ -n "$admin_parent" ]]; then
-            default_email="admin@$admin_parent"
-        else
-            default_email="admin@$CONTROL_DOMAIN"
-        fi
-        prompt_string "Bootstrap admin email (ADMIN_EMAIL)" "$default_email" "${ADMIN_EMAIL:-}"
-        write_env_var ADMIN_EMAIL "$REPLY_VALUE"
-        # Mirror back so the summary block echoes the chosen value, not the
-        # stale one sourced before the prompt loop (empty on a fresh install).
-        ADMIN_EMAIL="$REPLY_VALUE"
-
-        # Use hex (not base64) so the generated password is safe to paste into a
-        # web form. base64 emits '+' which decodes as space under
-        # application/x-www-form-urlencoded, blocking UI sign-in.
-        prompt_secret "Bootstrap admin password (ADMIN_PASSWORD)" "openssl rand -hex 24" "${ADMIN_PASSWORD:-}"
-        write_env_var ADMIN_PASSWORD "$REPLY_VALUE"
-        admin_pass="$REPLY_VALUE"
-        admin_pass_generated="$REPLY_GENERATED"
-    fi
-
-    echo ""
-    log_info "Guided setup complete. .env updated."
-    # Only print the password back when it was newly chosen this run.
-    # Reusing is_placeholder here was wrong: a real password is not a
-    # placeholder, so on every rerun the banner would re-leak the
-    # stored password into the terminal scrollback / install logs.
-    # Round-5 review fix.
-    if [[ "$admin_pass_generated" -eq 1 ]]; then
-        log_warn "Bootstrap admin password — write this down NOW; it's not shown again:"
-        echo ""
-        echo "    Email:    $ADMIN_EMAIL"
-        echo "    Password: $admin_pass"
-        echo ""
-        log_warn "The bootstrap admin is for first-login only — see deploy/.env.example for details."
-    fi
-    echo ""
-}
-
-# parse_flags reads our own --no-prompt before falling through to the
-# rest of setup.sh. Kept simple — no other flags supported. Wrapped
-# in a function so sourcing setup.sh from setup_test.sh doesn't pick
-# up the harness's argv (round-5 review: source-guard pattern lets
-# the test harness exercise the real helper bodies instead of inlined
-# copies that drift).
-NO_PROMPT=0
-parse_flags() {
-    for arg in "$@"; do
-        case "$arg" in
-            --no-prompt) NO_PROMPT=1 ;;
-            -h|--help)
-                cat <<EOF
-Usage: ./setup.sh [--no-prompt]
-
-  --no-prompt   Skip the interactive guided env setup; run cert
-                generation against the existing .env only. Equivalent
-                to running with stdin redirected from /dev/null.
 EOF
-                exit 0
-                ;;
-            *)
-                # Reject typos like --noprompt explicitly. Silent
-                # acceptance was a footgun: `./setup.sh --noprompt` on a
-                # fresh .env would run guided mode (CHANGE_ME values)
-                # and confuse the operator about why prompts appeared.
-                log_error "Unknown argument: $arg"
-                log_error "  See: $0 --help"
-                exit 2
-                ;;
-        esac
+}
+
+validate_permissions() {
+    local private
+    for private in "$CERTS_DIR/ca.key" "$CERTS_DIR/control.key" "$CERTS_DIR/postgres.key" \
+        "$CERTS_DIR/control-datastore.key" "$SECRETS_DIR"/*; do
+        [[ "$(stat -c '%a' "$private")" =~ ^[0-6]00$ ]] \
+            || fail "$private must not be group/world accessible"
     done
+    [[ -w "$DATA_DIR/artifacts" && -w "$DATA_DIR/backups" ]] \
+        || fail "artifact and backup paths must be writable"
 }
 
 main() {
-    log_info "Power Manage Server Setup"
-    echo ""
+    require_command openssl
+    require_command cmp
+    require_command stat
+    load_environment
+    validate_environment
 
-    # Detect a re-run / upgrade BEFORE generate_ca creates the CA: an existing
-    # CA is the canonical "this deployment is already provisioned" marker. Used
-    # to skip the one-time bootstrap-admin prompts (guided_setup) and to print
-    # upgrade-aware instructions instead of fresh-install next-steps.
-    EXISTING_INSTALL=0
-    if [[ -f "$CERTS_DIR/ca.crt" ]]; then
-        EXISTING_INSTALL=1
-        log_info "Existing deployment detected — running in upgrade mode."
-    fi
-    echo ""
+    mkdir -p "$CERTS_DIR" "$CONFIG_DIR" "$SECRETS_DIR" \
+        "$DATA_DIR/postgres" "$DATA_DIR/traefik" "$DATA_DIR/artifacts" "$DATA_DIR/backups"
+    chmod 700 "$CERTS_DIR" "$CONFIG_DIR" "$SECRETS_DIR"
+    # PostgreSQL's entrypoint drops to its service UID after preparing PGDATA;
+    # it must be able to traverse the bind-mount root on the second pass.
+    chmod 755 "$DATA_DIR/postgres"
+    chmod 600 "$SCRIPT_DIR/.env"
+    touch "$DATA_DIR/traefik/acme.json"
+    chmod 600 "$DATA_DIR/traefik/acme.json"
 
-    # Guided mode runs only on a TTY when --no-prompt wasn't passed.
-    # Falling back to non-prompt automatically when stdin is piped or
-    # redirected preserves CI / install.sh behavior.
-    if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
-        guided_setup
-    else
-        log_info "Non-interactive mode — skipping guided setup. Validating .env directly."
-    fi
+    ensure_ca
+    ensure_certificates
+    ensure_secret_files
+    write_config
 
-    check_env
-    clean_stray_cert_dirs
-    generate_ca
-    generate_control_cert
-    generate_control_public_cert
-    # spec 32: datastore mutual-TLS PKI (Postgres + Valkey server + client certs).
-    generate_datastore_certs
+    chmod 600 "$CERTS_DIR"/*.key "$SECRETS_DIR"/* "$CONFIG_DIR/control.json"
+    chmod 644 "$CERTS_DIR"/*.crt
+    validate_permissions
 
-    # Data directories need permissions that let the container
-    # users (postgres uid 70, valkey uid 999, traefik uid 0)
-    # write into the bind-mounted volumes. The script-wide
-    # `umask 077` at the top protects the certs/ tree; for data/
-    # we reset to 022 so the directories are 755 and the
-    # containers can initialise them.
-    (umask 022 && mkdir -p "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik")
-    chmod 755 "$DATA_DIR/postgres" "$DATA_DIR/valkey" "$DATA_DIR/traefik"
-    log_info "Created data directories: $DATA_DIR/{postgres,valkey,traefik}"
-
-    # spec 32: mint the per-service Valkey ACL passwords before rendering the
-    # config that embeds them.
-    ensure_acl_passwords
-    render_valkey_config
-
-    show_instructions
+    info "Deployment material is ready"
+    printf '%s\n' \
+        "Start:     cd $SCRIPT_DIR && docker compose up -d --wait" \
+        "Bootstrap: cd $SCRIPT_DIR && docker compose exec control control bootstrap-admin"
 }
+# docref: end generated-material
 
-# render_valkey_config writes the deployment's valkey.conf from the
-# template (deploy/valkey.conf.template) with the four per-service ACL
-# passwords substituted in. The rendered file is read-only-mounted into the
-# pm-valkey container so the passwords no longer appear in
-# /proc/<pid>/cmdline (audit F-03).
-render_valkey_config() {
-    local template="$SCRIPT_DIR/valkey.conf.template"
-    local rendered="$SCRIPT_DIR/valkey.conf"
-    if [[ ! -f "$template" ]]; then
-        log_error "valkey.conf.template missing at $template"
-        return 1
-    fi
-    # Docker bind-mount footgun: if compose ever starts before this
-    # function has rendered the file, dockerd silently creates the
-    # host-side path as a DIRECTORY (because the source of the bind
-    # mount doesn't exist). Valkey then loads without a config —
-    # `requirepass` not set, indexer's AUTH gets "no password
-    # configured", auth fails everywhere. Surface and fix the dir
-    # so the operator doesn't chase it through the indexer logs.
-    if [[ -d "$rendered" ]]; then
-        log_warn "valkey.conf is a directory (docker auto-created the bind-mount source); removing and re-rendering."
-        rm -rf "$rendered"
-    fi
-    # Literal substitution via a split-and-concatenate loop. Every
-    # other approach we tried interprets `&` as the matched text
-    # (awk's gsub, bash's ${var//pat/rep}, sed's s/// — all of
-    # them). Splitting the template at the placeholder and using
-    # the value as the joiner keeps the password truly literal, so a
-    # password containing &, \, /, |, $, or newlines lands in the
-    # rendered config exactly as the operator generated it.
-    #
-    # spec 32: substitute the per-service ACL passwords (control, indexer) in
-    # turn. Each is minted by ensure_acl_passwords into .env + the environment
-    # before this runs.
-    local content placeholder value remaining ph
-    content="$(<"$template")"
-    for ph in VALKEY_CONTROL_PASSWORD VALKEY_INDEXER_PASSWORD; do
-        placeholder="__${ph}__"
-        value="${!ph}"
-        remaining="$content"
-        content=""
-        while [[ "$remaining" == *"$placeholder"* ]]; do
-            content+="${remaining%%"$placeholder"*}${value}"
-            remaining="${remaining#*"$placeholder"}"
-        done
-        content+="$remaining"
-    done
-    local rendered_contents="$content"
-    # Write atomically: render to a temp, fsync via mv. Use printf
-    # rather than echo so a password starting with `-` is not
-    # interpreted as a flag.
-    local tmp
-    tmp="$(mktemp "${rendered}.tmp.XXXXXX")"
-    printf '%s' "$rendered_contents" > "$tmp"
-    # 0644 keeps the file readable by the valkey user inside the
-    # container (uid 999 in the valkey-bundle image) without
-    # needing the operator to chown to a specific uid. The bind-
-    # mount carries `ro,z` so the container cannot tamper, and the
-    # password is already on disk in .env (same protection level),
-    # so 0644 doesn't materially widen exposure beyond the existing
-    # secret-handling model. The audit-F-03 fix is the cmdline /
-    # /proc/cmdline scrubbing, which holds regardless of the
-    # rendered file's mode.
-    chmod 0644 "$tmp"
-    mv "$tmp" "$rendered"
-    log_info "Rendered valkey.conf from template"
-}
-
-# Run main only when executed directly. When this file is `source`d
-# (e.g. by setup_test.sh) we want the helpers loaded but no main run
-# and no argv parsed.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    parse_flags "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     main "$@"
 fi

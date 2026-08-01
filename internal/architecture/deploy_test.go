@@ -1,0 +1,84 @@
+package architecture_test
+
+import (
+	"bufio"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func TestDeploymentIsTheThreeServiceTarget(t *testing.T) {
+	root := repositoryRoot(t)
+	compose := readDeploymentFile(t, root, "compose.yml")
+
+	services := make(map[string]struct{})
+	scanner := bufio.NewScanner(strings.NewReader(compose))
+	inServices := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "services:" {
+			inServices = true
+			continue
+		}
+		if inServices && line != "" && line[0] != ' ' {
+			break
+		}
+		if inServices && strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.HasSuffix(line, ":") {
+			services[strings.TrimSuffix(strings.TrimSpace(line), ":")] = struct{}{}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan compose services: %v", err)
+	}
+	want := map[string]struct{}{"traefik": {}, "postgres": {}, "control": {}}
+	if len(services) != len(want) {
+		t.Fatalf("deployment services = %v; want exactly %v", services, want)
+	}
+	for service := range want {
+		if _, exists := services[service]; !exists {
+			t.Errorf("deployment is missing %s", service)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"/var/run/docker.sock",
+		"providers.docker",
+		"valkey",
+		"asynq",
+		"indexer",
+	} {
+		if strings.Contains(strings.ToLower(compose), forbidden) {
+			t.Errorf("compose contains abolished runtime %q", forbidden)
+		}
+	}
+	if !strings.Contains(compose, "internal: true") {
+		t.Error("agent proxy network is not isolated")
+	}
+
+	routes := readDeploymentFile(t, root, filepath.Join("traefik", "dynamic", "routes.yml"))
+	for _, required := range []string{"passthrough: true", "proxyProtocol:", "version: 2", "172.30.0.3:8082"} {
+		if !strings.Contains(routes, required) {
+			t.Errorf("static agent route is missing %q", required)
+		}
+	}
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate test source")
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
+
+func readDeploymentFile(t *testing.T, root, path string) string {
+	t.Helper()
+	contents, err := os.ReadFile(filepath.Join(root, "deploy", path))
+	if err != nil {
+		t.Fatalf("read deploy/%s: %v", path, err)
+	}
+	return string(contents)
+}

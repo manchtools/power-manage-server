@@ -1,154 +1,62 @@
-# Power Manage Server - Docker/Podman Compose
-#
-# Brings up the full stack: Traefik, PostgreSQL, Valkey, Control and Indexer.
-# Traefik handles TLS termination with automatic Let's Encrypt certificates.
-#
-# Usage:
-#   1. cp .env.example .env && $EDITOR .env
-#   2. ./setup.sh            (generates the internal CA + control certs)
-#   3. docker compose up -d  (or: podman-compose up -d)
-#
-# Architecture:
-#   Internet -> Traefik (:443, HTTPS, SNI=CONTROL_DOMAIN) -> Control (:8081)
-#                 -> Web UI, API, and the terminal WebSocket at /terminal
-#            -> Traefik (:443, TCP passthrough, SNI=AGENT_DOMAIN) -> Control (:8082)
-#                 -> Agent mTLS stream
-#              (:80 redirects to :443 for the web host only)
-#
-# The two hosts must differ. Traefik dispatches the shared :443 entrypoint by
-# SNI, and a TCP router wins over the HTTP routers for a matching SNI — so a
-# passthrough router on CONTROL_DOMAIN would swallow the browser's traffic.
-
+# docref: begin deployment-services
 services:
   traefik:
-    image: docker.io/traefik:v3
+    image: docker.io/traefik:v3.7.1
     container_name: pm-traefik
     restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./data/traefik:/letsencrypt
-    command:
-      # Docker labels are the only route source. The Redis KV provider that
-      # used to sit beside this one existed so horizontally-scaled gateways
-      # could publish their own routers at runtime; with the gateway gone
-      # nothing writes to that keyspace, so Traefik was watching an empty
-      # namespace and holding a Valkey dependency for it.
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--providers.docker.network=pm-internal"
-      - "--entrypoints.web.address=:80"
-      # One :443 entrypoint serves both the LE-terminated HTTP router for the
-      # web host and control's TCP-passthrough mTLS router for the agent host.
-      # Traefik dispatches by SNI: the TCP router with HostSNI(${AGENT_DOMAIN})
-      # + tls.passthrough=true takes precedence when the ClientHello matches,
-      # otherwise the HTTP router for ${CONTROL_DOMAIN} terminates TLS as
-      # normal. No dedicated mTLS entrypoint — that used to be on :8443 and
-      # splitting ports added deploy friction for no benefit.
-      - "--entrypoints.websecure.address=:443"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    environment:
+      CONTROL_DOMAIN: ${CONTROL_DOMAIN:?CONTROL_DOMAIN is required}
+      AGENT_DOMAIN: ${AGENT_DOMAIN:?AGENT_DOMAIN is required}
+      TRAEFIK_CERTIFICATESRESOLVERS_LETSENCRYPT_ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
     ports:
       - "80:80"
       - "443:443"
+    volumes:
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro,z
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro,z
+      - ./data/traefik:/letsencrypt:z
     networks:
-      - internal
+      internal:
+        ipv4_address: 172.29.0.2
+      agent_proxy:
+        ipv4_address: 172.30.0.2
 
   postgres:
     image: docker.io/postgres:18-alpine
     container_name: pm-postgres
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: powermanage
+      POSTGRES_DB: powermanage
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres.password
+    entrypoint:
+      - sh
+      - -ec
+      - >-
+        cp /run/certs/postgres.key /tmp/postgres.key;
+        chown postgres:postgres /tmp/postgres.key;
+        chmod 600 /tmp/postgres.key;
+        exec docker-entrypoint.sh postgres
+        -c ssl=on
+        -c ssl_cert_file=/run/certs/postgres.crt
+        -c ssl_key_file=/tmp/postgres.key
+        -c ssl_ca_file=/run/certs/ca.crt
+        -c hba_file=/etc/postgresql/pg_hba.conf
     volumes:
       - ./data/postgres:/var/lib/postgresql:z
-      - ./initdb.d:/docker-entrypoint-initdb.d:ro,z
-      # spec 32: TLS server cert + CA + the mTLS host-based auth rules.
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
-      - ./certs/postgres.crt:/certs/postgres.crt:ro,z
-      - ./certs/postgres.key:/certs/postgres.key:ro,z
+      - ./certs/ca.crt:/run/certs/ca.crt:ro,z
+      - ./certs/postgres.crt:/run/certs/postgres.crt:ro,z
+      - ./certs/postgres.key:/run/certs/postgres.key:ro,z
+      - ./secrets/postgres.password:/run/secrets/postgres.password:ro,z
       - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro,z
-    # spec 32: enable TLS + client-cert auth. The server process runs as uid 70
-    # (postgres) after docker-entrypoint drops privileges, so it cannot read the
-    # root/deploy-owned 0600 key on the read-only mount — copy it to a
-    # postgres-owned path first, then hand off to the stock entrypoint with the
-    # ssl + hba flags. `-c hba_file=` bypasses initdb's generated pg_hba.
-    entrypoint:
-      - "sh"
-      - "-c"
-      - "cp /certs/postgres.key /tmp/postgres.key && chown postgres:postgres /tmp/postgres.key && chmod 600 /tmp/postgres.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/postgres.crt -c ssl_key_file=/tmp/postgres.key -c ssl_ca_file=/certs/ca.crt -c hba_file=/etc/postgresql/pg_hba.conf"
-    environment:
-      - POSTGRES_USER=powermanage
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=powermanage
-      - INDEXER_POSTGRES_PASSWORD=${INDEXER_POSTGRES_PASSWORD}
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "powermanage"]
+      test: ["CMD-SHELL", "pg_isready -U powermanage -d powermanage"]
       interval: 5s
       timeout: 3s
-      retries: 3
+      retries: 10
     networks:
-      - internal
-
-  valkey:
-    # Pinned to avoid silent upstream upgrades. Bump deliberately when
-    # you've verified the valkey-search module + data format still
-    # work for your deployment. The bundle image carries valkey-server
-    # plus the search / json / bloom / ldap modules under
-    # /usr/lib/valkey/; its entrypoint auto-loads any .so it finds
-    # there that isn't already loaded by the config file.
-    image: docker.io/valkey/valkey-bundle:9.1.0
-    container_name: pm-valkey
-    restart: unless-stopped
-    volumes:
-      - ./data/valkey:/data:z
-      # valkey.conf is rendered from valkey.conf.template at setup time
-      # (spec 32: with the four per-service ACL passwords substituted in).
-      # Mounted read-only so a runtime container compromise can't tamper with it.
-      - ./valkey.conf:/etc/valkey/valkey.conf:ro,z
-      # spec 32: TLS server cert + CA. valkey-bundle runs as root, so it reads
-      # the 0600 key directly — no copy/chown dance (unlike Postgres uid 70).
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
-      - ./certs/valkey.crt:/certs/valkey.crt:ro,z
-      - ./certs/valkey.key:/certs/valkey.key:ro,z
-    # Secrets-in-cmdline hardening (audit F-03): the password used
-    # to live in `--requirepass ${VALKEY_PASSWORD}` here, which made
-    # it readable to anything with PID-namespace access via
-    # /proc/<pid>/cmdline. Now the password is in /etc/valkey/valkey.conf
-    # (file permissions enforced by the bind-mount), and the health
-    # check authenticates via REDISCLI_AUTH so the cmdline of the
-    # one-shot valkey-cli probe stays clean too.
-    #
-    # spec 32: the valkey-bundle entrypoint gosu-drops to the `valkey` user
-    # (uid 999), which cannot read the root-owned 0600 tls key on the read-only
-    # mount — so copy it to a valkey-owned path first (same problem + fix as the
-    # Postgres uid-70 key), then hand off to the bundle entrypoint (which
-    # auto-loads the search/json/bloom/ldap modules — see
-    # bundle-docker-entrypoint.sh). --tls-key-file overrides the conf's path to
-    # the readable copy. `valkey-server` (not the redis-server symlink) is what
-    # makes the bundle entrypoint take the module-autoload branch.
-    entrypoint:
-      - "sh"
-      - "-c"
-      - "cp /certs/valkey.key /tmp/valkey.key && chown valkey /tmp/valkey.key && chmod 600 /tmp/valkey.key && exec bundle-docker-entrypoint.sh valkey-server /etc/valkey/valkey.conf --tls-key-file /tmp/valkey.key"
-    command: []
-    # spec 32: the plaintext port is disabled (port 0 + tls-port 6379), so the
-    # healthcheck must speak TLS with a client cert and authenticate as an ACL
-    # user (default user is off). It presents the server keypair as its client
-    # cert (valkey.crt carries clientAuth EKU; --key is the valkey-readable /tmp
-    # copy) and pings as pm-control over localhost (in the cert SAN). If you tune
-    # the pm-control ACL, keep +ping.
-    healthcheck:
-      test: ["CMD-SHELL", "valkey-cli -h localhost --tls --cert /certs/valkey.crt --key /tmp/valkey.key --cacert /certs/ca.crt --user pm-control -a \"$$VALKEY_CONTROL_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
-    environment:
-      # Exposed to the container solely so the healthcheck shell can authenticate
-      # as pm-control. Namespace-isolated to this container; not a cmdline arg.
-      - VALKEY_CONTROL_PASSWORD=${VALKEY_CONTROL_PASSWORD}
-    networks:
-      - internal
+      internal:
+        ipv4_address: 172.29.0.4
 
   control:
     image: ghcr.io/manchtools/power-manage-control:${IMAGE_TAG:-latest}
@@ -157,122 +65,42 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      valkey:
-        condition: service_healthy
+    command: ["-config", "/etc/power-manage/control.json"]
     volumes:
-      - ./certs:/certs:ro,z
-    environment:
-      - CONTROL_LISTEN_ADDR=:8081
-      # spec 32: mutual TLS to Postgres. verify-full + client cert (CN=powermanage
-      # maps to the DB role via pg_hba `cert`); no password in the DSN — the cert
-      # is the credential. Control refuses to boot on anything less (fail closed).
-      - CONTROL_DATABASE_URL=postgres://powermanage@postgres:5432/powermanage?sslmode=verify-full&sslrootcert=/certs/ca.crt&sslcert=/certs/control-datastore.crt&sslkey=/certs/control-datastore.key
-      - CONTROL_CA_CERT=/certs/ca.crt
-      - CONTROL_CA_KEY=/certs/ca.key
-      - CONTROL_JWT_SECRET=${JWT_SECRET}
-      - CONTROL_ADMIN_EMAIL=${ADMIN_EMAIL}
-      - CONTROL_ADMIN_PASSWORD=${ADMIN_PASSWORD}
-      # The endpoint agents dial for the mTLS stream, handed to each agent in its
-      # registration response. This is AGENT_DOMAIN, never CONTROL_DOMAIN: the
-      # web host terminates TLS at Traefik and lands on :8081, which does not
-      # serve AgentService and never asks for a client certificate.
-      - CONTROL_AGENT_URL=https://${AGENT_DOMAIN}
-      - CONTROL_LOG_LEVEL=${LOG_LEVEL:-info}
-      - CONTROL_LOG_FORMAT=${LOG_FORMAT:-text}
-      - CONTROL_CORS_ORIGINS=${CORS_ORIGINS:-}
-      - CONTROL_DYNAMIC_GROUP_EVAL_INTERVAL=${DYNAMIC_GROUP_EVAL_INTERVAL:-1h}
-      - CONTROL_SSO_CALLBACK_BASE_URL=${CONTROL_SSO_CALLBACK_BASE_URL:-}
-      - CONTROL_SCIM_BASE_URL=${CONTROL_SCIM_BASE_URL:-}
-      # CONTROL_ENCRYPTION_KEY is mandatory (32-byte AES key, hex-encoded:
-      # `openssl rand -hex 32`). The control server refuses to boot without it —
-      # there is no plaintext opt-out.
-      - CONTROL_ENCRYPTION_KEY=${CONTROL_ENCRYPTION_KEY:?CONTROL_ENCRYPTION_KEY is required}
-      - CONTROL_INTERNAL_LISTEN_ADDR=:8082
-      - CONTROL_INTERNAL_TLS_CERT=/certs/control.crt
-      - CONTROL_INTERNAL_TLS_KEY=/certs/control.key
-      - CONTROL_PASSWORD_AUTH_ENABLED=${CONTROL_PASSWORD_AUTH_ENABLED:-true}
-      - CONTROL_TRUSTED_PROXIES=${CONTROL_TRUSTED_PROXIES:-}
-      - CONTROL_SSH_ACCESS_FOR_ALL=${CONTROL_SSH_ACCESS_FOR_ALL:-false}
-      - CONTROL_VALKEY_ADDR=valkey:6379
-      # spec 32: per-service ACL user + datastore mutual TLS (no plaintext fallback).
-      - CONTROL_VALKEY_USERNAME=pm-control
-      - CONTROL_VALKEY_PASSWORD=${VALKEY_CONTROL_PASSWORD}
-      - CONTROL_VALKEY_TLS_CERT=/certs/control-datastore.crt
-      - CONTROL_VALKEY_TLS_KEY=/certs/control-datastore.key
-      - CONTROL_VALKEY_TLS_CA=/certs/ca.crt
-      # Asynq task signing (audit F-02). Identical 64-hex value on
-      # control and indexer — they HMAC every task payload
-      # so a Valkey compromise can't forge dispatches.
-      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
-      # Public WebSocket URL of control's own terminal endpoint. Empty makes
-      # StartTerminal return Unavailable rather than mint a token against a URL
-      # that does not exist.
-      - CONTROL_TERMINAL_URL=${CONTROL_TERMINAL_URL:-}
+      - ./config/control.json:/etc/power-manage/control.json:ro,z
+      - ./certs/ca.crt:/run/certs/ca.crt:ro,z
+      - ./certs/ca.key:/run/certs/ca.key:ro,z
+      - ./certs/control.crt:/run/certs/control.crt:ro,z
+      - ./certs/control.key:/run/certs/control.key:ro,z
+      - ./certs/control-datastore.crt:/run/certs/control-datastore.crt:ro,z
+      - ./certs/control-datastore.key:/run/certs/control-datastore.key:ro,z
+      - ./secrets/database.url:/run/secrets/database.url:ro,z
+      - ./secrets/encryption.key:/run/secrets/encryption.key:ro,z
+      - ./secrets/session-signing.pem:/run/secrets/session-signing.pem:ro,z
+      - ./secrets/sealing.key:/run/secrets/sealing.key:ro,z
+      - ./data/artifacts:/var/lib/power-manage/artifacts:z
+      - ./data/backups:/var/lib/power-manage/backups:z
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8081/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8081/health"]
       interval: 10s
       timeout: 5s
-      retries: 3
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.control.rule=Host(`${CONTROL_DOMAIN}`)"
-      - "traefik.http.routers.control.entrypoints=websecure"
-      - "traefik.http.routers.control.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.control.middlewares=pm-headers"
-      - "traefik.http.middlewares.pm-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.services.control.loadbalancer.server.port=8081"
-      # Agent mTLS stream. tls.passthrough is the whole point: Traefik must not
-      # terminate, because control validates the agent's client certificate
-      # itself and a terminating proxy would strip it. Traefik therefore needs
-      # no certificate for this host — which is also why this router works
-      # without Let's Encrypt, and why control.crt must carry ${AGENT_DOMAIN}
-      # as a SAN (setup.sh stamps it): the agent verifies control's identity
-      # against the name it dialled, not against a Traefik-issued cert.
-      - "traefik.tcp.routers.control-agents.rule=HostSNI(`${AGENT_DOMAIN}`)"
-      - "traefik.tcp.routers.control-agents.entrypoints=websecure"
-      - "traefik.tcp.routers.control-agents.tls.passthrough=true"
-      - "traefik.tcp.services.control-agents.loadbalancer.server.port=8082"
+      retries: 10
     networks:
-      - internal
-
-  indexer:
-    image: ghcr.io/manchtools/power-manage-indexer:${IMAGE_TAG:-latest}
-    container_name: pm-indexer
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      valkey:
-        condition: service_healthy
-    volumes:
-      # spec 32: CA + the indexer's own datastore client keypair (CN=pm_indexer).
-      - ./certs/ca.crt:/certs/ca.crt:ro,z
-      - ./certs/indexer-datastore.crt:/certs/indexer-datastore.crt:ro,z
-      - ./certs/indexer-datastore.key:/certs/indexer-datastore.key:ro,z
-    environment:
-      # spec 32: mutual TLS to Postgres (verify-full + client cert; CN=pm_indexer
-      # maps to the read-only role). No password — the cert is the credential.
-      - INDEXER_DATABASE_URL=postgres://pm_indexer@postgres:5432/powermanage?sslmode=verify-full&sslrootcert=/certs/ca.crt&sslcert=/certs/indexer-datastore.crt&sslkey=/certs/indexer-datastore.key
-      - INDEXER_VALKEY_ADDR=valkey:6379
-      # spec 32: per-service ACL user + datastore mutual TLS.
-      - INDEXER_VALKEY_USERNAME=pm-indexer
-      - INDEXER_VALKEY_PASSWORD=${VALKEY_INDEXER_PASSWORD}
-      - INDEXER_VALKEY_TLS_CERT=/certs/indexer-datastore.crt
-      - INDEXER_VALKEY_TLS_KEY=/certs/indexer-datastore.key
-      - INDEXER_VALKEY_TLS_CA=/certs/ca.crt
-      - PM_TASK_SIGNING_KEY=${PM_TASK_SIGNING_KEY}
-      - INDEXER_RECONCILE_INTERVAL=1h
-      - INDEXER_LOG_LEVEL=${LOG_LEVEL:-info}
-      - INDEXER_LOG_FORMAT=${LOG_FORMAT:-text}
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-    networks:
-      - internal
+      internal:
+        ipv4_address: 172.29.0.3
+      agent_proxy:
+        ipv4_address: 172.30.0.3
+# docref: end deployment-services
 
 networks:
   internal:
-    name: pm-internal
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+  agent_proxy:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

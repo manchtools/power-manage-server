@@ -1,60 +1,57 @@
 # Power Manage server quickstart
 
-This guide describes the approved consolidation deployment. The sole system
-design authority is
+<!-- docref: begin src=deploy/compose.yml#@deployment-services:b4fee0cc -->
+The consolidation stack has exactly three services: Traefik, one control
+process, and PostgreSQL. The authoritative system design is
 `../../DESIGN_2026_07_31/00_TARGET_DESIGN.md`.
+<!-- docref: end -->
 
-## Stack
+## Prepare
 
-- Traefik
-- one control process
-- PostgreSQL
-- explicit artifact and backup mounts
+Copy `.env.example` to `.env`, edit the three required public values, then run
+`./setup.sh`.
 
-Do not deploy Gateway, Valkey, Asynq, or a separate indexer. PostgreSQL remains
-until the final SQLite/FTS5 port.
+<!-- docref: begin src=deploy/setup.sh#@generated-material:f8d53515 -->
+`setup.sh` creates the internal Ed25519 CA, the control and datastore
+certificates, the session and sealing keys, the PostgreSQL password, and
+`config/control.json`. Existing complete keypairs are retained, which permits a
+pre-provisioned CA. Partial or unusable material fails closed. Generated secret
+files are mode 0600 and are never printed.
+<!-- docref: end -->
 
-## Network
+<!-- docref: begin src=deploy/traefik/dynamic/routes.yml#@agent-route:2b16b515,cmd/control/httpserver.go#serveAgent:0543d07f,cmd/control/httpserver.go#buildAgentServer:ccd04d34,internal/agentstream/identity.go#MTLSMiddleware:f1b23680 -->
+The public and agent hostnames must differ. Traefik terminates browser/API TLS
+for `CONTROL_DOMAIN`. For `AGENT_DOMAIN`, it passes TLS through and adds PROXY
+protocol v2 on an isolated network; control itself authenticates the device
+certificate and checks revocation.
+<!-- docref: end -->
 
-Traefik exposes:
+## Start
 
-- HTTPS/L7 routing to control's browser/API listener; and
-- SNI TCP passthrough to control's dedicated agent mTLS listener.
+Run `docker compose up -d --wait`, then inspect the result with
+`docker compose ps`.
 
-If PROXY protocol v2 is enabled, its control listener must be reachable only
-from an allowlisted isolated Traefik network.
+<!-- docref: begin src=cmd/control/bootstrap_admin.go#runBootstrapAdmin:c20952b3 -->
+Create a host-authorized, single-use administrator setup URL:
 
-## Setup
+Run `docker compose exec control control bootstrap-admin`.
+<!-- docref: end -->
 
-Use the branch's deployment tooling to:
+Use that session to configure OIDC and SCIM. There is no local password or TOTP
+administrator.
 
-1. create or import the CA;
-2. generate deployment secrets without printing them;
-3. configure the API and agent routes;
-4. initialize PostgreSQL;
-5. validate key and mount permissions; and
-6. generate a one-time bootstrap-admin URL.
+## Operate
 
-Configure OIDC and SCIM through that bootstrap session. There is no local
-password or TOTP administrator.
+Use `./deploy.sh` for an update, `docker compose logs -f control` for logs, and
+`docker compose down` to stop the stack.
 
-## Readiness
+Artifacts and backups live under `data/artifacts` and `data/backups`.
+PostgreSQL data lives under `data/postgres`; ACME state lives under
+`data/traefik`. Back these paths and the `certs` and `secrets` directories up as
+one deployment unit.
 
-Before enrolling devices, confirm:
-
-- control reports the current schema;
-- keys and CA material are usable;
-- artifact and backup paths are writable;
-- certificate revocation lookup works on the agent listener; and
-- backup age and replication lag are visible.
-
-## Agent enrollment
-
-Create an enrollment token, install the agent, and point it at the control
-endpoint. The agent generates its identity key locally and connects outbound
-through Traefik directly to control.
-
-## Troubleshooting
-
-Inspect Traefik, control, PostgreSQL, and the agent journal. Pending dispatch is
-database state; there is no queue service or projector to rebuild.
+<!-- docref: begin src=internal/store/reads.go#ListDueDeliveries:081847c0,internal/store/search.go#Search:8542ac77 -->
+Pending dispatch is ordinary PostgreSQL state. Search uses PostgreSQL FTS.
+There is no broker, projector rebuild, dynamic proxy provider, or auxiliary
+search process to operate.
+<!-- docref: end -->

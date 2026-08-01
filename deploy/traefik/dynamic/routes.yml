@@ -1,0 +1,40 @@
+http:
+  routers:
+    control:
+      rule: 'Host(`{{ env "CONTROL_DOMAIN" }}`)'
+      entryPoints: [websecure]
+      middlewares: [security-headers]
+      service: control
+      tls:
+        certResolver: letsencrypt
+  middlewares:
+    security-headers:
+      headers:
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: no-referrer
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+  services:
+    control:
+      loadBalancer:
+        servers:
+          - url: http://172.29.0.3:8081
+
+# docref: begin agent-route
+tcp:
+  routers:
+    agents:
+      rule: 'HostSNI(`{{ env "AGENT_DOMAIN" }}`)'
+      entryPoints: [websecure]
+      service: agents
+      tls:
+        passthrough: true
+  services:
+    agents:
+      loadBalancer:
+        proxyProtocol:
+          version: 2
+        servers:
+          - address: 172.30.0.3:8082
+# docref: end agent-route
