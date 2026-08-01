@@ -155,6 +155,30 @@ func (s *Store) GetDelivery(ctx context.Context, id string) (DeliveryRow, error)
 	return row, nil
 }
 
+// ListDueDeliveries returns due, non-terminal deliveries for the
+// currently connected devices, oldest first.
+func (s *Store) ListDueDeliveries(ctx context.Context, deviceIDs []string, at time.Time, limit int32) ([]DeliveryRow, error) {
+	rows, err := s.queries.ListDueDeliveriesForDevices(ctx, generated.ListDueDeliveriesForDevicesParams{
+		DeviceIds: deviceIDs, AvailableAt: at, PageSize: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("delivery: list due for connected devices: %w", err)
+	}
+	return rows, nil
+}
+
+// ListDeviceDeliveries returns manifest deliveries that have not
+// reached durable agent receipt, oldest first.
+func (s *Store) ListDeviceDeliveries(ctx context.Context, deviceID string, limit int32) ([]DeliveryRow, error) {
+	rows, err := s.queries.ListSendableDeliveriesForDevice(ctx, generated.ListSendableDeliveriesForDeviceParams{
+		DeviceID: deviceID, Limit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("delivery: list sendable for device: %w", err)
+	}
+	return rows, nil
+}
+
 // GetDeviceView returns one live device with its labels and assignees.
 func (s *Store) GetDeviceView(ctx context.Context, id string) (DeviceView, error) {
 	row, err := s.GetDevice(ctx, id)

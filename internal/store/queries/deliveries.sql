@@ -59,19 +59,23 @@ WHERE delivery_id = $1
   AND state IN ('PENDING', 'PUSHED')
   AND $2 IN ('EXPIRED', 'CANCELLED');
 
--- name: ListDueDeliveries :many
--- The sweep's work list.
+-- name: ListDueDeliveriesForDevices :many
+-- The sweep only considers live connections. Offline rows stay durable and a
+-- reconnect queues them directly; excluding them here prevents a large offline
+-- backlog from monopolising every bounded sweep page.
 SELECT * FROM deliveries
-WHERE state IN ('PENDING', 'PUSHED')
-  AND available_at <= $1
+WHERE device_id = ANY(sqlc.arg(device_ids)::text[])
+  AND state IN ('PENDING', 'PUSHED')
+  AND available_at <= sqlc.arg(available_at)
 ORDER BY available_at
-LIMIT $2;
+LIMIT sqlc.arg(page_size);
 
--- name: ListPendingDeliveriesForDevice :many
--- What one agent still owes, oldest first.
+-- name: ListSendableDeliveriesForDevice :many
+-- Manifest frames one connected agent can still receive, oldest first. A row
+-- already acknowledged is awaiting results, not another manifest send.
 SELECT * FROM deliveries
 WHERE device_id = $1
-  AND state IN ('PENDING', 'PUSHED', 'ACKED_RECEIPT')
+  AND state IN ('PENDING', 'PUSHED')
 ORDER BY created_at
 LIMIT $2;
 

@@ -121,7 +121,7 @@ CREATE INDEX deliveries_sweep_idx
 -- What one agent still owes, oldest first, for the wakeup path.
 CREATE INDEX deliveries_device_pending_idx
     ON public.deliveries USING btree (device_id, created_at)
-    WHERE (state = ANY (ARRAY['PENDING'::text, 'PUSHED'::text, 'ACKED_RECEIPT'::text]));
+    WHERE (state = ANY (ARRAY['PENDING'::text, 'PUSHED'::text]));
 
 CREATE INDEX deliveries_device_idx ON public.deliveries USING btree (device_id, created_at DESC);
 CREATE INDEX deliveries_manifest_idx ON public.deliveries USING btree (manifest_id);

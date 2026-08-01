@@ -93,22 +93,26 @@ func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) 
 	return i, err
 }
 
-const listDueDeliveries = `-- name: ListDueDeliveries :many
+const listDueDeliveriesForDevices = `-- name: ListDueDeliveriesForDevices :many
 SELECT delivery_id, device_id, manifest_id, manifest, state, operation_id, push_epoch, attempt_count, created_at, available_at, expires_at, pushed_at, acked_receipt_at, terminal_at, result_code FROM deliveries
-WHERE state IN ('PENDING', 'PUSHED')
-  AND available_at <= $1
+WHERE device_id = ANY($1::text[])
+  AND state IN ('PENDING', 'PUSHED')
+  AND available_at <= $2
 ORDER BY available_at
-LIMIT $2
+LIMIT $3
 `
 
-type ListDueDeliveriesParams struct {
+type ListDueDeliveriesForDevicesParams struct {
+	DeviceIds   []string  `json:"device_ids"`
 	AvailableAt time.Time `json:"available_at"`
-	Limit       int32     `json:"limit"`
+	PageSize    int32     `json:"page_size"`
 }
 
-// The sweep's work list.
-func (q *Queries) ListDueDeliveries(ctx context.Context, arg ListDueDeliveriesParams) ([]Delivery, error) {
-	rows, err := q.db.Query(ctx, listDueDeliveries, arg.AvailableAt, arg.Limit)
+// The sweep only considers live connections. Offline rows stay durable and a
+// reconnect queues them directly; excluding them here prevents a large offline
+// backlog from monopolising every bounded sweep page.
+func (q *Queries) ListDueDeliveriesForDevices(ctx context.Context, arg ListDueDeliveriesForDevicesParams) ([]Delivery, error) {
+	rows, err := q.db.Query(ctx, listDueDeliveriesForDevices, arg.DeviceIds, arg.AvailableAt, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -193,22 +197,23 @@ func (q *Queries) ListExpiredDeliveries(ctx context.Context, arg ListExpiredDeli
 	return items, nil
 }
 
-const listPendingDeliveriesForDevice = `-- name: ListPendingDeliveriesForDevice :many
+const listSendableDeliveriesForDevice = `-- name: ListSendableDeliveriesForDevice :many
 SELECT delivery_id, device_id, manifest_id, manifest, state, operation_id, push_epoch, attempt_count, created_at, available_at, expires_at, pushed_at, acked_receipt_at, terminal_at, result_code FROM deliveries
 WHERE device_id = $1
-  AND state IN ('PENDING', 'PUSHED', 'ACKED_RECEIPT')
+  AND state IN ('PENDING', 'PUSHED')
 ORDER BY created_at
 LIMIT $2
 `
 
-type ListPendingDeliveriesForDeviceParams struct {
+type ListSendableDeliveriesForDeviceParams struct {
 	DeviceID string `json:"device_id"`
 	Limit    int32  `json:"limit"`
 }
 
-// What one agent still owes, oldest first.
-func (q *Queries) ListPendingDeliveriesForDevice(ctx context.Context, arg ListPendingDeliveriesForDeviceParams) ([]Delivery, error) {
-	rows, err := q.db.Query(ctx, listPendingDeliveriesForDevice, arg.DeviceID, arg.Limit)
+// Manifest frames one connected agent can still receive, oldest first. A row
+// already acknowledged is awaiting results, not another manifest send.
+func (q *Queries) ListSendableDeliveriesForDevice(ctx context.Context, arg ListSendableDeliveriesForDeviceParams) ([]Delivery, error) {
+	rows, err := q.db.Query(ctx, listSendableDeliveriesForDevice, arg.DeviceID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
