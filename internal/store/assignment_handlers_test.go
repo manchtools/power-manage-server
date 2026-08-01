@@ -206,6 +206,43 @@ func TestAssignmentHandlers_RejectSystemAndMissingResources(t *testing.T) {
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
+func TestAssignmentHandlers_GetUserAssignmentsResolvesDirectAndGroupTargets(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	ctx := f.actor("CreateAssignment", "GetUserAssignments")
+	userID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER]
+	groupID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP]
+	_, err := f.raw.Exec(context.Background(),
+		`INSERT INTO user_group_members (group_id, user_id, added_by) VALUES ($1, $2, $3)`,
+		groupID, userID, f.actorID)
+	require.NoError(t, err)
+
+	direct, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+		SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId:   f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION],
+		TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER,
+		TargetId:   userID,
+	}))
+	require.NoError(t, err)
+	group, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+		SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET,
+		SourceId:   f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET],
+		TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP,
+		TargetId:   groupID,
+	}))
+	require.NoError(t, err)
+
+	response, err := f.handlers.GetUserAssignments(ctx, connect.NewRequest(&pmv1.GetUserAssignmentsRequest{UserId: userID}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.Assignments, 2)
+	assert.Equal(t, []string{direct.Msg.Assignment.Id, group.Msg.Assignment.Id}, []string{
+		response.Msg.Assignments[0].Id, response.Msg.Assignments[1].Id,
+	})
+	for _, assignment := range response.Msg.Assignments {
+		assert.NotEmpty(t, assignment.SourceName)
+		assert.NotEmpty(t, assignment.TargetName)
+	}
+}
+
 func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 	f := newAssignmentHandlerFixture(t)
 	mounted := f.handlers.Mount(http.NewServeMux())
@@ -213,12 +250,13 @@ func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceCreateAssignmentProcedure,
 		powermanagev1connect.ControlServiceDeleteAssignmentProcedure,
 		powermanagev1connect.ControlServiceListAssignmentsProcedure,
+		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
 	}
 	assert.Equal(t, want, mounted)
 	assert.Equal(t, []string{want[0], want[1]}, assignment.MutationProcedures())
-	assert.Equal(t, []string{want[2]}, assignment.ReadProcedures())
+	assert.Equal(t, []string{want[2], want[3]}, assignment.ReadProcedures())
 
 	sorted := append([]string(nil), mounted...)
 	sort.Strings(sorted)
-	assert.Len(t, sorted, 3)
+	assert.Len(t, sorted, 4)
 }

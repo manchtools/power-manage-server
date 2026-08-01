@@ -270,6 +270,85 @@ func (q *Queries) ListAssignmentViews(ctx context.Context, arg ListAssignmentVie
 	return items, nil
 }
 
+const listAssignmentViewsForUser = `-- name: ListAssignmentViewsForUser :many
+SELECT a.id, a.source_type, a.source_id, a.target_type, a.target_id, a.sort_order, a.mode, a.created_at, a.created_by, a.is_deleted,
+       COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS resolved_source_name,
+       COALESCE(tu.display_name, tug.name, '')::text AS resolved_target_name
+FROM assignments a
+LEFT JOIN actions sa ON a.source_type = 'action' AND sa.id = a.source_id AND sa.is_deleted = FALSE
+LEFT JOIN action_sets ss ON a.source_type = 'action_set' AND ss.id = a.source_id AND ss.is_deleted = FALSE
+LEFT JOIN definitions sd ON a.source_type = 'definition' AND sd.id = a.source_id AND sd.is_deleted = FALSE
+LEFT JOIN compliance_policies sp ON a.source_type = 'compliance_policy' AND sp.id = a.source_id AND sp.is_deleted = FALSE
+LEFT JOIN users tu ON a.target_type = 'user' AND tu.id = a.target_id AND tu.is_deleted = FALSE
+LEFT JOIN user_groups tug ON a.target_type = 'user_group' AND tug.id = a.target_id AND tug.is_deleted = FALSE
+WHERE a.is_deleted = FALSE
+  AND (
+      (a.target_type = 'user' AND a.target_id = $1)
+      OR (
+          a.target_type = 'user_group'
+          AND EXISTS (
+              SELECT 1
+              FROM user_group_members ugm
+              WHERE ugm.group_id = a.target_id AND ugm.user_id = $1
+          )
+      )
+  )
+  AND COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
+  AND COALESCE(tu.id, tug.id) IS NOT NULL
+ORDER BY a.id
+`
+
+type ListAssignmentViewsForUserRow struct {
+	ID                 string     `json:"id"`
+	SourceType         string     `json:"source_type"`
+	SourceID           string     `json:"source_id"`
+	TargetType         string     `json:"target_type"`
+	TargetID           string     `json:"target_id"`
+	SortOrder          int32      `json:"sort_order"`
+	Mode               int32      `json:"mode"`
+	CreatedAt          *time.Time `json:"created_at"`
+	CreatedBy          string     `json:"created_by"`
+	IsDeleted          bool       `json:"is_deleted"`
+	ResolvedSourceName string     `json:"resolved_source_name"`
+	ResolvedTargetName string     `json:"resolved_target_name"`
+}
+
+// User-targeted assignments resolve through the current materialized group
+// memberships. Dynamic group evaluation updates the same membership table, so
+// this read needs no second query language or compatibility path.
+func (q *Queries) ListAssignmentViewsForUser(ctx context.Context, userID string) ([]ListAssignmentViewsForUserRow, error) {
+	rows, err := q.db.Query(ctx, listAssignmentViewsForUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAssignmentViewsForUserRow{}
+	for rows.Next() {
+		var i ListAssignmentViewsForUserRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SourceType,
+			&i.SourceID,
+			&i.TargetType,
+			&i.TargetID,
+			&i.SortOrder,
+			&i.Mode,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDeleted,
+			&i.ResolvedSourceName,
+			&i.ResolvedTargetName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const softDeleteAssignment = `-- name: SoftDeleteAssignment :one
 UPDATE assignments SET is_deleted = TRUE
 WHERE id = $1 AND is_deleted = FALSE

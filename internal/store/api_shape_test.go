@@ -81,6 +81,7 @@ var nonMutatingExports = map[string]string{
 	"FindAssignment":                   "read",
 	"ListAssignments":                  "read",
 	"CountAssignments":                 "read",
+	"ListAssignmentsForUser":           "read",
 	"GetDeviceGroupID":                 "read",
 	"GetDeviceGroup":                   "read",
 	"ListDeviceGroupMembers":           "read",

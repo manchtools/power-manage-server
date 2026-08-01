@@ -553,6 +553,25 @@ func (s *Store) CountAssignments(ctx context.Context, filter AssignmentListFilte
 	return n, nil
 }
 
+// ListAssignmentsForUser returns live direct and group-targeted assignments in
+// stable identifier order.
+func (s *Store) ListAssignmentsForUser(ctx context.Context, userID string) ([]AssignmentView, error) {
+	rows, err := s.queries.ListAssignmentViewsForUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("assignment: list for user: %w", err)
+	}
+	views := make([]AssignmentView, len(rows))
+	for i, row := range rows {
+		views[i] = AssignmentView{
+			ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
+			TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+			SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
+		}
+	}
+	return views, nil
+}
+
 // ListContainingActionSetIDs returns the live sets that directly contain an
 // Action.
 func (s *Store) ListContainingActionSetIDs(ctx context.Context, actionID string) ([]string, error) {

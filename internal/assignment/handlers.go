@@ -180,6 +180,28 @@ func (h *Handlers) ListAssignments(ctx context.Context, req *connect.Request[pmv
 	}), nil
 }
 
+// GetUserAssignments resolves direct and current user-group targets.
+func (h *Handlers) GetUserAssignments(ctx context.Context, req *connect.Request[pmv1.GetUserAssignmentsRequest]) (*connect.Response[pmv1.GetUserAssignmentsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	if _, err := h.actor(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "GetUserAssignments", ""); err != nil {
+		return nil, err
+	}
+	rows, err := h.store.ListAssignmentsForUser(ctx, req.Msg.UserId)
+	if err != nil {
+		return nil, h.internal(ctx, "get user assignments", err)
+	}
+	out := make([]*pmv1.Assignment, len(rows))
+	for i, row := range rows {
+		out[i] = assignmentToProto(row)
+	}
+	return connect.NewResponse(&pmv1.GetUserAssignmentsResponse{Assignments: out}), nil
+}
+
 func (h *Handlers) mapError(ctx context.Context, operation string, err error) error {
 	switch {
 	case errors.Is(err, ErrInvalidInput):
@@ -269,7 +291,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("assignment: mux is required")
 	}
-	mounted := make([]string, 0, 3)
+	mounted := make([]string, 0, 4)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -280,6 +302,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteAssignmentProcedure, h.DeleteAssignment, opts...))
 	register(powermanagev1connect.ControlServiceListAssignmentsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListAssignmentsProcedure, h.ListAssignments, opts...))
+	register(powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetUserAssignmentsProcedure, h.GetUserAssignments, opts...))
 	return mounted
 }
 
@@ -293,5 +317,8 @@ func MutationProcedures() []string {
 
 // ReadProcedures is the exact non-mutating assignment CRUD surface.
 func ReadProcedures() []string {
-	return []string{powermanagev1connect.ControlServiceListAssignmentsProcedure}
+	return []string{
+		powermanagev1connect.ControlServiceListAssignmentsProcedure,
+		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
+	}
 }
