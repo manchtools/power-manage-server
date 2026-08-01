@@ -110,6 +110,16 @@ func (f *dispatchHandlerFixture) manifest(deliveryID string) *pmv1.Manifest {
 	return &result
 }
 
+func (f *dispatchHandlerFixture) assign(sourceType, sourceID, targetType, targetID string, mode pmv1.AssignmentMode) {
+	f.t.Helper()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO assignments
+			(id, source_type, source_id, target_type, target_id, mode, created_at, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		newID(), sourceType, sourceID, targetType, targetID, int32(mode), f.now, f.actorID)
+	require.NoError(f.t, err)
+}
+
 func TestDispatchHandlers_CatalogAndInlineActionsUseDurableOneShotManifests(t *testing.T) {
 	f := newDispatchHandlerFixture(t)
 	ctx := f.actor("DispatchAction")
@@ -251,6 +261,66 @@ func TestDispatchHandlers_ActionSetAndDefinitionPreserveComposition(t *testing.T
 	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
 }
 
+func TestDispatchHandlers_AssignedDefinitionAbsorbsChildrenAndOverridesManifestSchedules(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+	f.assign("action", f.actionID, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+	f.assign("action_set", f.set1, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+	f.assign("definition", f.definition, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL)
+
+	response, err := f.handlers.DispatchAssignedActions(f.actor("DispatchAssignedActions"),
+		connect.NewRequest(&pmv1.DispatchAssignedActionsRequest{DeviceId: f.deviceID}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.Executions, 2,
+		"the Definition emits one manifest per set and absorbs direct assignments to its children")
+	require.Len(t, f.waker.ids, 2)
+	for _, deliveryID := range f.waker.ids {
+		compiled := f.manifest(deliveryID)
+		assert.Equal(t, f.definition, compiled.Provenance.DefinitionId)
+		assert.Equal(t, "0 1 * * *", compiled.Schedule.Cron,
+			"the Definition schedule overrides only its compiled manifests")
+		require.Len(t, compiled.Occurrences, 1)
+		assert.Equal(t, pmv1.DesiredState_DESIRED_STATE_ABSENT,
+			compiled.Occurrences[0].Action.DesiredState)
+	}
+
+	var set1Schedule, set2Schedule string
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT (SELECT schedule::text FROM action_sets WHERE id = $1),
+		       (SELECT schedule::text FROM action_sets WHERE id = $2)`, f.set1, f.set2).
+		Scan(&set1Schedule, &set2Schedule))
+	assert.JSONEq(t, `{"cron":"0 2 * * *"}`, set1Schedule)
+	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
+
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceDispatchAssignedActionsProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 4)
+}
+
+func TestDispatchHandlers_ExcludedAssignedContainerAbsorbsDirectChildren(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+	f.assign("definition", f.definition, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+	f.assign("definition", f.definition, "device_group", f.groupID, pmv1.AssignmentMode_ASSIGNMENT_MODE_EXCLUDED)
+	f.assign("action_set", f.set1, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+	f.assign("action", f.actionID, "device", f.deviceID, pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED)
+
+	response, err := f.handlers.DispatchAssignedActions(f.actor("DispatchAssignedActions"),
+		connect.NewRequest(&pmv1.DispatchAssignedActionsRequest{DeviceId: f.deviceID}))
+	require.NoError(t, err)
+	assert.Empty(t, response.Msg.Executions)
+	assert.Empty(t, f.waker.ids)
+
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceDispatchAssignedActionsProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 1, "an empty assigned dispatch is still an auditable operation")
+	assert.Equal(t, "device", effects[0].ResourceType)
+}
+
 func TestDispatchHandlers_MultiDeviceAndGroupFanoutAreSingleOperations(t *testing.T) {
 	f := newDispatchHandlerFixture(t)
 	multiple, err := f.handlers.DispatchToMultiple(f.actor("DispatchToMultiple"),
@@ -333,6 +403,7 @@ func TestDispatchHandlers_MountsExactInitialSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceDispatchDefinitionProcedure,
 		powermanagev1connect.ControlServiceDispatchToMultipleProcedure,
 		powermanagev1connect.ControlServiceDispatchToGroupProcedure,
+		powermanagev1connect.ControlServiceDispatchAssignedActionsProcedure,
 	}, f.handlers.MountActions(http.NewServeMux()))
 	assert.ElementsMatch(t, f.handlers.MountActions(http.NewServeMux()), dispatch.MutationProcedures())
 }

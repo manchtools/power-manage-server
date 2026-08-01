@@ -433,6 +433,54 @@ func (h *Handlers) DispatchToGroup(ctx context.Context, req *connect.Request[pmv
 	}), nil
 }
 
+// DispatchAssignedActions resolves assignment modes and authoring precedence,
+// then submits the resulting manifests as one durable device operation.
+func (h *Handlers) DispatchAssignedActions(ctx context.Context, req *connect.Request[pmv1.DispatchAssignedActionsRequest]) (*connect.Response[pmv1.DispatchAssignedActionsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.target(ctx, actor, "DispatchAssignedActions", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	inputs, err := h.assignedManifests(ctx, req.Msg.DeviceId)
+	if err != nil {
+		switch {
+		case errors.Is(err, errAssignedSourceNotVisible):
+			return nil, notFound(ctx, errAssignedSourceMissing, "assignment source not found")
+		case errors.Is(err, manifest.ErrEmptyManifest):
+			return nil, rpcError(ctx, errValidationFailed, connect.CodeFailedPrecondition,
+				"an assigned container contains no executable actions")
+		default:
+			return nil, h.internal(ctx, "resolve assigned manifests", err)
+		}
+	}
+	op := h.operation(req, actor,
+		powermanagev1connect.ControlServiceDispatchAssignedActionsProcedure, "DispatchAssignedActions")
+	if len(inputs) == 0 {
+		_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
+			ResourceType: "device", ResourceID: req.Msg.DeviceId,
+			Action: "DISPATCH_ASSIGNED", Outcome: store.EffectApplied,
+		})
+		if err != nil {
+			return nil, h.internal(ctx, "audit empty assigned dispatch", err)
+		}
+		return connect.NewResponse(&pmv1.DispatchAssignedActionsResponse{}), nil
+	}
+	result, err := h.submitter.Submit(ctx, SubmitParams{
+		Operation: op, DeviceID: req.Msg.DeviceId, Manifests: inputs,
+	})
+	if err != nil {
+		return nil, h.submitError(ctx, "submit assigned manifests", err)
+	}
+	return connect.NewResponse(&pmv1.DispatchAssignedActionsResponse{
+		Executions: createdExecutionsToProto(result.Executions),
+	}), nil
+}
+
 func (h *Handlers) compileError(ctx context.Context, operation string, err error) error {
 	switch {
 	case store.IsNotFound(err):

@@ -11,15 +11,16 @@ import (
 )
 
 const (
-	errNotAuthenticated   = "not_authenticated"
-	errPermissionDenied   = "permission_denied"
-	errValidationFailed   = "validation_failed"
-	errDeviceNotFound     = "device_not_found"
-	errActionNotFound     = "action_not_found"
-	errActionSetMissing   = "action_set_not_found"
-	errDefinitionMissing  = "definition_not_found"
-	errDeviceGroupMissing = "device_group_not_found"
-	errInternal           = "internal_error"
+	errNotAuthenticated      = "not_authenticated"
+	errPermissionDenied      = "permission_denied"
+	errValidationFailed      = "validation_failed"
+	errDeviceNotFound        = "device_not_found"
+	errActionNotFound        = "action_not_found"
+	errActionSetMissing      = "action_set_not_found"
+	errDefinitionMissing     = "definition_not_found"
+	errDeviceGroupMissing    = "device_group_not_found"
+	errAssignedSourceMissing = "assignment_source_not_found"
+	errInternal              = "internal_error"
 )
 
 func rpcError(ctx context.Context, code string, connectCode connect.Code, message string) *connect.Error {

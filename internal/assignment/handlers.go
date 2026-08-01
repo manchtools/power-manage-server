@@ -226,7 +226,7 @@ func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, h.internal(ctx, "resolve device assignments", err)
 	}
-	sources, err := effectiveSources(paths)
+	sources, err := EffectiveSources(paths)
 	if err != nil {
 		return nil, h.internal(ctx, "resolve assignment modes", err)
 	}
@@ -234,22 +234,22 @@ func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Reques
 	response := &pmv1.GetDeviceAssignmentsResponse{}
 	actionIndex := make(map[string]int)
 	for _, source := range sources {
-		sourceType, ok := sourceTypeValue(source.row.SourceType)
+		sourceType, ok := sourceTypeValue(source.Row.SourceType)
 		if !ok {
 			return nil, h.internal(ctx, "decode assigned source", ErrInvalidInput)
 		}
-		actions, err := h.previewActions(ctx, sourceType, source.row.SourceID)
+		actions, err := h.previewActions(ctx, sourceType, source.Row.SourceID)
 		if err != nil {
 			return nil, h.internal(ctx, "expand assigned actions", err)
 		}
-		appendResolvedActions(&response.Actions, actionIndex, actions, source.forceAbsent)
+		appendResolvedActions(&response.Actions, actionIndex, actions, source.ForceAbsent)
 
 		switch sourceType {
 		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
 			// The expanded action above is the complete response for a
 			// singleton source.
 		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
-			row, err := h.store.GetManifestActionSet(ctx, source.row.SourceID)
+			row, err := h.store.GetManifestActionSet(ctx, source.Row.SourceID)
 			if err != nil {
 				return nil, h.internal(ctx, "read assigned action set", err)
 			}
@@ -266,7 +266,7 @@ func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Reques
 				Set: set, Members: authoring.ActionSetMembersToProto(members),
 			})
 		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
-			row, err := h.store.GetManifestDefinition(ctx, source.row.SourceID)
+			row, err := h.store.GetManifestDefinition(ctx, source.Row.SourceID)
 			if err != nil {
 				return nil, h.internal(ctx, "read assigned definition", err)
 			}
@@ -283,7 +283,7 @@ func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Reques
 				Definition: definition, Members: authoring.DefinitionMembersToProto(members),
 			})
 		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
-			row, err := h.store.GetAuthoringCompliancePolicy(ctx, source.row.SourceID)
+			row, err := h.store.GetAuthoringCompliancePolicy(ctx, source.Row.SourceID)
 			if err != nil {
 				return nil, h.internal(ctx, "read assigned compliance policy", err)
 			}
@@ -297,12 +297,18 @@ func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(response), nil
 }
 
-type effectiveSource struct {
-	row         store.ResolvedAssignmentSource
-	forceAbsent bool
+// ResolvedSource is one source after all target paths and modes have been
+// collapsed. Excluded remains explicit because it suppresses lower authoring
+// layers even though it produces no manifest itself.
+type ResolvedSource struct {
+	Row         store.ResolvedAssignmentSource
+	Active      bool
+	Excluded    bool
+	ForceAbsent bool
 }
 
-func effectiveSources(paths []store.ResolvedAssignmentSource) ([]effectiveSource, error) {
+// ResolveSources collapses assignment modes without discarding exclusions.
+func ResolveSources(paths []store.ResolvedAssignmentSource) ([]ResolvedSource, error) {
 	type decision struct {
 		row                           store.ResolvedAssignmentSource
 		required, selected, uninstall bool
@@ -331,15 +337,31 @@ func effectiveSources(paths []store.ResolvedAssignmentSource) ([]effectiveSource
 			return nil, ErrInvalidInput
 		}
 	}
-	resolved := make([]effectiveSource, 0, len(order))
+	resolved := make([]ResolvedSource, 0, len(order))
 	for _, key := range order {
 		decision := bySource[key]
-		if decision.excluded || (!decision.required && !decision.selected && !decision.uninstall) {
-			continue
-		}
-		resolved = append(resolved, effectiveSource{row: decision.row, forceAbsent: decision.uninstall})
+		resolved = append(resolved, ResolvedSource{
+			Row: decision.row, Active: !decision.excluded &&
+				(decision.required || decision.selected || decision.uninstall),
+			Excluded: decision.excluded, ForceAbsent: decision.uninstall && !decision.excluded,
+		})
 	}
 	return resolved, nil
+}
+
+// EffectiveSources returns only sources that currently contribute actions.
+func EffectiveSources(paths []store.ResolvedAssignmentSource) ([]ResolvedSource, error) {
+	resolved, err := ResolveSources(paths)
+	if err != nil {
+		return nil, err
+	}
+	effective := make([]ResolvedSource, 0, len(resolved))
+	for _, source := range resolved {
+		if source.Active {
+			effective = append(effective, source)
+		}
+	}
+	return effective, nil
 }
 
 func appendResolvedActions(dst *[]*pmv1.ManagedAction, index map[string]int, actions []*pmv1.ManagedAction, forceAbsent bool) {
