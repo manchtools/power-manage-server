@@ -146,11 +146,17 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetDeviceInventory(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetOSQueryResult(context.Background(),
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.GetDeviceInventory(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetOSQueryResult(context.Background(),
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -256,6 +262,81 @@ func TestDeviceHandlers_GetDeviceInventoryRejectsInvalidStoredShape(t *testing.T
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt inventory must not look like an empty table")
 }
 
+func TestDeviceHandlers_GetOSQueryResultReadsDirectState(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	completedID, pendingID, staleID, outsideID := newID(), newID(), newID(), newID()
+	for _, row := range []struct {
+		id, deviceID string
+		completed    bool
+		createdAt    time.Time
+		rows         string
+	}{
+		{completedID, f.groupID, true, f.now.Add(-time.Minute), `[{"package":"bash"}]`},
+		{pendingID, f.groupID, false, f.now.Add(-time.Minute), `[]`},
+		{staleID, f.groupID, false, f.now.Add(-6 * time.Minute), `[]`},
+		{outsideID, f.outsideID, true, f.now.Add(-time.Minute), `[]`},
+	} {
+		_, err := f.raw.Exec(context.Background(), `
+			INSERT INTO osquery_results
+				(query_id, device_id, table_name, completed, success, rows, created_at)
+			VALUES ($1, $2, 'packages', $3, $3, $4, $5)`,
+			row.id, row.deviceID, row.completed, row.rows, row.createdAt)
+		require.NoError(t, err)
+	}
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"GetOSQueryResult"},
+		ScopedGrants: []auth.ScopedGrant{{
+			Permission: "GetOSQueryResult", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup,
+		}},
+	})
+
+	completed, err := f.handlers.GetOSQueryResult(ctx,
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: completedID}))
+	require.NoError(t, err)
+	assert.True(t, completed.Msg.Completed)
+	assert.True(t, completed.Msg.Success)
+	require.Len(t, completed.Msg.Rows, 1)
+	assert.Equal(t, "bash", completed.Msg.Rows[0].Data["package"])
+
+	pending, err := f.handlers.GetOSQueryResult(ctx,
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: pendingID}))
+	require.NoError(t, err)
+	assert.False(t, pending.Msg.Completed)
+
+	stale, err := f.handlers.GetOSQueryResult(ctx,
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: staleID}))
+	require.NoError(t, err)
+	assert.True(t, stale.Msg.Completed)
+	assert.False(t, stale.Msg.Success)
+	assert.Contains(t, stale.Msg.Error, "timed out")
+	var storedCompleted bool
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT completed FROM osquery_results WHERE query_id = $1`, staleID).Scan(&storedCompleted))
+	assert.False(t, storedCompleted, "a read must not smuggle in an unaudited expiry mutation")
+
+	_, err = f.handlers.GetOSQueryResult(ctx,
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "scope must not disclose the result")
+	_, err = f.handlers.GetOSQueryResult(ctx,
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: newID()}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestDeviceHandlers_GetOSQueryResultRejectsInvalidStoredShape(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	queryID := newID()
+	_, err := f.raw.Exec(context.Background(), `
+		INSERT INTO osquery_results
+			(query_id, device_id, table_name, completed, success, rows, created_at)
+		VALUES ($1, $2, 'packages', TRUE, TRUE, '{"not":"rows"}', $3)`, queryID, f.groupID, f.now)
+	require.NoError(t, err)
+
+	_, err = f.handlers.GetOSQueryResult(f.actor("GetOSQueryResult"),
+		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: queryID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt rows must not look like an empty result")
+}
+
 func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	ctx := f.actor(
@@ -359,6 +440,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceListDevicesProcedure,
 		powermanagev1connect.ControlServiceGetDeviceProcedure,
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
+		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,

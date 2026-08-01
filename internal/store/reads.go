@@ -319,6 +319,9 @@ type DeviceAssigneeView struct {
 // DeviceInventoryTable is one latest collected osquery table for a device.
 type DeviceInventoryTable = generated.ListDeviceInventoryRow
 
+// OSQueryResult is one current on-demand query result.
+type OSQueryResult = generated.GetOSQueryResultRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1149,6 +1152,15 @@ func (s *Store) ListDeviceInventory(ctx context.Context, deviceID string, tableN
 		return nil, fmt.Errorf("device: list inventory: %w", err)
 	}
 	return rows, nil
+}
+
+// GetOSQueryResult returns one on-demand query result by identifier.
+func (s *Store) GetOSQueryResult(ctx context.Context, queryID string) (OSQueryResult, error) {
+	row, err := s.queries.GetOSQueryResult(ctx, queryID)
+	if err != nil {
+		return OSQueryResult{}, fmt.Errorf("osquery: get result: %w", translateNotFound(err))
+	}
+	return row, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.

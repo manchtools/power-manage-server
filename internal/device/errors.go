@@ -12,14 +12,15 @@ import (
 )
 
 const (
-	errNotAuthenticated = "not_authenticated"
-	errPermissionDenied = "permission_denied"
-	errValidationFailed = "validation_failed"
-	errInvalidPageToken = "invalid_page_token"
-	errInternal         = "internal_error"
-	errDeviceNotFound   = "device_not_found"
-	errUserNotFound     = "user_not_found"
-	errUserGroupMissing = "user_group_not_found"
+	errNotAuthenticated   = "not_authenticated"
+	errPermissionDenied   = "permission_denied"
+	errValidationFailed   = "validation_failed"
+	errInvalidPageToken   = "invalid_page_token"
+	errInternal           = "internal_error"
+	errDeviceNotFound     = "device_not_found"
+	errQueryResultMissing = "query_result_not_found"
+	errUserNotFound       = "user_not_found"
+	errUserGroupMissing   = "user_group_not_found"
 )
 
 func rpcError(ctx context.Context, code string, connectCode connect.Code, message string) *connect.Error {

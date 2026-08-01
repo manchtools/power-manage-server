@@ -23,6 +23,7 @@ const (
 	defaultPageSize          = int32(50)
 	maxLabelFilters          = 64
 	maxInventoryTableFilters = 128
+	osQueryResultTimeout     = 5 * time.Minute
 )
 
 // Config supplies the direct PostgreSQL store and process-local seams used by
@@ -294,6 +295,54 @@ func (h *Handlers) GetDeviceInventory(ctx context.Context, req *connect.Request[
 		}
 	}
 	return connect.NewResponse(&pmv1.GetDeviceInventoryResponse{Tables: tables}), nil
+}
+
+// GetOSQueryResult returns one directly stored on-demand query result.
+func (h *Handlers) GetOSQueryResult(ctx context.Context, req *connect.Request[pmv1.GetOSQueryResultRequest]) (*connect.Response[pmv1.GetOSQueryResultResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	if _, err := h.actor(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "GetOSQueryResult", ""); err != nil {
+		return nil, err
+	}
+	result, err := h.store.GetOSQueryResult(ctx, req.Msg.QueryId)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errQueryResultMissing, "query result not found")
+		}
+		return nil, h.internal(ctx, "read osquery result", err)
+	}
+	if _, err := h.readDevice(ctx, "GetOSQueryResult", result.DeviceID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, notFound(ctx, errQueryResultMissing, "query result not found")
+		}
+		return nil, err
+	}
+
+	response := &pmv1.GetOSQueryResultResponse{
+		QueryId: result.QueryID, Completed: result.Completed,
+		Success: result.Success, Error: result.Error,
+	}
+	if !result.Completed && h.now().Sub(result.CreatedAt) > osQueryResultTimeout {
+		response.Completed = true
+		response.Success = false
+		response.Error = "query timed out: device did not respond within 5 minutes"
+		return connect.NewResponse(response), nil
+	}
+	if result.Completed && result.Success {
+		var values []map[string]string
+		if err := json.Unmarshal(result.Rows, &values); err != nil {
+			return nil, h.internal(ctx, "decode osquery result", err)
+		}
+		response.Rows = make([]*pmv1.OSQueryRow, len(values))
+		for i, value := range values {
+			response.Rows[i] = &pmv1.OSQueryRow{Data: value}
+		}
+	}
+	return connect.NewResponse(response), nil
 }
 
 // ListDeviceAssignees returns the live users and groups assigned to a device.

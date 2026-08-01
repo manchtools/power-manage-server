@@ -118,6 +118,7 @@ var nonMutatingExports = map[string]string{
 	"IsDeviceAssignedToUser":           "read",
 	"ListDeviceAssignees":              "read",
 	"ListDeviceInventory":              "read",
+	"GetOSQueryResult":                 "read",
 	"GetUser":                          "read",
 	"CountUsers":                       "read",
 	"GetUserEncryptionKey":             "read",
