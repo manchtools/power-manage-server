@@ -71,3 +71,104 @@ func (q *Queries) GetOSQueryResult(ctx context.Context, queryID string) (GetOSQu
 	)
 	return i, err
 }
+
+const listDeviceComplianceEvaluations = `-- name: ListDeviceComplianceEvaluations :many
+SELECT e.policy_id, p.name AS policy_name,
+       e.action_id, a.name AS action_name,
+       e.status, e.compliant, r.grace_period_hours,
+       e.checked_at, e.first_failed_at, cr.detection_output
+FROM compliance_policy_evaluation e
+JOIN compliance_policies p ON p.id = e.policy_id AND p.is_deleted = FALSE
+JOIN compliance_policy_rules r ON r.policy_id = e.policy_id AND r.action_id = e.action_id
+JOIN actions a ON a.id = e.action_id AND a.is_deleted = FALSE
+LEFT JOIN compliance_results cr ON cr.device_id = e.device_id AND cr.action_id = e.action_id
+WHERE e.device_id = $1
+ORDER BY e.policy_id, e.action_id
+`
+
+type ListDeviceComplianceEvaluationsRow struct {
+	PolicyID         string     `json:"policy_id"`
+	PolicyName       string     `json:"policy_name"`
+	ActionID         string     `json:"action_id"`
+	ActionName       string     `json:"action_name"`
+	Status           int32      `json:"status"`
+	Compliant        bool       `json:"compliant"`
+	GracePeriodHours int32      `json:"grace_period_hours"`
+	CheckedAt        *time.Time `json:"checked_at"`
+	FirstFailedAt    *time.Time `json:"first_failed_at"`
+	DetectionOutput  []byte     `json:"detection_output"`
+}
+
+func (q *Queries) ListDeviceComplianceEvaluations(ctx context.Context, deviceID string) ([]ListDeviceComplianceEvaluationsRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceComplianceEvaluations, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceComplianceEvaluationsRow{}
+	for rows.Next() {
+		var i ListDeviceComplianceEvaluationsRow
+		if err := rows.Scan(
+			&i.PolicyID,
+			&i.PolicyName,
+			&i.ActionID,
+			&i.ActionName,
+			&i.Status,
+			&i.Compliant,
+			&i.GracePeriodHours,
+			&i.CheckedAt,
+			&i.FirstFailedAt,
+			&i.DetectionOutput,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceComplianceResults = `-- name: ListDeviceComplianceResults :many
+SELECT cr.action_id, a.name AS action_name, cr.compliant,
+       cr.detection_output, cr.checked_at
+FROM compliance_results cr
+JOIN actions a ON a.id = cr.action_id AND a.is_deleted = FALSE
+WHERE cr.device_id = $1
+ORDER BY cr.action_id
+`
+
+type ListDeviceComplianceResultsRow struct {
+	ActionID        string    `json:"action_id"`
+	ActionName      string    `json:"action_name"`
+	Compliant       bool      `json:"compliant"`
+	DetectionOutput []byte    `json:"detection_output"`
+	CheckedAt       time.Time `json:"checked_at"`
+}
+
+func (q *Queries) ListDeviceComplianceResults(ctx context.Context, deviceID string) ([]ListDeviceComplianceResultsRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceComplianceResults, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceComplianceResultsRow{}
+	for rows.Next() {
+		var i ListDeviceComplianceResultsRow
+		if err := rows.Scan(
+			&i.ActionID,
+			&i.ActionName,
+			&i.Compliant,
+			&i.DetectionOutput,
+			&i.CheckedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 13)
+	mounted := make([]string, 0, 15)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -28,6 +28,10 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetOSQueryResultProcedure, h.GetOSQueryResult, opts...))
 	register(powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceLogResultProcedure, h.GetDeviceLogResult, opts...))
+	register(powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceComplianceProcedure, h.GetDeviceCompliance, opts...))
+	register(powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure, h.GetDeviceCompliancePolicyStatus, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -70,11 +74,13 @@ func ReadProcedures() []string {
 }
 
 // SensitiveReadProcedures is the protected device-data surface that records
-// evidence before returning inventory, query output, or logs.
+// evidence before returning inventory, query output, logs, or detection data.
 func SensitiveReadProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 	}
 }

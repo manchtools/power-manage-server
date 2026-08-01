@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/go-playground/validator/v10"
 	"github.com/oklog/ulid/v2"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
@@ -415,6 +416,159 @@ func (h *Handlers) GetDeviceLogResult(ctx context.Context, req *connect.Request[
 		return nil, err
 	}
 	return connect.NewResponse(response), nil
+}
+
+// GetDeviceCompliance returns the current direct compliance rows for one
+// visible device.
+func (h *Handlers) GetDeviceCompliance(ctx context.Context, req *connect.Request[pmv1.GetDeviceComplianceRequest]) (*connect.Response[pmv1.GetDeviceComplianceResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.readDevice(ctx, "GetDeviceCompliance", req.Msg.DeviceId)
+	if err != nil {
+		return nil, err
+	}
+	if !validComplianceStatus(view.ComplianceStatus) {
+		return nil, h.internal(ctx, "decode device compliance status", fmt.Errorf("unknown status %d", view.ComplianceStatus))
+	}
+	rows, err := h.store.ListDeviceComplianceResults(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "list device compliance", err)
+	}
+	checks := make([]*pmv1.ComplianceCheckResult, len(rows))
+	for i, row := range rows {
+		output, err := decodeCommandOutput(row.DetectionOutput)
+		if err != nil {
+			return nil, h.internal(ctx, "decode compliance output", err)
+		}
+		checks[i] = &pmv1.ComplianceCheckResult{
+			ActionId: row.ActionID, ActionName: row.ActionName,
+			Compliant: row.Compliant, DetectionOutput: output,
+			CheckedAt: timestamppb.New(row.CheckedAt),
+		}
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure, "GetDeviceCompliance",
+		"device_compliance", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.GetDeviceComplianceResponse{
+		Status: pmv1.ComplianceStatus(view.ComplianceStatus), Checks: checks,
+	}), nil
+}
+
+// GetDeviceCompliancePolicyStatus returns the current direct policy-rule
+// evaluations for one visible device.
+func (h *Handlers) GetDeviceCompliancePolicyStatus(ctx context.Context, req *connect.Request[pmv1.GetDeviceCompliancePolicyStatusRequest]) (*connect.Response[pmv1.GetDeviceCompliancePolicyStatusResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view, err := h.readDevice(ctx, "GetDeviceCompliancePolicyStatus", req.Msg.DeviceId)
+	if err != nil {
+		return nil, err
+	}
+	if !validComplianceStatus(view.ComplianceStatus) {
+		return nil, h.internal(ctx, "decode device compliance status", fmt.Errorf("unknown status %d", view.ComplianceStatus))
+	}
+	rows, err := h.store.ListDeviceComplianceEvaluations(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "list device compliance policies", err)
+	}
+
+	policies := make([]*pmv1.DevicePolicyEvaluation, 0)
+	var policy *pmv1.DevicePolicyEvaluation
+	for _, row := range rows {
+		if !validComplianceStatus(row.Status) {
+			return nil, h.internal(ctx, "decode policy compliance status", fmt.Errorf("unknown status %d", row.Status))
+		}
+		if policy == nil || policy.PolicyId != row.PolicyID {
+			policy = &pmv1.DevicePolicyEvaluation{
+				PolicyId: row.PolicyID, PolicyName: row.PolicyName,
+				Status: pmv1.ComplianceStatus_COMPLIANCE_STATUS_COMPLIANT,
+			}
+			policies = append(policies, policy)
+		}
+		output, err := decodeCommandOutput(row.DetectionOutput)
+		if err != nil {
+			return nil, h.internal(ctx, "decode policy compliance output", err)
+		}
+		rule := &pmv1.DevicePolicyRuleEvaluation{
+			ActionId: row.ActionID, ActionName: row.ActionName,
+			Status: pmv1.ComplianceStatus(row.Status), Compliant: row.Compliant,
+			GracePeriodHours: row.GracePeriodHours, DetectionOutput: output,
+		}
+		if row.CheckedAt != nil {
+			rule.CheckedAt = timestamppb.New(*row.CheckedAt)
+		}
+		if row.FirstFailedAt != nil {
+			rule.FirstFailedAt = timestamppb.New(*row.FirstFailedAt)
+			if row.GracePeriodHours > 0 {
+				rule.GraceExpiresAt = timestamppb.New(row.FirstFailedAt.Add(
+					time.Duration(row.GracePeriodHours) * time.Hour,
+				))
+			}
+		}
+		policy.Rules = append(policy.Rules, rule)
+		policy.Status = worseComplianceStatus(policy.Status, rule.Status)
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+		"GetDeviceCompliancePolicyStatus", "device_compliance_policy_status", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&pmv1.GetDeviceCompliancePolicyStatusResponse{
+		OverallStatus: pmv1.ComplianceStatus(view.ComplianceStatus), Policies: policies,
+	}), nil
+}
+
+func decodeCommandOutput(raw []byte) (*pmv1.CommandOutput, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	output := &pmv1.CommandOutput{}
+	if err := protojson.Unmarshal(raw, output); err != nil {
+		return nil, err
+	}
+	return output, nil
+}
+
+func validComplianceStatus(status int32) bool {
+	switch pmv1.ComplianceStatus(status) {
+	case pmv1.ComplianceStatus_COMPLIANCE_STATUS_UNKNOWN,
+		pmv1.ComplianceStatus_COMPLIANCE_STATUS_COMPLIANT,
+		pmv1.ComplianceStatus_COMPLIANCE_STATUS_NON_COMPLIANT,
+		pmv1.ComplianceStatus_COMPLIANCE_STATUS_IN_GRACE_PERIOD:
+		return true
+	default:
+		return false
+	}
+}
+
+func worseComplianceStatus(left, right pmv1.ComplianceStatus) pmv1.ComplianceStatus {
+	priority := func(status pmv1.ComplianceStatus) int {
+		switch status {
+		case pmv1.ComplianceStatus_COMPLIANCE_STATUS_NON_COMPLIANT:
+			return 3
+		case pmv1.ComplianceStatus_COMPLIANCE_STATUS_IN_GRACE_PERIOD:
+			return 2
+		case pmv1.ComplianceStatus_COMPLIANCE_STATUS_UNKNOWN:
+			return 1
+		default:
+			return 0
+		}
+	}
+	if priority(right) > priority(left) {
+		return right
+	}
+	return left
 }
 
 // ListDeviceAssignees returns the live users and groups assigned to a device.

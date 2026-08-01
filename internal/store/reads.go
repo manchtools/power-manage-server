@@ -325,6 +325,13 @@ type OSQueryResult = generated.GetOSQueryResultRow
 // DeviceLogResult is one current remote log query result.
 type DeviceLogResult = generated.GetDeviceLogResultRow
 
+// DeviceComplianceResult is one current action check for a device.
+type DeviceComplianceResult = generated.ListDeviceComplianceResultsRow
+
+// DeviceComplianceEvaluation is one current policy-rule evaluation for a
+// device.
+type DeviceComplianceEvaluation = generated.ListDeviceComplianceEvaluationsRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1173,6 +1180,25 @@ func (s *Store) GetDeviceLogResult(ctx context.Context, queryID string) (DeviceL
 		return DeviceLogResult{}, fmt.Errorf("device logs: get result: %w", translateNotFound(err))
 	}
 	return row, nil
+}
+
+// ListDeviceComplianceResults returns current action checks in stable order.
+func (s *Store) ListDeviceComplianceResults(ctx context.Context, deviceID string) ([]DeviceComplianceResult, error) {
+	rows, err := s.queries.ListDeviceComplianceResults(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("compliance: list device results: %w", err)
+	}
+	return rows, nil
+}
+
+// ListDeviceComplianceEvaluations returns current policy-rule evaluations in
+// stable policy and action order.
+func (s *Store) ListDeviceComplianceEvaluations(ctx context.Context, deviceID string) ([]DeviceComplianceEvaluation, error) {
+	rows, err := s.queries.ListDeviceComplianceEvaluations(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("compliance: list device evaluations: %w", err)
+	}
+	return rows, nil
 }
 
 // GetUser returns one live user. ErrNotFound when unknown or deleted.

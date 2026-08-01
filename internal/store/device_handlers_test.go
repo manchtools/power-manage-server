@@ -152,6 +152,12 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetDeviceLogResult(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceCompliance(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceCompliancePolicyStatus(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -163,6 +169,12 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.GetDeviceLogResult(context.Background(),
 		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceCompliance(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: f.directID}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceCompliancePolicyStatus(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -404,6 +416,89 @@ func TestDeviceHandlers_GetDeviceLogResultReadsDirectState(t *testing.T) {
 		"device_log_result", staleID)
 }
 
+func TestDeviceHandlers_GetDeviceComplianceReadsDirectState(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	policyID, graceActionID, failedActionID := newID(), newID(), newID()
+	firstFailed := f.now.Add(-2 * time.Hour)
+	_, err := f.raw.Exec(context.Background(), `
+		UPDATE devices
+		SET compliance_status = 2, compliance_checked_at = $2,
+			compliance_total = 2, compliance_passing = 0
+		WHERE id = $1`, f.groupID, f.now)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO actions (id, name, action_type, params, created_by)
+		VALUES
+			($1, 'grace check', 1, '{}', $3),
+			($2, 'failed check', 1, '{}', $3)`, graceActionID, failedActionID, f.actorID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO compliance_policies (id, name, created_by)
+		VALUES ($1, 'baseline', $2)`, policyID, f.actorID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO compliance_policy_rules (policy_id, action_id, grace_period_hours)
+		VALUES ($1, $2, 4), ($1, $3, 0)`, policyID, graceActionID, failedActionID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO compliance_results
+			(device_id, action_id, compliant, detection_output, checked_at)
+		VALUES
+			($1, $2, FALSE, '{"exitCode":1,"stdout":"grace drift"}', $4),
+			($1, $3, FALSE, '{"exitCode":2,"stderr":"failed drift"}', $4)`,
+		f.groupID, graceActionID, failedActionID, f.now)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(), `
+		INSERT INTO compliance_policy_evaluation
+			(device_id, policy_id, action_id, compliant, first_failed_at, status, checked_at)
+		VALUES
+			($1, $2, $3, FALSE, $5, 3, $6),
+			($1, $2, $4, FALSE, $5, 2, $6)`,
+		f.groupID, policyID, graceActionID, failedActionID, firstFailed, f.now)
+	require.NoError(t, err)
+	ctx := f.actor("GetDeviceCompliance", "GetDeviceCompliancePolicyStatus")
+
+	complianceResponse, err := f.handlers.GetDeviceCompliance(ctx,
+		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: f.groupID}))
+	require.NoError(t, err)
+	assert.Equal(t, pmv1.ComplianceStatus_COMPLIANCE_STATUS_NON_COMPLIANT, complianceResponse.Msg.Status)
+	require.Len(t, complianceResponse.Msg.Checks, 2)
+	checks := make(map[string]*pmv1.ComplianceCheckResult, len(complianceResponse.Msg.Checks))
+	for _, check := range complianceResponse.Msg.Checks {
+		checks[check.ActionId] = check
+	}
+	assert.Equal(t, int32(1), checks[graceActionID].DetectionOutput.ExitCode)
+	assert.Equal(t, "failed drift", checks[failedActionID].DetectionOutput.Stderr)
+
+	policyResponse, err := f.handlers.GetDeviceCompliancePolicyStatus(ctx,
+		connect.NewRequest(&pmv1.GetDeviceCompliancePolicyStatusRequest{DeviceId: f.groupID}))
+	require.NoError(t, err)
+	assert.Equal(t, pmv1.ComplianceStatus_COMPLIANCE_STATUS_NON_COMPLIANT, policyResponse.Msg.OverallStatus)
+	require.Len(t, policyResponse.Msg.Policies, 1)
+	policy := policyResponse.Msg.Policies[0]
+	assert.Equal(t, policyID, policy.PolicyId)
+	assert.Equal(t, pmv1.ComplianceStatus_COMPLIANCE_STATUS_NON_COMPLIANT, policy.Status)
+	require.Len(t, policy.Rules, 2)
+	for _, rule := range policy.Rules {
+		if rule.ActionId == graceActionID {
+			assert.Equal(t, pmv1.ComplianceStatus_COMPLIANCE_STATUS_IN_GRACE_PERIOD, rule.Status)
+			assert.True(t, rule.GraceExpiresAt.AsTime().Equal(firstFailed.Add(4*time.Hour)))
+		}
+	}
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+		"device_compliance", f.groupID)
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
+		"device_compliance_policy_status", f.groupID)
+
+	_, err = f.raw.Exec(context.Background(), `
+		UPDATE compliance_results SET detection_output = '{"unknown":"field"}'
+		WHERE device_id = $1 AND action_id = $2`, f.groupID, graceActionID)
+	require.NoError(t, err)
+	_, err = f.handlers.GetDeviceCompliance(ctx,
+		connect.NewRequest(&pmv1.GetDeviceComplianceRequest{DeviceId: f.groupID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "invalid output must not be silently dropped")
+}
+
 func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
 	f := newDeviceHandlerFixture(t)
 	_, err := f.raw.Exec(context.Background(), `
@@ -521,6 +616,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,
@@ -535,6 +632,8 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
 		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+		powermanagev1connect.ControlServiceGetDeviceComplianceProcedure,
+		powermanagev1connect.ControlServiceGetDeviceCompliancePolicyStatusProcedure,
 	}, device.SensitiveReadProcedures())
 	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
 	classified = append(classified, device.SensitiveReadProcedures()...)
