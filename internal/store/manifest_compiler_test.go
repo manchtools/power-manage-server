@@ -89,7 +89,7 @@ func TestManifestCompiler_ActionSetFlattensInAuthoredOrder(t *testing.T) {
 	assert.NotEqual(t, got.Occurrences[0].OccurrenceId, got.Occurrences[1].OccurrenceId)
 }
 
-func TestManifestCompiler_DefinitionCreatesOneManifestPerIndependentSet(t *testing.T) {
+func TestManifestCompiler_DefinitionScheduleOverridesOnlyCompiledManifests(t *testing.T) {
 	f := newManifestFixture(t)
 	got, err := f.compiler.Definition(context.Background(), f.definition)
 	require.NoError(t, err)
@@ -97,16 +97,31 @@ func TestManifestCompiler_DefinitionCreatesOneManifestPerIndependentSet(t *testi
 
 	assert.Equal(t, f.definition, got[0].Provenance.DefinitionId)
 	assert.Equal(t, f.set2, got[0].Provenance.ActionSetId, "definition member order is preserved")
-	assert.True(t, got[0].Schedule.RunOnAssign, "the contained set keeps its own schedule")
+	assert.Equal(t, "0 1 * * *", got[0].Schedule.Cron)
+	assert.False(t, got[0].Schedule.RunOnAssign)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_CONTINUE, got[0].DefaultOnFailure)
 	require.Len(t, got[0].Occurrences, 1)
 	assert.Equal(t, f.action1, got[0].Occurrences[0].Action.Id.Value)
 
 	assert.Equal(t, f.set1, got[1].Provenance.ActionSetId)
-	assert.Equal(t, "0 4 * * *", got[1].Schedule.Cron)
+	assert.Equal(t, "0 1 * * *", got[1].Schedule.Cron)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, got[1].DefaultOnFailure,
+		"the definition overrides schedule, not the set failure policy")
 	require.Len(t, got[1].Occurrences, 2)
 	assert.Equal(t, f.action1, got[1].Occurrences[0].Action.Id.Value,
 		"the same authored action reached through another set is preserved")
 	assert.NotEqual(t, got[0].Occurrences[0].OccurrenceId, got[1].Occurrences[0].OccurrenceId)
+
+	var unchanged bool
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT schedule = '{"cron":"0 4 * * *"}'::jsonb
+		FROM action_sets WHERE id = $1`, f.set1).Scan(&unchanged))
+	assert.True(t, unchanged, "compilation must not rewrite the ActionSet schedule")
+
+	standalone, err := f.compiler.ActionSet(context.Background(), f.set1)
+	require.NoError(t, err)
+	assert.Equal(t, "0 4 * * *", standalone.Schedule.Cron,
+		"independent ActionSet compilation still uses its own schedule")
 }
 
 func TestManifestCompiler_RejectsMalformedStoredParams(t *testing.T) {

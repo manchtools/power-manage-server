@@ -80,16 +80,17 @@ func (c *Compiler) ActionSet(ctx context.Context, id string) (*pmv1.Manifest, er
 	if err != nil {
 		return nil, err
 	}
-	return compileSet(set, rows, &pmv1.ManifestProvenance{ActionSetId: id})
+	return compileSet(set, rows, &pmv1.ManifestProvenance{ActionSetId: id}, nil)
 }
 
-// Definition creates one independent manifest per contained ActionSet. A
-// Definition schedule does not override the schedules authored on its sets.
+// Definition creates one manifest per contained ActionSet. The Definition
+// schedule overrides each emitted manifest without rewriting its ActionSet.
 func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest, error) {
 	if !validInput(ctx, id) {
 		return nil, ErrInvalidInput
 	}
-	if _, err := c.store.GetManifestDefinition(ctx, id); err != nil {
+	definition, err := c.store.GetManifestDefinition(ctx, id)
+	if err != nil {
 		return nil, err
 	}
 	sets, err := c.store.ListManifestDefinitionActionSets(ctx, id)
@@ -113,7 +114,7 @@ func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest,
 		compiled, err := compileSet(set, actionsBySet[set.ID], &pmv1.ManifestProvenance{
 			DefinitionId: id,
 			ActionSetId:  set.ID,
-		})
+		}, definition.Schedule)
 		if err != nil {
 			return nil, fmt.Errorf("manifest: definition %s set %s: %w", id, set.ID, err)
 		}
@@ -124,13 +125,17 @@ func (c *Compiler) Definition(ctx context.Context, id string) ([]*pmv1.Manifest,
 
 // docref: end manifest-compiler
 
-func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance) (*pmv1.Manifest, error) {
+func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance, scheduleOverride []byte) (*pmv1.Manifest, error) {
 	if len(rows) == 0 {
 		return nil, ErrEmptyManifest
 	}
-	schedule, err := requiredSchedule(set.Schedule)
+	scheduleRaw := set.Schedule
+	if scheduleOverride != nil {
+		scheduleRaw = scheduleOverride
+	}
+	schedule, err := requiredSchedule(scheduleRaw)
 	if err != nil {
-		return nil, fmt.Errorf("action set %s schedule: %w", set.ID, err)
+		return nil, fmt.Errorf("manifest schedule: %w", err)
 	}
 	policy := pmv1.OnFailure(set.OnFailure)
 	if policy != pmv1.OnFailure_ON_FAILURE_CONTINUE && policy != pmv1.OnFailure_ON_FAILURE_STOP {
