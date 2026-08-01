@@ -124,7 +124,11 @@ func ActionVisibleToCaller(ctx context.Context, st *store.Store, actionID string
 }
 
 func (h *Handlers) effectiveActionSetScopeGroups(ctx context.Context, setID string) ([]string, error) {
-	groups, err := h.directScopeGroups(ctx, "action_set", setID)
+	return effectiveActionSetScopeGroups(ctx, h.store, setID)
+}
+
+func effectiveActionSetScopeGroups(ctx context.Context, st *store.Store, setID string) ([]string, error) {
+	groups, err := directScopeGroups(ctx, st, "action_set", setID)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +136,12 @@ func (h *Handlers) effectiveActionSetScopeGroups(ctx context.Context, setID stri
 	for _, id := range groups {
 		seen[id] = struct{}{}
 	}
-	definitionIDs, err := h.store.ListContainingDefinitionIDs(ctx, setID)
+	definitionIDs, err := st.ListContainingDefinitionIDs(ctx, setID)
 	if err != nil {
 		return nil, err
 	}
 	for _, definitionID := range definitionIDs {
-		definitionGroups, err := h.directScopeGroups(ctx, "definition", definitionID)
+		definitionGroups, err := directScopeGroups(ctx, st, "definition", definitionID)
 		if err != nil {
 			return nil, err
 		}
@@ -150,6 +154,40 @@ func (h *Handlers) effectiveActionSetScopeGroups(ctx context.Context, setID stri
 		groups = append(groups, id)
 	}
 	return groups, nil
+}
+
+// ActionSetVisibleToCaller reports whether an ActionSet belongs to a
+// restricted caller's effective transitive object scope.
+func ActionSetVisibleToCaller(ctx context.Context, st *store.Store, setID string) (bool, error) {
+	if ctx == nil || st == nil {
+		return false, fmt.Errorf("authoring: scope context and store are required")
+	}
+	callerGroups, restricted := auth.ObjectScopeListFilter(ctx)
+	if !restricted {
+		return true, nil
+	}
+	objectGroups, err := effectiveActionSetScopeGroups(ctx, st, setID)
+	if err != nil {
+		return false, err
+	}
+	return groupsOverlap(callerGroups, objectGroups), nil
+}
+
+// DefinitionVisibleToCaller reports whether a Definition belongs to a
+// restricted caller's direct object scope.
+func DefinitionVisibleToCaller(ctx context.Context, st *store.Store, definitionID string) (bool, error) {
+	if ctx == nil || st == nil {
+		return false, fmt.Errorf("authoring: scope context and store are required")
+	}
+	callerGroups, restricted := auth.ObjectScopeListFilter(ctx)
+	if !restricted {
+		return true, nil
+	}
+	objectGroups, err := directScopeGroups(ctx, st, "definition", definitionID)
+	if err != nil {
+		return false, err
+	}
+	return groupsOverlap(callerGroups, objectGroups), nil
 }
 
 func groupsOverlap(left, right []string) bool {

@@ -23,15 +23,18 @@ import (
 )
 
 type dispatchHandlerFixture struct {
-	t        *testing.T
-	store    *store.Store
-	raw      *pgxpool.Pool
-	handlers *dispatch.Handlers
-	waker    *committedWaker
-	now      time.Time
-	actorID  string
-	deviceID string
-	actionID string
+	t          *testing.T
+	store      *store.Store
+	raw        *pgxpool.Pool
+	handlers   *dispatch.Handlers
+	waker      *committedWaker
+	now        time.Time
+	actorID    string
+	deviceID   string
+	actionID   string
+	set1       string
+	set2       string
+	definition string
 }
 
 func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
@@ -50,6 +53,27 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 		int32(pmv1.DesiredState_DESIRED_STATE_ABSENT),
 		`{"script":"printf catalog","interpreter":"/bin/sh"}`,
 		`{"cron":"0 4 * * *"}`, now)
+	require.NoError(t, err)
+	f.set1, f.set2, f.definition = newID(), newID(), newID()
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO action_sets (id, name, schedule, on_failure, created_at) VALUES
+			($1, 'first set', '{"cron":"0 2 * * *"}'::jsonb, $3, $5),
+			($2, 'second set', '{"runOnAssign":true}'::jsonb, $4, $5)`,
+		f.set1, f.set2,
+		int32(pmv1.OnFailure_ON_FAILURE_STOP), int32(pmv1.OnFailure_ON_FAILURE_CONTINUE),
+		now)
+	require.NoError(t, err)
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO action_set_members (set_id, action_id, sort_order, added_at) VALUES
+			($1, $3, 0, $4), ($2, $3, 0, $4)`, f.set1, f.set2, f.actionID, now)
+	require.NoError(t, err)
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO definitions (id, name, schedule, created_at)
+			VALUES ($1, 'two sets', '{"cron":"0 1 * * *"}'::jsonb, $2)`, f.definition, now)
+	require.NoError(t, err)
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO definition_members (definition_id, action_set_id, sort_order, added_at) VALUES
+			($1, $2, 0, $4), ($1, $3, 1, $4)`, f.definition, f.set1, f.set2, now)
 	require.NoError(t, err)
 	f.waker = &committedWaker{store: st}
 	f.handlers = dispatch.NewHandlers(dispatch.HandlersConfig{
@@ -164,6 +188,58 @@ func TestDispatchHandlers_InstantSchedulingAndValidation(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+func TestDispatchHandlers_ActionSetAndDefinitionPreserveComposition(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+	setResponse, err := f.handlers.DispatchActionSet(f.actor("DispatchActionSet"),
+		connect.NewRequest(&pmv1.DispatchActionSetRequest{
+			DeviceId: f.deviceID, ActionSetId: f.set1,
+		}))
+	require.NoError(t, err)
+	require.Len(t, setResponse.Msg.Executions, 1)
+	require.Len(t, f.waker.ids, 1)
+	setManifest := f.manifest(f.waker.ids[0])
+	assert.Equal(t, f.set1, setManifest.Provenance.ActionSetId)
+	assert.Empty(t, setManifest.Schedule.Cron)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, setManifest.DefaultOnFailure)
+	assert.Equal(t, pmv1.OnFailure_ON_FAILURE_STOP, setManifest.Occurrences[0].OnFailure)
+
+	definitionResponse, err := f.handlers.DispatchDefinition(f.actor("DispatchDefinition"),
+		connect.NewRequest(&pmv1.DispatchDefinitionRequest{
+			DeviceId: f.deviceID, DefinitionId: f.definition,
+		}))
+	require.NoError(t, err)
+	require.Len(t, definitionResponse.Msg.Executions, 2)
+	require.Len(t, f.waker.ids, 3)
+	first, second := f.manifest(f.waker.ids[1]), f.manifest(f.waker.ids[2])
+	assert.Equal(t, f.definition, first.Provenance.DefinitionId)
+	assert.Equal(t, f.definition, second.Provenance.DefinitionId)
+	assert.ElementsMatch(t, []string{f.set1, f.set2},
+		[]string{first.Provenance.ActionSetId, second.Provenance.ActionSetId})
+	assert.NotEqual(t, definitionResponse.Msg.Executions[0].Id, definitionResponse.Msg.Executions[1].Id,
+		"the same Action authored through two sets remains two occurrences")
+	assert.Equal(t, definitionResponse.Msg.Executions[0].ActionId, definitionResponse.Msg.Executions[1].ActionId)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceDispatchDefinitionProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 4, "two deliveries and two executions share one initiating operation")
+	for _, deliveryID := range f.waker.ids[1:] {
+		row, err := f.store.GetDelivery(context.Background(), deliveryID)
+		require.NoError(t, err)
+		require.NotNil(t, row.OperationID)
+		assert.Equal(t, operation.OperationID, *row.OperationID)
+	}
+
+	var set1Schedule, set2Schedule string
+	require.NoError(t, f.raw.QueryRow(context.Background(), `
+		SELECT (SELECT schedule::text FROM action_sets WHERE id = $1),
+		       (SELECT schedule::text FROM action_sets WHERE id = $2)`, f.set1, f.set2).
+		Scan(&set1Schedule, &set2Schedule))
+	assert.JSONEq(t, `{"cron":"0 2 * * *"}`, set1Schedule)
+	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
+}
+
 func TestDispatchHandlers_RefuseUnauthorizedAndMissingTargetsWithoutWork(t *testing.T) {
 	f := newDispatchHandlerFixture(t)
 	request := connect.NewRequest(&pmv1.DispatchActionRequest{
@@ -186,6 +262,8 @@ func TestDispatchHandlers_MountsExactInitialSurface(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		powermanagev1connect.ControlServiceDispatchActionProcedure,
 		powermanagev1connect.ControlServiceDispatchInstantActionProcedure,
+		powermanagev1connect.ControlServiceDispatchActionSetProcedure,
+		powermanagev1connect.ControlServiceDispatchDefinitionProcedure,
 	}, f.handlers.MountActions(http.NewServeMux()))
 	assert.ElementsMatch(t, f.handlers.MountActions(http.NewServeMux()), dispatch.MutationProcedures())
 }

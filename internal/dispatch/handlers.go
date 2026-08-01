@@ -250,6 +250,78 @@ func (h *Handlers) DispatchInstantAction(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
+// DispatchActionSet compiles the set once and submits its ordered occurrences
+// as one complete delivery.
+func (h *Handlers) DispatchActionSet(ctx context.Context, req *connect.Request[pmv1.DispatchActionSetRequest]) (*connect.Response[pmv1.DispatchActionSetResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.target(ctx, actor, "DispatchActionSet", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	compiled, err := h.compiler.ActionSet(ctx, req.Msg.ActionSetId)
+	if err != nil {
+		return nil, h.collectionCompileError(ctx, "action set", errActionSetMissing, "compile dispatched action set", err)
+	}
+	visible, err := authoring.ActionSetVisibleToCaller(ctx, h.store, req.Msg.ActionSetId)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve dispatched action set scope", err)
+	}
+	if !visible {
+		return nil, notFound(ctx, errActionSetMissing, "action set not found")
+	}
+	result, err := h.submitter.Submit(ctx, SubmitParams{
+		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchActionSetProcedure, "DispatchActionSet"),
+		DeviceID:  req.Msg.DeviceId, Manifests: catalogManifests(compiled),
+	})
+	if err != nil {
+		return nil, h.submitError(ctx, "submit action set dispatch", err)
+	}
+	return connect.NewResponse(&pmv1.DispatchActionSetResponse{
+		Executions: createdExecutionsToProto(result.Executions),
+	}), nil
+}
+
+// DispatchDefinition compiles one manifest per contained ActionSet and commits
+// the complete batch atomically without mutating any authored schedule.
+func (h *Handlers) DispatchDefinition(ctx context.Context, req *connect.Request[pmv1.DispatchDefinitionRequest]) (*connect.Response[pmv1.DispatchDefinitionResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.target(ctx, actor, "DispatchDefinition", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
+	compiled, err := h.compiler.Definition(ctx, req.Msg.DefinitionId)
+	if err != nil {
+		return nil, h.collectionCompileError(ctx, "definition", errDefinitionMissing, "compile dispatched definition", err)
+	}
+	visible, err := authoring.DefinitionVisibleToCaller(ctx, h.store, req.Msg.DefinitionId)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve dispatched definition scope", err)
+	}
+	if !visible {
+		return nil, notFound(ctx, errDefinitionMissing, "definition not found")
+	}
+	result, err := h.submitter.Submit(ctx, SubmitParams{
+		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchDefinitionProcedure, "DispatchDefinition"),
+		DeviceID:  req.Msg.DeviceId, Manifests: catalogManifests(compiled...),
+	})
+	if err != nil {
+		return nil, h.submitError(ctx, "submit definition dispatch", err)
+	}
+	return connect.NewResponse(&pmv1.DispatchDefinitionResponse{
+		Executions: createdExecutionsToProto(result.Executions),
+	}), nil
+}
+
 func (h *Handlers) compileError(ctx context.Context, operation string, err error) error {
 	switch {
 	case store.IsNotFound(err):
@@ -259,6 +331,38 @@ func (h *Handlers) compileError(ctx context.Context, operation string, err error
 	default:
 		return h.internal(ctx, operation, err)
 	}
+}
+
+func (h *Handlers) collectionCompileError(ctx context.Context, resource, code, operation string, err error) error {
+	switch {
+	case store.IsNotFound(err):
+		return notFound(ctx, code, resource+" not found")
+	case errors.Is(err, manifest.ErrInvalidInput):
+		return rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid "+resource)
+	case errors.Is(err, manifest.ErrEmptyManifest):
+		return rpcError(ctx, errValidationFailed, connect.CodeFailedPrecondition, resource+" contains no executable actions")
+	default:
+		return h.internal(ctx, operation, err)
+	}
+}
+
+func (h *Handlers) submitError(ctx context.Context, operation string, err error) error {
+	if errors.Is(err, ErrInvalidInput) {
+		return rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid dispatch")
+	}
+	return h.internal(ctx, operation, err)
+}
+
+func catalogManifests(manifests ...*pmv1.Manifest) []ManifestInput {
+	inputs := make([]ManifestInput, len(manifests))
+	for i, compiled := range manifests {
+		// Explicit Dispatch* RPCs are one-shot. The compiler has already
+		// resolved Definition-over-ActionSet schedule precedence; replacing the
+		// emitted schedule here does not rewrite either authored object.
+		compiled.Schedule = &pmv1.ActionSchedule{}
+		inputs[i] = ManifestInput{Manifest: compiled, PersistActionIDs: true}
+	}
+	return inputs
 }
 
 func futureTime(value *timestamppb.Timestamp) (*time.Time, error) {
@@ -290,6 +394,14 @@ func createdExecutionToProto(row store.ExecutionView) *pmv1.ActionExecution {
 	}
 	if row.ScheduledFor != nil {
 		result.ScheduledFor = timestamppb.New(*row.ScheduledFor)
+	}
+	return result
+}
+
+func createdExecutionsToProto(rows []store.ExecutionView) []*pmv1.ActionExecution {
+	result := make([]*pmv1.ActionExecution, len(rows))
+	for i := range rows {
+		result[i] = createdExecutionToProto(rows[i])
 	}
 	return result
 }

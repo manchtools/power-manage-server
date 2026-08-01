@@ -13,7 +13,7 @@ func (h *Handlers) MountActions(mux *http.ServeMux, opts ...connect.HandlerOptio
 	if mux == nil {
 		panic("dispatch: mux is required")
 	}
-	mounted := make([]string, 0, 2)
+	mounted := make([]string, 0, 4)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -22,6 +22,10 @@ func (h *Handlers) MountActions(mux *http.ServeMux, opts ...connect.HandlerOptio
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDispatchActionProcedure, h.DispatchAction, opts...))
 	register(powermanagev1connect.ControlServiceDispatchInstantActionProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDispatchInstantActionProcedure, h.DispatchInstantAction, opts...))
+	register(powermanagev1connect.ControlServiceDispatchActionSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDispatchActionSetProcedure, h.DispatchActionSet, opts...))
+	register(powermanagev1connect.ControlServiceDispatchDefinitionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDispatchDefinitionProcedure, h.DispatchDefinition, opts...))
 	return mounted
 }
 
@@ -30,5 +34,7 @@ func MutationProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceDispatchActionProcedure,
 		powermanagev1connect.ControlServiceDispatchInstantActionProcedure,
+		powermanagev1connect.ControlServiceDispatchActionSetProcedure,
+		powermanagev1connect.ControlServiceDispatchDefinitionProcedure,
 	}
 }
