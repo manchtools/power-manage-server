@@ -72,13 +72,38 @@ type AssignmentListFilter struct {
 	TargetID   string
 }
 
-// GetDeviceGroup returns one live device group.
-func (s *Store) GetDeviceGroup(ctx context.Context, id string) (string, error) {
-	rowID, err := s.queries.GetDeviceGroup(ctx, id)
+// DeviceGroupView is one live device group with a member count derived from
+// live membership rows.
+type DeviceGroupView = generated.GetDeviceGroupRow
+
+// DeviceGroupMemberView is one live member device.
+type DeviceGroupMemberView = generated.ListDeviceGroupMembersRow
+
+// GetDeviceGroupID returns one live device-group identifier.
+func (s *Store) GetDeviceGroupID(ctx context.Context, id string) (string, error) {
+	rowID, err := s.queries.GetDeviceGroupID(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("device group: get: %w", translateNotFound(err))
 	}
 	return rowID, nil
+}
+
+// GetDeviceGroup returns one live device group.
+func (s *Store) GetDeviceGroup(ctx context.Context, id string) (DeviceGroupView, error) {
+	row, err := s.queries.GetDeviceGroup(ctx, id)
+	if err != nil {
+		return DeviceGroupView{}, fmt.Errorf("device group: get: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// ListDeviceGroupMembers returns live devices in stable identifier order.
+func (s *Store) ListDeviceGroupMembers(ctx context.Context, id string) ([]DeviceGroupMemberView, error) {
+	rows, err := s.queries.ListDeviceGroupMembers(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("device group: list members: %w", err)
+	}
+	return rows, nil
 }
 
 // ActionSetRow is one live authored action set used to compile agent manifests.

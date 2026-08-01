@@ -155,7 +155,7 @@ type referenceQueries interface {
 	GetManifestDefinition(context.Context, string) (db.Definition, error)
 	GetAuthoringCompliancePolicy(context.Context, string) (db.CompliancePolicy, error)
 	GetDevice(context.Context, string) (db.Device, error)
-	GetDeviceGroup(context.Context, string) (string, error)
+	GetDeviceGroupID(context.Context, string) (string, error)
 	GetUser(context.Context, string) (db.User, error)
 	GetUserGroup(context.Context, string) (db.UserGroup, error)
 }
@@ -189,7 +189,7 @@ func (s *State) validateReferences(ctx context.Context, q referenceQueries, p Cr
 	case pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE:
 		_, err = q.GetDevice(ctx, p.TargetID)
 	case pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP:
-		_, err = q.GetDeviceGroup(ctx, p.TargetID)
+		_, err = q.GetDeviceGroupID(ctx, p.TargetID)
 	case pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER:
 		_, err = q.GetUser(ctx, p.TargetID)
 	case pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_USER_GROUP:

@@ -171,12 +171,12 @@ func (q *Queries) GetAssignmentByTuple(ctx context.Context, arg GetAssignmentByT
 	return i, err
 }
 
-const getDeviceGroup = `-- name: GetDeviceGroup :one
+const getDeviceGroupID = `-- name: GetDeviceGroupID :one
 SELECT id FROM device_groups WHERE id = $1 AND is_deleted = FALSE
 `
 
-func (q *Queries) GetDeviceGroup(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRow(ctx, getDeviceGroup, id)
+func (q *Queries) GetDeviceGroupID(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getDeviceGroupID, id)
 	err := row.Scan(&id)
 	return id, err
 }

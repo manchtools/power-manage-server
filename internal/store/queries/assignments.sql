@@ -1,4 +1,4 @@
--- name: GetDeviceGroup :one
+-- name: GetDeviceGroupID :one
 SELECT id FROM device_groups WHERE id = $1 AND is_deleted = FALSE;
 
 -- name: GetAssignmentByID :one
