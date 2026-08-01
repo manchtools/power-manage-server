@@ -364,11 +364,18 @@ func TestAssignRoleToUserGroup_GrantsAndRevokesByScope(t *testing.T) {
 	admin := f.seedActor(grant{Permissions: []string{"AssignRoleToUserGroup", "RevokeRoleFromUserGroup"}})
 	group := f.insertUserGroup()
 	role := f.insertRole([]string{"UpdateUserProfile"})
+	member := f.seedSubject()
+	f.addUserToGroup(group, member.ID)
+	before, err := f.store.GetUserSessionState(f.ctx(), member.ID)
+	require.NoError(t, err)
 
-	_, err := f.client.AssignRoleToUserGroup(f.ctx(), authed(&pmv1.AssignRoleToUserGroupRequest{
+	_, err = f.client.AssignRoleToUserGroup(f.ctx(), authed(&pmv1.AssignRoleToUserGroupRequest{
 		GroupId: group, RoleId: role,
 	}, admin.Token))
 	require.NoError(t, err)
+	afterGrant, err := f.store.GetUserSessionState(f.ctx(), member.ID)
+	require.NoError(t, err)
+	assert.Equal(t, before.SessionVersion+1, afterGrant.SessionVersion)
 
 	grants, err := f.store.ListUserGroupRoleGrants(f.ctx(), group)
 	require.NoError(t, err)
@@ -382,9 +389,49 @@ func TestAssignRoleToUserGroup_GrantsAndRevokesByScope(t *testing.T) {
 		GroupId: group, RoleId: role,
 	}, admin.Token))
 	require.NoError(t, err)
+	afterRevoke, err := f.store.GetUserSessionState(f.ctx(), member.ID)
+	require.NoError(t, err)
+	assert.Equal(t, before.SessionVersion+2, afterRevoke.SessionVersion)
 	grants, err = f.store.ListUserGroupRoleGrants(f.ctx(), group)
 	require.NoError(t, err)
 	assert.Empty(t, grants)
+}
+
+func TestRevokeRoleFromUser_RefusesLastEnabledAdmin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	soleAdmin := f.seedSubject()
+	f.insertUserRoleGrant(soleAdmin.ID, auth.AdminRoleID, "", "")
+	token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
+
+	_, err := f.client.RevokeRoleFromUser(f.ctx(), authed(&pmv1.RevokeRoleFromUserRequest{
+		UserId: soleAdmin.ID, RoleId: auth.AdminRoleID,
+	}, token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+	grants, err := f.store.ListUserRoleGrants(f.ctx(), soleAdmin.ID)
+	require.NoError(t, err)
+	require.Len(t, grants, 1, "the last-admin refusal must roll back the grant deletion")
+}
+
+func TestRevokeRoleFromUserGroup_RefusesLastEnabledAdmin(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	soleAdmin := f.seedSubject()
+	group := f.insertUserGroup()
+	f.addUserToGroup(group, soleAdmin.ID)
+	_, err := f.raw.Exec(f.ctx(),
+		`INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by)
+		 VALUES ($1, $2, $3, $4, '')`, newULID(), group, auth.AdminRoleID, f.now)
+	require.NoError(t, err)
+	token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
+
+	_, err = f.client.RevokeRoleFromUserGroup(f.ctx(), authed(&pmv1.RevokeRoleFromUserGroupRequest{
+		GroupId: group, RoleId: auth.AdminRoleID,
+	}, token))
+	assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+	grants, err := f.store.ListUserGroupRoleGrants(f.ctx(), group)
+	require.NoError(t, err)
+	require.Len(t, grants, 1, "the last-admin refusal must roll back the group grant deletion")
 }
 
 // A role held through a group confers its permissions, and the token

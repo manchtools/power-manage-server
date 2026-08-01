@@ -37,6 +37,12 @@ func (h *Handlers) countMatchingUsers(ctx context.Context, raw string) (int64, e
 func (h *Handlers) evaluateDynamicUserGroup(ctx context.Context, op store.AuditOperation, groupID, actorID string) (userGroupEvaluationResult, error) {
 	var result userGroupEvaluationResult
 	_, err := h.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		// Take the shared authority-removal lock before the group row lock.
+		// Delete/revoke paths take the same order, so an Admin-bearing
+		// dynamic group cannot deadlock with a concurrent removal.
+		if err := tx.LockLastAdminGuard(ctx); err != nil {
+			return err
+		}
 		group, err := tx.GetDynamicUserGroupQueryForUpdate(ctx, groupID)
 		if err != nil {
 			return err
@@ -68,9 +74,6 @@ func (h *Handlers) evaluateDynamicUserGroup(ctx context.Context, op store.AuditO
 				return err
 			}
 			if confersAdmin {
-				if err := tx.LockLastAdminGuard(ctx); err != nil {
-					return err
-				}
 				remains, err := tx.EnabledAdminExistsAfterDynamicUserGroupEvaluation(ctx, db.EnabledAdminExistsAfterDynamicUserGroupEvaluationParams{
 					GroupID: groupID, WantedUserIds: wanted,
 				})

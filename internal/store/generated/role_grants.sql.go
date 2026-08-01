@@ -10,6 +10,26 @@ import (
 	"time"
 )
 
+const bumpSessionVersionForUserGroupMembers = `-- name: BumpSessionVersionForUserGroupMembers :execrows
+UPDATE users
+SET session_version = session_version + 1, updated_at = $1
+WHERE is_deleted = FALSE
+  AND id IN (SELECT user_id FROM user_group_members WHERE group_id = $2)
+`
+
+type BumpSessionVersionForUserGroupMembersParams struct {
+	UpdatedAt *time.Time `json:"updated_at"`
+	GroupID   string     `json:"group_id"`
+}
+
+func (q *Queries) BumpSessionVersionForUserGroupMembers(ctx context.Context, arg BumpSessionVersionForUserGroupMembersParams) (int64, error) {
+	result, err := q.db.Exec(ctx, bumpSessionVersionForUserGroupMembers, arg.UpdatedAt, arg.GroupID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteScopedUserGroupRoleGrant = `-- name: DeleteScopedUserGroupRoleGrant :one
 DELETE FROM user_group_roles
 WHERE group_id = $1 AND role_id = $2 AND scope_kind = $3 AND scope_id = $4
@@ -153,6 +173,45 @@ func (q *Queries) DeleteUserRoleGrantsForUser(ctx context.Context, userID string
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const enabledAdminExistsAfterDirectRoleRevoke = `-- name: EnabledAdminExistsAfterDirectRoleRevoke :one
+SELECT EXISTS (
+    SELECT 1
+    FROM users u
+    WHERE u.is_deleted = FALSE
+      AND u.disabled = FALSE
+      AND (
+          EXISTS (
+              SELECT 1
+              FROM user_roles ur
+              JOIN roles r ON r.id = ur.role_id AND r.is_deleted = FALSE
+              WHERE ur.user_id = u.id
+                AND u.id <> $1
+                AND ur.scope_kind IS NULL
+                AND ur.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+          OR EXISTS (
+              SELECT 1
+              FROM user_group_members m
+              JOIN user_groups g ON g.id = m.group_id AND g.is_deleted = FALSE
+              JOIN user_group_roles gr ON gr.group_id = m.group_id
+              JOIN roles r ON r.id = gr.role_id AND r.is_deleted = FALSE
+              WHERE m.user_id = u.id
+                AND gr.scope_kind IS NULL
+                AND gr.scope_id IS NULL
+                AND r.name = 'Admin'
+          )
+      )
+)
+`
+
+func (q *Queries) EnabledAdminExistsAfterDirectRoleRevoke(ctx context.Context, affectedUserID string) (bool, error) {
+	row := q.db.QueryRow(ctx, enabledAdminExistsAfterDirectRoleRevoke, affectedUserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const insertUserGroupRoleGrant = `-- name: InsertUserGroupRoleGrant :one
