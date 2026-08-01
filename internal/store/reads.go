@@ -46,6 +46,41 @@ type ActionListFilter struct {
 // AssignmentTarget is one live target reached from an authored source.
 type AssignmentTarget = generated.ListAuthoringAssignmentsForSourceRow
 
+// AssignmentView is one live assignment with operator-facing source and
+// target names resolved from live rows.
+type AssignmentView struct {
+	ID         string
+	SourceType string
+	SourceID   string
+	TargetType string
+	TargetID   string
+	Mode       int32
+	CreatedAt  *time.Time
+	CreatedBy  string
+	SourceName string
+	TargetName string
+}
+
+// AssignmentListFilter is the deterministic keyset and exact-match filter
+// shared by assignment list and count reads.
+type AssignmentListFilter struct {
+	AfterID    string
+	Limit      int32
+	SourceType string
+	SourceID   string
+	TargetType string
+	TargetID   string
+}
+
+// GetDeviceGroup returns one live device group.
+func (s *Store) GetDeviceGroup(ctx context.Context, id string) (string, error) {
+	rowID, err := s.queries.GetDeviceGroup(ctx, id)
+	if err != nil {
+		return "", fmt.Errorf("device group: get: %w", translateNotFound(err))
+	}
+	return rowID, nil
+}
+
 // ActionSetRow is one live authored action set used to compile agent manifests.
 type ActionSetRow = generated.ActionSet
 
@@ -280,6 +315,76 @@ func (s *Store) ListAuthoringAssignmentTargets(ctx context.Context, sourceType, 
 		return nil, fmt.Errorf("authoring: list assignment targets: %w", err)
 	}
 	return rows, nil
+}
+
+// GetAssignment returns one live assignment whose source and target still
+// exist.
+func (s *Store) GetAssignment(ctx context.Context, id string) (AssignmentView, error) {
+	row, err := s.queries.GetAssignmentByID(ctx, id)
+	if err != nil {
+		return AssignmentView{}, fmt.Errorf("assignment: get: %w", translateNotFound(err))
+	}
+	return AssignmentView{
+		ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
+		TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+		CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+		SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
+	}, nil
+}
+
+// FindAssignment returns the live row for one source-target tuple.
+func (s *Store) FindAssignment(ctx context.Context, sourceType, sourceID, targetType, targetID string) (AssignmentView, error) {
+	row, err := s.queries.GetAssignmentByTuple(ctx, generated.GetAssignmentByTupleParams{
+		SourceType: sourceType, SourceID: sourceID, TargetType: targetType, TargetID: targetID,
+	})
+	if err != nil {
+		return AssignmentView{}, fmt.Errorf("assignment: find: %w", translateNotFound(err))
+	}
+	return AssignmentView{
+		ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
+		TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+		CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+		SourceName: row.SourceName, TargetName: row.TargetName,
+	}, nil
+}
+
+// ListAssignments returns a stable keyset page of live assignments.
+func (s *Store) ListAssignments(ctx context.Context, filter AssignmentListFilter) ([]AssignmentView, error) {
+	if filter.Limit < 0 || filter.Limit > 101 {
+		return nil, fmt.Errorf("assignment: list limit must be between 0 and 101")
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+	rows, err := s.queries.ListAssignmentViews(ctx, generated.ListAssignmentViewsParams{
+		AfterID: filter.AfterID, SourceType: filter.SourceType, SourceID: filter.SourceID,
+		TargetType: filter.TargetType, TargetID: filter.TargetID, RowLimit: filter.Limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("assignment: list: %w", err)
+	}
+	views := make([]AssignmentView, len(rows))
+	for i, row := range rows {
+		views[i] = AssignmentView{
+			ID: row.ID, SourceType: row.SourceType, SourceID: row.SourceID,
+			TargetType: row.TargetType, TargetID: row.TargetID, Mode: row.Mode,
+			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy,
+			SourceName: row.ResolvedSourceName, TargetName: row.ResolvedTargetName,
+		}
+	}
+	return views, nil
+}
+
+// CountAssignments counts the same population selected by ListAssignments.
+func (s *Store) CountAssignments(ctx context.Context, filter AssignmentListFilter) (int64, error) {
+	n, err := s.queries.CountAssignmentViews(ctx, generated.CountAssignmentViewsParams{
+		SourceType: filter.SourceType, SourceID: filter.SourceID,
+		TargetType: filter.TargetType, TargetID: filter.TargetID,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("assignment: count: %w", err)
+	}
+	return n, nil
 }
 
 // ListContainingActionSetIDs returns the live sets that directly contain an
