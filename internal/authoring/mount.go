@@ -53,3 +53,58 @@ func ActionReadProcedures() []string {
 		powermanagev1connect.ControlServiceListActionsProcedure,
 	}
 }
+
+// MountActionSets registers exactly the explicit ActionSet CRUD procedures.
+func (h *Handlers) MountActionSets(mux *http.ServeMux, opts ...connect.HandlerOption) []string {
+	if mux == nil {
+		panic("authoring: mux is required")
+	}
+	mounted := make([]string, 0, 10)
+	register := func(procedure string, handler http.Handler) {
+		mux.Handle(procedure, handler)
+		mounted = append(mounted, procedure)
+	}
+	register(powermanagev1connect.ControlServiceCreateActionSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceCreateActionSetProcedure, h.CreateActionSet, opts...))
+	register(powermanagev1connect.ControlServiceGetActionSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetActionSetProcedure, h.GetActionSet, opts...))
+	register(powermanagev1connect.ControlServiceListActionSetsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListActionSetsProcedure, h.ListActionSets, opts...))
+	register(powermanagev1connect.ControlServiceRenameActionSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRenameActionSetProcedure, h.RenameActionSet, opts...))
+	register(powermanagev1connect.ControlServiceUpdateActionSetDescriptionProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateActionSetDescriptionProcedure, h.UpdateActionSetDescription, opts...))
+	register(powermanagev1connect.ControlServiceUpdateActionSetScheduleProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceUpdateActionSetScheduleProcedure, h.UpdateActionSetSchedule, opts...))
+	register(powermanagev1connect.ControlServiceDeleteActionSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceDeleteActionSetProcedure, h.DeleteActionSet, opts...))
+	register(powermanagev1connect.ControlServiceAddActionToSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceAddActionToSetProcedure, h.AddActionToSet, opts...))
+	register(powermanagev1connect.ControlServiceRemoveActionFromSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceRemoveActionFromSetProcedure, h.RemoveActionFromSet, opts...))
+	register(powermanagev1connect.ControlServiceReorderActionInSetProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceReorderActionInSetProcedure, h.ReorderActionInSet, opts...))
+	return mounted
+}
+
+// ActionSetMutationProcedures is the exact audited ActionSet mutation surface.
+func ActionSetMutationProcedures() []string {
+	return []string{
+		powermanagev1connect.ControlServiceCreateActionSetProcedure,
+		powermanagev1connect.ControlServiceRenameActionSetProcedure,
+		powermanagev1connect.ControlServiceUpdateActionSetDescriptionProcedure,
+		powermanagev1connect.ControlServiceUpdateActionSetScheduleProcedure,
+		powermanagev1connect.ControlServiceDeleteActionSetProcedure,
+		powermanagev1connect.ControlServiceAddActionToSetProcedure,
+		powermanagev1connect.ControlServiceRemoveActionFromSetProcedure,
+		powermanagev1connect.ControlServiceReorderActionInSetProcedure,
+	}
+}
+
+// ActionSetReadProcedures is the exact non-mutating ActionSet surface.
+func ActionSetReadProcedures() []string {
+	return []string{
+		powermanagev1connect.ControlServiceGetActionSetProcedure,
+		powermanagev1connect.ControlServiceListActionSetsProcedure,
+	}
+}

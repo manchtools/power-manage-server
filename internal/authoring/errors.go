@@ -17,6 +17,9 @@ const (
 	errInvalidPageToken         = "invalid_page_token"
 	errInternal                 = "internal_error"
 	errActionNotFound           = "action_not_found"
+	errActionSetNotFound        = "action_set_not_found"
+	errActionAlreadyInSet       = "action_already_in_set"
+	errActionSetMemberNotFound  = "action_set_member_not_found"
 	errCannotModifySystemAction = "cannot_modify_system_action"
 )
 

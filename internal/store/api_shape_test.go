@@ -77,6 +77,8 @@ var nonMutatingExports = map[string]string{
 	"ListAuthoringAssignmentTargets":   "read",
 	"ListContainingActionSetIDs":       "read",
 	"ListContainingDefinitionIDs":      "read",
+	"ListAuthoringActionSets":          "read",
+	"CountAuthoringActionSets":         "read",
 	"CountDevices":                     "read",
 	"CountActions":                     "read",
 	"CountActionSets":                  "read",

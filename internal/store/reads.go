@@ -49,6 +49,23 @@ type AssignmentTarget = generated.ListAuthoringAssignmentsForSourceRow
 // ActionSetRow is one live authored action set used to compile agent manifests.
 type ActionSetRow = generated.ActionSet
 
+// ActionSetListFilter contains the keyset, assignment and object-scope
+// narrowing shared by the ActionSet list and count reads.
+type ActionSetListFilter struct {
+	AfterID         string
+	Limit           int32
+	UnassignedOnly  bool
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
+// ActionSetView is one authored set with its member count derived from the
+// live edge rows rather than stored projector state.
+type ActionSetView struct {
+	ActionSetRow
+	MemberCount int64
+}
+
 // ActionSetMemberView is one live action edge in authored execution order.
 type ActionSetMemberView = generated.ListActionSetMembersRow
 
@@ -247,7 +264,39 @@ func (s *Store) ListContainingDefinitionIDs(ctx context.Context, actionSetID str
 
 // CountActionSets returns the number of live authored sets.
 func (s *Store) CountActionSets(ctx context.Context) (int64, error) {
-	n, err := s.queries.CountActionSets(ctx)
+	return s.CountAuthoringActionSets(ctx, ActionSetListFilter{})
+}
+
+// ListAuthoringActionSets returns a deterministic keyset page of live sets
+// with member counts derived from live Actions.
+func (s *Store) ListAuthoringActionSets(ctx context.Context, filter ActionSetListFilter) ([]ActionSetView, error) {
+	rows, err := s.queries.ListAuthoringActionSets(ctx, generated.ListAuthoringActionSetsParams{
+		AfterID: filter.AfterID, UnassignedOnly: filter.UnassignedOnly,
+		ScopeRestricted: filter.ScopeRestricted, RowLimit: filter.Limit,
+		ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("action set: list: %w", err)
+	}
+	views := make([]ActionSetView, len(rows))
+	for i, row := range rows {
+		views[i] = ActionSetView{ActionSetRow: ActionSetRow{
+			ID: row.ID, Name: row.Name, Description: row.Description,
+			Schedule: row.Schedule, OnFailure: row.OnFailure,
+			CreatedAt: row.CreatedAt, CreatedBy: row.CreatedBy, UpdatedAt: row.UpdatedAt,
+			IsDeleted: row.IsDeleted, SearchTsv: row.SearchTsv,
+		}, MemberCount: row.MemberCount}
+	}
+	return views, nil
+}
+
+// CountAuthoringActionSets counts the same set population selected by the
+// list filter, ignoring its keyset and limit.
+func (s *Store) CountAuthoringActionSets(ctx context.Context, filter ActionSetListFilter) (int64, error) {
+	n, err := s.queries.CountAuthoringActionSets(ctx, generated.CountAuthoringActionSetsParams{
+		UnassignedOnly: filter.UnassignedOnly, ScopeRestricted: filter.ScopeRestricted,
+		ScopeGroupIds: filter.ScopeGroupIDs,
+	})
 	if err != nil {
 		return 0, fmt.Errorf("action set: count: %w", err)
 	}

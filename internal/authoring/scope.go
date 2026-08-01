@@ -85,6 +85,35 @@ func (h *Handlers) effectiveActionScopeGroups(ctx context.Context, actionID stri
 	return groups, nil
 }
 
+func (h *Handlers) effectiveActionSetScopeGroups(ctx context.Context, setID string) ([]string, error) {
+	groups, err := h.directScopeGroups(ctx, "action_set", setID)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(groups))
+	for _, id := range groups {
+		seen[id] = struct{}{}
+	}
+	definitionIDs, err := h.store.ListContainingDefinitionIDs(ctx, setID)
+	if err != nil {
+		return nil, err
+	}
+	for _, definitionID := range definitionIDs {
+		definitionGroups, err := h.directScopeGroups(ctx, "definition", definitionID)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range definitionGroups {
+			seen[id] = struct{}{}
+		}
+	}
+	groups = groups[:0]
+	for id := range seen {
+		groups = append(groups, id)
+	}
+	return groups, nil
+}
+
 func groupsOverlap(left, right []string) bool {
 	if len(left) == 0 || len(right) == 0 {
 		return false

@@ -158,6 +158,12 @@ func (s *Service) AddActionToSet(ctx context.Context, op store.AuditOperation, s
 		return nil
 	})
 	if store.IsNotFound(err) {
+		if _, readErr := s.store.GetManifestActionSet(ctx, setID); readErr != nil {
+			return readErr
+		}
+		if _, readErr := s.store.GetManifestAction(ctx, actionID); readErr != nil {
+			return readErr
+		}
 		return ErrAlreadyMember
 	}
 	return err
