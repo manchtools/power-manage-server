@@ -290,6 +290,84 @@ func TestSetUserDisabled_HasNoSelfOrScopedTier(t *testing.T) {
 		"a subject cannot change their own disabled state")
 }
 
+func TestDisableAndDeleteUser_RefuseLastEnabledAdmin(t *testing.T) {
+	for _, viaGroup := range []bool{false, true} {
+		name := "direct"
+		if viaGroup {
+			name = "group"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			soleAdmin := f.seedSubject()
+			if viaGroup {
+				groupID := f.insertUserGroup()
+				f.addUserToGroup(groupID, soleAdmin.ID)
+				_, err := f.raw.Exec(f.ctx(),
+					`INSERT INTO user_group_roles (grant_id, group_id, role_id, assigned_at, assigned_by)
+					 VALUES ($1, $2, $3, $4, '')`, newULID(), groupID, auth.AdminRoleID, f.now)
+				require.NoError(t, err)
+			} else {
+				f.insertUserRoleGrant(soleAdmin.ID, auth.AdminRoleID, "", "")
+			}
+			token := f.mintToken(soleAdmin.ID, soleAdmin.Email)
+
+			_, err := f.client.SetUserDisabled(f.ctx(), authed(&pmv1.SetUserDisabledRequest{
+				Id: soleAdmin.ID, Disabled: true,
+			}, token))
+			assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+			_, err = f.client.DeleteUser(f.ctx(), authed(&pmv1.DeleteUserRequest{Id: soleAdmin.ID}, token))
+			assert.Equal(t, connect.CodeFailedPrecondition, connectCodeOf(t, err))
+
+			state, err := f.store.GetUserSessionState(f.ctx(), soleAdmin.ID)
+			require.NoError(t, err)
+			assert.False(t, state.Disabled)
+			assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceSetUserDisabledProcedure))
+			assert.Empty(t, f.operationsFor(powermanagev1connect.ControlServiceDeleteUserProcedure))
+		})
+	}
+}
+
+func TestSetUserDisabled_ConcurrentAdminsCannotRaceToZero(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	first, second := f.seedSubject(), f.seedSubject()
+	f.insertUserRoleGrant(first.ID, auth.AdminRoleID, "", "")
+	f.insertUserRoleGrant(second.ID, auth.AdminRoleID, "", "")
+	firstToken := f.mintToken(first.ID, first.Email)
+	secondToken := f.mintToken(second.ID, second.Email)
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, attempt := range []struct {
+		id, token string
+	}{{first.ID, firstToken}, {second.ID, secondToken}} {
+		attempt := attempt
+		go func() {
+			<-start
+			_, err := f.client.SetUserDisabled(f.ctx(), authed(&pmv1.SetUserDisabledRequest{
+				Id: attempt.id, Disabled: true,
+			}, attempt.token))
+			results <- err
+		}()
+	}
+	close(start)
+	errs := []error{<-results, <-results}
+	successes, refused := 0, 0
+	for _, err := range errs {
+		if err == nil {
+			successes++
+		} else if connectCodeOf(t, err) == connect.CodeFailedPrecondition {
+			refused++
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, refused)
+	var enabled int
+	require.NoError(t, f.raw.QueryRow(f.ctx(),
+		`SELECT count(*) FROM users WHERE id = ANY($1::text[]) AND disabled = FALSE`, []string{first.ID, second.ID}).Scan(&enabled))
+	assert.Equal(t, 1, enabled, "the shared transaction lock must leave one enabled administrator")
+}
+
 func TestAddUserSshKey_RecordsTheKeyFingerprintNotTheKey(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)

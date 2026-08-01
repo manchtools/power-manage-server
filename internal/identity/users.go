@@ -393,6 +393,28 @@ func (h *Handlers) SetUserDisabled(ctx context.Context, req *connect.Request[pmv
 	at := h.now().UTC()
 	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermSetUserDisabled),
 		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			if err := tx.LockLastAdminGuard(ctx); err != nil {
+				return err
+			}
+			current, err := tx.GetUser(ctx, before.ID)
+			if err != nil {
+				return err
+			}
+			if req.Msg.Disabled && !current.Disabled {
+				admin, err := tx.UserHoldsUnscopedAdmin(ctx, before.ID)
+				if err != nil {
+					return err
+				}
+				if admin {
+					remains, err := tx.EnabledAdminExistsExcludingUser(ctx, before.ID)
+					if err != nil {
+						return err
+					}
+					if !remains {
+						return errLastAdmin
+					}
+				}
+			}
 			n, err := tx.SetUserDisabled(ctx, db.SetUserDisabledParams{
 				ID: before.ID, Disabled: req.Msg.Disabled, UpdatedAt: &at,
 			})
@@ -405,7 +427,7 @@ func (h *Handlers) SetUserDisabled(ctx context.Context, req *connect.Request[pmv
 				// changing, so no row means it already held that value.
 				outcome = store.EffectRejected
 			}
-			wasDisabled := before.Disabled
+			wasDisabled := current.Disabled
 			rec.Effect(store.AuditEffect{
 				ResourceType:  "user",
 				ResourceID:    before.ID,
@@ -418,6 +440,12 @@ func (h *Handlers) SetUserDisabled(ctx context.Context, req *connect.Request[pmv
 			return nil
 		})
 	if err != nil {
+		if errors.Is(err, errLastAdmin) {
+			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
+		}
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, ErrUserNotFound, "user not found")
+		}
 		return nil, internalError(ctx, "failed to update user")
 	}
 	return h.updatedUserResponse(ctx, before.ID)
@@ -755,6 +783,29 @@ func (h *Handlers) DeleteUser(ctx context.Context, req *connect.Request[pmv1.Del
 
 	_, err = h.store.WithAudit(ctx, h.mutationOp(req, actor, PermDeleteUser),
 		func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+			if err := tx.LockLastAdminGuard(ctx); err != nil {
+				return err
+			}
+			current, err := tx.GetUser(ctx, before.ID)
+			if err != nil {
+				return err
+			}
+			before = current
+			if !current.Disabled {
+				admin, err := tx.UserHoldsUnscopedAdmin(ctx, current.ID)
+				if err != nil {
+					return err
+				}
+				if admin {
+					remains, err := tx.EnabledAdminExistsExcludingUser(ctx, current.ID)
+					if err != nil {
+						return err
+					}
+					if !remains {
+						return errLastAdmin
+					}
+				}
+			}
 			links, err := tx.DeleteIdentityLinksForUser(ctx, before.ID)
 			if err != nil {
 				return err
@@ -815,6 +866,12 @@ func (h *Handlers) DeleteUser(ctx context.Context, req *connect.Request[pmv1.Del
 			return nil
 		})
 	if err != nil {
+		if errors.Is(err, errLastAdmin) {
+			return nil, rpcError(ctx, ErrCannotRemoveLastAdmin, connect.CodeFailedPrecondition, "cannot remove the last enabled administrator")
+		}
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, ErrUserNotFound, "user not found")
+		}
 		h.logger.Error("failed to erase user", "error", err)
 		return nil, internalError(ctx, "failed to delete user")
 	}
