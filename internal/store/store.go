@@ -28,11 +28,19 @@ import (
 	"github.com/manchtools/power-manage/server/internal/store/migrations"
 )
 
-// Tx is the transaction-bound query handle handed to a WithAudit
-// callback. It is the generated query surface: everything reachable
-// through it commits or rolls back with the audit rows written by the
-// same call.
-type Tx = generated.Queries
+// Tx is the transaction-bound query handle handed to a WithAudit callback.
+// Generated domain queries stay exported through the embedded handle; raw SQL
+// remains package-private so other packages cannot bypass the audited store
+// surface.
+type Tx struct {
+	*generated.Queries
+	raw pgx.Tx
+}
+
+func (tx *Tx) exec(ctx context.Context, statement string) error {
+	_, err := tx.raw.Exec(ctx, statement)
+	return err
+}
 
 // Store owns the connection pool and the primitives every domain
 // shares: the audited transaction spine, advisory locks, chain

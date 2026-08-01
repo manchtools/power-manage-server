@@ -230,9 +230,9 @@ func (s *Store) WithAudit(
 
 	var rec AuditRecorder
 	var out AuditRecord
-	err := s.withTx(ctx, func(_ pgx.Tx, q *generated.Queries) error {
+	err := s.withTx(ctx, func(raw pgx.Tx, q *generated.Queries) error {
 		if mutate != nil {
-			if err := mutate(ctx, q, &rec); err != nil {
+			if err := mutate(ctx, &Tx{Queries: q, raw: raw}, &rec); err != nil {
 				return err
 			}
 		}
@@ -324,7 +324,7 @@ func (s *Store) WithAuditEffects(
 
 	var rec AuditRecorder
 	var out AuditRecord
-	err := s.withTx(ctx, func(_ pgx.Tx, q *generated.Queries) error {
+	err := s.withTx(ctx, func(raw pgx.Tx, q *generated.Queries) error {
 		parent, err := q.GetAuditOperation(ctx, operationID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -334,7 +334,7 @@ func (s *Store) WithAuditEffects(
 		}
 
 		if mutate != nil {
-			if err := mutate(ctx, q, &rec); err != nil {
+			if err := mutate(ctx, &Tx{Queries: q, raw: raw}, &rec); err != nil {
 				return err
 			}
 		}

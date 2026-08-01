@@ -33,6 +33,8 @@ import (
 //     position the caller has published off-host
 //   - PruneAuditPrefix  the retention path; deletes an archived prefix
 //     and writes its checkpoint in one transaction
+//   - RebuildSearchIndexes reindexes fixed PostgreSQL facets and records
+//     its maintenance effect in the same transaction
 //
 // Adding an entry here is a deliberate act that has to survive review.
 var mutationCapableExports = map[string]string{
@@ -41,6 +43,7 @@ var mutationCapableExports = map[string]string{
 	"WithAuditEffects":           "audited continuation of an existing operation",
 	"RecordPublishedAuditAnchor": "appends an anchor for a published chain position",
 	"PruneAuditPrefix":           "archived-prefix deletion with its checkpoint",
+	"RebuildSearchIndexes":       "audited PostgreSQL index maintenance",
 }
 
 // nonMutatingExports is every other exported method, each with the
@@ -164,6 +167,7 @@ var nonMutatingExports = map[string]string{
 	"IsTokenRevoked":                         "read",
 	"GetServerSettings":                      "read",
 	"CountLiveBootstrapAdminTokens":          "read",
+	"Search":                                 "read",
 
 	// Directory-provisioning reads.
 	"ListSCIMUsers":                    "read",
