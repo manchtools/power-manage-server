@@ -151,7 +151,7 @@ func TestServeHTTP_TokenStoreOutageIsUnavailableNotUnauthorized(t *testing.T) {
 // expired token — only the log severity differs — so a bearer probe cannot tell
 // "wrong token for a live session" from "no such session".
 func TestServeHTTP_ForgedBearerIsUnauthorizedNotUnavailable(t *testing.T) {
-	store := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	store := terminal.NewTokenStore(terminal.NewMemoryBackend(nil))
 	minted, err := store.Mint(context.Background(), terminal.MintParams{
 		UserID:   "01HZX9USER0000000000000000",
 		DeviceID: "01HZX9DEV00000000000000000",

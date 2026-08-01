@@ -76,7 +76,7 @@ func newDeviceHandlerFixture(t *testing.T) *deviceHandlerFixture {
 		encryptor: encryptor, sender: &fakeAgentSender{},
 		sessions: connection.NewTerminalSessionRegistry(), connected: make(map[string]bool),
 	}
-	f.tokens = terminal.NewTokenStore(terminal.NewFakeBackend(func() time.Time { return now }),
+	f.tokens = terminal.NewTokenStore(terminal.NewMemoryBackend(func() time.Time { return now }),
 		terminal.WithClock(func() time.Time { return now }))
 	f.connected[f.directID], f.connected[f.groupID], f.connected[f.outsideID] = true, true, true
 	fingerprint := strings.Repeat("a", 64)

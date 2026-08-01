@@ -9,7 +9,7 @@ import (
 )
 
 func TestTokenStore_MintLookupRoundTrip(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -42,7 +42,7 @@ func TestTokenStore_MintLookupRoundTrip(t *testing.T) {
 }
 
 func TestTokenStore_TokenIsHashedNotPlaintext(t *testing.T) {
-	backend := NewFakeBackend(nil)
+	backend := NewMemoryBackend(nil)
 	store := NewTokenStore(backend)
 	ctx := context.Background()
 
@@ -69,7 +69,7 @@ func TestTokenStore_TokenIsHashedNotPlaintext(t *testing.T) {
 }
 
 func TestTokenStore_Validate_RoundTrip(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -91,7 +91,7 @@ func TestTokenStore_Validate_RoundTrip(t *testing.T) {
 }
 
 func TestTokenStore_Validate_MismatchedToken(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -110,7 +110,7 @@ func TestTokenStore_Validate_MismatchedToken(t *testing.T) {
 }
 
 func TestTokenStore_Validate_UnknownSession(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	_, err := store.Validate(context.Background(), "no-such-session", "anything")
 	if !errors.Is(err, ErrTokenNotFound) {
 		t.Errorf("expected ErrTokenNotFound, got %v", err)
@@ -125,7 +125,7 @@ func TestTokenStore_Validate_UnknownSession(t *testing.T) {
 // that captures query params) and an attacker mints additional
 // WebSocket connections during the 60 s window.
 func TestTokenStore_Validate_IsSingleUse(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -153,7 +153,7 @@ func TestTokenStore_Validate_IsSingleUse(t *testing.T) {
 // Without this behavior, any attacker guess of a session_id would
 // lock out the real web client for the remaining TTL.
 func TestTokenStore_Validate_MismatchPreservesSession(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -181,7 +181,7 @@ func TestTokenStore_Validate_MismatchPreservesSession(t *testing.T) {
 }
 
 func TestTokenStore_Revoke_IsIdempotent(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 
 	res, err := store.Mint(ctx, MintParams{
@@ -210,7 +210,7 @@ func TestTokenStore_TTLExpiry(t *testing.T) {
 	// Frozen clock so we can advance it deterministically.
 	now := time.Unix(0, 0)
 	clock := func() time.Time { return now }
-	backend := NewFakeBackend(clock)
+	backend := NewMemoryBackend(clock)
 	store := NewTokenStore(backend, WithClock(clock), WithTTL(10*time.Second))
 	ctx := context.Background()
 
@@ -237,7 +237,7 @@ func TestTokenStore_TTLExpiry(t *testing.T) {
 }
 
 func TestTokenStore_Mint_RequiresFields(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 	cases := []MintParams{
 		{DeviceID: "d", TtyUser: "u"}, // no UserID
@@ -252,7 +252,7 @@ func TestTokenStore_Mint_RequiresFields(t *testing.T) {
 }
 
 func TestTokenStore_MintGeneratesUniqueIDs(t *testing.T) {
-	store := NewTokenStore(NewFakeBackend(nil))
+	store := NewTokenStore(NewMemoryBackend(nil))
 	ctx := context.Background()
 	seen := make(map[string]struct{})
 	for i := 0; i < 100; i++ {

@@ -1,14 +1,9 @@
-// Package terminal provides the control-server side of the remote
-// terminal feature: a session token store keyed in Valkey, the metadata
-// schema for active sessions, and the helpers used by the
-// ControlService RPC handlers (manchtools/power-manage-sdk#16,
-// manchtools/power-manage-server#6).
+// Package terminal provides the control-server side of remote terminal
+// authentication and session metadata.
 //
 // The token store is intentionally a thin wrapper over a small
-// SessionBackend interface so handler tests can fake it without
-// pulling in miniredis. The production wiring uses Valkey via the
-// existing *redis.Client that the control server already maintains
-// for RediSearch.
+// SessionBackend interface. Production uses the bounded process-local memory
+// backend because one control process owns every active terminal session.
 package terminal
 
 import (
@@ -31,10 +26,6 @@ import (
 // idle sweeper closes it.
 const DefaultTokenTTL = 60 * time.Second
 
-// keyPrefix is the Valkey key namespace for terminal session tokens.
-// One key per session: pm:terminal:session:<session_id>.
-const keyPrefix = "pm:terminal:session:"
-
 // Errors returned by the store. Wrap with %w in callers; check with
 // errors.Is.
 var (
@@ -49,10 +40,8 @@ var (
 	ErrTokenMismatch = errors.New("terminal: session token mismatch")
 )
 
-// Session is the persisted form of an active terminal session, stored
-// in Valkey under pm:terminal:session:<session_id>. The bearer Token is
-// hashed at rest, NOT stored verbatim, so a Valkey dump cannot be used
-// to forge connections.
+// Session is the short-lived pending terminal session. The bearer token is
+// hashed, never retained verbatim.
 type Session struct {
 	// SessionID is the ULID identifying the session for its full
 	// lifetime (mint, validate, stop, audit).
@@ -75,10 +64,10 @@ type Session struct {
 	Cols uint32 `json:"cols"`
 	Rows uint32 `json:"rows"`
 	// CreatedAt is the mint time. Used for diagnostics and audit; the
-	// real expiry is enforced by Valkey TTL on the key.
+	// backend enforces the real expiry.
 	CreatedAt time.Time `json:"created_at"`
 	// ExpiresAt is the absolute deadline for connecting. Mirrors the
-	// Valkey TTL but is convenient to surface in StartTerminal's
+	// backend TTL but is convenient to surface in StartTerminal's
 	// response so the web client can decide when to retry.
 	ExpiresAt time.Time `json:"expires_at"`
 	// TokenHash is the SHA-256 hash of the bearer token. The plaintext
@@ -89,8 +78,7 @@ type Session struct {
 
 // SessionBackend is the storage interface the token store depends on.
 // Implementations must be safe for concurrent use. Two implementations
-// ship with this package: ValkeyBackend (production) and FakeBackend
-// (tests).
+// The production implementation is MemoryBackend.
 type SessionBackend interface {
 	// Set stores the session with the given TTL. Implementations must
 	// support TTL eviction so expired entries do not accumulate.
@@ -106,8 +94,7 @@ type SessionBackend interface {
 	// single-use tokens: two concurrent connect attempts with the
 	// same bearer can only succeed once — the loser sees
 	// ErrTokenNotFound. Implementations must use a primitive that
-	// cannot race (Valkey GETDEL, an in-process mutex on the fake,
-	// etc.). A naïve Get-then-Delete pair does NOT satisfy this
+	// cannot race. A naïve Get-then-Delete pair does NOT satisfy this
 	// contract; returning a nil payload and nil error MUST be
 	// translated to ErrTokenNotFound.
 	GetAndDelete(ctx context.Context, sessionID string) ([]byte, error)
@@ -185,16 +172,14 @@ type MintResult struct {
 // Mint creates a new session with an auto-generated session ID,
 // stores its hashed token + metadata, and returns the plaintext
 // token to the caller. Use MintWithID when the caller needs to
-// control the session ID (e.g. to write a CQRS event before
-// minting the derived Valkey state).
+// control the session ID before minting the pending token.
 func (s *TokenStore) Mint(ctx context.Context, params MintParams) (*MintResult, error) {
 	return s.MintWithID(ctx, ulid.Make().String(), params)
 }
 
 // MintWithID is like Mint but uses the caller-supplied session ID
-// instead of generating one. This supports the CQRS pattern where
-// the event (source of truth) is written first with a known ID,
-// and the Valkey token (derived state) is minted afterwards.
+// instead of generating one. The caller can commit the durable session row
+// under the same identifier before returning it to the browser.
 func (s *TokenStore) MintWithID(ctx context.Context, sessionID string, params MintParams) (*MintResult, error) {
 	if sessionID == "" {
 		return nil, errors.New("terminal: session_id is required")

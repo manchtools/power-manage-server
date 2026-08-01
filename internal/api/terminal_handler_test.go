@@ -56,7 +56,7 @@ func setLinuxUsername(t *testing.T, st *store.Store, userID, linuxUsername strin
 // assert mint/revoke side effects.
 func newTerminalHandler(t *testing.T, st *store.Store) (*api.TerminalHandler, *terminal.TokenStore) {
 	t.Helper()
-	tokenStore := terminal.NewTokenStore(terminal.NewFakeBackend(nil))
+	tokenStore := terminal.NewTokenStore(terminal.NewMemoryBackend(nil))
 	h := api.NewTerminalHandler(st, tokenStore, "wss://control.example.com/terminal", slog.Default())
 	// Default transport: device connected, stop succeeds and finds the session.
 	// Tests that need the offline or indeterminate paths override this.

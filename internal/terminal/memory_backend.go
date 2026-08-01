@@ -6,41 +6,39 @@ import (
 	"time"
 )
 
-// FakeBackend is an in-memory SessionBackend used by tests so the
-// handler suite doesn't need a real Valkey instance. It honours TTLs
-// using the supplied clock — pass time.Now in production-like tests
-// or a frozen clock for deterministic expiry assertions.
+// MemoryBackend is the single-process SessionBackend. It honours TTLs using
+// the supplied clock and atomically consumes one-time tokens under its mutex.
 //
 // Concurrency is the same as the production backend: independent
 // goroutines may call Set/Get/Delete simultaneously.
-type FakeBackend struct {
+type MemoryBackend struct {
 	mu     sync.Mutex
 	now    func() time.Time
-	values map[string]fakeEntry
+	values map[string]memoryEntry
 }
 
-type fakeEntry struct {
+type memoryEntry struct {
 	payload   []byte
 	expiresAt time.Time
 }
 
-// NewFakeBackend constructs an empty in-memory backend. now defaults
+// NewMemoryBackend constructs an empty in-memory backend. now defaults
 // to time.Now if nil.
-func NewFakeBackend(now func() time.Time) *FakeBackend {
+func NewMemoryBackend(now func() time.Time) *MemoryBackend {
 	if now == nil {
 		now = time.Now
 	}
-	return &FakeBackend{
+	return &MemoryBackend{
 		now:    now,
-		values: make(map[string]fakeEntry),
+		values: make(map[string]memoryEntry),
 	}
 }
 
 // Set stores the payload with the given TTL.
-func (b *FakeBackend) Set(ctx context.Context, sessionID string, payload []byte, ttl time.Duration) error {
+func (b *MemoryBackend) Set(ctx context.Context, sessionID string, payload []byte, ttl time.Duration) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.values[sessionID] = fakeEntry{
+	b.values[sessionID] = memoryEntry{
 		payload:   append([]byte(nil), payload...), // defensive copy
 		expiresAt: b.now().Add(ttl),
 	}
@@ -49,7 +47,7 @@ func (b *FakeBackend) Set(ctx context.Context, sessionID string, payload []byte,
 
 // Get returns the stored payload, honouring TTL via lazy expiry on
 // read. Returns ErrTokenNotFound for unknown or expired entries.
-func (b *FakeBackend) Get(ctx context.Context, sessionID string) ([]byte, error) {
+func (b *MemoryBackend) Get(ctx context.Context, sessionID string) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.values[sessionID]
@@ -64,18 +62,18 @@ func (b *FakeBackend) Get(ctx context.Context, sessionID string) ([]byte, error)
 }
 
 // Delete is idempotent.
-func (b *FakeBackend) Delete(ctx context.Context, sessionID string) error {
+func (b *MemoryBackend) Delete(ctx context.Context, sessionID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.values, sessionID)
 	return nil
 }
 
-// GetAndDelete mirrors the Valkey GETDEL primitive: returns the payload
-// and removes the entry in a single atomic step under the mutex, so
+// GetAndDelete returns the payload and removes the entry in a single atomic
+// step under the mutex, so
 // two concurrent callers cannot both observe it. Essential for the
 // single-use token semantics Validate relies on.
-func (b *FakeBackend) GetAndDelete(ctx context.Context, sessionID string) ([]byte, error) {
+func (b *MemoryBackend) GetAndDelete(ctx context.Context, sessionID string) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	entry, ok := b.values[sessionID]
