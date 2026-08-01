@@ -21,6 +21,7 @@ const maxBatchDevices = 256
 var (
 	ErrInvalidInput   = errors.New("invalid device group input")
 	ErrInvalidQuery   = errors.New("invalid device group query")
+	ErrStaticGroup    = errors.New("static device group has no dynamic query")
 	ErrDynamicGroup   = errors.New("dynamic group membership is evaluator-owned")
 	ErrMemberNotFound = errors.New("device group member not found")
 	errNoChange       = errors.New("device group mutation made no change")
@@ -127,7 +128,21 @@ func (s *State) UpdateQuery(ctx context.Context, op store.AuditOperation, id str
 	if err != nil {
 		return store.DeviceGroupView{}, err
 	}
+	current, err := s.store.GetDeviceGroup(ctx, id)
+	if err != nil {
+		return store.DeviceGroupView{}, translateNotFound(err)
+	}
+	if !current.IsDynamic {
+		return store.DeviceGroupView{}, ErrStaticGroup
+	}
 	_, err = s.store.WithAudit(ctx, op, func(ctx context.Context, tx *store.Tx, rec *store.AuditRecorder) error {
+		current, err := tx.GetDeviceGroup(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !current.IsDynamic {
+			return ErrStaticGroup
+		}
 		if _, err := tx.UpdateDeviceGroupQuery(ctx, db.UpdateDeviceGroupQueryParams{
 			ID: id, IsDynamic: dynamic, DynamicQuery: query,
 		}); err != nil {

@@ -33,6 +33,27 @@ func (q *Queries) AddDeviceGroupMember(ctx context.Context, arg AddDeviceGroupMe
 	return result.RowsAffected(), nil
 }
 
+const countDeviceGroups = `-- name: CountDeviceGroups :one
+SELECT COUNT(*) FROM device_groups g
+WHERE g.is_deleted = FALSE
+  AND (
+      NOT $1::boolean
+      OR g.id = ANY($2::text[])
+  )
+`
+
+type CountDeviceGroupsParams struct {
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+func (q *Queries) CountDeviceGroups(ctx context.Context, arg CountDeviceGroupsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeviceGroups, arg.ScopeRestricted, arg.ScopeGroupIds)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteDeviceGroupAssignments = `-- name: DeleteDeviceGroupAssignments :execrows
 UPDATE assignments SET is_deleted = TRUE
 WHERE target_type = 'device_group' AND target_id = $1 AND is_deleted = FALSE
@@ -206,6 +227,153 @@ func (q *Queries) ListDeviceGroupMembers(ctx context.Context, groupID string) ([
 			&i.Hostname,
 			&i.AgentVersion,
 			&i.LastSeenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceGroups = `-- name: ListDeviceGroups :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.sync_interval_minutes,
+       g.inventory_interval_minutes, g.maintenance_window,
+       COUNT(d.id)::bigint AS live_member_count
+FROM device_groups g
+LEFT JOIN device_group_members m ON m.group_id = g.id
+LEFT JOIN devices d ON d.id = m.device_id AND d.is_deleted = FALSE
+WHERE g.is_deleted = FALSE
+  AND g.id > $1
+  AND (
+      NOT $2::boolean
+      OR g.id = ANY($3::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id
+LIMIT $4
+`
+
+type ListDeviceGroupsParams struct {
+	AfterID         string   `json:"after_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+	RowLimit        int32    `json:"row_limit"`
+}
+
+type ListDeviceGroupsRow struct {
+	ID                       string     `json:"id"`
+	Name                     string     `json:"name"`
+	Description              string     `json:"description"`
+	CreatedAt                *time.Time `json:"created_at"`
+	CreatedBy                string     `json:"created_by"`
+	IsDynamic                bool       `json:"is_dynamic"`
+	DynamicQuery             *string    `json:"dynamic_query"`
+	SyncIntervalMinutes      int32      `json:"sync_interval_minutes"`
+	InventoryIntervalMinutes int32      `json:"inventory_interval_minutes"`
+	MaintenanceWindow        []byte     `json:"maintenance_window"`
+	LiveMemberCount          int64      `json:"live_member_count"`
+}
+
+func (q *Queries) ListDeviceGroups(ctx context.Context, arg ListDeviceGroupsParams) ([]ListDeviceGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroups,
+		arg.AfterID,
+		arg.ScopeRestricted,
+		arg.ScopeGroupIds,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceGroupsRow{}
+	for rows.Next() {
+		var i ListDeviceGroupsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDynamic,
+			&i.DynamicQuery,
+			&i.SyncIntervalMinutes,
+			&i.InventoryIntervalMinutes,
+			&i.MaintenanceWindow,
+			&i.LiveMemberCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeviceGroupsForDevice = `-- name: ListDeviceGroupsForDevice :many
+SELECT g.id, g.name, g.description, g.created_at, g.created_by,
+       g.is_dynamic, g.dynamic_query, g.sync_interval_minutes,
+       g.inventory_interval_minutes, g.maintenance_window,
+       COUNT(live.id)::bigint AS live_member_count
+FROM device_group_members requested
+JOIN device_groups g ON g.id = requested.group_id AND g.is_deleted = FALSE
+LEFT JOIN device_group_members members ON members.group_id = g.id
+LEFT JOIN devices live ON live.id = members.device_id AND live.is_deleted = FALSE
+WHERE requested.device_id = $1
+  AND (
+      NOT $2::boolean
+      OR g.id = ANY($3::text[])
+  )
+GROUP BY g.id
+ORDER BY g.id
+`
+
+type ListDeviceGroupsForDeviceParams struct {
+	DeviceID        string   `json:"device_id"`
+	ScopeRestricted bool     `json:"scope_restricted"`
+	ScopeGroupIds   []string `json:"scope_group_ids"`
+}
+
+type ListDeviceGroupsForDeviceRow struct {
+	ID                       string     `json:"id"`
+	Name                     string     `json:"name"`
+	Description              string     `json:"description"`
+	CreatedAt                *time.Time `json:"created_at"`
+	CreatedBy                string     `json:"created_by"`
+	IsDynamic                bool       `json:"is_dynamic"`
+	DynamicQuery             *string    `json:"dynamic_query"`
+	SyncIntervalMinutes      int32      `json:"sync_interval_minutes"`
+	InventoryIntervalMinutes int32      `json:"inventory_interval_minutes"`
+	MaintenanceWindow        []byte     `json:"maintenance_window"`
+	LiveMemberCount          int64      `json:"live_member_count"`
+}
+
+func (q *Queries) ListDeviceGroupsForDevice(ctx context.Context, arg ListDeviceGroupsForDeviceParams) ([]ListDeviceGroupsForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listDeviceGroupsForDevice, arg.DeviceID, arg.ScopeRestricted, arg.ScopeGroupIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeviceGroupsForDeviceRow{}
+	for rows.Next() {
+		var i ListDeviceGroupsForDeviceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.CreatedBy,
+			&i.IsDynamic,
+			&i.DynamicQuery,
+			&i.SyncIntervalMinutes,
+			&i.InventoryIntervalMinutes,
+			&i.MaintenanceWindow,
+			&i.LiveMemberCount,
 		); err != nil {
 			return nil, err
 		}

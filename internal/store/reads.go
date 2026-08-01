@@ -79,6 +79,15 @@ type DeviceGroupView = generated.GetDeviceGroupRow
 // DeviceGroupMemberView is one live member device.
 type DeviceGroupMemberView = generated.ListDeviceGroupMembersRow
 
+// DeviceGroupListFilter contains the keyset and device-group scope shared by
+// the list and count reads.
+type DeviceGroupListFilter struct {
+	AfterID         string
+	Limit           int32
+	ScopeRestricted bool
+	ScopeGroupIDs   []string
+}
+
 // GetDeviceGroupID returns one live device-group identifier.
 func (s *Store) GetDeviceGroupID(ctx context.Context, id string) (string, error) {
 	rowID, err := s.queries.GetDeviceGroupID(ctx, id)
@@ -104,6 +113,55 @@ func (s *Store) ListDeviceGroupMembers(ctx context.Context, id string) ([]Device
 		return nil, fmt.Errorf("device group: list members: %w", err)
 	}
 	return rows, nil
+}
+
+// ListDeviceGroups returns a deterministic keyset page.
+func (s *Store) ListDeviceGroups(ctx context.Context, filter DeviceGroupListFilter) ([]DeviceGroupView, error) {
+	if filter.Limit < 0 || filter.Limit > 101 {
+		return nil, fmt.Errorf("device group: list limit must be between 0 and 101")
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+	rows, err := s.queries.ListDeviceGroups(ctx, generated.ListDeviceGroupsParams{
+		AfterID: filter.AfterID, RowLimit: filter.Limit,
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("device group: list: %w", err)
+	}
+	groups := make([]DeviceGroupView, len(rows))
+	for i, row := range rows {
+		groups[i] = DeviceGroupView(row)
+	}
+	return groups, nil
+}
+
+// CountDeviceGroups counts the same scope selected by ListDeviceGroups.
+func (s *Store) CountDeviceGroups(ctx context.Context, filter DeviceGroupListFilter) (int64, error) {
+	n, err := s.queries.CountDeviceGroups(ctx, generated.CountDeviceGroupsParams{
+		ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("device group: count: %w", err)
+	}
+	return n, nil
+}
+
+// ListDeviceGroupsForDevice returns the visible live groups containing one
+// device.
+func (s *Store) ListDeviceGroupsForDevice(ctx context.Context, deviceID string, filter DeviceGroupListFilter) ([]DeviceGroupView, error) {
+	rows, err := s.queries.ListDeviceGroupsForDevice(ctx, generated.ListDeviceGroupsForDeviceParams{
+		DeviceID: deviceID, ScopeRestricted: filter.ScopeRestricted, ScopeGroupIds: filter.ScopeGroupIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("device group: list for device: %w", err)
+	}
+	groups := make([]DeviceGroupView, len(rows))
+	for i, row := range rows {
+		groups[i] = DeviceGroupView(row)
+	}
+	return groups, nil
 }
 
 // ActionSetRow is one live authored action set used to compile agent manifests.
