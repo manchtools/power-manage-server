@@ -220,6 +220,78 @@ func (q *Queries) GetOSQueryResult(ctx context.Context, queryID string) (GetOSQu
 	return i, err
 }
 
+const insertExecution = `-- name: InsertExecution :one
+INSERT INTO executions (
+    id, device_id, action_id, action_type, desired_state, params,
+    timeout_seconds, status, created_at, scheduled_for,
+    created_by_type, created_by_id
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6,
+    $7, $8, $9,
+    $10, $11, $12
+)
+RETURNING id, device_id, action_id, action_type, desired_state, params, timeout_seconds, status, error, output, detection_output, changed, compliant, created_at, scheduled_for, dispatched_at, started_at, completed_at, duration_ms, created_by_type, created_by_id, search_tsv
+`
+
+type InsertExecutionParams struct {
+	ID             string     `json:"id"`
+	DeviceID       string     `json:"device_id"`
+	ActionID       *string    `json:"action_id"`
+	ActionType     int32      `json:"action_type"`
+	DesiredState   int32      `json:"desired_state"`
+	Params         []byte     `json:"params"`
+	TimeoutSeconds int32      `json:"timeout_seconds"`
+	Status         string     `json:"status"`
+	CreatedAt      *time.Time `json:"created_at"`
+	ScheduledFor   *time.Time `json:"scheduled_for"`
+	CreatedByType  string     `json:"created_by_type"`
+	CreatedByID    string     `json:"created_by_id"`
+}
+
+func (q *Queries) InsertExecution(ctx context.Context, arg InsertExecutionParams) (Execution, error) {
+	row := q.db.QueryRow(ctx, insertExecution,
+		arg.ID,
+		arg.DeviceID,
+		arg.ActionID,
+		arg.ActionType,
+		arg.DesiredState,
+		arg.Params,
+		arg.TimeoutSeconds,
+		arg.Status,
+		arg.CreatedAt,
+		arg.ScheduledFor,
+		arg.CreatedByType,
+		arg.CreatedByID,
+	)
+	var i Execution
+	err := row.Scan(
+		&i.ID,
+		&i.DeviceID,
+		&i.ActionID,
+		&i.ActionType,
+		&i.DesiredState,
+		&i.Params,
+		&i.TimeoutSeconds,
+		&i.Status,
+		&i.Error,
+		&i.Output,
+		&i.DetectionOutput,
+		&i.Changed,
+		&i.Compliant,
+		&i.CreatedAt,
+		&i.ScheduledFor,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.DurationMs,
+		&i.CreatedByType,
+		&i.CreatedByID,
+		&i.SearchTsv,
+	)
+	return i, err
+}
+
 const listDeviceComplianceEvaluations = `-- name: ListDeviceComplianceEvaluations :many
 SELECT e.policy_id, p.name AS policy_name,
        e.action_id, a.name AS action_name,

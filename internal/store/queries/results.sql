@@ -41,6 +41,19 @@ UPDATE executions
 SET status = 'cancelled', completed_at = $2
 WHERE id = $1 AND status IN ('scheduled', 'pending');
 
+-- name: InsertExecution :one
+INSERT INTO executions (
+    id, device_id, action_id, action_type, desired_state, params,
+    timeout_seconds, status, created_at, scheduled_for,
+    created_by_type, created_by_id
+) VALUES (
+    sqlc.arg(id), sqlc.arg(device_id), sqlc.narg(action_id),
+    sqlc.arg(action_type), sqlc.arg(desired_state), sqlc.arg(params),
+    sqlc.arg(timeout_seconds), sqlc.arg(status), sqlc.arg(created_at),
+    sqlc.narg(scheduled_for), sqlc.arg(created_by_type), sqlc.arg(created_by_id)
+)
+RETURNING *;
+
 -- name: ListExecutionViews :many
 SELECT e.*, COALESCE(a.name, '')::text AS action_name
 FROM executions e
