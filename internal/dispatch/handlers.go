@@ -151,33 +151,15 @@ func (h *Handlers) DispatchAction(ctx context.Context, req *connect.Request[pmv1
 	var input ManifestInput
 	switch source := req.Msg.ActionSource.(type) {
 	case *pmv1.DispatchActionRequest_ActionId:
-		compiled, err := h.compiler.Action(ctx, source.ActionId)
+		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
 		if err != nil {
-			return nil, h.compileError(ctx, "compile dispatched action", err)
+			return nil, err
 		}
-		visible, err := authoring.ActionVisibleToCaller(ctx, h.store, source.ActionId)
-		if err != nil {
-			return nil, h.internal(ctx, "resolve dispatched action scope", err)
-		}
-		if !visible {
-			return nil, notFound(ctx, errActionNotFound, "action not found")
-		}
-		compiled.Schedule = &pmv1.ActionSchedule{}
 		input = ManifestInput{Manifest: compiled, PersistActionIDs: true}
 	case *pmv1.DispatchActionRequest_InlineAction:
-		if source.InlineAction == nil {
-			return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
-		}
-		inline := proto.Clone(source.InlineAction).(*pmv1.Action)
-		if inline.TimeoutSeconds == 0 {
-			inline.TimeoutSeconds = 300
-		}
-		if err := authoring.ValidateExecutableAction(inline); err != nil {
-			return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
-		}
-		compiled, err := manifest.OneShotAction(inline)
+		compiled, err := h.inlineTemplate(ctx, source.InlineAction)
 		if err != nil {
-			return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
+			return nil, err
 		}
 		input = ManifestInput{Manifest: compiled}
 	default:
@@ -263,16 +245,9 @@ func (h *Handlers) DispatchActionSet(ctx context.Context, req *connect.Request[p
 	if err := h.target(ctx, actor, "DispatchActionSet", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	compiled, err := h.compiler.ActionSet(ctx, req.Msg.ActionSetId)
+	compiled, err := h.catalogActionSetTemplate(ctx, req.Msg.ActionSetId)
 	if err != nil {
-		return nil, h.collectionCompileError(ctx, "action set", errActionSetMissing, "compile dispatched action set", err)
-	}
-	visible, err := authoring.ActionSetVisibleToCaller(ctx, h.store, req.Msg.ActionSetId)
-	if err != nil {
-		return nil, h.internal(ctx, "resolve dispatched action set scope", err)
-	}
-	if !visible {
-		return nil, notFound(ctx, errActionSetMissing, "action set not found")
+		return nil, err
 	}
 	result, err := h.submitter.Submit(ctx, SubmitParams{
 		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchActionSetProcedure, "DispatchActionSet"),
@@ -299,16 +274,9 @@ func (h *Handlers) DispatchDefinition(ctx context.Context, req *connect.Request[
 	if err := h.target(ctx, actor, "DispatchDefinition", req.Msg.DeviceId); err != nil {
 		return nil, err
 	}
-	compiled, err := h.compiler.Definition(ctx, req.Msg.DefinitionId)
+	compiled, err := h.catalogDefinitionTemplates(ctx, req.Msg.DefinitionId)
 	if err != nil {
-		return nil, h.collectionCompileError(ctx, "definition", errDefinitionMissing, "compile dispatched definition", err)
-	}
-	visible, err := authoring.DefinitionVisibleToCaller(ctx, h.store, req.Msg.DefinitionId)
-	if err != nil {
-		return nil, h.internal(ctx, "resolve dispatched definition scope", err)
-	}
-	if !visible {
-		return nil, notFound(ctx, errDefinitionMissing, "definition not found")
+		return nil, err
 	}
 	result, err := h.submitter.Submit(ctx, SubmitParams{
 		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchDefinitionProcedure, "DispatchDefinition"),
@@ -318,6 +286,149 @@ func (h *Handlers) DispatchDefinition(ctx context.Context, req *connect.Request[
 		return nil, h.submitError(ctx, "submit definition dispatch", err)
 	}
 	return connect.NewResponse(&pmv1.DispatchDefinitionResponse{
+		Executions: createdExecutionsToProto(result.Executions),
+	}), nil
+}
+
+// DispatchToMultiple atomically submits one Action to every named device.
+func (h *Handlers) DispatchToMultiple(ctx context.Context, req *connect.Request[pmv1.DispatchToMultipleRequest]) (*connect.Response[pmv1.DispatchToMultipleResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hasDuplicateIDs(req.Msg.DeviceIds) {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "device_ids contains duplicates")
+	}
+	for _, deviceID := range req.Msg.DeviceIds {
+		if err := h.target(ctx, actor, "DispatchToMultiple", deviceID); err != nil {
+			return nil, err
+		}
+	}
+
+	var templates []*pmv1.Manifest
+	persistActionIDs := false
+	switch source := req.Msg.ActionSource.(type) {
+	case *pmv1.DispatchToMultipleRequest_ActionId:
+		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
+		if err != nil {
+			return nil, err
+		}
+		templates, persistActionIDs = []*pmv1.Manifest{compiled}, true
+	case *pmv1.DispatchToMultipleRequest_InlineAction:
+		compiled, err := h.inlineTemplate(ctx, source.InlineAction)
+		if err != nil {
+			return nil, err
+		}
+		templates = []*pmv1.Manifest{compiled}
+	default:
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument,
+			"either action_id or inline_action is required")
+	}
+	targets, err := freshTargets(req.Msg.DeviceIds, templates, persistActionIDs)
+	if err != nil {
+		return nil, h.internal(ctx, "prepare multi-device dispatch", err)
+	}
+	result, err := h.submitter.SubmitBatch(ctx, SubmitBatchParams{
+		Operation: h.operation(req, actor, powermanagev1connect.ControlServiceDispatchToMultipleProcedure, "DispatchToMultiple"),
+		Targets:   targets,
+	})
+	if err != nil {
+		return nil, h.submitError(ctx, "submit multi-device dispatch", err)
+	}
+	return connect.NewResponse(&pmv1.DispatchToMultipleResponse{
+		Executions: createdExecutionsToProto(result.Executions),
+	}), nil
+}
+
+// DispatchToGroup snapshots the group's live members, then atomically submits
+// one freshly identified copy of the selected source to every member.
+func (h *Handlers) DispatchToGroup(ctx context.Context, req *connect.Request[pmv1.DispatchToGroupRequest]) (*connect.Response[pmv1.DispatchToGroupResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !auth.AuthorizeContext(ctx, "DispatchToGroup", req.Msg.GroupId) {
+		return nil, rpcError(ctx, errPermissionDenied, connect.CodePermissionDenied, "permission denied")
+	}
+	if _, err := h.store.GetDeviceGroup(ctx, req.Msg.GroupId); err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errDeviceGroupMissing, "device group not found")
+		}
+		return nil, h.internal(ctx, "read dispatch device group", err)
+	}
+	if groups, restricted := auth.DeviceScopeListFilter(ctx, "DispatchToGroup"); restricted && !containsID(groups, req.Msg.GroupId) {
+		return nil, notFound(ctx, errDeviceGroupMissing, "device group not found")
+	}
+	members, err := h.store.ListDeviceGroupMembers(ctx, req.Msg.GroupId)
+	if err != nil {
+		return nil, h.internal(ctx, "list dispatch group members", err)
+	}
+	deviceIDs := make([]string, len(members))
+	if len(members) == 0 && !auth.HasPermission(ctx, "DispatchToGroup") {
+		return nil, notFound(ctx, errDeviceGroupMissing, "device group not found")
+	}
+	for i, member := range members {
+		deviceIDs[i] = member.DeviceID
+		if err := h.target(ctx, actor, "DispatchToGroup", member.DeviceID); err != nil {
+			return nil, err
+		}
+	}
+
+	var templates []*pmv1.Manifest
+	persistActionIDs := true
+	switch source := req.Msg.ActionSource.(type) {
+	case *pmv1.DispatchToGroupRequest_ActionId:
+		compiled, err := h.catalogActionTemplate(ctx, source.ActionId)
+		if err != nil {
+			return nil, err
+		}
+		templates = []*pmv1.Manifest{compiled}
+	case *pmv1.DispatchToGroupRequest_ActionSetId:
+		compiled, err := h.catalogActionSetTemplate(ctx, source.ActionSetId)
+		if err != nil {
+			return nil, err
+		}
+		templates = []*pmv1.Manifest{compiled}
+	case *pmv1.DispatchToGroupRequest_DefinitionId:
+		templates, err = h.catalogDefinitionTemplates(ctx, source.DefinitionId)
+		if err != nil {
+			return nil, err
+		}
+	case *pmv1.DispatchToGroupRequest_InlineAction:
+		compiled, err := h.inlineTemplate(ctx, source.InlineAction)
+		if err != nil {
+			return nil, err
+		}
+		templates, persistActionIDs = []*pmv1.Manifest{compiled}, false
+	default:
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "an action source is required")
+	}
+	op := h.operation(req, actor, powermanagev1connect.ControlServiceDispatchToGroupProcedure, "DispatchToGroup")
+	if len(deviceIDs) == 0 {
+		_, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
+			ResourceType: "device_group", ResourceID: req.Msg.GroupId,
+			Action: "DISPATCH", Outcome: store.EffectApplied,
+		})
+		if err != nil {
+			return nil, h.internal(ctx, "audit empty group dispatch", err)
+		}
+		return connect.NewResponse(&pmv1.DispatchToGroupResponse{}), nil
+	}
+	targets, err := freshTargets(deviceIDs, templates, persistActionIDs)
+	if err != nil {
+		return nil, h.internal(ctx, "prepare group dispatch", err)
+	}
+	result, err := h.submitter.SubmitBatch(ctx, SubmitBatchParams{Operation: op, Targets: targets})
+	if err != nil {
+		return nil, h.submitError(ctx, "submit group dispatch", err)
+	}
+	return connect.NewResponse(&pmv1.DispatchToGroupResponse{
 		Executions: createdExecutionsToProto(result.Executions),
 	}), nil
 }
@@ -356,13 +467,113 @@ func (h *Handlers) submitError(ctx context.Context, operation string, err error)
 func catalogManifests(manifests ...*pmv1.Manifest) []ManifestInput {
 	inputs := make([]ManifestInput, len(manifests))
 	for i, compiled := range manifests {
-		// Explicit Dispatch* RPCs are one-shot. The compiler has already
-		// resolved Definition-over-ActionSet schedule precedence; replacing the
-		// emitted schedule here does not rewrite either authored object.
-		compiled.Schedule = &pmv1.ActionSchedule{}
 		inputs[i] = ManifestInput{Manifest: compiled, PersistActionIDs: true}
 	}
 	return inputs
+}
+
+func (h *Handlers) catalogActionTemplate(ctx context.Context, actionID string) (*pmv1.Manifest, error) {
+	compiled, err := h.compiler.Action(ctx, actionID)
+	if err != nil {
+		return nil, h.compileError(ctx, "compile dispatched action", err)
+	}
+	visible, err := authoring.ActionVisibleToCaller(ctx, h.store, actionID)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve dispatched action scope", err)
+	}
+	if !visible {
+		return nil, notFound(ctx, errActionNotFound, "action not found")
+	}
+	compiled.Schedule = &pmv1.ActionSchedule{}
+	return compiled, nil
+}
+
+func (h *Handlers) catalogActionSetTemplate(ctx context.Context, setID string) (*pmv1.Manifest, error) {
+	compiled, err := h.compiler.ActionSet(ctx, setID)
+	if err != nil {
+		return nil, h.collectionCompileError(ctx, "action set", errActionSetMissing, "compile dispatched action set", err)
+	}
+	visible, err := authoring.ActionSetVisibleToCaller(ctx, h.store, setID)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve dispatched action set scope", err)
+	}
+	if !visible {
+		return nil, notFound(ctx, errActionSetMissing, "action set not found")
+	}
+	compiled.Schedule = &pmv1.ActionSchedule{}
+	return compiled, nil
+}
+
+func (h *Handlers) catalogDefinitionTemplates(ctx context.Context, definitionID string) ([]*pmv1.Manifest, error) {
+	compiled, err := h.compiler.Definition(ctx, definitionID)
+	if err != nil {
+		return nil, h.collectionCompileError(ctx, "definition", errDefinitionMissing, "compile dispatched definition", err)
+	}
+	visible, err := authoring.DefinitionVisibleToCaller(ctx, h.store, definitionID)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve dispatched definition scope", err)
+	}
+	if !visible {
+		return nil, notFound(ctx, errDefinitionMissing, "definition not found")
+	}
+	for _, item := range compiled {
+		item.Schedule = &pmv1.ActionSchedule{}
+	}
+	return compiled, nil
+}
+
+func (h *Handlers) inlineTemplate(ctx context.Context, action *pmv1.Action) (*pmv1.Manifest, error) {
+	if action == nil {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
+	}
+	inline := proto.Clone(action).(*pmv1.Action)
+	if inline.TimeoutSeconds == 0 {
+		inline.TimeoutSeconds = 300
+	}
+	if err := authoring.ValidateExecutableAction(inline); err != nil {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
+	}
+	compiled, err := manifest.OneShotAction(inline)
+	if err != nil {
+		return nil, rpcError(ctx, errValidationFailed, connect.CodeInvalidArgument, "invalid inline action")
+	}
+	return compiled, nil
+}
+
+func freshTargets(deviceIDs []string, templates []*pmv1.Manifest, persistActionIDs bool) ([]TargetInput, error) {
+	targets := make([]TargetInput, len(deviceIDs))
+	for deviceIndex, deviceID := range deviceIDs {
+		inputs := make([]ManifestInput, len(templates))
+		for manifestIndex, template := range templates {
+			compiled, err := manifest.FreshCopy(template)
+			if err != nil {
+				return nil, err
+			}
+			inputs[manifestIndex] = ManifestInput{Manifest: compiled, PersistActionIDs: persistActionIDs}
+		}
+		targets[deviceIndex] = TargetInput{DeviceID: deviceID, Manifests: inputs}
+	}
+	return targets, nil
+}
+
+func hasDuplicateIDs(ids []string) bool {
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, duplicate := seen[id]; duplicate {
+			return true
+		}
+		seen[id] = struct{}{}
+	}
+	return false
+}
+
+func containsID(ids []string, wanted string) bool {
+	for _, id := range ids {
+		if id == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func futureTime(value *timestamppb.Timestamp) (*time.Time, error) {

@@ -119,3 +119,35 @@ func TestDispatchSubmission_SchedulingAndAuditFailure(t *testing.T) {
 	_, err = st.GetExecution(context.Background(), failedManifest.Occurrences[0].OccurrenceId)
 	assert.True(t, store.IsNotFound(err), "audit failure must roll the execution back")
 }
+
+func TestDispatchSubmission_MultiDeviceFailureRollsBackWholeFanout(t *testing.T) {
+	st, raw := setupPostgres(t)
+	deviceID := seedDevice(t, raw)
+	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	waker := &committedWaker{store: st}
+	service := dispatch.New(dispatch.Config{Store: st, Waker: waker, Now: func() time.Time { return now }})
+	first, second := dispatchManifest(), dispatchManifest()
+	op := mutationOp()
+	op.RequestDescriptor = "/powermanage.v1.ControlService/DispatchToMultiple"
+
+	_, err := service.SubmitBatch(context.Background(), dispatch.SubmitBatchParams{
+		Operation: op,
+		Targets: []dispatch.TargetInput{
+			{DeviceID: deviceID, Manifests: []dispatch.ManifestInput{{Manifest: first}}},
+			{DeviceID: newID(), Manifests: []dispatch.ManifestInput{{Manifest: second}}},
+		},
+	})
+	require.Error(t, err)
+	assert.Empty(t, waker.ids, "no part of an uncommitted fan-out may wake")
+	for _, executionID := range []string{
+		first.Occurrences[0].OccurrenceId, second.Occurrences[0].OccurrenceId,
+	} {
+		_, err := st.GetExecution(context.Background(), executionID)
+		assert.True(t, store.IsNotFound(err), "every execution must roll back together")
+	}
+	var operations int
+	require.NoError(t, raw.QueryRow(context.Background(), `
+		SELECT count(*) FROM audit_operations WHERE request_descriptor = $1`,
+		op.RequestDescriptor).Scan(&operations))
+	assert.Zero(t, operations, "a failed fan-out cannot leave an initiating audit row")
+}

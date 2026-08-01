@@ -23,18 +23,20 @@ import (
 )
 
 type dispatchHandlerFixture struct {
-	t          *testing.T
-	store      *store.Store
-	raw        *pgxpool.Pool
-	handlers   *dispatch.Handlers
-	waker      *committedWaker
-	now        time.Time
-	actorID    string
-	deviceID   string
-	actionID   string
-	set1       string
-	set2       string
-	definition string
+	t           *testing.T
+	store       *store.Store
+	raw         *pgxpool.Pool
+	handlers    *dispatch.Handlers
+	waker       *committedWaker
+	now         time.Time
+	actorID     string
+	deviceID    string
+	otherDevice string
+	groupID     string
+	actionID    string
+	set1        string
+	set2        string
+	definition  string
 }
 
 func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
@@ -43,9 +45,18 @@ func newDispatchHandlerFixture(t *testing.T) *dispatchHandlerFixture {
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
 	f := &dispatchHandlerFixture{
 		t: t, store: st, raw: raw, now: now, actorID: newID(),
-		deviceID: seedDevice(t, raw), actionID: newID(),
+		deviceID: seedDevice(t, raw), otherDevice: seedDevice(t, raw),
+		groupID: newID(), actionID: newID(),
 	}
 	_, err := raw.Exec(context.Background(), `
+		INSERT INTO device_groups (id, name, created_at) VALUES ($1, 'fanout', $2)`,
+		f.groupID, now)
+	require.NoError(t, err)
+	_, err = raw.Exec(context.Background(), `
+		INSERT INTO device_group_members (group_id, device_id, added_at) VALUES
+			($1, $2, $4), ($1, $3, $4)`, f.groupID, f.deviceID, f.otherDevice, now)
+	require.NoError(t, err)
+	_, err = raw.Exec(context.Background(), `
 		INSERT INTO actions
 			(id, name, action_type, desired_state, params, timeout_seconds, schedule, created_at)
 		VALUES ($1, 'catalog shell', $2, $3, $4::jsonb, 90, $5::jsonb, $6)`,
@@ -240,6 +251,54 @@ func TestDispatchHandlers_ActionSetAndDefinitionPreserveComposition(t *testing.T
 	assert.JSONEq(t, `{"runOnAssign":true}`, set2Schedule)
 }
 
+func TestDispatchHandlers_MultiDeviceAndGroupFanoutAreSingleOperations(t *testing.T) {
+	f := newDispatchHandlerFixture(t)
+	multiple, err := f.handlers.DispatchToMultiple(f.actor("DispatchToMultiple"),
+		connect.NewRequest(&pmv1.DispatchToMultipleRequest{
+			DeviceIds: []string{f.deviceID, f.otherDevice},
+			ActionSource: &pmv1.DispatchToMultipleRequest_ActionId{
+				ActionId: f.actionID,
+			},
+		}))
+	require.NoError(t, err)
+	require.Len(t, multiple.Msg.Executions, 2)
+	assert.Equal(t, []string{f.deviceID, f.otherDevice}, []string{
+		multiple.Msg.Executions[0].DeviceId, multiple.Msg.Executions[1].DeviceId,
+	})
+	require.Len(t, f.waker.ids, 2)
+	firstManifest, secondManifest := f.manifest(f.waker.ids[0]), f.manifest(f.waker.ids[1])
+	assert.NotEqual(t, firstManifest.ManifestId, secondManifest.ManifestId)
+	assert.NotEqual(t, firstManifest.Occurrences[0].OccurrenceId, secondManifest.Occurrences[0].OccurrenceId)
+	operation, err := latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceDispatchToMultipleProcedure)
+	require.NoError(t, err)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 4)
+
+	group, err := f.handlers.DispatchToGroup(f.actor("DispatchToGroup"),
+		connect.NewRequest(&pmv1.DispatchToGroupRequest{
+			GroupId: f.groupID,
+			ActionSource: &pmv1.DispatchToGroupRequest_DefinitionId{
+				DefinitionId: f.definition,
+			},
+		}))
+	require.NoError(t, err)
+	require.Len(t, group.Msg.Executions, 4, "two set manifests are copied to each of two devices")
+	require.Len(t, f.waker.ids, 6)
+	counts := map[string]int{}
+	for _, execution := range group.Msg.Executions {
+		counts[execution.DeviceId]++
+	}
+	assert.Equal(t, map[string]int{f.deviceID: 2, f.otherDevice: 2}, counts)
+	operation, err = latestOperationFor(t, f.store, f.raw,
+		powermanagev1connect.ControlServiceDispatchToGroupProcedure)
+	require.NoError(t, err)
+	effects, err = f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 8, "four deliveries and four executions share the group operation")
+}
+
 func TestDispatchHandlers_RefuseUnauthorizedAndMissingTargetsWithoutWork(t *testing.T) {
 	f := newDispatchHandlerFixture(t)
 	request := connect.NewRequest(&pmv1.DispatchActionRequest{
@@ -254,6 +313,14 @@ func TestDispatchHandlers_RefuseUnauthorizedAndMissingTargetsWithoutWork(t *test
 	request.Msg.DeviceId = newID()
 	_, err = f.handlers.DispatchAction(f.actor("DispatchAction"), request)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	_, err = f.handlers.DispatchToMultiple(f.actor("DispatchToMultiple"),
+		connect.NewRequest(&pmv1.DispatchToMultipleRequest{
+			DeviceIds: []string{f.deviceID, f.deviceID},
+			ActionSource: &pmv1.DispatchToMultipleRequest_ActionId{
+				ActionId: f.actionID,
+			},
+		}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Empty(t, f.waker.ids)
 }
 
@@ -264,6 +331,8 @@ func TestDispatchHandlers_MountsExactInitialSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceDispatchInstantActionProcedure,
 		powermanagev1connect.ControlServiceDispatchActionSetProcedure,
 		powermanagev1connect.ControlServiceDispatchDefinitionProcedure,
+		powermanagev1connect.ControlServiceDispatchToMultipleProcedure,
+		powermanagev1connect.ControlServiceDispatchToGroupProcedure,
 	}, f.handlers.MountActions(http.NewServeMux()))
 	assert.ElementsMatch(t, f.handlers.MountActions(http.NewServeMux()), dispatch.MutationProcedures())
 }

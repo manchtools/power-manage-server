@@ -144,6 +144,26 @@ func OneShotAction(action *pmv1.Action) (*pmv1.Manifest, error) {
 	})
 }
 
+// FreshCopy preserves compiled semantics while reminting delivery-local
+// manifest and occurrence identities for another target device.
+func FreshCopy(compiled *pmv1.Manifest) (*pmv1.Manifest, error) {
+	if compiled == nil {
+		return nil, ErrInvalidInput
+	}
+	cloned, ok := proto.Clone(compiled).(*pmv1.Manifest)
+	if !ok {
+		return nil, ErrInvalidInput
+	}
+	cloned.ManifestId = ulid.Make().String()
+	for _, occurrence := range cloned.Occurrences {
+		if occurrence == nil {
+			return nil, ErrInvalidInput
+		}
+		occurrence.OccurrenceId = ulid.Make().String()
+	}
+	return finish(cloned)
+}
+
 // docref: end manifest-compiler
 
 func compileSet(set store.ActionSetRow, rows []store.ActionRow, provenance *pmv1.ManifestProvenance, scheduleOverride []byte) (*pmv1.Manifest, error) {
