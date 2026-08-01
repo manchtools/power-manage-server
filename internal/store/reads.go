@@ -322,6 +322,9 @@ type DeviceInventoryTable = generated.ListDeviceInventoryRow
 // OSQueryResult is one current on-demand query result.
 type OSQueryResult = generated.GetOSQueryResultRow
 
+// DeviceLogResult is one current remote log query result.
+type DeviceLogResult = generated.GetDeviceLogResultRow
+
 // DefaultInventoryIntervalMinutes is the server cadence used when neither a
 // device nor any live device group supplies an inventory interval.
 const DefaultInventoryIntervalMinutes int32 = 1440
@@ -1159,6 +1162,15 @@ func (s *Store) GetOSQueryResult(ctx context.Context, queryID string) (OSQueryRe
 	row, err := s.queries.GetOSQueryResult(ctx, queryID)
 	if err != nil {
 		return OSQueryResult{}, fmt.Errorf("osquery: get result: %w", translateNotFound(err))
+	}
+	return row, nil
+}
+
+// GetDeviceLogResult returns one remote log query result by identifier.
+func (s *Store) GetDeviceLogResult(ctx context.Context, queryID string) (DeviceLogResult, error) {
+	row, err := s.queries.GetDeviceLogResult(ctx, queryID)
+	if err != nil {
+		return DeviceLogResult{}, fmt.Errorf("device logs: get result: %w", translateNotFound(err))
 	}
 	return row, nil
 }

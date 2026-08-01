@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	pmv1 "github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1"
+	"github.com/manchtools/power-manage-sdk/gen/go/powermanage/v1/powermanagev1connect"
 	sdkvalidate "github.com/manchtools/power-manage-sdk/validate"
 	"github.com/manchtools/power-manage/server/internal/auth"
 	"github.com/manchtools/power-manage/server/internal/store"
@@ -23,7 +24,7 @@ const (
 	defaultPageSize          = int32(50)
 	maxLabelFilters          = 64
 	maxInventoryTableFilters = 128
-	osQueryResultTimeout     = 5 * time.Minute
+	resultTimeout            = 5 * time.Minute
 )
 
 // Config supplies the direct PostgreSQL store and process-local seams used by
@@ -180,6 +181,23 @@ func (h *Handlers) operation(req connect.AnyRequest, actor *auth.UserContext, pr
 	return op
 }
 
+func (h *Handlers) recordSensitiveRead(
+	ctx context.Context,
+	req connect.AnyRequest,
+	actor *auth.UserContext,
+	procedure, permission, resourceType, resourceID string,
+) error {
+	op := h.operation(req, actor, procedure, permission)
+	op.Class = store.ClassSensitiveRead
+	if _, err := h.store.RecordOperation(ctx, op, store.AuditEffect{
+		ResourceType: resourceType, ResourceID: resourceID,
+		Action: "READ", Outcome: store.EffectApplied,
+	}); err != nil {
+		return h.internal(ctx, "record sensitive read", err)
+	}
+	return nil
+}
+
 // ListDevices returns a keyset page narrowed in SQL by assignment, device
 // scope, status, and exact label matches.
 func (h *Handlers) ListDevices(ctx context.Context, req *connect.Request[pmv1.ListDevicesRequest]) (*connect.Response[pmv1.ListDevicesResponse], error) {
@@ -266,7 +284,8 @@ func (h *Handlers) GetDeviceInventory(ctx context.Context, req *connect.Request[
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
 	}
-	if _, err := h.actor(ctx); err != nil {
+	actor, err := h.actor(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if len(req.Msg.TableNames) > maxInventoryTableFilters {
@@ -294,6 +313,11 @@ func (h *Handlers) GetDeviceInventory(ctx context.Context, req *connect.Request[
 			CollectedAt: timestamppb.New(row.CollectedAt),
 		}
 	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure, "GetDeviceInventory",
+		"device_inventory", req.Msg.DeviceId); err != nil {
+		return nil, err
+	}
 	return connect.NewResponse(&pmv1.GetDeviceInventoryResponse{Tables: tables}), nil
 }
 
@@ -302,7 +326,8 @@ func (h *Handlers) GetOSQueryResult(ctx context.Context, req *connect.Request[pm
 	if err := validateRequest(h, ctx, req); err != nil {
 		return nil, err
 	}
-	if _, err := h.actor(ctx); err != nil {
+	actor, err := h.actor(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := h.authorize(ctx, "GetOSQueryResult", ""); err != nil {
@@ -326,13 +351,11 @@ func (h *Handlers) GetOSQueryResult(ctx context.Context, req *connect.Request[pm
 		QueryId: result.QueryID, Completed: result.Completed,
 		Success: result.Success, Error: result.Error,
 	}
-	if !result.Completed && h.now().Sub(result.CreatedAt) > osQueryResultTimeout {
+	if !result.Completed && h.now().Sub(result.CreatedAt) > resultTimeout {
 		response.Completed = true
 		response.Success = false
 		response.Error = "query timed out: device did not respond within 5 minutes"
-		return connect.NewResponse(response), nil
-	}
-	if result.Completed && result.Success {
+	} else if result.Completed && result.Success {
 		var values []map[string]string
 		if err := json.Unmarshal(result.Rows, &values); err != nil {
 			return nil, h.internal(ctx, "decode osquery result", err)
@@ -341,6 +364,55 @@ func (h *Handlers) GetOSQueryResult(ctx context.Context, req *connect.Request[pm
 		for i, value := range values {
 			response.Rows[i] = &pmv1.OSQueryRow{Data: value}
 		}
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetOSQueryResultProcedure, "GetOSQueryResult",
+		"osquery_result", result.QueryID); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(response), nil
+}
+
+// GetDeviceLogResult returns one directly stored remote log query result.
+func (h *Handlers) GetDeviceLogResult(ctx context.Context, req *connect.Request[pmv1.GetDeviceLogResultRequest]) (*connect.Response[pmv1.GetDeviceLogResultResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	actor, err := h.actor(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "GetDeviceLogResult", ""); err != nil {
+		return nil, err
+	}
+	result, err := h.store.GetDeviceLogResult(ctx, req.Msg.QueryId)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, notFound(ctx, errQueryResultMissing, "log query result not found")
+		}
+		return nil, h.internal(ctx, "read device log result", err)
+	}
+	if _, err := h.readDevice(ctx, "GetDeviceLogResult", result.DeviceID); err != nil {
+		if connect.CodeOf(err) == connect.CodeNotFound {
+			return nil, notFound(ctx, errQueryResultMissing, "log query result not found")
+		}
+		return nil, err
+	}
+
+	response := &pmv1.GetDeviceLogResultResponse{
+		QueryId: result.QueryID, Completed: result.Completed,
+		Success: result.Success, Error: result.Error, Logs: result.Logs,
+	}
+	if !result.Completed && h.now().Sub(result.CreatedAt) > resultTimeout {
+		response.Completed = true
+		response.Success = false
+		response.Error = "log query timed out: device did not respond within 5 minutes"
+		response.Logs = ""
+	}
+	if err := h.recordSensitiveRead(ctx, req, actor,
+		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure, "GetDeviceLogResult",
+		"device_log_result", result.QueryID); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(response), nil
 }

@@ -10,6 +10,37 @@ import (
 	"time"
 )
 
+const getDeviceLogResult = `-- name: GetDeviceLogResult :one
+SELECT query_id, device_id, completed, success, error, logs, created_at
+FROM log_query_results
+WHERE query_id = $1
+`
+
+type GetDeviceLogResultRow struct {
+	QueryID   string    `json:"query_id"`
+	DeviceID  string    `json:"device_id"`
+	Completed bool      `json:"completed"`
+	Success   bool      `json:"success"`
+	Error     string    `json:"error"`
+	Logs      string    `json:"logs"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) GetDeviceLogResult(ctx context.Context, queryID string) (GetDeviceLogResultRow, error) {
+	row := q.db.QueryRow(ctx, getDeviceLogResult, queryID)
+	var i GetDeviceLogResultRow
+	err := row.Scan(
+		&i.QueryID,
+		&i.DeviceID,
+		&i.Completed,
+		&i.Success,
+		&i.Error,
+		&i.Logs,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOSQueryResult = `-- name: GetOSQueryResult :one
 SELECT query_id, device_id, completed, success, error, rows, created_at
 FROM osquery_results

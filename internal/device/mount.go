@@ -13,7 +13,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("device: mux is required")
 	}
-	mounted := make([]string, 0, 12)
+	mounted := make([]string, 0, 13)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -26,6 +26,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceInventoryProcedure, h.GetDeviceInventory, opts...))
 	register(powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetOSQueryResultProcedure, h.GetOSQueryResult, opts...))
+	register(powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceLogResultProcedure, h.GetDeviceLogResult, opts...))
 	register(powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetDeviceLabelProcedure, h.SetDeviceLabel, opts...))
 	register(powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
@@ -63,8 +65,16 @@ func ReadProcedures() []string {
 	return []string{
 		powermanagev1connect.ControlServiceListDevicesProcedure,
 		powermanagev1connect.ControlServiceGetDeviceProcedure,
+		powermanagev1connect.ControlServiceListDeviceAssigneesProcedure,
+	}
+}
+
+// SensitiveReadProcedures is the protected device-data surface that records
+// evidence before returning inventory, query output, or logs.
+func SensitiveReadProcedures() []string {
+	return []string{
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
-		powermanagev1connect.ControlServiceListDeviceAssigneesProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
 	}
 }

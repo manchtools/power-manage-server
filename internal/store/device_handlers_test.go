@@ -149,6 +149,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	_, err = f.handlers.GetOSQueryResult(context.Background(),
 		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: "bad"}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLogResult(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: "bad"}))
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = f.handlers.GetDevice(context.Background(), connect.NewRequest(&pmv1.GetDeviceRequest{Id: f.directID}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -157,6 +160,9 @@ func TestDeviceHandlers_ValidateBeforeAuthentication(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	_, err = f.handlers.GetOSQueryResult(context.Background(),
 		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: newID()}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	_, err = f.handlers.GetDeviceLogResult(context.Background(),
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: newID()}))
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
@@ -249,6 +255,8 @@ func TestDeviceHandlers_GetDeviceInventoryReadsDirectTables(t *testing.T) {
 			DeviceId: f.groupID, TableNames: make([]string, 129),
 		}))
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
+		"device_inventory", f.groupID)
 }
 
 func TestDeviceHandlers_GetDeviceInventoryRejectsInvalidStoredShape(t *testing.T) {
@@ -321,6 +329,8 @@ func TestDeviceHandlers_GetOSQueryResultReadsDirectState(t *testing.T) {
 	_, err = f.handlers.GetOSQueryResult(ctx,
 		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: newID()}))
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
+		"osquery_result", staleID)
 }
 
 func TestDeviceHandlers_GetOSQueryResultRejectsInvalidStoredShape(t *testing.T) {
@@ -335,6 +345,75 @@ func TestDeviceHandlers_GetOSQueryResultRejectsInvalidStoredShape(t *testing.T) 
 	_, err = f.handlers.GetOSQueryResult(f.actor("GetOSQueryResult"),
 		connect.NewRequest(&pmv1.GetOSQueryResultRequest{QueryId: queryID}))
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err), "corrupt rows must not look like an empty result")
+}
+
+func TestDeviceHandlers_GetDeviceLogResultReadsDirectState(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	completedID, staleID, outsideID := newID(), newID(), newID()
+	for _, row := range []struct {
+		id, deviceID string
+		completed    bool
+		createdAt    time.Time
+		logs         string
+	}{
+		{completedID, f.groupID, true, f.now.Add(-time.Minute), "service started\n"},
+		{staleID, f.groupID, false, f.now.Add(-6 * time.Minute), ""},
+		{outsideID, f.outsideID, true, f.now.Add(-time.Minute), "hidden\n"},
+	} {
+		_, err := f.raw.Exec(context.Background(), `
+			INSERT INTO log_query_results
+				(query_id, device_id, completed, success, logs, created_at)
+			VALUES ($1, $2, $3, $3, $4, $5)`,
+			row.id, row.deviceID, row.completed, row.logs, row.createdAt)
+		require.NoError(t, err)
+	}
+	ctx := auth.WithUser(context.Background(), &auth.UserContext{
+		ID: f.actorID, Kind: auth.PrincipalUser,
+		Permissions: []string{"GetDeviceLogResult"},
+		ScopedGrants: []auth.ScopedGrant{{
+			Permission: "GetDeviceLogResult", ScopeKind: auth.ScopeKindDeviceGroup, ScopeID: f.scopeGroup,
+		}},
+	})
+
+	completed, err := f.handlers.GetDeviceLogResult(ctx,
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: completedID}))
+	require.NoError(t, err)
+	assert.True(t, completed.Msg.Completed)
+	assert.True(t, completed.Msg.Success)
+	assert.Equal(t, "service started\n", completed.Msg.Logs)
+
+	stale, err := f.handlers.GetDeviceLogResult(ctx,
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: staleID}))
+	require.NoError(t, err)
+	assert.True(t, stale.Msg.Completed)
+	assert.False(t, stale.Msg.Success)
+	assert.Empty(t, stale.Msg.Logs)
+	assert.Contains(t, stale.Msg.Error, "timed out")
+	var storedCompleted bool
+	require.NoError(t, f.raw.QueryRow(context.Background(),
+		`SELECT completed FROM log_query_results WHERE query_id = $1`, staleID).Scan(&storedCompleted))
+	assert.False(t, storedCompleted, "a read must not smuggle in an unaudited expiry mutation")
+
+	_, err = f.handlers.GetDeviceLogResult(ctx,
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: outsideID}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "scope must not disclose the result")
+	_, err = f.handlers.GetDeviceLogResult(ctx,
+		connect.NewRequest(&pmv1.GetDeviceLogResultRequest{QueryId: newID()}))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assertSensitiveDeviceRead(t, f, powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+		"device_log_result", staleID)
+}
+
+func TestDeviceHandlers_SensitiveReadFailsClosedWhenEvidenceFails(t *testing.T) {
+	f := newDeviceHandlerFixture(t)
+	_, err := f.raw.Exec(context.Background(), `
+		ALTER TABLE audit_operations ADD CONSTRAINT reject_inventory_evidence
+		CHECK (request_descriptor <> '/powermanage.v1.ControlService/GetDeviceInventory')`)
+	require.NoError(t, err)
+
+	_, err = f.handlers.GetDeviceInventory(f.actor("GetDeviceInventory"),
+		connect.NewRequest(&pmv1.GetDeviceInventoryRequest{DeviceId: f.groupID}))
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
 
 func TestDeviceHandlers_MutationsAreAuditedCRUD(t *testing.T) {
@@ -441,6 +520,7 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetDeviceProcedure,
 		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
 		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
 		powermanagev1connect.ControlServiceSetDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceRemoveDeviceLabelProcedure,
 		powermanagev1connect.ControlServiceAssignDeviceProcedure,
@@ -451,6 +531,31 @@ func TestDeviceHandlers_MountsExactSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceDeleteDeviceProcedure,
 	}
 	assert.Equal(t, want, mounted)
+	assert.Equal(t, []string{
+		powermanagev1connect.ControlServiceGetDeviceInventoryProcedure,
+		powermanagev1connect.ControlServiceGetOSQueryResultProcedure,
+		powermanagev1connect.ControlServiceGetDeviceLogResultProcedure,
+	}, device.SensitiveReadProcedures())
+	classified := append(device.MutationProcedures(), device.ReadProcedures()...)
+	classified = append(classified, device.SensitiveReadProcedures()...)
+	assert.ElementsMatch(t, want, classified, "every mounted procedure must have exactly one audit class")
+}
+
+func assertSensitiveDeviceRead(
+	t *testing.T,
+	f *deviceHandlerFixture,
+	procedure, resourceType, resourceID string,
+) {
+	t.Helper()
+	operation, err := latestOperationFor(t, f.store, f.raw, procedure)
+	require.NoError(t, err)
+	assert.Equal(t, string(store.ClassSensitiveRead), operation.OperationClass)
+	effects, err := f.store.ListAuditEffects(context.Background(), operation.OperationID)
+	require.NoError(t, err)
+	require.Len(t, effects, 1)
+	assert.Equal(t, resourceType, effects[0].ResourceType)
+	assert.Equal(t, resourceID, effects[0].ResourceID)
+	assert.Equal(t, "READ", effects[0].Action)
 }
 
 func latestOperationFor(t *testing.T, st *store.Store, raw *pgxpool.Pool, procedure string) (store.AuditOperationRow, error) {
