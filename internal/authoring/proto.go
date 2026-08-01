@@ -38,7 +38,8 @@ func ActionToProto(row store.ActionRow) (*pmv1.ManagedAction, error) {
 	return action, nil
 }
 
-func actionSetToProto(row store.ActionSetRow, memberCount int64) (*pmv1.ActionSet, error) {
+// ActionSetToProto decodes one trusted stored ActionSet.
+func ActionSetToProto(row store.ActionSetRow, memberCount int64) (*pmv1.ActionSet, error) {
 	if !validFailurePolicy(pmv1.OnFailure(row.OnFailure)) {
 		return nil, fmt.Errorf("authoring: invalid stored action set failure policy %d", row.OnFailure)
 	}
@@ -63,7 +64,8 @@ func actionSetToProto(row store.ActionSetRow, memberCount int64) (*pmv1.ActionSe
 	return set, nil
 }
 
-func actionSetMembersToProto(rows []store.ActionSetMemberView) []*pmv1.ActionSetMember {
+// ActionSetMembersToProto converts the ordered member edge list.
+func ActionSetMembersToProto(rows []store.ActionSetMemberView) []*pmv1.ActionSetMember {
 	members := make([]*pmv1.ActionSetMember, len(rows))
 	for i, row := range rows {
 		members[i] = &pmv1.ActionSetMember{
@@ -74,7 +76,8 @@ func actionSetMembersToProto(rows []store.ActionSetMemberView) []*pmv1.ActionSet
 	return members
 }
 
-func definitionToProto(row store.DefinitionRow, memberCount int64) (*pmv1.Definition, error) {
+// DefinitionToProto decodes one trusted stored Definition.
+func DefinitionToProto(row store.DefinitionRow, memberCount int64) (*pmv1.Definition, error) {
 	schedule, err := actionparams.ParseSchedule(row.Schedule)
 	if err != nil {
 		return nil, fmt.Errorf("authoring: decode stored definition schedule: %w", err)
@@ -95,7 +98,8 @@ func definitionToProto(row store.DefinitionRow, memberCount int64) (*pmv1.Defini
 	return definition, nil
 }
 
-func definitionMembersToProto(rows []store.DefinitionMemberView) []*pmv1.DefinitionMember {
+// DefinitionMembersToProto converts the ordered member edge list.
+func DefinitionMembersToProto(rows []store.DefinitionMemberView) []*pmv1.DefinitionMember {
 	members := make([]*pmv1.DefinitionMember, len(rows))
 	for i, row := range rows {
 		members[i] = &pmv1.DefinitionMember{

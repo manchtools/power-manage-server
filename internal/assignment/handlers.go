@@ -203,6 +203,179 @@ func (h *Handlers) GetUserAssignments(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(&pmv1.GetUserAssignmentsResponse{Assignments: out}), nil
 }
 
+// GetDeviceAssignments expands every effective live source that reaches a
+// device. EXCLUDED suppresses a source, UNINSTALL forces its resolved actions
+// absent, and AVAILABLE contributes only when selected.
+func (h *Handlers) GetDeviceAssignments(ctx context.Context, req *connect.Request[pmv1.GetDeviceAssignmentsRequest]) (*connect.Response[pmv1.GetDeviceAssignmentsResponse], error) {
+	if err := validateRequest(h, ctx, req); err != nil {
+		return nil, err
+	}
+	if _, err := h.actor(ctx); err != nil {
+		return nil, err
+	}
+	if err := h.authorize(ctx, "GetDeviceAssignments", ""); err != nil {
+		return nil, err
+	}
+	if _, err := h.store.GetDevice(ctx, req.Msg.DeviceId); err != nil {
+		if store.IsNotFound(err) {
+			return nil, rpcError(ctx, "device_not_found", connect.CodeNotFound, "device not found")
+		}
+		return nil, h.internal(ctx, "read assignment device", err)
+	}
+	paths, err := h.store.ListResolvedSources(ctx, req.Msg.DeviceId)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve device assignments", err)
+	}
+	sources, err := effectiveSources(paths)
+	if err != nil {
+		return nil, h.internal(ctx, "resolve assignment modes", err)
+	}
+
+	response := &pmv1.GetDeviceAssignmentsResponse{}
+	actionIndex := make(map[string]int)
+	for _, source := range sources {
+		sourceType, ok := sourceTypeValue(source.row.SourceType)
+		if !ok {
+			return nil, h.internal(ctx, "decode assigned source", ErrInvalidInput)
+		}
+		actions, err := h.previewActions(ctx, sourceType, source.row.SourceID)
+		if err != nil {
+			return nil, h.internal(ctx, "expand assigned actions", err)
+		}
+		appendResolvedActions(&response.Actions, actionIndex, actions, source.forceAbsent)
+
+		switch sourceType {
+		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION:
+			// The expanded action above is the complete response for a
+			// singleton source.
+		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET:
+			row, err := h.store.GetManifestActionSet(ctx, source.row.SourceID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned action set", err)
+			}
+			members, err := h.store.ListActionSetMembers(ctx, row.ID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned action set members", err)
+			}
+			set, err := authoring.ActionSetToProto(row, int64(len(members)))
+			if err != nil {
+				return nil, h.internal(ctx, "encode assigned action set", err)
+			}
+			response.ActionSets = append(response.ActionSets, set)
+			response.ActionSetDetails = append(response.ActionSetDetails, &pmv1.GetActionSetResponse{
+				Set: set, Members: authoring.ActionSetMembersToProto(members),
+			})
+		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION:
+			row, err := h.store.GetManifestDefinition(ctx, source.row.SourceID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned definition", err)
+			}
+			members, err := h.store.ListDefinitionMembers(ctx, row.ID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned definition members", err)
+			}
+			definition, err := authoring.DefinitionToProto(row, int64(len(members)))
+			if err != nil {
+				return nil, h.internal(ctx, "encode assigned definition", err)
+			}
+			response.Definitions = append(response.Definitions, definition)
+			response.DefinitionDetails = append(response.DefinitionDetails, &pmv1.GetDefinitionResponse{
+				Definition: definition, Members: authoring.DefinitionMembersToProto(members),
+			})
+		case pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY:
+			row, err := h.store.GetAuthoringCompliancePolicy(ctx, source.row.SourceID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned compliance policy", err)
+			}
+			rules, err := h.store.ListCompliancePolicyRules(ctx, row.ID)
+			if err != nil {
+				return nil, h.internal(ctx, "read assigned compliance rules", err)
+			}
+			response.CompliancePolicies = append(response.CompliancePolicies, compliancePolicyToProto(row, rules))
+		}
+	}
+	return connect.NewResponse(response), nil
+}
+
+type effectiveSource struct {
+	row         store.ResolvedAssignmentSource
+	forceAbsent bool
+}
+
+func effectiveSources(paths []store.ResolvedAssignmentSource) ([]effectiveSource, error) {
+	type decision struct {
+		row                           store.ResolvedAssignmentSource
+		required, selected, uninstall bool
+		excluded                      bool
+	}
+	order := make([]string, 0, len(paths))
+	bySource := make(map[string]*decision, len(paths))
+	for _, path := range paths {
+		key := path.SourceType + ":" + path.SourceID
+		current := bySource[key]
+		if current == nil {
+			current = &decision{row: path}
+			bySource[key] = current
+			order = append(order, key)
+		}
+		switch pmv1.AssignmentMode(path.Mode) {
+		case pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED:
+			current.required = true
+		case pmv1.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE:
+			current.selected = current.selected || path.Selected
+		case pmv1.AssignmentMode_ASSIGNMENT_MODE_EXCLUDED:
+			current.excluded = true
+		case pmv1.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL:
+			current.uninstall = true
+		default:
+			return nil, ErrInvalidInput
+		}
+	}
+	resolved := make([]effectiveSource, 0, len(order))
+	for _, key := range order {
+		decision := bySource[key]
+		if decision.excluded || (!decision.required && !decision.selected && !decision.uninstall) {
+			continue
+		}
+		resolved = append(resolved, effectiveSource{row: decision.row, forceAbsent: decision.uninstall})
+	}
+	return resolved, nil
+}
+
+func appendResolvedActions(dst *[]*pmv1.ManagedAction, index map[string]int, actions []*pmv1.ManagedAction, forceAbsent bool) {
+	for _, action := range actions {
+		if existing, ok := index[action.Id]; ok {
+			if forceAbsent {
+				(*dst)[existing].DesiredState = pmv1.DesiredState_DESIRED_STATE_ABSENT
+			}
+			continue
+		}
+		if forceAbsent {
+			action.DesiredState = pmv1.DesiredState_DESIRED_STATE_ABSENT
+		}
+		index[action.Id] = len(*dst)
+		*dst = append(*dst, action)
+	}
+}
+
+func compliancePolicyToProto(row store.CompliancePolicyRow, rules []store.CompliancePolicyRuleView) *pmv1.CompliancePolicy {
+	policy := &pmv1.CompliancePolicy{
+		Id: row.ID, Name: row.Name, Description: row.Description,
+		RuleCount: boundedCount(int64(len(rules))), CreatedBy: row.CreatedBy,
+		Rules: make([]*pmv1.CompliancePolicyRule, len(rules)),
+	}
+	if row.CreatedAt != nil {
+		policy.CreatedAt = timestamppb.New(*row.CreatedAt)
+	}
+	for i, rule := range rules {
+		policy.Rules[i] = &pmv1.CompliancePolicyRule{
+			ActionId: rule.ActionID, ActionName: rule.ActionName,
+			GracePeriodHours: rule.GracePeriodHours,
+		}
+	}
+	return policy
+}
+
 // SetUserSelection persists one optional source choice for an accessible
 // device through the audited mutation primitive.
 func (h *Handlers) SetUserSelection(ctx context.Context, req *connect.Request[pmv1.SetUserSelectionRequest]) (*connect.Response[pmv1.SetUserSelectionResponse], error) {
@@ -457,7 +630,7 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 	if mux == nil {
 		panic("assignment: mux is required")
 	}
-	mounted := make([]string, 0, 6)
+	mounted := make([]string, 0, 7)
 	register := func(procedure string, handler http.Handler) {
 		mux.Handle(procedure, handler)
 		mounted = append(mounted, procedure)
@@ -474,6 +647,8 @@ func (h *Handlers) Mount(mux *http.ServeMux, opts ...connect.HandlerOption) []st
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceSetUserSelectionProcedure, h.SetUserSelection, opts...))
 	register(powermanagev1connect.ControlServiceListAvailableActionsProcedure,
 		connect.NewUnaryHandler(powermanagev1connect.ControlServiceListAvailableActionsProcedure, h.ListAvailableActions, opts...))
+	register(powermanagev1connect.ControlServiceGetDeviceAssignmentsProcedure,
+		connect.NewUnaryHandler(powermanagev1connect.ControlServiceGetDeviceAssignmentsProcedure, h.GetDeviceAssignments, opts...))
 	return mounted
 }
 
@@ -492,5 +667,6 @@ func ReadProcedures() []string {
 		powermanagev1connect.ControlServiceListAssignmentsProcedure,
 		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
 		powermanagev1connect.ControlServiceListAvailableActionsProcedure,
+		powermanagev1connect.ControlServiceGetDeviceAssignmentsProcedure,
 	}
 }

@@ -34,7 +34,7 @@ func (h *Handlers) CreateDefinition(ctx context.Context, req *connect.Request[pm
 	if err != nil {
 		return nil, h.definitionError(ctx, "create definition", err)
 	}
-	definition, err := definitionToProto(row, 0)
+	definition, err := DefinitionToProto(row, 0)
 	if err != nil {
 		return nil, h.internal(ctx, "encode created definition", err)
 	}
@@ -63,12 +63,12 @@ func (h *Handlers) GetDefinition(ctx context.Context, req *connect.Request[pmv1.
 	if err != nil {
 		return nil, h.internal(ctx, "list definition members", err)
 	}
-	definition, err := definitionToProto(row, int64(len(members)))
+	definition, err := DefinitionToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode definition", err)
 	}
 	return connect.NewResponse(&pmv1.GetDefinitionResponse{
-		Definition: definition, Members: definitionMembersToProto(members),
+		Definition: definition, Members: DefinitionMembersToProto(members),
 	}), nil
 }
 
@@ -109,7 +109,7 @@ func (h *Handlers) ListDefinitions(ctx context.Context, req *connect.Request[pmv
 	}
 	definitions := make([]*pmv1.Definition, len(views))
 	for i, view := range views {
-		definitions[i], err = definitionToProto(view.DefinitionRow, view.LiveMemberCount)
+		definitions[i], err = DefinitionToProto(view.DefinitionRow, view.LiveMemberCount)
 		if err != nil {
 			return nil, h.internal(ctx, "encode listed definition", err)
 		}
@@ -338,7 +338,7 @@ func (h *Handlers) updatedDefinition(ctx context.Context, operation string, row 
 	if err != nil {
 		return nil, h.internal(ctx, "count updated definition members", err)
 	}
-	definition, err := definitionToProto(row, int64(len(members)))
+	definition, err := DefinitionToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode updated definition", err)
 	}
@@ -354,7 +354,7 @@ func (h *Handlers) definitionResponse(ctx context.Context, id string) (*pmv1.Def
 	if err != nil {
 		return nil, h.internal(ctx, "count changed definition members", err)
 	}
-	definition, err := definitionToProto(row, int64(len(members)))
+	definition, err := DefinitionToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode changed definition", err)
 	}

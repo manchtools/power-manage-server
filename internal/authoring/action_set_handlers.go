@@ -34,7 +34,7 @@ func (h *Handlers) CreateActionSet(ctx context.Context, req *connect.Request[pmv
 	if err != nil {
 		return nil, h.actionSetError(ctx, "create action set", err)
 	}
-	set, err := actionSetToProto(row, 0)
+	set, err := ActionSetToProto(row, 0)
 	if err != nil {
 		return nil, h.internal(ctx, "encode created action set", err)
 	}
@@ -63,12 +63,12 @@ func (h *Handlers) GetActionSet(ctx context.Context, req *connect.Request[pmv1.G
 	if err != nil {
 		return nil, h.internal(ctx, "list action set members", err)
 	}
-	set, err := actionSetToProto(row, int64(len(members)))
+	set, err := ActionSetToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode action set", err)
 	}
 	return connect.NewResponse(&pmv1.GetActionSetResponse{
-		Set: set, Members: actionSetMembersToProto(members),
+		Set: set, Members: ActionSetMembersToProto(members),
 	}), nil
 }
 
@@ -110,7 +110,7 @@ func (h *Handlers) ListActionSets(ctx context.Context, req *connect.Request[pmv1
 	}
 	sets := make([]*pmv1.ActionSet, len(views))
 	for i, view := range views {
-		sets[i], err = actionSetToProto(view.ActionSetRow, view.MemberCount)
+		sets[i], err = ActionSetToProto(view.ActionSetRow, view.MemberCount)
 		if err != nil {
 			return nil, h.internal(ctx, "encode listed action set", err)
 		}
@@ -366,7 +366,7 @@ func (h *Handlers) updatedActionSet(ctx context.Context, operation string, row s
 	if err != nil {
 		return nil, h.internal(ctx, "count updated action set members", err)
 	}
-	set, err := actionSetToProto(row, int64(len(members)))
+	set, err := ActionSetToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode updated action set", err)
 	}
@@ -382,7 +382,7 @@ func (h *Handlers) actionSetResponse(ctx context.Context, id string) (*pmv1.Acti
 	if err != nil {
 		return nil, h.internal(ctx, "count changed action set members", err)
 	}
-	set, err := actionSetToProto(row, int64(len(members)))
+	set, err := ActionSetToProto(row, int64(len(members)))
 	if err != nil {
 		return nil, h.internal(ctx, "encode changed action set", err)
 	}

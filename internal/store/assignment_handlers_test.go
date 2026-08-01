@@ -386,6 +386,119 @@ func TestAssignmentHandlers_AvailableSourcesResolveEveryTargetKind(t *testing.T)
 	assert.Len(t, assigned.Msg.Items, 4)
 }
 
+func TestAssignmentHandlers_AvailableSourceIsHiddenByStrongerMode(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	ctx := f.actor("CreateAssignment", "ListAvailableActions", "ListDevices")
+	deviceID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE]
+	groupID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP]
+	actionID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION]
+
+	_, err := f.raw.Exec(context.Background(),
+		`INSERT INTO device_group_members (group_id, device_id) VALUES ($1, $2)`, groupID, deviceID)
+	require.NoError(t, err)
+	for _, assignment := range []*pmv1.CreateAssignmentRequest{
+		{
+			SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, SourceId: actionID,
+			TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE, TargetId: deviceID,
+			Mode: pmv1.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE,
+		},
+		{
+			SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, SourceId: actionID,
+			TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE_GROUP, TargetId: groupID,
+			Mode: pmv1.AssignmentMode_ASSIGNMENT_MODE_REQUIRED,
+		},
+	} {
+		_, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(assignment))
+		require.NoError(t, err)
+	}
+
+	response, err := f.handlers.ListAvailableActions(ctx,
+		connect.NewRequest(&pmv1.ListAvailableActionsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	assert.Empty(t, response.Msg.Items, "a required source is not also an optional choice")
+}
+
+func TestAssignmentHandlers_GetDeviceAssignmentsExpandsLiveSources(t *testing.T) {
+	f := newAssignmentHandlerFixture(t)
+	ctx := f.actor("CreateAssignment", "GetDeviceAssignments", "SetUserSelection", "ListDevices")
+	deviceID := f.targets[pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE]
+	actionID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION]
+	setID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET]
+	definitionID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION]
+	policyID := f.sources[pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY]
+
+	_, err := f.raw.Exec(context.Background(),
+		`INSERT INTO action_set_members (set_id, action_id, sort_order) VALUES ($1, $2, 0)`, setID, actionID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(),
+		`INSERT INTO definition_members (definition_id, action_set_id, sort_order) VALUES ($1, $2, 0)`, definitionID, setID)
+	require.NoError(t, err)
+	_, err = f.raw.Exec(context.Background(),
+		`INSERT INTO compliance_policy_rules (policy_id, action_id, action_name) VALUES ($1, $2, 'assigned action')`,
+		policyID, actionID)
+	require.NoError(t, err)
+
+	for _, source := range []pmv1.AssignmentSourceType{
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION_SET,
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_DEFINITION,
+		pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_COMPLIANCE_POLICY,
+	} {
+		_, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+			SourceType: source, SourceId: f.sources[source],
+			TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE,
+			TargetId:   deviceID,
+		}))
+		require.NoError(t, err)
+	}
+
+	authoringState := authoring.New(authoring.Config{Store: f.store, Now: func() time.Time { return f.now }})
+	availableID := createPolicyAction(t, authoringState, "selected optional action", false)
+	excludedID := createPolicyAction(t, authoringState, "excluded action", false)
+	uninstallID := createPolicyAction(t, authoringState, "uninstall action", false)
+	for id, mode := range map[string]pmv1.AssignmentMode{
+		availableID: pmv1.AssignmentMode_ASSIGNMENT_MODE_AVAILABLE,
+		excludedID:  pmv1.AssignmentMode_ASSIGNMENT_MODE_EXCLUDED,
+		uninstallID: pmv1.AssignmentMode_ASSIGNMENT_MODE_UNINSTALL,
+	} {
+		_, err := f.handlers.CreateAssignment(ctx, connect.NewRequest(&pmv1.CreateAssignmentRequest{
+			SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION, SourceId: id,
+			TargetType: pmv1.AssignmentTargetType_ASSIGNMENT_TARGET_TYPE_DEVICE, TargetId: deviceID,
+			Mode: mode,
+		}))
+		require.NoError(t, err)
+	}
+	_, err = f.handlers.SetUserSelection(ctx, connect.NewRequest(&pmv1.SetUserSelectionRequest{
+		DeviceId: deviceID, SourceType: pmv1.AssignmentSourceType_ASSIGNMENT_SOURCE_TYPE_ACTION,
+		SourceId: availableID, Selected: true,
+	}))
+	require.NoError(t, err)
+
+	response, err := f.handlers.GetDeviceAssignments(ctx,
+		connect.NewRequest(&pmv1.GetDeviceAssignmentsRequest{DeviceId: deviceID}))
+	require.NoError(t, err)
+	require.Len(t, response.Msg.Actions, 3, "duplicates collapse, selected optional and uninstall remain, excluded is absent")
+	actionsByID := make(map[string]*pmv1.ManagedAction, len(response.Msg.Actions))
+	for _, action := range response.Msg.Actions {
+		actionsByID[action.Id] = action
+	}
+	assert.Contains(t, actionsByID, actionID)
+	assert.Contains(t, actionsByID, availableID)
+	assert.NotContains(t, actionsByID, excludedID)
+	require.Contains(t, actionsByID, uninstallID)
+	assert.Equal(t, pmv1.DesiredState_DESIRED_STATE_ABSENT, actionsByID[uninstallID].DesiredState)
+	require.Len(t, response.Msg.ActionSets, 1)
+	assert.Equal(t, setID, response.Msg.ActionSets[0].Id)
+	require.Len(t, response.Msg.ActionSetDetails, 1)
+	require.Len(t, response.Msg.ActionSetDetails[0].Members, 1)
+	require.Len(t, response.Msg.Definitions, 1)
+	assert.Equal(t, definitionID, response.Msg.Definitions[0].Id)
+	require.Len(t, response.Msg.DefinitionDetails, 1)
+	require.Len(t, response.Msg.DefinitionDetails[0].Members, 1)
+	require.Len(t, response.Msg.CompliancePolicies, 1)
+	assert.Equal(t, policyID, response.Msg.CompliancePolicies[0].Id)
+}
+
 func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 	f := newAssignmentHandlerFixture(t)
 	mounted := f.handlers.Mount(http.NewServeMux())
@@ -396,12 +509,13 @@ func TestAssignmentHandlers_MountExactCRUDSurface(t *testing.T) {
 		powermanagev1connect.ControlServiceGetUserAssignmentsProcedure,
 		powermanagev1connect.ControlServiceSetUserSelectionProcedure,
 		powermanagev1connect.ControlServiceListAvailableActionsProcedure,
+		powermanagev1connect.ControlServiceGetDeviceAssignmentsProcedure,
 	}
 	assert.Equal(t, want, mounted)
 	assert.Equal(t, []string{want[0], want[1], want[4]}, assignment.MutationProcedures())
-	assert.Equal(t, []string{want[2], want[3], want[5]}, assignment.ReadProcedures())
+	assert.Equal(t, []string{want[2], want[3], want[5], want[6]}, assignment.ReadProcedures())
 
 	sorted := append([]string(nil), mounted...)
 	sort.Strings(sorted)
-	assert.Len(t, sorted, 6)
+	assert.Len(t, sorted, 7)
 }

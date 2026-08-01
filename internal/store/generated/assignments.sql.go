@@ -407,13 +407,12 @@ func (q *Queries) ListAssignmentViewsForUser(ctx context.Context, userID string)
 	return items, nil
 }
 
-const listAvailableAssignmentSourcesForDevice = `-- name: ListAvailableAssignmentSourcesForDevice :many
-WITH available_sources AS (
-    SELECT DISTINCT a.source_type, a.source_id
+const listResolvedAssignmentSourcesForDevice = `-- name: ListResolvedAssignmentSourcesForDevice :many
+WITH resolved_sources AS (
+    SELECT DISTINCT a.source_type, a.source_id, a.mode
     FROM assignments a
     JOIN devices d ON d.id = $1 AND d.is_deleted = FALSE
     WHERE a.is_deleted = FALSE
-      AND a.mode = 1
       AND (
           (a.target_type = 'device' AND a.target_id = d.id)
           OR (a.target_type = 'device_group' AND EXISTS (
@@ -442,42 +441,45 @@ WITH available_sources AS (
           ))
       )
 )
-SELECT available_sources.source_type,
-       available_sources.source_id,
+SELECT resolved_sources.source_type,
+       resolved_sources.source_id,
+       resolved_sources.mode,
        COALESCE(sa.name, ss.name, sd.name, sp.name, '')::text AS source_name,
        COALESCE(sa.description, ss.description, sd.description, sp.description, '')::text AS source_description,
        COALESCE(us.selected, FALSE)::boolean AS selected
-FROM available_sources
-LEFT JOIN actions sa ON available_sources.source_type = 'action' AND sa.id = available_sources.source_id AND sa.is_deleted = FALSE
-LEFT JOIN action_sets ss ON available_sources.source_type = 'action_set' AND ss.id = available_sources.source_id AND ss.is_deleted = FALSE
-LEFT JOIN definitions sd ON available_sources.source_type = 'definition' AND sd.id = available_sources.source_id AND sd.is_deleted = FALSE
-LEFT JOIN compliance_policies sp ON available_sources.source_type = 'compliance_policy' AND sp.id = available_sources.source_id AND sp.is_deleted = FALSE
+FROM resolved_sources
+LEFT JOIN actions sa ON resolved_sources.source_type = 'action' AND sa.id = resolved_sources.source_id AND sa.is_deleted = FALSE
+LEFT JOIN action_sets ss ON resolved_sources.source_type = 'action_set' AND ss.id = resolved_sources.source_id AND ss.is_deleted = FALSE
+LEFT JOIN definitions sd ON resolved_sources.source_type = 'definition' AND sd.id = resolved_sources.source_id AND sd.is_deleted = FALSE
+LEFT JOIN compliance_policies sp ON resolved_sources.source_type = 'compliance_policy' AND sp.id = resolved_sources.source_id AND sp.is_deleted = FALSE
 LEFT JOIN user_selections us ON us.device_id = $1
-    AND us.source_type = available_sources.source_type AND us.source_id = available_sources.source_id
+    AND us.source_type = resolved_sources.source_type AND us.source_id = resolved_sources.source_id
 WHERE COALESCE(sa.id, ss.id, sd.id, sp.id) IS NOT NULL
-ORDER BY available_sources.source_type, available_sources.source_id
+ORDER BY resolved_sources.source_type, resolved_sources.source_id, resolved_sources.mode
 `
 
-type ListAvailableAssignmentSourcesForDeviceRow struct {
+type ListResolvedAssignmentSourcesForDeviceRow struct {
 	SourceType        string `json:"source_type"`
 	SourceID          string `json:"source_id"`
+	Mode              int32  `json:"mode"`
 	SourceName        string `json:"source_name"`
 	SourceDescription string `json:"source_description"`
 	Selected          bool   `json:"selected"`
 }
 
-func (q *Queries) ListAvailableAssignmentSourcesForDevice(ctx context.Context, deviceID string) ([]ListAvailableAssignmentSourcesForDeviceRow, error) {
-	rows, err := q.db.Query(ctx, listAvailableAssignmentSourcesForDevice, deviceID)
+func (q *Queries) ListResolvedAssignmentSourcesForDevice(ctx context.Context, deviceID string) ([]ListResolvedAssignmentSourcesForDeviceRow, error) {
+	rows, err := q.db.Query(ctx, listResolvedAssignmentSourcesForDevice, deviceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListAvailableAssignmentSourcesForDeviceRow{}
+	items := []ListResolvedAssignmentSourcesForDeviceRow{}
 	for rows.Next() {
-		var i ListAvailableAssignmentSourcesForDeviceRow
+		var i ListResolvedAssignmentSourcesForDeviceRow
 		if err := rows.Scan(
 			&i.SourceType,
 			&i.SourceID,
+			&i.Mode,
 			&i.SourceName,
 			&i.SourceDescription,
 			&i.Selected,

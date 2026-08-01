@@ -79,9 +79,9 @@ type AssignmentView struct {
 	TargetName string
 }
 
-// AvailableAssignmentSource is one live AVAILABLE-mode source resolved to a
-// device, with its current selection state.
-type AvailableAssignmentSource = generated.ListAvailableAssignmentSourcesForDeviceRow
+// ResolvedAssignmentSource is one live source/mode path that reaches a device,
+// with its current optional selection state.
+type ResolvedAssignmentSource = generated.ListResolvedAssignmentSourcesForDeviceRow
 
 // UserSelectionRow is one device/source selection.
 type UserSelectionRow = generated.UserSelection
@@ -581,10 +581,34 @@ func (s *Store) ListAssignmentsForUser(ctx context.Context, userID string) ([]As
 
 // ListAvailableSources resolves direct, device-group, assigned-user and
 // assigned-user-group targets to one source list for a device.
-func (s *Store) ListAvailableSources(ctx context.Context, deviceID string) ([]AvailableAssignmentSource, error) {
-	rows, err := s.queries.ListAvailableAssignmentSourcesForDevice(ctx, deviceID)
+func (s *Store) ListAvailableSources(ctx context.Context, deviceID string) ([]ResolvedAssignmentSource, error) {
+	rows, err := s.ListResolvedSources(ctx, deviceID)
 	if err != nil {
-		return nil, fmt.Errorf("assignment: list available sources: %w", err)
+		return nil, err
+	}
+	// A source reached through a stronger mode is not an optional choice,
+	// even if another target path reaches it as AVAILABLE.
+	nonOptional := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		if row.Mode != 1 {
+			nonOptional[row.SourceType+":"+row.SourceID] = true
+		}
+	}
+	available := make([]ResolvedAssignmentSource, 0, len(rows))
+	for _, row := range rows {
+		if row.Mode == 1 && !nonOptional[row.SourceType+":"+row.SourceID] {
+			available = append(available, row)
+		}
+	}
+	return available, nil
+}
+
+// ListResolvedSources returns every live source/mode path that reaches a
+// device. Callers decide how the assignment modes combine for their response.
+func (s *Store) ListResolvedSources(ctx context.Context, deviceID string) ([]ResolvedAssignmentSource, error) {
+	rows, err := s.queries.ListResolvedAssignmentSourcesForDevice(ctx, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("assignment: list resolved sources: %w", err)
 	}
 	return rows, nil
 }
